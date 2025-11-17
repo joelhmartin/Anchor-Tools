@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: Generate, upload, validate, bulk create, edit, and serve JSON-LD schema from a meta box and a bulk wizard. Auto detects content from Divi modules and ACF fields. Includes OpenAI settings and debug logging.
- * Version: 1.2.0
+ * Version: 1.2.2
  * Author: Anchor Corps
  * License: GPLv2 or later
  * Text Domain: anchor-tools

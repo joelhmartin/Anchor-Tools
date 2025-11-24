@@ -742,28 +742,30 @@ class ACG_Admin {
         return trim( implode( "\n", $unique ) );
     }
 
-    private function walk_divi_layout( $node, array &$chunks ){
+    private function walk_divi_layout( $node, array &$chunks, $parent_key = '' ){
+        if ( is_object( $node ) ) {
+            $node = (array) $node;
+        }
         if ( is_string( $node ) ) {
             $clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $node ) ) );
-            if ( '' !== $clean ) {
-                $chunks[] = $clean;
+            if ( '' === $clean ) {
+                return;
             }
+            if ( $this->is_textual_divi_key( $parent_key ) ) {
+                $chunks[] = $clean;
+                return;
+            }
+            if ( $this->should_skip_divi_snippet( $clean ) ) {
+                return;
+            }
+            $chunks[] = $clean;
             return;
         }
         if ( ! is_array( $node ) ) {
             return;
         }
         foreach ( $node as $key => $value ) {
-            if ( is_string( $value ) && $this->is_textual_divi_key( $key ) ) {
-                $clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $value ) ) );
-                if ( '' !== $clean ) {
-                    $chunks[] = $clean;
-                }
-                continue;
-            }
-            if ( is_array( $value ) || is_string( $value ) ) {
-                $this->walk_divi_layout( $value, $chunks );
-            }
+            $this->walk_divi_layout( $value, $chunks, $key );
         }
     }
 
@@ -776,6 +778,26 @@ class ACG_Admin {
             return true;
         }
         if ( preg_match( '/(^|_)(content|text|description|body|caption|blurb)(_|\b)/', $key ) ) {
+            return true;
+        }
+        return false;
+    }
+
+    private function should_skip_divi_snippet( $text ){
+        $lower = strtolower( $text );
+        $noise_markers = [ 'et_pb', 'et-builder', 'et_module', 'et-module', 'et_menu', 'module_class' ];
+        foreach ( $noise_markers as $marker ) {
+            if ( false !== strpos( $lower, $marker ) ) {
+                return true;
+            }
+        }
+        if ( preg_match( '/^[.#]/', $text ) ) {
+            return true;
+        }
+        if ( strpos( $text, ' ' ) === false && preg_match( '/[_0-9-]/', $text ) ) {
+            return true;
+        }
+        if ( strlen( $text ) <= 2 && strpos( $text, ' ' ) === false ) {
             return true;
         }
         return false;

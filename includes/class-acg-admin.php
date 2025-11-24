@@ -568,98 +568,367 @@ class ACG_Admin {
     }
 
     private function generate_llms_from_site(){
-        $home    = home_url('/');
-        $site    = get_bloginfo('name');
-        $tagline = get_bloginfo('description');
-        $privacy = function_exists('get_privacy_policy_url') ? get_privacy_policy_url() : '';
-        $contact = get_option('admin_email');
-        $lines   = [];
+        $home_url   = home_url('/');
+        $site_name  = get_bloginfo('name');
+        $owner      = $site_name ? $site_name : wp_parse_url( $home_url, PHP_URL_HOST );
+        $contact    = get_option('admin_email');
+        $home_post  = $this->get_home_page_post();
+        $tagline    = get_bloginfo('description');
+        $home_text  = $home_post ? $this->extract_text_from_post( $home_post ) : '';
+        if ( empty( $home_text ) && $tagline ) {
+            $home_text = $tagline;
+        }
 
-        $lines[] = '# ' . ( $site ? $site : __('Website overview', 'anchor-tools') );
-        if ( $tagline ) {
-            $lines[] = '> ' . $tagline;
+        $purpose     = $this->summarize_text_block( $home_text, 200 );
+        $description = $this->summarize_text_block( $home_text, 320 );
+
+        if ( ! $purpose ) {
+            $purpose = $tagline ? $tagline : sprintf( __('Provide trustworthy information from %s.', 'anchor-tools'), $owner ? $owner : __('this site', 'anchor-tools') );
         }
-        $lines[] = '';
-        $lines[] = 'Source: ' . $home;
-        $lines[] = 'Generated: ' . current_time('mysql');
-        if ( $privacy ) {
-            $lines[] = 'Privacy: ' . $privacy;
+        if ( ! $description ) {
+            $description = $purpose;
         }
+
+        $sections   = $this->detect_high_value_sections();
+        $low_value  = $this->get_low_value_sections();
+        $llm_use    = __('permitted for summarization, search, question answering, and educational output.', 'anchor-tools');
+        $llm_limits = __('Do not generate content claiming official partnerships, legal advice, or medical advice.', 'anchor-tools');
+        $citation   = '"' . ( $owner ? $owner : __('Website', 'anchor-tools') ) . ', ' . untrailingslashit( $home_url ) . '"';
+        $frequency  = $this->estimate_update_frequency_label();
+
+        $lines = [];
+        $lines[] = '# LLMS.txt';
+        $lines[] = '# Guidelines for Large Language Model indexing';
         $lines[] = '';
-        $lines[] = '## Guidance';
-        $lines[] = '- Cite the canonical URL from this document when referencing the site.';
-        $lines[] = '- Keep summaries faithful to the linked content.';
+        $lines[] = 'website: ' . untrailingslashit( $home_url );
+        $lines[] = 'owner: ' . ( $owner ? $owner : __('Website owner', 'anchor-tools') );
         if ( $contact ) {
-            $lines[] = '- Questions: ' . $contact;
+            $lines[] = 'contact: ' . $contact;
         }
+        $lines[] = 'purpose: ' . $purpose;
+        $lines[] = '';
+        $lines[] = 'indexing: allow';
+        $lines[] = '';
+        $lines[] = '# High value content sections';
+        foreach ( $sections as $section ) {
+            $lines[] = 'allow: ' . $section;
+        }
+        $lines[] = '';
+        $lines[] = '# Low value or private sections';
+        foreach ( $low_value as $section ) {
+            $lines[] = 'disallow: ' . $section;
+        }
+        $lines[] = '';
+        $lines[] = '# Content description';
+        $lines[] = 'description: ' . $description;
+        $lines[] = '';
+        $lines[] = '# Content usage policy';
+        $lines[] = 'llm_use: ' . $llm_use;
+        $lines[] = 'llm_use_restrictions: ' . $llm_limits;
+        $lines[] = '';
+        $lines[] = '# Preferred citation form when referencing this site';
+        $lines[] = 'citation: ' . $citation;
+        $lines[] = '';
+        $lines[] = '# Update frequency notice';
+        $lines[] = 'update_frequency: ' . $frequency;
 
-        $core_pages = get_posts([
-            'post_type'        => 'page',
-            'post_status'      => 'publish',
-            'posts_per_page'   => 5,
-            'orderby'          => 'menu_order',
-            'order'            => 'ASC',
-            'suppress_filters' => true,
+        return trim( implode( "\n", $lines ) );
+    }
+
+    private function get_home_page_post(){
+        $front = (int) get_option('page_on_front');
+        if ( $front ) {
+            $page = get_post( $front );
+            if ( $page ) {
+                return $page;
+            }
+        }
+        $posts_page = (int) get_option('page_for_posts');
+        if ( $posts_page ) {
+            $page = get_post( $posts_page );
+            if ( $page ) {
+                return $page;
+            }
+        }
+        $pages = get_pages([
+            'sort_column' => 'menu_order',
+            'sort_order'  => 'ASC',
+            'number'      => 1,
         ]);
-        $recent_posts = get_posts([
+        if ( ! empty( $pages ) ) {
+            return $pages[0];
+        }
+        $recent_post = get_posts([
             'post_type'        => 'post',
             'post_status'      => 'publish',
-            'posts_per_page'   => 5,
+            'posts_per_page'   => 1,
             'orderby'          => 'date',
             'order'            => 'DESC',
             'suppress_filters' => true,
         ]);
-
-        if ( empty($core_pages) && empty($recent_posts) ) {
-            return new WP_Error('acg_llms_no_content', __('No published content found to build LLMS.txt.', 'anchor-tools'));
-        }
-
-        if ( $core_pages ) {
-            $lines[] = '';
-            $lines[] = '## Core Pages';
-            foreach ( $core_pages as $page ) {
-                $lines[] = $this->format_llms_entry( $page );
-            }
-        }
-
-        if ( $recent_posts ) {
-            $lines[] = '';
-            $lines[] = '## Recent Articles';
-            foreach ( $recent_posts as $post ) {
-                $lines[] = $this->format_llms_entry( $post );
-            }
-        }
-
-        return trim( implode("\n", $lines ) );
+        return $recent_post ? $recent_post[0] : null;
     }
 
-    private function format_llms_entry( $post ){
-        $title = get_the_title( $post );
-        $url   = get_permalink( $post );
-        $summary = $this->summarize_post_for_llms( $post );
-        $line = '- [' . $title . '](' . $url . ')';
-        if ( $summary ) {
-            $line .= ': ' . $summary;
+    private function extract_text_from_post( $post ){
+        $parts = [];
+        $divi_text = $this->extract_divi_layout_text( $post->ID );
+        if ( $divi_text ) {
+            $parts[] = $divi_text;
         }
-        return $line;
+        if ( ! empty( $post->post_excerpt ) ) {
+            $parts[] = $post->post_excerpt;
+        }
+        if ( ! empty( $post->post_content ) ) {
+            $parts[] = strip_shortcodes( $post->post_content );
+        }
+        $acf_values = $this->collect_acf_text( $post->ID );
+        if ( $acf_values ) {
+            $parts[] = implode( "\n", $acf_values );
+        }
+        $parts = array_filter( array_map( function( $value ){
+            return trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $value ) ) );
+        }, $parts ) );
+        return trim( implode( "\n", $parts ) );
     }
 
-    private function summarize_post_for_llms( $post ){
-        $content = $post->post_excerpt ? $post->post_excerpt : $post->post_content;
-        $text = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $content ) ) );
-        if ( empty( $text ) ) {
-            $text = sprintf(
-                __('Updated on %s.', 'anchor-tools'),
-                get_post_modified_time( get_option( 'date_format' ), false, $post )
-            );
+    private function collect_acf_text( $post_id ){
+        if ( ! function_exists('get_fields') ) {
+            return [];
+        }
+        $fields = get_fields( $post_id );
+        if ( ! is_array( $fields ) ) {
+            return [];
+        }
+        $chunks = [];
+        foreach ( $fields as $value ) {
+            $this->flatten_text_value( $value, $chunks );
+        }
+        return $chunks;
+    }
+
+    private function flatten_text_value( $value, array &$chunks ){
+        if ( is_string( $value ) ) {
+            $clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $value ) ) );
+            if ( '' !== $clean ) {
+                $chunks[] = $clean;
+            }
+            return;
+        }
+        if ( is_array( $value ) ) {
+            foreach ( $value as $child ) {
+                $this->flatten_text_value( $child, $chunks );
+            }
+        }
+    }
+
+    private function extract_divi_layout_text( $post_id ){
+        $raw = get_post_meta( $post_id, '_et_pb_layout_data', true );
+        if ( empty( $raw ) ) {
+            return '';
+        }
+        $decoded = json_decode( $raw, true );
+        if ( json_last_error() !== JSON_ERROR_NONE ) {
+            $decoded = json_decode( base64_decode( $raw ), true );
+        }
+        if ( ! is_array( $decoded ) ) {
+            return '';
+        }
+        $chunks = [];
+        $this->walk_divi_layout( $decoded, $chunks );
+        if ( empty( $chunks ) ) {
+            return '';
+        }
+        $unique = array_values( array_unique( $chunks ) );
+        return trim( implode( "\n", $unique ) );
+    }
+
+    private function walk_divi_layout( $node, array &$chunks ){
+        if ( is_string( $node ) ) {
+            $clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $node ) ) );
+            if ( '' !== $clean ) {
+                $chunks[] = $clean;
+            }
+            return;
+        }
+        if ( ! is_array( $node ) ) {
+            return;
+        }
+        foreach ( $node as $key => $value ) {
+            if ( is_string( $value ) && $this->is_textual_divi_key( $key ) ) {
+                $clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $value ) ) );
+                if ( '' !== $clean ) {
+                    $chunks[] = $clean;
+                }
+                continue;
+            }
+            if ( is_array( $value ) || is_string( $value ) ) {
+                $this->walk_divi_layout( $value, $chunks );
+            }
+        }
+    }
+
+    private function is_textual_divi_key( $key ){
+        $key = strtolower( (string) $key );
+        $explicit = [
+            'content','text','title','subtitle','description','body','body_content','button_text','quote','quote_content','address','excerpt','heading','subheading','blurb','blurb_content','cta_text','cta_content','price','name','job_title','caption','alt','content_new','main_content','list_content','link_text','label','paragraph_text'
+        ];
+        if ( in_array( $key, $explicit, true ) ) {
+            return true;
+        }
+        if ( preg_match( '/(^|_)(content|text|description|body|caption|blurb)(_|\b)/', $key ) ) {
+            return true;
+        }
+        return false;
+    }
+
+    private function summarize_text_block( $text, $limit = 200 ){
+        $clean = trim( preg_replace( '/\s+/', ' ', $text ) );
+        if ( '' === $clean ) {
+            return '';
         }
         if ( function_exists( 'wp_html_excerpt' ) ) {
-            return wp_html_excerpt( $text, 240, '...' );
+            return trim( wp_html_excerpt( $clean, $limit, '...' ) );
         }
-        if ( strlen( $text ) > 240 ) {
-            return substr( $text, 0, 240 ) . '...';
+        if ( strlen( $clean ) > $limit ) {
+            return substr( $clean, 0, $limit ) . '...';
         }
-        return $text;
+        return $clean;
+    }
+
+    private function detect_high_value_sections(){
+        $home_url = home_url('/');
+        $home_host = wp_parse_url( $home_url, PHP_URL_HOST );
+        $sections = [];
+
+        if ( function_exists('get_nav_menu_locations') && function_exists('wp_get_nav_menu_items') ) {
+            $locations = get_nav_menu_locations();
+            if ( is_array( $locations ) ) {
+                $menu_ids = array_filter( array_unique( array_values( $locations ) ) );
+                foreach ( $menu_ids as $menu_id ) {
+                    $items = wp_get_nav_menu_items( $menu_id );
+                    if ( empty( $items ) ) {
+                        continue;
+                    }
+                    foreach ( $items as $item ) {
+                        if ( empty( $item->url ) ) {
+                            continue;
+                        }
+                        $path = $this->normalize_section_path( $item->url, $home_host );
+                        if ( $path && ! in_array( $path, $sections, true ) ) {
+                            $sections[] = $path;
+                        }
+                    }
+                }
+            }
+        }
+
+        if ( count( $sections ) < 3 ) {
+            $pages = get_pages([
+                'parent'      => 0,
+                'sort_column' => 'menu_order',
+                'sort_order'  => 'ASC',
+                'number'      => 6,
+            ]);
+            foreach ( $pages as $page ) {
+                $path = $this->normalize_section_path( get_permalink( $page ), $home_host );
+                if ( $path && ! in_array( $path, $sections, true ) ) {
+                    $sections[] = $path;
+                }
+            }
+        }
+
+        $posts_page = (int) get_option('page_for_posts');
+        if ( $posts_page ) {
+            $path = $this->normalize_section_path( get_permalink( $posts_page ), $home_host );
+            if ( $path && ! in_array( $path, $sections, true ) ) {
+                $sections[] = $path;
+            }
+        } elseif ( get_option('show_on_front') !== 'page' ) {
+            $sections[] = '/blog/';
+        }
+
+        if ( empty( $sections ) ) {
+            $sections[] = '/';
+        }
+
+        return array_slice( $sections, 0, 10 );
+    }
+
+    private function normalize_section_path( $url, $home_host ){
+        if ( empty( $url ) ) {
+            return '';
+        }
+        $parts = wp_parse_url( $url );
+        if ( ! $parts ) {
+            return '';
+        }
+        if ( isset( $parts['host'] ) && $parts['host'] && $home_host && $parts['host'] !== $home_host ) {
+            return '';
+        }
+        $path = isset( $parts['path'] ) ? $parts['path'] : '/';
+        if ( empty( $path ) || '/' === $path ) {
+            return '';
+        }
+        $segments = explode( '/', trim( $path, '/' ) );
+        $first = isset( $segments[0] ) ? $segments[0] : '';
+        if ( '' === $first ) {
+            return '';
+        }
+        return '/' . $first . '/';
+    }
+
+    private function get_low_value_sections(){
+        $defaults = [
+            '/wp-admin/',
+            '/wp-login.php',
+            '/wp-json/',
+            '/xmlrpc.php',
+            '/cart/',
+            '/checkout/',
+            '/my-account/',
+            '/account/',
+            '/private/',
+            '/temp/',
+            '/tmp/',
+            '/feed/',
+            '/search/',
+        ];
+        return apply_filters( 'acg_llms_low_value_sections', $defaults );
+    }
+
+    private function estimate_update_frequency_label(){
+        $latest = get_posts([
+            'post_type'        => 'any',
+            'post_status'      => 'publish',
+            'posts_per_page'   => 1,
+            'orderby'          => 'modified',
+            'order'            => 'DESC',
+            'suppress_filters' => true,
+        ]);
+        if ( empty( $latest ) ) {
+            return 'Monthly';
+        }
+        $timestamp = get_post_modified_time( 'U', true, $latest[0] );
+        if ( ! $timestamp ) {
+            $timestamp = get_post_time( 'U', true, $latest[0] );
+        }
+        if ( ! $timestamp ) {
+            return 'Monthly';
+        }
+        $diff = time() - $timestamp;
+        if ( $diff <= WEEK_IN_SECONDS * 2 ) {
+            return 'Weekly';
+        }
+        if ( $diff <= MONTH_IN_SECONDS * 2 ) {
+            return 'Monthly';
+        }
+        if ( $diff <= DAY_IN_SECONDS * 120 ) {
+            return 'Quarterly';
+        }
+        if ( $diff <= DAY_IN_SECONDS * 240 ) {
+            return 'Biannually';
+        }
+        return 'Annually';
     }
 
     private function build_prompt($type, $raw){

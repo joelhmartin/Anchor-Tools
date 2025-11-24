@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools — Bulk Content + SEO + JSON-LD
  * Description: Bulk rewrite with Preview → Review Wizard → Apply Approved for Divi, ACF, SEO/meta, plus JSON-LD generation + management. Includes OpenAI + schema tools with update checks.
- * Version: 2.0.0
+ * Version: 2.0.1
  * Author: Anchor Corps
  * Text Domain: anchor-schema
  */
@@ -241,6 +241,7 @@ Output Mode: {{OUTPUT_MODE}}
 - If HTML_FRAGMENT: preserve the HTML tags and structure types (e.g., <h2> stays <h2>); return raw HTML only (no Markdown, no code fences).
 
 Context (for personalization):
+- Post Title: {{POST_TITLE}}
 - Doctor: {{DOCTOR}}
 - Business: {{BUSINESS}}
 - Location: {{LOCATION}}
@@ -258,6 +259,7 @@ Original CONTENT:
 
 Guidelines:
 - Leave tokens like %%SHORTCODE_X%% unchanged.
+- Leave any quoted passages (text surrounded by “ ”, " ", or ' ') exactly as provided; do not rewrite or paraphrase quoted material.
 - Maintain meaning and clinical accuracy.
 - Do not wrap output in triple backticks or Markdown fences.
 EOT
@@ -402,7 +404,7 @@ EOT
                     <textarea id="ai_bulk_prompt" class="ai-br-textarea"><?php echo esc_textarea(
                         $this->default_prompt_template()
                     ); ?></textarea>
-                    <p class="ai-br-small">Placeholders: Code: <code>{{ORIGINAL_HTML}}</code>, <code>{{KEYWORDS}}</code>, <code>{{DOCTOR}}</code>, <code>{{BUSINESS}}</code>, <code>{{LOCATION}}</code>, <code>{{OUTPUT_MODE}}</code>, <code>{{TARGET_CHARS}}</code>, <code>{{FIELD_LABEL}}</code>, <code>{{FIELD_TYPE}}</code>.</p>
+                    <p class="ai-br-small">Placeholders: Code: <code>{{ORIGINAL_HTML}}</code>, <code>{{KEYWORDS}}</code>, <code>{{DOCTOR}}</code>, <code>{{BUSINESS}}</code>, <code>{{LOCATION}}</code>, <code>{{OUTPUT_MODE}}</code>, <code>{{TARGET_CHARS}}</code>, <code>{{FIELD_LABEL}}</code>, <code>{{FIELD_TYPE}}</code>, <code>{{POST_TITLE}}</code>.</p>
                 </div>
             </div>
 
@@ -1300,7 +1302,8 @@ EOT
         $output_mode,
         $target_chars,
         $field_label,
-        $field_type
+        $field_type,
+        $post_title
     ) {
         $seo_keywords = trim((string) $keywords_csv);
         $filled = strtr((string) $template, [
@@ -1313,6 +1316,7 @@ EOT
             "{{TARGET_CHARS}}" => (string) max(10, (int) $target_chars),
             "{{FIELD_LABEL}}" => $field_label ?: "",
             "{{FIELD_TYPE}}" => $field_type ?: "",
+            "{{POST_TITLE}}" => $post_title ?: "",
         ]);
 
         if (
@@ -1362,7 +1366,8 @@ EOT
             $output_mode,
             $len_hint,
             $field_label,
-            $field_type
+            $field_type,
+            $params["post_title"] ?? ""
         );
 
         $body = [
@@ -1520,6 +1525,7 @@ EOT
                                 "output_mode" => "HTML_FRAGMENT",
                                 "field_label" => $m["label"],
                                 "field_type" => "divi_" . $m["type"],
+                                "post_title" => $entry["title"] ?? "",
                             ])
                         );
                         if (is_wp_error($rw)) {
@@ -1561,6 +1567,7 @@ EOT
                                 "output_mode" => $field_mode,
                                 "field_label" => $f["label"],
                                 "field_type" => "acf_" . $f["type"],
+                                "post_title" => $entry["title"] ?? "",
                             ])
                         );
                         if (is_wp_error($rw)) {
@@ -1840,6 +1847,7 @@ EOT
                 error_log("AI Bulk Rewriter (Direct Apply Error): " . $log_message); // Kinsta Log
                 continue;
             }
+            $post_title = get_the_title($post_id);
 
             $diviUpdated = $diviErr = 0;
             $acfUpdated = $acfErr = 0;
@@ -1861,6 +1869,7 @@ EOT
                             "output_mode" => "HTML_FRAGMENT",
                             "field_label" => $m["label"],
                             "field_type" => "divi_" . $m["type"],
+                            "post_title" => $post_title,
                         ])
                     );
                     if (is_wp_error($rw)) {
@@ -1899,6 +1908,7 @@ EOT
                         "output_mode" => $mode,
                         "field_label" => $f["label"],
                         "field_type" => "acf_" . $f["type"],
+                        "post_title" => $post_title,
                     ]));
 
                     if (is_wp_error($rw)) {
@@ -1923,7 +1933,7 @@ EOT
 
             $log_message =
                 "[$post_id] “" .
-                get_the_title($post_id) .
+                $post_title .
                 "” — Divi updated: $diviUpdated (errors $diviErr), ACF updated: $acfUpdated (errors $acfErr)";
             $log[] = $log_message;
             error_log("AI Bulk Rewriter (Direct Apply): " . $log_message); // Kinsta Log

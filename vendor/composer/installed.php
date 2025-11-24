@@ -3,7 +3,7 @@
         'name' => 'anchor/anchor-tools',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => '2c2df1c57a71f7be31b422d719eef53f03bb6c09',
+        'reference' => 'f884664cddbb9ca7ed80dfc2c369eac37cd0f926',
         'type' => 'wordpress-plugin',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -13,7 +13,7 @@
         'anchor/anchor-tools' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '2c2df1c57a71f7be31b422d719eef53f03bb6c09',
+            'reference' => 'f884664cddbb9ca7ed80dfc2c369eac37cd0f926',
             'type' => 'wordpress-plugin',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),

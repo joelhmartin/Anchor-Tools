@@ -5,7 +5,26 @@ class Anchor_Schema_Helper {
 
     public static function get_schema_types(){
         return [
-            'FAQPage','Article','BlogPosting','NewsArticle','LocalBusiness','Organization','Person','WebSite','WebPage','AboutPage','ContactPage','MedicalWebPage','CollectionPage','SearchAction','BreadcrumbList','Event','Product','Offer','Review','HowTo','VideoObject','AudioObject','ImageObject','Service','Course','Recipe','SoftwareApplication','JobPosting','Book','Movie','PodcastEpisode','PodcastSeries','Dentist','Clinic','MedicalCondition','MedicalProcedure','MedicalBusiness','MedicalOrganization','Physician','Hospital','Pharmacy','MedicalClinic','EducationalOrganization','ProfessionalService','TouristAttraction','TravelAction','BeautySalon','DaySpa','HealthClub','WellnessCenter','FinancialService','Attorney','LegalService','RoofingContractor','HVACBusiness','RealEstateAgent','AutoRepair','HomeAndConstructionBusiness','PaintingContractor','Plumber','Electrician','Locksmith','ComputerStore','Store','FurnitureStore','HomeGoodsStore','HardwareStore','SpecialtyStore','SportsActivityLocation','FitnessCenter','TaxiService','DryCleaningOrLaundry','EmergencyService','FireStation','GovernmentOffice','PoliceStation','ElementarySchool','MiddleSchool','HighSchool','CollegeOrUniversity','ChildCare','Nursing','NursingHome','Notary','Florist','Bakery','CafeOrCoffeeShop','Restaurant','BarOrPub','FastFoodRestaurant','FoodEstablishment','TravelAgency','AutoDealer','AutoRental','AutoWash','AutoBodyShop','AutoPartsStore','BikeStore','BookStore','ClothingStore','ElectronicsStore','GardenStore','GroceryStore','HobbyShop','JewelryStore','LiquorStore','MobilePhoneStore','OfficeEquipmentStore','OutletStore','PawnShop','PetStore','ShoeStore','SportingGoodsStore','TireShop','ToyStore','WholesaleStore','Accommodation','Hotel','Motel','Resort','LodgingBusiness','Apartment','House','SingleFamilyResidence','AutomotiveBusiness','Dentist','MedicalBusiness','MedicalOrganization','Dermatology','Emergency','Geriatric','Gynecologic','Midwifery','Nursing','Obstetric','Oncologic','Optometric','Otolaryngologic','Pediatric','Physiotherapy','PlasticSurgery','Podiatric','PrimaryCare','Psychiatric','PublicHealth','Cardiovascular','Chiropractic','CommunityHealth','DiagnosticLab','DietNutrition','General','Genetic','InfectiousDisease','LaboratoryScience','MedicalResearcher','MedicalSpecialty','Pathology','Pharmacology','Radiography','RadiationTherapy','RespiratoryTherapy','Surgical','Therapeutic','Urologic','VeterinaryCare','WellDrillingService','WindowInstallation','RoofingContractor','EventVenue','PerformingGroup','SportsTeam','SportsOrganization','Place','TouristDestination'
+            'Article',
+            'BlogPosting',
+            'NewsArticle',
+            'FAQPage',
+            'HowTo',
+            'Event',
+            'Product',
+            'Offer',
+            'Review',
+            'Service',
+            'LocalBusiness',
+            'Organization',
+            'Person',
+            'WebSite',
+            'WebPage',
+            'AboutPage',
+            'ContactPage',
+            'VideoObject',
+            'ImageObject',
+            'Course',
         ];
     }
 

@@ -9,7 +9,7 @@ class ACG_Admin {
     const META_KEY   = '_anchor_schema_items';
 
     public function __construct(){
-        add_action('admin_menu', [ $this, 'add_settings_page' ]);
+        add_action('admin_menu', [ $this, 'register_anchor_menu' ], 9);
         add_action('admin_init', [ $this, 'register_settings' ]);
         add_action('add_meta_boxes', [ $this, 'register_metabox' ]);
         add_action('admin_enqueue_scripts', [ $this, 'enqueue_assets' ]);
@@ -21,8 +21,6 @@ class ACG_Admin {
         add_action('wp_ajax_acg_upload',   [ $this, 'ajax_upload' ]);
 
         // Wizard page and AJAX endpoints
-        add_action('admin_menu', [ $this, 'add_wizard_page' ]);
-        add_action('admin_menu', [ $this, 'add_llms_tool_page' ]);
         add_action('wp_ajax_acg_list_posts', [ $this, 'ajax_list_posts' ]);
         add_action('wp_ajax_acg_scan_post',  [ $this, 'ajax_scan_post' ]);
         add_action('wp_ajax_acg_generate_for_post', [ $this, 'ajax_generate_for_post' ]);
@@ -30,14 +28,51 @@ class ACG_Admin {
     }
 
     /* Settings */
-    public function add_settings_page(){
-        add_options_page(
+    public function register_anchor_menu(){
+        $cap = 'manage_options';
+        add_menu_page(
             __('Anchor Tools', 'anchor-tools'),
             __('Anchor Tools', 'anchor-tools'),
-            'manage_options',
+            $cap,
+            'anchor-tools',
+            [ $this, 'render_settings_page' ],
+            'dashicons-admin-tools',
+            58
+        );
+
+        add_submenu_page(
+            'anchor-tools',
+            __('Settings', 'anchor-tools'),
+            __('Settings', 'anchor-tools'),
+            $cap,
             'anchor-tools',
             [ $this, 'render_settings_page' ]
         );
+
+        add_submenu_page(
+            'anchor-tools',
+            __('Bulk Re/Write', 'anchor-tools'),
+            __('Bulk Re/Write', 'anchor-tools'),
+            $cap,
+            'acg-wizard',
+            [ $this, 'render_wizard_page' ]
+        );
+
+        add_submenu_page(
+            'anchor-tools',
+            __('LLMS.txt Tool', 'anchor-tools'),
+            __('LLMS.txt Tool', 'anchor-tools'),
+            $cap,
+            'acg-llms',
+            [ $this, 'render_llms_page' ]
+        );
+
+        /**
+         * Allow other modules to hook Anchor Tools submenus.
+         *
+         * @param string $parent_slug The parent menu slug.
+         */
+        do_action('acg_anchor_menu_registered', 'anchor-tools');
     }
 
     public function register_settings(){
@@ -157,7 +192,14 @@ class ACG_Admin {
 
     public function enqueue_assets($hook){
         $screen = function_exists('get_current_screen') ? get_current_screen() : null;
-        if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || $screen->id === 'settings_page_anchor-tools' || $screen->id === 'tools_page_acg-wizard') ) {
+        $admin_pages = [
+            'toplevel_page_anchor-tools',
+            'anchor-tools_page_anchor-tools',
+            'anchor-tools_page_acg-wizard',
+            'anchor-tools_page_acg-llms',
+        ];
+
+        if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || in_array($screen->id, $admin_pages, true)) ) {
             wp_enqueue_style('acg-admin', ACG_URL . 'assets/admin.css', [], ACG_VERSION);
         }
         if ( $screen && in_array($screen->base, [ 'post', 'page' ], true) ) {
@@ -172,36 +214,13 @@ class ACG_Admin {
                 ]
             ]);
         }
-        if ( $screen && $screen->id === 'tools_page_acg-wizard' ) {
+        if ( $screen && $screen->id === 'anchor-tools_page_acg-wizard' ) {
             wp_enqueue_script('acg-wizard', ACG_URL . 'assets/wizard.js', [ 'jquery' ], ACG_VERSION, true);
             wp_localize_script('acg-wizard', 'ACG_WIZ', [
                 'ajax'   => admin_url('admin-ajax.php'),
                 'nonce'  => wp_create_nonce('acg_ajax'),
             ]);
         }
-    }
-
-    /* Wizard page */
-    public function add_wizard_page(){
-        add_submenu_page(
-            'tools.php',
-            __('Anchor Tools Wizard', 'anchor-tools'),
-            __('Anchor Tools Wizard', 'anchor-tools'),
-            'manage_options',
-            'acg-wizard',
-            [ $this, 'render_wizard_page' ]
-        );
-    }
-
-    public function add_llms_tool_page(){
-        add_submenu_page(
-            'tools.php',
-            __('LLMS.txt Tool', 'anchor-tools'),
-            __('LLMS.txt Tool', 'anchor-tools'),
-            'manage_options',
-            'acg-llms',
-            [ $this, 'render_llms_page' ]
-        );
     }
 
     public function render_wizard_page(){

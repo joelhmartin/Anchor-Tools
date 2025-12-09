@@ -1,0 +1,69 @@
+.mm-panel{
+  background:#fff;
+  border-radius:10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.15), 0 2px 8px rgba(0,0,0,.1);
+  padding: 14px 16px;
+  min-width: 18rem;
+  max-width: min(92vw, 64rem);
+  transform-origin: 50% 0;
+  transition: opacity .18s ease, transform .22s ease;
+  position: absolute;
+  display: none; /* prevent layout before first open */
+}
+.mm-panel.mm-open{ display:block; }
+.mm-panel .mm-viewport{ overflow:auto; max-height: var(--mm-max-h, 400px); }
+
+/* Animations (toggle with .mm-open) */
+.mm-anim-fade{ opacity:0; }
+.mm-anim-fade.mm-open{ opacity:1; }
+
+.mm-anim-slide{ transform: translateY(-8px); opacity:0; }
+.mm-anim-slide.mm-open{ transform: translateY(0); opacity:1; }
+
+.mm-anim-scale{ transform: scale(.98); opacity:0; }
+.mm-anim-scale.mm-open{ transform: scale(1); opacity:1; }
+
+.mm-anim-flip{ transform: rotateX(-8deg); opacity:0; transform-origin: 50% 0; }
+.mm-anim-flip.mm-open{ transform: rotateX(0); opacity:1; }
+
+/* Arrow */
+.mm-arrow{
+  position:absolute;
+  width:0;
+  height:0;
+  pointer-events:none;
+  --mm-arrow-size: 10px;
+  --mm-arrow-color: #ffffff;
+}
+
+/* Pointing up (panel below trigger) */
+.mm-pos-below .mm-arrow{
+  top: calc(-1 * var(--mm-arrow-size));
+  border-left:  var(--mm-arrow-size) solid transparent;
+  border-right: var(--mm-arrow-size) solid transparent;
+  border-bottom: var(--mm-arrow-size) solid var(--mm-arrow-color);
+}
+
+/* Pointing down (panel above trigger) */
+.mm-pos-above .mm-arrow{
+  bottom: calc(-1 * var(--mm-arrow-size));
+  border-left:  var(--mm-arrow-size) solid transparent;
+  border-right: var(--mm-arrow-size) solid transparent;
+  border-top: var(--mm-arrow-size) solid var(--mm-arrow-color);
+}
+
+/* Pointing left (panel right of trigger) */
+.mm-pos-right .mm-arrow{
+  left: calc(-1 * var(--mm-arrow-size));
+  border-top:    var(--mm-arrow-size) solid transparent;
+  border-bottom: var(--mm-arrow-size) solid transparent;
+  border-right:  var(--mm-arrow-size) solid var(--mm-arrow-color);
+}
+
+/* Pointing right (panel left of trigger) */
+.mm-pos-left .mm-arrow{
+  right: calc(-1 * var(--mm-arrow-size));
+  border-top:    var(--mm-arrow-size) solid transparent;
+  border-bottom: var(--mm-arrow-size) solid transparent;
+  border-left:   var(--mm-arrow-size) solid var(--mm-arrow-color);
+}

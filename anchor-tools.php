@@ -94,6 +94,25 @@ spl_autoload_register(function($class){
     }
 });
 
+// Load bundled modules.
+require_once ACG_DIR . 'anchor_social_feed/social_feed_plugin.php';
+require_once ACG_DIR . 'mega-menu-snippets-1.1.3/mega-menu-snippets.php';
+require_once ACG_DIR . 'universal-popups/universal-popups.php';
+
+// Keep module admin pages grouped beneath Anchor Tools.
+add_filter('ssfs_parent_menu_slug', function(){
+	return 'anchor-tools';
+});
+add_filter('ssfs_menu_title', function(){
+	return 'Social Feeds';
+});
+add_filter('mm_snippets_parent_menu', function(){
+	return 'anchor-tools';
+});
+add_filter('up_parent_menu_slug', function(){
+	return 'anchor-tools';
+});
+
 add_action( 'plugins_loaded', function(){
     load_plugin_textdomain( 'anchor-tools', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
 });

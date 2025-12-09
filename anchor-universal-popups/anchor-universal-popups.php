@@ -1,13 +1,15 @@
 <?php
 /**
- * Anchor Tools module: Universal Popups.
+ * Anchor Tools module: Anchor Universal Popups.
  */
 
 if (!defined('ABSPATH')) exit;
 
-class UP_Plugin {
-    const CPT = 'up_popup';
-    const NONCE = 'up_popup_nonce';
+class Anchor_Universal_Popups_Module {
+    const CPT = 'anchor_popup';
+    const LEGACY_CPT = 'up_popup';
+    const MIGRATION_FLAG = 'anchor_universal_popups_migrated';
+    const NONCE = 'anchor_popup_nonce';
 
     public function __construct(){
         add_action('init', [$this, 'register_cpt']);
@@ -16,23 +18,40 @@ class UP_Plugin {
         add_action('admin_enqueue_scripts', [$this, 'admin_assets']);
         add_action('wp_enqueue_scripts', [$this, 'frontend_assets']);
         add_shortcode('up_popup', [$this, 'shortcode_render']);
+        add_shortcode('anchor_popup', [$this, 'shortcode_render']);
     }
 
     public function register_cpt(){
+        $this->maybe_migrate_legacy_posts();
         register_post_type(self::CPT, [
             'labels' => [
-                'name' => 'Universal Popups',
-                'singular_name' => 'Universal Popup',
-                'add_new_item' => 'Add New Popup',
-                'edit_item' => 'Edit Popup',
-                'menu_name' => 'Universal Popups',
+                'name' => 'Anchor Universal Popups',
+                'singular_name' => 'Anchor Universal Popup',
+                'add_new_item' => 'Add New Anchor Popup',
+                'edit_item' => 'Edit Anchor Popup',
+                'menu_name' => 'Anchor Universal Popups',
             ],
             'public' => false,
             'show_ui' => true,
-            'show_in_menu' => apply_filters('up_parent_menu_slug', true),
+            'show_in_menu' => apply_filters('anchor_universal_popups_parent_menu', true),
             'menu_icon' => 'dashicons-welcome-widgets-menus',
             'supports' => ['title'],
         ]);
+    }
+
+    private function maybe_migrate_legacy_posts(){
+        if ( get_option(self::MIGRATION_FLAG) ) {
+            return;
+        }
+        global $wpdb;
+        $updated = $wpdb->update(
+            $wpdb->posts,
+            ['post_type' => self::CPT],
+            ['post_type' => self::LEGACY_CPT]
+        );
+        if ( false !== $updated ) {
+            update_option(self::MIGRATION_FLAG, 1);
+        }
     }
 
     private function defaults(){
@@ -349,5 +368,3 @@ class UP_Plugin {
         return ob_get_clean();
     }
 }
-
-new UP_Plugin();

@@ -1,13 +1,15 @@
 <?php
 /**
- * Anchor Tools module: Simple Social Feed Shortcodes.
+ * Anchor Tools module: Anchor Social Feed.
  * Displays social feeds for YouTube, Facebook, X (Twitter), and Spotify via shortcodes.
  */
 
 if (!defined('ABSPATH')) exit;
 
-class Simple_Social_Feed_Shortcodes {
-    const OPT_KEY = 'ssfs_options_v1';
+class Anchor_Social_Feed_Module {
+    const OPT_KEY = 'anchor_social_feed_options';
+    const LEGACY_KEYS = [ 'ssfs_options_v1' ];
+    const PAGE_SLUG = 'anchor-social-feed';
 
     public function __construct() {
         add_action('admin_menu', [$this, 'add_settings_page']);
@@ -27,6 +29,15 @@ class Simple_Social_Feed_Shortcodes {
             'layout'             => 'grid',
         ];
         $opts = get_option(self::OPT_KEY, []);
+        if ( empty($opts) ) {
+            foreach (self::LEGACY_KEYS as $legacy_key) {
+                $legacy = get_option($legacy_key, []);
+                if ( ! empty($legacy) ) {
+                    $opts = $legacy;
+                    break;
+                }
+            }
+        }
         return wp_parse_args($opts, $defaults);
     }
 
@@ -278,32 +289,32 @@ class Simple_Social_Feed_Shortcodes {
     }
 
     public function add_settings_page() {
-        $parent     = apply_filters('ssfs_parent_menu_slug', 'options-general.php');
-        $menu_title = apply_filters('ssfs_menu_title', 'Social Feed Shortcodes');
+        $parent     = apply_filters('anchor_social_feed_parent_menu_slug', 'options-general.php');
+        $menu_title = apply_filters('anchor_social_feed_menu_title', __('Anchor Social Feed', 'anchor-tools'));
         $callback   = [$this, 'render_settings_page'];
 
         if ('options-general.php' === $parent) {
             add_options_page(
-                'Social Feed Shortcodes',
+                __('Anchor Social Feed', 'anchor-tools'),
                 $menu_title,
                 'manage_options',
-                'ssfs-settings',
+                self::PAGE_SLUG,
                 $callback
             );
         } else {
             add_submenu_page(
                 $parent,
-                'Social Feed Shortcodes',
+                __('Anchor Social Feed', 'anchor-tools'),
                 $menu_title,
                 'manage_options',
-                'ssfs-settings',
+                self::PAGE_SLUG,
                 $callback
             );
         }
     }
 
     public function register_settings() {
-        register_setting('ssfs_settings_group', self::OPT_KEY, [
+        register_setting('anchor_social_feed_group', self::OPT_KEY, [
             'type' => 'array',
             'sanitize_callback' => [$this, 'sanitize_options'],
             'default' => [],
@@ -312,7 +323,7 @@ class Simple_Social_Feed_Shortcodes {
         add_settings_section('ssfs_main', 'Platform Settings', function () {
             echo '<p>Enter the required IDs or URLs, then save. Use the provided shortcodes to display feeds.</p>';
             echo '<p class="ssfs-note">Instagram profile feeds are not available without API permission. This plugin outputs a simple profile link.</p>';
-        }, 'ssfs-settings');
+        }, self::PAGE_SLUG);
 
         $fields = [
             'youtube_channel_id' => 'YouTube Channel, UC id, @handle, or channel URL',
@@ -329,7 +340,7 @@ class Simple_Social_Feed_Shortcodes {
                 $key,
                 esc_html($label),
                 [$this, 'render_field'],
-                'ssfs-settings',
+                self::PAGE_SLUG,
                 'ssfs_main',
                 ['key' => $key]
             );
@@ -392,11 +403,11 @@ class Simple_Social_Feed_Shortcodes {
 
     public function render_settings_page() {
         if (!current_user_can('manage_options')) return;
-        echo '<div class="wrap"><h1>Social Feed Shortcodes</h1>';
+        echo '<div class="wrap"><h1>' . esc_html__('Anchor Social Feed', 'anchor-tools') . '</h1>';
         echo '<form method="post" action="options.php">';
-        settings_fields('ssfs_settings_group');
-        do_settings_sections('ssfs-settings');
-        submit_button('Save Changes');
+        settings_fields('anchor_social_feed_group');
+        do_settings_sections(self::PAGE_SLUG);
+        submit_button(__('Save Changes', 'anchor-tools'));
         echo '</form>';
 
         echo '<hr />';
@@ -866,5 +877,3 @@ private function ytapi_resolve_channel_id($input, $api_key){
         return $note . '<p><a href="' . esc_url($url) . '" target="_blank" rel="noopener">Follow @' . esc_html($username) . ' on Instagram</a></p>';
     }
 }
-
-new Simple_Social_Feed_Shortcodes();

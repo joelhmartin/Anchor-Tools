@@ -94,24 +94,127 @@ spl_autoload_register(function($class){
     }
 });
 
-// Load bundled modules.
-require_once ACG_DIR . 'anchor_social_feed/social_feed_plugin.php';
-require_once ACG_DIR . 'mega-menu-snippets-1.1.3/mega-menu-snippets.php';
-require_once ACG_DIR . 'universal-popups/universal-popups.php';
+if ( ! function_exists( 'acg_get_available_modules' ) ) {
+	/**
+	 * Return configuration for bundled Anchor modules.
+	 *
+	 * @return array
+	 */
+	function acg_get_available_modules() {
+		return [
+			'social_feed' => [
+				'label' => __( 'Anchor Social Feed', 'anchor-tools' ),
+				'description' => __( 'Display curated social feeds for YouTube, Facebook, X, and Spotify.', 'anchor-tools' ),
+				'path' => ACG_DIR . 'anchor-social-feed/anchor-social-feed.php',
+				'class' => 'Anchor_Social_Feed_Module',
+				'setup' => function() {
+					add_filter( 'anchor_social_feed_parent_menu_slug', function() {
+						return 'anchor-tools';
+					});
+					add_filter( 'anchor_social_feed_menu_title', function() {
+						return __( 'Anchor Social Feed', 'anchor-tools' );
+					});
+				},
+			],
+			'mega_menu' => [
+				'label' => __( 'Anchor Mega Menu', 'anchor-tools' ),
+				'description' => __( 'Build reusable mega menu panels with HTML, CSS, and JavaScript.', 'anchor-tools' ),
+				'path' => ACG_DIR . 'anchor-mega-menu/anchor-mega-menu.php',
+				'class' => 'Anchor_Mega_Menu_Module',
+				'setup' => function() {
+					add_filter( 'anchor_mega_menu_parent_menu', function() {
+						return 'anchor-tools';
+					});
+				},
+			],
+			'universal_popups' => [
+				'label' => __( 'Anchor Universal Popups', 'anchor-tools' ),
+				'description' => __( 'Create reusable popups triggered by page load, class, or ID.', 'anchor-tools' ),
+				'path' => ACG_DIR . 'anchor-universal-popups/anchor-universal-popups.php',
+				'class' => 'Anchor_Universal_Popups_Module',
+				'setup' => function() {
+					add_filter( 'anchor_universal_popups_parent_menu', function() {
+						return 'anchor-tools';
+					});
+				},
+			],
+			'shortcodes' => [
+				'label' => __( 'Anchor Shortcodes', 'anchor-tools' ),
+				'description' => __( 'Manage general business info and lightweight custom shortcodes.', 'anchor-tools' ),
+				'path' => ACG_DIR . 'anchor-shortcodes/anchor-shortcodes.php',
+				'class' => 'Anchor_Shortcodes_Module',
+				'setup' => function() {
+					add_filter( 'anchor_shortcodes_parent_menu_slug', function() {
+						return 'anchor-tools';
+					});
+					add_filter( 'anchor_shortcodes_menu_title', function() {
+						return __( 'Anchor Shortcodes', 'anchor-tools' );
+					});
+				},
+			],
+		];
+	}
+}
 
-// Keep module admin pages grouped beneath Anchor Tools.
-add_filter('ssfs_parent_menu_slug', function(){
-	return 'anchor-tools';
-});
-add_filter('ssfs_menu_title', function(){
-	return 'Social Feeds';
-});
-add_filter('mm_snippets_parent_menu', function(){
-	return 'anchor-tools';
-});
-add_filter('up_parent_menu_slug', function(){
-	return 'anchor-tools';
-});
+if ( ! function_exists( 'acg_is_module_enabled' ) ) {
+	/**
+	 * Determine whether a module is enabled in the plugin settings.
+	 *
+	 * @param string $module_key
+	 * @return bool
+	 */
+	function acg_is_module_enabled( $module_key ) {
+		$settings = get_option( 'acg_settings', [] );
+		if ( empty( $settings ) ) {
+			$legacy = get_option( 'anchor_schema_settings', [] );
+			if ( ! empty( $legacy ) ) {
+				$settings = $legacy;
+			}
+		}
+
+		if ( empty( $settings['modules'] ) || ! is_array( $settings['modules'] ) ) {
+			return true;
+		}
+
+		if ( ! array_key_exists( $module_key, $settings['modules'] ) ) {
+			return true;
+		}
+
+		return ! empty( $settings['modules'][ $module_key ] );
+	}
+}
+
+if ( ! function_exists( 'acg_bootstrap_modules' ) ) {
+	/**
+	 * Load and instantiate enabled modules.
+	 *
+	 * @return void
+	 */
+	function acg_bootstrap_modules() {
+		$modules = acg_get_available_modules();
+		foreach ( $modules as $key => $module ) {
+			if ( ! acg_is_module_enabled( $key ) ) {
+				continue;
+			}
+
+			if ( isset( $module['setup'] ) && is_callable( $module['setup'] ) ) {
+				call_user_func( $module['setup'] );
+			}
+
+			if ( isset( $module['path'] ) && file_exists( $module['path'] ) ) {
+				require_once $module['path'];
+			}
+
+			if ( isset( $module['loader'] ) && is_callable( $module['loader'] ) ) {
+				call_user_func( $module['loader'] );
+			} elseif ( isset( $module['class'] ) && class_exists( $module['class'] ) ) {
+				new $module['class']();
+			}
+		}
+	}
+
+	add_action( 'plugins_loaded', 'acg_bootstrap_modules', 5 );
+}
 
 add_action( 'plugins_loaded', function(){
     load_plugin_textdomain( 'anchor-tools', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );

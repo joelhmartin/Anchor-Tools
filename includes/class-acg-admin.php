@@ -104,6 +104,12 @@ class ACG_Admin {
                 esc_html__('Write plugin events to error.log, useful on Kinsta', 'anchor-tools')
             );
         }, 'acg_settings', 'acg_main');
+
+        add_settings_section('acg_modules', __('Modules', 'anchor-tools'), function(){
+            echo '<p>' . esc_html__('Toggle which bundled Anchor modules are active. Disabling a module removes its menu items, CPTs, and shortcodes.', 'anchor-tools') . '</p>';
+        }, 'acg_settings');
+
+        add_settings_field('modules', __('Available Modules', 'anchor-tools'), [ $this, 'render_modules_field' ], 'acg_settings', 'acg_modules');
     }
 
     private function get_settings(){
@@ -113,6 +119,18 @@ class ACG_Admin {
             $legacy = get_option('anchor_schema_settings', []);
             if ( ! empty($legacy) ) { $opts = $legacy; }
         }
+        if ( ! isset($opts['modules']) || ! is_array($opts['modules']) ) {
+            $opts['modules'] = [];
+        }
+        if ( function_exists('acg_get_available_modules') ) {
+            foreach (acg_get_available_modules() as $module_key => $meta) {
+                if ( ! array_key_exists($module_key, $opts['modules']) ) {
+                    $opts['modules'][$module_key] = true;
+                } else {
+                    $opts['modules'][$module_key] = (bool) $opts['modules'][$module_key];
+                }
+            }
+        }
         return $opts;
     }
 
@@ -121,7 +139,36 @@ class ACG_Admin {
         $out['api_key'] = isset($input['api_key']) ? sanitize_text_field($input['api_key']) : '';
         $out['model']   = isset($input['model']) ? sanitize_text_field($input['model']) : 'gpt-4o-mini';
         $out['debug']   = ! empty($input['debug']);
+        $out['modules'] = [];
+        if ( function_exists('acg_get_available_modules') ) {
+            foreach (acg_get_available_modules() as $module_key => $meta) {
+                $out['modules'][$module_key] = ! empty($input['modules'][ $module_key ]);
+            }
+        }
         return $out;
+    }
+
+    public function render_modules_field(){
+        if ( ! function_exists('acg_get_available_modules') ) {
+            echo '<p>' . esc_html__('No modules detected.', 'anchor-tools') . '</p>';
+            return;
+        }
+        $modules = acg_get_available_modules();
+        $opts = $this->get_settings();
+        $values = isset($opts['modules']) ? $opts['modules'] : [];
+        echo '<div class="acg-modules">';
+        foreach ($modules as $key => $module) {
+            $enabled = isset($values[$key]) ? (bool) $values[$key] : true;
+            printf(
+                '<label style="display:flex;align-items:flex-start;gap:8px;margin-bottom:12px;"><input type="checkbox" name="%1$s[modules][%2$s]" value="1" %3$s/> <span><strong>%4$s</strong><br><small>%5$s</small></span></label>',
+                esc_attr(self::OPTION_KEY),
+                esc_attr($key),
+                checked($enabled, true, false),
+                esc_html($module['label']),
+                esc_html($module['description'])
+            );
+        }
+        echo '</div>';
     }
 
     public function render_settings_page(){
@@ -197,6 +244,8 @@ class ACG_Admin {
             'anchor-tools_page_anchor-tools',
             'anchor-tools_page_acg-wizard',
             'anchor-tools_page_acg-llms',
+            'anchor-tools_page_anchor-social-feed',
+            'anchor-tools_page_anchor-shortcodes',
         ];
 
         if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || in_array($screen->id, $admin_pages, true)) ) {

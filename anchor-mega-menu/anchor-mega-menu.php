@@ -1,13 +1,15 @@
 <?php
 /**
- * Anchor Tools module: Mega Menu Snippets.
+ * Anchor Tools module: Anchor Mega Menu.
  */
 
 if (!defined('ABSPATH')) { exit; }
 
-class MM_Snippets_Plugin {
-    const CPT = 'mm_snippet';
-    const NONCE = 'mm_snippet_nonce';
+class Anchor_Mega_Menu_Module {
+    const CPT = 'anchor_mega_snippet';
+    const LEGACY_CPT = 'mm_snippet';
+    const MIGRATION_FLAG = 'anchor_mega_menu_migrated';
+    const NONCE = 'anchor_mega_snippet_nonce';
 
     public function __construct(){
         add_action('init', [$this, 'register_cpt']);
@@ -16,24 +18,42 @@ class MM_Snippets_Plugin {
         add_action('admin_enqueue_scripts', [$this, 'admin_assets']);
         add_action('wp_enqueue_scripts', [$this, 'frontend_assets']);
         add_shortcode('mm_snippet', [$this, 'shortcode_render']);
+        add_shortcode('anchor_mega_snippet', [$this, 'shortcode_render']);
     }
 
     public function register_cpt(){
+        $this->maybe_migrate_legacy_posts();
+
         $labels = [
-            'name' => 'Mega Snippets',
-            'singular_name' => 'Mega Snippet',
-            'add_new_item' => 'Add New Mega Snippet',
-            'edit_item' => 'Edit Mega Snippet',
-            'menu_name' => 'Mega Snippets',
+            'name' => 'Anchor Mega Snippets',
+            'singular_name' => 'Anchor Mega Snippet',
+            'add_new_item' => 'Add New Anchor Mega Snippet',
+            'edit_item' => 'Edit Anchor Mega Snippet',
+            'menu_name' => 'Anchor Mega Snippets',
         ];
         register_post_type(self::CPT, [
             'labels' => $labels,
             'public' => false,
             'show_ui' => true,
-            'show_in_menu' => apply_filters('mm_snippets_parent_menu', true),
+            'show_in_menu' => apply_filters('anchor_mega_menu_parent_menu', true),
             'menu_icon' => 'dashicons-editor-code',
             'supports' => ['title'],
         ]);
+    }
+
+    private function maybe_migrate_legacy_posts(){
+        if ( get_option(self::MIGRATION_FLAG) ) {
+            return;
+        }
+        global $wpdb;
+        $updated = $wpdb->update(
+            $wpdb->posts,
+            ['post_type' => self::CPT],
+            ['post_type' => self::LEGACY_CPT]
+        );
+        if ( false !== $updated ) {
+            update_option(self::MIGRATION_FLAG, 1);
+        }
     }
 
     public function add_metaboxes(){
@@ -280,5 +300,3 @@ class MM_Snippets_Plugin {
         return ob_get_clean();
     }
 }
-
-new MM_Snippets_Plugin();

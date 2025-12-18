@@ -89,24 +89,33 @@
     return modal;
   }
 
-  function buildYouTubeSrc(id, autoplay){
+  function buildYouTubeSrc(id, opts){
+    opts = opts || {};
     var p = new URLSearchParams({
-      autoplay: autoplay ? '1' : '0',
+      autoplay: opts.autoplay ? '1' : '0',
       playsinline: '1',
       rel: '0',
       modestbranding: '1',
       enablejsapi: '1'
     });
+    // Autoplay on page load is commonly blocked unless muted.
+    if(opts.autoplay && opts.muted){
+      p.set('mute', '1');
+    }
     return 'https://www.youtube.com/embed/' + encodeURIComponent(id) + '?' + p.toString();
   }
-  function buildVimeoSrc(id, autoplay){
+  function buildVimeoSrc(id, opts){
+    opts = opts || {};
     var p = new URLSearchParams({
-      autoplay: autoplay ? '1' : '0',
+      autoplay: opts.autoplay ? '1' : '0',
       byline: '0',
       title: '0',
       portrait: '0',
       dnt: '1'
     });
+    if(opts.autoplay && opts.muted){
+      p.set('muted', '1');
+    }
     return 'https://player.vimeo.com/video/' + encodeURIComponent(id) + '?' + p.toString();
   }
 
@@ -114,8 +123,9 @@
     var frameWrap = modal.querySelector('[data-frame]');
     if(!frameWrap) return;
 
-    var src = provider === 'youtube' ? buildYouTubeSrc(id, autoplay) : buildVimeoSrc(id, autoplay);
-    frameWrap.innerHTML = '<iframe src="'+src+'" allow="fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+    var opts = { autoplay: !!autoplay, muted: !!(extra && extra.muted) };
+    var src = provider === 'youtube' ? buildYouTubeSrc(id, opts) : buildVimeoSrc(id, opts);
+    frameWrap.innerHTML = '<iframe src="'+src+'" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
 
     // Optional content under the video
     var after = modal.querySelector('[data-after]');
@@ -169,13 +179,19 @@
     wireClose(modal);
 
     function triggerOpen(){
-      if(!shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes)) return;
+      // For "Click on class", treat the popup like an explicit user action and
+      // avoid frequency gating that can make clicks appear "broken".
+      var bypassFrequency = (trig && trig.type === 'class');
+      if(!bypassFrequency && !shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes)) return;
       if(isVideo){
-        openVideo(modal, sn.mode, sn.video_id, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js });
+        var muteForAutoplay = (trig && trig.type === 'page_load');
+        openVideo(modal, sn.mode, sn.video_id, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
       } else {
         openContent(modal, sn.html, sn.css, sn.js);
       }
-      markShown(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes);
+      if(!bypassFrequency){
+        markShown(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes);
+      }
     }
 
     var trig = sn.trigger || {type:'page_load', value:'', delay:0};

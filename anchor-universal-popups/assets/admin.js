@@ -1,4 +1,26 @@
 (function($){
+  function toggleTriggerFields(){
+    var triggerType = $('select[name="up_trigger_type"]').val() || 'page_load';
+
+    $('[data-up-show-when-trigger]').each(function(){
+      var allowed = String($(this).attr('data-up-show-when-trigger') || '')
+        .split(',')
+        .map(function(s){ return $.trim(s); })
+        .filter(Boolean);
+      var show = allowed.indexOf(triggerType) !== -1;
+      $(this).toggle(show);
+    });
+
+    $('[data-up-hide-when-trigger]').each(function(){
+      var blocked = String($(this).attr('data-up-hide-when-trigger') || '')
+        .split(',')
+        .map(function(s){ return $.trim(s); })
+        .filter(Boolean);
+      var hide = blocked.indexOf(triggerType) !== -1;
+      $(this).toggle(!hide);
+    });
+  }
+
   function applyPreview(){
     var html = $('#up_html').val() || '';
     var css  = $('#up_css').val() || '';
@@ -12,6 +34,9 @@
   }
 
   $(document).ready(function(){
+    toggleTriggerFields();
+    $(document).on('change', 'select[name="up_trigger_type"]', toggleTriggerFields);
+
     if (window.wp && wp.codeEditor){
       ['up_html','up_css','up_js'].forEach(function(id){
         var $ta = $('#'+id);

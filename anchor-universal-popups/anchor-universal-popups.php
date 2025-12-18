@@ -163,36 +163,44 @@ class Anchor_Universal_Popups_Module {
           </select>
           <p class="description">For class or ID, enter the selector value below.</p>
 
-          <label>Trigger value</label>
-          <input type="text" name="up_trigger_value" value="<?php echo esc_attr($m['trigger_value']); ?>" placeholder="class without dot, or id without hash"/>
+          <div data-up-show-when-trigger="class,id">
+            <label>Trigger value</label>
+            <input type="text" name="up_trigger_value" value="<?php echo esc_attr($m['trigger_value']); ?>" placeholder="class without dot, or id without hash"/>
+          </div>
 
-          <label>Delay on page load (ms)</label>
-          <input type="number" min="0" step="100" name="up_delay_ms" value="<?php echo esc_attr($m['delay_ms']); ?>" />
+          <div data-up-show-when-trigger="page_load">
+            <label>Delay on page load (ms)</label>
+            <input type="number" min="0" step="100" name="up_delay_ms" value="<?php echo esc_attr($m['delay_ms']); ?>" />
+          </div>
 
-          <hr/>
-          <h4 style="margin:6px 0;">Frequency</h4>
-          <label>Mode</label>
-          <select name="up_frequency_mode">
-            <option value="session" <?php selected($m['frequency_mode'],'session'); ?>>Once per session</option>
-            <option value="cooldown" <?php selected($m['frequency_mode'],'cooldown'); ?>>Cooldown (minutes)</option>
-          </select>
+          <div data-up-hide-when-trigger="class">
+            <hr/>
+            <h4 style="margin:6px 0;">Frequency</h4>
+            <label>Mode</label>
+            <select name="up_frequency_mode">
+              <option value="session" <?php selected($m['frequency_mode'],'session'); ?>>Once per session</option>
+              <option value="cooldown" <?php selected($m['frequency_mode'],'cooldown'); ?>>Cooldown (minutes)</option>
+            </select>
 
-          <label>Cooldown minutes</label>
-          <input type="number" min="1" step="1" name="up_cooldown_minutes" value="<?php echo esc_attr($m['cooldown_minutes']); ?>" />
+            <label>Cooldown minutes</label>
+            <input type="number" min="1" step="1" name="up_cooldown_minutes" value="<?php echo esc_attr($m['cooldown_minutes']); ?>" />
+          </div>
 
-          <hr/>
-          <h4 style="margin:6px 0;">Exclusions</h4>
-          <label>Exclude on URLs (comma separated)</label>
-          <textarea name="up_exclude_urls" placeholder="/thank-you, /landing/special, https://example.com/exact-path"><?php
-              echo esc_textarea($m['exclude_urls']);
-          ?></textarea>
-          <p class="description">Use full URLs or relative paths. Prefix match is allowed.</p>
+          <div data-up-hide-when-trigger="class">
+            <hr/>
+            <h4 style="margin:6px 0;">Exclusions</h4>
+            <label>Exclude on URLs (comma separated)</label>
+            <textarea name="up_exclude_urls" placeholder="/thank-you, /landing/special, https://example.com/exact-path"><?php
+                echo esc_textarea($m['exclude_urls']);
+            ?></textarea>
+            <p class="description">Use full URLs or relative paths. Prefix match is allowed.</p>
 
-          <label>Exclude on categories (comma separated slugs or IDs)</label>
-          <textarea name="up_exclude_cats" placeholder="news, events, 42"><?php
-              echo esc_textarea($m['exclude_cats']);
-          ?></textarea>
-          <p class="description">If the singular post has any of these categories, the popup will not load.</p>
+            <label>Exclude on categories (comma separated slugs or IDs)</label>
+            <textarea name="up_exclude_cats" placeholder="news, events, 42"><?php
+                echo esc_textarea($m['exclude_cats']);
+            ?></textarea>
+            <p class="description">If the singular post has any of these categories, the popup will not load.</p>
+          </div>
         </div>
         <?php
     }
@@ -334,7 +342,7 @@ class Anchor_Universal_Popups_Module {
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
             wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.0.1');
-            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.1', true);
+            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.2', true);
         }
     }
 
@@ -349,7 +357,7 @@ class Anchor_Universal_Popups_Module {
         if (empty($snippets)) return;
 
         wp_enqueue_style('up-frontend', plugins_url('assets/frontend.css', __FILE__), [], '1.0.1');
-        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.1', true);
+        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.2', true);
         wp_localize_script('up-frontend', 'UP_SNIPPETS', $snippets);
     }
 

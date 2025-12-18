@@ -1,8 +1,8 @@
 <?php
 /**
- * Plugin Name: Anchor Tools — Bulk Content + SEO + JSON-LD
- * Description: Bulk rewrite with Preview → Review Wizard → Apply Approved for Divi, ACF, SEO/meta, plus JSON-LD generation + management. Includes OpenAI + schema tools with update checks.
- * Version: 3.1.1
+ * Plugin Name: Anchor Tools
+ * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
+ * Version: 3.1.2
  * Author: Anchor Corps
  * Text Domain: anchor-schema
  */

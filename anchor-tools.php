@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.1.5
+ * Version: 3.1.6
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -1140,8 +1140,11 @@ EOT
 
             try {
                 if ($is_nested) {
-                    // Use name-based path (with 1-based indices for repeaters/flex)
-                    $ok = update_sub_field($path_names, $new_val, $post_id);
+                    $name_selector = $this->build_acf_name_selector($path_names);
+
+                    if ($name_selector) {
+                        $ok = update_field($name_selector, $new_val, $post_id);
+                    }
 
                     // Fallback: mutate top-level array and save
                     if (!$ok) {
@@ -1235,6 +1238,28 @@ EOT
             }
             $ref[$last] = $value;
         }
+    }
+
+    /**
+     * Build an ACF name-based selector (e.g., repeater_0_subfield_1_child).
+     *
+     * @param array $path_names Array of field names and 1-based indices.
+     * @return string
+     */
+    private function build_acf_name_selector(array $path_names)
+    {
+        if (empty($path_names)) {
+            return "";
+        }
+        $parts = [];
+        foreach ($path_names as $seg) {
+            if (is_int($seg) || (is_string($seg) && ctype_digit($seg))) {
+                $parts[] = (string) max(0, ((int) $seg) - 1); // ACF expects 0-based in names
+            } else {
+                $parts[] = (string) $seg;
+            }
+        }
+        return implode("_", $parts);
     }
 
     /* ---------------- OpenAI ---------------- */

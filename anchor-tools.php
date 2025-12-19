@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.2.4
+ * Version: 3.2.5
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -395,8 +395,9 @@ EOT
                 <div class="ai-br-flex">
                     <label><strong>Batch size</strong>
                         <select id="ai_bulk_batch">
-                            <option>5</option><option selected>10</option><option>20</option><option>50</option>
+                            <option>1</option><option>2</option><option>3</option><option selected>5</option><option>10</option><option>20</option><option>50</option><option>200</option>
                         </select>
+                        <span class="ai-br-small">Processes all selected posts in chunks; capped at 10 per request.</span>
                     </label>
                     <label><strong>Min text length to rewrite</strong>
                         <input type="number" id="ai_bulk_minlen" value="40" min="0" step="5" style="width:90px;">
@@ -579,7 +580,8 @@ EOT
                 };
                 previewMode = aiBulkMode;
 
-                const batch = parseInt($('#ai_bulk_batch').val(), 10) || 10;
+                const batchSel = parseInt($('#ai_bulk_batch').val(), 10) || 5;
+                const batch = Math.max(1, Math.min(batchSel, 10)); // cap to 10 per request to avoid timeouts
                 const chunks = [];
                 for(let i=0;i<ids.length;i+=batch) chunks.push(ids.slice(i,i+batch));
 
@@ -650,7 +652,8 @@ EOT
                     include_acf:  $('#ai_bulk_include_acf').is(':checked') ? 1 : 0,
                     mode: aiBulkMode,
                 };
-                const batch = parseInt($('#ai_bulk_batch').val(), 10) || 10;
+                const batchSel = parseInt($('#ai_bulk_batch').val(), 10) || 5;
+                const batch = Math.max(1, Math.min(batchSel, 10)); // cap to 10 per request to avoid timeouts
                 const chunks = [];
                 for(let i=0;i<ids.length;i+=batch) chunks.push(ids.slice(i,i+batch));
                 let done = 0;

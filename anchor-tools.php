@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.1.8
+ * Version: 3.1.9
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -405,7 +405,7 @@ EOT
                 </form>
             </div>
 
-            <div class="ai-br-card">
+            <div class="ai-br-card" id="ai_prompt_inputs_card">
                 <div class="ai-br-flex">
                     <label style="flex:1;">
                         <strong>Focus keywords</strong> (comma-separated)
@@ -577,7 +577,7 @@ EOT
                 const isJson = aiBulkMode === 'jsonld';
                 const isSeo  = aiBulkMode === 'seo_meta';
                 $('.ai-jsonld-only').toggle(isJson);
-                $('#ai_prompt_card').toggle(!isJson);
+                $('#ai_prompt_inputs_card').toggle(!isJson);
                 $('#ai_bulk_apply').prop('disabled', isJson);
                 $('#ai_jsonld_direct_notice').toggle(isJson);
                 if (isJson){

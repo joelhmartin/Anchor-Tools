@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.1.7
+ * Version: 3.1.8
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -271,6 +271,24 @@ EOT
         );
     }
 
+    private function default_seo_prompt_template()
+    {
+        return trim(
+            <<<'EOT'
+System:
+You are an SEO copywriter. Rewrite the provided SEO fields clearly, naturally, and concisely. Do not add placeholders or site-wide variables. Keep Yoast variables (%%...%%) unchanged.
+
+Output:
+- Return plain text only (no HTML, no Markdown).
+- Respect the intent of the field (Title or Meta Description) and keep length reasonable for SERP display.
+
+User:
+Original FIELD ({{FIELD_LABEL}}):
+{{ORIGINAL_HTML}}
+EOT
+        );
+    }
+
     public function bulk_page()
     {
         if (!current_user_can("manage_options")) {
@@ -423,7 +441,7 @@ EOT
                     <label><strong>Min text length to rewrite</strong>
                         <input type="number" id="ai_bulk_minlen" value="40" min="0" step="5" style="width:90px;">
                     </label>
-                    <label><input type="checkbox" id="ai_bulk_include_acf" checked> Include ACF fields</label>
+                    <label class="ai-mode-content-only"><input type="checkbox" id="ai_bulk_include_acf" checked> Include ACF fields</label>
                 </div>
             </div>
 
@@ -557,6 +575,7 @@ EOT
             function updateModeUI(){
                 aiBulkMode = $('#ai_bulk_mode').val() || 'content';
                 const isJson = aiBulkMode === 'jsonld';
+                const isSeo  = aiBulkMode === 'seo_meta';
                 $('.ai-jsonld-only').toggle(isJson);
                 $('#ai_prompt_card').toggle(!isJson);
                 $('#ai_bulk_apply').prop('disabled', isJson);
@@ -566,6 +585,18 @@ EOT
                 }
                 if (!aiPreviewRunId){
                     previewMode = aiBulkMode;
+                }
+                $('.ai-mode-content-only').toggle(!isSeo && !isJson);
+
+                // Swap prompt to SEO default when switching into SEO mode (if using the base default)
+                const basePrompt = <?php echo json_encode( $this->default_prompt_template() ); ?>;
+                const seoPrompt  = <?php echo json_encode( $this->default_seo_prompt_template() ); ?>;
+                const current = $('#ai_bulk_prompt').val() || '';
+                if (isSeo && (current.trim() === '' || current.trim() === basePrompt.trim())) {
+                    $('#ai_bulk_prompt').val(seoPrompt);
+                }
+                if (!isSeo && current.trim() === '' ) {
+                    $('#ai_bulk_prompt').val(basePrompt);
                 }
             }
 

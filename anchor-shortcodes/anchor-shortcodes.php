@@ -287,7 +287,12 @@ $fields = [
     }
     public function admin_inline_js() {
         $screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
-        if ( ! $screen || $screen->id !== 'anchor-tools_page_' . self::PAGE_SLUG ) {
+        $allowed_ids = [
+            'settings_page_' . self::PAGE_SLUG,      // when parent is options-general.php
+            'anchor-tools_page_' . self::PAGE_SLUG,  // if parent slug is anchor-tools
+            self::PAGE_SLUG,                         // fallback
+        ];
+        if ( ! $screen || ! in_array( $screen->id, $allowed_ids, true ) ) {
             return;
         }
         ?>

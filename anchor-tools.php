@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.2.1
+ * Version: 3.2.2
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -225,6 +225,8 @@ Guidelines:
 - Leave tokens like %%SHORTCODE_X%% unchanged.
 - Maintain meaning and clinical accuracy.
 - Do not wrap output in triple backticks or Markdown fences.
+- Never use em dashes; use commas and periods instead.
+- Ignore quotations — keep quoted text and its outbound links exactly as provided.
 EOT
         );
     }

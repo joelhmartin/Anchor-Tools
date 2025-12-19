@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.1.9
+ * Version: 3.2.0
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -121,7 +121,6 @@ class AI_ACF_Bulk_Rewriter_Wizard
     public function __construct()
     {
         add_action("admin_menu", [$this, "register_menus"]);
-        add_action("admin_init", [$this, "register_settings"]);
         add_action("admin_enqueue_scripts", [$this, "enqueue_admin"]);
 
         // AJAX
@@ -141,13 +140,6 @@ class AI_ACF_Bulk_Rewriter_Wizard
 
     public function register_menus()
     {
-        add_options_page(
-            "AI Content Editor",
-            "AI Content Editor",
-            "manage_options",
-            "ai-acf-rewriter",
-            [$this, "settings_page"]
-        );
         add_submenu_page(
             "tools.php",
             "AI Bulk Rewriter",
@@ -156,40 +148,6 @@ class AI_ACF_Bulk_Rewriter_Wizard
             "ai-bulk-rewriter",
             [$this, "bulk_page"]
         );
-    }
-
-    public function register_settings()
-    {
-        register_setting("ai_br_group", $this->option_key);
-    }
-
-    public function settings_page()
-    {
-        if (!current_user_can("manage_options")) {
-            return;
-        } ?>
-        <div class="wrap">
-            <h1>AI Content Editor Settings</h1>
-            <form method="post" action="options.php">
-                <?php settings_fields("ai_br_group"); ?>
-                <table class="form-table">
-                    <tr>
-                        <th scope="row"><label for="api_key">OpenAI API Key</label></th>
-                        <td>
-                            <input type="password" id="api_key" name="<?php echo esc_attr(
-                                $this->option_key
-                            ); ?>"
-                                   value="<?php echo esc_attr(
-                                       get_option($this->option_key) ?: get_option($this->legacy_option_key)
-                                   ); ?>" size="60" />
-                            <p class="description">Stored in wp_options (admins only). Required for rewriting.</p>
-                        </td>
-                    </tr>
-                </table>
-                <?php submit_button(); ?>
-            </form>
-        </div>
-        <?php
     }
 
     /* ---------------- Assets ---------------- */
@@ -1483,6 +1441,19 @@ EOT
         return $this->sanitize_model_output($text, $output_mode);
     }
 
+    private function get_openai_key()
+    {
+        $global = get_option(Anchor_Schema_Admin::OPTION_KEY, []);
+        $key = $global['api_key'] ?? '';
+        if (!$key && isset($global['openai_api_key'])) {
+            $key = $global['openai_api_key'];
+        }
+        if (!$key) {
+            $key = get_option($this->option_key) ?: get_option($this->legacy_option_key);
+        }
+        return $key;
+    }
+
     /* ---------------- AJAX: PREVIEW (stage) ---------------- */
 
     public function ajax_bulk_preview()
@@ -1492,7 +1463,7 @@ EOT
         }
         check_ajax_referer($this->nonce_action, $this->nonce_name);
 
-        $api_key = get_option($this->option_key) ?: get_option($this->legacy_option_key);
+        $api_key = $this->get_openai_key();
         if (!$api_key) {
             wp_die("OpenAI key not set.");
         }
@@ -1877,7 +1848,7 @@ EOT
         }
         check_ajax_referer($this->nonce_action, $this->nonce_name);
 
-        $api_key = get_option($this->option_key) ?: get_option($this->legacy_option_key);
+        $api_key = $this->get_openai_key();
         if (!$api_key) {
             wp_die("OpenAI key not set.");
         }

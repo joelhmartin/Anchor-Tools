@@ -21,7 +21,6 @@ class Anchor_Social_Feed_Module {
     public static function get_options() {
         $defaults = [
             'youtube_channel_id' => '',    // UC id, @handle, or channel URL
-            'youtube_api_key'    => '',
             'facebook_page_url'  => '',
             'instagram_username' => '',
             'twitter_username'   => '',
@@ -39,6 +38,11 @@ class Anchor_Social_Feed_Module {
             }
         }
         return wp_parse_args($opts, $defaults);
+    }
+
+    private function get_google_api_key() {
+        $global = get_option( Anchor_Schema_Admin::OPTION_KEY, [] );
+        return trim( $global['google_api_key'] ?? '' );
     }
 
     public function enqueue_assets() {
@@ -327,7 +331,6 @@ class Anchor_Social_Feed_Module {
 
         $fields = [
             'youtube_channel_id' => 'YouTube Channel, UC id, @handle, or channel URL',
-            'youtube_api_key'    => 'YouTube API Key',
             'facebook_page_url'  => 'Facebook Page URL',
             'instagram_username' => 'Instagram Username',
             'twitter_username'   => 'X, Twitter Username',
@@ -359,9 +362,6 @@ class Anchor_Social_Feed_Module {
                     $val = strtolower(sanitize_text_field($input[$k]));
                     $out[$k] = in_array($val, ['grid', 'stack'], true) ? $val : 'grid';
                     break;
-                case 'youtube_api_key':
-                    $out[$k] = trim(sanitize_text_field($input[$k]));
-                    break;
                 default:
                     $out[$k] = preg_replace('/[^A-Za-z0-9_\-\.@:\\\\/]/', '', sanitize_text_field($input[$k]));
             }
@@ -392,8 +392,6 @@ class Anchor_Social_Feed_Module {
 
         if ($key === 'youtube_channel_id') {
             echo '<p class="description">Accepts UC id, @handle, or channel URL.</p>';
-        } elseif ($key === 'youtube_api_key') {
-            echo '<p class="description">Enable YouTube Data API v3 in Google Cloud, then paste your API key here. For server calls, avoid HTTP referrer restriction.</p>';
         } elseif ($key === 'facebook_page_url') {
             echo '<p class="description">Example, https://www.facebook.com/YourPage</p>';
         } elseif ($key === 'spotify_artist_id') {
@@ -519,13 +517,13 @@ class Anchor_Social_Feed_Module {
 
 /* ===================== YouTube, API only ===================== */
 
-private function render_youtube_api_feed($opts, $atts) {
-    $api_key    = trim($opts['youtube_api_key'] ?? '');
+    private function render_youtube_api_feed($opts, $atts) {
+    $api_key    = trim($opts['youtube_api_key'] ?? '') ?: $this->get_google_api_key();
     $channel_in = trim($opts['youtube_channel_id'] ?? '');
     $mode       = strtolower($atts['youtube_api'] ?? 'auto');
     $use_api    = ($mode === 'on') || ($mode === 'auto' && $api_key && $channel_in);
 
-    if (!$use_api) return '<p class="ssfs-note">YouTube API is not enabled. Add an API key in Settings or pass youtube_api="on".</p>';
+    if (!$use_api) return '<p class="ssfs-note">YouTube API is not enabled. Add a Google API key in Anchor Tools settings or pass youtube_api="on".</p>';
     if (!$api_key || !$channel_in) return '<p class="ssfs-note">Missing YouTube API key or channel value.</p>';
 
     // Resolve UC id from handle or URL

@@ -20,8 +20,8 @@ class Anchor_Schema_Admin {
 
     public function add_settings_page(){
         add_options_page(
-            __('Anchor Schema', 'anchor-schema'),
-            __('Anchor Schema', 'anchor-schema'),
+            __('Anchor Tools Settings', 'anchor-schema'),
+            __('Anchor Tools', 'anchor-schema'),
             'manage_options',
             'anchor-schema',
             [ $this, 'render_settings_page' ]
@@ -32,13 +32,20 @@ class Anchor_Schema_Admin {
         register_setting( 'anchor_schema_group', self::OPTION_KEY, [ $this, 'sanitize_settings' ] );
 
         add_settings_section('anchor_schema_main', __('API Configuration', 'anchor-schema'), function(){
-            echo '<p>' . esc_html__('Configure the OpenAI API key and model. Enable debug to log to PHP error log.', 'anchor-schema') . '</p>';
+            echo '<p>' . esc_html__('Configure shared API keys used across Anchor Tools modules (OpenAI, Social Feed, etc.).', 'anchor-schema') . '</p>';
         }, 'anchor_schema_settings');
 
         add_settings_field('api_key', __('OpenAI API Key', 'anchor-schema'), function(){
             $opts = $this->get_settings();
             $val  = isset($opts['api_key']) ? $opts['api_key'] : '';
             printf('<input type="password" name="%s[api_key]" value="%s" class="regular-text" autocomplete="off" />', esc_attr(self::OPTION_KEY), esc_attr($val));
+        }, 'anchor_schema_settings', 'anchor_schema_main');
+
+        add_settings_field('google_api_key', __('Google Cloud API Key', 'anchor-schema'), function(){
+            $opts = $this->get_settings();
+            $val  = isset($opts['google_api_key']) ? $opts['google_api_key'] : '';
+            printf('<input type="password" name="%s[google_api_key]" value="%s" class="regular-text" autocomplete="off" />', esc_attr(self::OPTION_KEY), esc_attr($val));
+            echo '<p class="description">' . esc_html__('Used by Social Feed (e.g., YouTube).', 'anchor-schema') . '</p>';
         }, 'anchor_schema_settings', 'anchor_schema_main');
 
         add_settings_field('model', __('Model', 'anchor-schema'), function(){
@@ -68,6 +75,7 @@ class Anchor_Schema_Admin {
     public function sanitize_settings($input){
         $out = [];
         $out['api_key'] = isset($input['api_key']) ? sanitize_text_field($input['api_key']) : '';
+        $out['google_api_key'] = isset($input['google_api_key']) ? sanitize_text_field($input['google_api_key']) : '';
         $out['model']   = isset($input['model']) ? sanitize_text_field($input['model']) : 'gpt-4o-mini';
         $out['debug']   = ! empty($input['debug']);
         $out['modules'] = [];
@@ -119,7 +127,7 @@ class Anchor_Schema_Admin {
     }
 
     public function render_settings_page(){
-        echo '<div class="wrap"><h1>' . esc_html__('Anchor Schema Settings', 'anchor-schema') . '</h1>';
+        echo '<div class="wrap"><h1>' . esc_html__('Anchor Tools Settings', 'anchor-schema') . '</h1>';
         echo '<form method="post" action="options.php">';
         settings_fields('anchor_schema_group');
         do_settings_sections('anchor_schema_settings');

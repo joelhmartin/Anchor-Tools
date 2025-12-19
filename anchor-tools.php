@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.1.6
+ * Version: 3.1.7
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -92,9 +92,15 @@ if ( class_exists( PucFactory::class ) ) {
 }
 
 add_action(
-    'plugins_loaded',
+    'init',
     function() {
         load_plugin_textdomain( 'anchor-schema', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
+    }
+);
+
+add_action(
+    'plugins_loaded',
+    function() {
         if ( is_admin() && class_exists( 'Anchor_Schema_Admin' ) ) {
             new Anchor_Schema_Admin();
         }
@@ -500,6 +506,7 @@ EOT
                 <div class="ai-br-actions">
                     <div>
                         <label><input type="checkbox" id="ai_wizard_toggle_acf" checked> Show ACF fields</label>
+                        <label style="margin-left:10px;"><input type="checkbox" id="ai_wizard_toggle_seo" checked> Show SEO fields</label>
                     </div>
                     <div>
                         <button class="button button-secondary" id="ai_wizard_prev">Previous</button>
@@ -650,6 +657,7 @@ EOT
                     prompt:   $('#ai_bulk_prompt').val() || '',
                     minlen:   parseInt($('#ai_bulk_minlen').val(), 10) || 0,
                     include_acf:  $('#ai_bulk_include_acf').is(':checked') ? 1 : 0,
+                    mode: aiBulkMode,
                 };
                 const batch = parseInt($('#ai_bulk_batch').val(), 10) || 10;
                 const chunks = [];
@@ -720,6 +728,7 @@ EOT
                     return;
                 }
                 const showACF  = $('#ai_wizard_toggle_acf').is(':checked');
+                const showSEO  = $('#ai_wizard_toggle_seo').is(':checked');
 
                 const origWrap = [];
                 const newWrap  = [];
@@ -747,6 +756,7 @@ EOT
                 }
 
                 if (showACF  && data.acf)  data.acf.forEach(a => addRow(a,'acf'));
+                if (showSEO  && data.seo)  data.seo.forEach(s => addRow(s,'seo'));
 
                 $('#ai_wizard_original').html(origWrap.join('') || '<div class="ai-br-small">No items for this filter.</div>');
                 $('#ai_wizard_new').html(newWrap.join('') || '<div class="ai-br-small">No items for this filter.</div>');
@@ -799,7 +809,7 @@ EOT
 
             function escapeHtml(s){ return (s||"").toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]||c)); }
 
-            $('#ai_wizard_toggle_acf').on('change', function(){ loadStep(); });
+            $('#ai_wizard_toggle_acf, #ai_wizard_toggle_seo').on('change', function(){ loadStep(); });
 
             $('#ai_wizard_approve_all').on('click', function(){
                 const postId = selectedIds[reviewIndex];
@@ -1073,6 +1083,54 @@ EOT
         ];
     }
 
+    private function protect_yoast_vars($text)
+    {
+        $map = [];
+        $clean = (string) $text;
+        if (preg_match_all('/%%[^%]+%%/', $clean, $matches)) {
+            foreach ($matches[0] as $i => $tag) {
+                $token = "%%YOASTVAR_" . $i . "%%";
+                $map[$token] = $tag;
+                $clean = str_replace($tag, $token, $clean);
+            }
+        }
+        return [$clean, $map];
+    }
+
+    private function restore_yoast_vars($text, $map)
+    {
+        foreach ($map as $token => $tag) {
+            $text = str_replace($token, $tag, $text);
+        }
+        return $text;
+    }
+
+    private function get_yoast_fields($post_id)
+    {
+        $fields = [];
+        $title = get_post_meta($post_id, "_yoast_wpseo_title", true);
+        $desc = get_post_meta($post_id, "_yoast_wpseo_metadesc", true);
+
+        $fields[] = [
+            "id" => "yoast_title",
+            "label" => "SEO Title",
+            "meta_key" => "_yoast_wpseo_title",
+            "value" => (string) $title,
+            "len" => strlen(trim((string) $title)),
+            "type" => "yoast_title",
+        ];
+        $fields[] = [
+            "id" => "yoast_desc",
+            "label" => "Meta Description",
+            "meta_key" => "_yoast_wpseo_metadesc",
+            "value" => (string) $desc,
+            "len" => strlen(trim((string) $desc)),
+            "type" => "yoast_metadesc",
+        ];
+
+        return $fields;
+    }
+
     private function pretty_print_json($json)
     {
         $decoded = json_decode($json, true);
@@ -1180,6 +1238,27 @@ EOT
             acf_flush_cache($post_id);
         }
 
+        return [$applied, $errors];
+    }
+
+
+    private function commit_seo_updates($post_id, $items_to_commit)
+    {
+        $applied = 0;
+        $errors = 0;
+        foreach ($items_to_commit as $item) {
+            $key = $item["meta_key"] ?? "";
+            if (!$key) {
+                $errors++;
+                continue;
+            }
+            $ok = update_post_meta($post_id, $key, $item["new_html"] ?? "");
+            if ($ok !== false) {
+                $applied++;
+            } else {
+                $errors++;
+            }
+        }
         return [$applied, $errors];
     }
 
@@ -1401,8 +1480,9 @@ EOT
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
         $incACF = intval($_POST["include_acf"] ?? 1);
         $mode = sanitize_text_field($_POST["mode"] ?? "content");
-        if ($mode === "jsonld") {
-            wp_die("JSON-LD mode requires preview workflow.");
+        $allowed_modes = ["content", "seo_meta", "jsonld"];
+        if (!in_array($mode, $allowed_modes, true)) {
+            $mode = "content";
         }
         $mode = sanitize_text_field($_POST["mode"] ?? "content");
         $allowed_modes = ["content", "seo_meta", "jsonld"];
@@ -1438,6 +1518,7 @@ EOT
             $entry = [
                 "title" => get_the_title($post_id),
                 "acf" => [],
+                "seo" => [],
                 "jsonld" => [],
             ];
 
@@ -1475,6 +1556,34 @@ EOT
                     "raw" => $raw,
                     "warnings" => $validation["warnings"],
                 ];
+            } elseif ($mode === "seo_meta") {
+                $yoast_items = $this->get_yoast_fields($post_id);
+                foreach ($yoast_items as $f) {
+                    if ($f["len"] < $minlen) {
+                        continue;
+                    }
+                    [$clean, $map] = $this->protect_yoast_vars($f["value"]);
+                    $rw = $this->call_openai(
+                        $api_key,
+                        $clean,
+                        array_merge($paramsBase, [
+                            "output_mode" => "TEXT_ONLY",
+                            "field_label" => $f["label"],
+                            "field_type" => $f["type"],
+                        ])
+                    );
+                    if (is_wp_error($rw)) {
+                        continue;
+                    }
+                    $rw = $this->restore_yoast_vars($rw, $map);
+                    $entry["seo"][] = [
+                        "id" => $f["id"],
+                        "label" => $f["label"],
+                        "meta_key" => $f["meta_key"],
+                        "orig_html" => $f["value"],
+                        "new_html" => $rw,
+                    ];
+                }
             } else {
                 // ACF
                 if ($incACF && function_exists("get_field_object")) {
@@ -1558,22 +1667,32 @@ EOT
         }
 
         $entry = $stash[$post_id];
-        $payload = [
-            "title" => $entry["title"] ?? "",
-            "acf" => array_map(
-                fn($a) => [
-                    "id" => $a["id"],
+            $payload = [
+                "title" => $entry["title"] ?? "",
+                "acf" => array_map(
+                    fn($a) => [
+                        "id" => $a["id"],
                     "label" => $a["label"],
                     "orig_html" => $a["orig_html"],
                     "new_html" => $a["new_html"],
-                ],
-                $entry["acf"] ?? []
-            ),
-            "jsonld" => array_map(
-                fn($schema) => [
-                    "id" => $schema["id"],
-                    "label" => $schema["label"],
-                    "type" => $schema["type"],
+                    ],
+                    $entry["acf"] ?? []
+                ),
+                "seo" => array_map(
+                    fn($s) => [
+                        "id" => $s["id"],
+                        "label" => $s["label"],
+                        "orig_html" => $s["orig_html"],
+                        "new_html" => $s["new_html"],
+                        "meta_key" => $s["meta_key"] ?? "",
+                    ],
+                    $entry["seo"] ?? []
+                ),
+                "jsonld" => array_map(
+                    fn($schema) => [
+                        "id" => $schema["id"],
+                        "label" => $schema["label"],
+                        "type" => $schema["type"],
                     "json" => $schema["json"],
                     "raw" => $schema["raw"] ?? "",
                     "warnings" => $schema["warnings"] ?? [],
@@ -1635,6 +1754,8 @@ EOT
             $idset = array_flip((array) $ids);
             $acfApplied = 0;
             $acfErrors = 0;
+            $seoApplied = 0;
+            $seoErrors = 0;
             $schemaApplied = 0;
 
             // --- Build list of approved ACF items ---
@@ -1650,6 +1771,19 @@ EOT
             // --- Commit them all at once ---
             if (!empty($items_to_commit)) {
                 list($acfApplied, $acfErrors) = $this->commit_acf_updates($post_id, $items_to_commit);
+            }
+
+            // SEO (Yoast)
+            $seo_items_to_commit = [];
+            if (!empty($entry["seo"])) {
+                foreach ($entry["seo"] as $s) {
+                    if (isset($idset[$s["id"]])) {
+                        $seo_items_to_commit[] = $s;
+                    }
+                }
+            }
+            if (!empty($seo_items_to_commit)) {
+                list($seoApplied, $seoErrors) = $this->commit_seo_updates($post_id, $seo_items_to_commit);
             }
 
             // JSON-LD schemas
@@ -1693,7 +1827,7 @@ EOT
             $log_message =
                 "[$post_id] “" .
                 ($entry["title"] ?? get_the_title($post_id)) .
-                "” — Applied ACF: $acfApplied (Errors: $acfErrors), Schema: $schemaApplied";
+                "” — Applied ACF: $acfApplied (Errors: $acfErrors), SEO: $seoApplied (Errors: $seoErrors), Schema: $schemaApplied";
                 
             $log[] = $log_message;
             error_log("AI Bulk Rewriter (Apply Approved): " . $log_message); // Kinsta Log
@@ -1744,48 +1878,70 @@ EOT
 
             $acfUpdated = $acfErr = 0;
 
-            // --- NEW ACF LOGIC (Direct Apply) ---
-            if ($incACF && function_exists("get_field_object")) {
-                
+            if ($mode === "seo_meta") {
                 $items_to_commit = [];
-                $acf_items = $this->get_acf_fields($post_id); // Get all fields
-                
-                foreach ($acf_items as $f) {
+                $yoast_items = $this->get_yoast_fields($post_id);
+                foreach ($yoast_items as $f) {
                     if ($f["len"] < $minlen) { continue; }
-
-                    $mode = ($f["type"] === "wysiwyg") ? "HTML_FRAGMENT" : "TEXT_ONLY";
-                    [$clean, $map] = $this->protect_shortcodes($f["value"]);
-                    
-                    $rw = $this->call_openai( $api_key, $clean, array_merge($paramsBase, [
-                        "output_mode" => $mode,
+                    [$clean, $map] = $this->protect_yoast_vars($f["value"]);
+                    $rw = $this->call_openai($api_key, $clean, array_merge($paramsBase, [
+                        "output_mode" => "TEXT_ONLY",
                         "field_label" => $f["label"],
-                        "field_type" => "acf_" . $f["type"],
+                        "field_type" => $f["type"],
                     ]));
-
-                    if (is_wp_error($rw)) {
-                        $acfErr++; // Count AI errors
-                        continue;
-                    }
-                    
-                    $rw = $this->restore_shortcodes($rw, $map);
-
-                    // Prep the item for commit
-                    $f['new_html'] = $rw; // Add the new value
-                    $items_to_commit[] = $f;
+                    if (is_wp_error($rw)) { $acfErr++; continue; }
+                    $rw = $this->restore_yoast_vars($rw, $map);
+                    $items_to_commit[] = array_merge($f, ["new_html" => $rw]);
                 }
-
-                // --- Commit them all at once ---
                 if (!empty($items_to_commit)) {
-                    // Note: This adds to $acfErr, so we get AI errors + save errors
-                    list($acfUpdated, $saveErrors) = $this->commit_acf_updates($post_id, $items_to_commit);
-                    $acfErr += $saveErrors;
+                    list($seoApplied, $seoErrors) = $this->commit_seo_updates($post_id, $items_to_commit);
+                    $acfUpdated += $seoApplied;
+                    $acfErr += $seoErrors;
+                }
+            } else {
+                // --- NEW ACF LOGIC (Direct Apply) ---
+                if ($incACF && function_exists("get_field_object")) {
+                    
+                    $items_to_commit = [];
+                    $acf_items = $this->get_acf_fields($post_id); // Get all fields
+                    
+                    foreach ($acf_items as $f) {
+                        if ($f["len"] < $minlen) { continue; }
+
+                        $out_mode = ($f["type"] === "wysiwyg") ? "HTML_FRAGMENT" : "TEXT_ONLY";
+                        [$clean, $map] = $this->protect_shortcodes($f["value"]);
+                        
+                        $rw = $this->call_openai( $api_key, $clean, array_merge($paramsBase, [
+                            "output_mode" => $out_mode,
+                            "field_label" => $f["label"],
+                            "field_type" => "acf_" . $f["type"],
+                        ]));
+
+                        if (is_wp_error($rw)) {
+                            $acfErr++; // Count AI errors
+                            continue;
+                        }
+                        
+                        $rw = $this->restore_shortcodes($rw, $map);
+
+                        // Prep the item for commit
+                        $f['new_html'] = $rw; // Add the new value
+                        $items_to_commit[] = $f;
+                    }
+
+                    // --- Commit them all at once ---
+                    if (!empty($items_to_commit)) {
+                        // Note: This adds to $acfErr, so we get AI errors + save errors
+                        list($acfUpdated, $saveErrors) = $this->commit_acf_updates($post_id, $items_to_commit);
+                        $acfErr += $saveErrors;
+                    }
                 }
             }
 
             $log_message =
                 "[$post_id] “" .
                 get_the_title($post_id) .
-                "” — ACF updated: $acfUpdated (errors $acfErr)";
+                "” — Updated: $acfUpdated (errors $acfErr)";
             $log[] = $log_message;
             error_log("AI Bulk Rewriter (Direct Apply): " . $log_message); // Kinsta Log
         }

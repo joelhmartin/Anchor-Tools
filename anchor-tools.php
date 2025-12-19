@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.2.3
+ * Version: 3.2.4
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -1445,15 +1445,28 @@ EOT
 
     private function get_openai_key()
     {
-        $global = get_option(Anchor_Schema_Admin::OPTION_KEY, []);
-        $key = $global['api_key'] ?? '';
-        if (!$key && isset($global['openai_api_key'])) {
-            $key = $global['openai_api_key'];
+        $key = '';
+
+        // Primary: Anchor Tools settings (anchor_schema_settings)
+        if (class_exists('Anchor_Schema_Admin')) {
+            $global = get_option(Anchor_Schema_Admin::OPTION_KEY, []);
+            $key = $global['api_key'] ?? '';
+            if (!$key && isset($global['openai_api_key'])) {
+                $key = $global['openai_api_key'];
+            }
         }
+
+        // Env/constant fallbacks
+        if (!$key) {
+            $key = getenv('OPENAI_API_KEY') ?: (defined('OPENAI_API_KEY') ? OPENAI_API_KEY : '');
+        }
+
+        // Legacy options
         if (!$key) {
             $key = get_option($this->option_key) ?: get_option($this->legacy_option_key);
         }
-        return $key;
+
+        return trim($key);
     }
 
     /* ---------------- AJAX: PREVIEW (stage) ---------------- */

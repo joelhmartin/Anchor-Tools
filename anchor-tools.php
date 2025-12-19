@@ -2,9 +2,9 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.1.3
+ * Version: 3.1.4
  * Author: Anchor Corps
- * Text Domain: anchor-schema
+ * Text Domain: anchor-tools
  */
 
 use Dotenv\Dotenv;
@@ -104,9 +104,10 @@ add_action(
     }
 );
 
-class AI_Divi_ACF_Bulk_Rewriter_Wizard
+class AI_ACF_Bulk_Rewriter_Wizard
 {
-    private $option_key = "divi_ai_api_key";
+    private $option_key = "ai_rewriter_api_key";
+    private $legacy_option_key = "divi_ai_api_key";
     private $nonce_action = "ai_bulk_rewriter_nonce_action";
     private $nonce_name = "ai_bulk_rewriter_nonce";
     private $transient_ttl_min = 45; // preview cache TTL
@@ -138,7 +139,7 @@ class AI_Divi_ACF_Bulk_Rewriter_Wizard
             "AI Content Editor",
             "AI Content Editor",
             "manage_options",
-            "ai-divi-acf-rewriter",
+            "ai-acf-rewriter",
             [$this, "settings_page"]
         );
         add_submenu_page(
@@ -173,7 +174,7 @@ class AI_Divi_ACF_Bulk_Rewriter_Wizard
                                 $this->option_key
                             ); ?>"
                                    value="<?php echo esc_attr(
-                                       get_option($this->option_key)
+                                       get_option($this->option_key) ?: get_option($this->legacy_option_key)
                                    ); ?>" size="60" />
                             <p class="description">Stored in wp_options (admins only). Required for rewriting.</p>
                         </td>
@@ -333,7 +334,7 @@ EOT
                         <input type="text" id="ai_jsonld_custom" placeholder="e.g., Dentist" />
                     </label>
                 </div>
-                <p class="ai-br-small ai-jsonld-only" style="display:none;">JSON-LD mode pulls Divi + ACF content for context, then lets you edit the generated JSON before saving.</p>
+                <p class="ai-br-small ai-jsonld-only" style="display:none;">JSON-LD mode pulls ACF content for context, then lets you edit the generated JSON before saving.</p>
             </div>
 
             <div class="ai-br-card">
@@ -416,7 +417,6 @@ EOT
                     <label><strong>Min text length to rewrite</strong>
                         <input type="number" id="ai_bulk_minlen" value="40" min="0" step="5" style="width:90px;">
                     </label>
-                    <label><input type="checkbox" id="ai_bulk_include_divi" checked> Include Divi modules</label>
                     <label><input type="checkbox" id="ai_bulk_include_acf" checked> Include ACF fields</label>
                 </div>
             </div>
@@ -499,8 +499,7 @@ EOT
                 </div>
                 <div class="ai-br-actions">
                     <div>
-                        <label><input type="checkbox" id="ai_wizard_toggle_divi" checked> Show Divi modules</label>
-                        <label style="margin-left:10px;"><input type="checkbox" id="ai_wizard_toggle_acf" checked> Show ACF fields</label>
+                        <label><input type="checkbox" id="ai_wizard_toggle_acf" checked> Show ACF fields</label>
                     </div>
                     <div>
                         <button class="button button-secondary" id="ai_wizard_prev">Previous</button>
@@ -548,12 +547,6 @@ EOT
                 return overrides[postId][itemId] !== undefined ? overrides[postId][itemId] : null;
             }
 
-            function syncWizardFilters(){
-                const showFilters = previewMode !== 'jsonld';
-                $('#ai_wizard_toggle_divi').closest('label').toggle(showFilters);
-                $('#ai_wizard_toggle_acf').closest('label').toggle(showFilters);
-            }
-
             function updateModeUI(){
                 aiBulkMode = $('#ai_bulk_mode').val() || 'content';
                 const isJson = aiBulkMode === 'jsonld';
@@ -567,7 +560,6 @@ EOT
                 if (!aiPreviewRunId){
                     previewMode = aiBulkMode;
                 }
-                syncWizardFilters();
             }
 
             $('#ai_bulk_mode').on('change', updateModeUI);
@@ -582,14 +574,12 @@ EOT
                     location: $('#ai_bulk_location').val() || '',
                     prompt:   $('#ai_bulk_prompt').val() || '',
                     minlen:   parseInt($('#ai_bulk_minlen').val(), 10) || 0,
-                    include_divi: $('#ai_bulk_include_divi').is(':checked') ? 1 : 0,
                     include_acf:  $('#ai_bulk_include_acf').is(':checked') ? 1 : 0,
                     mode: aiBulkMode,
                     schema_type: $('#ai_jsonld_type').val() || 'Article',
                     schema_custom: $('#ai_jsonld_custom').val() || ''
                 };
                 previewMode = aiBulkMode;
-                syncWizardFilters();
 
                 const batch = parseInt($('#ai_bulk_batch').val(), 10) || 10;
                 const chunks = [];
@@ -659,7 +649,6 @@ EOT
                     location: $('#ai_bulk_location').val() || '',
                     prompt:   $('#ai_bulk_prompt').val() || '',
                     minlen:   parseInt($('#ai_bulk_minlen').val(), 10) || 0,
-                    include_divi: $('#ai_bulk_include_divi').is(':checked') ? 1 : 0,
                     include_acf:  $('#ai_bulk_include_acf').is(':checked') ? 1 : 0,
                 };
                 const batch = parseInt($('#ai_bulk_batch').val(), 10) || 10;
@@ -730,7 +719,6 @@ EOT
                     renderJsonldStep(postId, data);
                     return;
                 }
-                const showDivi = $('#ai_wizard_toggle_divi').is(':checked');
                 const showACF  = $('#ai_wizard_toggle_acf').is(':checked');
 
                 const origWrap = [];
@@ -758,7 +746,6 @@ EOT
                     );
                 }
 
-                if (showDivi && data.divi) data.divi.forEach(d => addRow(d,'divi'));
                 if (showACF  && data.acf)  data.acf.forEach(a => addRow(a,'acf'));
 
                 $('#ai_wizard_original').html(origWrap.join('') || '<div class="ai-br-small">No items for this filter.</div>');
@@ -812,7 +799,7 @@ EOT
 
             function escapeHtml(s){ return (s||"").toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]||c)); }
 
-            $('#ai_wizard_toggle_divi, #ai_wizard_toggle_acf').on('change', function(){ loadStep(); });
+            $('#ai_wizard_toggle_acf').on('change', function(){ loadStep(); });
 
             $('#ai_wizard_approve_all').on('click', function(){
                 const postId = selectedIds[reviewIndex];
@@ -886,28 +873,6 @@ EOT
     }
 
     /* ---------------- Helpers ---------------- */
-
-    // Divi modules with text content
-    private function extract_divi_modules($content)
-    {
-        $pattern =
-            '/(\[et_pb_(text|button|blurb|toggle|accordion|call_to_action)[^\]]*\])(.*?)(\[\/et_pb_\2\])/s';
-        preg_match_all($pattern, $content, $matches, PREG_SET_ORDER);
-        $modules = [];
-        foreach ($matches as $m) {
-            $innerText = wp_strip_all_tags($m[3]);
-            $modules[] = [
-                "full" => $m[0],
-                "open" => $m[1],
-                "type" => "et_pb_" . $m[2],
-                "inner" => $m[3],
-                "close" => $m[4],
-                "label" => strtoupper("et_pb_" . $m[2]) . " module",
-                "len" => strlen(trim($innerText)),
-            ];
-        }
-        return $modules;
-    }
 
     // Strip markdown code fences like ``` or ```html
     private function strip_code_fences($html)
@@ -1068,7 +1033,7 @@ EOT
         return $out;
     }
 
-    private function collect_jsonld_context($post, $include_divi, $include_acf, $params)
+    private function collect_jsonld_context($post, $include_acf, $params)
     {
         $pieces = [];
         $pieces[] = "Title: " . get_the_title($post->ID);
@@ -1077,12 +1042,6 @@ EOT
         }
         if (!empty($post->post_content)) {
             $pieces[] = "Body: " . wp_strip_all_tags($post->post_content);
-        }
-        if ($include_divi) {
-            $mods = $this->extract_divi_modules($post->post_content);
-            foreach ($mods as $m) {
-                $pieces[] = $m["label"] . ": " . wp_strip_all_tags($m["inner"]);
-            }
         }
         if ($include_acf && function_exists("get_field_object")) {
             $acf_items = $this->get_acf_fields($post->ID);
@@ -1404,7 +1363,7 @@ EOT
         }
         check_ajax_referer($this->nonce_action, $this->nonce_name);
 
-        $api_key = get_option($this->option_key);
+        $api_key = get_option($this->option_key) ?: get_option($this->legacy_option_key);
         if (!$api_key) {
             wp_die("OpenAI key not set.");
         }
@@ -1421,7 +1380,6 @@ EOT
             "prompt" => wp_kses_post(stripslashes($_POST["prompt"] ?? "")),
         ];
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
-        $incDivi = intval($_POST["include_divi"] ?? 1);
         $incACF = intval($_POST["include_acf"] ?? 1);
         $mode = sanitize_text_field($_POST["mode"] ?? "content");
         if ($mode === "jsonld") {
@@ -1460,13 +1418,12 @@ EOT
 
             $entry = [
                 "title" => get_the_title($post_id),
-                "divi" => [],
                 "acf" => [],
                 "jsonld" => [],
             ];
 
             if ($mode === "jsonld") {
-                $context = $this->collect_jsonld_context($post, $incDivi, $incACF, $paramsBase);
+                $context = $this->collect_jsonld_context($post, $incACF, $paramsBase);
                 $raw = $context["raw"];
                 if (empty($raw)) {
                     $log_message = "[$post_id] “" . $entry["title"] . "” — No content available for JSON-LD.";
@@ -1500,42 +1457,6 @@ EOT
                     "warnings" => $validation["warnings"],
                 ];
             } else {
-                // DIVI
-                if ($incDivi) {
-                    $content = $post->post_content;
-                    $mods = $this->extract_divi_modules($content);
-                    foreach ($mods as $m) {
-                        $plain_len = strlen(trim(wp_strip_all_tags($m["inner"])));
-                        if ($plain_len < $minlen) {
-                            continue;
-                        }
-                        [$clean, $map] = $this->protect_shortcodes($m["inner"]);
-                        $rw = $this->call_openai(
-                            $api_key,
-                            $clean,
-                            array_merge($paramsBase, [
-                                "output_mode" => "HTML_FRAGMENT",
-                                "field_label" => $m["label"],
-                                "field_type" => "divi_" . $m["type"],
-                            ])
-                        );
-                        if (is_wp_error($rw)) {
-                            continue;
-                        }
-                        $rw = $this->restore_shortcodes($rw, $map);
-                        $entry["divi"][] = [
-                            "id" => uniqid("d_", true),
-                            "label" => $m["label"],
-                            "type" => $m["type"],
-                            "full" => $m["full"],
-                            "open" => $m["open"],
-                            "close" => $m["close"],
-                            "orig_html" => $m["inner"],
-                            "new_html" => $rw,
-                        ];
-                    }
-                }
-
                 // ACF
                 if ($incACF && function_exists("get_field_object")) {
                     $acf_items = $this->get_acf_fields($post_id);
@@ -1620,16 +1541,6 @@ EOT
         $entry = $stash[$post_id];
         $payload = [
             "title" => $entry["title"] ?? "",
-            "divi" => array_map(
-                fn($d) => [
-                    "id" => $d["id"],
-                    "label" => $d["label"],
-                    "type" => $d["type"],
-                    "orig_html" => $d["orig_html"],
-                    "new_html" => $d["new_html"],
-                ],
-                $entry["divi"] ?? []
-            ),
             "acf" => array_map(
                 fn($a) => [
                     "id" => $a["id"],
@@ -1703,33 +1614,9 @@ EOT
             }
 
             $idset = array_flip((array) $ids);
-            $diviApplied = 0;
             $acfApplied = 0;
             $acfErrors = 0;
             $schemaApplied = 0;
-
-            // Apply Divi
-            if (!empty($entry["divi"])) {
-                $content = $post->post_content;
-                foreach ($entry["divi"] as $d) {
-                    if (!isset($idset[$d["id"]])) {
-                        continue;
-                    }
-                    $new_module = $d["open"] . $d["new_html"] . $d["close"];
-                    $content = $this->str_replace_once(
-                        $d["full"],
-                        $new_module,
-                        $content
-                    );
-                    $diviApplied++;
-                }
-                if ($diviApplied > 0) {
-                    wp_update_post([
-                        "ID" => $post_id,
-                        "post_content" => $content,
-                    ]);
-                }
-            }
 
             // --- Build list of approved ACF items ---
             $items_to_commit = [];
@@ -1784,11 +1671,10 @@ EOT
                 }
             }
 
-            // Updated log message to be accurate
             $log_message =
                 "[$post_id] “" .
                 ($entry["title"] ?? get_the_title($post_id)) .
-                "” — Applied Divi: $diviApplied, ACF: $acfApplied (Errors: $acfErrors), Schema: $schemaApplied";
+                "” — Applied ACF: $acfApplied (Errors: $acfErrors), Schema: $schemaApplied";
                 
             $log[] = $log_message;
             error_log("AI Bulk Rewriter (Apply Approved): " . $log_message); // Kinsta Log
@@ -1807,7 +1693,7 @@ EOT
         }
         check_ajax_referer($this->nonce_action, $this->nonce_name);
 
-        $api_key = get_option($this->option_key);
+        $api_key = get_option($this->option_key) ?: get_option($this->legacy_option_key);
         if (!$api_key) {
             wp_die("OpenAI key not set.");
         }
@@ -1824,7 +1710,6 @@ EOT
             "prompt" => wp_kses_post(stripslashes($_POST["prompt"] ?? "")),
         ];
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
-        $incDivi = intval($_POST["include_divi"] ?? 1);
         $incACF = intval($_POST["include_acf"] ?? 1);
 
         $log = [];
@@ -1838,47 +1723,7 @@ EOT
                 continue;
             }
 
-            $diviUpdated = $diviErr = 0;
             $acfUpdated = $acfErr = 0;
-
-            // Divi
-            if ($incDivi) {
-                $content = $post->post_content;
-                $mods = $this->extract_divi_modules($content);
-                foreach ($mods as $m) {
-                    $plain_len = strlen(trim(wp_strip_all_tags($m["inner"])));
-                    if ($plain_len < $minlen) {
-                        continue;
-                    }
-                    [$clean, $map] = $this->protect_shortcodes($m["inner"]);
-                    $rw = $this->call_openai(
-                        $api_key,
-                        $clean,
-                        array_merge($paramsBase, [
-                            "output_mode" => "HTML_FRAGMENT",
-                            "field_label" => $m["label"],
-                            "field_type" => "divi_" . $m["type"],
-                        ])
-                    );
-                    if (is_wp_error($rw)) {
-                        $diviErr++;
-                        continue;
-                    }
-                    $rw = $this->restore_shortcodes($rw, $map);
-                    $content = $this->str_replace_once(
-                        $m["full"],
-                        $m["open"] . $rw . $m["close"],
-                        $content
-                    );
-                    $diviUpdated++;
-                }
-                if ($diviUpdated > 0) {
-                    wp_update_post([
-                        "ID" => $post_id,
-                        "post_content" => $content,
-                    ]);
-                }
-            }
 
             // --- NEW ACF LOGIC (Direct Apply) ---
             if ($incACF && function_exists("get_field_object")) {
@@ -1921,7 +1766,7 @@ EOT
             $log_message =
                 "[$post_id] “" .
                 get_the_title($post_id) .
-                "” — Divi updated: $diviUpdated (errors $diviErr), ACF updated: $acfUpdated (errors $acfErr)";
+                "” — ACF updated: $acfUpdated (errors $acfErr)";
             $log[] = $log_message;
             error_log("AI Bulk Rewriter (Direct Apply): " . $log_message); // Kinsta Log
         }
@@ -1930,7 +1775,7 @@ EOT
     }
 }
 
-new AI_Divi_ACF_Bulk_Rewriter_Wizard();
+new AI_ACF_Bulk_Rewriter_Wizard();
 
 if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
     /**

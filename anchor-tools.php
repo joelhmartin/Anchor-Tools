@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.1.4
+ * Version: 3.1.5
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -1135,26 +1135,20 @@ EOT
         foreach ($items_to_commit as $item) {
             $ok = false;
             $new_val = $item["new_html"] ?? "";
-            $path_keys = $item["path_keys"] ?? [];
             $path_names = $item["path_names"] ?? [];
-            $is_nested = !empty($path_keys) || !empty($path_names);
+            $is_nested = !empty($path_names);
 
             try {
                 if ($is_nested) {
-                    // Prefer key-based selector, then name-based selector
-                    if (!empty($path_keys)) {
-                        $ok = update_sub_field($path_keys, $new_val, $post_id);
-                    }
-                    if (!$ok && !empty($path_names)) {
-                        $ok = update_sub_field($path_names, $new_val, $post_id);
-                    }
+                    // Use name-based path (with 1-based indices for repeaters/flex)
+                    $ok = update_sub_field($path_names, $new_val, $post_id);
 
                     // Fallback: mutate top-level array and save
                     if (!$ok) {
-                        $top_selector = $path_keys[0] ?? $path_names[0] ?? ($item["key"] ?? "");
+                        $top_selector = $path_names[0] ?? ($item["key"] ?? "");
                         if ($top_selector) {
                             $current = get_field($top_selector, $post_id);
-                            $mut_path = $path_keys ?: $path_names;
+                            $mut_path = $path_names;
                             array_shift($mut_path);
                             $this->deep_set_by_path($current, $mut_path, $new_val);
                             $ok = update_field($top_selector, $current, $post_id);
@@ -1162,7 +1156,7 @@ EOT
                     }
                 } else {
                     // Top-level field
-                    $selector = $item["key"] ?? ($path_keys[0] ?? $path_names[0] ?? null);
+                    $selector = $item["key"] ?? ($path_names[0] ?? null);
                     if ($selector) {
                         $ok = update_field($selector, $new_val, $post_id);
                     }

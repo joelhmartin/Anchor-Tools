@@ -45,7 +45,11 @@ class Anchor_Shortcodes_Module {
     }
 
     public function register_settings() {
-        register_setting( 'anchor_shortcodes_group', self::OPTION_KEY, [ $this, 'sanitize_options' ] );
+        register_setting( 'anchor_shortcodes_group', self::OPTION_KEY, [
+            'type' => 'array',
+            'sanitize_callback' => [ $this, 'sanitize_options' ],
+            'default' => [],
+        ] );
 
         // Section: Business Info
         add_settings_section(
@@ -95,19 +99,7 @@ $fields = [
     }
 
     public function sanitize_options( $input ) {
-        $out = [
-            'business_name'     => '',
-            'address'           => '',
-            'phone'             => '',
-            'email'             => '',
-            'business_hours'    => '',
-            'site_image_url'    => '',
-            'site_icon_url'     => '',
-            'site_image_horizontal' => '',
-            'site_image_horizontal_white' => '',
-            'site_image_white' => '',
-            'custom_shortcodes' => [],
-        ];
+        $out = $this->get_options();
 
         foreach ( [
             'business_name', 'address', 'phone', 'email', 'business_hours',
@@ -126,12 +118,13 @@ $fields = [
 
         // Custom shortcodes
         if ( isset( $input['custom_shortcodes'] ) && is_array( $input['custom_shortcodes'] ) ) {
+            $out['custom_shortcodes'] = [];
             foreach ( $input['custom_shortcodes'] as $row ) {
                 if ( empty( $row['shortcode'] ) ) continue;
                 $out['custom_shortcodes'][] = [
                     'shortcode' => sanitize_key( $row['shortcode'] ),
                     'title'     => sanitize_text_field( $row['title'] ?? '' ),
-                    'content'   => sanitize_textarea_field( $row['content'] ?? '' ),
+                    'content'   => wp_kses_post( $row['content'] ?? '' ),
                 ];
             }
         }

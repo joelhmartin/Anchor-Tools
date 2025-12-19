@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.2.0
+ * Version: 3.2.1
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -350,7 +350,7 @@ EOT
 
                     <label><strong>Per page:</strong>
                         <select name="per_page">
-                            <?php foreach ([10, 20, 50, 100] as $n): ?>
+                            <?php foreach ([10, 20, 50, 100, 200] as $n): ?>
                                 <option value="<?php echo $n; ?>" <?php selected(
     $per_page,
     $n

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.1.2
+ * Version: 3.1.3
  * Author: Anchor Corps
  * Text Domain: anchor-schema
  */
@@ -1158,56 +1158,54 @@ EOT
     }
 
     /**
-     * ===================================================================
-     * *** MODIFIED FUNCTION (v1.9.4 - Prefixed Key Attempt) ***
-     * ===================================================================
-     * This version attempts to update group subfields using the prefixed
-     * meta key strategy ('group_name_subfield_name').
-     * It does NOT use the get/mutate/set method as a fallback in this version.
+     * Write ACF updates back to their original fields (including nested repeater/flex paths).
      *
-     * @param int $post_id The post ID to update.
-     * @param array $items_to_commit A flat array of "ACF item" objects.
+     * @param int   $post_id
+     * @param array $items_to_commit Flat list of ACF items with keys/paths + new_html
      * @return array [int $total_applied, int $total_errors]
      */
     private function commit_acf_updates($post_id, $items_to_commit)
     {
-        if (empty($items_to_commit) || !function_exists('update_field')) {
-            return [0, count($items_to_commit)]; // Return all as errors if ACF isn't active
+        if (empty($items_to_commit) || !function_exists("update_field")) {
+            return [0, count($items_to_commit)];
         }
 
-        $total_applied = 0;
-        $total_errors = 0;
+        $applied = 0;
+        $errors = 0;
 
         foreach ($items_to_commit as $item) {
             $ok = false;
-            $is_nested = !empty($item["path_names"]); // Check if it has a path
+            $new_val = $item["new_html"] ?? "";
+            $path_keys = $item["path_keys"] ?? [];
+            $path_names = $item["path_names"] ?? [];
+            $is_nested = !empty($path_keys) || !empty($path_names);
 
             try {
                 if ($is_nested) {
-                    // --- This is a NESTED (Group) field ---
-                    // Construct the prefixed meta key (e.g., group_name_subfield_name)
-                    $prefixed_key = implode('_', $item["path_names"]);
-
-                    if (!empty($prefixed_key)) {
-                         // Use update_field with the prefixed key
-                        $ok = update_field($prefixed_key, $item['new_html'], $post_id);
-                         // Note: We are specifically NOT using the 'key' (field_xxxx) here for nested fields
-                         // in this version, only the constructed name-based key.
-                    } else {
-                        // If path_names was empty for some reason, count as error
-                        $ok = false;
-                        error_log("AI Bulk Rewriter (Commit Error): Could not construct prefixed key for item: " . print_r($item, true));
+                    // Prefer key-based selector, then name-based selector
+                    if (!empty($path_keys)) {
+                        $ok = update_sub_field($path_keys, $new_val, $post_id);
+                    }
+                    if (!$ok && !empty($path_names)) {
+                        $ok = update_sub_field($path_names, $new_val, $post_id);
                     }
 
+                    // Fallback: mutate top-level array and save
+                    if (!$ok) {
+                        $top_selector = $path_keys[0] ?? $path_names[0] ?? ($item["key"] ?? "");
+                        if ($top_selector) {
+                            $current = get_field($top_selector, $post_id);
+                            $mut_path = $path_keys ?: $path_names;
+                            array_shift($mut_path);
+                            $this->deep_set_by_path($current, $mut_path, $new_val);
+                            $ok = update_field($top_selector, $current, $post_id);
+                        }
+                    }
                 } else {
-                    // --- This is a TOP-LEVEL field ---
-                    // Use the field's unique key (field_xxxx)
-                    if (!empty($item['key'])) {
-                        $ok = update_field($item['key'], $item['new_html'], $post_id);
-                    } else {
-                        // If key is missing for a top-level field, count as error
-                         $ok = false;
-                         error_log("AI Bulk Rewriter (Commit Error): Missing field key for top-level item: " . print_r($item, true));
+                    // Top-level field
+                    $selector = $item["key"] ?? ($path_keys[0] ?? $path_names[0] ?? null);
+                    if ($selector) {
+                        $ok = update_field($selector, $new_val, $post_id);
                     }
                 }
             } catch (Exception $e) {
@@ -1216,18 +1214,17 @@ EOT
             }
 
             if ($ok) {
-                $total_applied++;
+                $applied++;
             } else {
-                $total_errors++;
+                $errors++;
             }
         }
 
-        // Optional: Flush cache once at the very end if any updates succeeded
-        if ($total_applied > 0 && function_exists('acf_flush_cache')) {
-             acf_flush_cache($post_id);
+        if ($applied > 0 && function_exists("acf_flush_cache")) {
+            acf_flush_cache($post_id);
         }
 
-        return [$total_applied, $total_errors];
+        return [$applied, $errors];
     }
 
 

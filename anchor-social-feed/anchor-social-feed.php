@@ -326,6 +326,7 @@ class Anchor_Social_Feed_Module {
 
         add_settings_section('ssfs_main', 'Platform Settings', function () {
             echo '<p>Enter the required IDs or URLs, then save. Use the provided shortcodes to display feeds.</p>';
+            echo '<p class="ssfs-note">YouTube API key is managed in Anchor Tools settings.</p>';
             echo '<p class="ssfs-note">Instagram profile feeds are not available without API permission. This plugin outputs a simple profile link.</p>';
         }, self::PAGE_SLUG);
 

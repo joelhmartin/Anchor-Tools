@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.2.6
+ * Version: 3.2.7
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -48,6 +48,12 @@ if ( ! class_exists( 'Anchor_Schema_Admin' ) ) {
 }
 if ( ! class_exists( 'Anchor_Schema_Render' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-schema-render.php';
+}
+if ( ! class_exists( 'Anchor_Reviews_Google_Provider' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-reviews-provider-google.php';
+}
+if ( ! class_exists( 'Anchor_Reviews_Manager' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-reviews.php';
 }
 
 if ( class_exists( PucFactory::class ) ) {
@@ -106,6 +112,9 @@ add_action(
         }
         if ( class_exists( 'Anchor_Schema_Render' ) ) {
             new Anchor_Schema_Render();
+        }
+        if ( class_exists( 'Anchor_Reviews_Manager' ) ) {
+            new Anchor_Reviews_Manager();
         }
     }
 );
@@ -730,6 +739,9 @@ EOT
                 function addRow(item, kind){
                     const itemId = item.id;
                     if (!approvals[postId]) approvals[postId] = new Set();
+                    if (previewMode === 'seo_meta' && kind === 'seo' && approvals[postId].size === 0) {
+                        approvals[postId].add(itemId);
+                    }
                     const isChecked = approvals[postId].has(itemId) ? 'checked' : '';
 
                     // LEFT: Original — label + content (NO checkbox)
@@ -1102,8 +1114,18 @@ EOT
     private function get_yoast_fields($post_id)
     {
         $fields = [];
+        $post = get_post($post_id);
+        $fallback_title = get_the_title($post_id);
+        $fallback_desc = $post ? (string) $post->post_excerpt : '';
+
         $title = get_post_meta($post_id, "_yoast_wpseo_title", true);
+        if ($title === '') {
+            $title = $fallback_title;
+        }
         $desc = get_post_meta($post_id, "_yoast_wpseo_metadesc", true);
+        if ($desc === '') {
+            $desc = $fallback_desc;
+        }
 
         $fields[] = [
             "id" => "yoast_title",
@@ -1246,11 +1268,17 @@ EOT
                 $errors++;
                 continue;
             }
-            $ok = update_post_meta($post_id, $key, $item["new_html"] ?? "");
+            $new_val = (string) ($item["new_html"] ?? "");
+            $ok = update_post_meta($post_id, $key, $new_val);
             if ($ok !== false) {
                 $applied++;
             } else {
-                $errors++;
+                $current = (string) get_post_meta($post_id, $key, true);
+                if ($current === $new_val) {
+                    $applied++;
+                } else {
+                    $errors++;
+                }
             }
         }
         return [$applied, $errors];
@@ -1593,6 +1621,9 @@ EOT
                         continue;
                     }
                     $rw = $this->restore_yoast_vars($rw, $map);
+                    if (trim($rw) === '') {
+                        $rw = $f["value"];
+                    }
                     $entry["seo"][] = [
                         "id" => $f["id"],
                         "label" => $f["label"],
@@ -1907,6 +1938,9 @@ EOT
                     ]));
                     if (is_wp_error($rw)) { $acfErr++; continue; }
                     $rw = $this->restore_yoast_vars($rw, $map);
+                    if (trim($rw) === '') {
+                        $rw = $f["value"];
+                    }
                     $items_to_commit[] = array_merge($f, ["new_html" => $rw]);
                 }
                 if (!empty($items_to_commit)) {

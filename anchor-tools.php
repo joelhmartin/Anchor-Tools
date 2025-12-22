@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.2.5
+ * Version: 3.2.6
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -1579,9 +1579,6 @@ EOT
             } elseif ($mode === "seo_meta") {
                 $yoast_items = $this->get_yoast_fields($post_id);
                 foreach ($yoast_items as $f) {
-                    if ($f["len"] < $minlen) {
-                        continue;
-                    }
                     [$clean, $map] = $this->protect_yoast_vars($f["value"]);
                     $rw = $this->call_openai(
                         $api_key,
@@ -1902,7 +1899,6 @@ EOT
                 $items_to_commit = [];
                 $yoast_items = $this->get_yoast_fields($post_id);
                 foreach ($yoast_items as $f) {
-                    if ($f["len"] < $minlen) { continue; }
                     [$clean, $map] = $this->protect_yoast_vars($f["value"]);
                     $rw = $this->call_openai($api_key, $clean, array_merge($paramsBase, [
                         "output_mode" => "TEXT_ONLY",

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.2.7
+ * Version: 3.2.8
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -183,6 +183,7 @@ class AI_ACF_Bulk_Rewriter_Wizard
             .ai-br-mono{font-family:monospace;font-size:12px;}
             .ai-br-small{font-size:12px;color:#555;}
             .ai-br-textarea{width:100%;min-height:180px;font-family:monospace;}
+            .ai-br-edit{width:100%;min-height:120px;font-family:monospace;}
             .ai-jsonld-editor{width:100%;min-height:220px;font-family:monospace;background:#0f172a;color:#e2e8f0;border:1px solid #1e293b;border-radius:6px;padding:10px;}
             .ai-jsonld-warning{color:#b45309;font-size:12px;margin:6px 0;}
             .ai-jsonld-badge{display:inline-flex;align-items:center;background:#7c3aed;color:#fff;padding:2px 8px;border-radius:999px;font-size:11px;margin-left:8px;text-transform:uppercase;letter-spacing:0.05em;}
@@ -730,8 +731,8 @@ EOT
                     renderJsonldStep(postId, data);
                     return;
                 }
-                const showACF  = $('#ai_wizard_toggle_acf').is(':checked');
-                const showSEO  = $('#ai_wizard_toggle_seo').is(':checked');
+                const showACF  = (previewMode === 'content') && $('#ai_wizard_toggle_acf').is(':checked');
+                const showSEO  = (previewMode === 'seo_meta') && $('#ai_wizard_toggle_seo').is(':checked');
 
                 const origWrap = [];
                 const newWrap  = [];
@@ -743,6 +744,8 @@ EOT
                         approvals[postId].add(itemId);
                     }
                     const isChecked = approvals[postId].has(itemId) ? 'checked' : '';
+                    const overrideVal = getOverride(postId, itemId);
+                    const newVal = overrideVal !== null ? overrideVal : item.new_html;
 
                     // LEFT: Original — label + content (NO checkbox)
                     origWrap.push(
@@ -756,7 +759,7 @@ EOT
                     newWrap.push(
                         '<div class="ai-br-row" data-kind="'+kind+'" data-id="'+itemId+'">'+
                             '<label><input type="checkbox" class="ai-approve-item" data-post="'+postId+'" data-id="'+itemId+'" '+isChecked+'> '+escapeHtml(item.label)+'</label>'+
-                            '<div class="ai-br-panel-sm">'+item.new_html+'</div>'+
+                            '<textarea class="ai-br-edit ai-edit-field" data-post="'+postId+'" data-id="'+itemId+'">'+escapeHtml(newVal)+'</textarea>'+
                         '</div>'
                     );
                 }
@@ -839,6 +842,13 @@ EOT
             });
 
             $(document).on('input', '.ai-jsonld-editor', function(){
+                const postId = $(this).data('post');
+                const id = $(this).data('id');
+                if (!overrides[postId]) overrides[postId] = {};
+                overrides[postId][id] = $(this).val();
+            });
+
+            $(document).on('input', '.ai-edit-field', function(){
                 const postId = $(this).data('post');
                 const id = $(this).data('id');
                 if (!overrides[postId]) overrides[postId] = {};
@@ -1565,6 +1575,7 @@ EOT
 
             $entry = [
                 "title" => get_the_title($post_id),
+                "mode" => $mode,
                 "acf" => [],
                 "seo" => [],
                 "jsonld" => [],
@@ -1805,12 +1816,17 @@ EOT
             $seoApplied = 0;
             $seoErrors = 0;
             $schemaApplied = 0;
+            $entry_mode = $entry["mode"] ?? "content";
 
             // --- Build list of approved ACF items ---
             $items_to_commit = [];
-            if (!empty($entry["acf"])) {
+            if ($entry_mode === "content" && !empty($entry["acf"])) {
                 foreach ($entry["acf"] as $a) {
                     if (isset($idset[$a["id"]])) {
+                        if (isset($overrides[$post_id][$a["id"]])) {
+                            $raw_override = (string) $overrides[$post_id][$a["id"]];
+                            $a["new_html"] = ($a["type"] === "wysiwyg") ? wp_kses_post($raw_override) : sanitize_text_field($raw_override);
+                        }
                         $items_to_commit[] = $a; // Add the full item object
                     }
                 }
@@ -1826,16 +1842,19 @@ EOT
             if (!empty($entry["seo"])) {
                 foreach ($entry["seo"] as $s) {
                     if (isset($idset[$s["id"]])) {
+                        if (isset($overrides[$post_id][$s["id"]])) {
+                            $s["new_html"] = sanitize_text_field((string) $overrides[$post_id][$s["id"]]);
+                        }
                         $seo_items_to_commit[] = $s;
                     }
                 }
             }
-            if (!empty($seo_items_to_commit)) {
+            if ($entry_mode === "seo_meta" && !empty($seo_items_to_commit)) {
                 list($seoApplied, $seoErrors) = $this->commit_seo_updates($post_id, $seo_items_to_commit);
             }
 
             // JSON-LD schemas
-            if (!empty($entry["jsonld"])) {
+            if ($entry_mode === "jsonld" && !empty($entry["jsonld"])) {
                 $items = get_post_meta($post_id, Anchor_Schema_Admin::META_KEY, true);
                 if (!is_array($items)) {
                     $items = [];

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.2.8
+ * Version: 3.2.9
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -35,6 +35,7 @@ if ( file_exists( $acg_autoload ) ) {
 if ( class_exists( Dotenv::class ) && file_exists( ANCHOR_TOOLS_PLUGIN_DIR . '.env' ) ) {
     $dotenv = Dotenv::createImmutable( ANCHOR_TOOLS_PLUGIN_DIR );
     $dotenv->safeLoad();
+    
 }
 
 if ( ! class_exists( 'Anchor_Schema_Logger' ) ) {
@@ -233,6 +234,7 @@ Original CONTENT:
 
 Guidelines:
 - Leave tokens like %%SHORTCODE_X%% unchanged.
+- Shortcodes present (do not change): {{SHORTCODES_LIST}}
 - Maintain meaning and clinical accuracy.
 - Do not wrap output in triple backticks or Markdown fences.
 - Never use em dashes; use commas and periods instead.
@@ -251,6 +253,7 @@ You are an SEO copywriter. Rewrite the provided SEO fields clearly, naturally, a
 Output:
 - Return plain text only (no HTML, no Markdown).
 - Respect the intent of the field (Title or Meta Description) and keep length reasonable for SERP display.
+- Do NOT include labels or prefixes like "Title:" or "Meta Description:" in the output.
 
 User:
 Original FIELD ({{FIELD_LABEL}}):
@@ -1121,6 +1124,71 @@ EOT
         return $text;
     }
 
+    private function strip_wrapping_quotes($text)
+    {
+        $text = trim((string) $text);
+        if ($text === "") {
+            return $text;
+        }
+        $first = substr($text, 0, 1);
+        $last = substr($text, -1);
+        if (($first === '"' || $first === "'") && $last === $first) {
+            $text = substr($text, 1, -1);
+        }
+        return trim($text);
+    }
+
+    private function extract_seo_labeled_value($text, array $labels, array $stop_labels)
+    {
+        if (empty($labels)) {
+            return "";
+        }
+        $label_pattern = implode("|", array_map("preg_quote", $labels));
+        $stop = array_filter(array_merge($labels, $stop_labels));
+        $stop_pattern = $stop ? implode("|", array_map("preg_quote", $stop)) : "";
+
+        $lookahead = $stop_pattern
+            ? "(?=\\s*\\b(?:" . $stop_pattern . ")\\b\\s*[:\\-]|$)"
+            : "(?=$)";
+        $regex = "/\\b(?:" . $label_pattern . ")\\b\\s*[:\\-]\\s*(.+?)" . $lookahead . "/is";
+        if (preg_match($regex, $text, $m)) {
+            return trim((string) $m[1]);
+        }
+        return "";
+    }
+
+    private function normalize_seo_output($text, $field_type)
+    {
+        $text = trim((string) $text);
+        if ($text === "") {
+            return $text;
+        }
+
+        $title_labels = ["title", "seo title"];
+        $meta_labels = ["meta description", "meta desc", "meta-description", "description"];
+
+        $type = strtolower((string) $field_type);
+        if ($type === "yoast_title") {
+            $picked = $this->extract_seo_labeled_value($text, $title_labels, $meta_labels);
+            if ($picked !== "") {
+                $text = $picked;
+            }
+        } elseif ($type === "yoast_metadesc") {
+            $picked = $this->extract_seo_labeled_value($text, $meta_labels, $title_labels);
+            if ($picked !== "") {
+                $text = $picked;
+            }
+        }
+
+        $strip_labels = array_merge($title_labels, $meta_labels);
+        $strip_pattern = implode("|", array_map("preg_quote", $strip_labels));
+        $text = preg_replace("/^\\s*(?:" . $strip_pattern . ")\\s*[:\\-]\\s*/i", "", $text);
+
+        $text = $this->strip_wrapping_quotes($text);
+        $text = preg_replace("/\\s+/", " ", $text);
+        return trim($text);
+    }
+
     private function get_yoast_fields($post_id)
     {
         $fields = [];
@@ -1189,6 +1257,16 @@ EOT
             $html = str_replace($token, $sc, $html);
         }
         return $html;
+    }
+
+    private function build_shortcodes_list($map)
+    {
+        if (empty($map)) {
+            return "None";
+        }
+        $shortcodes = array_values($map);
+        $shortcodes = array_unique($shortcodes);
+        return implode("\n- ", $shortcodes);
     }
 
     private function str_replace_once($search, $replace, $subject)
@@ -1386,7 +1464,8 @@ EOT
         $output_mode,
         $target_chars,
         $field_label,
-        $field_type
+        $field_type,
+        $shortcodes_list
     ) {
         $seo_keywords = trim((string) $keywords_csv);
         $filled = strtr((string) $template, [
@@ -1399,6 +1478,7 @@ EOT
             "{{TARGET_CHARS}}" => (string) max(10, (int) $target_chars),
             "{{FIELD_LABEL}}" => $field_label ?: "",
             "{{FIELD_TYPE}}" => $field_type ?: "",
+            "{{SHORTCODES_LIST}}" => $shortcodes_list ?: "None",
         ]);
 
         if (
@@ -1448,7 +1528,8 @@ EOT
             $output_mode,
             $len_hint,
             $field_label,
-            $field_type
+            $field_type,
+            $params["shortcodes_list"] ?? ""
         );
 
         $body = [
@@ -1542,10 +1623,8 @@ EOT
         if (!in_array($mode, $allowed_modes, true)) {
             $mode = "content";
         }
-        $mode = sanitize_text_field($_POST["mode"] ?? "content");
-        $allowed_modes = ["content", "seo_meta", "jsonld"];
-        if (!in_array($mode, $allowed_modes, true)) {
-            $mode = "content";
+        if ($mode === "seo_meta") {
+            $paramsBase["prompt"] = $this->default_seo_prompt_template();
         }
         $schema_type = sanitize_text_field($_POST["schema_type"] ?? "Article");
         $schema_custom = sanitize_text_field($_POST["schema_custom"] ?? "");
@@ -1632,6 +1711,7 @@ EOT
                         continue;
                     }
                     $rw = $this->restore_yoast_vars($rw, $map);
+                    $rw = $this->normalize_seo_output($rw, $f["type"]);
                     if (trim($rw) === '') {
                         $rw = $f["value"];
                     }
@@ -1641,6 +1721,7 @@ EOT
                         "meta_key" => $f["meta_key"],
                         "orig_html" => $f["value"],
                         "new_html" => $rw,
+                        "type" => $f["type"],
                     ];
                 }
             } else {
@@ -1659,6 +1740,7 @@ EOT
                                 : "TEXT_ONLY";
 
                         [$clean, $map] = $this->protect_shortcodes($f["value"]);
+                        $shortcodes_list = $this->build_shortcodes_list($map);
                         $rw = $this->call_openai(
                             $api_key,
                             $clean,
@@ -1666,6 +1748,7 @@ EOT
                                 "output_mode" => $field_mode,
                                 "field_label" => $f["label"],
                                 "field_type" => "acf_" . $f["type"],
+                                "shortcodes_list" => $shortcodes_list,
                             ])
                         );
                         if (is_wp_error($rw)) {
@@ -1845,6 +1928,8 @@ EOT
                         if (isset($overrides[$post_id][$s["id"]])) {
                             $s["new_html"] = sanitize_text_field((string) $overrides[$post_id][$s["id"]]);
                         }
+                        $field_type = $s["type"] ?? ($s["id"] === "yoast_title" ? "yoast_title" : "yoast_metadesc");
+                        $s["new_html"] = $this->normalize_seo_output($s["new_html"], $field_type);
                         $seo_items_to_commit[] = $s;
                     }
                 }
@@ -1931,6 +2016,17 @@ EOT
         ];
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
         $incACF = intval($_POST["include_acf"] ?? 1);
+        $mode = sanitize_text_field($_POST["mode"] ?? "content");
+        $allowed_modes = ["content", "seo_meta", "jsonld"];
+        if (!in_array($mode, $allowed_modes, true)) {
+            $mode = "content";
+        }
+        if ($mode === "seo_meta") {
+            $paramsBase["prompt"] = $this->default_seo_prompt_template();
+        }
+        if ($mode === "jsonld") {
+            wp_die("JSON-LD mode requires Preview → Review → Apply Approved.");
+        }
 
         $log = [];
 
@@ -1957,6 +2053,7 @@ EOT
                     ]));
                     if (is_wp_error($rw)) { $acfErr++; continue; }
                     $rw = $this->restore_yoast_vars($rw, $map);
+                    $rw = $this->normalize_seo_output($rw, $f["type"]);
                     if (trim($rw) === '') {
                         $rw = $f["value"];
                     }
@@ -1979,11 +2076,13 @@ EOT
 
                         $out_mode = ($f["type"] === "wysiwyg") ? "HTML_FRAGMENT" : "TEXT_ONLY";
                         [$clean, $map] = $this->protect_shortcodes($f["value"]);
+                        $shortcodes_list = $this->build_shortcodes_list($map);
                         
                         $rw = $this->call_openai( $api_key, $clean, array_merge($paramsBase, [
                             "output_mode" => $out_mode,
                             "field_label" => $f["label"],
                             "field_type" => "acf_" . $f["type"],
+                            "shortcodes_list" => $shortcodes_list,
                         ]));
 
                         if (is_wp_error($rw)) {

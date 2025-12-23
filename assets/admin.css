@@ -8,3 +8,10 @@
 #anchor-schema-list .schema-item textarea { width: 100%; height: 160px; font-family: monospace; }
 .anchor-schema-actions { display: flex; gap: 8px; }
 .anchor-schema-badge { padding: 2px 6px; font-size: 11px; background: #f0f0f0; border-radius: 3px; }
+.anchor-reviews-results { border: 1px solid #ccd0d4; background: #fff; max-width: 480px; margin-top: 6px; }
+.anchor-reviews-result { display: flex; gap: 10px; align-items: center; padding: 8px; border-bottom: 1px solid #eee; }
+.anchor-reviews-result:last-child { border-bottom: none; }
+.anchor-reviews-meta { flex: 1; }
+.anchor-reviews-name { font-weight: 600; }
+.anchor-reviews-address, .anchor-reviews-status { font-size: 12px; color: #666; }
+.anchor-reviews-loading, .anchor-reviews-empty { padding: 8px; color: #666; }

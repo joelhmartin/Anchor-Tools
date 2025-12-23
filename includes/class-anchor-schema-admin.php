@@ -16,6 +16,7 @@ class Anchor_Schema_Admin {
         add_action('wp_ajax_anchor_schema_update_item', [ $this, 'ajax_update_item' ]);
         add_action('wp_ajax_anchor_schema_delete_item', [ $this, 'ajax_delete_item' ]);
         add_action('wp_ajax_anchor_schema_upload',   [ $this, 'ajax_upload' ]);
+        add_action('wp_ajax_anchor_reviews_place_search', [ $this, 'ajax_reviews_place_search' ]);
     }
 
     public function add_settings_page(){
@@ -86,7 +87,15 @@ class Anchor_Schema_Admin {
         add_settings_field('reviews_google_place_id', __('Google Place ID', 'anchor-schema'), function(){
             $opts = $this->get_settings();
             $val  = isset($opts['reviews_google_place_id']) ? $opts['reviews_google_place_id'] : '';
-            printf('<input type="text" name="%s[reviews_google_place_id]" value="%s" class="regular-text" />', esc_attr(self::OPTION_KEY), esc_attr($val));
+            $selected = $opts['reviews_place_name'] ?? '';
+            $selected_text = $selected ? $selected : ($val ? $val : '');
+            $selected_label = $selected_text ? sprintf( __( 'Selected: %s', 'anchor-schema' ), $selected_text ) : __( 'Select a business to fill the Place ID, then save to validate.', 'anchor-schema' );
+            echo '<div class="anchor-reviews-search">';
+            echo '<input type="text" id="anchor-reviews-search" class="regular-text" placeholder="' . esc_attr__( 'Search for a business', 'anchor-schema' ) . '" autocomplete="off" />';
+            echo '<div id="anchor-reviews-results" class="anchor-reviews-results" style="display:none;"></div>';
+            echo '<div id="anchor-reviews-selected" class="description">' . esc_html( $selected_label ) . '</div>';
+            echo '</div>';
+            printf('<input type="text" id="anchor-reviews-place-id" name="%s[reviews_google_place_id]" value="%s" class="regular-text" />', esc_attr(self::OPTION_KEY), esc_attr($val));
             echo '<p class="description">' . esc_html__('Uses the Google API key from Anchor Tools Settings.', 'anchor-schema') . '</p>';
         }, 'anchor_reviews_settings', 'anchor_reviews_main');
 
@@ -357,7 +366,7 @@ class Anchor_Schema_Admin {
 
     public function enqueue_assets($hook){
         $screen = function_exists('get_current_screen') ? get_current_screen() : null;
-        if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || $screen->id === 'settings_page_anchor-schema') ) {
+        if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || in_array($screen->id, [ 'settings_page_anchor-schema', 'settings_page_anchor-reviews' ], true)) ) {
             wp_enqueue_style('anchor-schema-admin', ANCHOR_SCHEMA_URL . 'assets/admin.css', [], ANCHOR_SCHEMA_VERSION);
         }
         if ( $screen && in_array($screen->base, [ 'post', 'page' ], true) ) {
@@ -372,6 +381,53 @@ class Anchor_Schema_Admin {
                 ]
             ]);
         }
+        if ( $screen && $screen->id === 'settings_page_anchor-reviews' ) {
+            wp_enqueue_script('anchor-reviews-admin', ANCHOR_SCHEMA_URL . 'assets/reviews-admin.js', [ 'jquery' ], ANCHOR_SCHEMA_VERSION, true);
+            wp_localize_script('anchor-reviews-admin', 'ANCHOR_REVIEWS', [
+                'ajax'   => admin_url('admin-ajax.php'),
+                'nonce'  => wp_create_nonce('anchor_reviews_search'),
+                'strings'=> [
+                    'noKey'   => __('Google API key is not configured.', 'anchor-schema'),
+                    'short'   => __('Type at least 3 characters to search.', 'anchor-schema'),
+                    'empty'   => __('No matching businesses found.', 'anchor-schema'),
+                    'error'   => __('Search failed. Check the API key and try again.', 'anchor-schema'),
+                    'selected'=> __('Selected:', 'anchor-schema'),
+                ],
+            ]);
+        }
+    }
+
+    public function ajax_reviews_place_search(){
+        check_ajax_referer('anchor_reviews_search', 'nonce');
+        if ( ! current_user_can('manage_options') ) {
+            wp_send_json_error([ 'message' => 'no_cap' ]);
+        }
+
+        $query = isset($_POST['query']) ? sanitize_text_field($_POST['query']) : '';
+        if ( strlen($query) < 3 ) {
+            wp_send_json_error([ 'message' => 'too_short' ]);
+        }
+
+        $settings = $this->get_settings();
+        $api_key = trim($settings['google_api_key'] ?? '');
+        if ( ! $api_key ) {
+            wp_send_json_error([ 'message' => 'missing_key' ]);
+        }
+        if ( ! class_exists( 'Anchor_Reviews_Google_Provider' ) ) {
+            wp_send_json_error([ 'message' => 'provider_missing' ]);
+        }
+
+        $provider = new Anchor_Reviews_Google_Provider();
+        if ( ! method_exists( $provider, 'search' ) ) {
+            wp_send_json_error([ 'message' => 'search_missing' ]);
+        }
+
+        $results = $provider->search( $query, $api_key, 8 );
+        if ( is_wp_error( $results ) ) {
+            wp_send_json_error([ 'message' => $results->get_error_message() ]);
+        }
+
+        wp_send_json_success([ 'results' => $results ]);
     }
 
     public function ajax_generate(){

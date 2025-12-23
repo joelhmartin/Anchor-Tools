@@ -12,6 +12,67 @@ class Anchor_Reviews_Google_Provider implements Anchor_Reviews_Provider {
         return 'google';
     }
 
+    public function search( $query, $api_key, $limit = 5 ) {
+        $query = trim( (string) $query );
+        if ( ! $api_key || ! $query ) {
+            return new WP_Error( 'anchor_reviews_missing', 'Missing Google API key or query.' );
+        }
+
+        $endpoint = add_query_arg(
+            [
+                'input'     => $query,
+                'inputtype' => 'textquery',
+                'fields'    => 'place_id,name,formatted_address,business_status,types',
+                'key'       => $api_key,
+            ],
+            'https://maps.googleapis.com/maps/api/place/findplacefromtext/json'
+        );
+
+        $resp = wp_remote_get( $endpoint, [ 'timeout' => 20 ] );
+        if ( is_wp_error( $resp ) ) {
+            return $resp;
+        }
+        $code = wp_remote_retrieve_response_code( $resp );
+        if ( $code !== 200 ) {
+            return new WP_Error( 'anchor_reviews_http', 'Google API HTTP ' . $code );
+        }
+
+        $data = json_decode( wp_remote_retrieve_body( $resp ), true );
+        $status = $data['status'] ?? 'unknown';
+        if ( $status !== 'OK' && $status !== 'ZERO_RESULTS' ) {
+            return new WP_Error( 'anchor_reviews_api', 'Google API error: ' . $status );
+        }
+
+        $candidates = $data['candidates'] ?? [];
+        if ( empty( $candidates ) ) {
+            return [];
+        }
+
+        $operational = [];
+        $other = [];
+        foreach ( $candidates as $c ) {
+            $row = [
+                'place_id'        => $c['place_id'] ?? '',
+                'name'            => $c['name'] ?? '',
+                'address'         => $c['formatted_address'] ?? '',
+                'business_status' => $c['business_status'] ?? '',
+                'types'           => $c['types'] ?? [],
+            ];
+            if ( ! $row['place_id'] ) {
+                continue;
+            }
+            if ( $row['business_status'] === 'OPERATIONAL' ) {
+                $operational[] = $row;
+            } else {
+                $other[] = $row;
+            }
+        }
+
+        $combined = array_merge( $operational, $other );
+        $limit = max( 1, (int) $limit );
+        return array_slice( $combined, 0, $limit );
+    }
+
     public function fetch( $place_id, $api_key ) {
         if ( ! $api_key || ! $place_id ) {
             return new WP_Error( 'anchor_reviews_missing', 'Missing Google API key or Place ID.' );

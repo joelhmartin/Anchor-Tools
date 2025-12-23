@@ -146,7 +146,7 @@ class Anchor_Reviews_Manager {
             }
         }
 
-        $url = add_query_arg( [ 'anchor_reviews_refresh' => $status ], wp_get_referer() ?: admin_url( 'options-general.php?page=anchor-schema' ) );
+        $url = add_query_arg( [ 'anchor_reviews_refresh' => $status ], wp_get_referer() ?: admin_url( 'options-general.php?page=anchor-reviews' ) );
         wp_safe_redirect( $url );
         exit;
     }

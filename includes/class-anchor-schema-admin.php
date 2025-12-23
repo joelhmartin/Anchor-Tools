@@ -26,10 +26,18 @@ class Anchor_Schema_Admin {
             'anchor-schema',
             [ $this, 'render_settings_page' ]
         );
+        add_options_page(
+            __('Anchor Reviews Settings', 'anchor-schema'),
+            __('Anchor Reviews', 'anchor-schema'),
+            'manage_options',
+            'anchor-reviews',
+            [ $this, 'render_reviews_settings_page' ]
+        );
     }
 
     public function register_settings(){
         register_setting( 'anchor_schema_group', self::OPTION_KEY, [ $this, 'sanitize_settings' ] );
+        register_setting( 'anchor_reviews_group', self::OPTION_KEY, [ $this, 'sanitize_settings' ] );
 
         add_settings_section('anchor_schema_main', __('API Configuration', 'anchor-schema'), function(){
             echo '<p>' . esc_html__('Configure shared API keys used across Anchor Tools modules (OpenAI, Social Feed, etc.).', 'anchor-schema') . '</p>';
@@ -71,21 +79,40 @@ class Anchor_Schema_Admin {
 
         add_settings_field('modules', __('Bundled Modules', 'anchor-schema'), [ $this, 'render_modules_field' ], 'anchor_schema_settings', 'anchor_schema_modules');
 
-        add_settings_section('anchor_schema_reviews', __('Reviews', 'anchor-schema'), function(){
-            echo '<p>' . esc_html__('Configure Google reviews fetching and caching. Reviews are cached and never fetched on page render.', 'anchor-schema') . '</p>';
-        }, 'anchor_schema_settings');
+        add_settings_section('anchor_reviews_main', __('Google Reviews', 'anchor-schema'), function(){
+            echo '<p>' . esc_html__('Validate your Google Place ID via the Places API and configure cached reviews. Reviews are never fetched on page render.', 'anchor-schema') . '</p>';
+        }, 'anchor_reviews_settings');
 
         add_settings_field('reviews_google_place_id', __('Google Place ID', 'anchor-schema'), function(){
             $opts = $this->get_settings();
             $val  = isset($opts['reviews_google_place_id']) ? $opts['reviews_google_place_id'] : '';
             printf('<input type="text" name="%s[reviews_google_place_id]" value="%s" class="regular-text" />', esc_attr(self::OPTION_KEY), esc_attr($val));
-        }, 'anchor_schema_settings', 'anchor_schema_reviews');
+            echo '<p class="description">' . esc_html__('Uses the Google API key from Anchor Tools Settings.', 'anchor-schema') . '</p>';
+        }, 'anchor_reviews_settings', 'anchor_reviews_main');
+
+        add_settings_field('reviews_place_validation', __('Place Validation', 'anchor-schema'), function(){
+            $opts = $this->get_settings();
+            $name = $opts['reviews_place_name'] ?? '';
+            $url = $opts['reviews_place_url'] ?? '';
+            $validated = $opts['reviews_place_validated'] ?? '';
+            if ( $name ) {
+                echo '<strong>' . esc_html( $name ) . '</strong>';
+                if ( $url ) {
+                    echo ' &mdash; <a href="' . esc_url( $url ) . '" target="_blank" rel="noopener">' . esc_html__( 'View on Google', 'anchor-schema' ) . '</a>';
+                }
+            } else {
+                echo esc_html__( 'Not validated yet. Save settings to validate.', 'anchor-schema' );
+            }
+            if ( $validated ) {
+                echo '<div class="description">' . esc_html__( 'Last validated:', 'anchor-schema' ) . ' ' . esc_html( $validated ) . '</div>';
+            }
+        }, 'anchor_reviews_settings', 'anchor_reviews_main');
 
         add_settings_field('reviews_cache_hours', __('Cache Duration (hours)', 'anchor-schema'), function(){
             $opts = $this->get_settings();
             $val  = isset($opts['reviews_cache_hours']) ? (int) $opts['reviews_cache_hours'] : 24;
             printf('<input type="number" min="1" max="168" name="%s[reviews_cache_hours]" value="%s" class="small-text" />', esc_attr(self::OPTION_KEY), esc_attr($val));
-        }, 'anchor_schema_settings', 'anchor_schema_reviews');
+        }, 'anchor_reviews_settings', 'anchor_reviews_main');
 
         add_settings_field('reviews_last_fetch', __('Last Successful Fetch', 'anchor-schema'), function(){
             $opts = $this->get_settings();
@@ -95,44 +122,81 @@ class Anchor_Schema_Admin {
                 $last = Anchor_Reviews_Manager::get_last_fetch( 'google', $place_id );
             }
             echo $last ? esc_html( $last ) : esc_html__( 'Not yet fetched.', 'anchor-schema' );
-        }, 'anchor_schema_settings', 'anchor_schema_reviews');
+        }, 'anchor_reviews_settings', 'anchor_reviews_main');
 
         add_settings_field('reviews_refresh', __('Manual Refresh', 'anchor-schema'), function(){
             $url = wp_nonce_url( admin_url( 'admin-post.php?action=anchor_reviews_refresh' ), 'anchor_reviews_refresh' );
             echo '<a class="button" href="' . esc_url( $url ) . '">Refresh Reviews</a>';
-        }, 'anchor_schema_settings', 'anchor_schema_reviews');
+        }, 'anchor_reviews_settings', 'anchor_reviews_main');
     }
 
     public function sanitize_settings($input){
-        $out = [];
-        $out['api_key'] = isset($input['api_key']) ? sanitize_text_field($input['api_key']) : '';
-        $out['google_api_key'] = isset($input['google_api_key']) ? sanitize_text_field($input['google_api_key']) : '';
-        $out['model']   = isset($input['model']) ? sanitize_text_field($input['model']) : 'gpt-4o-mini';
-        $out['debug']   = ! empty($input['debug']);
-        $out['reviews_google_place_id'] = isset($input['reviews_google_place_id']) ? sanitize_text_field($input['reviews_google_place_id']) : '';
-        $out['reviews_cache_hours'] = isset($input['reviews_cache_hours']) ? (int) $input['reviews_cache_hours'] : 24;
-        $out['reviews_cache_hours'] = max( 1, min( $out['reviews_cache_hours'], 168 ) );
-        $out['modules'] = [];
-        if ( function_exists('anchor_tools_get_available_modules') ) {
+        $out = $this->get_settings();
+        $option_page = isset( $_POST['option_page'] ) ? sanitize_text_field( $_POST['option_page'] ) : '';
+        $saving_main = ( $option_page === 'anchor_schema_group' );
+        $saving_reviews = ( $option_page === 'anchor_reviews_group' );
+
+        if ( $saving_main || array_key_exists( 'api_key', $input ) ) {
+            $out['api_key'] = isset( $input['api_key'] ) ? sanitize_text_field( $input['api_key'] ) : '';
+        }
+        if ( $saving_main || array_key_exists( 'google_api_key', $input ) ) {
+            $out['google_api_key'] = isset( $input['google_api_key'] ) ? sanitize_text_field( $input['google_api_key'] ) : '';
+        }
+        if ( $saving_main || array_key_exists( 'model', $input ) ) {
+            $out['model'] = isset( $input['model'] ) ? sanitize_text_field( $input['model'] ) : 'gpt-4o-mini';
+        }
+        if ( $saving_main ) {
+            $out['debug'] = ! empty( $input['debug'] );
+        }
+        if ( $saving_reviews || array_key_exists( 'reviews_google_place_id', $input ) ) {
+            $out['reviews_google_place_id'] = isset( $input['reviews_google_place_id'] ) ? sanitize_text_field( $input['reviews_google_place_id'] ) : '';
+        }
+        if ( $saving_reviews || array_key_exists( 'reviews_cache_hours', $input ) ) {
+            $out['reviews_cache_hours'] = isset( $input['reviews_cache_hours'] ) ? (int) $input['reviews_cache_hours'] : 24;
+            $out['reviews_cache_hours'] = max( 1, min( $out['reviews_cache_hours'], 168 ) );
+        }
+        if ( $saving_main && function_exists( 'anchor_tools_get_available_modules' ) ) {
+            $out['modules'] = [];
             foreach ( anchor_tools_get_available_modules() as $module_key => $module ) {
                 $out['modules'][ $module_key ] = ! empty( $input['modules'][ $module_key ] );
             }
         }
-        // Validate place ID format
-        if ( $out['reviews_google_place_id'] && ! preg_match( '/^[A-Za-z0-9_-]{10,}$/', $out['reviews_google_place_id'] ) ) {
-            add_settings_error( 'anchor_schema_settings', 'reviews_place_id', __( 'Google Place ID format looks invalid.', 'anchor-schema' ), 'error' );
-        }
 
-        // Test Google API key on save (and prefetch cache)
-        if ( $out['google_api_key'] && $out['reviews_google_place_id'] && class_exists( 'Anchor_Reviews_Google_Provider' ) ) {
-            $provider = new Anchor_Reviews_Google_Provider();
-            $data = $provider->fetch( $out['reviews_google_place_id'], $out['google_api_key'] );
-            if ( is_wp_error( $data ) ) {
-                add_settings_error( 'anchor_schema_settings', 'reviews_google_api', __( 'Google Reviews fetch failed. Check API key and Place ID.', 'anchor-schema' ), 'error' );
-            } elseif ( class_exists( 'Anchor_Reviews_Manager' ) ) {
-                $hours = max( 1, min( $out['reviews_cache_hours'], 168 ) );
-                Anchor_Reviews_Manager::store_cache( 'google', $out['reviews_google_place_id'], $data, $hours );
-                add_settings_error( 'anchor_schema_settings', 'reviews_google_api', __( 'Google Reviews fetched successfully.', 'anchor-schema' ), 'updated' );
+        $error_group = $saving_reviews ? 'anchor_reviews_settings' : 'anchor_schema_settings';
+
+        if ( $saving_reviews ) {
+            if ( ! $out['reviews_google_place_id'] ) {
+                $out['reviews_place_name'] = '';
+                $out['reviews_place_url'] = '';
+                $out['reviews_place_validated'] = '';
+            } elseif ( ! preg_match( '/^[A-Za-z0-9_-]{10,}$/', $out['reviews_google_place_id'] ) ) {
+                $out['reviews_place_name'] = '';
+                $out['reviews_place_url'] = '';
+                $out['reviews_place_validated'] = '';
+                add_settings_error( $error_group, 'reviews_place_id', __( 'Google Place ID format looks invalid.', 'anchor-schema' ), 'error' );
+            } elseif ( ! $out['google_api_key'] ) {
+                $out['reviews_place_name'] = '';
+                $out['reviews_place_url'] = '';
+                $out['reviews_place_validated'] = '';
+                add_settings_error( $error_group, 'reviews_google_key', __( 'Google API key is missing. Set it in Anchor Tools Settings.', 'anchor-schema' ), 'error' );
+            } elseif ( class_exists( 'Anchor_Reviews_Google_Provider' ) ) {
+                $provider = new Anchor_Reviews_Google_Provider();
+                $data = $provider->fetch( $out['reviews_google_place_id'], $out['google_api_key'] );
+                if ( is_wp_error( $data ) ) {
+                    $out['reviews_place_name'] = '';
+                    $out['reviews_place_url'] = '';
+                    $out['reviews_place_validated'] = '';
+                    add_settings_error( $error_group, 'reviews_google_api', __( 'Place validation failed. Check API key and Place ID.', 'anchor-schema' ), 'error' );
+                } else {
+                    $out['reviews_place_name'] = $data['business_name'] ?? '';
+                    $out['reviews_place_url'] = $data['business_url'] ?? '';
+                    $out['reviews_place_validated'] = current_time( 'mysql' );
+                    if ( class_exists( 'Anchor_Reviews_Manager' ) ) {
+                        $hours = max( 1, min( $out['reviews_cache_hours'], 168 ) );
+                        Anchor_Reviews_Manager::store_cache( 'google', $out['reviews_google_place_id'], $data, $hours );
+                    }
+                    add_settings_error( $error_group, 'reviews_google_api', __( 'Place validated and reviews cached successfully.', 'anchor-schema' ), 'updated' );
+                }
             }
         }
 
@@ -155,6 +219,15 @@ class Anchor_Schema_Admin {
         }
         if ( ! isset( $opts['reviews_cache_hours'] ) ) {
             $opts['reviews_cache_hours'] = 24;
+        }
+        if ( ! isset( $opts['reviews_place_name'] ) ) {
+            $opts['reviews_place_name'] = '';
+        }
+        if ( ! isset( $opts['reviews_place_url'] ) ) {
+            $opts['reviews_place_url'] = '';
+        }
+        if ( ! isset( $opts['reviews_place_validated'] ) ) {
+            $opts['reviews_place_validated'] = '';
         }
         if ( function_exists('anchor_tools_get_available_modules') ) {
             foreach ( anchor_tools_get_available_modules() as $module_key => $module ) {
@@ -204,6 +277,24 @@ class Anchor_Schema_Admin {
         echo '<form method="post" action="options.php">';
         settings_fields('anchor_schema_group');
         do_settings_sections('anchor_schema_settings');
+        submit_button();
+        echo '</form></div>';
+    }
+
+    public function render_reviews_settings_page(){
+        echo '<div class="wrap"><h1>' . esc_html__('Anchor Reviews Settings', 'anchor-schema') . '</h1>';
+        if ( isset( $_GET['anchor_reviews_refresh'] ) ) {
+            $status = sanitize_text_field( $_GET['anchor_reviews_refresh'] );
+            if ( $status === 'success' ) {
+                add_settings_error( 'anchor_reviews_settings', 'reviews_refresh', __( 'Reviews refreshed successfully.', 'anchor-schema' ), 'updated' );
+            } elseif ( $status === 'fail' ) {
+                add_settings_error( 'anchor_reviews_settings', 'reviews_refresh', __( 'Reviews refresh failed. Check API key and Place ID.', 'anchor-schema' ), 'error' );
+            }
+        }
+        settings_errors('anchor_reviews_settings');
+        echo '<form method="post" action="options.php">';
+        settings_fields('anchor_reviews_group');
+        do_settings_sections('anchor_reviews_settings');
         submit_button();
         echo '</form></div>';
     }

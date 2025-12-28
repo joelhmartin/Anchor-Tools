@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.3.5
+ * Version: 3.3.6
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -1928,7 +1928,10 @@ EOT
             $mode = "content";
         }
         if ($mode === "seo_meta") {
-            $paramsBase["prompt"] = $this->default_seo_prompt_template();
+            $prompt = trim((string) ($paramsBase["prompt"] ?? ""));
+            if ($prompt === "") {
+                $paramsBase["prompt"] = $this->default_seo_prompt_template();
+            }
         }
         $schema_type = sanitize_text_field($_POST["schema_type"] ?? "Article");
         $schema_custom = sanitize_text_field($_POST["schema_custom"] ?? "");
@@ -2638,7 +2641,10 @@ EOT
             $mode = "content";
         }
         if ($mode === "seo_meta") {
-            $paramsBase["prompt"] = $this->default_seo_prompt_template();
+            $prompt = trim((string) ($paramsBase["prompt"] ?? ""));
+            if ($prompt === "") {
+                $paramsBase["prompt"] = $this->default_seo_prompt_template();
+            }
         }
         if ($mode === "jsonld") {
             wp_die("JSON-LD mode requires Preview → Review → Apply Approved.");
@@ -2724,7 +2730,10 @@ EOT
             $mode = "content";
         }
         if ($mode === "seo_meta") {
-            $paramsBase["prompt"] = $this->default_seo_prompt_template();
+            $prompt = trim((string) ($paramsBase["prompt"] ?? ""));
+            if ($prompt === "") {
+                $paramsBase["prompt"] = $this->default_seo_prompt_template();
+            }
         }
         if ($mode === "jsonld") {
             wp_die("JSON-LD mode requires Preview → Review → Apply Approved.");

@@ -1,0 +1,30 @@
+.avs-slider {
+  background: #fff;
+  border: 1px solid #ccd0d4;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.avs-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.avs-field-row {
+  margin-bottom: 12px;
+}
+.avs-field-row label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.avs-table th,
+.avs-table td {
+  vertical-align: top;
+}
+.avs-thumb-wrap {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.3.3
+ * Version: 3.3.5
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -314,7 +314,8 @@ EOT
                     <label>
                         <strong>Workflow mode</strong>
                         <select id="ai_bulk_mode">
-                            <option value="content" selected>Bulk Content</option>
+                            <option value="content" selected>ACF Fields</option>
+                            <option value="post_content">Blog Content</option>
                             <option value="seo_meta">Bulk SEO + Meta</option>
                             <option value="jsonld">JSON-LD Schema</option>
                         </select>
@@ -418,7 +419,7 @@ EOT
                     <label><strong>Min text length to rewrite</strong>
                         <input type="number" id="ai_bulk_minlen" value="40" min="0" step="5" style="width:90px;">
                     </label>
-                    <label class="ai-mode-content-only"><input type="checkbox" id="ai_bulk_include_acf" checked> Include ACF fields</label>
+                    <label class="ai-mode-acf-only"><input type="checkbox" id="ai_bulk_include_acf" checked> Include ACF fields</label>
                 </div>
             </div>
 
@@ -501,8 +502,9 @@ EOT
                 </div>
                 <div class="ai-br-actions">
                     <div>
-                        <label><input type="checkbox" id="ai_wizard_toggle_acf" checked> Show ACF fields</label>
-                        <label style="margin-left:10px;"><input type="checkbox" id="ai_wizard_toggle_seo" checked> Show SEO fields</label>
+                        <label class="ai-wizard-acf-only"><input type="checkbox" id="ai_wizard_toggle_acf" checked> Show ACF fields</label>
+                        <label style="margin-left:10px;" class="ai-wizard-content-only"><input type="checkbox" id="ai_wizard_toggle_content" checked> Show Post Content</label>
+                        <label style="margin-left:10px;" class="ai-wizard-seo-only"><input type="checkbox" id="ai_wizard_toggle_seo" checked> Show SEO fields</label>
                     </div>
                     <div>
                         <button class="button button-secondary" id="ai_wizard_prev">Previous</button>
@@ -557,6 +559,8 @@ EOT
                 aiBulkMode = $('#ai_bulk_mode').val() || 'content';
                 const isJson = aiBulkMode === 'jsonld';
                 const isSeo  = aiBulkMode === 'seo_meta';
+                const isContent = aiBulkMode === 'content';
+                const isPost = aiBulkMode === 'post_content';
                 $('.ai-jsonld-only').toggle(isJson);
                 $('#ai_prompt_inputs_card').toggle(!isJson);
                 $('#ai_bulk_apply').prop('disabled', isJson);
@@ -568,7 +572,10 @@ EOT
                 if (!aiPreviewRunId){
                     previewMode = aiBulkMode;
                 }
-                $('.ai-mode-content-only').toggle(!isSeo && !isJson);
+                $('.ai-mode-acf-only').toggle(isContent);
+                $('.ai-wizard-content-only').toggle(isPost);
+                $('.ai-wizard-acf-only').toggle(isContent);
+                $('.ai-wizard-seo-only').toggle(isSeo);
 
                 // Swap prompt to SEO default when switching into SEO mode (if using the base default)
                 const basePrompt = <?php echo json_encode( $this->default_prompt_template() ); ?>;
@@ -810,6 +817,7 @@ EOT
                     return;
                 }
                 const showACF  = (previewMode === 'content') && $('#ai_wizard_toggle_acf').is(':checked');
+                const showContent = (previewMode === 'post_content') && $('#ai_wizard_toggle_content').is(':checked');
                 const showSEO  = (previewMode === 'seo_meta') && $('#ai_wizard_toggle_seo').is(':checked');
 
                 const origWrap = [];
@@ -843,6 +851,7 @@ EOT
                 }
 
                 if (showACF  && data.acf)  data.acf.forEach(a => addRow(a,'acf'));
+                if (showContent && data.content) data.content.forEach(c => addRow(c,'content'));
                 if (showSEO  && data.seo)  data.seo.forEach(s => addRow(s,'seo'));
 
                 $('#ai_wizard_original').html(origWrap.join('') || '<div class="ai-br-small">No items for this filter.</div>');
@@ -896,7 +905,7 @@ EOT
 
             function escapeHtml(s){ return (s||"").toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]||c)); }
 
-            $('#ai_wizard_toggle_acf, #ai_wizard_toggle_seo').on('change', function(){ loadStep(); });
+            $('#ai_wizard_toggle_acf, #ai_wizard_toggle_seo, #ai_wizard_toggle_content').on('change', function(){ loadStep(); });
 
             $('#ai_wizard_approve_all').on('click', function(){
                 const postId = selectedIds[reviewIndex];
@@ -1539,6 +1548,37 @@ EOT
         return [$applied, $errors];
     }
 
+    private function commit_post_content_updates($post_id, $items_to_commit)
+    {
+        $applied = 0;
+        $errors = 0;
+        $this->store_rewrite_snapshot($post_id, $items_to_commit, 'content');
+        $update = [ 'ID' => $post_id ];
+        $count = 0;
+        foreach ($items_to_commit as $item) {
+            $type = $item['type'] ?? 'post_content';
+            $new_val = (string) ($item["new_html"] ?? "");
+            $new_val = wp_kses_post($new_val);
+            if ($type === 'post_excerpt') {
+                $update['post_excerpt'] = $new_val;
+                $count++;
+            } else {
+                $update['post_content'] = $new_val;
+                $count++;
+            }
+        }
+        if ($count === 0) {
+            return [0, count($items_to_commit)];
+        }
+        $result = wp_update_post($update, true);
+        if (is_wp_error($result)) {
+            $errors += $count;
+        } else {
+            $applied += $count;
+        }
+        return [$applied, $errors];
+    }
+
     private function store_rewrite_snapshot($post_id, $items, $type)
     {
         if (empty($items)) {
@@ -1568,6 +1608,12 @@ EOT
                 $entry['items'][] = [
                     'meta_key' => $item['meta_key'] ?? '',
                     'label' => $item['label'] ?? '',
+                    'old_value' => $old_val,
+                ];
+            } elseif ($type === 'content') {
+                $entry['items'][] = [
+                    'label' => $item['label'] ?? 'Post Content',
+                    'field_type' => $item['type'] ?? 'post_content',
                     'old_value' => $old_val,
                 ];
             } else {
@@ -1877,7 +1923,7 @@ EOT
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
         $incACF = intval($_POST["include_acf"] ?? 1);
         $mode = sanitize_text_field($_POST["mode"] ?? "content");
-        $allowed_modes = ["content", "seo_meta", "jsonld"];
+        $allowed_modes = ["content", "post_content", "seo_meta", "jsonld"];
         if (!in_array($mode, $allowed_modes, true)) {
             $mode = "content";
         }
@@ -1914,6 +1960,7 @@ EOT
                 "title" => get_the_title($post_id),
                 "mode" => $mode,
                 "acf" => [],
+                "content" => [],
                 "seo" => [],
                 "jsonld" => [],
             ];
@@ -1981,6 +2028,69 @@ EOT
                         "new_html" => $rw,
                         "type" => $f["type"],
                     ];
+                }
+            } elseif ($mode === "post_content") {
+                $raw = (string) $post->post_content;
+                $plain = trim(wp_strip_all_tags($raw));
+                if (strlen($plain) < $minlen) {
+                    $log_message = "[$post_id] “" . $entry["title"] . "” — Post content below min length.";
+                    $log[] = $log_message;
+                } elseif ($this->has_structured_layout_markup($raw)) {
+                    $log_message = "[$post_id] “" . $entry["title"] . "” — Skipped post content due to layout markup.";
+                    $log[] = $log_message;
+                } else {
+                    [$clean, $map] = $this->protect_shortcodes($raw);
+                    $shortcodes_list = $this->build_shortcodes_list($map);
+                    $rewrite_params = array_merge($paramsBase, [
+                        "output_mode" => "HTML_FRAGMENT",
+                        "field_label" => "Post Content",
+                        "field_type" => "post_content",
+                        "shortcodes_list" => $shortcodes_list,
+                    ]);
+                    $rw = $this->rewrite_html_text_nodes($clean, $api_key, $rewrite_params, 40);
+                    if (is_wp_error($rw)) {
+                        $log_message = "[$post_id] “" . $entry["title"] . "” — Skipped post content: " . $rw->get_error_message();
+                        $log[] = $log_message;
+                    } else {
+                        $rw = $this->restore_shortcodes($rw, $map);
+                        $entry["content"][] = [
+                            "id" => "post_content",
+                            "label" => "Post Content",
+                            "orig_html" => $raw,
+                            "new_html" => $rw,
+                            "type" => "post_content",
+                        ];
+                    }
+                }
+
+                $excerpt = (string) $post->post_excerpt;
+                $excerpt_plain = trim(wp_strip_all_tags($excerpt));
+                if ($excerpt_plain !== '' && strlen($excerpt_plain) >= $minlen) {
+                    [$clean_ex, $map_ex] = $this->protect_shortcodes($excerpt);
+                    $shortcodes_list_ex = $this->build_shortcodes_list($map_ex);
+                    $rewrite_params_ex = array_merge($paramsBase, [
+                        "output_mode" => "TEXT_ONLY",
+                        "field_label" => "Post Excerpt",
+                        "field_type" => "post_excerpt",
+                        "shortcodes_list" => $shortcodes_list_ex,
+                    ]);
+                    $rw_ex = $this->call_openai($api_key, $clean_ex, $rewrite_params_ex);
+                    if (is_wp_error($rw_ex)) {
+                        $log_message = "[$post_id] “" . $entry["title"] . "” — Skipped post excerpt: " . $rw_ex->get_error_message();
+                        $log[] = $log_message;
+                    } else {
+                        $rw_ex = $this->restore_shortcodes($rw_ex, $map_ex);
+                        $entry["content"][] = [
+                            "id" => "post_excerpt",
+                            "label" => "Post Excerpt",
+                            "orig_html" => $excerpt,
+                            "new_html" => $rw_ex,
+                            "type" => "post_excerpt",
+                        ];
+                    }
+                } elseif ($excerpt_plain !== '') {
+                    $log_message = "[$post_id] “" . $entry["title"] . "” — Post excerpt below min length.";
+                    $log[] = $log_message;
                 }
             } else {
                 // ACF
@@ -2089,6 +2199,15 @@ EOT
                     ],
                     $entry["acf"] ?? []
                 ),
+                "content" => array_map(
+                    fn($c) => [
+                        "id" => $c["id"],
+                        "label" => $c["label"],
+                        "orig_html" => $c["orig_html"],
+                        "new_html" => $c["new_html"],
+                    ],
+                    $entry["content"] ?? []
+                ),
                 "seo" => array_map(
                     fn($s) => [
                         "id" => $s["id"],
@@ -2165,6 +2284,8 @@ EOT
             $idset = array_flip((array) $ids);
             $acfApplied = 0;
             $acfErrors = 0;
+            $contentApplied = 0;
+            $contentErrors = 0;
             $seoApplied = 0;
             $seoErrors = 0;
             $schemaApplied = 0;
@@ -2187,6 +2308,22 @@ EOT
             // --- Commit them all at once ---
             if (!empty($items_to_commit)) {
                 list($acfApplied, $acfErrors) = $this->commit_acf_updates($post_id, $items_to_commit);
+            }
+
+            // Post content
+            $content_items_to_commit = [];
+            if (!empty($entry["content"])) {
+                foreach ($entry["content"] as $c) {
+                    if (isset($idset[$c["id"]])) {
+                        if (isset($overrides[$post_id][$c["id"]])) {
+                            $c["new_html"] = wp_kses_post((string) $overrides[$post_id][$c["id"]]);
+                        }
+                        $content_items_to_commit[] = $c;
+                    }
+                }
+            }
+            if ($entry_mode === "post_content" && !empty($content_items_to_commit)) {
+                list($contentApplied, $contentErrors) = $this->commit_post_content_updates($post_id, $content_items_to_commit);
             }
 
             // SEO (Yoast)
@@ -2248,7 +2385,7 @@ EOT
             $log_message =
                 "[$post_id] “" .
                 ($entry["title"] ?? get_the_title($post_id)) .
-                "” — Applied ACF: $acfApplied (Errors: $acfErrors), SEO: $seoApplied (Errors: $seoErrors), Schema: $schemaApplied";
+                "” — Applied ACF: $acfApplied (Errors: $acfErrors), Content: $contentApplied (Errors: $contentErrors), SEO: $seoApplied (Errors: $seoErrors), Schema: $schemaApplied";
                 
             $log[] = $log_message;
             error_log("AI Bulk Rewriter (Apply Approved): " . $log_message); // Kinsta Log
@@ -2300,6 +2437,80 @@ EOT
                     list($seoApplied, $seoErrors) = $this->commit_seo_updates($post_id, $items_to_commit);
                     $acfUpdated += $seoApplied;
                     $acfErr += $seoErrors;
+                }
+            } elseif ($mode === "post_content") {
+                $items_to_commit = [];
+                $raw = (string) $post->post_content;
+                $plain = trim(wp_strip_all_tags($raw));
+                if (strlen($plain) < $minlen) {
+                    $log_message = "[$post_id] “" . get_the_title($post_id) . "” — Post content below min length.";
+                    $log[] = $log_message;
+                } elseif ($this->has_structured_layout_markup($raw)) {
+                    $log_message = "[$post_id] “" . get_the_title($post_id) . "” — Skipped post content due to layout markup.";
+                    $log[] = $log_message;
+                } else {
+                    [$clean, $map] = $this->protect_shortcodes($raw);
+                    $shortcodes_list = $this->build_shortcodes_list($map);
+                    $rewrite_params = array_merge($paramsBase, [
+                        "output_mode" => "HTML_FRAGMENT",
+                        "field_label" => "Post Content",
+                        "field_type" => "post_content",
+                        "shortcodes_list" => $shortcodes_list,
+                    ]);
+
+                    $rw = $this->rewrite_html_text_nodes($clean, $api_key, $rewrite_params, 40);
+                    if (is_wp_error($rw)) {
+                        $acfErr++;
+                        $log_message = "[$post_id] “" . get_the_title($post_id) . "” — Skipped post content: " . $rw->get_error_message();
+                        $log[] = $log_message;
+                    } else {
+                        $rw = $this->restore_shortcodes($rw, $map);
+                        $items_to_commit[] = [
+                            "id" => "post_content",
+                            "label" => "Post Content",
+                            "orig_html" => $raw,
+                            "new_html" => $rw,
+                            "type" => "post_content",
+                        ];
+                    }
+                }
+
+                $excerpt = (string) $post->post_excerpt;
+                $excerpt_plain = trim(wp_strip_all_tags($excerpt));
+                if ($excerpt_plain !== '' && strlen($excerpt_plain) >= $minlen) {
+                    [$clean_ex, $map_ex] = $this->protect_shortcodes($excerpt);
+                    $shortcodes_list_ex = $this->build_shortcodes_list($map_ex);
+                    $rewrite_params_ex = array_merge($paramsBase, [
+                        "output_mode" => "TEXT_ONLY",
+                        "field_label" => "Post Excerpt",
+                        "field_type" => "post_excerpt",
+                        "shortcodes_list" => $shortcodes_list_ex,
+                    ]);
+
+                    $rw_ex = $this->call_openai($api_key, $clean_ex, $rewrite_params_ex);
+                    if (is_wp_error($rw_ex)) {
+                        $acfErr++;
+                        $log_message = "[$post_id] “" . get_the_title($post_id) . "” — Skipped post excerpt: " . $rw_ex->get_error_message();
+                        $log[] = $log_message;
+                    } else {
+                        $rw_ex = $this->restore_shortcodes($rw_ex, $map_ex);
+                        $items_to_commit[] = [
+                            "id" => "post_excerpt",
+                            "label" => "Post Excerpt",
+                            "orig_html" => $excerpt,
+                            "new_html" => $rw_ex,
+                            "type" => "post_excerpt",
+                        ];
+                    }
+                } elseif ($excerpt_plain !== '') {
+                    $log_message = "[$post_id] “" . get_the_title($post_id) . "” — Post excerpt below min length.";
+                    $log[] = $log_message;
+                }
+
+                if (!empty($items_to_commit)) {
+                    list($contentApplied, $contentErrors) = $this->commit_post_content_updates($post_id, $items_to_commit);
+                    $acfUpdated += $contentApplied;
+                    $acfErr += $contentErrors;
                 }
             } else {
                 // --- ACF LOGIC (Direct Apply) ---
@@ -2422,7 +2633,7 @@ EOT
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
         $incACF = intval($_POST["include_acf"] ?? 1);
         $mode = sanitize_text_field($_POST["mode"] ?? "content");
-        $allowed_modes = ["content", "seo_meta", "jsonld"];
+        $allowed_modes = ["content", "post_content", "seo_meta", "jsonld"];
         if (!in_array($mode, $allowed_modes, true)) {
             $mode = "content";
         }
@@ -2508,7 +2719,7 @@ EOT
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
         $incACF = intval($_POST["include_acf"] ?? 1);
         $mode = sanitize_text_field($_POST["mode"] ?? "content");
-        $allowed_modes = ["content", "seo_meta", "jsonld"];
+        $allowed_modes = ["content", "post_content", "seo_meta", "jsonld"];
         if (!in_array($mode, $allowed_modes, true)) {
             $mode = "content";
         }
@@ -2562,6 +2773,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Manage general business info + custom shortcodes.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-shortcodes/anchor-shortcodes.php',
                 'class'       => 'Anchor_Shortcodes_Module',
+            ],
+            'video_slider' => [
+                'label'       => __( 'Anchor Video Slider', 'anchor-schema' ),
+                'description' => __( 'Display a horizontal video slider with popup playback.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/anchor-video-slider.php',
+                'class'       => 'Anchor_Video_Slider_Module',
             ],
         ];
     }

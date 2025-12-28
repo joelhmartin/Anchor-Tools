@@ -1,0 +1,109 @@
+.anchor-video-slider {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 8px 0;
+}
+.anchor-video-track {
+  display: flex;
+  gap: 16px;
+  scroll-snap-type: x mandatory;
+}
+.anchor-video-tile {
+  position: relative;
+  border: 0;
+  padding: 0;
+  background: #0f172a;
+  color: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+  min-width: 260px;
+  max-width: 320px;
+  width: 70vw;
+  scroll-snap-align: start;
+  cursor: pointer;
+}
+.anchor-video-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: linear-gradient(135deg, #0f172a, #1f2937);
+  background-size: cover;
+  background-position: center;
+}
+.anchor-video-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  color: #fff;
+  text-shadow: 0 6px 18px rgba(0,0,0,0.5);
+}
+.anchor-video-label {
+  display: block;
+  padding: 8px 12px 12px;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: #e2e8f0;
+}
+
+@media (min-width: 900px) {
+  .anchor-video-tile {
+    width: 280px;
+  }
+}
+
+/* Fallback modal styling if Universal Popups CSS is not loaded */
+.anchor-video-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+}
+.anchor-video-modal[hidden] {
+  display: none;
+}
+.anchor-video-modal .up-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.8);
+}
+.anchor-video-modal .up-modal__dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(960px, 92vw);
+  max-height: min(90vh, 860px);
+  margin: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.45);
+}
+.anchor-video-modal .up-modal__frame {
+  aspect-ratio: 16 / 9;
+  flex: 0 0 auto;
+  background: #000;
+}
+.anchor-video-modal .up-modal__frame,
+.anchor-video-modal .up-modal__frame iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+}
+.anchor-video-modal .up-modal__close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 34px;
+  line-height: 1;
+  color: #fff;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  z-index: 10;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.6);
+}

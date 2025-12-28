@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.3.2
+ * Version: 3.3.3
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -144,6 +144,9 @@ class AI_ACF_Bulk_Rewriter_Wizard
             "ajax_bulk_apply_approved",
         ]);
         add_action("wp_ajax_ai_br_bulk_apply", [$this, "ajax_bulk_apply"]);
+        add_action("wp_ajax_ai_br_bulk_queue", [$this, "ajax_bulk_queue"]);
+        add_action("wp_ajax_ai_br_queue_status", [$this, "ajax_bulk_queue_status"]);
+        add_action("anchor_tools_bulk_rewrite_process", [$this, "process_bulk_queue"], 10, 1);
     }
 
     /* ---------------- Menus & Settings ---------------- */
@@ -460,6 +463,7 @@ EOT
                     <button class="button" id="ai_bulk_preview">Preview Selected</button>
                     <button class="button button-secondary" id="ai_bulk_review" disabled>Review & Approve (Wizard)</button>
                     <button class="button button-primary" id="ai_bulk_apply">Apply Selected (Skip Preview)</button>
+                    <button class="button" id="ai_bulk_queue">Queue Selected (Background)</button>
                     <span id="ai_jsonld_direct_notice" class="ai-br-small" style="display:none;">JSON-LD mode requires Preview → Review → Apply.</span>
                     <div style="flex:1;"></div>
                     <div style="min-width:320px;">
@@ -521,6 +525,9 @@ EOT
             let reviewIndex = 0;
             const approvals = {}; // { post_id: Set(entry_id) }
             const overrides = {}; // { post_id: { itemId: value } }
+            let queueRunId = null;
+            let queueTimer = null;
+            const hasScheduler = <?php echo function_exists('as_enqueue_async_action') ? 'true' : 'false'; ?>;
 
             $('#ai_bulk_select_all').on('change', function(){ $('.ai_bulk_row').prop('checked', $(this).is(':checked')); });
 
@@ -553,6 +560,7 @@ EOT
                 $('.ai-jsonld-only').toggle(isJson);
                 $('#ai_prompt_inputs_card').toggle(!isJson);
                 $('#ai_bulk_apply').prop('disabled', isJson);
+                $('#ai_bulk_queue').prop('disabled', isJson || !hasScheduler);
                 $('#ai_jsonld_direct_notice').toggle(isJson);
                 if (isJson){
                     $('#ai_bulk_optimize').prop('checked', false);
@@ -644,6 +652,10 @@ EOT
                 runPreviewBatches(selectedIds);
             });
 
+            if (!hasScheduler) {
+                $('#ai_bulk_queue').attr('title', 'Action Scheduler not available.');
+            }
+
             // Direct apply (skip preview/wizard)
             $('#ai_bulk_apply').on('click', function(){
                 if (aiBulkMode === 'jsonld') {
@@ -689,6 +701,69 @@ EOT
                     });
                 }
                 next();
+            });
+
+            function startQueuePolling(runId){
+                queueRunId = runId;
+                if (queueTimer) { clearInterval(queueTimer); }
+                queueTimer = setInterval(function(){
+                    $.post(ajaxurlWP, { action:'ai_br_queue_status', run_id: queueRunId, <?php echo esc_js(
+                        $this->nonce_name
+                    ); ?>: nonce }, function(resp){
+                        let data = resp;
+                        if (typeof resp === 'string') { try { data = JSON.parse(resp); } catch(e) { data = null; } }
+                        if (!data) { return; }
+                        updateBar(data.processed || 0, data.total || 0);
+                        $('#ai_bulk_status').text((data.status || 'running') + ' — ' + (data.processed || 0) + ' / ' + (data.total || 0) + ' processed');
+                        if (data.status === 'completed') {
+                            clearInterval(queueTimer);
+                            queueTimer = null;
+                            logLine('Background run completed. Errors: ' + (data.errors || 0));
+                        }
+                    });
+                }, 3000);
+            }
+
+            // Queue apply (background)
+            $('#ai_bulk_queue').on('click', function(){
+                if (aiBulkMode === 'jsonld') {
+                    alert('JSON-LD mode requires Preview → Review → Apply Approved.');
+                    return;
+                }
+                const ids = gatherSelectedIds();
+                if (!ids.length) { alert('Select at least one post.'); return; }
+                if (!confirm('Queue rewrites in the background for selected posts?')) return;
+
+                const payloadBase = {
+                    keywords: $('#ai_bulk_keywords').val() || '',
+                    optimize: $('#ai_bulk_optimize').is(':checked') ? 1 : 0,
+                    doctor:   $('#ai_bulk_doctor').val() || '',
+                    business: $('#ai_bulk_business').val() || '',
+                    location: $('#ai_bulk_location').val() || '',
+                    prompt:   $('#ai_bulk_prompt').val() || '',
+                    minlen:   parseInt($('#ai_bulk_minlen').val(), 10) || 0,
+                    include_acf:  $('#ai_bulk_include_acf').is(':checked') ? 1 : 0,
+                    mode: aiBulkMode,
+                    batch_size: parseInt($('#ai_bulk_batch').val(), 10) || 5,
+                };
+                $('#ai_bulk_log_pre').text('');
+                updateBar(0, ids.length);
+                $('#ai_bulk_status').text('Queueing background run...');
+
+                $.post(ajaxurlWP, { action:'ai_br_bulk_queue', ids: ids, <?php echo esc_js(
+                    $this->nonce_name
+                ); ?>: nonce, ...payloadBase }, function(resp){
+                    let data = resp;
+                    if (typeof resp === 'string') { try { data = JSON.parse(resp); } catch(e) { data = null; } }
+                    if (!data || !data.run_id) {
+                        logLine(resp || 'Queue failed.');
+                        return;
+                    }
+                    logLine('Background run queued. Run ID: ' + data.run_id + '.');
+                    startQueuePolling(data.run_id);
+                }).fail(function(xhr){
+                    logLine('Queue failed: ' + (xhr && xhr.responseText ? xhr.responseText : 'unknown error'));
+                });
             });
 
             /* ---------- Review Wizard ---------- */
@@ -1269,6 +1344,96 @@ EOT
         return implode("\n- ", $shortcodes);
     }
 
+    private function has_structured_layout_markup($text)
+    {
+        if (!is_string($text) || $text === "") {
+            return false;
+        }
+        if (preg_match('/\\[et_pb_[^\\]]+\\]/i', $text)) {
+            return true;
+        }
+        if (preg_match('/<!--\\s*wp:[^\\s>]+/i', $text)) {
+            return true;
+        }
+        return false;
+    }
+
+    private function get_dom_inner_html($node)
+    {
+        $html = '';
+        if (!$node || !$node->hasChildNodes()) {
+            return $html;
+        }
+        foreach ($node->childNodes as $child) {
+            $html .= $node->ownerDocument->saveHTML($child);
+        }
+        return $html;
+    }
+
+    private function rewrite_html_text_nodes($html, $api_key, $params, $node_limit = 20)
+    {
+        if (!is_string($html) || trim($html) === '') {
+            return $html;
+        }
+
+        $original = $html;
+        if (!class_exists('DOMDocument')) {
+            return new WP_Error('anchor_html_dom', 'DOMDocument is not available.');
+        }
+        libxml_use_internal_errors(true);
+        $doc = new DOMDocument();
+        $wrapped = '<div id="anchor-rewrite-root">' . $html . '</div>';
+        $encoded = function_exists('mb_convert_encoding')
+            ? mb_convert_encoding($wrapped, 'HTML-ENTITIES', 'UTF-8')
+            : $wrapped;
+        $loaded = $doc->loadHTML($encoded, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+        if (!$loaded) {
+            libxml_clear_errors();
+            return new WP_Error('anchor_html_parse', 'Failed to parse HTML content.');
+        }
+
+        $xpath = new DOMXPath($doc);
+        $nodes = $xpath->query('//div[@id="anchor-rewrite-root"]//text()[normalize-space(.) != ""]');
+        if (!$nodes || $nodes->length === 0) {
+            libxml_clear_errors();
+            return $original;
+        }
+        if ($nodes->length > $node_limit) {
+            libxml_clear_errors();
+            return new WP_Error('anchor_html_nodes', 'Too many text nodes to safely rewrite.');
+        }
+
+        foreach ($nodes as $node) {
+            $parent = $node->parentNode ? strtolower($node->parentNode->nodeName) : '';
+            if (in_array($parent, ['script', 'style', 'pre', 'code', 'textarea'], true)) {
+                continue;
+            }
+            $text = trim($node->nodeValue);
+            if ($text === '') {
+                continue;
+            }
+            if (strpos($text, '%%SHORTCODE_') !== false) {
+                continue;
+            }
+
+            $rw = $this->call_openai($api_key, $text, array_merge($params, [
+                'output_mode' => 'TEXT_ONLY',
+                'field_label' => $params['field_label'] ?? '',
+                'field_type' => $params['field_type'] ?? '',
+            ]));
+            if (is_wp_error($rw)) {
+                libxml_clear_errors();
+                return $rw;
+            }
+            $node->nodeValue = $rw;
+        }
+
+        $root = $doc->getElementById('anchor-rewrite-root');
+        $result = $root ? $this->get_dom_inner_html($root) : $original;
+        libxml_clear_errors();
+        return $result;
+    }
+
     private function str_replace_once($search, $replace, $subject)
     {
         $pos = strpos($subject, $search);
@@ -1293,6 +1458,7 @@ EOT
 
         $applied = 0;
         $errors = 0;
+        $this->store_rewrite_snapshot($post_id, $items_to_commit, 'acf');
 
         foreach ($items_to_commit as $item) {
             $ok = false;
@@ -1350,6 +1516,7 @@ EOT
     {
         $applied = 0;
         $errors = 0;
+        $this->store_rewrite_snapshot($post_id, $items_to_commit, 'seo');
         foreach ($items_to_commit as $item) {
             $key = $item["meta_key"] ?? "";
             if (!$key) {
@@ -1370,6 +1537,54 @@ EOT
             }
         }
         return [$applied, $errors];
+    }
+
+    private function store_rewrite_snapshot($post_id, $items, $type)
+    {
+        if (empty($items)) {
+            return;
+        }
+
+        $snapshots = get_post_meta($post_id, '_anchor_rewrite_snapshots', true);
+        if (!is_array($snapshots)) {
+            $snapshots = [];
+        }
+
+        $entry = [
+            'timestamp' => current_time('mysql'),
+            'type' => $type,
+            'items' => [],
+        ];
+
+        foreach ($items as $item) {
+            $old_val = '';
+            if (isset($item['orig_html'])) {
+                $old_val = (string) $item['orig_html'];
+            } elseif (isset($item['value'])) {
+                $old_val = (string) $item['value'];
+            }
+
+            if ($type === 'seo') {
+                $entry['items'][] = [
+                    'meta_key' => $item['meta_key'] ?? '',
+                    'label' => $item['label'] ?? '',
+                    'old_value' => $old_val,
+                ];
+            } else {
+                $entry['items'][] = [
+                    'field_key' => $item['key'] ?? '',
+                    'path_names' => $item['path_names'] ?? [],
+                    'label' => $item['label'] ?? '',
+                    'old_value' => $old_val,
+                ];
+            }
+        }
+
+        $snapshots[] = $entry;
+        if (count($snapshots) > 10) {
+            $snapshots = array_slice($snapshots, -10);
+        }
+        update_post_meta($post_id, '_anchor_rewrite_snapshots', $snapshots);
     }
 
 
@@ -1591,6 +1806,49 @@ EOT
         return trim($key);
     }
 
+    private function get_bulk_queue_state()
+    {
+        $state = get_option('_anchor_bulk_queue_state', []);
+        return is_array($state) ? $state : [];
+    }
+
+    private function set_bulk_queue_state($state)
+    {
+        update_option('_anchor_bulk_queue_state', $state, false);
+    }
+
+    private function init_bulk_queue($run_id, $total, $mode)
+    {
+        $state = $this->get_bulk_queue_state();
+        $state[$run_id] = [
+            'total' => (int) $total,
+            'processed' => 0,
+            'errors' => 0,
+            'status' => 'queued',
+            'mode' => $mode,
+            'started' => current_time('mysql'),
+            'updated' => current_time('mysql'),
+        ];
+        $this->set_bulk_queue_state($state);
+    }
+
+    private function bump_bulk_queue($run_id, $processed_inc, $errors_inc)
+    {
+        $state = $this->get_bulk_queue_state();
+        if (!isset($state[$run_id])) {
+            return;
+        }
+        $state[$run_id]['processed'] += (int) $processed_inc;
+        $state[$run_id]['errors'] += (int) $errors_inc;
+        $state[$run_id]['updated'] = current_time('mysql');
+        if ($state[$run_id]['processed'] >= $state[$run_id]['total']) {
+            $state[$run_id]['status'] = 'completed';
+        } else {
+            $state[$run_id]['status'] = 'running';
+        }
+        $this->set_bulk_queue_state($state);
+    }
+
     /* ---------------- AJAX: PREVIEW (stage) ---------------- */
 
     public function ajax_bulk_preview()
@@ -1739,19 +1997,30 @@ EOT
                                 ? "HTML_FRAGMENT"
                                 : "TEXT_ONLY";
 
+                        if ($this->has_structured_layout_markup($f["value"])) {
+                            $log_message = "[$post_id] “" . $entry["title"] . "” — Skipped ACF field (“" . $f["label"] . "”) due to layout markup.";
+                            $log[] = $log_message;
+                            continue;
+                        }
+
                         [$clean, $map] = $this->protect_shortcodes($f["value"]);
                         $shortcodes_list = $this->build_shortcodes_list($map);
-                        $rw = $this->call_openai(
-                            $api_key,
-                            $clean,
-                            array_merge($paramsBase, [
-                                "output_mode" => $field_mode,
-                                "field_label" => $f["label"],
-                                "field_type" => "acf_" . $f["type"],
-                                "shortcodes_list" => $shortcodes_list,
-                            ])
-                        );
+
+                        $rewrite_params = array_merge($paramsBase, [
+                            "output_mode" => $field_mode,
+                            "field_label" => $f["label"],
+                            "field_type" => "acf_" . $f["type"],
+                            "shortcodes_list" => $shortcodes_list,
+                        ]);
+
+                        if ($f["type"] === "wysiwyg") {
+                            $rw = $this->rewrite_html_text_nodes($clean, $api_key, $rewrite_params);
+                        } else {
+                            $rw = $this->call_openai($api_key, $clean, $rewrite_params);
+                        }
                         if (is_wp_error($rw)) {
+                            $log_message = "[$post_id] “" . $entry["title"] . "” — Skipped ACF field (“" . $f["label"] . "”): " . $rw->get_error_message();
+                            $log[] = $log_message;
                             continue;
                         }
                         $rw = $this->restore_shortcodes($rw, $map);
@@ -1989,6 +2258,228 @@ EOT
         wp_die(implode("\n", $log));
     }
 
+    private function run_bulk_apply_for_ids($ids, $api_key, $paramsBase, $minlen, $incACF, $mode)
+    {
+        $log = [];
+        $stats = [
+            'processed' => 0,
+            'errors' => 0,
+        ];
+
+        foreach ($ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) {
+                $log_message = "[$post_id] Invalid post.";
+                $log[] = $log_message;
+                error_log("AI Bulk Rewriter (Direct Apply Error): " . $log_message);
+                $stats['processed']++;
+                continue;
+            }
+
+            $acfUpdated = $acfErr = 0;
+
+            if ($mode === "seo_meta") {
+                $items_to_commit = [];
+                $yoast_items = $this->get_yoast_fields($post_id);
+                foreach ($yoast_items as $f) {
+                    [$clean, $map] = $this->protect_yoast_vars($f["value"]);
+                    $rw = $this->call_openai($api_key, $clean, array_merge($paramsBase, [
+                        "output_mode" => "TEXT_ONLY",
+                        "field_label" => $f["label"],
+                        "field_type" => $f["type"],
+                    ]));
+                    if (is_wp_error($rw)) { $acfErr++; continue; }
+                    $rw = $this->restore_yoast_vars($rw, $map);
+                    $rw = $this->normalize_seo_output($rw, $f["type"]);
+                    if (trim($rw) === '') {
+                        $rw = $f["value"];
+                    }
+                    $items_to_commit[] = array_merge($f, ["new_html" => $rw]);
+                }
+                if (!empty($items_to_commit)) {
+                    list($seoApplied, $seoErrors) = $this->commit_seo_updates($post_id, $items_to_commit);
+                    $acfUpdated += $seoApplied;
+                    $acfErr += $seoErrors;
+                }
+            } else {
+                // --- ACF LOGIC (Direct Apply) ---
+                if ($incACF && function_exists("get_field_object")) {
+                    $items_to_commit = [];
+                    $acf_items = $this->get_acf_fields($post_id);
+
+                    foreach ($acf_items as $f) {
+                        if ($f["len"] < $minlen) { continue; }
+
+                        $out_mode = ($f["type"] === "wysiwyg") ? "HTML_FRAGMENT" : "TEXT_ONLY";
+                        if ($this->has_structured_layout_markup($f["value"])) {
+                            $log_message = "[$post_id] “" . get_the_title($post_id) . "” — Skipped ACF field (“" . $f["label"] . "”) due to layout markup.";
+                            $log[] = $log_message;
+                            continue;
+                        }
+                        [$clean, $map] = $this->protect_shortcodes($f["value"]);
+                        $shortcodes_list = $this->build_shortcodes_list($map);
+
+                        $rewrite_params = array_merge($paramsBase, [
+                            "output_mode" => $out_mode,
+                            "field_label" => $f["label"],
+                            "field_type" => "acf_" . $f["type"],
+                            "shortcodes_list" => $shortcodes_list,
+                        ]);
+
+                        if ($f["type"] === "wysiwyg") {
+                            $rw = $this->rewrite_html_text_nodes($clean, $api_key, $rewrite_params);
+                        } else {
+                            $rw = $this->call_openai($api_key, $clean, $rewrite_params);
+                        }
+
+                        if (is_wp_error($rw)) {
+                            $acfErr++;
+                            $log_message = "[$post_id] “" . get_the_title($post_id) . "” — Skipped ACF field (“" . $f["label"] . "”): " . $rw->get_error_message();
+                            $log[] = $log_message;
+                            continue;
+                        }
+
+                        $rw = $this->restore_shortcodes($rw, $map);
+
+                        $f['new_html'] = $rw;
+                        $items_to_commit[] = $f;
+                    }
+
+                    if (!empty($items_to_commit)) {
+                        list($acfUpdated, $saveErrors) = $this->commit_acf_updates($post_id, $items_to_commit);
+                        $acfErr += $saveErrors;
+                    }
+                }
+            }
+
+            $log_message =
+                "[$post_id] “" .
+                get_the_title($post_id) .
+                "” — Updated: $acfUpdated (errors $acfErr)";
+            $log[] = $log_message;
+            error_log("AI Bulk Rewriter (Direct Apply): " . $log_message);
+            $stats['processed']++;
+            $stats['errors'] += $acfErr;
+        }
+
+        return [$log, $stats];
+    }
+
+    public function process_bulk_queue($payload)
+    {
+        $run_id = isset($payload['run_id']) ? sanitize_text_field($payload['run_id']) : '';
+        $ids = isset($payload['ids']) ? array_map('intval', (array) $payload['ids']) : [];
+        if (!$run_id || empty($ids)) {
+            return;
+        }
+
+        $api_key = $this->get_openai_key();
+        if (!$api_key) {
+            $this->bump_bulk_queue($run_id, count($ids), count($ids));
+            return;
+        }
+
+        $paramsBase = isset($payload['params']) && is_array($payload['params']) ? $payload['params'] : [];
+        $minlen = isset($payload['minlen']) ? (int) $payload['minlen'] : 0;
+        $incACF = isset($payload['incACF']) ? (int) $payload['incACF'] : 1;
+        $mode = isset($payload['mode']) ? sanitize_text_field($payload['mode']) : 'content';
+
+        list($log, $stats) = $this->run_bulk_apply_for_ids($ids, $api_key, $paramsBase, $minlen, $incACF, $mode);
+        $this->bump_bulk_queue($run_id, $stats['processed'], $stats['errors']);
+    }
+
+    public function ajax_bulk_queue()
+    {
+        if (!current_user_can("manage_options")) {
+            wp_die("Unauthorized");
+        }
+        check_ajax_referer($this->nonce_action, $this->nonce_name);
+
+        if (!function_exists('as_enqueue_async_action')) {
+            wp_die("Action Scheduler not available.");
+        }
+
+        $api_key = $this->get_openai_key();
+        if (!$api_key) {
+            wp_die("OpenAI key not set.");
+        }
+
+        $ids = isset($_POST["ids"])
+            ? array_map("intval", (array) $_POST["ids"])
+            : [];
+        if (empty($ids)) {
+            wp_die("No posts selected.");
+        }
+
+        $paramsBase = [
+            "keywords" => sanitize_text_field($_POST["keywords"] ?? ""),
+            "optimize" => intval($_POST["optimize"] ?? 0),
+            "doctor" => sanitize_text_field($_POST["doctor"] ?? ""),
+            "business" => sanitize_text_field($_POST["business"] ?? ""),
+            "location" => sanitize_text_field($_POST["location"] ?? ""),
+            "prompt" => wp_kses_post(stripslashes($_POST["prompt"] ?? "")),
+        ];
+        $minlen = max(0, intval($_POST["minlen"] ?? 0));
+        $incACF = intval($_POST["include_acf"] ?? 1);
+        $mode = sanitize_text_field($_POST["mode"] ?? "content");
+        $allowed_modes = ["content", "seo_meta", "jsonld"];
+        if (!in_array($mode, $allowed_modes, true)) {
+            $mode = "content";
+        }
+        if ($mode === "seo_meta") {
+            $paramsBase["prompt"] = $this->default_seo_prompt_template();
+        }
+        if ($mode === "jsonld") {
+            wp_die("JSON-LD mode requires Preview → Review → Apply Approved.");
+        }
+
+        $batch_size = intval($_POST["batch_size"] ?? 5);
+        $batch_size = max(1, min(10, $batch_size));
+
+        $run_id = "ai_br_queue_" . wp_generate_password(12, false);
+        $this->init_bulk_queue($run_id, count($ids), $mode);
+
+        foreach (array_chunk($ids, $batch_size) as $chunk) {
+            as_enqueue_async_action(
+                "anchor_tools_bulk_rewrite_process",
+                [
+                    "run_id" => $run_id,
+                    "ids" => $chunk,
+                    "params" => $paramsBase,
+                    "minlen" => $minlen,
+                    "incACF" => $incACF,
+                    "mode" => $mode,
+                ],
+                "anchor-tools"
+            );
+        }
+
+        wp_send_json([
+            "run_id" => $run_id,
+            "total" => count($ids),
+            "batch_size" => $batch_size,
+        ]);
+    }
+
+    public function ajax_bulk_queue_status()
+    {
+        if (!current_user_can("manage_options")) {
+            wp_die("Unauthorized");
+        }
+        check_ajax_referer($this->nonce_action, $this->nonce_name);
+
+        $run_id = sanitize_text_field($_POST["run_id"] ?? "");
+        if (!$run_id) {
+            wp_die("Missing run_id.");
+        }
+
+        $state = $this->get_bulk_queue_state();
+        if (!isset($state[$run_id])) {
+            wp_die("Queue not found.");
+        }
+        wp_send_json($state[$run_id]);
+    }
+
     /* ---------------- AJAX: Direct Apply (no wizard) ---------------- */
 
     public function ajax_bulk_apply()
@@ -2028,92 +2519,7 @@ EOT
             wp_die("JSON-LD mode requires Preview → Review → Apply Approved.");
         }
 
-        $log = [];
-
-        foreach ($ids as $post_id) {
-            $post = get_post($post_id);
-            if (!$post) {
-                $log_message = "[$post_id] Invalid post.";
-                $log[] = $log_message;
-                error_log("AI Bulk Rewriter (Direct Apply Error): " . $log_message); // Kinsta Log
-                continue;
-            }
-
-            $acfUpdated = $acfErr = 0;
-
-            if ($mode === "seo_meta") {
-                $items_to_commit = [];
-                $yoast_items = $this->get_yoast_fields($post_id);
-                foreach ($yoast_items as $f) {
-                    [$clean, $map] = $this->protect_yoast_vars($f["value"]);
-                    $rw = $this->call_openai($api_key, $clean, array_merge($paramsBase, [
-                        "output_mode" => "TEXT_ONLY",
-                        "field_label" => $f["label"],
-                        "field_type" => $f["type"],
-                    ]));
-                    if (is_wp_error($rw)) { $acfErr++; continue; }
-                    $rw = $this->restore_yoast_vars($rw, $map);
-                    $rw = $this->normalize_seo_output($rw, $f["type"]);
-                    if (trim($rw) === '') {
-                        $rw = $f["value"];
-                    }
-                    $items_to_commit[] = array_merge($f, ["new_html" => $rw]);
-                }
-                if (!empty($items_to_commit)) {
-                    list($seoApplied, $seoErrors) = $this->commit_seo_updates($post_id, $items_to_commit);
-                    $acfUpdated += $seoApplied;
-                    $acfErr += $seoErrors;
-                }
-            } else {
-                // --- NEW ACF LOGIC (Direct Apply) ---
-                if ($incACF && function_exists("get_field_object")) {
-                    
-                    $items_to_commit = [];
-                    $acf_items = $this->get_acf_fields($post_id); // Get all fields
-                    
-                    foreach ($acf_items as $f) {
-                        if ($f["len"] < $minlen) { continue; }
-
-                        $out_mode = ($f["type"] === "wysiwyg") ? "HTML_FRAGMENT" : "TEXT_ONLY";
-                        [$clean, $map] = $this->protect_shortcodes($f["value"]);
-                        $shortcodes_list = $this->build_shortcodes_list($map);
-                        
-                        $rw = $this->call_openai( $api_key, $clean, array_merge($paramsBase, [
-                            "output_mode" => $out_mode,
-                            "field_label" => $f["label"],
-                            "field_type" => "acf_" . $f["type"],
-                            "shortcodes_list" => $shortcodes_list,
-                        ]));
-
-                        if (is_wp_error($rw)) {
-                            $acfErr++; // Count AI errors
-                            continue;
-                        }
-                        
-                        $rw = $this->restore_shortcodes($rw, $map);
-
-                        // Prep the item for commit
-                        $f['new_html'] = $rw; // Add the new value
-                        $items_to_commit[] = $f;
-                    }
-
-                    // --- Commit them all at once ---
-                    if (!empty($items_to_commit)) {
-                        // Note: This adds to $acfErr, so we get AI errors + save errors
-                        list($acfUpdated, $saveErrors) = $this->commit_acf_updates($post_id, $items_to_commit);
-                        $acfErr += $saveErrors;
-                    }
-                }
-            }
-
-            $log_message =
-                "[$post_id] “" .
-                get_the_title($post_id) .
-                "” — Updated: $acfUpdated (errors $acfErr)";
-            $log[] = $log_message;
-            error_log("AI Bulk Rewriter (Direct Apply): " . $log_message); // Kinsta Log
-        }
-
+        list($log, $stats) = $this->run_bulk_apply_for_ids($ids, $api_key, $paramsBase, $minlen, $incACF, $mode);
         wp_die(implode("\n", $log));
     }
 }

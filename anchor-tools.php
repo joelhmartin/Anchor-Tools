@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.3.6
+ * Version: 3.3.7
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -1815,12 +1815,23 @@ EOT
                 "OpenAI request failed: " . $response->get_error_message()
             );
         }
-        $data = json_decode(wp_remote_retrieve_body($response), true);
+        $status = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+        $data = json_decode($body, true);
+        if ($status < 200 || $status >= 300) {
+            $msg = $data["error"]["message"] ?? ("HTTP " . $status);
+            return new WP_Error("openai_http", "OpenAI request failed: " . $msg);
+        }
+        if (isset($data["error"])) {
+            $msg = $data["error"]["message"] ?? "Unknown API error.";
+            return new WP_Error("openai_api", "OpenAI error: " . $msg);
+        }
         $text = $data["choices"][0]["message"]["content"] ?? "";
         if (!$text) {
+            $snippet = $body ? substr($body, 0, 500) : "empty body";
             return new WP_Error(
                 "openai_empty",
-                "OpenAI returned empty content."
+                "OpenAI returned empty content. Response: " . $snippet
             );
         }
         return $this->sanitize_model_output($text, $output_mode);

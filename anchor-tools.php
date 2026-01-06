@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.3.7
+ * Version: 3.3.8
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -220,6 +220,7 @@ Output Mode: {{OUTPUT_MODE}}
 - If HTML_FRAGMENT: preserve the HTML tags and structure types (e.g., <h2> stays <h2>); return raw HTML only (no Markdown, no code fences).
 
 Context (for personalization):
+- Post Title: {{POST_TITLE}}
 - Doctor: {{DOCTOR}}
 - Business: {{BUSINESS}}
 - Location: {{LOCATION}}
@@ -1724,6 +1725,7 @@ EOT
         $optimize,
         $output_mode,
         $target_chars,
+        $post_title,
         $field_label,
         $field_type,
         $shortcodes_list
@@ -1732,6 +1734,7 @@ EOT
         $filled = strtr((string) $template, [
             "{{ORIGINAL_HTML}}" => $original,
             "{{KEYWORDS}}" => $seo_keywords,
+            "{{POST_TITLE}}" => $post_title ?: "",
             "{{DOCTOR}}" => $doctor,
             "{{BUSINESS}}" => $business,
             "{{LOCATION}}" => $location,
@@ -1774,6 +1777,7 @@ EOT
         $output_mode = $params["output_mode"] ?? "HTML_FRAGMENT";
         $field_label = $params["field_label"] ?? "";
         $field_type = $params["field_type"] ?? "";
+        $post_title = $params["post_title"] ?? "";
         $len_hint = max(10, strlen(trim(wp_strip_all_tags($original_html))));
         // Bound the hint to avoid extremes
         $len_hint = min(2000, max(20, $len_hint));
@@ -1788,6 +1792,7 @@ EOT
             !empty($params["optimize"]),
             $output_mode,
             $len_hint,
+            $post_title,
             $field_label,
             $field_type,
             $params["shortcodes_list"] ?? ""
@@ -2024,6 +2029,7 @@ EOT
                             "output_mode" => "TEXT_ONLY",
                             "field_label" => $f["label"],
                             "field_type" => $f["type"],
+                            "post_title" => $entry["title"],
                         ])
                     );
                     if (is_wp_error($rw)) {
@@ -2060,6 +2066,7 @@ EOT
                         "field_label" => "Post Content",
                         "field_type" => "post_content",
                         "shortcodes_list" => $shortcodes_list,
+                        "post_title" => $entry["title"],
                     ]);
                     $rw = $this->rewrite_html_text_nodes($clean, $api_key, $rewrite_params, 40);
                     if (is_wp_error($rw)) {
@@ -2087,6 +2094,7 @@ EOT
                         "field_label" => "Post Excerpt",
                         "field_type" => "post_excerpt",
                         "shortcodes_list" => $shortcodes_list_ex,
+                        "post_title" => $entry["title"],
                     ]);
                     $rw_ex = $this->call_openai($api_key, $clean_ex, $rewrite_params_ex);
                     if (is_wp_error($rw_ex)) {
@@ -2135,6 +2143,7 @@ EOT
                             "field_label" => $f["label"],
                             "field_type" => "acf_" . $f["type"],
                             "shortcodes_list" => $shortcodes_list,
+                            "post_title" => $entry["title"],
                         ]);
 
                         if ($f["type"] === "wysiwyg") {
@@ -2438,6 +2447,7 @@ EOT
                         "output_mode" => "TEXT_ONLY",
                         "field_label" => $f["label"],
                         "field_type" => $f["type"],
+                        "post_title" => get_the_title($post_id),
                     ]));
                     if (is_wp_error($rw)) { $acfErr++; continue; }
                     $rw = $this->restore_yoast_vars($rw, $map);
@@ -2470,6 +2480,7 @@ EOT
                         "field_label" => "Post Content",
                         "field_type" => "post_content",
                         "shortcodes_list" => $shortcodes_list,
+                        "post_title" => get_the_title($post_id),
                     ]);
 
                     $rw = $this->rewrite_html_text_nodes($clean, $api_key, $rewrite_params, 40);
@@ -2499,6 +2510,7 @@ EOT
                         "field_label" => "Post Excerpt",
                         "field_type" => "post_excerpt",
                         "shortcodes_list" => $shortcodes_list_ex,
+                        "post_title" => get_the_title($post_id),
                     ]);
 
                     $rw_ex = $this->call_openai($api_key, $clean_ex, $rewrite_params_ex);
@@ -2549,6 +2561,7 @@ EOT
                             "field_label" => $f["label"],
                             "field_type" => "acf_" . $f["type"],
                             "shortcodes_list" => $shortcodes_list,
+                            "post_title" => get_the_title($post_id),
                         ]);
 
                         if ($f["type"] === "wysiwyg") {

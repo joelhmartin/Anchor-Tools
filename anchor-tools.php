@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.3.8
+ * Version: 3.3.9
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -213,7 +213,7 @@ class AI_ACF_Bulk_Rewriter_Wizard
         return trim(
             <<<'EOT'
 System:
-You are a professional medical/dental copywriter. Rewrite the provided CONTENT to be unique, natural, and clinically accurate. Shortcodes and URLs must remain unchanged. Keep length roughly similar (±20%). Never add content the user would not expect in context.
+You are a professional copywriter. Rewrite the provided CONTENT to be unique, natural, and accurate. Shortcodes and URLs must remain unchanged. Keep length roughly similar (+/- 20%). Never add content the user would not expect in context.
 
 Output Mode: {{OUTPUT_MODE}}
 - If TEXT_ONLY: return plain text only (no HTML, no Markdown, no code fences). Do NOT add headings or paragraphs.
@@ -221,9 +221,6 @@ Output Mode: {{OUTPUT_MODE}}
 
 Context (for personalization):
 - Post Title: {{POST_TITLE}}
-- Doctor: {{DOCTOR}}
-- Business: {{BUSINESS}}
-- Location: {{LOCATION}}
 - Field: {{FIELD_LABEL}} (type: {{FIELD_TYPE}})
 
 SEO:
@@ -239,7 +236,7 @@ Original CONTENT:
 Guidelines:
 - Leave tokens like %%SHORTCODE_X%% unchanged.
 - Shortcodes present (do not change): {{SHORTCODES_LIST}}
-- Maintain meaning and clinical accuracy.
+- Maintain meaning and accuracy.
 - Do not wrap output in triple backticks or Markdown fences.
 - Never use em dashes; use commas and periods instead.
 - Ignore quotations — keep quoted text and its outbound links exactly as provided.
@@ -390,22 +387,13 @@ EOT
                         <input type="text" id="ai_bulk_keywords" style="width:100%;" placeholder="e.g., TMJ treatment, dental sleep apnea" />
                     </label>
                     <label><input type="checkbox" id="ai_bulk_optimize" checked /> Optimize for SEO</label>
-                    <label><strong>Doctor</strong>
-                        <input type="text" id="ai_bulk_doctor" placeholder="e.g., Dr. Lynn Lipskis" />
-                    </label>
-                    <label><strong>Business</strong>
-                        <input type="text" id="ai_bulk_business" placeholder="e.g., the TMJ & Sleep Therapy Centre of Reno" />
-                    </label>
-                    <label><strong>Location</strong>
-                        <input type="text" id="ai_bulk_location" placeholder="City, State (or region)" />
-                    </label>
                 </div>
                 <div style="margin-top:10px;">
                     <label><strong>Prompt template (editable per run):</strong></label>
                     <textarea id="ai_bulk_prompt" class="ai-br-textarea"><?php echo esc_textarea(
                         $this->default_prompt_template()
                     ); ?></textarea>
-                    <p class="ai-br-small">Placeholders: Code: <code>{{ORIGINAL_HTML}}</code>, <code>{{KEYWORDS}}</code>, <code>{{DOCTOR}}</code>, <code>{{BUSINESS}}</code>, <code>{{LOCATION}}</code>, <code>{{OUTPUT_MODE}}</code>, <code>{{TARGET_CHARS}}</code>, <code>{{FIELD_LABEL}}</code>, <code>{{FIELD_TYPE}}</code>.</p>
+                    <p class="ai-br-small">Placeholders: <code>{{ORIGINAL_HTML}}</code>, <code>{{KEYWORDS}}</code>, <code>{{POST_TITLE}}</code>, <code>{{OUTPUT_MODE}}</code>, <code>{{TARGET_CHARS}}</code>, <code>{{FIELD_LABEL}}</code>, <code>{{FIELD_TYPE}}</code>, <code>{{SHORTCODES_LIST}}</code>.</p>
                 </div>
             </div>
 
@@ -421,6 +409,9 @@ EOT
                         <input type="number" id="ai_bulk_minlen" value="40" min="0" step="5" style="width:90px;">
                     </label>
                     <label class="ai-mode-acf-only"><input type="checkbox" id="ai_bulk_include_acf" checked> Include ACF fields</label>
+                    <label class="ai-mode-acf-only"><strong>ACF field slugs (comma-separated)</strong>
+                        <input type="text" id="ai_bulk_acf_filter" placeholder="e.g., hero_title, main_paragraph">
+                    </label>
                 </div>
             </div>
 
@@ -597,12 +588,10 @@ EOT
                 const payloadBase = {
                     keywords: $('#ai_bulk_keywords').val() || '',
                     optimize: $('#ai_bulk_optimize').is(':checked') ? 1 : 0,
-                    doctor:   $('#ai_bulk_doctor').val() || '',
-                    business: $('#ai_bulk_business').val() || '',
-                    location: $('#ai_bulk_location').val() || '',
                     prompt:   $('#ai_bulk_prompt').val() || '',
                     minlen:   parseInt($('#ai_bulk_minlen').val(), 10) || 0,
                     include_acf:  $('#ai_bulk_include_acf').is(':checked') ? 1 : 0,
+                    acf_fields: $('#ai_bulk_acf_filter').val() || '',
                     mode: aiBulkMode,
                     schema_type: $('#ai_jsonld_type').val() || 'Article',
                     schema_custom: $('#ai_jsonld_custom').val() || ''
@@ -677,12 +666,10 @@ EOT
                 const payloadBase = {
                     keywords: $('#ai_bulk_keywords').val() || '',
                     optimize: $('#ai_bulk_optimize').is(':checked') ? 1 : 0,
-                    doctor:   $('#ai_bulk_doctor').val() || '',
-                    business: $('#ai_bulk_business').val() || '',
-                    location: $('#ai_bulk_location').val() || '',
                     prompt:   $('#ai_bulk_prompt').val() || '',
                     minlen:   parseInt($('#ai_bulk_minlen').val(), 10) || 0,
                     include_acf:  $('#ai_bulk_include_acf').is(':checked') ? 1 : 0,
+                    acf_fields: $('#ai_bulk_acf_filter').val() || '',
                     mode: aiBulkMode,
                 };
                 const batchSel = parseInt($('#ai_bulk_batch').val(), 10) || 5;
@@ -745,12 +732,10 @@ EOT
                 const payloadBase = {
                     keywords: $('#ai_bulk_keywords').val() || '',
                     optimize: $('#ai_bulk_optimize').is(':checked') ? 1 : 0,
-                    doctor:   $('#ai_bulk_doctor').val() || '',
-                    business: $('#ai_bulk_business').val() || '',
-                    location: $('#ai_bulk_location').val() || '',
                     prompt:   $('#ai_bulk_prompt').val() || '',
                     minlen:   parseInt($('#ai_bulk_minlen').val(), 10) || 0,
                     include_acf:  $('#ai_bulk_include_acf').is(':checked') ? 1 : 0,
+                    acf_fields: $('#ai_bulk_acf_filter').val() || '',
                     mode: aiBulkMode,
                     batch_size: parseInt($('#ai_bulk_batch').val(), 10) || 5,
                 };
@@ -1000,15 +985,8 @@ EOT
     // Deep ACF traversal: collect text/textarea/wysiwyg (keys+names) inside group/repeater/flex
     private function get_acf_fields($post_id)
     {
-        if (!function_exists("get_field_objects")) {
-            return [];
-        }
-        $objs = get_field_objects($post_id);
-        if (!$objs) {
-            return [];
-        }
-
         $out = [];
+        $seen = [];
 
         $collect_simple = function (
             array $pathNames,
@@ -1016,14 +994,20 @@ EOT
             string $labelPath,
             array $field,
             $value
-        ) use (&$out) {
-            $type = $field["type"];
-            if (!in_array($type, ["text", "textarea", "wysiwyg"])) {
+        ) use (&$out, &$seen) {
+            $type = $field["type"] ?? "";
+            if (!in_array($type, ["text", "textarea", "wysiwyg"], true)) {
                 return;
             }
             $plain = is_string($value) ? wp_strip_all_tags($value) : "";
+            $key = ($field["key"] ?? "") . "|" . implode("/", $pathNames);
+            if (isset($seen[$key])) {
+                return;
+            }
+            $seen[$key] = true;
             $out[] = [
-                "key" => $field["key"], // for top-level update_field
+                "name" => $field["name"] ?? "",
+                "key" => $field["key"] ?? "", // for top-level update_field
                 "path_names" => $pathNames, // names path for nested
                 "path_keys" => $pathKeys, // keys path for nested (preferred)
                 "label" => $labelPath, // breadcrumb for UI
@@ -1039,14 +1023,17 @@ EOT
             array $pathNames = [],
             array $pathKeys = [],
             string $labelPath = ""
-        ) use (&$walk, $collect_simple) {
-            $type = $field["type"];
-            $label = $field["label"] ?? $field["name"];
-            $name = $field["name"];
-            $fkey = $field["key"];
+        ) use (&$walk, $collect_simple, $post_id) {
+            if (!is_array($field)) {
+                return;
+            }
+            $type = $field["type"] ?? "";
+            $label = $field["label"] ?? ($field["name"] ?? "");
+            $name = $field["name"] ?? "";
+            $fkey = $field["key"] ?? "";
             $labelPath = $labelPath ? $labelPath . " → " . $label : $label;
 
-            if (in_array($type, ["text", "textarea", "wysiwyg"])) {
+            if (in_array($type, ["text", "textarea", "wysiwyg"], true)) {
                 $collect_simple(
                     $pathNames,
                     $pathKeys,
@@ -1060,8 +1047,8 @@ EOT
             if ($type === "group" && !empty($field["sub_fields"])) {
                 $groupVal = is_array($value) ? $value : [];
                 foreach ($field["sub_fields"] as $sf) {
-                    $sfName = $sf["name"];
-                    $sfKey = $sf["key"];
+                    $sfName = $sf["name"] ?? "";
+                    $sfKey = $sf["key"] ?? "";
                     $walk(
                         $sf,
                         $groupVal[$sfName] ?? "",
@@ -1073,16 +1060,13 @@ EOT
                 return;
             }
 
-            if (
-                $type === "repeater" &&
-                !empty($field["sub_fields"]) &&
-                is_array($value)
-            ) {
-                foreach ($value as $i => $row) {
+            if ($type === "repeater" && !empty($field["sub_fields"])) {
+                $rows = is_array($value) ? $value : [];
+                foreach ($rows as $i => $row) {
                     $rowIndex = $i + 1; // ACF is 1-based for update_sub_field
                     foreach ($field["sub_fields"] as $sf) {
-                        $sfName = $sf["name"];
-                        $sfKey = $sf["key"];
+                        $sfName = $sf["name"] ?? "";
+                        $sfKey = $sf["key"] ?? "";
                         $walk(
                             $sf,
                             $row[$sfName] ?? "",
@@ -1099,28 +1083,22 @@ EOT
                 return;
             }
 
-            if (
-                $type === "flexible_content" &&
-                !empty($field["layouts"]) &&
-                is_array($value)
-            ) {
-                // Build lookup for layouts by name
+            if ($type === "flexible_content" && !empty($field["layouts"])) {
+                $rows = is_array($value) ? $value : [];
                 $layoutsByName = [];
                 foreach ($field["layouts"] as $ld) {
                     $layoutsByName[$ld["name"]] = $ld;
                 }
-
-                foreach ($value as $i => $row) {
+                foreach ($rows as $i => $row) {
                     $rowIndex = $i + 1;
                     $layout = $row["acf_fc_layout"] ?? "";
                     $layoutDef = $layoutsByName[$layout] ?? null;
                     if (!$layoutDef || empty($layoutDef["sub_fields"])) {
                         continue;
                     }
-
                     foreach ($layoutDef["sub_fields"] as $sf) {
-                        $sfName = $sf["name"];
-                        $sfKey = $sf["key"];
+                        $sfName = $sf["name"] ?? "";
+                        $sfKey = $sf["key"] ?? "";
                         $walk(
                             $sf,
                             $row[$sfName] ?? "",
@@ -1137,11 +1115,77 @@ EOT
                 return;
             }
 
-            // ignore other types
+            if ($type === "clone") {
+                $display = $field["display"] ?? "group";
+                $clone_fields = [];
+                if (!empty($field["sub_fields"])) {
+                    $clone_fields = $field["sub_fields"];
+                } elseif (!empty($field["clone"]) && function_exists("acf_get_field")) {
+                    foreach ((array) $field["clone"] as $ckey) {
+                        $cf = acf_get_field($ckey);
+                        if ($cf) {
+                            $clone_fields[] = $cf;
+                        }
+                    }
+                }
+                if (!empty($clone_fields)) {
+                    $cloneVal = is_array($value) ? $value : [];
+                    foreach ($clone_fields as $sf) {
+                        $sfName = $sf["name"] ?? "";
+                        $sfKey = $sf["key"] ?? "";
+                        $usePrefix = ($display !== "seamless");
+                        $nextPathNames = $usePrefix ? array_merge($pathNames, [$name, $sfName]) : array_merge($pathNames, [$sfName]);
+                        $nextPathKeys = $usePrefix ? array_merge($pathKeys, [$fkey, $sfKey]) : array_merge($pathKeys, [$sfKey]);
+                        $subVal = $cloneVal[$sfName] ?? (function_exists("get_field") ? get_field($sfName, $post_id, false) : "");
+                        $walk(
+                            $sf,
+                            $subVal,
+                            $nextPathNames,
+                            $nextPathKeys,
+                            $labelPath
+                        );
+                    }
+                }
+                return;
+            }
         };
 
-        foreach ($objs as $name => $fo) {
-            $walk($fo, $fo["value"], [], [], "");
+        if (function_exists("acf_get_field_groups") && function_exists("acf_get_fields")) {
+            $groups = acf_get_field_groups(["post_id" => $post_id]);
+            if (!empty($groups)) {
+                foreach ($groups as $group) {
+                    $fields = acf_get_fields($group);
+                    if (empty($fields)) {
+                        continue;
+                    }
+                    foreach ($fields as $field) {
+                        $name = $field["name"] ?? "";
+                        $key = $field["key"] ?? "";
+                        $value = "";
+                        if (function_exists("get_field")) {
+                            if ($name) {
+                                $value = get_field($name, $post_id, false);
+                            } elseif ($key) {
+                                $value = get_field($key, $post_id, false);
+                            }
+                        }
+                        $walk($field, $value, [], [], "");
+                    }
+                }
+                return $out;
+            }
+        }
+
+        if (!function_exists("get_field_objects")) {
+            return [];
+        }
+        $objs = get_field_objects($post_id);
+        if (!$objs) {
+            return [];
+        }
+
+        foreach ($objs as $fo) {
+            $walk($fo, $fo["value"] ?? "", [], [], "");
         }
 
         return $out;
@@ -1166,16 +1210,6 @@ EOT
                 $pieces[] = $f["label"] . ": " . wp_strip_all_tags($f["value"]);
             }
         }
-        if (!empty($params["doctor"])) {
-            $pieces[] = "Doctor: " . $params["doctor"];
-        }
-        if (!empty($params["business"])) {
-            $pieces[] = "Business: " . $params["business"];
-        }
-        if (!empty($params["location"])) {
-            $pieces[] = "Location: " . $params["location"];
-        }
-
         $raw = implode("\n\n", array_filter(array_map("trim", $pieces)));
         if (function_exists("mb_substr")) {
             $raw = mb_substr($raw, 0, 8000);
@@ -1352,6 +1386,65 @@ EOT
         $shortcodes = array_values($map);
         $shortcodes = array_unique($shortcodes);
         return implode("\n- ", $shortcodes);
+    }
+
+    private function parse_acf_filter_list($filter_csv)
+    {
+        $raw = array_filter(array_map('trim', explode(',', (string) $filter_csv)));
+        $out = [];
+        foreach ($raw as $val) {
+            if ($val !== '') {
+                $out[] = $val;
+            }
+        }
+        return array_values(array_unique($out));
+    }
+
+    private function acf_item_matches_filter($item, $filters)
+    {
+        if (empty($filters)) {
+            return true;
+        }
+        $name = $item['name'] ?? '';
+        $key = $item['key'] ?? '';
+        $path_names = $item['path_names'] ?? [];
+        $path_dot = $path_names ? implode('.', $path_names) : '';
+        $path_underscore = $path_names ? implode('_', $path_names) : '';
+        $last = $path_names ? end($path_names) : '';
+
+        foreach ($filters as $filter) {
+            if ($filter === '') {
+                continue;
+            }
+            if ($filter === $name || $filter === $key) {
+                return true;
+            }
+            if ($path_dot && $filter === $path_dot) {
+                return true;
+            }
+            if ($path_underscore && $filter === $path_underscore) {
+                return true;
+            }
+            if ($last && $filter === $last) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function filter_acf_items($items, $filter_csv)
+    {
+        $filters = $this->parse_acf_filter_list($filter_csv);
+        if (empty($filters)) {
+            return $items;
+        }
+        $out = [];
+        foreach ($items as $item) {
+            if ($this->acf_item_matches_filter($item, $filters)) {
+                $out[] = $item;
+            }
+        }
+        return $out;
     }
 
     private function has_structured_layout_markup($text)
@@ -1719,9 +1812,6 @@ EOT
         $template,
         $original,
         $keywords_csv,
-        $doctor,
-        $business,
-        $location,
         $optimize,
         $output_mode,
         $target_chars,
@@ -1735,9 +1825,9 @@ EOT
             "{{ORIGINAL_HTML}}" => $original,
             "{{KEYWORDS}}" => $seo_keywords,
             "{{POST_TITLE}}" => $post_title ?: "",
-            "{{DOCTOR}}" => $doctor,
-            "{{BUSINESS}}" => $business,
-            "{{LOCATION}}" => $location,
+            "{{DOCTOR}}" => "",
+            "{{BUSINESS}}" => "",
+            "{{LOCATION}}" => "",
             "{{OUTPUT_MODE}}" => $output_mode,
             "{{TARGET_CHARS}}" => (string) max(10, (int) $target_chars),
             "{{FIELD_LABEL}}" => $field_label ?: "",
@@ -1786,9 +1876,6 @@ EOT
             $template,
             $original_html,
             $params["keywords"] ?? "",
-            $params["doctor"] ?? "",
-            $params["business"] ?? "",
-            $params["location"] ?? "",
             !empty($params["optimize"]),
             $output_mode,
             $len_hint,
@@ -1931,11 +2018,9 @@ EOT
         $paramsBase = [
             "keywords" => sanitize_text_field($_POST["keywords"] ?? ""),
             "optimize" => intval($_POST["optimize"] ?? 0),
-            "doctor" => sanitize_text_field($_POST["doctor"] ?? ""),
-            "business" => sanitize_text_field($_POST["business"] ?? ""),
-            "location" => sanitize_text_field($_POST["location"] ?? ""),
             "prompt" => wp_kses_post(stripslashes($_POST["prompt"] ?? "")),
         ];
+        $acf_filter = sanitize_text_field($_POST["acf_fields"] ?? "");
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
         $incACF = intval($_POST["include_acf"] ?? 1);
         $mode = sanitize_text_field($_POST["mode"] ?? "content");
@@ -2118,6 +2203,11 @@ EOT
                 // ACF
                 if ($incACF && function_exists("get_field_object")) {
                     $acf_items = $this->get_acf_fields($post_id);
+                    $acf_items = $this->filter_acf_items($acf_items, $acf_filter);
+                    if (empty($acf_items) && $acf_filter !== "") {
+                        $log_message = "[$post_id] “" . $entry["title"] . "” — No ACF fields matched filter.";
+                        $log[] = $log_message;
+                    }
                     foreach ($acf_items as $f) {
                         if ($f["len"] < $minlen) {
                             continue;
@@ -2425,6 +2515,7 @@ EOT
             'processed' => 0,
             'errors' => 0,
         ];
+        $acf_filter = (string) ($paramsBase["acf_fields"] ?? "");
 
         foreach ($ids as $post_id) {
             $post = get_post($post_id);
@@ -2543,6 +2634,11 @@ EOT
                 if ($incACF && function_exists("get_field_object")) {
                     $items_to_commit = [];
                     $acf_items = $this->get_acf_fields($post_id);
+                    $acf_items = $this->filter_acf_items($acf_items, $acf_filter);
+                    if (empty($acf_items) && $acf_filter !== "") {
+                        $log_message = "[$post_id] “" . get_the_title($post_id) . "” — No ACF fields matched filter.";
+                        $log[] = $log_message;
+                    }
 
                     foreach ($acf_items as $f) {
                         if ($f["len"] < $minlen) { continue; }
@@ -2652,10 +2748,8 @@ EOT
         $paramsBase = [
             "keywords" => sanitize_text_field($_POST["keywords"] ?? ""),
             "optimize" => intval($_POST["optimize"] ?? 0),
-            "doctor" => sanitize_text_field($_POST["doctor"] ?? ""),
-            "business" => sanitize_text_field($_POST["business"] ?? ""),
-            "location" => sanitize_text_field($_POST["location"] ?? ""),
             "prompt" => wp_kses_post(stripslashes($_POST["prompt"] ?? "")),
+            "acf_fields" => sanitize_text_field($_POST["acf_fields"] ?? ""),
         ];
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
         $incACF = intval($_POST["include_acf"] ?? 1);
@@ -2741,10 +2835,8 @@ EOT
         $paramsBase = [
             "keywords" => sanitize_text_field($_POST["keywords"] ?? ""),
             "optimize" => intval($_POST["optimize"] ?? 0),
-            "doctor" => sanitize_text_field($_POST["doctor"] ?? ""),
-            "business" => sanitize_text_field($_POST["business"] ?? ""),
-            "location" => sanitize_text_field($_POST["location"] ?? ""),
             "prompt" => wp_kses_post(stripslashes($_POST["prompt"] ?? "")),
+            "acf_fields" => sanitize_text_field($_POST["acf_fields"] ?? ""),
         ];
         $minlen = max(0, intval($_POST["minlen"] ?? 0));
         $incACF = intval($_POST["include_acf"] ?? 1);

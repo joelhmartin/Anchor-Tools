@@ -10,6 +10,7 @@ class Anchor_Mega_Menu_Module {
     const LEGACY_CPT = 'mm_snippet';
     const MIGRATION_FLAG = 'anchor_mega_menu_migrated';
     const NONCE = 'anchor_mega_snippet_nonce';
+    const GLOBAL_CSS_OPTION = 'anchor_mega_menu_global_css';
 
     public function __construct(){
         add_action('init', [$this, 'register_cpt']);
@@ -94,6 +95,7 @@ class Anchor_Mega_Menu_Module {
     public function render_box_code($post){
         wp_nonce_field(self::NONCE, self::NONCE);
         $m = $this->get_meta($post->ID);
+        $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
         wp_enqueue_code_editor(array('type' => 'text/html'));
         wp_enqueue_code_editor(array('type' => 'text/css'));
         wp_enqueue_code_editor(array('type' => 'application/javascript'));
@@ -104,6 +106,10 @@ class Anchor_Mega_Menu_Module {
             <div class="mm-field">
                 <label for="mm_html"><strong>HTML</strong></label>
                 <textarea id="mm_html" name="mm_html" rows="10" class="widefat code"><?php echo esc_textarea($m['html']); ?></textarea>
+            </div>
+            <div class="mm-field">
+                <label for="mm_global_css"><strong>Global CSS (applies to all snippets)</strong></label>
+                <textarea id="mm_global_css" name="mm_global_css" rows="6" class="widefat code"><?php echo esc_textarea($global_css); ?></textarea>
             </div>
             <div class="mm-field">
                 <label for="mm_css"><strong>CSS</strong></label>
@@ -221,6 +227,10 @@ class Anchor_Mega_Menu_Module {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
         if (!current_user_can('edit_post', $post_id)) return;
 
+        if (isset($_POST['mm_global_css'])) {
+            update_option(self::GLOBAL_CSS_OPTION, $_POST['mm_global_css']);
+        }
+
         $fields = ['html','css','js','trigger_class','position','absolute','hover_delay','max_height','animation','z_index','offset_x','offset_y',
                    'arrow','arrow_color','arrow_size','arrow_align','arrow_offset'];
         foreach ($fields as $f){
@@ -280,6 +290,10 @@ class Anchor_Mega_Menu_Module {
         if (empty($snippets)) return;
         wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.3');
         wp_enqueue_script('mm-frontend', plugins_url('frontend.js', __FILE__), [], '1.1.3', true);
+        $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
+        if ($global_css !== '') {
+            wp_add_inline_style('mm-frontend', $global_css);
+        }
         wp_localize_script('mm-frontend', 'MM_SNIPPETS', $snippets);
     }
 

@@ -1,21 +1,22 @@
 (function($){
   function applyPreview(){
     var html = $('#mm_html').val() || '';
+    var globalCss = $('#mm_global_css').val() || '';
     var css  = $('#mm_css').val() || '';
     var js  =  $('#mm_js').val() || '';
     var $wrap = $('#mm-preview-content');
     if(!$wrap.length) return;
-    var doc = '<style>'+css+'</style><div class="mm-viewport" style="max-height:400px; overflow:auto; padding:12px;">'+html+'</div><script>(function(){try{'+js+'}catch(e){console.error(e)}})();</script>';
+    var doc = '<style>'+globalCss+'</style><style>'+css+'</style><div class="mm-viewport" style="max-height:400px; overflow:auto; padding:12px;">'+html+'</div><script>(function(){try{'+js+'}catch(e){console.error(e)}})();</script>';
     $wrap.empty().append(doc);
   }
 
   $(document).ready(function(){
     if (window.wp && wp.codeEditor){
-      ['mm_html','mm_css','mm_js'].forEach(function(id){
+      ['mm_html','mm_global_css','mm_css','mm_js'].forEach(function(id){
         var $ta = $('#'+id);
         if($ta.length){
           var mode = 'text/html';
-          if(id==='mm_css') mode = 'text/css';
+          if(id==='mm_css' || id==='mm_global_css') mode = 'text/css';
           if(id==='mm_js') mode = 'application/javascript';
           var editor = wp.codeEditor.initialize($ta, { codemirror: { mode: mode, lineNumbers: true } });
           if(editor && editor.codemirror){
@@ -26,7 +27,7 @@
         }
       });
     } else {
-      $('#mm_html,#mm_css,#mm_js').on('input', applyPreview);
+      $('#mm_html,#mm_global_css,#mm_css,#mm_js').on('input', applyPreview);
     }
 
     applyPreview();

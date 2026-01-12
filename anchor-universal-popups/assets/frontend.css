@@ -1,17 +1,19 @@
-.up-modal[hidden]{ display:none; }
-.up-modal{
+.up-modal[hidden] {
+  display: none;
+}
+.up-modal {
   position: fixed;
   inset: 0;
   z-index: 999999;
 }
-.up-modal__backdrop{
-  position:absolute;
-  inset:0;
-  background: rgba(0,0,0,.8);
+.up-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.8);
 }
 
 /* Video and hybrid layout */
-.up-modal__dialog{
+.up-modal__dialog {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -23,17 +25,17 @@
   background: #000;
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 20px 50px rgba(0,0,0,.45);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
 }
 
 /* Video region keeps 16:9 area, then content scrolls below */
-.up-modal__frame{
+.up-modal__frame {
   aspect-ratio: 16 / 9;
   flex: 0 0 auto;
-  background:#000;
+  background: #000;
 }
 .up-modal__frame,
-.up-modal__frame iframe{
+.up-modal__frame iframe {
   width: 100%;
   height: 100%;
   display: block;
@@ -41,18 +43,17 @@
 }
 
 /* Content placed under the video when in YouTube or Vimeo mode */
-.up-video-after{
+.up-video-after {
   flex: 1 1 auto;
   overflow: auto;
   background: #fff;
   color: #111;
-  padding: 16px;
 }
 
 /* Pure HTML mode wrapper */
-.up-content-wrap{
-  background:#fff;
-  color:#111;
+.up-content-wrap {
+  background: #fff;
+  color: #111;
   width: min(960px, 92vw);
   max-height: min(86vh, 720px);
   margin: auto;
@@ -61,16 +62,16 @@
   position: relative;
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 20px 50px rgba(0,0,0,.45);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
 }
-.up-content__inner{
-  overflow:auto;
+.up-content__inner {
+  overflow: auto;
   max-height: calc(min(86vh, 720px) - 48px);
   padding: 16px;
 }
 
 /* Close button floats above both regions */
-.up-modal__close{
+.up-modal__close {
   position: absolute;
   top: 8px;
   right: 10px;
@@ -81,5 +82,5 @@
   border: 0;
   cursor: pointer;
   z-index: 10;
-  text-shadow: 0 2px 10px rgba(0,0,0,.6);
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
 }

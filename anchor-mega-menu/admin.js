@@ -1,13 +1,39 @@
 (function($){
+  function ensurePreviewNodes(){
+    var $wrap = $('#mm-preview-content');
+    if(!$wrap.length) return null;
+    if(!$wrap.find('#mm-preview-global-css').length){
+      $wrap.empty().append(
+        '<style id="mm-preview-global-css"></style>' +
+        '<style id="mm-preview-css"></style>' +
+        '<div id="mm-preview-html" class="mm-viewport" style="max-height:400px; overflow:auto; padding:12px;"></div>' +
+        '<div id="mm-preview-js"></div>'
+      );
+    }
+    return {
+      globalStyle: $wrap.find('#mm-preview-global-css'),
+      style: $wrap.find('#mm-preview-css'),
+      viewport: $wrap.find('#mm-preview-html'),
+      js: $wrap.find('#mm-preview-js')
+    };
+  }
+
   function applyPreview(){
     var html = $('#mm_html').val() || '';
     var globalCss = $('#mm_global_css').val() || '';
     var css  = $('#mm_css').val() || '';
     var js  =  $('#mm_js').val() || '';
-    var $wrap = $('#mm-preview-content');
-    if(!$wrap.length) return;
-    var doc = '<style>'+globalCss+'</style><style>'+css+'</style><div class="mm-viewport" style="max-height:400px; overflow:auto; padding:12px;">'+html+'</div><script>(function(){try{'+js+'}catch(e){console.error(e)}})();</script>';
-    $wrap.empty().append(doc);
+    var nodes = ensurePreviewNodes();
+    if(!nodes) return;
+    nodes.globalStyle.text(globalCss);
+    nodes.style.text(css);
+    nodes.viewport.html(html);
+    nodes.js.empty();
+    if(js){
+      var script = document.createElement('script');
+      script.text = '(function(){try{'+js+'}catch(e){console.error(e)}})();';
+      nodes.js.append(script);
+    }
   }
 
   $(document).ready(function(){

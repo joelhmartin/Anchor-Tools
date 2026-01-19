@@ -67,3 +67,9 @@
   border-bottom: var(--mm-arrow-size) solid transparent;
   border-left:   var(--mm-arrow-size) solid var(--mm-arrow-color);
 }
+
+/* Shortcode embed */
+.mm-snippet-inline{
+  display:block;
+  margin: 12px 0;
+}

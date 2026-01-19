@@ -49,6 +49,8 @@ class Module {
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
         \add_action( 'admin_post_nopriv_anchor_event_register', [ $this, 'handle_registration' ] );
         \add_action( 'admin_post_anchor_event_export', [ $this, 'handle_export' ] );
+        \add_action( 'wp_ajax_anchor_events_calendar', [ $this, 'ajax_calendar' ] );
+        \add_action( 'wp_ajax_nopriv_anchor_events_calendar', [ $this, 'ajax_calendar' ] );
 
         \add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'handle_settings_update' ], 10, 2 );
         \add_action( 'before_delete_post', [ $this, 'clear_caches_on_delete' ] );
@@ -66,8 +68,8 @@ class Module {
         }
 
         $labels = [
-            'name'               => __( 'Events', 'anchor-schema' ),
-            'singular_name'      => __( 'Event', 'anchor-schema' ),
+            'name'               => __( 'Anchor Events', 'anchor-schema' ),
+            'singular_name'      => __( 'Anchor Event', 'anchor-schema' ),
             'add_new_item'       => __( 'Add New Event', 'anchor-schema' ),
             'edit_item'          => __( 'Edit Event', 'anchor-schema' ),
             'new_item'           => __( 'New Event', 'anchor-schema' ),
@@ -75,7 +77,7 @@ class Module {
             'search_items'       => __( 'Search Events', 'anchor-schema' ),
             'not_found'          => __( 'No events found.', 'anchor-schema' ),
             'not_found_in_trash' => __( 'No events found in Trash.', 'anchor-schema' ),
-            'menu_name'          => __( 'Events', 'anchor-schema' ),
+            'menu_name'          => __( 'Anchor Events', 'anchor-schema' ),
         ];
 
         \register_post_type( self::CPT, [
@@ -574,6 +576,11 @@ class Module {
             return;
         }
         \wp_enqueue_style( 'anchor-events-frontend', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.0' );
+        \wp_enqueue_script( 'anchor-events-frontend', \plugins_url( 'assets/frontend.js', __FILE__ ), [], '1.0.2', true );
+        \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [
+            'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
+            'nonce'   => \wp_create_nonce( 'anchor_events_calendar' ),
+        ] );
         $this->assets_enqueued = true;
     }
 
@@ -737,64 +744,7 @@ class Module {
             return $this->render_events_list( [ 'limit' => 20 ], 'calendar' );
         }
 
-        $month = $atts['month'] ? sanitize_text_field( $atts['month'] ) : date( 'Y-m' );
-        $month_start = $month . '-01';
-        $timezone = \get_option( 'timezone_string' ) ?: 'UTC';
-        $start = $this->to_timestamp( $month_start, '00:00', $timezone );
-        $end = strtotime( '+1 month', strtotime( $month_start ) );
-
-        $meta_query = [
-            [
-                'key' => $this->meta_key( 'start_ts' ),
-                'value' => [ $start, $end ],
-                'compare' => 'BETWEEN',
-                'type' => 'NUMERIC',
-            ],
-            $this->build_hide_clause(),
-        ];
-        if ( $atts['show_past'] === 'no' ) {
-            $meta_query[] = $this->build_visibility_clause();
-        }
-
-        $args = [
-            'post_type' => self::CPT,
-            'posts_per_page' => -1,
-            'post_status' => 'publish',
-            'meta_query' => $meta_query,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
-            'order' => 'ASC',
-        ];
-
-        $args = \apply_filters( 'anchor_events_query_args', $args, $atts );
-        $events = $this->get_cached_ids( $args );
-        $by_day = [];
-        foreach ( $events as $event_id ) {
-            $meta = $this->get_meta( $event_id );
-            $day = $meta['start_date'];
-            if ( ! $day ) {
-                continue;
-            }
-            if ( ! isset( $by_day[ $day ] ) ) {
-                $by_day[ $day ] = [];
-            }
-            $by_day[ $day ][] = $event_id;
-        }
-
-        $calendar_month = $month_start;
-        $calendar_first = strtotime( $month_start );
-        $calendar_days = (int) date( 't', $calendar_first );
-        $calendar_start_weekday = (int) date( 'N', $calendar_first );
-        $calendar_events = $by_day;
-
-        $template = $this->locate_template( 'calendar.php' );
-        if ( $template && file_exists( $template ) ) {
-            ob_start();
-            include $template;
-            return ob_get_clean();
-        }
-
-        return '<div class="anchor-events-empty">' . esc_html__( 'Calendar template not found.', 'anchor-schema' ) . '</div>';
+        return $this->render_calendar_month( $atts );
     }
 
     public function render_events_list( $atts, $context ) {
@@ -1306,6 +1256,13 @@ class Module {
 
     public function render_settings_page() {
         echo '<div class="wrap"><h1>' . esc_html__( 'Anchor Events Settings', 'anchor-schema' ) . '</h1>';
+        echo '<p>' . esc_html__( 'Display events with these shortcodes:', 'anchor-schema' ) . '</p>';
+        echo '<ul style="margin-left:18px;list-style:disc;">';
+        echo '<li><code>[events_list]</code> ' . esc_html__( 'List events. Attributes: category, tag, type, status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[featured_events]</code> ' . esc_html__( 'Show featured events. Attributes: limit, orderby (priority|date), order (ASC|DESC).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_calendar]</code> ' . esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
+        echo '</ul>';
+        echo '<p>' . esc_html__( 'You can also link to the events archive at /event/ (or your custom slug).', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="options.php">';
         \settings_fields( 'anchor_events_group' );
         \do_settings_sections( 'anchor_events_settings' );
@@ -1508,6 +1465,106 @@ class Module {
         return $dt->getTimestamp();
     }
 
+    private function diff_months( $a, $b ) {
+        if ( ! preg_match( '/^(\\d{4})-(\\d{2})$/', $a, $ma ) || ! preg_match( '/^(\\d{4})-(\\d{2})$/', $b, $mb ) ) {
+            return 0;
+        }
+        $am = ( (int) $ma[1] * 12 ) + (int) $ma[2];
+        $bm = ( (int) $mb[1] * 12 ) + (int) $mb[2];
+        return $am - $bm;
+    }
+
+    private function render_calendar_month( $atts, $force_month = '' ) {
+        $show_past = $atts['show_past'] ?? 'yes';
+
+        $requested_month = '';
+        if ( $force_month ) {
+            $requested_month = $force_month;
+        } elseif ( ! empty( $_GET['anchor_events_month'] ) ) {
+            $requested_month = sanitize_text_field( wp_unslash( $_GET['anchor_events_month'] ) );
+        } elseif ( ! empty( $atts['month'] ) ) {
+            $requested_month = sanitize_text_field( $atts['month'] );
+        }
+        if ( ! preg_match( '/^\\d{4}-\\d{2}$/', $requested_month ) ) {
+            $requested_month = date( 'Y-m' );
+        }
+
+        $month = $requested_month;
+        $month_start = $month . '-01';
+        $timezone = \get_option( 'timezone_string' ) ?: 'UTC';
+        $start = $this->to_timestamp( $month_start, '00:00', $timezone );
+        $end = strtotime( '+1 month', strtotime( $month_start ) );
+
+        $diff_to_now = $this->diff_months( $month, date( 'Y-m' ) );
+        $prev_month = ( $diff_to_now > -12 ) ? date( 'Y-m', strtotime( '-1 month', strtotime( $month_start ) ) ) : '';
+        $next_month = ( $diff_to_now < 12 ) ? date( 'Y-m', strtotime( '+1 month', strtotime( $month_start ) ) ) : '';
+        $nav_param = 'anchor_events_month';
+        $current_url = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '';
+        if ( ! $current_url && function_exists( 'get_permalink' ) ) {
+            $current_url = \get_permalink();
+        }
+        $prev_link = $prev_month ? esc_url( add_query_arg( $nav_param, $prev_month, $current_url ) ) : '';
+        $next_link = $next_month ? esc_url( add_query_arg( $nav_param, $next_month, $current_url ) ) : '';
+
+        $meta_query = [
+            [
+                'key' => $this->meta_key( 'start_ts' ),
+                'value' => [ $start, $end ],
+                'compare' => 'BETWEEN',
+                'type' => 'NUMERIC',
+            ],
+            $this->build_hide_clause(),
+        ];
+        if ( $show_past === 'no' ) {
+            $meta_query[] = $this->build_visibility_clause();
+        }
+
+        $args = [
+            'post_type' => self::CPT,
+            'posts_per_page' => -1,
+            'post_status' => 'publish',
+            'meta_query' => $meta_query,
+            'orderby' => 'meta_value_num',
+            'meta_key' => $this->meta_key( 'start_ts' ),
+            'order' => 'ASC',
+        ];
+
+        $args = \apply_filters( 'anchor_events_query_args', $args, $atts );
+        $events = $this->get_cached_ids( $args );
+        $by_day = [];
+        foreach ( $events as $event_id ) {
+            $meta = $this->get_meta( $event_id );
+            $day = $meta['start_date'];
+            if ( ! $day ) {
+                continue;
+            }
+            if ( ! isset( $by_day[ $day ] ) ) {
+                $by_day[ $day ] = [];
+            }
+            $by_day[ $day ][] = $event_id;
+        }
+
+        $calendar_month = $month_start;
+        $calendar_first = strtotime( $month_start );
+        $calendar_days = (int) date( 't', $calendar_first );
+        $calendar_start_weekday = (int) date( 'N', $calendar_first );
+        $calendar_events = $by_day;
+        $calendar_prev_link = $prev_link;
+        $calendar_next_link = $next_link;
+        $calendar_prev_month = $prev_month;
+        $calendar_next_month = $next_month;
+        $calendar_show_past = $show_past;
+
+        $template = $this->locate_template( 'calendar.php' );
+        if ( $template && file_exists( $template ) ) {
+            ob_start();
+            include $template;
+            return ob_get_clean();
+        }
+
+        return '<div class="anchor-events-empty">' . esc_html__( 'Calendar template not found.', 'anchor-schema' ) . '</div>';
+    }
+
     private function format_date_time( $meta, $include_range = false ) {
         if ( ! $meta['start_date'] ) {
             return '';
@@ -1620,6 +1677,14 @@ class Module {
         $fields = [];
         // Allow developers to extend registration fields with custom inputs.
         return \apply_filters( 'anchor_events_registration_fields', $fields );
+    }
+
+    public function ajax_calendar() {
+        \check_ajax_referer( 'anchor_events_calendar', 'nonce' );
+        $month = isset( $_POST['month'] ) ? sanitize_text_field( wp_unslash( $_POST['month'] ) ) : '';
+        $show_past = isset( $_POST['show_past'] ) ? sanitize_text_field( wp_unslash( $_POST['show_past'] ) ) : 'yes';
+        $html = $this->render_calendar_month( [ 'show_past' => $show_past ], $month );
+        \wp_send_json_success( [ 'html' => $html ] );
     }
 
     private function get_registrations( $event_id, $limit = 50 ) {

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.3.97
+ * Version: 3.3.99
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -2886,6 +2886,24 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Create reusable mega menu snippets.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-mega-menu/anchor-mega-menu.php',
                 'class'       => 'Anchor_Mega_Menu_Module',
+            ],
+            'events_manager' => [
+                'label'       => __( 'Anchor Events Manager', 'anchor-schema' ),
+                'description' => __( 'Manage events, calendars, and registrations.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-events-manager/anchor-events-manager.php',
+                'class'       => '\\Anchor\\Events\\Module',
+            ],
+            'store_locator' => [
+                'label'       => __( 'Anchor Store Locator', 'anchor-schema' ),
+                'description' => __( 'Add a map-based store locator with search and proximity filtering.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-store-locator/anchor-store-locator.php',
+                'class'       => '\\Anchor\\StoreLocator\\Module',
+            ],
+            'webinars' => [
+                'label'       => __( 'Anchor Webinars', 'anchor-schema' ),
+                'description' => __( 'Publish gated webinars with Vimeo watch tracking.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-webinars/anchor-webinars.php',
+                'class'       => '\\Anchor\\Webinars\\Module',
             ],
             'universal_popups' => [
                 'label'       => __( 'Anchor Universal Popups', 'anchor-schema' ),

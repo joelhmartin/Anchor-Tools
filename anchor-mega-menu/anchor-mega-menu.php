@@ -20,6 +20,9 @@ class Anchor_Mega_Menu_Module {
         add_action('wp_enqueue_scripts', [$this, 'frontend_assets']);
         add_shortcode('mm_snippet', [$this, 'shortcode_render']);
         add_shortcode('anchor_mega_snippet', [$this, 'shortcode_render']);
+
+        add_filter('manage_' . self::CPT . '_posts_columns', [$this, 'add_admin_columns']);
+        add_action('manage_' . self::CPT . '_posts_custom_column', [$this, 'render_admin_column'], 10, 2);
     }
 
     public function register_cpt(){
@@ -280,16 +283,16 @@ class Anchor_Mega_Menu_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('mm-admin', plugins_url('admin.css', __FILE__), [], '1.1.3');
-            wp_enqueue_script('mm-admin', plugins_url('admin.js', __FILE__), ['jquery', 'code-editor'], '1.1.3', true);
+            wp_enqueue_style('mm-admin', plugins_url('admin.css', __FILE__), [], '1.1.4');
+            wp_enqueue_script('mm-admin', plugins_url('admin.js', __FILE__), ['jquery', 'code-editor'], '1.1.4', true);
         }
     }
 
     public function frontend_assets(){
         $snippets = $this->get_published_snippets();
         if (empty($snippets)) return;
-        wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.3');
-        wp_enqueue_script('mm-frontend', plugins_url('frontend.js', __FILE__), [], '1.1.3', true);
+        wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.4');
+        wp_enqueue_script('mm-frontend', plugins_url('frontend.js', __FILE__), [], '1.1.4', true);
         $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
         if ($global_css !== '') {
             wp_add_inline_style('mm-frontend', $global_css);
@@ -301,16 +304,69 @@ class Anchor_Mega_Menu_Module {
         $atts = shortcode_atts(['id' => 0], $atts);
         $post_id = (int)$atts['id'];
         if (!$post_id) return '';
+        $this->ensure_embed_assets();
         $meta = $this->get_meta($post_id);
+        $max_h = (int)$meta['max_height'];
+        $html  = $meta['html'];
+        $css   = trim($meta['css']);
+        $js    = trim($meta['js']);
+
+        if ($css !== '') {
+            wp_add_inline_style('mm-frontend', "\n/* Mega Menu snippet {$post_id} */\n{$css}");
+        }
+        if ($js !== '') {
+            wp_add_inline_script('mm-frontend', "(function(){try{ {$js} }catch(e){console.error(e);}})();");
+        }
+
         ob_start(); ?>
-        <div class="mm-panel-embed mm-anim-<?php echo esc_attr($meta['animation']); ?>" style="--mm-max-h: <?php echo esc_attr((int)$meta['max_height']); ?>px;">
-            <style><?php echo $meta['css']; ?></style>
-            <div class="mm-viewport">
-                <?php echo $meta['html']; ?>
-            </div>
-            <script>(function(){ try { <?php echo $meta['js']; ?> } catch(e){} })();</script>
+        <div class="mm-snippet-inline" data-mm-id="<?php echo (int)$post_id; ?>" style="--mm-max-h: <?php echo esc_attr($max_h); ?>px;">
+            <?php echo $html; ?>
         </div>
-        <?php
-        return ob_get_clean();
+        <?php return ob_get_clean();
+    }
+
+    private function ensure_embed_assets(){
+        if (!wp_style_is('mm-frontend', 'enqueued')) {
+            wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.4');
+            $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
+            if ($global_css !== '') {
+                wp_add_inline_style('mm-frontend', $global_css);
+            }
+        }
+    }
+
+    public function add_admin_columns($columns){
+        $new = [];
+        foreach ($columns as $key => $label){
+            $new[$key] = $label;
+            if ($key === 'title'){
+                $new['mm_trigger'] = __('Trigger', 'anchor-schema');
+                $new['mm_shortcode'] = __('Shortcode', 'anchor-schema');
+            }
+        }
+        return $new;
+    }
+
+    public function render_admin_column($column, $post_id){
+        if ($column === 'mm_trigger'){
+            $meta = $this->get_meta($post_id);
+            $trigger = trim($meta['trigger_class']);
+            if ($trigger){
+                $classes = preg_split('/\s+/', $trigger);
+                $formatted = array_map(function($c){
+                    return '<code>.' . esc_html($c) . '</code>';
+                }, array_filter($classes));
+                echo implode('<br/>', $formatted);
+            } else {
+                echo '<span class="dashicons dashicons-clock"></span> ' . esc_html__('Page load / manual trigger', 'anchor-schema');
+            }
+            return;
+        }
+
+        if ($column === 'mm_shortcode'){
+            $shortcode = '[anchor_mega_snippet id="' . (int)$post_id . '"]';
+            echo '<code>' . esc_html($shortcode) . '</code>';
+            return;
+        }
     }
 }

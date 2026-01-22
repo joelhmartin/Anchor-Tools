@@ -775,27 +775,54 @@ private function ytapi_resolve_channel_id($input, $api_key){
     if ($input === '') return new WP_Error('ssfs_input', 'No channel provided');
     if (preg_match('/^UC[0-9A-Za-z_-]{22}$/', $input)) return $input;
 
-    if ($input[0] === '@' || strpos($input, 'youtube.com/@') !== false) {
-        $handle = $input[0] === '@' ? $input : preg_replace('~^.*?(/@[^/]+).*$~', '$1', $input);
+    if ($input[0] === '@' || stripos($input, 'youtube.com/@') !== false) {
+        $handle = $input[0] === '@' ? $input : preg_replace('~^.*?/@([^/?#]+).*$~', '@$1', $input);
+        $handle = ltrim(trim($handle), '@/');
+        if ($handle === '') return new WP_Error('ssfs_handle', 'Empty handle provided');
+
+        $cache_key = 'ssfs_yt_handle_' . md5(strtolower($handle));
+        if (isset($_GET['ssfs_refresh']) && $_GET['ssfs_refresh'] == '1') delete_transient($cache_key);
+        $cached = get_transient($cache_key);
+        if (is_string($cached) && preg_match('/^UC[0-9A-Za-z_-]{22}$/', $cached)) return $cached;
+        if (is_array($cached)) {
+            $cid = $cached['items'][0]['id']['channelId'] ?? ($cached['items'][0]['id'] ?? '');
+            if ($cid && preg_match('/^UC[0-9A-Za-z_-]{22}$/', $cid)) return $cid;
+        }
+
+        // Prefer channels.list forHandle for accurate resolution, fall back to search.
+        $url = add_query_arg([
+            'part'      => 'id',
+            'forHandle' => $handle,
+            'key'       => $api_key,
+        ], 'https://www.googleapis.com/youtube/v3/channels');
+        $res = wp_remote_get($url, ['timeout' => 12]);
+        if (!is_wp_error($res)) {
+            $data = json_decode(wp_remote_retrieve_body($res), true);
+            $cid = $data['items'][0]['id'] ?? '';
+            if ($cid && preg_match('/^UC[0-9A-Za-z_-]{22}$/', $cid)) {
+                set_transient($cache_key, $cid, DAY_IN_SECONDS);
+                return $cid;
+            }
+        } else {
+            return $res;
+        }
+
         $url = add_query_arg([
             'part'       => 'snippet',
-            'q'          => $handle,
+            'q'          => '@' . $handle,
             'type'       => 'channel',
             'maxResults' => 1,
             'key'        => $api_key,
         ], 'https://www.googleapis.com/youtube/v3/search');
 
-        $cache_key = 'ssfs_yt_handle_' . md5(strtolower($handle));
-        if (isset($_GET['ssfs_refresh']) && $_GET['ssfs_refresh'] == '1') delete_transient($cache_key);
-        $data = get_transient($cache_key);
-        if (!$data) {
-            $res = wp_remote_get($url, ['timeout' => 12]);
-            if (is_wp_error($res)) return $res;
-            $data = json_decode(wp_remote_retrieve_body($res), true);
-            set_transient($cache_key, $data, DAY_IN_SECONDS);
-        }
+        $res = wp_remote_get($url, ['timeout' => 12]);
+        if (is_wp_error($res)) return $res;
+        $data = json_decode(wp_remote_retrieve_body($res), true);
         $cid = $data['items'][0]['id']['channelId'] ?? '';
-        if ($cid && preg_match('/^UC[0-9A-Za-z_-]{22}$/', $cid)) return $cid;
+        if ($cid && preg_match('/^UC[0-9A-Za-z_-]{22}$/', $cid)) {
+            set_transient($cache_key, $cid, DAY_IN_SECONDS);
+            return $cid;
+        }
         return new WP_Error('ssfs_handle', 'Could not resolve handle to a channel ID');
     }
 

@@ -32,10 +32,18 @@
   gap:12px;
 }
 
+.anchor-event-thumb{
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
 .anchor-event-thumb img{
-  width:100%;
-  height:auto;
-  border-radius:8px;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .anchor-event-title{

@@ -17,7 +17,13 @@
     styleTag.textContent = sn.css || '';
     var viewport = document.createElement('div');
     viewport.className = 'mm-viewport';
-    viewport.style.maxHeight = (sn.settings.maxHeight || 400)+'px';
+    var maxHeight = sn.settings.maxHeight;
+    if (maxHeight === null || maxHeight === undefined || maxHeight === '' || maxHeight === 0 || maxHeight === 'none') {
+      viewport.style.maxHeight = 'none';
+    } else {
+      var maxPx = parseInt(maxHeight, 10);
+      viewport.style.maxHeight = (!isNaN(maxPx) && maxPx > 0) ? (maxPx + 'px') : 'none';
+    }
     viewport.style.overflow = 'auto';
     viewport.innerHTML = sn.html || '';
 

@@ -75,7 +75,7 @@ class Anchor_Mega_Menu_Module {
             'position' => 'below',      // below | above | left | right
             'absolute' => '1',
             'hover_delay' => 200,
-            'max_height' => 400,
+            'max_height' => '',
             'animation' => 'fade',      // fade | slide | scale | flip
             'z_index' => 9999,
             'offset_x' => 0,
@@ -93,6 +93,18 @@ class Anchor_Mega_Menu_Module {
             if ($meta[$k] === '') { $meta[$k] = $v; }
         }
         return $meta;
+    }
+
+    private function normalize_max_height($value){
+        $value = trim((string)$value);
+        if ($value === '' || strtolower($value) === 'none') {
+            return '';
+        }
+        if (is_numeric($value)) {
+            $num = (int)$value;
+            return $num > 0 ? $num : '';
+        }
+        return '';
     }
 
     public function render_box_code($post){
@@ -156,8 +168,9 @@ class Anchor_Mega_Menu_Module {
             <label>Hover close delay (ms)</label>
             <input type="number" min="0" step="50" name="mm_hover_delay" value="<?php echo esc_attr($m['hover_delay']); ?>" />
 
-            <label>Viewport max height (px)</label>
-            <input type="number" min="100" step="10" name="mm_max_height" value="<?php echo esc_attr($m['max_height']); ?>" />
+            <label>Viewport max height (px or none)</label>
+            <input type="text" name="mm_max_height" value="<?php echo esc_attr($m['max_height']); ?>" placeholder="none" />
+            <p class="description">Leave blank or set to "none" for auto height.</p>
 
             <label>Z-index</label>
             <input type="number" name="mm_z_index" value="<?php echo esc_attr($m['z_index']); ?>" />
@@ -218,7 +231,7 @@ class Anchor_Mega_Menu_Module {
         ?>
         <p class="description">Live preview renders your HTML/CSS/JS below inside a contained viewport so you can test scrolling and interactions.</p>
         <div id="mm-preview-wrap">
-            <div id="mm-preview-viewport" style="border:1px solid #ccd0d4; border-radius:8px; overflow:auto; max-height:400px; background:#fff;">
+            <div id="mm-preview-viewport" style="border:1px solid #ccd0d4; border-radius:8px; overflow:auto; max-height:none; background:#fff;">
                 <div id="mm-preview-content" style="padding:16px;"></div>
             </div>
         </div>
@@ -239,6 +252,9 @@ class Anchor_Mega_Menu_Module {
         foreach ($fields as $f){
             $key = "mm_$f";
             $val = isset($_POST[$key]) ? $_POST[$key] : '';
+            if ($f === 'max_height') {
+                $val = $this->normalize_max_height($val);
+            }
             update_post_meta($post_id, $key, $val);
         }
     }
@@ -253,6 +269,7 @@ class Anchor_Mega_Menu_Module {
         $items = [];
         foreach ($q->posts as $p){
             $meta = $this->get_meta($p->ID);
+            $max_height = $this->normalize_max_height($meta['max_height']);
             $items[] = [
                 'id' => (int)$p->ID,
                 'title' => $p->post_title,
@@ -261,7 +278,7 @@ class Anchor_Mega_Menu_Module {
                     'position' => $meta['position'],
                     'absolute' => $meta['absolute'] === '1',
                     'hoverDelay' => (int)$meta['hover_delay'],
-                    'maxHeight' => (int)$meta['max_height'],
+                    'maxHeight' => $max_height,
                     'animation' => $meta['animation'],
                     'zIndex' => (int)$meta['z_index'],
                     'offsetX' => (int)$meta['offset_x'],
@@ -306,7 +323,7 @@ class Anchor_Mega_Menu_Module {
         if (!$post_id) return '';
         $this->ensure_embed_assets();
         $meta = $this->get_meta($post_id);
-        $max_h = (int)$meta['max_height'];
+        $max_h = $this->normalize_max_height($meta['max_height']);
         $html  = $meta['html'];
         $css   = trim($meta['css']);
         $js    = trim($meta['js']);
@@ -319,7 +336,8 @@ class Anchor_Mega_Menu_Module {
         }
 
         ob_start(); ?>
-        <div class="mm-snippet-inline" data-mm-id="<?php echo (int)$post_id; ?>" style="--mm-max-h: <?php echo esc_attr($max_h); ?>px;">
+        <?php $style = ($max_h !== '') ? ' style="--mm-max-h: ' . esc_attr($max_h) . 'px;"' : ''; ?>
+        <div class="mm-snippet-inline" data-mm-id="<?php echo (int)$post_id; ?>"<?php echo $style; ?>>
             <?php echo $html; ?>
         </div>
         <?php return ob_get_clean();

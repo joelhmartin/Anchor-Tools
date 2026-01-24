@@ -6,7 +6,7 @@
       $wrap.empty().append(
         '<style id="mm-preview-global-css"></style>' +
         '<style id="mm-preview-css"></style>' +
-        '<div id="mm-preview-html" class="mm-viewport" style="max-height:400px; overflow:auto; padding:12px;"></div>' +
+        '<div id="mm-preview-html" class="mm-viewport" style="max-height:none; overflow:auto; padding:12px;"></div>' +
         '<div id="mm-preview-js"></div>'
       );
     }
@@ -58,9 +58,22 @@
 
     applyPreview();
 
-    $('input[name="mm_max_height"]').on('input', function(){
-      var v = parseInt($(this).val() || '400', 10);
-      $('#mm-preview-viewport').css('max-height', v+'px');
-    });
+    function applyPreviewMaxHeight(){
+      var raw = ($('input[name="mm_max_height"]').val() || '').trim().toLowerCase();
+      var $viewport = $('#mm-preview-viewport');
+      if (!raw || raw === 'none') {
+        $viewport.css('max-height', 'none');
+        return;
+      }
+      var v = parseInt(raw, 10);
+      if (!isNaN(v) && v > 0) {
+        $viewport.css('max-height', v + 'px');
+      } else {
+        $viewport.css('max-height', 'none');
+      }
+    }
+
+    applyPreviewMaxHeight();
+    $('input[name="mm_max_height"]').on('input', applyPreviewMaxHeight);
   });
 })(jQuery);

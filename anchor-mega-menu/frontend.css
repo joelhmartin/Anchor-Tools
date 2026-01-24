@@ -11,7 +11,7 @@
   display: none; /* prevent layout before first open */
 }
 .mm-panel.mm-open{ display:block; }
-.mm-panel .mm-viewport{ overflow:auto; max-height: var(--mm-max-h, 400px); }
+.mm-panel .mm-viewport{ overflow:auto; max-height: var(--mm-max-h, none); }
 
 /* Animations (toggle with .mm-open) */
 .mm-anim-fade{ opacity:0; }

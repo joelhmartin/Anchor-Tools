@@ -1,4 +1,4 @@
 #mm-preview-wrap{ margin-top: 8px; }
 #mm-preview-viewport{ background:#fff; }
-#mm-preview-content .mm-viewport{ max-height:400px; overflow:auto; }
+#mm-preview-content .mm-viewport{ max-height:none; overflow:auto; }
 .mm-fields .mm-field{ margin-bottom: 12px; }

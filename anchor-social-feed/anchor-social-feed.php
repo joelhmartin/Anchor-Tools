@@ -18,7 +18,7 @@ class Anchor_Social_Feed_Module {
         add_action('wp_enqueue_scripts', [$this, 'enqueue_assets']);
     }
 
-    public static function get_options() {
+    public function get_options() {
         $defaults = [
             'youtube_channel_id' => '',    // UC id, @handle, or channel URL
             'facebook_page_url'  => '',
@@ -352,19 +352,29 @@ class Anchor_Social_Feed_Module {
     }
 
     public function sanitize_options($input) {
-        $out = self::get_options();
-        foreach ($out as $k => $v) {
-            if (!isset($input[$k])) continue;
+        $out = $this->get_options();
+
+        // Process each field explicitly using null coalescing for safety
+        foreach ([
+            'youtube_channel_id',
+            'facebook_page_url',
+            'instagram_username',
+            'twitter_username',
+            'spotify_artist_id',
+            'layout',
+        ] as $k) {
+            $val = $input[$k] ?? '';
             switch ($k) {
                 case 'facebook_page_url':
-                    $out[$k] = esc_url_raw($input[$k]);
+                    $out[$k] = esc_url_raw($val);
                     break;
                 case 'layout':
-                    $val = strtolower(sanitize_text_field($input[$k]));
+                    $val = strtolower(sanitize_text_field($val));
                     $out[$k] = in_array($val, ['grid', 'stack'], true) ? $val : 'grid';
                     break;
                 default:
-                    $out[$k] = preg_replace('/[^A-Za-z0-9_\-\.@:\\\\/]/', '', sanitize_text_field($input[$k]));
+                    // Allow alphanumeric, underscore, hyphen, period, @, colon, forward slash
+                    $out[$k] = preg_replace('/[^A-Za-z0-9_\-.@:\/]/', '', sanitize_text_field($val));
             }
         }
         return $out;
@@ -372,8 +382,8 @@ class Anchor_Social_Feed_Module {
 
     public function render_field($args) {
         $key = $args['key'];
-        $opts = self::get_options();
-        $val  = isset($opts[$key]) ? $opts[$key] : '';
+        $opts = $this->get_options();
+        $val  = $opts[$key] ?? '';
 
         if ($key === 'layout') {
             echo '<select name="' . esc_attr(self::OPT_KEY . '[' . $key . ']') . '">';
@@ -420,7 +430,7 @@ class Anchor_Social_Feed_Module {
     }
 
     public function shortcode_handler($atts = [], $content = null) {
-        $opts = self::get_options();
+        $opts = $this->get_options();
         $atts = shortcode_atts([
             'platform'           => '',
             'platforms'          => '',

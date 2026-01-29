@@ -30,6 +30,7 @@ class Anchor_Quick_Edit_Module {
         add_action('wp_ajax_ac_yqep_process_image', [$this, 'ajax_process_image']);
         add_action('wp_ajax_ac_yqep_set_featured', [$this, 'ajax_set_featured']);
         add_action('wp_ajax_ac_yqep_remove_featured', [$this, 'ajax_remove_featured']);
+        add_action('wp_ajax_ac_yqep_generate_seo', [$this, 'ajax_generate_seo']);
     }
 
     private function get_assets_url() {
@@ -78,8 +79,8 @@ class Anchor_Quick_Edit_Module {
         wp_enqueue_style('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css', [], '1.6.2');
         wp_enqueue_script('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js', [], '1.6.2', true);
 
-        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.1');
-        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.1', true);
+        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.2');
+        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.2', true);
 
         wp_localize_script('ac-yqep-admin', 'AC_YQEP', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
@@ -113,6 +114,11 @@ class Anchor_Quick_Edit_Module {
                     <span class="title">Meta Description</span>
                     <textarea name="<?php echo esc_attr(self::META_DESC); ?>" rows="3" style="width:100%;"></textarea>
                 </label>
+
+                <div class="ac-yqep-ai-row" style="margin-top:8px;">
+                    <button type="button" class="button ac-yqep-generate-seo">Generate with AI</button>
+                    <span class="ac-yqep-ai-status"></span>
+                </div>
 
                 <div style="margin-top:12px;">
                     <h4>Featured Image</h4>
@@ -426,5 +432,159 @@ class Anchor_Quick_Edit_Module {
         wp_send_json_success([
             'message' => 'Featured image removed.',
         ]);
+    }
+
+    public function ajax_generate_seo() {
+        check_ajax_referer(self::NONCE_ACTION, 'nonce');
+
+        $post_id = isset($_POST['postId']) ? absint($_POST['postId']) : 0;
+
+        if (!$post_id) {
+            wp_send_json_error(['message' => 'Missing post ID.'], 400);
+        }
+        if (!current_user_can('edit_post', $post_id)) {
+            wp_send_json_error(['message' => 'Permission denied.'], 403);
+        }
+
+        // Get OpenAI settings from Anchor Tools
+        if (!class_exists('Anchor_Schema_Admin')) {
+            wp_send_json_error(['message' => 'Anchor Tools not properly configured.'], 500);
+        }
+
+        $settings = get_option(Anchor_Schema_Admin::OPTION_KEY, []);
+        $api_key = isset($settings['api_key']) ? trim($settings['api_key']) : '';
+        $model = isset($settings['model']) ? trim($settings['model']) : 'gpt-4o-mini';
+
+        if (empty($api_key)) {
+            wp_send_json_error(['message' => 'OpenAI API key not configured in Anchor Tools settings.'], 400);
+        }
+
+        // Get post content
+        $post = get_post($post_id);
+        if (!$post) {
+            wp_send_json_error(['message' => 'Post not found.'], 404);
+        }
+
+        $title = $post->post_title;
+        $content = $post->post_content;
+
+        // Strip shortcodes and HTML, limit length
+        $clean_content = wp_strip_all_tags(strip_shortcodes($content));
+        $clean_content = preg_replace('/\s+/', ' ', $clean_content);
+        $clean_content = mb_substr($clean_content, 0, 3000); // Limit to ~3000 chars
+
+        if (empty($clean_content) && empty($title)) {
+            wp_send_json_error(['message' => 'Post has no content to analyze.'], 400);
+        }
+
+        // Build prompt
+        $prompt = $this->build_seo_prompt($title, $clean_content);
+
+        // Call OpenAI
+        $response = $this->call_openai_for_seo($api_key, $model, $prompt);
+
+        if (is_wp_error($response)) {
+            wp_send_json_error(['message' => $response->get_error_message()], 500);
+        }
+
+        // Parse JSON response
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE || !isset($data['seo_title']) || !isset($data['meta_description'])) {
+            // Try to extract from non-JSON response
+            $data = $this->extract_seo_from_text($response);
+            if (!$data) {
+                wp_send_json_error(['message' => 'Failed to parse AI response.'], 500);
+            }
+        }
+
+        wp_send_json_success([
+            'seoTitle' => sanitize_text_field($data['seo_title']),
+            'metaDescription' => sanitize_textarea_field($data['meta_description']),
+        ]);
+    }
+
+    private function build_seo_prompt($title, $content) {
+        $site_name = get_bloginfo('name');
+
+        return "You are an SEO expert. Generate an SEO title and meta description for the following webpage.
+
+REQUIREMENTS:
+- SEO Title: 50-60 characters max, compelling, include primary keyword naturally
+- Meta Description: 150-160 characters max, include a call-to-action, summarize the page value
+
+Page Title: {$title}
+Site Name: {$site_name}
+
+Page Content:
+{$content}
+
+Respond ONLY with valid JSON in this exact format (no markdown, no code fences):
+{\"seo_title\": \"Your SEO title here\", \"meta_description\": \"Your meta description here\"}";
+    }
+
+    private function call_openai_for_seo($api_key, $model, $prompt) {
+        $body = [
+            'model' => $model ?: 'gpt-4o-mini',
+            'messages' => [
+                ['role' => 'system', 'content' => 'You are an SEO specialist. Always respond with valid JSON only, no markdown formatting.'],
+                ['role' => 'user', 'content' => $prompt],
+            ],
+            'temperature' => 0.7,
+            'max_tokens' => 300,
+        ];
+
+        $response = wp_remote_post('https://api.openai.com/v1/chat/completions', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $api_key,
+                'Content-Type'  => 'application/json',
+            ],
+            'body'    => wp_json_encode($body),
+            'timeout' => 30,
+        ]);
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        $code = wp_remote_retrieve_response_code($response);
+        $raw = wp_remote_retrieve_body($response);
+
+        if ($code < 200 || $code >= 300) {
+            return new WP_Error('openai_http', 'OpenAI error ' . $code . ': ' . $raw);
+        }
+
+        $data = json_decode($raw, true);
+        if (!$data || empty($data['choices'][0]['message']['content'])) {
+            return new WP_Error('openai_parse', 'Invalid response from OpenAI');
+        }
+
+        return trim($data['choices'][0]['message']['content']);
+    }
+
+    private function extract_seo_from_text($text) {
+        // Try to extract JSON from text that might have markdown formatting
+        if (preg_match('/\{[^}]+\}/', $text, $match)) {
+            $data = json_decode($match[0], true);
+            if (json_last_error() === JSON_ERROR_NONE && isset($data['seo_title']) && isset($data['meta_description'])) {
+                return $data;
+            }
+        }
+
+        // Fallback: try to parse structured text
+        $seo_title = '';
+        $meta_desc = '';
+
+        if (preg_match('/seo.?title["\s:]+([^"}\n]+)/i', $text, $m)) {
+            $seo_title = trim($m[1], '", ');
+        }
+        if (preg_match('/meta.?description["\s:]+([^"}\n]+)/i', $text, $m)) {
+            $meta_desc = trim($m[1], '", ');
+        }
+
+        if ($seo_title && $meta_desc) {
+            return ['seo_title' => $seo_title, 'meta_description' => $meta_desc];
+        }
+
+        return null;
     }
 }

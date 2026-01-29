@@ -292,4 +292,43 @@
     });
   });
 
+  // Generate SEO with AI
+  $(document).on('click', '.ac-yqep-generate-seo', function(){
+    const $btn = $(this);
+    const $editRow = $btn.closest('tr.inline-edit-row');
+    const postId = parseInt($editRow.find('.ac-yqep-post-id').val(), 10);
+    const $status = $editRow.find('.ac-yqep-ai-status');
+
+    if (!postId) {
+      $status.text('Error: No post ID').css('color', '#d63638');
+      return;
+    }
+
+    // Disable button and show loading
+    $btn.prop('disabled', true).text('Generating...');
+    $status.text('').css('color', '');
+
+    $.post(AC_YQEP.ajaxUrl, {
+      action: 'ac_yqep_generate_seo',
+      nonce: AC_YQEP.nonce,
+      postId: postId
+    }).done(function(res){
+      if (res && res.success) {
+        // Populate the fields
+        $editRow.find('input[name="_yoast_wpseo_title"]').val(res.data.seoTitle);
+        $editRow.find('textarea[name="_yoast_wpseo_metadesc"]').val(res.data.metaDescription);
+        $status.text('Generated!').css('color', '#00a32a');
+
+        // Clear status after a moment
+        setTimeout(function(){ $status.text(''); }, 2000);
+      } else {
+        $status.text((res && res.data && res.data.message) || 'Generation failed.').css('color', '#d63638');
+      }
+    }).fail(function(){
+      $status.text('Request failed.').css('color', '#d63638');
+    }).always(function(){
+      $btn.prop('disabled', false).text('Generate with AI');
+    });
+  });
+
 })(jQuery);

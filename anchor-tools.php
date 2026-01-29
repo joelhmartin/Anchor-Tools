@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.4.05
+ * Version: 3.4.06
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -2922,6 +2922,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Display a horizontal video slider with popup playback.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/anchor-video-slider.php',
                 'class'       => 'Anchor_Video_Slider_Module',
+            ],
+            'quick_edit' => [
+                'label'       => __( 'Anchor Quick Edit', 'anchor-schema' ),
+                'description' => __( 'Quick Edit fields for Yoast SEO and featured image editing.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-quick-edit/anchor-quick-edit.php',
+                'class'       => 'Anchor_Quick_Edit_Module',
             ],
         ];
     }

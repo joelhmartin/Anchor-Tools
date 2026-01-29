@@ -1,0 +1,31 @@
+.ac-yqep-modal { display:none; }
+.ac-yqep-modal.is-open { display:block; position:fixed; inset:0; z-index:999999; }
+.ac-yqep-modal__backdrop { position:absolute; inset:0; background:rgba(0,0,0,.6); }
+.ac-yqep-modal__panel {
+  position:relative;
+  width:min(1100px, 92vw);
+  height:min(720px, 88vh);
+  margin:4vh auto 0;
+  background:#fff;
+  border-radius:10px;
+  overflow:hidden;
+  box-shadow:0 10px 30px rgba(0,0,0,.3);
+  display:flex;
+  flex-direction:column;
+}
+.ac-yqep-modal__header {
+  padding:12px 14px;
+  border-bottom:1px solid #e5e5e5;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+.ac-yqep-modal__body { padding:14px; overflow:auto; }
+.ac-yqep-grid { display:grid; grid-template-columns: 1.6fr 1fr; gap:14px; }
+.ac-yqep-image-wrap { width:100%; height:520px; background:#f6f7f7; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+.ac-yqep-image { max-width:100%; display:block; }
+.ac-yqep-row { display:flex; gap:10px; margin-top:10px; align-items:center; flex-wrap:wrap; }
+.ac-yqep-field { margin-bottom:14px; }
+.ac-yqep-field input[type="number"] { width:110px; }
+.ac-yqep-checkbox, .ac-yqep-radio { display:block; margin-top:8px; }
+.ac-yqep-status { margin-left:10px; }

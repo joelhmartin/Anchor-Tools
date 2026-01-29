@@ -1,5 +1,6 @@
 (function($){
   let cropper = null;
+  let mediaFrame = null;
 
   function openModal($modal) {
     $modal.attr('aria-hidden', 'false').addClass('is-open');
@@ -22,6 +23,28 @@
     return $modal.find('input[name="ac_yqep_mode"]:checked').val() || 'copy';
   }
 
+  // Update button visibility and thumbnail preview
+  function updateFeaturedUI($editRow, thumbId, thumbUrl) {
+    const hasFeatured = thumbId && parseInt(thumbId, 10) > 0;
+    const $thumbInline = $editRow.find('.ac-yqep-thumb-inline');
+    const $editBtn = $editRow.find('.ac-yqep-edit-featured');
+    const $removeBtn = $editRow.find('.ac-yqep-remove-featured');
+
+    if (hasFeatured && thumbUrl) {
+      $thumbInline.html('<img src="' + thumbUrl + '" style="max-width:80px;max-height:80px;border-radius:4px;" />');
+      $editBtn.show();
+      $removeBtn.show();
+    } else if (hasFeatured) {
+      $thumbInline.html('<span style="color:#666;">Image set</span>');
+      $editBtn.show();
+      $removeBtn.show();
+    } else {
+      $thumbInline.html('<span style="color:#999;">No featured image</span>');
+      $editBtn.hide();
+      $removeBtn.hide();
+    }
+  }
+
   // Extend inline edit to populate fields and wire post id
   const original = inlineEditPost.edit;
   inlineEditPost.edit = function(id){
@@ -34,14 +57,103 @@
     const $row = $('#post-' + postId);
     const seoTitle = ($row.find('.ac-yqep-yoast-title-val').text() || '').trim();
     const metaDesc = ($row.find('.ac-yqep-yoast-desc-val').text() || '').trim();
+    const thumbId = ($row.find('.ac-yqep-thumb-id').text() || '').trim();
+    const $thumbPreview = $row.find('.ac-yqep-thumb-preview img');
+    const thumbUrl = $thumbPreview.length ? $thumbPreview.attr('src') : '';
 
     const $editRow = $('#edit-' + postId);
     $editRow.find('input[name="_yoast_wpseo_title"]').val(seoTitle);
     $editRow.find('textarea[name="_yoast_wpseo_metadesc"]').val(metaDesc);
-
     $editRow.find('.ac-yqep-post-id').val(postId);
+
+    // Update featured image UI
+    updateFeaturedUI($editRow, thumbId, thumbUrl);
   };
 
+  // Select / Upload new featured image
+  $(document).on('click', '.ac-yqep-select-featured', function(){
+    const $editRow = $(this).closest('tr.inline-edit-row');
+    const postId = parseInt($editRow.find('.ac-yqep-post-id').val(), 10);
+
+    if (!postId) return;
+
+    // Create media frame if needed
+    if (!mediaFrame) {
+      mediaFrame = wp.media({
+        title: AC_YQEP.i18n ? AC_YQEP.i18n.selectImage : 'Select Featured Image',
+        button: { text: AC_YQEP.i18n ? AC_YQEP.i18n.useImage : 'Set as Featured Image' },
+        multiple: false,
+        library: { type: 'image' }
+      });
+
+      mediaFrame.on('select', function(){
+        const attachment = mediaFrame.state().get('selection').first().toJSON();
+        const currentPostId = mediaFrame.acYqepPostId;
+        const $currentEditRow = $('#edit-' + currentPostId);
+
+        if (!attachment.id || !currentPostId) return;
+
+        // Set featured image via AJAX
+        $.post(AC_YQEP.ajaxUrl, {
+          action: 'ac_yqep_set_featured',
+          nonce: AC_YQEP.nonce,
+          postId: currentPostId,
+          attachmentId: attachment.id
+        }).done(function(res){
+          if (res && res.success) {
+            // Update the inline preview
+            const thumbUrl = res.data.thumbUrl || attachment.sizes.thumbnail ? attachment.sizes.thumbnail.url : attachment.url;
+            updateFeaturedUI($currentEditRow, attachment.id, thumbUrl);
+
+            // Update the original row preview too
+            const $origRow = $('#post-' + currentPostId);
+            $origRow.find('.ac-yqep-thumb-id').text(attachment.id);
+            if (thumbUrl) {
+              $origRow.find('.ac-yqep-thumb-preview').html('<img src="' + thumbUrl + '" style="max-width:60px;max-height:60px;" />');
+            }
+          } else {
+            alert((res && res.data && res.data.message) || 'Failed to set featured image.');
+          }
+        }).fail(function(){
+          alert('Request failed.');
+        });
+      });
+    }
+
+    // Store current post ID for the select handler
+    mediaFrame.acYqepPostId = postId;
+    mediaFrame.open();
+  });
+
+  // Remove featured image
+  $(document).on('click', '.ac-yqep-remove-featured', function(){
+    const $editRow = $(this).closest('tr.inline-edit-row');
+    const postId = parseInt($editRow.find('.ac-yqep-post-id').val(), 10);
+
+    if (!postId) return;
+    if (!confirm('Remove the featured image?')) return;
+
+    $.post(AC_YQEP.ajaxUrl, {
+      action: 'ac_yqep_remove_featured',
+      nonce: AC_YQEP.nonce,
+      postId: postId
+    }).done(function(res){
+      if (res && res.success) {
+        updateFeaturedUI($editRow, 0, '');
+
+        // Update original row
+        const $origRow = $('#post-' + postId);
+        $origRow.find('.ac-yqep-thumb-id').text('');
+        $origRow.find('.ac-yqep-thumb-preview').html('None');
+      } else {
+        alert((res && res.data && res.data.message) || 'Failed to remove featured image.');
+      }
+    }).fail(function(){
+      alert('Request failed.');
+    });
+  });
+
+  // Edit current featured image (open cropper modal)
   $(document).on('click', '.ac-yqep-edit-featured', function(){
     const $editRow = $(this).closest('tr.inline-edit-row');
     const postId = parseInt($editRow.find('.ac-yqep-post-id').val(), 10);

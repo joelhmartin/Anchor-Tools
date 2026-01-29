@@ -28,6 +28,8 @@ class Anchor_Quick_Edit_Module {
 
         add_action('wp_ajax_ac_yqep_get_featured', [$this, 'ajax_get_featured']);
         add_action('wp_ajax_ac_yqep_process_image', [$this, 'ajax_process_image']);
+        add_action('wp_ajax_ac_yqep_set_featured', [$this, 'ajax_set_featured']);
+        add_action('wp_ajax_ac_yqep_remove_featured', [$this, 'ajax_remove_featured']);
     }
 
     private function get_assets_url() {
@@ -69,17 +71,24 @@ class Anchor_Quick_Edit_Module {
 
         $base = $this->get_assets_url();
 
+        // WordPress media uploader
+        wp_enqueue_media();
+
         // Cropper.js from CDN
         wp_enqueue_style('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css', [], '1.6.2');
         wp_enqueue_script('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js', [], '1.6.2', true);
 
-        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.0');
-        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.0', true);
+        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.1');
+        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.1', true);
 
         wp_localize_script('ac-yqep-admin', 'AC_YQEP', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce'   => wp_create_nonce(self::NONCE_ACTION),
             'postTypes' => $this->post_types,
+            'i18n' => [
+                'selectImage' => __('Select Featured Image', 'anchor-schema'),
+                'useImage' => __('Set as Featured Image', 'anchor-schema'),
+            ],
         ]);
     }
 
@@ -107,8 +116,12 @@ class Anchor_Quick_Edit_Module {
 
                 <div style="margin-top:12px;">
                     <h4>Featured Image</h4>
-                    <p class="description" style="margin:0 0 6px;">Edit crop, output size, and format in a popup.</p>
-                    <button type="button" class="button ac-yqep-edit-featured">Edit Featured Image</button>
+                    <div class="ac-yqep-thumb-inline" style="margin-bottom:8px;"></div>
+                    <div class="ac-yqep-feat-buttons">
+                        <button type="button" class="button ac-yqep-select-featured">Select / Upload</button>
+                        <button type="button" class="button ac-yqep-edit-featured">Edit Current</button>
+                        <button type="button" class="button ac-yqep-remove-featured">Remove</button>
+                    </div>
                     <input type="hidden" class="ac-yqep-post-id" value="" />
                 </div>
             </div>
@@ -365,5 +378,53 @@ class Anchor_Quick_Edit_Module {
             'image/webp' => 'webp',
         ];
         return isset($map[$mime]) ? $map[$mime] : '';
+    }
+
+    public function ajax_set_featured() {
+        check_ajax_referer(self::NONCE_ACTION, 'nonce');
+
+        $post_id = isset($_POST['postId']) ? absint($_POST['postId']) : 0;
+        $attachment_id = isset($_POST['attachmentId']) ? absint($_POST['attachmentId']) : 0;
+
+        if (!$post_id || !$attachment_id) {
+            wp_send_json_error(['message' => 'Missing post or attachment ID.'], 400);
+        }
+        if (!current_user_can('edit_post', $post_id)) {
+            wp_send_json_error(['message' => 'Permission denied.'], 403);
+        }
+
+        // Verify it's a valid image attachment
+        if (!wp_attachment_is_image($attachment_id)) {
+            wp_send_json_error(['message' => 'Selected file is not an image.'], 400);
+        }
+
+        set_post_thumbnail($post_id, $attachment_id);
+
+        $thumb_url = get_the_post_thumbnail_url($post_id, [60, 60]);
+
+        wp_send_json_success([
+            'message' => 'Featured image set.',
+            'attachmentId' => $attachment_id,
+            'thumbUrl' => $thumb_url,
+        ]);
+    }
+
+    public function ajax_remove_featured() {
+        check_ajax_referer(self::NONCE_ACTION, 'nonce');
+
+        $post_id = isset($_POST['postId']) ? absint($_POST['postId']) : 0;
+
+        if (!$post_id) {
+            wp_send_json_error(['message' => 'Missing post ID.'], 400);
+        }
+        if (!current_user_can('edit_post', $post_id)) {
+            wp_send_json_error(['message' => 'Permission denied.'], 403);
+        }
+
+        delete_post_thumbnail($post_id);
+
+        wp_send_json_success([
+            'message' => 'Featured image removed.',
+        ]);
     }
 }

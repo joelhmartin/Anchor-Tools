@@ -187,7 +187,9 @@
         var muteForAutoplay = (trig && trig.type === 'page_load');
         openVideo(modal, sn.mode, sn.video_id, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
       } else {
-        openContent(modal, sn.html, sn.css, sn.js);
+        // Use pre-rendered shortcode content if in shortcode mode, otherwise use HTML
+        var content = (sn.mode === 'shortcode' && sn.shortcode_content) ? sn.shortcode_content : sn.html;
+        openContent(modal, content, sn.css, sn.js);
       }
       if(!bypassFrequency){
         markShown(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes);

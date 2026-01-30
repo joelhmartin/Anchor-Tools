@@ -57,10 +57,11 @@ class Anchor_Universal_Popups_Module {
     private function defaults(){
         return [
             // content
-            'mode' => 'html',               // html, youtube, vimeo
+            'mode' => 'html',               // html, youtube, vimeo, shortcode
             'video_id' => '',               // id for youtube or vimeo
             'autoplay' => '0',              // 0 or 1 for video popups
             'html' => '',
+            'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
             'css'  => '',
             'js'   => '',
 
@@ -109,20 +110,27 @@ class Anchor_Universal_Popups_Module {
 
             <div class="up-field">
               <label><strong>Mode</strong></label>
-              <select name="up_mode">
+              <select name="up_mode" id="up_mode">
                 <option value="html" <?php selected($m['mode'], 'html'); ?>>HTML</option>
+                <option value="shortcode" <?php selected($m['mode'], 'shortcode'); ?>>Shortcode</option>
                 <option value="youtube" <?php selected($m['mode'], 'youtube'); ?>>YouTube</option>
                 <option value="vimeo" <?php selected($m['mode'], 'vimeo'); ?>>Vimeo</option>
               </select>
             </div>
 
-            <div class="up-field">
+            <div class="up-field up-field-video" data-up-show-when-mode="youtube,vimeo">
               <label><strong>Video ID</strong></label>
               <input type="text" name="up_video_id" value="<?php echo esc_attr($m['video_id']); ?>" placeholder="YouTube or Vimeo ID only" class="widefat"/>
               <p class="description">Example, for https://www.youtube.com/watch?v=abcdefgh, use abcdefgh. For Vimeo, use the numeric ID.</p>
             </div>
 
-            <div class="up-field">
+            <div class="up-field up-field-shortcode" data-up-show-when-mode="shortcode">
+                <label for="up_shortcode"><strong>Shortcode</strong></label>
+                <textarea id="up_shortcode" name="up_shortcode" rows="4" class="widefat code"><?php echo esc_textarea($m['shortcode']); ?></textarea>
+                <p class="description">Enter your shortcode(s) here. They will be processed and rendered. Example: [contact-form-7 id="123" title="Contact"]</p>
+            </div>
+
+            <div class="up-field up-field-html" data-up-show-when-mode="html">
                 <label for="up_html"><strong>HTML</strong></label>
                 <textarea id="up_html" name="up_html" rows="8" class="widefat code"><?php echo esc_textarea($m['html']); ?></textarea>
             </div>
@@ -223,7 +231,7 @@ class Anchor_Universal_Popups_Module {
 
         $fields = [
             'mode','video_id','autoplay',
-            'html','css','js',
+            'html','shortcode','css','js',
             'trigger_type','trigger_value','delay_ms',
             'frequency_mode','cooldown_minutes',
             'exclude_urls','exclude_cats'
@@ -231,7 +239,7 @@ class Anchor_Universal_Popups_Module {
         foreach ($fields as $f){
             $key = "up_$f";
             $val = isset($_POST[$key]) ? $_POST[$key] : '';
-            if (in_array($f, ['html','css','js'], true)){
+            if (in_array($f, ['html','shortcode','css','js'], true)){
                 // allow markup in these fields in admin
                 update_post_meta($post_id, $key, $val);
             } else {
@@ -313,6 +321,13 @@ class Anchor_Universal_Popups_Module {
         $items = [];
         foreach ($q->posts as $p){
             $m = $this->get_meta($p->ID);
+
+            // For shortcode mode, process the shortcode content server-side
+            $rendered_shortcode = '';
+            if ( $m['mode'] === 'shortcode' && ! empty( $m['shortcode'] ) ) {
+                $rendered_shortcode = do_shortcode( $m['shortcode'] );
+            }
+
             $items[] = [
                 'id' => (int)$p->ID,
                 'title' => $p->post_title,
@@ -320,6 +335,7 @@ class Anchor_Universal_Popups_Module {
                 'video_id' => $m['video_id'],
                 'autoplay' => ($m['autoplay'] === '1'),
                 'html' => $m['html'],
+                'shortcode_content' => $rendered_shortcode, // pre-rendered shortcode content
                 'css' => $m['css'],
                 'js' => $m['js'],
                 'trigger' => [
@@ -341,8 +357,8 @@ class Anchor_Universal_Popups_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.0.1');
-            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.2', true);
+            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.0.2');
+            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.3', true);
         }
     }
 
@@ -357,7 +373,7 @@ class Anchor_Universal_Popups_Module {
         if (empty($snippets)) return;
 
         wp_enqueue_style('up-frontend', plugins_url('assets/frontend.css', __FILE__), [], '1.0.1');
-        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.2', true);
+        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.3', true);
         wp_localize_script('up-frontend', 'UP_SNIPPETS', $snippets);
     }
 
@@ -366,10 +382,19 @@ class Anchor_Universal_Popups_Module {
         $post_id = (int)$atts['id'];
         if (!$post_id) return '';
         $m = $this->get_meta($post_id);
+
+        // Determine content based on mode
+        $content = '';
+        if ( $m['mode'] === 'shortcode' && ! empty( $m['shortcode'] ) ) {
+            $content = do_shortcode( $m['shortcode'] );
+        } else {
+            $content = $m['html'];
+        }
+
         ob_start(); ?>
         <div class="up-embed-popup" data-up-embed="<?php echo esc_attr($post_id); ?>">
             <style><?php echo $m['css']; ?></style>
-            <div class="up-embed-viewport"><?php echo $m['html']; ?></div>
+            <div class="up-embed-viewport"><?php echo $content; ?></div>
             <script>(function(){ try{ <?php echo $m['js']; ?> }catch(e){ console && console.error && console.error(e); } })();</script>
         </div>
         <?php

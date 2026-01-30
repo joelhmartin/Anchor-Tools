@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.4.08
+ * Version: 3.4.09
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -2928,6 +2928,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Quick Edit fields for Yoast SEO and featured image editing.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-quick-edit/anchor-quick-edit.php',
                 'class'       => 'Anchor_Quick_Edit_Module',
+            ],
+            'ctm_forms' => [
+                'label'       => __( 'Anchor CTM Forms', 'anchor-schema' ),
+                'description' => __( 'Create custom forms that submit to CallTrackingMetrics FormReactors.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-ctm-forms/anchor-ctm-forms.php',
+                'class'       => 'Anchor_CTM_Forms_Module',
             ],
         ];
     }

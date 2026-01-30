@@ -1,0 +1,586 @@
+<?php
+/**
+ * Anchor Tools module: Anchor CTM Forms.
+ * Pick a CTM Form Reactor, generate a minimal starter form.
+ * Submissions are posted server-side to CTM's FormReactor API.
+ */
+
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+class Anchor_CTM_Forms_Module {
+    const OPTION_KEY    = 'anchor_ctm_forms_options';
+    const NONCE_ACTION  = 'anchor_ctm_forms_nonce';
+    const NONCE_NAME    = 'anchor_ctm_nonce';
+
+    public function __construct() {
+        add_action( 'init', [ $this, 'register_cpt' ] );
+        add_action( 'admin_menu', [ $this, 'admin_menu' ] );
+        add_action( 'admin_init', [ $this, 'register_settings' ] );
+        add_action( 'add_meta_boxes', [ $this, 'add_variant_metabox' ] );
+        add_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
+
+        add_shortcode( 'ctm_form_variant', [ $this, 'render_form_shortcode' ] );
+
+        add_filter( 'manage_ctm_form_variant_posts_columns', [ $this, 'add_shortcode_column' ] );
+        add_action( 'manage_ctm_form_variant_posts_custom_column', [ $this, 'render_shortcode_column' ], 10, 2 );
+
+        add_action( 'wp_ajax_anchor_ctm_generate', [ $this, 'ajax_generate_starter' ] );
+        add_action( 'wp_ajax_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
+        add_action( 'wp_ajax_nopriv_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
+    }
+
+    /* ========================= Settings ========================= */
+    public function admin_menu() {
+        $parent = apply_filters( 'anchor_ctm_forms_parent_menu_slug', 'options-general.php' );
+        if ( 'options-general.php' === $parent ) {
+            add_options_page(
+                __( 'CTM Forms', 'anchor-schema' ),
+                __( 'CTM Forms', 'anchor-schema' ),
+                'manage_options',
+                'anchor-ctm-forms',
+                [ $this, 'settings_page' ]
+            );
+        } else {
+            add_submenu_page(
+                $parent,
+                __( 'CTM Forms', 'anchor-schema' ),
+                __( 'CTM Forms', 'anchor-schema' ),
+                'manage_options',
+                'anchor-ctm-forms',
+                [ $this, 'settings_page' ]
+            );
+        }
+    }
+
+    public function register_settings() {
+        register_setting( 'anchor_ctm_forms_group', self::OPTION_KEY, [
+            'type' => 'array',
+            'sanitize_callback' => [ $this, 'sanitize_options' ],
+            'default' => [],
+        ] );
+
+        add_settings_section(
+            'anchor_ctm_main',
+            __( 'CTM API Credentials', 'anchor-schema' ),
+            function() {
+                echo '<p>' . esc_html__( 'Enter your CallTrackingMetrics API credentials. Find these in your CTM account under Settings > API.', 'anchor-schema' ) . '</p>';
+            },
+            'anchor-ctm-forms'
+        );
+
+        add_settings_field( 'access_key', __( 'Access Key', 'anchor-schema' ), [ $this, 'field_text' ], 'anchor-ctm-forms', 'anchor_ctm_main', [ 'key' => 'access_key' ] );
+        add_settings_field( 'secret_key', __( 'Secret Key', 'anchor-schema' ), [ $this, 'field_password' ], 'anchor-ctm-forms', 'anchor_ctm_main', [ 'key' => 'secret_key' ] );
+        add_settings_field( 'account_id', __( 'Account ID', 'anchor-schema' ), [ $this, 'field_text' ], 'anchor-ctm-forms', 'anchor_ctm_main', [ 'key' => 'account_id' ] );
+    }
+
+    public function field_text( $args ) {
+        $opts = $this->get_options();
+        $val = esc_attr( $opts[ $args['key'] ] ?? '' );
+        printf( '<input type="text" name="%s[%s]" value="%s" class="regular-text" />', esc_attr( self::OPTION_KEY ), esc_attr( $args['key'] ), $val );
+    }
+
+    public function field_password( $args ) {
+        $opts = $this->get_options();
+        $val = esc_attr( $opts[ $args['key'] ] ?? '' );
+        printf( '<input type="password" name="%s[%s]" value="%s" class="regular-text" autocomplete="off" />', esc_attr( self::OPTION_KEY ), esc_attr( $args['key'] ), $val );
+    }
+
+    public function sanitize_options( $input ) {
+        $out = $this->get_options();
+        $out['access_key'] = isset( $input['access_key'] ) ? sanitize_text_field( $input['access_key'] ) : '';
+        $out['secret_key'] = isset( $input['secret_key'] ) ? sanitize_text_field( $input['secret_key'] ) : '';
+        $out['account_id'] = isset( $input['account_id'] ) ? preg_replace( '/[^0-9]/', '', $input['account_id'] ) : '';
+        return $out;
+    }
+
+    public function get_options() {
+        $defaults = [
+            'access_key' => '',
+            'secret_key' => '',
+            'account_id' => '',
+        ];
+        return wp_parse_args( get_option( self::OPTION_KEY, [] ), $defaults );
+    }
+
+    public function settings_page() {
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e( 'CTM Forms Settings', 'anchor-schema' ); ?></h1>
+            <form method="post" action="options.php">
+                <?php settings_fields( 'anchor_ctm_forms_group' ); ?>
+                <?php do_settings_sections( 'anchor-ctm-forms' ); ?>
+                <?php submit_button(); ?>
+            </form>
+        </div>
+        <?php
+    }
+
+    /* ========================= CPT ========================= */
+    public function register_cpt() {
+        register_post_type( 'ctm_form_variant', [
+            'label' => __( 'CTM Form Variants', 'anchor-schema' ),
+            'public' => false,
+            'show_ui' => true,
+            'supports' => [ 'title' ],
+            'show_in_menu' => true,
+            'menu_icon' => 'dashicons-feedback',
+        ] );
+    }
+
+    /* ========================= Admin list columns ========================= */
+    public function add_shortcode_column( $columns ) {
+        $columns['ctm_shortcode'] = __( 'Shortcode', 'anchor-schema' );
+        return $columns;
+    }
+
+    public function render_shortcode_column( $column, $post_id ) {
+        if ( $column === 'ctm_shortcode' ) {
+            echo '<code>[ctm_form_variant id="' . intval( $post_id ) . '"]</code>';
+        }
+    }
+
+    /* ========================= API helpers ========================= */
+    private function auth_headers() {
+        $opts = $this->get_options();
+        if ( empty( $opts['access_key'] ) || empty( $opts['secret_key'] ) ) {
+            return false;
+        }
+        return [
+            'Authorization' => 'Basic ' . base64_encode( $opts['access_key'] . ':' . $opts['secret_key'] ),
+            'Accept'        => 'application/json',
+            'User-Agent'    => 'Anchor-CTM-Forms/1.0 (+WordPress)'
+        ];
+    }
+
+    private function account_id() {
+        $opts = $this->get_options();
+        return $opts['account_id'] ?? '';
+    }
+
+    private function fetch_reactors_list() {
+        $acc = $this->account_id();
+        $headers = $this->auth_headers();
+        if ( ! $acc || ! $headers ) {
+            return [];
+        }
+
+        $url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/form_reactors";
+        $res = wp_remote_get( $url, [ 'headers' => $headers, 'timeout' => 20 ] );
+
+        if ( is_wp_error( $res ) ) {
+            return [];
+        }
+
+        $code = wp_remote_retrieve_response_code( $res );
+        $body = json_decode( wp_remote_retrieve_body( $res ), true );
+
+        if ( $code < 200 || $code >= 300 || ! is_array( $body ) ) {
+            return [];
+        }
+
+        $items = $body['forms'] ?? $body['form_reactors'] ?? $body;
+        $out = [];
+
+        foreach ( (array) $items as $r ) {
+            if ( empty( $r['id'] ) ) continue;
+            $out[] = [
+                'id' => (string) $r['id'],
+                'name' => (string) ( $r['name'] ?? $r['title'] ?? $r['id'] )
+            ];
+        }
+
+        return $out;
+    }
+
+    private function fetch_reactor_detail( $reactor_id ) {
+        $acc = $this->account_id();
+        $headers = $this->auth_headers();
+        if ( ! $acc || ! $headers ) {
+            return [];
+        }
+
+        $url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/form_reactors/" . rawurlencode( $reactor_id );
+        $res = wp_remote_get( $url, [ 'headers' => $headers, 'timeout' => 20 ] );
+
+        if ( is_wp_error( $res ) ) {
+            return [];
+        }
+
+        $code = wp_remote_retrieve_response_code( $res );
+        $body = json_decode( wp_remote_retrieve_body( $res ), true );
+
+        if ( $code < 200 || $code >= 300 || ! is_array( $body ) ) {
+            return [];
+        }
+
+        return $body;
+    }
+
+    /* ========================= Metabox (builder) ========================= */
+    public function add_variant_metabox() {
+        add_meta_box( 'anchor_ctm_variant', __( 'CTM Form Builder', 'anchor-schema' ), [ $this, 'variant_metabox_cb' ], 'ctm_form_variant', 'normal', 'high' );
+    }
+
+    public function variant_metabox_cb( $post ) {
+        $reactor_id = get_post_meta( $post->ID, '_ctm_reactor_id', true );
+        $html = get_post_meta( $post->ID, '_ctm_form_html', true );
+        $reactors = $this->fetch_reactors_list();
+
+        wp_nonce_field( self::NONCE_ACTION, self::NONCE_NAME );
+        ?>
+        <div class="ctm-box" style="border:1px solid #ddd;padding:12px;border-radius:8px;background:#fff;margin-bottom:12px">
+            <p><label><strong><?php esc_html_e( 'Choose Form Reactor', 'anchor-schema' ); ?></strong><br>
+                <select name="ctm_reactor_id" id="ctm_reactor_id" style="width:100%">
+                    <option value=""><?php esc_html_e( '— Select —', 'anchor-schema' ); ?></option>
+                    <?php foreach ( $reactors as $r ): ?>
+                    <option value="<?php echo esc_attr( $r['id'] ); ?>" <?php selected( $reactor_id, $r['id'] ); ?>>
+                        <?php echo esc_html( $r['name'] . ' — ' . $r['id'] ); ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </label></p>
+
+            <p><button type="button" class="button" id="ctm-generate"><?php esc_html_e( 'Generate Starter Form', 'anchor-schema' ); ?></button></p>
+
+            <p><label><strong><?php esc_html_e( 'Form HTML', 'anchor-schema' ); ?></strong></label></p>
+            <p><textarea name="ctm_form_html" id="ctm_form_html" style="width:100%;height:420px" placeholder="<?php esc_attr_e( 'Starter HTML will appear here after you choose a reactor and click Generate.', 'anchor-schema' ); ?>"><?php echo esc_textarea( $html ); ?></textarea></p>
+
+            <p><strong><?php esc_html_e( 'Shortcode', 'anchor-schema' ); ?></strong></p>
+            <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" readonly value="[ctm_form_variant id=&quot;<?php echo intval( $post->ID ); ?>&quot;]" id="ctm-shortcode-field" style="width:100%" />
+                <button type="button" class="button" id="ctm-copy-sc"><?php esc_html_e( 'Copy', 'anchor-schema' ); ?></button>
+            </div>
+            <p class="description"><?php esc_html_e( 'Embed this saved form variant using the shortcode.', 'anchor-schema' ); ?></p>
+        </div>
+
+        <script>
+        (function(){
+            const genBtn = document.getElementById('ctm-generate');
+            const sel = document.getElementById('ctm_reactor_id');
+            const ta = document.getElementById('ctm_form_html');
+            const copy = document.getElementById('ctm-copy-sc');
+            const scfld = document.getElementById('ctm-shortcode-field');
+
+            genBtn?.addEventListener('click', async () => {
+                const id = sel.value;
+                if (!id) { alert('Please choose a reactor first.'); return; }
+                const fd = new FormData();
+                fd.append('action', 'anchor_ctm_generate');
+                fd.append('<?php echo esc_js( self::NONCE_NAME ); ?>', '<?php echo esc_js( wp_create_nonce( self::NONCE_ACTION ) ); ?>');
+                fd.append('reactor_id', id);
+                const res = await fetch(ajaxurl, { method: 'POST', body: fd });
+                const data = await res.json();
+                if (data && data.success) {
+                    ta.value = data.data.html || '';
+                } else {
+                    alert((data && data.data) || 'Failed to generate form.');
+                }
+            });
+
+            copy?.addEventListener('click', () => {
+                scfld.select();
+                scfld.setSelectionRange(0, 99999);
+                document.execCommand('copy');
+                copy.textContent = 'Copied';
+                setTimeout(() => copy.textContent = 'Copy', 1200);
+            });
+        })();
+        </script>
+        <?php
+    }
+
+    /* Build starter HTML */
+    private function build_starter_html_from_detail( $detail ) {
+        $fields = [];
+
+        if ( ! empty( $detail['include_name'] ) ) {
+            $fields[] = [ 'name' => 'caller_name', 'type' => 'text', 'label' => 'Name', 'required' => ! empty( $detail['name_required'] ) ];
+        }
+        if ( ! empty( $detail['include_email'] ) ) {
+            $fields[] = [ 'name' => 'email', 'type' => 'email', 'label' => 'Email', 'required' => ! empty( $detail['email_required'] ) ];
+        }
+        $fields[] = [ 'name' => 'phone_number', 'type' => 'tel', 'label' => 'Phone', 'required' => true ];
+
+        if ( ! empty( $detail['custom_fields'] ) && is_array( $detail['custom_fields'] ) ) {
+            foreach ( $detail['custom_fields'] as $cf ) {
+                if ( is_array( $cf ) && ! empty( $cf['name'] ) ) {
+                    $type = strtolower( (string) ( $cf['type'] ?? 'text' ) );
+                    if ( ! in_array( $type, [ 'textarea', 'email', 'tel', 'text', 'number', 'url' ], true ) ) {
+                        $type = 'text';
+                    }
+                    $fields[] = [
+                        'name' => (string) $cf['name'],
+                        'type' => $type,
+                        'label' => (string) ( $cf['label'] ?? ucfirst( $cf['name'] ) ),
+                        'required' => ! empty( $cf['required'] ),
+                        'custom' => true,
+                    ];
+                }
+            }
+        }
+
+        $html = "<form id=\"ctmForm\" novalidate>\n";
+        foreach ( $fields as $f ) {
+            $label = esc_html( $f['label'] ?? $f['name'] );
+            $name = esc_attr( $f['name'] );
+            $type = esc_attr( $f['type'] ?? 'text' );
+            $req = ! empty( $f['required'] ) ? ' required' : '';
+            $cls = ! empty( $f['custom'] ) ? ' class="ctm-custom"' : '';
+
+            if ( $type === 'textarea' ) {
+                $html .= "  <label>{$label}<textarea name=\"{$name}\"{$cls}{$req}></textarea></label>\n";
+            } else {
+                $html .= "  <label>{$label}<input type=\"{$type}\" name=\"{$name}\"{$cls}{$req}></label>\n";
+            }
+        }
+        $html .= "  <button type=\"submit\">Submit</button>\n";
+        $html .= "</form>";
+
+        return $html;
+    }
+
+    /* ========================= Save ========================= */
+    public function save_variant( $post_id ) {
+        if ( ! isset( $_POST[ self::NONCE_NAME ] ) || ! wp_verify_nonce( $_POST[ self::NONCE_NAME ], self::NONCE_ACTION ) ) {
+            return;
+        }
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+        if ( ! current_user_can( 'edit_post', $post_id ) ) {
+            return;
+        }
+
+        if ( isset( $_POST['ctm_form_html'] ) ) {
+            update_post_meta( $post_id, '_ctm_form_html', wp_unslash( $_POST['ctm_form_html'] ) );
+        }
+        if ( isset( $_POST['ctm_reactor_id'] ) ) {
+            update_post_meta( $post_id, '_ctm_reactor_id', sanitize_text_field( $_POST['ctm_reactor_id'] ) );
+        }
+    }
+
+    /* ========================= AJAX: Generate starter ========================= */
+    public function ajax_generate_starter() {
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_send_json_error( 'Unauthorized' );
+        }
+        check_ajax_referer( self::NONCE_ACTION, self::NONCE_NAME );
+
+        $rid = isset( $_POST['reactor_id'] ) ? sanitize_text_field( $_POST['reactor_id'] ) : '';
+        if ( ! $rid ) {
+            wp_send_json_error( 'Missing reactor_id' );
+        }
+
+        $detail = $this->fetch_reactor_detail( $rid );
+        if ( empty( $detail ) ) {
+            wp_send_json_error( 'Could not load reactor details' );
+        }
+
+        $html = $this->build_starter_html_from_detail( $detail );
+        wp_send_json_success( [ 'html' => $html ] );
+    }
+
+    /* ========================= Shortcode ========================= */
+    public function render_form_shortcode( $atts ) {
+        $atts = shortcode_atts( [ 'id' => 0 ], $atts );
+        $post_id = intval( $atts['id'] );
+        if ( ! $post_id ) {
+            return '';
+        }
+
+        $reactor_id = get_post_meta( $post_id, '_ctm_reactor_id', true );
+        $html = get_post_meta( $post_id, '_ctm_form_html', true );
+        if ( ! $reactor_id || ! $html ) {
+            return '';
+        }
+
+        $ajax_url = admin_url( 'admin-ajax.php' );
+        $nonce = wp_create_nonce( self::NONCE_ACTION );
+
+        ob_start();
+        ?>
+        <div class="ctm-form-wrap" data-variant="<?php echo esc_attr( $post_id ); ?>">
+            <?php echo $html; ?>
+        </div>
+        <script>
+        (function(){
+            var wrap = document.currentScript.previousElementSibling;
+            if (!wrap) return;
+            var form = wrap.querySelector('form');
+            if (!form) return;
+
+            var CFG = {
+                ajax: <?php echo wp_json_encode( $ajax_url ); ?>,
+                nonce: <?php echo wp_json_encode( $nonce ); ?>,
+                variantId: <?php echo wp_json_encode( $post_id ); ?>,
+                reactorId: <?php echo wp_json_encode( $reactor_id ); ?>
+            };
+
+            if (!form.getAttribute('method')) form.setAttribute('method', 'POST');
+            if (!form.getAttribute('action')) form.setAttribute('action', CFG.ajax);
+
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                var core = {};
+                var custom = {};
+                var els = form.querySelectorAll('[name]');
+
+                for (var i = 0; i < els.length; i++) {
+                    var el = els[i];
+                    var name = el.getAttribute('name');
+                    if (!name) continue;
+                    var val = (el.type === 'checkbox' || el.type === 'radio') ? (el.checked ? el.value : '') : el.value;
+                    if (val === '') continue;
+
+                    if (el.classList.contains('ctm-custom')) {
+                        custom[name] = val;
+                    } else {
+                        core[name] = val;
+                    }
+                }
+
+                var fd = new FormData();
+                fd.append('action', 'anchor_ctm_submit');
+                fd.append('<?php echo esc_js( self::NONCE_NAME ); ?>', CFG.nonce);
+                fd.append('variant_id', CFG.variantId);
+                fd.append('core_json', JSON.stringify(core));
+                fd.append('custom_json', JSON.stringify(custom));
+
+                fetch(CFG.ajax, { method: 'POST', body: fd })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        var msg = form.querySelector('.ctm-form-msg') || (function() {
+                            var m = document.createElement('div');
+                            m.className = 'ctm-form-msg';
+                            form.appendChild(m);
+                            return m;
+                        })();
+
+                        if (data && data.success) {
+                            msg.textContent = 'Thanks! We\'ll be in touch shortly.';
+                            msg.style.color = '#00a32a';
+                            try { form.reset(); } catch(e) {}
+                        } else {
+                            msg.textContent = (data && data.data && (data.data.message || data.data)) || 'Something went wrong.';
+                            msg.style.color = '#d63638';
+                        }
+                    })
+                    .catch(function() {
+                        var msg = form.querySelector('.ctm-form-msg');
+                        if (msg) msg.textContent = 'Network error. Please try again.';
+                    });
+            });
+        })();
+        </script>
+        <?php
+        return ob_get_clean();
+    }
+
+    /* ========================= AJAX Submit (server → CTM) ========================= */
+    public function ajax_submit() {
+        check_ajax_referer( self::NONCE_ACTION, self::NONCE_NAME );
+
+        $variant_id = isset( $_POST['variant_id'] ) ? intval( $_POST['variant_id'] ) : 0;
+        if ( ! $variant_id ) {
+            wp_send_json_error( [ 'type' => 'validation', 'message' => 'Missing variant.' ] );
+        }
+
+        $reactor_id = get_post_meta( $variant_id, '_ctm_reactor_id', true );
+        if ( ! $reactor_id ) {
+            wp_send_json_error( [ 'type' => 'validation', 'message' => 'Variant not configured.' ] );
+        }
+
+        // Parse JSON blobs from JS
+        $core = [];
+        $custom = [];
+
+        if ( isset( $_POST['core_json'] ) ) {
+            $tmp = json_decode( wp_unslash( $_POST['core_json'] ), true );
+            if ( is_array( $tmp ) ) {
+                $core = array_map( 'sanitize_text_field', $tmp );
+            }
+        }
+        if ( isset( $_POST['custom_json'] ) ) {
+            $tmp = json_decode( wp_unslash( $_POST['custom_json'] ), true );
+            if ( is_array( $tmp ) ) {
+                $custom = array_map( 'sanitize_text_field', $tmp );
+            }
+        }
+
+        // Normalize keys
+        if ( ! empty( $core['phone'] ) && empty( $core['phone_number'] ) ) {
+            $core['phone_number'] = $core['phone'];
+            unset( $core['phone'] );
+        }
+        if ( empty( $core['phone_number'] ) ) {
+            wp_send_json_error( [ 'type' => 'validation', 'message' => 'Phone number is required.' ] );
+        }
+
+        $core['phone_number'] = preg_replace( '/\D+/', '', $core['phone_number'] );
+
+        if ( ! isset( $core['country_code'] ) ) {
+            $core['country_code'] = '1'; // default US
+        }
+
+        // Map "name" to "caller_name" if needed
+        if ( empty( $core['caller_name'] ) && ! empty( $core['name'] ) ) {
+            $core['caller_name'] = $core['name'];
+            unset( $core['name'] );
+        }
+
+        $res = $this->send_submission_to_ctm( $reactor_id, $core, $custom );
+
+        if ( is_wp_error( $res ) ) {
+            wp_send_json_error( [ 'type' => 'server', 'message' => $res->get_error_message() ] );
+        }
+
+        wp_send_json_success( [ 'message' => 'Success' ] );
+    }
+
+    /**
+     * Send form submission to CTM FormReactor API.
+     *
+     * IMPORTANT: The submission endpoint is different from the list/detail endpoints!
+     * - List/Detail: /api/v1/accounts/{account_id}/form_reactors/{id}
+     * - Submit:      /api/v1/formreactor/{id}  (no account_id, singular "formreactor")
+     */
+    private function send_submission_to_ctm( $reactor_id, $core, $custom = [] ) {
+        $headers = $this->auth_headers();
+        if ( ! $headers ) {
+            return new WP_Error( 'ctm_missing_creds', 'API credentials not configured.' );
+        }
+
+        // Build the submission body
+        $body = $core;
+        if ( ! empty( $custom ) ) {
+            $body['custom'] = $custom;
+        }
+
+        // CORRECT ENDPOINT: /api/v1/formreactor/{reactor_id}
+        // Note: This is different from the listing endpoint which uses /form_reactors/
+        $url = "https://api.calltrackingmetrics.com/api/v1/formreactor/" . rawurlencode( $reactor_id );
+
+        $args = [
+            'headers' => array_merge( $headers, [ 'Content-Type' => 'application/json' ] ),
+            'timeout' => 20,
+            'body'    => wp_json_encode( $body ),
+            'method'  => 'POST',
+        ];
+
+        $response = wp_remote_post( $url, $args );
+
+        if ( is_wp_error( $response ) ) {
+            return $response;
+        }
+
+        $code = wp_remote_retrieve_response_code( $response );
+
+        if ( $code >= 200 && $code < 300 ) {
+            return true;
+        }
+
+        $raw = wp_remote_retrieve_body( $response );
+        return new WP_Error( 'ctm_api_error', 'CTM API error (' . $code . '): ' . substr( $raw, 0, 600 ) );
+    }
+}

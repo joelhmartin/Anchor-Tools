@@ -291,3 +291,93 @@ if (class_exists('Anchor_Schema_Logger')) {
 2. **Fresh Install**: Test on a site without existing module data
 3. **Upgrade Path**: Test upgrading from previous versions
 4. **Conflict Check**: Verify no conflicts with other Anchor Tools modules
+
+## Working with External APIs
+
+When integrating with external APIs, follow these patterns:
+
+### Store Credentials Securely
+
+Use the WordPress Settings API with password fields:
+
+```php
+add_settings_field('api_key', __('API Key', 'anchor-schema'), function() {
+    $opts = $this->get_options();
+    printf('<input type="password" name="%s[api_key]" value="%s" class="regular-text" autocomplete="off" />',
+        esc_attr(self::OPTION_KEY),
+        esc_attr($opts['api_key'] ?? '')
+    );
+}, 'your-settings-page', 'your-section');
+```
+
+### Use wp_remote_* Functions
+
+Always use WordPress HTTP API instead of cURL:
+
+```php
+$response = wp_remote_post($url, [
+    'headers' => [
+        'Authorization' => 'Bearer ' . $api_key,
+        'Content-Type' => 'application/json',
+    ],
+    'body' => wp_json_encode($data),
+    'timeout' => 30,
+]);
+
+if (is_wp_error($response)) {
+    return $response;
+}
+
+$code = wp_remote_retrieve_response_code($response);
+$body = wp_remote_retrieve_body($response);
+```
+
+### API Endpoint Troubleshooting
+
+A common issue is using wrong API endpoints. When you get 404 errors:
+
+1. **Check endpoint documentation carefully** - listing endpoints often differ from action endpoints
+2. **Log the full URL and response** for debugging:
+   ```php
+   error_log('API URL: ' . $url);
+   error_log('API Response: ' . wp_remote_retrieve_body($response));
+   ```
+3. **Verify authentication** - some endpoints require different auth methods
+
+**Real-world example** - CTM FormReactor API:
+- **Listing endpoint**: `/api/v1/accounts/{account_id}/form_reactors/{id}`
+- **Submission endpoint**: `/api/v1/formreactor/{id}` (different path!)
+
+### Caching API Responses
+
+Use transients for cacheable data:
+
+```php
+$cache_key = 'my_api_data_' . md5($unique_identifier);
+$cached = get_transient($cache_key);
+
+if ($cached !== false) {
+    return $cached;
+}
+
+$data = $this->fetch_from_api();
+set_transient($cache_key, $data, 10 * MINUTE_IN_SECONDS);
+return $data;
+```
+
+## Available Modules Reference
+
+Current modules in Anchor Tools:
+
+| Module Key | Class Name | Description |
+|------------|------------|-------------|
+| `social_feed` | `Anchor_Social_Feed_Module` | Display curated social feeds |
+| `mega_menu` | `Anchor_Mega_Menu_Module` | Create reusable mega menu snippets |
+| `events_manager` | `\Anchor\Events\Module` | Manage events, calendars, registrations |
+| `store_locator` | `\Anchor\StoreLocator\Module` | Map-based store locator |
+| `webinars` | `\Anchor\Webinars\Module` | Gated webinars with Vimeo tracking |
+| `universal_popups` | `Anchor_Universal_Popups_Module` | HTML/video popups with triggers |
+| `shortcodes` | `Anchor_Shortcodes_Module` | Business info + custom shortcodes |
+| `video_slider` | `Anchor_Video_Slider_Module` | Horizontal video slider |
+| `quick_edit` | `Anchor_Quick_Edit_Module` | Quick Edit for Yoast SEO + images |
+| `ctm_forms` | `Anchor_CTM_Forms_Module` | CallTrackingMetrics form integration |

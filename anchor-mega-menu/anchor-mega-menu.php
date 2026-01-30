@@ -16,6 +16,7 @@ class Anchor_Mega_Menu_Module {
      * Ensure we only print the shortcode reset CSS once per request.
      */
     private static $shortcode_css_added = false;
+    private static $shortcode_inline_printed = false;
 
     public function __construct(){
         add_action('init', [$this, 'register_cpt']);
@@ -341,7 +342,13 @@ class Anchor_Mega_Menu_Module {
             wp_add_inline_script('mm-frontend', "(function(){try{ {$js} }catch(e){console.error(e);}})();");
         }
 
-        ob_start(); ?>
+        ob_start();
+        // Print a scoped inline reset as a fallback (in case styles are concatenated/optimized).
+        if (!self::$shortcode_inline_printed){
+            echo '<style id="mm-shortcode-reset">' . $this->get_shortcode_reset_css() . '</style>';
+            self::$shortcode_inline_printed = true;
+        }
+        ?>
         <?php $style = ($max_h !== '') ? ' style="--mm-max-h: ' . esc_attr($max_h) . 'px;"' : ''; ?>
         <div class="mm-snippet-inline" data-mm-id="<?php echo (int)$post_id; ?>" data-mm-shortcode="1"<?php echo $style; ?>>
             <?php echo $html; ?>
@@ -359,7 +366,20 @@ class Anchor_Mega_Menu_Module {
         if (self::$shortcode_css_added) return;
         self::$shortcode_css_added = true;
 
-        $css = <<<CSS
+        // Ensure the frontend style handle exists so we can attach the override.
+        if (!wp_style_is('mm-frontend', 'enqueued')) {
+            wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.4');
+            $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
+            if ($global_css !== '') {
+                wp_add_inline_style('mm-frontend', $global_css);
+            }
+        }
+
+        wp_add_inline_style('mm-frontend', $this->get_shortcode_reset_css());
+    }
+
+    private function get_shortcode_reset_css(){
+        return <<<CSS
 .mm-snippet-inline[data-mm-shortcode="1"]{
   position: static !important;
   display: block !important;
@@ -375,6 +395,9 @@ class Anchor_Mega_Menu_Module {
   opacity: 1 !important;
   pointer-events: auto !important;
 }
+.mm-snippet-inline[data-mm-shortcode="1"] .mm-panel.mm-open{
+  display: block !important;
+}
 .mm-snippet-inline[data-mm-shortcode="1"] .mm-viewport{
   overflow: visible !important;
   max-height: none !important;
@@ -383,17 +406,6 @@ class Anchor_Mega_Menu_Module {
   display: none !important;
 }
 CSS;
-
-        // Ensure the frontend style handle exists so we can attach the override.
-        if (!wp_style_is('mm-frontend', 'enqueued')) {
-            wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.4');
-            $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
-            if ($global_css !== '') {
-                wp_add_inline_style('mm-frontend', $global_css);
-            }
-        }
-
-        wp_add_inline_style('mm-frontend', $css);
     }
 
     private function ensure_embed_assets(){

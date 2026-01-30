@@ -1,15 +1,6 @@
 (function(){
   if(!window.MM_SNIPPETS || !Array.isArray(MM_SNIPPETS)) return;
 
-  // Detect snippets that are rendered inline via shortcode so we don't also
-  // spawn floating panels for them.
-  var inlineIds = Array.prototype.slice.call(
-    document.querySelectorAll('.mm-snippet-inline[data-mm-shortcode][data-mm-id]')
-  ).map(function(node){
-    var v = parseInt(node.getAttribute('data-mm-id'), 10);
-    return isNaN(v) ? null : v;
-  }).filter(function(v){ return v !== null; });
-
   function createPanel(sn){
     var panel = document.createElement('div');
     panel.className = 'mm-panel mm-anim-'+sn.settings.animation;
@@ -155,7 +146,7 @@
 
   function attach(sn){
     if(!sn.trigger_class) return;
-    var selector = '.' + sn.trigger_class.trim().split(/\s+/).join('.');
+    var selector = '.' + sn.trigger_class.trim().split(/\\s+/).join('.');
     var triggers = document.querySelectorAll(selector);
     if(!triggers.length) return;
 
@@ -211,11 +202,5 @@
     });
   }
 
-  MM_SNIPPETS.forEach(function(sn){
-    if (inlineIds.indexOf(sn.id) !== -1) {
-      // Already rendered via shortcode; skip floating panel behavior.
-      return;
-    }
-    attach(sn);
-  });
+  MM_SNIPPETS.forEach(attach);
 })();

@@ -12,12 +12,6 @@ class Anchor_Mega_Menu_Module {
     const NONCE = 'anchor_mega_snippet_nonce';
     const GLOBAL_CSS_OPTION = 'anchor_mega_menu_global_css';
 
-    /**
-     * Ensure we only print the shortcode reset CSS once per request.
-     */
-    private static $shortcode_css_added = false;
-    private static $shortcode_inline_printed = false;
-
     public function __construct(){
         add_action('init', [$this, 'register_cpt']);
         add_action('add_meta_boxes', [$this, 'add_metaboxes']);
@@ -328,7 +322,6 @@ class Anchor_Mega_Menu_Module {
         $post_id = (int)$atts['id'];
         if (!$post_id) return '';
         $this->ensure_embed_assets();
-        $this->add_shortcode_reset_css();
         $meta = $this->get_meta($post_id);
         $max_h = $this->normalize_max_height($meta['max_height']);
         $html  = $meta['html'];
@@ -342,70 +335,12 @@ class Anchor_Mega_Menu_Module {
             wp_add_inline_script('mm-frontend', "(function(){try{ {$js} }catch(e){console.error(e);}})();");
         }
 
-        ob_start();
-        // Print a scoped inline reset as a fallback (in case styles are concatenated/optimized).
-        if (!self::$shortcode_inline_printed){
-            echo '<style id="mm-shortcode-reset">' . $this->get_shortcode_reset_css() . '</style>';
-            self::$shortcode_inline_printed = true;
-        }
-        ?>
+        ob_start(); ?>
         <?php $style = ($max_h !== '') ? ' style="--mm-max-h: ' . esc_attr($max_h) . 'px;"' : ''; ?>
-        <div class="mm-snippet-inline" data-mm-id="<?php echo (int)$post_id; ?>" data-mm-shortcode="1"<?php echo $style; ?>>
+        <div class="mm-snippet-inline" data-mm-id="<?php echo (int)$post_id; ?>"<?php echo $style; ?>>
             <?php echo $html; ?>
         </div>
         <?php return ob_get_clean();
-    }
-
-    /**
-     * When rendering via shortcode we want to bypass the floating mega-menu
-     * positioning so the snippet sits naturally in the document flow. This
-     * injects a small, scoped override that neutralizes the absolute/fixed
-     * layout rules for any menu markup contained inside the shortcode output.
-     */
-    private function add_shortcode_reset_css(){
-        if (self::$shortcode_css_added) return;
-        self::$shortcode_css_added = true;
-
-        // Ensure the frontend style handle exists so we can attach the override.
-        if (!wp_style_is('mm-frontend', 'enqueued')) {
-            wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.4');
-            $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
-            if ($global_css !== '') {
-                wp_add_inline_style('mm-frontend', $global_css);
-            }
-        }
-
-        wp_add_inline_style('mm-frontend', $this->get_shortcode_reset_css());
-    }
-
-    private function get_shortcode_reset_css(){
-        return <<<CSS
-.mm-snippet-inline[data-mm-shortcode="1"]{
-  position: static !important;
-  display: block !important;
-}
-.mm-snippet-inline[data-mm-shortcode="1"] .mm-panel{
-  position: static !important;
-  display: block !important;
-  top: auto !important;
-  left: auto !important;
-  right: auto !important;
-  bottom: auto !important;
-  transform: none !important;
-  opacity: 1 !important;
-  pointer-events: auto !important;
-}
-.mm-snippet-inline[data-mm-shortcode="1"] .mm-panel.mm-open{
-  display: block !important;
-}
-.mm-snippet-inline[data-mm-shortcode="1"] .mm-viewport{
-  overflow: visible !important;
-  max-height: none !important;
-}
-.mm-snippet-inline[data-mm-shortcode="1"] .mm-arrow{
-  display: none !important;
-}
-CSS;
     }
 
     private function ensure_embed_assets(){

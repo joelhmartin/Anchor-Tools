@@ -335,7 +335,13 @@ class Anchor_CTM_Forms_Module {
                 </select>
             </label></p>
 
-            <p><button type="button" class="button" id="ctm-generate"><?php esc_html_e( 'Generate Starter Form', 'anchor-schema' ); ?></button></p>
+            <p style="display:flex;align-items:center;gap:12px;">
+                <button type="button" class="button" id="ctm-generate"><?php esc_html_e( 'Generate Starter Form', 'anchor-schema' ); ?></button>
+                <label style="display:inline-flex;align-items:center;gap:4px;">
+                    <input type="checkbox" id="ctm_floating_labels" value="1" />
+                    <?php esc_html_e( 'Floating labels', 'anchor-schema' ); ?>
+                </label>
+            </p>
 
             <p><label><strong><?php esc_html_e( 'Form HTML', 'anchor-schema' ); ?></strong></label></p>
             <p><textarea name="ctm_form_html" id="ctm_form_html" style="width:100%;height:420px" placeholder="<?php esc_attr_e( 'Starter HTML will appear here after you choose a reactor and click Generate.', 'anchor-schema' ); ?>"><?php echo esc_textarea( $html ); ?></textarea></p>
@@ -431,10 +437,12 @@ class Anchor_CTM_Forms_Module {
             genBtn?.addEventListener('click', async () => {
                 const id = sel.value;
                 if (!id) { alert('Please choose a reactor first.'); return; }
+                const floatingLabels = document.getElementById('ctm_floating_labels')?.checked ? '1' : '0';
                 const fd = new FormData();
                 fd.append('action', 'anchor_ctm_generate');
                 fd.append('<?php echo esc_js( self::NONCE_NAME ); ?>', '<?php echo esc_js( wp_create_nonce( self::NONCE_ACTION ) ); ?>');
                 fd.append('reactor_id', id);
+                fd.append('floating_labels', floatingLabels);
                 const res = await fetch(ajaxurl, { method: 'POST', body: fd });
                 const data = await res.json();
                 if (data && data.success) {
@@ -497,7 +505,7 @@ class Anchor_CTM_Forms_Module {
     }
 
     /* Build starter HTML */
-    private function build_starter_html_from_detail( $detail ) {
+    private function build_starter_html_from_detail( $detail, $floating_labels = false ) {
         $fields = [];
 
         if ( ! empty( $detail['include_name'] ) ) {
@@ -512,15 +520,47 @@ class Anchor_CTM_Forms_Module {
             foreach ( $detail['custom_fields'] as $cf ) {
                 if ( is_array( $cf ) && ! empty( $cf['name'] ) ) {
                     $type = strtolower( (string) ( $cf['type'] ?? 'text' ) );
-                    if ( ! in_array( $type, [ 'textarea', 'email', 'tel', 'text', 'number', 'url' ], true ) ) {
+
+                    // Supported field types
+                    $allowed_types = [ 'textarea', 'email', 'tel', 'text', 'number', 'url', 'select', 'checkbox', 'radio' ];
+                    if ( ! in_array( $type, $allowed_types, true ) ) {
                         $type = 'text';
                     }
+
+                    // Parse options for select/checkbox/radio fields
+                    $options = [];
+                    if ( in_array( $type, [ 'select', 'checkbox', 'radio' ], true ) ) {
+                        // CTM may provide options as 'options', 'choices', or 'values'
+                        $raw_options = $cf['options'] ?? $cf['choices'] ?? $cf['values'] ?? [];
+                        if ( is_string( $raw_options ) ) {
+                            // Options might be comma-separated or newline-separated
+                            $raw_options = preg_split( '/[\n,]+/', $raw_options );
+                        }
+                        if ( is_array( $raw_options ) ) {
+                            foreach ( $raw_options as $opt ) {
+                                if ( is_array( $opt ) ) {
+                                    // Option might be { value: 'x', label: 'X' } or { name: 'X', value: 'x' }
+                                    $options[] = [
+                                        'value' => (string) ( $opt['value'] ?? $opt['name'] ?? $opt['label'] ?? '' ),
+                                        'label' => (string) ( $opt['label'] ?? $opt['name'] ?? $opt['value'] ?? '' ),
+                                    ];
+                                } else {
+                                    $opt = trim( (string) $opt );
+                                    if ( $opt !== '' ) {
+                                        $options[] = [ 'value' => $opt, 'label' => $opt ];
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     $fields[] = [
-                        'name' => (string) $cf['name'],
-                        'type' => $type,
-                        'label' => (string) ( $cf['label'] ?? ucfirst( $cf['name'] ) ),
+                        'name'     => (string) $cf['name'],
+                        'type'     => $type,
+                        'label'    => (string) ( $cf['label'] ?? ucfirst( $cf['name'] ) ),
                         'required' => ! empty( $cf['required'] ),
-                        'custom' => true,
+                        'custom'   => true,
+                        'options'  => $options,
                     ];
                 }
             }
@@ -532,11 +572,63 @@ class Anchor_CTM_Forms_Module {
             $name = esc_attr( $f['name'] );
             $type = esc_attr( $f['type'] ?? 'text' );
             $req = ! empty( $f['required'] ) ? ' required' : '';
-            $cls = ! empty( $f['custom'] ) ? ' class="ctm-custom"' : '';
+            $is_custom = ! empty( $f['custom'] );
+            $options = $f['options'] ?? [];
 
-            if ( $type === 'textarea' ) {
+            // Floating labels only apply to text, email, tel, number, url, textarea
+            $use_floating = $floating_labels && in_array( $type, [ 'text', 'email', 'tel', 'number', 'url', 'textarea' ], true );
+
+            if ( $use_floating ) {
+                // Floating label markup
+                $input_cls = $is_custom ? 'ctm-custom input-field' : 'input-field';
+                if ( $type === 'textarea' ) {
+                    $html .= "  <div class=\"input\">\n";
+                    $html .= "    <textarea name=\"{$name}\" class=\"{$input_cls}\"{$req}></textarea>\n";
+                    $html .= "    <label class=\"input-label\">{$label}</label>\n";
+                    $html .= "  </div>\n";
+                } else {
+                    $html .= "  <div class=\"input\">\n";
+                    $html .= "    <input class=\"{$input_cls}\" type=\"{$type}\" name=\"{$name}\"{$req}>\n";
+                    $html .= "    <label class=\"input-label\">{$label}</label>\n";
+                    $html .= "  </div>\n";
+                }
+            } elseif ( $type === 'textarea' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
                 $html .= "  <label>{$label}<textarea name=\"{$name}\"{$cls}{$req}></textarea></label>\n";
+            } elseif ( $type === 'select' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                $html .= "  <label>{$label}\n";
+                $html .= "    <select name=\"{$name}\"{$cls}{$req}>\n";
+                $html .= "      <option value=\"\">— Select —</option>\n";
+                foreach ( $options as $opt ) {
+                    $optVal = esc_attr( $opt['value'] );
+                    $optLabel = esc_html( $opt['label'] );
+                    $html .= "      <option value=\"{$optVal}\">{$optLabel}</option>\n";
+                }
+                $html .= "    </select>\n";
+                $html .= "  </label>\n";
+            } elseif ( $type === 'checkbox' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                $html .= "  <fieldset>\n";
+                $html .= "    <legend>{$label}</legend>\n";
+                foreach ( $options as $i => $opt ) {
+                    $optVal = esc_attr( $opt['value'] );
+                    $optLabel = esc_html( $opt['label'] );
+                    $html .= "    <label><input type=\"checkbox\" name=\"{$name}[]\" value=\"{$optVal}\"{$cls}> {$optLabel}</label>\n";
+                }
+                $html .= "  </fieldset>\n";
+            } elseif ( $type === 'radio' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                $html .= "  <fieldset>\n";
+                $html .= "    <legend>{$label}</legend>\n";
+                foreach ( $options as $opt ) {
+                    $optVal = esc_attr( $opt['value'] );
+                    $optLabel = esc_html( $opt['label'] );
+                    $html .= "    <label><input type=\"radio\" name=\"{$name}\" value=\"{$optVal}\"{$cls}{$req}> {$optLabel}</label>\n";
+                }
+                $html .= "  </fieldset>\n";
             } else {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
                 $html .= "  <label>{$label}<input type=\"{$type}\" name=\"{$name}\"{$cls}{$req}></label>\n";
             }
         }
@@ -592,12 +684,14 @@ class Anchor_CTM_Forms_Module {
             wp_send_json_error( 'Missing reactor_id' );
         }
 
+        $floating_labels = isset( $_POST['floating_labels'] ) && $_POST['floating_labels'] === '1';
+
         $detail = $this->fetch_reactor_detail( $rid );
         if ( empty( $detail ) ) {
             wp_send_json_error( 'Could not load reactor details' );
         }
 
-        $html = $this->build_starter_html_from_detail( $detail );
+        $html = $this->build_starter_html_from_detail( $detail, $floating_labels );
         wp_send_json_success( [ 'html' => $html ] );
     }
 
@@ -705,10 +799,35 @@ class Anchor_CTM_Forms_Module {
                     var el = els[i];
                     var name = el.getAttribute('name');
                     if (!name) continue;
-                    var val = (el.type === 'checkbox' || el.type === 'radio') ? (el.checked ? el.value : '') : el.value;
+
+                    var val;
+                    var isCustom = el.classList.contains('ctm-custom');
+                    var target = isCustom ? custom : core;
+
+                    // Handle checkbox arrays (name ends with [])
+                    if (el.type === 'checkbox') {
+                        if (!el.checked) continue;
+                        val = el.value;
+
+                        // Check if it's an array field (name ends with [])
+                        if (name.endsWith('[]')) {
+                            var baseName = name.slice(0, -2);
+                            if (!target[baseName]) {
+                                target[baseName] = [];
+                            }
+                            target[baseName].push(val);
+                            continue;
+                        }
+                    } else if (el.type === 'radio') {
+                        if (!el.checked) continue;
+                        val = el.value;
+                    } else {
+                        val = el.value;
+                    }
+
                     if (val === '') continue;
 
-                    if (el.classList.contains('ctm-custom')) {
+                    if (isCustom) {
                         custom[name] = val;
                     } else {
                         core[name] = val;
@@ -831,8 +950,15 @@ class Anchor_CTM_Forms_Module {
 
         // Build the submission body
         $body = $core;
+
+        // Custom fields must be prefixed with "custom_" and sent at top level
+        // NOT nested under a "custom" key
         if ( ! empty( $custom ) ) {
-            $body['custom'] = $custom;
+            foreach ( $custom as $key => $value ) {
+                // Ensure key has custom_ prefix
+                $prefixed_key = strpos( $key, 'custom_' ) === 0 ? $key : 'custom_' . $key;
+                $body[ $prefixed_key ] = $value;
+            }
         }
 
         // CORRECT ENDPOINT: /api/v1/formreactor/{reactor_id}

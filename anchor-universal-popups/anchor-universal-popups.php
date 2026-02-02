@@ -62,6 +62,7 @@ class Anchor_Universal_Popups_Module {
             'autoplay' => '0',              // 0 or 1 for video popups
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
+            'close_color' => '#ffffff',     // close icon color
             'css'  => '',
             'js'   => '',
 
@@ -153,9 +154,18 @@ class Anchor_Universal_Popups_Module {
           <style>
             .up-side label{ display:block; margin-top:8px; font-weight:600; }
             .up-side input[type="number"], .up-side input[type="text"], .up-side select, .up-side textarea{ width:100%; }
+            .up-side input[type="color"]{ width:50px; height:30px; padding:0; border:1px solid #8c8f94; cursor:pointer; }
             .up-side textarea{ min-height:70px; }
             .description{ color:#666; font-size:12px; }
+            .up-color-row{ display:flex; align-items:center; gap:8px; }
+            .up-color-row input[type="text"]{ flex:1; }
           </style>
+
+          <label>Close Icon Color</label>
+          <div class="up-color-row">
+            <input type="color" id="up_close_color_picker" value="<?php echo esc_attr($m['close_color']); ?>" />
+            <input type="text" name="up_close_color" id="up_close_color" value="<?php echo esc_attr($m['close_color']); ?>" placeholder="#ffffff" />
+          </div>
 
           <label>Autoplay (videos only)</label>
           <select name="up_autoplay">
@@ -230,7 +240,7 @@ class Anchor_Universal_Popups_Module {
         if (!current_user_can('edit_post', $post_id)) return;
 
         $fields = [
-            'mode','video_id','autoplay',
+            'mode','video_id','autoplay','close_color',
             'html','shortcode','css','js',
             'trigger_type','trigger_value','delay_ms',
             'frequency_mode','cooldown_minutes',
@@ -334,6 +344,7 @@ class Anchor_Universal_Popups_Module {
                 'mode' => $m['mode'],
                 'video_id' => $m['video_id'],
                 'autoplay' => ($m['autoplay'] === '1'),
+                'close_color' => $m['close_color'],
                 'html' => $m['html'],
                 'shortcode_content' => $rendered_shortcode, // pre-rendered shortcode content
                 'css' => $m['css'],
@@ -357,8 +368,8 @@ class Anchor_Universal_Popups_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.0.2');
-            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.3', true);
+            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.0.3');
+            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.4', true);
         }
     }
 
@@ -373,7 +384,7 @@ class Anchor_Universal_Popups_Module {
         if (empty($snippets)) return;
 
         wp_enqueue_style('up-frontend', plugins_url('assets/frontend.css', __FILE__), [], '1.0.1');
-        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.3', true);
+        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.4', true);
         wp_localize_script('up-frontend', 'UP_SNIPPETS', $snippets);
     }
 

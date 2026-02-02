@@ -54,10 +54,76 @@ class Module {
 
         \add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'handle_settings_update' ], 10, 2 );
         \add_action( 'before_delete_post', [ $this, 'clear_caches_on_delete' ] );
+
+        // SEO: Add canonical URL for calendar month parameter pages
+        \add_action( 'wp_head', [ $this, 'output_canonical_url' ], 1 );
+        \add_filter( 'wpseo_canonical', [ $this, 'filter_yoast_canonical' ] );
+        \add_filter( 'rank_math/frontend/canonical', [ $this, 'filter_yoast_canonical' ] );
     }
 
     public static function instance() {
         return self::$instance;
+    }
+
+    /**
+     * Get the canonical URL for the current page (without calendar month parameters).
+     * This prevents search engines from indexing each month view as a separate page.
+     *
+     * @return string|false The canonical URL or false if not applicable.
+     */
+    private function get_canonical_url() {
+        if ( ! isset( $_GET['anchor_events_month'] ) ) {
+            return false;
+        }
+
+        // Get the current URL without query parameters
+        global $wp;
+        $canonical = \home_url( $wp->request );
+
+        // Preserve other query parameters except anchor_events_month
+        $query_params = $_GET;
+        unset( $query_params['anchor_events_month'] );
+
+        if ( ! empty( $query_params ) ) {
+            $canonical = \add_query_arg( $query_params, $canonical );
+        }
+
+        // Ensure trailing slash consistency
+        if ( \trailingslashit( \home_url() ) !== \home_url() . '/' ) {
+            $canonical = \untrailingslashit( $canonical );
+        } else {
+            $canonical = \trailingslashit( $canonical );
+        }
+
+        return $canonical;
+    }
+
+    /**
+     * Output canonical URL in wp_head for pages with calendar month parameter.
+     * This serves as a fallback if no SEO plugin outputs a canonical tag.
+     */
+    public function output_canonical_url() {
+        $canonical = $this->get_canonical_url();
+        if ( ! $canonical ) {
+            return;
+        }
+
+        // Output the canonical tag - SEO plugin filters will override if present
+        echo '<link rel="canonical" href="' . \esc_url( $canonical ) . '" />' . "\n";
+    }
+
+    /**
+     * Filter Yoast SEO and Rank Math canonical URL for calendar month pages.
+     *
+     * @param string $canonical The canonical URL.
+     * @return string The filtered canonical URL.
+     */
+    public function filter_yoast_canonical( $canonical ) {
+        $our_canonical = $this->get_canonical_url();
+        if ( $our_canonical ) {
+            return $our_canonical;
+        }
+        return $canonical;
     }
 
     public function register_cpt() {

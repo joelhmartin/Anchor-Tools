@@ -71,6 +71,17 @@
       applyPreview();
     });
 
+    // Sync color picker with text input
+    $('#up_close_color_picker').on('input change', function(){
+      $('#up_close_color').val($(this).val());
+    });
+    $('#up_close_color').on('input change', function(){
+      var val = $(this).val();
+      if(/^#[0-9A-Fa-f]{6}$/.test(val)){
+        $('#up_close_color_picker').val(val);
+      }
+    });
+
     if (window.wp && wp.codeEditor){
       ['up_html','up_shortcode','up_css','up_js'].forEach(function(id){
         var $ta = $('#'+id);

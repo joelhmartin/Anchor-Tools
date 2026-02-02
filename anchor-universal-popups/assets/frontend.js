@@ -50,6 +50,7 @@
       close.type = 'button';
       close.setAttribute('aria-label','Close popup');
       close.setAttribute('data-close','');
+      close.setAttribute('data-close-btn','');
       close.textContent = '×';
 
       var frame = document.createElement('div');
@@ -74,6 +75,7 @@
       close2.type = 'button';
       close2.setAttribute('aria-label','Close popup');
       close2.setAttribute('data-close','');
+      close2.setAttribute('data-close-btn','');
       close2.textContent = '×';
 
       var inner = document.createElement('div');
@@ -177,6 +179,12 @@
     var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo');
     var modal = buildModalShell(isVideo);
     wireClose(modal);
+
+    // Apply close icon color if set
+    if(sn.close_color){
+      var closeBtn = modal.querySelector('[data-close-btn]');
+      if(closeBtn) closeBtn.style.color = sn.close_color;
+    }
 
     function triggerOpen(){
       // For "Click on class", treat the popup like an explicit user action and

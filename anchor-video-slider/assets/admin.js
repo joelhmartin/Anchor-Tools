@@ -281,59 +281,6 @@
       }, 500);
     });
 
-    // Bulk add videos
-    var $bulkModal = $gallery.find('.avs-bulk-modal');
-    var $bulkTextarea = $gallery.find('.avs-bulk-urls');
-
-    $gallery.find('.avs-bulk-add-video').off('click.avg').on('click.avg', function(){
-      $bulkTextarea.val('');
-      $bulkModal.find('.avs-bulk-result').remove();
-      $bulkModal.removeAttr('hidden');
-      $bulkTextarea.focus();
-    });
-
-    $bulkModal.find('.avs-bulk-modal-close, .avs-bulk-cancel').off('click.avg').on('click.avg', function(){
-      $bulkModal.attr('hidden', true);
-    });
-
-    $bulkModal.find('.avs-bulk-import').off('click.avg').on('click.avg', function(){
-      var urls = $bulkTextarea.val();
-      var result = bulkAddVideos($gallery, urls);
-
-      // Show result message
-      $bulkModal.find('.avs-bulk-result').remove();
-      var resultClass = result.failed === 0 ? 'success' : (result.added > 0 ? 'warning' : 'error');
-      var resultMsg = '';
-
-      if (result.added > 0) {
-        resultMsg = result.added + ' video' + (result.added > 1 ? 's' : '') + ' added successfully.';
-      }
-      if (result.failed > 0) {
-        if (resultMsg) resultMsg += ' ';
-        resultMsg += result.failed + ' URL' + (result.failed > 1 ? 's' : '') + ' could not be parsed.';
-      }
-      if (result.added === 0 && result.failed === 0) {
-        resultMsg = 'No valid URLs found. Please enter YouTube or Vimeo URLs.';
-        resultClass = 'error';
-      }
-
-      $('<div class="avs-bulk-result ' + resultClass + '">' + resultMsg + '</div>').insertAfter($bulkTextarea);
-
-      if (result.added > 0) {
-        // Close modal after short delay on success
-        setTimeout(function(){
-          $bulkModal.attr('hidden', true);
-        }, 1500);
-      }
-    });
-
-    // Close modal on backdrop click
-    $bulkModal.off('click.avg').on('click.avg', function(e){
-      if ($(e.target).is('.avs-bulk-modal')) {
-        $bulkModal.attr('hidden', true);
-      }
-    });
-
     // Bind existing videos
     $gallery.find('.avs-video-card').each(function(){
       bindVideoEvents($(this), $gallery);
@@ -423,6 +370,66 @@
     });
 
     initSortable();
+
+    // Bulk add - open modal
+    $(document).on('click', '.avs-bulk-add-video', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var $gallery = $(this).closest('.avs-gallery');
+      var $modal = $gallery.find('.avs-bulk-modal');
+      $modal.find('.avs-bulk-urls').val('');
+      $modal.find('.avs-bulk-result').remove();
+      $modal.removeAttr('hidden');
+      $modal.find('.avs-bulk-urls').focus();
+    });
+
+    // Bulk add - close modal
+    $(document).on('click', '.avs-bulk-modal-close, .avs-bulk-cancel', function(e) {
+      e.preventDefault();
+      $(this).closest('.avs-bulk-modal').attr('hidden', true);
+    });
+
+    // Bulk add - close on backdrop click
+    $(document).on('click', '.avs-bulk-modal', function(e) {
+      if ($(e.target).hasClass('avs-bulk-modal')) {
+        $(this).attr('hidden', true);
+      }
+    });
+
+    // Bulk add - import
+    $(document).on('click', '.avs-bulk-import', function(e) {
+      e.preventDefault();
+      var $modal = $(this).closest('.avs-bulk-modal');
+      var $gallery = $(this).closest('.avs-gallery');
+      var $textarea = $modal.find('.avs-bulk-urls');
+      var urls = $textarea.val();
+      var result = bulkAddVideos($gallery, urls);
+
+      // Show result
+      $modal.find('.avs-bulk-result').remove();
+      var resultClass = result.failed === 0 ? 'success' : (result.added > 0 ? 'warning' : 'error');
+      var resultMsg = '';
+
+      if (result.added > 0) {
+        resultMsg = result.added + ' video' + (result.added > 1 ? 's' : '') + ' added successfully.';
+      }
+      if (result.failed > 0) {
+        if (resultMsg) resultMsg += ' ';
+        resultMsg += result.failed + ' URL' + (result.failed > 1 ? 's' : '') + ' could not be parsed.';
+      }
+      if (result.added === 0 && result.failed === 0) {
+        resultMsg = 'No valid URLs found. Please enter YouTube or Vimeo URLs.';
+        resultClass = 'error';
+      }
+
+      $('<div class="avs-bulk-result ' + resultClass + '">' + resultMsg + '</div>').insertAfter($textarea);
+
+      if (result.added > 0) {
+        setTimeout(function() {
+          $modal.attr('hidden', true);
+        }, 1500);
+      }
+    });
   });
 
 })(jQuery);

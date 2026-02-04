@@ -13,7 +13,6 @@ if (!defined('ABSPATH')) {
 
 class Anchor_Video_Slider_Module {
     const OPTION_KEY = 'anchor_video_slider_items';
-    const VERSION = '2.2.0';
 
     // Sample videos for preview
     private $sample_videos = [
@@ -75,15 +74,16 @@ class Anchor_Video_Slider_Module {
     }
 
     public function enqueue_assets() {
+        $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/assets/';
         $base_url = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-video-slider/assets/';
 
         $up_css_path = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-universal-popups/assets/frontend.css';
         if (file_exists($up_css_path)) {
-            wp_enqueue_style('up-frontend', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-universal-popups/assets/frontend.css', [], '1.0.1');
+            wp_enqueue_style('up-frontend', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-universal-popups/assets/frontend.css', [], filemtime($up_css_path));
         }
 
-        wp_enqueue_style('anchor-video-gallery', $base_url . 'anchor-video-slider.css', [], self::VERSION);
-        wp_enqueue_script('anchor-video-gallery', $base_url . 'anchor-video-slider.js', [], self::VERSION, true);
+        wp_enqueue_style('anchor-video-gallery', $base_url . 'anchor-video-slider.css', [], filemtime($base_dir . 'anchor-video-slider.css'));
+        wp_enqueue_script('anchor-video-gallery', $base_url . 'anchor-video-slider.js', [], filemtime($base_dir . 'anchor-video-slider.js'), true);
     }
 
     public function register_menu() {
@@ -103,21 +103,22 @@ class Anchor_Video_Slider_Module {
         wp_enqueue_media();
 
         // Enqueue frontend styles for preview
+        $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/assets/';
         $base_url = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-video-slider/assets/';
-        wp_enqueue_style('anchor-video-gallery', $base_url . 'anchor-video-slider.css', [], self::VERSION);
-        wp_enqueue_script('anchor-video-gallery', $base_url . 'anchor-video-slider.js', [], self::VERSION, true);
+        wp_enqueue_style('anchor-video-gallery', $base_url . 'anchor-video-slider.css', [], filemtime($base_dir . 'anchor-video-slider.css'));
+        wp_enqueue_script('anchor-video-gallery', $base_url . 'anchor-video-slider.js', [], filemtime($base_dir . 'anchor-video-slider.js'), true);
 
         wp_enqueue_style(
             'anchor-video-gallery-admin',
             ANCHOR_TOOLS_PLUGIN_URL . 'anchor-video-slider/assets/admin.css',
             ['anchor-video-gallery'],
-            self::VERSION
+            filemtime($base_dir . 'admin.css')
         );
         wp_enqueue_script(
             'anchor-video-gallery-admin',
             ANCHOR_TOOLS_PLUGIN_URL . 'anchor-video-slider/assets/admin.js',
             ['jquery', 'anchor-video-gallery'],
-            self::VERSION,
+            filemtime($base_dir . 'admin.js'),
             true
         );
         wp_localize_script('anchor-video-gallery-admin', 'ANCHOR_VIDEO_GALLERY', [

@@ -12,7 +12,7 @@ class Anchor_Account_Dashboard {
         if ( ! is_singular() ) {
             return;
         }
-        wp_register_style( 'anchor-account-dashboard', false, [], ANCHOR_TOOLS_VERSION );
+        wp_register_style( 'anchor-account-dashboard', false, [] );
         $css = '
             .anchor-account{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:12px 0;font-family:system-ui,sans-serif;}
             .anchor-account h3{margin:16px 0 8px;font-size:18px;}

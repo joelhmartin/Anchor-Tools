@@ -503,6 +503,13 @@ class Anchor_Video_Slider_Module {
                     <!-- Videos -->
                     <div class="avs-section avs-videos-section">
                         <h3><?php esc_html_e('Videos', 'anchor-schema'); ?></h3>
+
+                        <!-- Bulk Add -->
+                        <div class="avs-bulk-inline">
+                            <textarea class="avs-bulk-urls" rows="3" placeholder="<?php esc_attr_e('Paste video URLs here, one per line (YouTube & Vimeo)', 'anchor-schema'); ?>"></textarea>
+                            <button type="button" class="button button-primary avs-bulk-import"><?php esc_html_e('Import URLs', 'anchor-schema'); ?></button>
+                        </div>
+
                         <div class="avs-videos-grid" data-gallery-index="<?php echo esc_attr($idx); ?>">
                             <?php
                             if (empty($videos)) {
@@ -515,28 +522,6 @@ class Anchor_Video_Slider_Module {
                         </div>
                         <div class="avs-video-actions">
                             <button type="button" class="button avs-add-video"><?php esc_html_e('+ Add Video', 'anchor-schema'); ?></button>
-                            <button type="button" class="button avs-bulk-add-video"><?php esc_html_e('Bulk Add URLs', 'anchor-schema'); ?></button>
-                        </div>
-
-                        <!-- Bulk Add Modal -->
-                        <div class="avs-bulk-modal" hidden>
-                            <div class="avs-bulk-modal-content">
-                                <div class="avs-bulk-modal-header">
-                                    <h4><?php esc_html_e('Bulk Add Videos', 'anchor-schema'); ?></h4>
-                                    <button type="button" class="avs-bulk-modal-close">&times;</button>
-                                </div>
-                                <div class="avs-bulk-modal-body">
-                                    <p class="avs-bulk-instructions"><?php esc_html_e('Paste video URLs below, one per line. Supports YouTube and Vimeo.', 'anchor-schema'); ?></p>
-                                    <textarea class="avs-bulk-urls" rows="10" placeholder="https://youtube.com/watch?v=...
-https://vimeo.com/...
-https://youtu.be/..."></textarea>
-                                    <p class="avs-bulk-hint"><?php esc_html_e('Tip: You can paste a list directly from a spreadsheet or text file.', 'anchor-schema'); ?></p>
-                                </div>
-                                <div class="avs-bulk-modal-footer">
-                                    <button type="button" class="button avs-bulk-cancel"><?php esc_html_e('Cancel', 'anchor-schema'); ?></button>
-                                    <button type="button" class="button button-primary avs-bulk-import"><?php esc_html_e('Import Videos', 'anchor-schema'); ?></button>
-                                </div>
-                            </div>
                         </div>
                     </div>
                 </div>

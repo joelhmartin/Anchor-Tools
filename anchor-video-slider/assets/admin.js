@@ -371,63 +371,42 @@
 
     initSortable();
 
-    // Bulk add - open modal
-    $(document).on('click', '.avs-bulk-add-video', function(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      var $gallery = $(this).closest('.avs-gallery');
-      var $modal = $gallery.find('.avs-bulk-modal');
-      $modal.find('.avs-bulk-urls').val('');
-      $modal.find('.avs-bulk-result').remove();
-      $modal.removeAttr('hidden');
-      $modal.find('.avs-bulk-urls').focus();
-    });
-
-    // Bulk add - close modal
-    $(document).on('click', '.avs-bulk-modal-close, .avs-bulk-cancel', function(e) {
-      e.preventDefault();
-      $(this).closest('.avs-bulk-modal').attr('hidden', true);
-    });
-
-    // Bulk add - close on backdrop click
-    $(document).on('click', '.avs-bulk-modal', function(e) {
-      if ($(e.target).hasClass('avs-bulk-modal')) {
-        $(this).attr('hidden', true);
-      }
-    });
-
     // Bulk add - import
     $(document).on('click', '.avs-bulk-import', function(e) {
       e.preventDefault();
-      var $modal = $(this).closest('.avs-bulk-modal');
       var $gallery = $(this).closest('.avs-gallery');
-      var $textarea = $modal.find('.avs-bulk-urls');
+      var $inline = $(this).closest('.avs-bulk-inline');
+      var $textarea = $inline.find('.avs-bulk-urls');
       var urls = $textarea.val();
+
+      if (!urls.trim()) return;
+
       var result = bulkAddVideos($gallery, urls);
 
       // Show result
-      $modal.find('.avs-bulk-result').remove();
+      $gallery.find('.avs-bulk-result').remove();
       var resultClass = result.failed === 0 ? 'success' : (result.added > 0 ? 'warning' : 'error');
       var resultMsg = '';
 
       if (result.added > 0) {
-        resultMsg = result.added + ' video' + (result.added > 1 ? 's' : '') + ' added successfully.';
+        resultMsg = result.added + ' video' + (result.added > 1 ? 's' : '') + ' added.';
       }
       if (result.failed > 0) {
         if (resultMsg) resultMsg += ' ';
-        resultMsg += result.failed + ' URL' + (result.failed > 1 ? 's' : '') + ' could not be parsed.';
+        resultMsg += result.failed + ' URL' + (result.failed > 1 ? 's' : '') + ' not recognized.';
       }
       if (result.added === 0 && result.failed === 0) {
-        resultMsg = 'No valid URLs found. Please enter YouTube or Vimeo URLs.';
+        resultMsg = 'No valid URLs found.';
         resultClass = 'error';
       }
 
-      $('<div class="avs-bulk-result ' + resultClass + '">' + resultMsg + '</div>').insertAfter($textarea);
+      $('<div class="avs-bulk-result ' + resultClass + '">' + resultMsg + '</div>').insertAfter($inline);
 
       if (result.added > 0) {
+        $textarea.val('');
         setTimeout(function() {
-          $modal.attr('hidden', true);
-        }, 1500);
+          $gallery.find('.avs-bulk-result').fadeOut(300, function() { $(this).remove(); });
+        }, 3000);
       }
     });
   });

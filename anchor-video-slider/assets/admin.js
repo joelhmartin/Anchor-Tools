@@ -1,7 +1,112 @@
 (function($){
-  function getNextIndex(){
+  'use strict';
+
+  // Debounce utility for preview updates
+  var previewTimers = {};
+  function debounce(key, fn, delay) {
+    if (previewTimers[key]) {
+      clearTimeout(previewTimers[key]);
+    }
+    previewTimers[key] = setTimeout(fn, delay);
+  }
+
+  // Collect all settings from a gallery for preview
+  function collectGallerySettings($gallery) {
+    var gIdx = $gallery.attr('data-index');
+    var prefix = 'galleries[' + gIdx + ']';
+    var settings = {};
+
+    // Get all form values
+    $gallery.find('input, select, textarea').each(function() {
+      var $el = $(this);
+      var name = $el.attr('name');
+      if (!name || name.indexOf(prefix) !== 0) return;
+
+      // Extract the key from the name (e.g., "galleries[0][layout]" -> "layout")
+      var match = name.match(/\]\[([^\]]+)\]$/);
+      if (!match) return;
+      var key = match[1];
+
+      // Handle radio buttons
+      if ($el.attr('type') === 'radio') {
+        if ($el.is(':checked')) {
+          settings[key] = $el.val();
+        }
+      }
+      // Handle checkboxes
+      else if ($el.attr('type') === 'checkbox') {
+        settings[key] = $el.is(':checked') ? '1' : '0';
+      }
+      // Handle other inputs
+      else {
+        settings[key] = $el.val();
+      }
+    });
+
+    return settings;
+  }
+
+  // Refresh the preview panel
+  function refreshPreview($gallery) {
+    var $previewContent = $gallery.find('.avs-preview-content');
+    var $previewStatus = $gallery.find('.avs-preview-status');
+
+    if (!$previewContent.length) return;
+
+    // Show loading state
+    $previewStatus.addClass('loading').text('Updating');
+
+    var settings = collectGallerySettings($gallery);
+
+    $.ajax({
+      url: window.ANCHOR_VIDEO_GALLERY ? ANCHOR_VIDEO_GALLERY.ajaxUrl : ajaxurl,
+      type: 'POST',
+      data: {
+        action: 'avg_preview',
+        nonce: window.ANCHOR_VIDEO_GALLERY ? ANCHOR_VIDEO_GALLERY.nonce : '',
+        settings: settings
+      },
+      success: function(response) {
+        if (response.success && response.data && response.data.html) {
+          $previewContent.html(response.data.html);
+
+          // Re-initialize the frontend JS for the preview
+          if (window.AnchorVideoGallery && typeof window.AnchorVideoGallery.init === 'function') {
+            window.AnchorVideoGallery.init($previewContent);
+          }
+
+          $previewStatus.removeClass('loading').text('Live Preview');
+        } else {
+          $previewStatus.removeClass('loading').text('Preview Error');
+        }
+      },
+      error: function() {
+        $previewStatus.removeClass('loading').text('Preview Error');
+      }
+    });
+  }
+
+  // Bind preview triggers for a gallery
+  function bindPreviewTriggers($gallery) {
+    var gIdx = $gallery.attr('data-index');
+
+    // Listen for changes on all form elements
+    $gallery.find('input, select, textarea').off('change.avgpreview input.avgpreview').on('change.avgpreview input.avgpreview', function() {
+      // Debounce to prevent too many calls
+      debounce('preview-' + gIdx, function() {
+        refreshPreview($gallery);
+      }, 500);
+    });
+
+    // Initial preview load
+    setTimeout(function() {
+      refreshPreview($gallery);
+    }, 100);
+  }
+
+  function getNextGalleryIndex(){
     var max = -1;
-    $('#avs-sliders .avs-slider').each(function(){
+    $('#avs-galleries .avs-gallery').each(function(){
       var idx = parseInt($(this).attr('data-index'), 10);
       if (!isNaN(idx)) {
         max = Math.max(max, idx);
@@ -10,13 +115,46 @@
     return max + 1;
   }
 
+  function getNextVideoIndex($gallery){
+    var max = -1;
+    $gallery.find('.avs-video-card').each(function(){
+      var idx = parseInt($(this).attr('data-video-index'), 10);
+      if (!isNaN(idx)) {
+        max = Math.max(max, idx);
+      }
+    });
+    return max + 1;
+  }
+
+  function updateLayoutVisibility($gallery){
+    var layout = $gallery.find('input[name*="[layout]"]:checked').val() || 'slider';
+    $gallery.attr('data-layout', layout);
+  }
+
+  function updateGalleryTitle($gallery){
+    var title = $gallery.find('.avs-gallery-title-input').val();
+    var id = $gallery.find('.avs-gallery-id').val();
+    var $titleEl = $gallery.find('.avs-gallery-header .avs-gallery-title');
+
+    var displayTitle = title || 'New Gallery';
+    var shortcode = id ? ' <code class="avs-shortcode-preview">[anchor_video_gallery id="' + id + '"]</code>' : '';
+
+    $titleEl.html(displayTitle + shortcode);
+  }
+
+  function renumberVideos($gallery){
+    $gallery.find('.avs-video-card').each(function(i){
+      $(this).find('.avs-video-number').text('#' + (i + 1));
+    });
+  }
+
   function bindMediaPicker($context){
-    $context.find('.avs-thumb-pick').off('click').on('click', function(e){
+    $context.find('.avs-thumb-pick').off('click.avg').on('click.avg', function(e){
       e.preventDefault();
       var $field = $(this).closest('.avs-thumb-wrap').find('.avs-thumb-field');
       var frame = wp.media({
-        title: (ANCHOR_VIDEO_SLIDER && ANCHOR_VIDEO_SLIDER.mediaTitle) || 'Select or upload image',
-        button: { text: (ANCHOR_VIDEO_SLIDER && ANCHOR_VIDEO_SLIDER.mediaButton) || 'Use this image' },
+        title: (window.ANCHOR_VIDEO_GALLERY && ANCHOR_VIDEO_GALLERY.mediaTitle) || 'Select or upload image',
+        button: { text: (window.ANCHOR_VIDEO_GALLERY && ANCHOR_VIDEO_GALLERY.mediaButton) || 'Use this image' },
         multiple: false
       });
       frame.on('select', function(){
@@ -28,52 +166,139 @@
     });
   }
 
-  function bindVideoRowActions($context){
-    $context.find('.avs-remove-video').off('click').on('click', function(){
-      var $row = $(this).closest('tr');
-      var $tbody = $row.closest('tbody');
-      $row.remove();
-      if ($tbody.find('tr').length === 0) {
-        $tbody.append($('#avs-video-template').html().replace(/__INDEX__/g, $tbody.closest('.avs-slider').attr('data-index')).replace(/__VIDX__/g, 0));
+  function bindGalleryEvents($gallery){
+    var gIdx = $gallery.attr('data-index');
+
+    // Toggle collapse
+    $gallery.find('.avs-gallery-header').off('click.avg').on('click.avg', function(e){
+      if ($(e.target).closest('.avs-remove-gallery').length) return;
+      $gallery.toggleClass('collapsed');
+    });
+
+    // Remove gallery
+    $gallery.find('.avs-remove-gallery').off('click.avg').on('click.avg', function(e){
+      e.stopPropagation();
+      if (confirm('Are you sure you want to delete this gallery?')) {
+        $gallery.remove();
       }
-      bindMediaPicker($tbody);
-      bindVideoRowActions($tbody);
+    });
+
+    // Layout change
+    $gallery.find('input[name*="[layout]"]').off('change.avg').on('change.avg', function(){
+      updateLayoutVisibility($gallery);
+    });
+    updateLayoutVisibility($gallery);
+
+    // Title/ID update
+    $gallery.find('.avs-gallery-title-input, .avs-gallery-id').off('input.avg').on('input.avg', function(){
+      updateGalleryTitle($gallery);
+    });
+
+    // Add video
+    $gallery.find('.avs-add-video').off('click.avg').on('click.avg', function(){
+      var vIdx = getNextVideoIndex($gallery);
+      var tpl = $('#avs-video-template').html()
+        .replace(/__GIDX__/g, gIdx)
+        .replace(/__VIDX__/g, vIdx);
+      var $card = $(tpl);
+      $gallery.find('.avs-videos-grid').append($card);
+      bindVideoEvents($card, $gallery);
+      renumberVideos($gallery);
+      // Refresh preview after adding video
+      debounce('preview-' + gIdx, function() {
+        refreshPreview($gallery);
+      }, 500);
+    });
+
+    // Bind existing videos
+    $gallery.find('.avs-video-card').each(function(){
+      bindVideoEvents($(this), $gallery);
+    });
+
+    bindMediaPicker($gallery);
+
+    // Bind preview triggers
+    bindPreviewTriggers($gallery);
+  }
+
+  function bindVideoEvents($card, $gallery){
+    var gIdx = $gallery.attr('data-index');
+
+    // Remove video
+    $card.find('.avs-remove-video').off('click.avg').on('click.avg', function(){
+      $card.remove();
+      renumberVideos($gallery);
+      // Ensure at least one empty video card
+      if ($gallery.find('.avs-video-card').length === 0) {
+        $gallery.find('.avs-add-video').trigger('click');
+      }
+      // Refresh preview after removing video
+      debounce('preview-' + gIdx, function() {
+        refreshPreview($gallery);
+      }, 500);
+    });
+
+    bindMediaPicker($card);
+  }
+
+  function initSortable(){
+    if (!$.fn.sortable) return;
+
+    $('.avs-videos-grid').sortable({
+      handle: '.avs-video-drag-handle',
+      placeholder: 'avs-video-card avs-sortable-placeholder',
+      tolerance: 'pointer',
+      update: function(event, ui){
+        var $gallery = ui.item.closest('.avs-gallery');
+        var gIdx = $gallery.attr('data-index');
+        renumberVideos($gallery);
+        reindexVideoFields($gallery);
+        // Refresh preview after reordering
+        debounce('preview-' + gIdx, function() {
+          refreshPreview($gallery);
+        }, 500);
+      }
     });
   }
 
-  function bindSliderActions($context){
-    $context.find('.avs-add-video').off('click').on('click', function(){
-      var $slider = $(this).closest('.avs-slider');
-      var idx = $slider.attr('data-index');
-      var $tbody = $slider.find('tbody');
-      var vIdx = $tbody.find('tr').length;
-      var tpl = $('#avs-video-template').html().replace(/__INDEX__/g, idx).replace(/__VIDX__/g, vIdx);
-      $tbody.append(tpl);
-      bindMediaPicker($slider);
-      bindVideoRowActions($slider);
-    });
-
-    $context.find('.avs-remove-slider').off('click').on('click', function(){
-      $(this).closest('.avs-slider').remove();
+  function reindexVideoFields($gallery){
+    var gIdx = $gallery.attr('data-index');
+    $gallery.find('.avs-video-card').each(function(i){
+      $(this).attr('data-video-index', i);
+      $(this).find('input, textarea').each(function(){
+        var name = $(this).attr('name');
+        if (name) {
+          name = name.replace(/\[videos\]\[\d+\]/, '[videos][' + i + ']');
+          $(this).attr('name', name);
+        }
+      });
     });
   }
 
   $(function(){
-    var $root = $('#avs-sliders');
+    var $root = $('#avs-galleries');
     if (!$root.length) return;
 
-    bindMediaPicker($root);
-    bindVideoRowActions($root);
-    bindSliderActions($root);
-
-    $('#avs-add-slider').on('click', function(){
-      var idx = getNextIndex();
-      var tpl = $('#avs-slider-template').html().replace(/__INDEX__/g, idx);
-      $root.append(tpl);
-      var $newSlider = $root.find('.avs-slider').last();
-      bindMediaPicker($newSlider);
-      bindVideoRowActions($newSlider);
-      bindSliderActions($newSlider);
+    // Bind existing galleries
+    $root.find('.avs-gallery').each(function(){
+      bindGalleryEvents($(this));
     });
+
+    // Add new gallery
+    $('#avs-add-gallery').on('click', function(){
+      var idx = getNextGalleryIndex();
+      var tpl = $('#avs-gallery-template').html().replace(/__INDEX__/g, idx);
+      var $gallery = $(tpl);
+      $root.append($gallery);
+      bindGalleryEvents($gallery);
+      initSortable();
+      // Scroll to new gallery
+      $('html, body').animate({
+        scrollTop: $gallery.offset().top - 50
+      }, 300);
+    });
+
+    initSortable();
   });
+
 })(jQuery);

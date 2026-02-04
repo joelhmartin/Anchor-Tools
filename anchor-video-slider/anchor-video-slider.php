@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 
 class Anchor_Video_Slider_Module {
     const OPTION_KEY = 'anchor_video_slider_items';
-    const VERSION = '2.1.0';
+    const VERSION = '2.2.0';
 
     // Sample videos for preview
     private $sample_videos = [

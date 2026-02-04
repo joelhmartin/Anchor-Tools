@@ -545,3 +545,149 @@
     gap: 12px;
   }
 }
+
+/* Video Actions */
+.avs-video-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* Bulk Add Modal */
+.avs-bulk-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.avs-bulk-modal[hidden] {
+  display: none;
+}
+
+.avs-bulk-modal-content {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  width: 100%;
+  max-width: 600px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.avs-bulk-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e4e7;
+  background: #f6f7f7;
+}
+
+.avs-bulk-modal-header h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1d2327;
+}
+
+.avs-bulk-modal-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  line-height: 1;
+  color: #787c82;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.avs-bulk-modal-close:hover {
+  background: #dcdcde;
+  color: #1d2327;
+}
+
+.avs-bulk-modal-body {
+  padding: 20px;
+  flex: 1;
+  overflow: auto;
+}
+
+.avs-bulk-instructions {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #1d2327;
+}
+
+.avs-bulk-urls {
+  width: 100%;
+  min-height: 200px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px;
+  border: 1px solid #c3c4c7;
+  border-radius: 4px;
+  resize: vertical;
+}
+
+.avs-bulk-urls:focus {
+  border-color: #2271b1;
+  box-shadow: 0 0 0 1px #2271b1;
+  outline: none;
+}
+
+.avs-bulk-hint {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: #646970;
+}
+
+.avs-bulk-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid #e2e4e7;
+  background: #f6f7f7;
+}
+
+.avs-bulk-result {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.avs-bulk-result.success {
+  background: #edfaef;
+  border: 1px solid #46b450;
+  color: #1e4620;
+}
+
+.avs-bulk-result.warning {
+  background: #fcf9e8;
+  border: 1px solid #dba617;
+  color: #614200;
+}
+
+.avs-bulk-result.error {
+  background: #fcf0f1;
+  border: 1px solid #d63638;
+  color: #8a1f1f;
+}

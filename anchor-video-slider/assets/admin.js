@@ -148,6 +148,77 @@
     });
   }
 
+  // Parse video URL to check if it's a valid YouTube or Vimeo URL
+  function parseVideoUrl(url) {
+    url = url.trim();
+    if (!url) return null;
+
+    // YouTube patterns
+    var ytMatch = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/))([A-Za-z0-9_-]{11})/);
+    if (ytMatch) {
+      return { provider: 'youtube', id: ytMatch[1], url: url };
+    }
+
+    // Vimeo patterns
+    var vmMatch = url.match(/(?:vimeo\.com\/(?:video\/|channels\/[^\/]+\/|groups\/[^\/]+\/videos\/)?)(\d+)/);
+    if (vmMatch) {
+      return { provider: 'vimeo', id: vmMatch[1], url: url };
+    }
+
+    return null;
+  }
+
+  // Bulk add videos from pasted URLs
+  function bulkAddVideos($gallery, urlText) {
+    var gIdx = $gallery.attr('data-index');
+    var lines = urlText.split(/[\r\n]+/);
+    var added = 0;
+    var failed = 0;
+
+    // Remove empty first video card if it exists and is empty
+    var $existingCards = $gallery.find('.avs-video-card');
+    if ($existingCards.length === 1) {
+      var $firstCard = $existingCards.first();
+      var firstUrl = $firstCard.find('.avs-video-url').val();
+      if (!firstUrl || !firstUrl.trim()) {
+        $firstCard.remove();
+      }
+    }
+
+    lines.forEach(function(line) {
+      line = line.trim();
+      if (!line) return;
+
+      var parsed = parseVideoUrl(line);
+      if (parsed) {
+        var vIdx = getNextVideoIndex($gallery);
+        var tpl = $('#avs-video-template').html()
+          .replace(/__GIDX__/g, gIdx)
+          .replace(/__VIDX__/g, vIdx);
+        var $card = $(tpl);
+
+        // Set the URL
+        $card.find('.avs-video-url').val(parsed.url);
+
+        $gallery.find('.avs-videos-grid').append($card);
+        bindVideoEvents($card, $gallery);
+        added++;
+      } else {
+        failed++;
+      }
+    });
+
+    if (added > 0) {
+      renumberVideos($gallery);
+      // Refresh preview
+      debounce('preview-' + gIdx, function() {
+        refreshPreview($gallery);
+      }, 500);
+    }
+
+    return { added: added, failed: failed };
+  }
+
   function bindMediaPicker($context){
     $context.find('.avs-thumb-pick').off('click.avg').on('click.avg', function(e){
       e.preventDefault();
@@ -208,6 +279,59 @@
       debounce('preview-' + gIdx, function() {
         refreshPreview($gallery);
       }, 500);
+    });
+
+    // Bulk add videos
+    var $bulkModal = $gallery.find('.avs-bulk-modal');
+    var $bulkTextarea = $gallery.find('.avs-bulk-urls');
+
+    $gallery.find('.avs-bulk-add-video').off('click.avg').on('click.avg', function(){
+      $bulkTextarea.val('');
+      $bulkModal.find('.avs-bulk-result').remove();
+      $bulkModal.removeAttr('hidden');
+      $bulkTextarea.focus();
+    });
+
+    $bulkModal.find('.avs-bulk-modal-close, .avs-bulk-cancel').off('click.avg').on('click.avg', function(){
+      $bulkModal.attr('hidden', true);
+    });
+
+    $bulkModal.find('.avs-bulk-import').off('click.avg').on('click.avg', function(){
+      var urls = $bulkTextarea.val();
+      var result = bulkAddVideos($gallery, urls);
+
+      // Show result message
+      $bulkModal.find('.avs-bulk-result').remove();
+      var resultClass = result.failed === 0 ? 'success' : (result.added > 0 ? 'warning' : 'error');
+      var resultMsg = '';
+
+      if (result.added > 0) {
+        resultMsg = result.added + ' video' + (result.added > 1 ? 's' : '') + ' added successfully.';
+      }
+      if (result.failed > 0) {
+        if (resultMsg) resultMsg += ' ';
+        resultMsg += result.failed + ' URL' + (result.failed > 1 ? 's' : '') + ' could not be parsed.';
+      }
+      if (result.added === 0 && result.failed === 0) {
+        resultMsg = 'No valid URLs found. Please enter YouTube or Vimeo URLs.';
+        resultClass = 'error';
+      }
+
+      $('<div class="avs-bulk-result ' + resultClass + '">' + resultMsg + '</div>').insertAfter($bulkTextarea);
+
+      if (result.added > 0) {
+        // Close modal after short delay on success
+        setTimeout(function(){
+          $bulkModal.attr('hidden', true);
+        }, 1500);
+      }
+    });
+
+    // Close modal on backdrop click
+    $bulkModal.off('click.avg').on('click.avg', function(e){
+      if ($(e.target).is('.avs-bulk-modal')) {
+        $bulkModal.attr('hidden', true);
+      }
     });
 
     // Bind existing videos

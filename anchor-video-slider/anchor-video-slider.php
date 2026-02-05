@@ -122,7 +122,7 @@ class Anchor_Video_Slider_Module {
         wp_enqueue_script(
             'anchor-video-gallery-admin',
             ANCHOR_TOOLS_PLUGIN_URL . 'anchor-video-slider/assets/admin.js',
-            ['jquery', 'jquery-ui-sortable', 'anchor-video-gallery'],
+            ['jquery', 'jquery-ui-sortable'],
             filemtime($base_dir . 'admin.js'),
             true
         );
@@ -185,8 +185,7 @@ class Anchor_Video_Slider_Module {
         $galleries = $this->sanitize_galleries($raw);
         update_option(self::OPTION_KEY, $galleries, false);
 
-        $url = add_query_arg('updated', '1', menu_page_url('anchor-video-slider', false));
-        wp_safe_redirect($url);
+        wp_safe_redirect(admin_url('options-general.php?page=anchor-video-slider&updated=1'));
         exit;
     }
 

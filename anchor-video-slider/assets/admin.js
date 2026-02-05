@@ -192,9 +192,12 @@
       var parsed = parseVideoUrl(line);
       if (parsed) {
         var vIdx = getNextVideoIndex($gallery);
-        var tpl = $('#avs-video-template').html()
-          .replace(/__GIDX__/g, gIdx)
-          .replace(/__VIDX__/g, vIdx);
+        var tplHtml = $('#avs-video-template').html();
+        if (!tplHtml) {
+          console.error('Anchor Video Gallery: video template not found');
+          return;
+        }
+        var tpl = tplHtml.replace(/__GIDX__/g, gIdx).replace(/__VIDX__/g, vIdx);
         var $card = $(tpl);
 
         // Set the URL
@@ -268,9 +271,12 @@
     // Add video
     $gallery.find('.avs-add-video').off('click.avg').on('click.avg', function(){
       var vIdx = getNextVideoIndex($gallery);
-      var tpl = $('#avs-video-template').html()
-        .replace(/__GIDX__/g, gIdx)
-        .replace(/__VIDX__/g, vIdx);
+      var tplHtml = $('#avs-video-template').html();
+      if (!tplHtml) {
+        console.error('Anchor Video Gallery: video template not found');
+        return;
+      }
+      var tpl = tplHtml.replace(/__GIDX__/g, gIdx).replace(/__VIDX__/g, vIdx);
       var $card = $(tpl);
       $gallery.find('.avs-videos-grid').append($card);
       bindVideoEvents($card, $gallery);
@@ -358,7 +364,12 @@
     // Add new gallery
     $('#avs-add-gallery').on('click', function(){
       var idx = getNextGalleryIndex();
-      var tpl = $('#avs-gallery-template').html().replace(/__INDEX__/g, idx);
+      var tplHtml = $('#avs-gallery-template').html();
+      if (!tplHtml) {
+        console.error('Anchor Video Gallery: gallery template not found');
+        return;
+      }
+      var tpl = tplHtml.replace(/__INDEX__/g, idx);
       var $gallery = $(tpl);
       $root.append($gallery);
       bindGalleryEvents($gallery);

@@ -223,6 +223,10 @@
 }
 
 /* Style: Overlay */
+.avg-tiles-overlay .avg-tile-inner {
+  position: relative;
+}
+
 .avg-tiles-overlay .avg-meta {
   position: absolute;
   bottom: 0;
@@ -230,15 +234,7 @@
   right: 0;
   padding: 40px 14px 14px;
   background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%);
-}
-
-.avg-tiles-overlay .avg-thumb {
-  aspect-ratio: auto;
-  height: 100%;
-}
-
-.avg-tiles-overlay .avg-tile-inner {
-  position: relative;
+  z-index: 1;
 }
 
 .avg-tiles-overlay .avg-title,
@@ -450,7 +446,6 @@
 }
 
 .avg-layout-masonry .avg-thumb {
-  aspect-ratio: auto;
   min-height: 120px;
 }
 
@@ -782,6 +777,10 @@
    ========================================================================== */
 
 .avg-tile.avg-inline-expanded {
+  grid-column: 1 / -1;
+}
+
+.avg-layout-grid .avg-inline-player {
   grid-column: 1 / -1;
 }
 

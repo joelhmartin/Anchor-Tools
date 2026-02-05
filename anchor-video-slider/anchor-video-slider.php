@@ -14,6 +14,8 @@ if (!defined('ABSPATH')) {
 class Anchor_Video_Slider_Module {
     const OPTION_KEY = 'anchor_video_slider_items';
 
+    private $page_hook = '';
+
     // Sample videos for preview
     private $sample_videos = [
         ['provider' => 'youtube', 'id' => 'dQw4w9WgXcQ', 'label' => 'Sample Video 1', 'thumb' => 'https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg', 'duration' => '3:33', 'channel' => 'Demo Channel'],
@@ -87,7 +89,7 @@ class Anchor_Video_Slider_Module {
     }
 
     public function register_menu() {
-        add_options_page(
+        $this->page_hook = add_options_page(
             __('Anchor Video Gallery', 'anchor-schema'),
             __('Anchor Video Gallery', 'anchor-schema'),
             'manage_options',
@@ -97,7 +99,10 @@ class Anchor_Video_Slider_Module {
     }
 
     public function enqueue_admin_assets($hook) {
-        if ($hook !== 'settings_page_anchor-video-slider') {
+        if ($this->page_hook && $hook !== $this->page_hook) {
+            return;
+        }
+        if (!$this->page_hook && $hook !== 'settings_page_anchor-video-slider') {
             return;
         }
         wp_enqueue_media();
@@ -117,7 +122,7 @@ class Anchor_Video_Slider_Module {
         wp_enqueue_script(
             'anchor-video-gallery-admin',
             ANCHOR_TOOLS_PLUGIN_URL . 'anchor-video-slider/assets/admin.js',
-            ['jquery', 'anchor-video-gallery'],
+            ['jquery', 'jquery-ui-sortable', 'anchor-video-gallery'],
             filemtime($base_dir . 'admin.js'),
             true
         );
@@ -812,11 +817,11 @@ class Anchor_Video_Slider_Module {
             <div class="avg-track">
                 <?php
                 $total = count($videos);
-                $per_page = $settings['pagination_enabled'] ? $settings['videos_per_page'] : $total;
-                $show_count = min($per_page, $total);
+                $paginate = $settings['pagination_enabled'] && in_array($layout, ['grid', 'masonry']);
+                $per_page = $paginate ? $settings['videos_per_page'] : $total;
 
                 foreach ($videos as $i => $video):
-                    $hidden = $settings['pagination_enabled'] && $i >= $per_page;
+                    $hidden = $paginate && $i >= $per_page;
                 ?>
                 <div class="avg-tile<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                      data-index="<?php echo esc_attr($i); ?>"
@@ -825,7 +830,7 @@ class Anchor_Video_Slider_Module {
                      data-url="<?php echo esc_attr($video['raw_url'] ?? ''); ?>"
                      <?php if (!empty($video['duration'])): ?>data-duration="<?php echo esc_attr($video['duration']); ?>"<?php endif; ?>>
                     <div class="avg-tile-inner">
-                        <div class="avg-thumb"<?php echo !empty($video['thumb']) ? ' style="background-image:url(' . esc_url($video['thumb']) . ')"' : ''; ?>>
+                        <div class="avg-thumb"<?php echo !empty($video['thumb']) ? ' style="background-image:url(\'' . esc_url($video['thumb']) . '\')"' : ''; ?>>
                             <?php if ($settings['play_button_style'] !== 'none'): ?>
                             <span class="avg-play" aria-hidden="true">
                                 <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>
@@ -860,7 +865,7 @@ class Anchor_Video_Slider_Module {
             <div class="avg-dots"></div>
             <?php endif; ?>
 
-            <?php if ($settings['pagination_enabled'] && $total > $per_page): ?>
+            <?php if ($paginate && $total > $per_page): ?>
             <div class="avg-pagination" data-total="<?php echo esc_attr($total); ?>" data-per-page="<?php echo esc_attr($per_page); ?>">
                 <?php if ($settings['pagination_style'] === 'numbered'): ?>
                     <div class="avg-pagination-numbers"></div>
@@ -953,7 +958,7 @@ class Anchor_Video_Slider_Module {
 
     private function normalize_video_url($url) {
         $id = '';
-        if (preg_match('~(?:youtu\.be/|youtube\.com/(?:watch\\?v=|embed/|shorts/))([A-Za-z0-9_-]{6,})~', $url, $matches)) {
+        if (preg_match('~(?:youtu\.be/|youtube\.com/(?:watch\\?v=|embed/|shorts/|live/))([A-Za-z0-9_-]{6,})~', $url, $matches)) {
             $id = $matches[1];
             return [
                 'provider' => 'youtube',

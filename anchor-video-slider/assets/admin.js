@@ -1,5 +1,8 @@
+console.log('[AVG] admin.js loaded', jQuery ? 'jQuery OK' : 'jQuery MISSING');
 (function($){
   'use strict';
+
+  console.log('[AVG] IIFE running, $ =', typeof $);
 
   // Debounce utility for preview updates
   var previewTimers = {};
@@ -354,12 +357,14 @@
 
   $(function(){
     var $root = $('#avs-galleries');
+    console.log('[AVG] DOM ready. #avs-galleries found:', $root.length, 'Templates: gallery=', $('#avs-gallery-template').length, 'video=', $('#avs-video-template').length);
     if (!$root.length) return;
 
     // Bind existing galleries
     $root.find('.avs-gallery').each(function(){
       bindGalleryEvents($(this));
     });
+    console.log('[AVG] Bound', $root.find('.avs-gallery').length, 'galleries');
 
     // Add new gallery
     $('#avs-add-gallery').on('click', function(){

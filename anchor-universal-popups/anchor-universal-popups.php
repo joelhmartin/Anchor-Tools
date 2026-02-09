@@ -741,14 +741,14 @@ class Anchor_Universal_Popups_Module {
     }
 
     public function shortcode_render($atts){
-        $atts = shortcode_atts(['id' => 0], $atts);
+        $atts = shortcode_atts(['id' => 0, 'width' => ''], $atts);
         $post_id = (int)$atts['id'];
         if (!$post_id) return '';
         $m = $this->get_meta($post_id);
 
         // Video mode: render a clickable video card
         if (in_array($m['mode'], ['video', 'youtube', 'vimeo'], true)) {
-            return $this->render_video_card($post_id, $m);
+            return $this->render_video_card($post_id, $m, $atts['width']);
         }
 
         // Determine content based on mode
@@ -772,7 +772,7 @@ class Anchor_Universal_Popups_Module {
     /**
      * Render a video card for shortcode embedding.
      */
-    private function render_video_card($post_id, $m) {
+    private function render_video_card($post_id, $m, $width = '') {
         // Resolve provider and video ID
         $provider = '';
         $video_id = $m['video_id'];
@@ -840,9 +840,18 @@ class Anchor_Universal_Popups_Module {
 
         $has_meta = $show_title || $show_channel;
 
+        // Build inline style
+        $style = '--up-card-ratio: ' . esc_attr($ratio_val) . '; --up-card-radius: ' . esc_attr($radius) . 'px';
+        if ($width !== '') {
+            // Append px if numeric only
+            $w = trim($width);
+            if (is_numeric($w)) $w .= 'px';
+            $style .= '; max-width: ' . esc_attr($w);
+        }
+
         ob_start();
         ?>
-        <div class="<?php echo esc_attr(implode(' ', $classes)); ?>" data-up-popup-id="<?php echo esc_attr($post_id); ?>" style="--up-card-ratio: <?php echo esc_attr($ratio_val); ?>; --up-card-radius: <?php echo esc_attr($radius); ?>px" tabindex="0" role="button" aria-label="<?php echo esc_attr($title ?: 'Play video'); ?>">
+        <div class="<?php echo esc_attr(implode(' ', $classes)); ?>" data-up-popup-id="<?php echo esc_attr($post_id); ?>" style="<?php echo $style; ?>" tabindex="0" role="button" aria-label="<?php echo esc_attr($title ?: 'Play video'); ?>">
             <div class="up-video-card__thumb" style="background-image: url('<?php echo esc_url($thumb); ?>')">
                 <?php if ($play_svg): ?>
                 <span class="up-video-card__play"><?php echo $play_svg; ?></span>

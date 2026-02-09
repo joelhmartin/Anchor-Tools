@@ -100,7 +100,6 @@
   --up-play-color: #0f172a;
 
   display: inline-block;
-  max-width: 400px;
   width: 100%;
   cursor: pointer;
   border-radius: var(--up-card-radius, 12px);

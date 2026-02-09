@@ -90,21 +90,50 @@
    ========================================================================== */
 
 .up-video-card {
+  /* Theme colors - Dark (default) */
+  --up-bg: #0f172a;
+  --up-bg-hover: #1e293b;
+  --up-text: #f1f5f9;
+  --up-text-muted: #94a3b8;
+  --up-border: #334155;
+  --up-play-bg: rgba(255, 255, 255, 0.9);
+  --up-play-color: #0f172a;
+
   display: inline-block;
   max-width: 400px;
   width: 100%;
   cursor: pointer;
-  border-radius: 12px;
+  border-radius: var(--up-card-radius, 12px);
   overflow: hidden;
-  background: #0f172a;
+  background: var(--up-bg);
   transition: transform 0.25s ease, box-shadow 0.25s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
-.up-video-card:hover,
-.up-video-card:focus {
-  transform: translateY(-4px);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
-  outline: none;
+/* Theme: Light */
+.up-theme-light .up-video-card,
+.up-theme-light.up-video-card {
+  --up-bg: #ffffff;
+  --up-bg-hover: #f8fafc;
+  --up-text: #1e293b;
+  --up-text-muted: #64748b;
+  --up-border: #e2e8f0;
+  --up-play-bg: rgba(15, 23, 42, 0.85);
+  --up-play-color: #ffffff;
+}
+
+/* Theme: Auto */
+@media (prefers-color-scheme: light) {
+  .up-theme-auto .up-video-card,
+  .up-theme-auto.up-video-card {
+    --up-bg: #ffffff;
+    --up-bg-hover: #f8fafc;
+    --up-text: #1e293b;
+    --up-text-muted: #64748b;
+    --up-border: #e2e8f0;
+    --up-play-bg: rgba(15, 23, 42, 0.85);
+    --up-play-color: #ffffff;
+  }
 }
 
 .up-video-card:focus-visible {
@@ -118,7 +147,8 @@
   aspect-ratio: var(--up-card-ratio, 16 / 9);
   background-size: cover;
   background-position: center;
-  background-color: #1e293b;
+  background-color: var(--up-bg-hover, #1e293b);
+  overflow: hidden;
 }
 
 .up-video-card__play {
@@ -140,21 +170,167 @@
 .up-video-card__play svg {
   width: 60px;
   height: 60px;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--up-play-bg);
   filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
 }
 
 .up-video-card__meta {
   padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .up-video-card__title {
   font-size: 14px;
   font-weight: 500;
-  color: #f1f5f9;
+  color: var(--up-text);
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.up-video-card__channel {
+  font-size: 12px;
+  color: var(--up-text-muted);
+}
+
+.up-video-card__duration {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+/* ==========================================================================
+   Hover Effects
+   ========================================================================== */
+
+/* Hover: Lift */
+.up-hover-lift.up-video-card:hover,
+.up-hover-lift.up-video-card:focus {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
+  outline: none;
+}
+
+/* Hover: Zoom */
+.up-hover-zoom .up-video-card__thumb {
+  transition: transform 0.3s ease;
+}
+
+.up-hover-zoom.up-video-card:hover .up-video-card__thumb,
+.up-hover-zoom.up-video-card:focus .up-video-card__thumb {
+  transform: scale(1.05);
+}
+
+/* Hover: Glow */
+.up-hover-glow.up-video-card:hover,
+.up-hover-glow.up-video-card:focus {
+  box-shadow: 0 0 0 3px var(--up-border), 0 8px 25px rgba(0, 0, 0, 0.3);
+  outline: none;
+}
+
+/* Hover: None */
+.up-hover-none.up-video-card:hover,
+.up-hover-none.up-video-card:focus {
+  transform: none;
+  box-shadow: none;
+}
+
+/* ==========================================================================
+   Play Button Styles
+   ========================================================================== */
+
+/* Play style: Circle (default) */
+.up-play-circle .up-video-card__play svg {
+  color: var(--up-play-bg);
+}
+
+/* Play style: YouTube */
+.up-play-youtube .up-video-card__play svg {
+  width: 68px;
+  height: 48px;
+}
+
+/* Play style: Minimal */
+.up-play-minimal .up-video-card__play svg {
+  width: 48px;
+  height: 48px;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+/* Play style: Square */
+.up-play-square .up-video-card__play svg {
+  width: 50px;
+  height: 50px;
+  color: var(--up-play-bg);
+}
+
+/* ==========================================================================
+   Tile Styles
+   ========================================================================== */
+
+/* Style: Card (default) - base styles above */
+
+/* Style: Minimal */
+.up-tiles-minimal.up-video-card {
+  background: transparent;
+}
+
+.up-tiles-minimal .up-video-card__thumb {
+  border-radius: var(--up-card-radius, 12px);
+}
+
+.up-tiles-minimal .up-video-card__meta {
+  padding: 10px 4px;
+}
+
+/* Style: Overlay */
+.up-tiles-overlay.up-video-card {
+  position: relative;
+}
+
+.up-tiles-overlay .up-video-card__meta {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 40px 14px 14px;
+  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%);
+  z-index: 1;
+}
+
+.up-tiles-overlay .up-video-card__title,
+.up-tiles-overlay .up-video-card__channel {
+  color: #fff;
+}
+
+.up-tiles-overlay .up-video-card__channel {
+  color: rgba(255,255,255,0.75);
+}
+
+/* Style: Cinematic */
+.up-tiles-cinematic.up-video-card {
+  background: #000;
+}
+
+.up-tiles-cinematic .up-video-card__meta {
+  background: #000;
+}
+
+.up-tiles-cinematic .up-video-card__title {
+  color: #fff;
+}
+
+.up-tiles-cinematic .up-video-card__channel {
+  color: rgba(255,255,255,0.6);
 }

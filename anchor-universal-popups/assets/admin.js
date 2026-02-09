@@ -34,6 +34,16 @@
     });
   }
 
+  function toggleCinematic(){
+    var tileStyle = $('#up_tile_style').val() || 'card';
+    var $ratio = $('#up_aspect_ratio');
+    if (tileStyle === 'cinematic') {
+      $ratio.prop('disabled', true).closest('.up-field').find('.description').text('Cinematic forces 2.35:1 aspect ratio.');
+    } else {
+      $ratio.prop('disabled', false).closest('.up-field').find('.description').text('Aspect ratio for the video card thumbnail displayed via shortcode.');
+    }
+  }
+
   function applyPreview(){
     var mode = $('select[name="up_mode"]').val() || 'html';
     var content = '';
@@ -77,11 +87,13 @@
   $(document).ready(function(){
     toggleTriggerFields();
     toggleModeFields();
+    toggleCinematic();
     $(document).on('change', 'select[name="up_trigger_type"]', toggleTriggerFields);
     $(document).on('change', 'select[name="up_mode"]', function(){
       toggleModeFields();
       applyPreview();
     });
+    $(document).on('change', '#up_tile_style', toggleCinematic);
 
     // Sync color picker with text input
     $('#up_close_color_picker').on('input change', function(){

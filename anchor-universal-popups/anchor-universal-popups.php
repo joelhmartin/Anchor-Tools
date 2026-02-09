@@ -19,6 +19,8 @@ class Anchor_Universal_Popups_Module {
         add_action('wp_enqueue_scripts', [$this, 'frontend_assets']);
         add_shortcode('up_popup', [$this, 'shortcode_render']);
         add_shortcode('anchor_popup', [$this, 'shortcode_render']);
+        add_filter('manage_' . self::CPT . '_posts_columns', [$this, 'admin_columns']);
+        add_action('manage_' . self::CPT . '_posts_custom_column', [$this, 'admin_column_content'], 10, 2);
     }
 
     public function register_cpt(){
@@ -37,6 +39,28 @@ class Anchor_Universal_Popups_Module {
             'menu_icon' => 'dashicons-welcome-widgets-menus',
             'supports' => ['title'],
         ]);
+    }
+
+    public function admin_columns($columns) {
+        $new = [];
+        foreach ($columns as $k => $v) {
+            $new[$k] = $v;
+            if ($k === 'title') {
+                $new['up_shortcode'] = 'Shortcode';
+                $new['up_mode'] = 'Mode';
+            }
+        }
+        return $new;
+    }
+
+    public function admin_column_content($column, $post_id) {
+        if ($column === 'up_shortcode') {
+            echo '<code>[anchor_popup id="' . esc_html($post_id) . '"]</code>';
+        } elseif ($column === 'up_mode') {
+            $mode = get_post_meta($post_id, 'up_mode', true);
+            if (in_array($mode, ['youtube', 'vimeo'], true)) $mode = 'video';
+            echo esc_html(ucfirst($mode ?: 'html'));
+        }
     }
 
     private function maybe_migrate_legacy_posts(){
@@ -61,6 +85,14 @@ class Anchor_Universal_Popups_Module {
             'video_url' => '',              // full YouTube/Vimeo URL
             'video_id' => '',               // id for youtube or vimeo (derived from URL or legacy)
             'aspect_ratio' => '16:9',       // thumbnail aspect ratio
+            'tile_style' => 'card',         // card, minimal, overlay, cinematic
+            'theme' => 'dark',              // dark, light, auto
+            'show_title' => '1',            // 0 or 1
+            'show_duration' => '0',         // 0 or 1
+            'show_channel' => '0',          // 0 or 1
+            'hover_effect' => 'lift',       // lift, zoom, glow, none
+            'play_button_style' => 'circle', // circle, square, youtube, minimal, none
+            'border_radius' => '12',        // 0-32
             'autoplay' => '0',              // 0 or 1 for video popups
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
@@ -132,7 +164,7 @@ class Anchor_Universal_Popups_Module {
      * @return array ['thumb' => '...', 'title' => '...']
      */
     private function fetch_video_meta($provider, $id) {
-        if (!$provider || !$id) return ['thumb' => '', 'title' => ''];
+        if (!$provider || !$id) return ['thumb' => '', 'title' => '', 'duration' => '', 'channel' => ''];
 
         if ($provider === 'youtube') {
             return $this->fetch_youtube_meta($id);
@@ -141,7 +173,7 @@ class Anchor_Universal_Popups_Module {
             return $this->fetch_vimeo_meta($id);
         }
 
-        return ['thumb' => '', 'title' => ''];
+        return ['thumb' => '', 'title' => '', 'duration' => '', 'channel' => ''];
     }
 
     private function fetch_youtube_meta($id) {
@@ -154,13 +186,15 @@ class Anchor_Universal_Popups_Module {
         $meta = [
             'thumb' => 'https://img.youtube.com/vi/' . $id . '/hqdefault.jpg',
             'title' => '',
+            'duration' => '',
+            'channel' => '',
         ];
 
         // Try API if key available
         $api_key = $this->get_google_api_key();
         if ($api_key) {
             $url = add_query_arg([
-                'part' => 'snippet',
+                'part' => 'snippet,contentDetails',
                 'id'   => $id,
                 'key'  => $api_key,
             ], 'https://www.googleapis.com/youtube/v3/videos');
@@ -171,11 +205,15 @@ class Anchor_Universal_Popups_Module {
                 if (!empty($data['items'][0]['snippet'])) {
                     $sn = $data['items'][0]['snippet'];
                     $meta['title'] = $sn['title'] ?? '';
+                    $meta['channel'] = $sn['channelTitle'] ?? '';
                     if (!empty($sn['thumbnails']['high']['url'])) {
                         $meta['thumb'] = $sn['thumbnails']['high']['url'];
                     } elseif (!empty($sn['thumbnails']['medium']['url'])) {
                         $meta['thumb'] = $sn['thumbnails']['medium']['url'];
                     }
+                }
+                if (!empty($data['items'][0]['contentDetails']['duration'])) {
+                    $meta['duration'] = $this->format_iso_duration($data['items'][0]['contentDetails']['duration']);
                 }
             }
         }
@@ -191,7 +229,7 @@ class Anchor_Universal_Popups_Module {
             return $cached;
         }
 
-        $meta = ['thumb' => '', 'title' => ''];
+        $meta = ['thumb' => '', 'title' => '', 'duration' => '', 'channel' => ''];
 
         $oembed_url = add_query_arg([
             'url' => 'https://vimeo.com/' . rawurlencode($id),
@@ -204,11 +242,44 @@ class Anchor_Universal_Popups_Module {
             if (is_array($data)) {
                 $meta['title'] = $data['title'] ?? '';
                 $meta['thumb'] = $data['thumbnail_url'] ?? '';
+                $meta['channel'] = $data['author_name'] ?? '';
+                if (!empty($data['duration'])) {
+                    $meta['duration'] = $this->format_seconds_duration((int) $data['duration']);
+                }
             }
         }
 
         set_transient($cache_key, $meta, 24 * HOUR_IN_SECONDS);
         return $meta;
+    }
+
+    private function format_iso_duration($iso) {
+        preg_match('/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/', $iso, $m);
+        $h = (int) ($m[1] ?? 0);
+        $min = (int) ($m[2] ?? 0);
+        $s = (int) ($m[3] ?? 0);
+        return $h > 0 ? sprintf('%d:%02d:%02d', $h, $min, $s) : sprintf('%d:%02d', $min, $s);
+    }
+
+    private function format_seconds_duration($seconds) {
+        $h = floor($seconds / 3600);
+        $m = floor(($seconds % 3600) / 60);
+        $s = $seconds % 60;
+        return $h > 0 ? sprintf('%d:%02d:%02d', $h, $m, $s) : sprintf('%d:%02d', $m, $s);
+    }
+
+    private function get_play_button_svg($style) {
+        switch ($style) {
+            case 'youtube':
+                return '<svg viewBox="0 0 68 48"><path fill="#f00" d="M66.52 7.74c-.78-2.93-2.49-5.41-5.42-6.19C55.79.13 34 0 34 0S12.21.13 6.9 1.55c-2.93.78-4.63 3.26-5.42 6.19C.06 13.05 0 24 0 24s.06 10.95 1.48 16.26c.78 2.93 2.49 5.41 5.42 6.19C12.21 47.87 34 48 34 48s21.79-.13 27.1-1.55c2.93-.78 4.63-3.26 5.42-6.19C67.94 34.95 68 24 68 24s-.06-10.95-1.48-16.26z"/><path fill="#fff" d="M45 24L27 14v20"/></svg>';
+            case 'square':
+                return '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="currentColor" opacity="0.8"/><polygon points="10,8 16,12 10,16" fill="#fff"/></svg>';
+            case 'minimal':
+                return '<svg viewBox="0 0 24 24"><polygon points="8,5 19,12 8,19" fill="currentColor"/></svg>';
+            case 'circle':
+            default:
+                return '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="currentColor" opacity="0.85"/><polygon points="10,8 16,12 10,16" fill="#fff"/></svg>';
+        }
     }
 
     private function get_google_api_key() {
@@ -264,7 +335,7 @@ class Anchor_Universal_Popups_Module {
 
             <div class="up-field" data-up-show-when-mode="video">
               <label><strong>Card Aspect Ratio</strong></label>
-              <select name="up_aspect_ratio">
+              <select name="up_aspect_ratio" id="up_aspect_ratio">
                 <option value="16:9" <?php selected($m['aspect_ratio'], '16:9'); ?>>16:9 (Widescreen)</option>
                 <option value="4:3" <?php selected($m['aspect_ratio'], '4:3'); ?>>4:3 (Classic)</option>
                 <option value="1:1" <?php selected($m['aspect_ratio'], '1:1'); ?>>1:1 (Square)</option>
@@ -272,6 +343,79 @@ class Anchor_Universal_Popups_Module {
                 <option value="21:9" <?php selected($m['aspect_ratio'], '21:9'); ?>>21:9 (Cinematic)</option>
               </select>
               <p class="description">Aspect ratio for the video card thumbnail displayed via shortcode.</p>
+            </div>
+
+            <div data-up-show-when-mode="video">
+              <h4 style="margin:12px 0 8px;">Card Appearance</h4>
+
+              <div class="up-field">
+                <label><strong>Tile Style</strong></label>
+                <select name="up_tile_style" id="up_tile_style">
+                  <option value="card" <?php selected($m['tile_style'], 'card'); ?>>Card</option>
+                  <option value="minimal" <?php selected($m['tile_style'], 'minimal'); ?>>Minimal</option>
+                  <option value="overlay" <?php selected($m['tile_style'], 'overlay'); ?>>Overlay</option>
+                  <option value="cinematic" <?php selected($m['tile_style'], 'cinematic'); ?>>Cinematic</option>
+                </select>
+              </div>
+
+              <div class="up-field">
+                <label><strong>Theme</strong></label>
+                <select name="up_theme">
+                  <option value="dark" <?php selected($m['theme'], 'dark'); ?>>Dark</option>
+                  <option value="light" <?php selected($m['theme'], 'light'); ?>>Light</option>
+                  <option value="auto" <?php selected($m['theme'], 'auto'); ?>>Auto (system)</option>
+                </select>
+              </div>
+
+              <div class="up-field">
+                <label><strong>Hover Effect</strong></label>
+                <select name="up_hover_effect">
+                  <option value="lift" <?php selected($m['hover_effect'], 'lift'); ?>>Lift</option>
+                  <option value="zoom" <?php selected($m['hover_effect'], 'zoom'); ?>>Zoom</option>
+                  <option value="glow" <?php selected($m['hover_effect'], 'glow'); ?>>Glow</option>
+                  <option value="none" <?php selected($m['hover_effect'], 'none'); ?>>None</option>
+                </select>
+              </div>
+
+              <div class="up-field">
+                <label><strong>Play Button</strong></label>
+                <select name="up_play_button_style">
+                  <option value="circle" <?php selected($m['play_button_style'], 'circle'); ?>>Circle</option>
+                  <option value="square" <?php selected($m['play_button_style'], 'square'); ?>>Square</option>
+                  <option value="youtube" <?php selected($m['play_button_style'], 'youtube'); ?>>YouTube</option>
+                  <option value="minimal" <?php selected($m['play_button_style'], 'minimal'); ?>>Minimal</option>
+                  <option value="none" <?php selected($m['play_button_style'], 'none'); ?>>None</option>
+                </select>
+              </div>
+
+              <div class="up-field">
+                <label><strong>Border Radius</strong></label>
+                <input type="number" name="up_border_radius" value="<?php echo esc_attr($m['border_radius']); ?>" min="0" max="32" step="1" style="width:80px;" /> px
+              </div>
+
+              <div class="up-field">
+                <label>
+                  <input type="hidden" name="up_show_title" value="0" />
+                  <input type="checkbox" name="up_show_title" value="1" <?php checked($m['show_title'], '1'); ?> />
+                  Show Title
+                </label>
+              </div>
+
+              <div class="up-field">
+                <label>
+                  <input type="hidden" name="up_show_duration" value="0" />
+                  <input type="checkbox" name="up_show_duration" value="1" <?php checked($m['show_duration'], '1'); ?> />
+                  Show Duration
+                </label>
+              </div>
+
+              <div class="up-field">
+                <label>
+                  <input type="hidden" name="up_show_channel" value="0" />
+                  <input type="checkbox" name="up_show_channel" value="1" <?php checked($m['show_channel'], '1'); ?> />
+                  Show Channel
+                </label>
+              </div>
             </div>
 
             <div class="up-field up-field-shortcode" data-up-show-when-mode="shortcode">
@@ -389,7 +533,10 @@ class Anchor_Universal_Popups_Module {
         if (!current_user_can('edit_post', $post_id)) return;
 
         $fields = [
-            'mode','video_url','video_id','aspect_ratio','autoplay','close_color',
+            'mode','video_url','video_id','aspect_ratio',
+            'tile_style','theme','show_title','show_duration','show_channel',
+            'hover_effect','play_button_style','border_radius',
+            'autoplay','close_color',
             'html','shortcode','css','js',
             'trigger_type','trigger_value','delay_ms',
             'frequency_mode','cooldown_minutes',
@@ -504,6 +651,8 @@ class Anchor_Universal_Popups_Module {
             $video_url = $m['video_url'];
             $video_thumb = '';
             $video_title = '';
+            $video_duration = '';
+            $video_channel = '';
             $aspect_ratio = $m['aspect_ratio'];
 
             if (in_array($mode, ['youtube', 'vimeo', 'video'], true)) {
@@ -529,6 +678,8 @@ class Anchor_Universal_Popups_Module {
                     $meta = $this->fetch_video_meta($provider, $video_id);
                     $video_thumb = $meta['thumb'];
                     $video_title = $meta['title'];
+                    $video_duration = $meta['duration'];
+                    $video_channel = $meta['channel'];
                 }
             }
 
@@ -541,6 +692,8 @@ class Anchor_Universal_Popups_Module {
                 'video_url' => $video_url,
                 'video_thumb' => $video_thumb,
                 'video_title' => $video_title,
+                'video_duration' => $video_duration,
+                'video_channel' => $video_channel,
                 'aspect_ratio' => $aspect_ratio,
                 'autoplay' => ($m['autoplay'] === '1'),
                 'close_color' => $m['close_color'],
@@ -567,8 +720,8 @@ class Anchor_Universal_Popups_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.0.4');
-            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.5', true);
+            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.1.0');
+            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.1.0', true);
         }
     }
 
@@ -582,7 +735,7 @@ class Anchor_Universal_Popups_Module {
         }));
         if (empty($snippets)) return;
 
-        wp_enqueue_style('up-frontend', plugins_url('assets/frontend.css', __FILE__), [], '1.0.2');
+        wp_enqueue_style('up-frontend', plugins_url('assets/frontend.css', __FILE__), [], '1.1.0');
         wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.5', true);
         wp_localize_script('up-frontend', 'UP_SNIPPETS', $snippets);
     }
@@ -646,8 +799,20 @@ class Anchor_Universal_Popups_Module {
         $meta = $this->fetch_video_meta($provider, $video_id);
         $thumb = $meta['thumb'];
         $title = $meta['title'];
+        $duration = $meta['duration'];
+        $channel = $meta['channel'];
 
-        // Convert aspect ratio to CSS value
+        // Card settings
+        $tile_style = $m['tile_style'];
+        $theme = $m['theme'];
+        $hover = $m['hover_effect'];
+        $play_style = $m['play_button_style'];
+        $radius = (int) $m['border_radius'];
+        $show_title = $m['show_title'] === '1';
+        $show_duration = $m['show_duration'] === '1' && $duration !== '';
+        $show_channel = $m['show_channel'] === '1' && $channel !== '';
+
+        // Convert aspect ratio to CSS value (cinematic forces 2.35:1)
         $ratio_map = [
             '16:9' => '16 / 9',
             '4:3'  => '4 / 3',
@@ -655,20 +820,45 @@ class Anchor_Universal_Popups_Module {
             '9:16' => '9 / 16',
             '21:9' => '21 / 9',
         ];
-        $ratio_val = isset($ratio_map[$m['aspect_ratio']]) ? $ratio_map[$m['aspect_ratio']] : '16 / 9';
+        if ($tile_style === 'cinematic') {
+            $ratio_val = '2.35 / 1';
+        } else {
+            $ratio_val = isset($ratio_map[$m['aspect_ratio']]) ? $ratio_map[$m['aspect_ratio']] : '16 / 9';
+        }
+
+        // Build CSS classes
+        $classes = [
+            'up-video-card',
+            'up-tiles-' . $tile_style,
+            'up-theme-' . $theme,
+            'up-hover-' . $hover,
+            'up-play-' . $play_style,
+        ];
 
         // Play button SVG
-        $play_svg = '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="11" fill="currentColor" opacity="0.85"/><polygon points="10,8 16,12 10,16" fill="#fff"/></svg>';
+        $play_svg = $play_style !== 'none' ? $this->get_play_button_svg($play_style) : '';
+
+        $has_meta = $show_title || $show_channel;
 
         ob_start();
         ?>
-        <div class="up-video-card" data-up-popup-id="<?php echo esc_attr($post_id); ?>" style="--up-card-ratio: <?php echo esc_attr($ratio_val); ?>" tabindex="0" role="button" aria-label="<?php echo esc_attr($title ?: 'Play video'); ?>">
+        <div class="<?php echo esc_attr(implode(' ', $classes)); ?>" data-up-popup-id="<?php echo esc_attr($post_id); ?>" style="--up-card-ratio: <?php echo esc_attr($ratio_val); ?>; --up-card-radius: <?php echo esc_attr($radius); ?>px" tabindex="0" role="button" aria-label="<?php echo esc_attr($title ?: 'Play video'); ?>">
             <div class="up-video-card__thumb" style="background-image: url('<?php echo esc_url($thumb); ?>')">
+                <?php if ($play_svg): ?>
                 <span class="up-video-card__play"><?php echo $play_svg; ?></span>
+                <?php endif; ?>
+                <?php if ($show_duration): ?>
+                <span class="up-video-card__duration"><?php echo esc_html($duration); ?></span>
+                <?php endif; ?>
             </div>
-            <?php if ($title): ?>
+            <?php if ($has_meta): ?>
             <div class="up-video-card__meta">
+                <?php if ($show_title && $title): ?>
                 <span class="up-video-card__title"><?php echo esc_html($title); ?></span>
+                <?php endif; ?>
+                <?php if ($show_channel): ?>
+                <span class="up-video-card__channel"><?php echo esc_html($channel); ?></span>
+                <?php endif; ?>
             </div>
             <?php endif; ?>
         </div>

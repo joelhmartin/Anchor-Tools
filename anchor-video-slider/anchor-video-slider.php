@@ -38,6 +38,7 @@ class Anchor_Video_Slider_Module {
         'autoplay' => true,
         'theme' => 'dark',
         'tile_style' => 'card',
+        'thumb_aspect_ratio' => '16:9',
         'show_title' => true,
         'show_duration' => true,
         'show_channel' => false,
@@ -60,6 +61,13 @@ class Anchor_Video_Slider_Module {
             'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link']],
             'theme' => ['type' => 'select', 'label' => 'Theme', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto']],
             'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic']],
+            'thumb_aspect_ratio' => ['type' => 'select', 'label' => 'Thumbnail Aspect Ratio', 'options' => [
+                '16:9' => '16:9 (Widescreen)',
+                '4:3'  => '4:3 (Classic)',
+                '1:1'  => '1:1 (Square)',
+                '9:16' => '9:16 (Portrait)',
+                '21:9' => '21:9 (Cinematic)',
+            ]],
             'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None']],
             'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden']],
             'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'min' => 0, 'max' => 32, 'step' => 2],
@@ -570,12 +578,19 @@ class Anchor_Video_Slider_Module {
             }
         }
 
+        // Aspect ratio: cinematic tile style forces 2.35:1, otherwise use setting
+        $ratio_map = ['16:9' => '16 / 9', '4:3' => '4 / 3', '1:1' => '1 / 1', '9:16' => '9 / 16', '21:9' => '21 / 9'];
+        $thumb_ratio = ($settings['tile_style'] === 'cinematic')
+            ? '2.35 / 1'
+            : ($ratio_map[$settings['thumb_aspect_ratio']] ?? '16 / 9');
+
         $style_vars = [
             '--avg-gap: ' . intval($settings['gap']) . 'px',
             '--avg-radius: ' . intval($settings['border_radius']) . 'px',
             '--avg-cols-desktop: ' . intval($settings['columns_desktop']),
             '--avg-cols-tablet: ' . intval($settings['columns_tablet']),
             '--avg-cols-mobile: ' . intval($settings['columns_mobile']),
+            '--avg-thumb-ratio: ' . $thumb_ratio,
         ];
 
         ob_start();

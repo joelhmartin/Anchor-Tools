@@ -82,7 +82,7 @@
 .avg-thumb {
   position: relative;
   width: 100%;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: var(--avg-thumb-ratio, 16 / 9);
   background: linear-gradient(135deg, var(--avg-bg), var(--avg-border));
   background-size: cover;
   background-position: center;

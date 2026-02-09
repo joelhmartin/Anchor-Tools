@@ -48,6 +48,18 @@
                 '</code>' +
                 '<p style="margin-top:8px; font-size:12px;">Shortcodes will be rendered when the popup is displayed on the frontend.</p>' +
                 '</div>';
+    } else if(mode === 'video'){
+      // For video mode, show a placeholder with the URL
+      var videoUrl = $('input[name="up_video_url"]').val() || '';
+      var aspectRatio = $('select[name="up_aspect_ratio"]').val() || '16:9';
+      content = '<div style="background:#0f172a; padding:24px; border-radius:8px; color:#f1f5f9; text-align:center;">' +
+                '<div style="font-size:48px; margin-bottom:12px; opacity:0.9;">&#9654;</div>' +
+                '<strong>Video Popup</strong><br/>' +
+                '<span style="font-size:12px; color:#94a3b8; word-break:break-all;">' +
+                (videoUrl ? videoUrl.replace(/</g,'&lt;').replace(/>/g,'&gt;') : '(No URL entered)') +
+                '</span><br/>' +
+                '<span style="font-size:11px; color:#64748b; margin-top:8px; display:inline-block;">Aspect Ratio: ' + aspectRatio + '</span>' +
+                '</div>';
     } else {
       content = $('#up_html').val() || '';
     }

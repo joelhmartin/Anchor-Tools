@@ -1,6 +1,23 @@
 (function(){
   if(!window.UP_SNIPPETS || !Array.isArray(UP_SNIPPETS)) return;
 
+  // Modal registry for global close coordination
+  var allModals = [];
+
+  // Global close event - closes all popups except the specified one
+  function closeAllPopups(exceptModal) {
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: exceptModal } }));
+  }
+
+  document.addEventListener('anchor-close-popups', function(e) {
+    var except = e.detail && e.detail.except;
+    allModals.forEach(function(m) {
+      if (m !== except && !m.hidden) {
+        closeModal(m);
+      }
+    });
+  });
+
   // Storage helpers
   function markShown(id, mode, minutes){
     try{
@@ -88,6 +105,7 @@
     }
 
     document.body.appendChild(modal);
+    allModals.push(modal);
     return modal;
   }
 
@@ -176,9 +194,18 @@
   }
 
   function attach(sn){
-    var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo');
+    var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo' || sn.mode === 'video');
     var modal = buildModalShell(isVideo);
     wireClose(modal);
+
+    // Store modal reference on snippet for card click handler
+    sn._modal = modal;
+
+    // Resolve provider from snippet (for unified video mode)
+    var provider = sn.provider || sn.mode;
+    if (provider === 'video') {
+      provider = sn.provider || 'youtube'; // fallback
+    }
 
     // Apply close icon color if set
     if(sn.close_color){
@@ -187,13 +214,16 @@
     }
 
     function triggerOpen(){
+      // Close any other open popups first
+      closeAllPopups(modal);
+
       // For "Click on class", treat the popup like an explicit user action and
       // avoid frequency gating that can make clicks appear "broken".
       var bypassFrequency = (trig && trig.type === 'class');
       if(!bypassFrequency && !shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes)) return;
       if(isVideo){
         var muteForAutoplay = (trig && trig.type === 'page_load');
-        openVideo(modal, sn.mode, sn.video_id, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
+        openVideo(modal, provider, sn.video_id, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
       } else {
         // Use pre-rendered shortcode content if in shortcode mode, otherwise use HTML
         var content = (sn.mode === 'shortcode' && sn.shortcode_content) ? sn.shortcode_content : sn.html;
@@ -203,6 +233,9 @@
         markShown(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes);
       }
     }
+
+    // Expose triggerOpen for card click handler
+    sn._triggerOpen = triggerOpen;
 
     var trig = sn.trigger || {type:'page_load', value:'', delay:0};
     if(trig.type === 'page_load'){
@@ -236,6 +269,36 @@
       });
     }
   }
+
+  // Build a lookup map for snippets by ID
+  var snippetMap = {};
+  UP_SNIPPETS.forEach(function(sn) {
+    snippetMap[sn.id] = sn;
+  });
+
+  // Video card click handler (for shortcode-rendered cards)
+  document.addEventListener('click', function(e) {
+    var card = e.target.closest('[data-up-popup-id]');
+    if (!card) return;
+
+    var popupId = parseInt(card.getAttribute('data-up-popup-id'), 10);
+    var sn = snippetMap[popupId];
+    if (!sn || !sn._triggerOpen) return;
+
+    e.preventDefault();
+    sn._triggerOpen();
+  });
+
+  // Keyboard support for video cards (Enter/Space)
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+
+    var card = e.target.closest('[data-up-popup-id]');
+    if (!card) return;
+
+    e.preventDefault();
+    card.click();
+  });
 
   document.addEventListener('DOMContentLoaded', function(){
     try{

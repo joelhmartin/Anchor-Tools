@@ -82,6 +82,9 @@
   }
 
   function openLightbox(provider, id, autoplay) {
+    // Close any other open popups first (cross-module coordination)
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getLightboxModal() } }));
+
     var modal = getLightboxModal();
     var frame = modal.querySelector('[data-frame]');
     var src = getVideoSrc(provider, id, autoplay);
@@ -138,6 +141,9 @@
   }
 
   function openTheater(provider, id, autoplay, title) {
+    // Close any other open popups first (cross-module coordination)
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getTheaterEl() } }));
+
     var theater = getTheaterEl();
     var frame = theater.querySelector('[data-frame]');
     var titleEl = theater.querySelector('[data-title]');
@@ -204,6 +210,9 @@
   }
 
   function openSidePanel(provider, id, autoplay, title) {
+    // Close any other open popups first (cross-module coordination)
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getSidePanelEl() } }));
+
     var panel = getSidePanelEl();
     var frame = panel.querySelector('[data-frame]');
     var titleEl = panel.querySelector('[data-title]');
@@ -247,6 +256,9 @@
   var currentInlineTile = null;
 
   function openInline(gallery, tile, provider, id, autoplay) {
+    // Close any other open popups first (cross-module coordination)
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: null } }));
+
     // Close any existing inline player
     closeInline();
 
@@ -308,6 +320,28 @@
         legacyModal.hidden = true;
       }
     }
+  });
+
+  // ============================================================================
+  // Cross-Module Close Event (coordination with Universal Popups)
+  // ============================================================================
+
+  document.addEventListener('anchor-close-popups', function(e) {
+    var except = e.detail && e.detail.except;
+    // Close lightbox if not the excepted element
+    if (lightboxModal && lightboxModal !== except && !lightboxModal.hidden) {
+      closeLightbox();
+    }
+    // Close theater if not the excepted element
+    if (theaterEl && theaterEl !== except && !theaterEl.hidden) {
+      closeTheater();
+    }
+    // Close side panel if not the excepted element
+    if (sidePanelEl && sidePanelEl !== except && !sidePanelEl.hidden) {
+      closeSidePanel();
+    }
+    // Always close inline (it doesn't have a persistent element to compare)
+    closeInline();
   });
 
   // ============================================================================

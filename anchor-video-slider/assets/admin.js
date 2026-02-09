@@ -46,6 +46,23 @@
     });
   }
 
+  // Disable aspect ratio dropdown when cinematic tile style is selected
+  function updateAspectRatioState(){
+    var tileStyle = $('#avg_tile_style').val() || 'card';
+    var $aspectRatio = $('#avg_thumb_aspect_ratio');
+    var $row = $aspectRatio.closest('.avg-setting-row');
+
+    if (tileStyle === 'cinematic') {
+      $aspectRatio.prop('disabled', true);
+      if (!$row.find('.avg-cinematic-note').length) {
+        $row.append('<span class="avg-cinematic-note" style="display:block; font-size:11px; color:#666; margin-top:4px;">Cinematic tile style uses fixed 2.35:1 ratio</span>');
+      }
+    } else {
+      $aspectRatio.prop('disabled', false);
+      $row.find('.avg-cinematic-note').remove();
+    }
+  }
+
   // Add a video row
   function addVideoRow(url, title){
     var idx = $('#avg-video-list .avg-video-row').length;
@@ -62,10 +79,12 @@
     $(document).on('change input', '.avg-setting', function(){
       refreshPreview();
       updateVisibility();
+      updateAspectRatioState();
     });
 
     // Layout visibility on load
     updateVisibility();
+    updateAspectRatioState();
 
     // Add video
     $('#avg-add-video').on('click', function(){

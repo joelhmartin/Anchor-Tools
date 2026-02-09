@@ -57,8 +57,10 @@ class Anchor_Universal_Popups_Module {
     private function defaults(){
         return [
             // content
-            'mode' => 'html',               // html, youtube, vimeo, shortcode
-            'video_id' => '',               // id for youtube or vimeo
+            'mode' => 'html',               // html, video, shortcode (legacy: youtube, vimeo)
+            'video_url' => '',              // full YouTube/Vimeo URL
+            'video_id' => '',               // id for youtube or vimeo (derived from URL or legacy)
+            'aspect_ratio' => '16:9',       // thumbnail aspect ratio
             'autoplay' => '0',              // 0 or 1 for video popups
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
@@ -91,6 +93,135 @@ class Anchor_Universal_Popups_Module {
         return $meta;
     }
 
+    /**
+     * Parse a video URL to extract provider and ID.
+     * @return array|null ['provider' => 'youtube'|'vimeo', 'id' => '...'] or null
+     */
+    private function parse_video_url($url) {
+        $url = trim((string) $url);
+        if ($url === '') return null;
+
+        // YouTube patterns
+        if (preg_match('~(?:youtu\.be/|youtube\.com/(?:watch\\?v=|embed/|shorts/|live/))([A-Za-z0-9_-]{6,})~', $url, $matches)) {
+            return ['provider' => 'youtube', 'id' => $matches[1]];
+        }
+
+        // Vimeo patterns
+        if (preg_match('~vimeo\.com/(?:video/)?([0-9]+)~', $url, $matches)) {
+            return ['provider' => 'vimeo', 'id' => $matches[1]];
+        }
+
+        return null;
+    }
+
+    /**
+     * Reconstruct URL from provider and ID for legacy compatibility.
+     */
+    private function reconstruct_video_url($provider, $id) {
+        if ($provider === 'youtube' && $id) {
+            return 'https://www.youtube.com/watch?v=' . $id;
+        }
+        if ($provider === 'vimeo' && $id) {
+            return 'https://vimeo.com/' . $id;
+        }
+        return '';
+    }
+
+    /**
+     * Fetch video metadata (thumbnail, title) for a given provider and ID.
+     * @return array ['thumb' => '...', 'title' => '...']
+     */
+    private function fetch_video_meta($provider, $id) {
+        if (!$provider || !$id) return ['thumb' => '', 'title' => ''];
+
+        if ($provider === 'youtube') {
+            return $this->fetch_youtube_meta($id);
+        }
+        if ($provider === 'vimeo') {
+            return $this->fetch_vimeo_meta($id);
+        }
+
+        return ['thumb' => '', 'title' => ''];
+    }
+
+    private function fetch_youtube_meta($id) {
+        $cache_key = 'up_yt_' . $id;
+        $cached = get_transient($cache_key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $meta = [
+            'thumb' => 'https://img.youtube.com/vi/' . $id . '/hqdefault.jpg',
+            'title' => '',
+        ];
+
+        // Try API if key available
+        $api_key = $this->get_google_api_key();
+        if ($api_key) {
+            $url = add_query_arg([
+                'part' => 'snippet',
+                'id'   => $id,
+                'key'  => $api_key,
+            ], 'https://www.googleapis.com/youtube/v3/videos');
+
+            $res = wp_remote_get($url, ['timeout' => 10]);
+            if (!is_wp_error($res)) {
+                $data = json_decode(wp_remote_retrieve_body($res), true);
+                if (!empty($data['items'][0]['snippet'])) {
+                    $sn = $data['items'][0]['snippet'];
+                    $meta['title'] = $sn['title'] ?? '';
+                    if (!empty($sn['thumbnails']['high']['url'])) {
+                        $meta['thumb'] = $sn['thumbnails']['high']['url'];
+                    } elseif (!empty($sn['thumbnails']['medium']['url'])) {
+                        $meta['thumb'] = $sn['thumbnails']['medium']['url'];
+                    }
+                }
+            }
+        }
+
+        set_transient($cache_key, $meta, 12 * HOUR_IN_SECONDS);
+        return $meta;
+    }
+
+    private function fetch_vimeo_meta($id) {
+        $cache_key = 'up_vm_' . $id;
+        $cached = get_transient($cache_key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $meta = ['thumb' => '', 'title' => ''];
+
+        $oembed_url = add_query_arg([
+            'url' => 'https://vimeo.com/' . rawurlencode($id),
+            'dnt' => '1',
+        ], 'https://vimeo.com/api/oembed.json');
+
+        $res = wp_remote_get($oembed_url, ['timeout' => 10]);
+        if (!is_wp_error($res)) {
+            $data = json_decode(wp_remote_retrieve_body($res), true);
+            if (is_array($data)) {
+                $meta['title'] = $data['title'] ?? '';
+                $meta['thumb'] = $data['thumbnail_url'] ?? '';
+            }
+        }
+
+        set_transient($cache_key, $meta, 24 * HOUR_IN_SECONDS);
+        return $meta;
+    }
+
+    private function get_google_api_key() {
+        if (class_exists('Anchor_Schema_Admin')) {
+            $opts = get_option(Anchor_Schema_Admin::OPTION_KEY, []);
+            $key = trim($opts['google_api_key'] ?? '');
+            if ($key !== '') return $key;
+            $legacy = trim($opts['youtube_api_key'] ?? '');
+            if ($legacy !== '') return $legacy;
+        }
+        return '';
+    }
+
     public function add_metaboxes(){
         add_meta_box('up_popup_code', 'Popup Content (HTML, CSS, JS or Video)', [$this, 'render_box_code'], self::CPT, 'normal', 'high');
         add_meta_box('up_popup_settings', 'Trigger, Frequency, Exclusions', [$this, 'render_box_settings'], self::CPT, 'side');
@@ -114,15 +245,33 @@ class Anchor_Universal_Popups_Module {
               <select name="up_mode" id="up_mode">
                 <option value="html" <?php selected($m['mode'], 'html'); ?>>HTML</option>
                 <option value="shortcode" <?php selected($m['mode'], 'shortcode'); ?>>Shortcode</option>
-                <option value="youtube" <?php selected($m['mode'], 'youtube'); ?>>YouTube</option>
-                <option value="vimeo" <?php selected($m['mode'], 'vimeo'); ?>>Vimeo</option>
+                <option value="video" <?php selected(in_array($m['mode'], ['video', 'youtube', 'vimeo'], true)); ?>>Video</option>
               </select>
             </div>
 
-            <div class="up-field up-field-video" data-up-show-when-mode="youtube,vimeo">
-              <label><strong>Video ID</strong></label>
-              <input type="text" name="up_video_id" value="<?php echo esc_attr($m['video_id']); ?>" placeholder="YouTube or Vimeo ID only" class="widefat"/>
-              <p class="description">Example, for https://www.youtube.com/watch?v=abcdefgh, use abcdefgh. For Vimeo, use the numeric ID.</p>
+            <div class="up-field up-field-video" data-up-show-when-mode="video">
+              <label><strong>Video URL</strong></label>
+              <?php
+              // For legacy youtube/vimeo modes, reconstruct the URL from video_id
+              $video_url_display = $m['video_url'];
+              if ($video_url_display === '' && $m['video_id'] !== '' && in_array($m['mode'], ['youtube', 'vimeo'], true)) {
+                  $video_url_display = $this->reconstruct_video_url($m['mode'], $m['video_id']);
+              }
+              ?>
+              <input type="url" name="up_video_url" value="<?php echo esc_attr($video_url_display); ?>" placeholder="https://youtube.com/watch?v=... or https://vimeo.com/..." class="widefat"/>
+              <p class="description">Paste the full YouTube or Vimeo URL. The video ID will be extracted automatically.</p>
+            </div>
+
+            <div class="up-field" data-up-show-when-mode="video">
+              <label><strong>Card Aspect Ratio</strong></label>
+              <select name="up_aspect_ratio">
+                <option value="16:9" <?php selected($m['aspect_ratio'], '16:9'); ?>>16:9 (Widescreen)</option>
+                <option value="4:3" <?php selected($m['aspect_ratio'], '4:3'); ?>>4:3 (Classic)</option>
+                <option value="1:1" <?php selected($m['aspect_ratio'], '1:1'); ?>>1:1 (Square)</option>
+                <option value="9:16" <?php selected($m['aspect_ratio'], '9:16'); ?>>9:16 (Portrait)</option>
+                <option value="21:9" <?php selected($m['aspect_ratio'], '21:9'); ?>>21:9 (Cinematic)</option>
+              </select>
+              <p class="description">Aspect ratio for the video card thumbnail displayed via shortcode.</p>
             </div>
 
             <div class="up-field up-field-shortcode" data-up-show-when-mode="shortcode">
@@ -240,7 +389,7 @@ class Anchor_Universal_Popups_Module {
         if (!current_user_can('edit_post', $post_id)) return;
 
         $fields = [
-            'mode','video_id','autoplay','close_color',
+            'mode','video_url','video_id','aspect_ratio','autoplay','close_color',
             'html','shortcode','css','js',
             'trigger_type','trigger_value','delay_ms',
             'frequency_mode','cooldown_minutes',
@@ -254,6 +403,16 @@ class Anchor_Universal_Popups_Module {
                 update_post_meta($post_id, $key, $val);
             } else {
                 update_post_meta($post_id, $key, sanitize_text_field($val));
+            }
+        }
+
+        // When mode is video, derive video_id from URL for backward compatibility
+        $mode = isset($_POST['up_mode']) ? sanitize_text_field($_POST['up_mode']) : '';
+        $video_url = isset($_POST['up_video_url']) ? esc_url_raw($_POST['up_video_url']) : '';
+        if ($mode === 'video' && $video_url !== '') {
+            $parsed = $this->parse_video_url($video_url);
+            if ($parsed) {
+                update_post_meta($post_id, 'up_video_id', $parsed['id']);
             }
         }
     }
@@ -338,11 +497,51 @@ class Anchor_Universal_Popups_Module {
                 $rendered_shortcode = do_shortcode( $m['shortcode'] );
             }
 
+            // Normalize legacy youtube/vimeo modes to video
+            $mode = $m['mode'];
+            $provider = '';
+            $video_id = $m['video_id'];
+            $video_url = $m['video_url'];
+            $video_thumb = '';
+            $video_title = '';
+            $aspect_ratio = $m['aspect_ratio'];
+
+            if (in_array($mode, ['youtube', 'vimeo', 'video'], true)) {
+                // Legacy modes: provider is the mode itself
+                if ($mode === 'youtube' || $mode === 'vimeo') {
+                    $provider = $mode;
+                    // Reconstruct URL if not set
+                    if ($video_url === '' && $video_id !== '') {
+                        $video_url = $this->reconstruct_video_url($provider, $video_id);
+                    }
+                    $mode = 'video'; // normalize
+                } else {
+                    // Video mode: parse URL to get provider and ID
+                    $parsed = $this->parse_video_url($video_url);
+                    if ($parsed) {
+                        $provider = $parsed['provider'];
+                        $video_id = $parsed['id'];
+                    }
+                }
+
+                // Fetch metadata
+                if ($provider && $video_id) {
+                    $meta = $this->fetch_video_meta($provider, $video_id);
+                    $video_thumb = $meta['thumb'];
+                    $video_title = $meta['title'];
+                }
+            }
+
             $items[] = [
                 'id' => (int)$p->ID,
                 'title' => $p->post_title,
-                'mode' => $m['mode'],
-                'video_id' => $m['video_id'],
+                'mode' => $mode,
+                'provider' => $provider,
+                'video_id' => $video_id,
+                'video_url' => $video_url,
+                'video_thumb' => $video_thumb,
+                'video_title' => $video_title,
+                'aspect_ratio' => $aspect_ratio,
                 'autoplay' => ($m['autoplay'] === '1'),
                 'close_color' => $m['close_color'],
                 'html' => $m['html'],
@@ -368,8 +567,8 @@ class Anchor_Universal_Popups_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.0.3');
-            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.4', true);
+            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.0.4');
+            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.0.5', true);
         }
     }
 
@@ -383,8 +582,8 @@ class Anchor_Universal_Popups_Module {
         }));
         if (empty($snippets)) return;
 
-        wp_enqueue_style('up-frontend', plugins_url('assets/frontend.css', __FILE__), [], '1.0.1');
-        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.4', true);
+        wp_enqueue_style('up-frontend', plugins_url('assets/frontend.css', __FILE__), [], '1.0.2');
+        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], '1.0.5', true);
         wp_localize_script('up-frontend', 'UP_SNIPPETS', $snippets);
     }
 
@@ -393,6 +592,11 @@ class Anchor_Universal_Popups_Module {
         $post_id = (int)$atts['id'];
         if (!$post_id) return '';
         $m = $this->get_meta($post_id);
+
+        // Video mode: render a clickable video card
+        if (in_array($m['mode'], ['video', 'youtube', 'vimeo'], true)) {
+            return $this->render_video_card($post_id, $m);
+        }
 
         // Determine content based on mode
         $content = '';
@@ -407,6 +611,66 @@ class Anchor_Universal_Popups_Module {
             <style><?php echo $m['css']; ?></style>
             <div class="up-embed-viewport"><?php echo $content; ?></div>
             <script>(function(){ try{ <?php echo $m['js']; ?> }catch(e){ console && console.error && console.error(e); } })();</script>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Render a video card for shortcode embedding.
+     */
+    private function render_video_card($post_id, $m) {
+        // Resolve provider and video ID
+        $provider = '';
+        $video_id = $m['video_id'];
+        $video_url = $m['video_url'];
+
+        if ($m['mode'] === 'youtube' || $m['mode'] === 'vimeo') {
+            $provider = $m['mode'];
+            if ($video_url === '' && $video_id !== '') {
+                $video_url = $this->reconstruct_video_url($provider, $video_id);
+            }
+        } else {
+            $parsed = $this->parse_video_url($video_url);
+            if ($parsed) {
+                $provider = $parsed['provider'];
+                $video_id = $parsed['id'];
+            }
+        }
+
+        if (!$provider || !$video_id) {
+            return '<!-- Universal Popup: Invalid video URL -->';
+        }
+
+        // Fetch metadata
+        $meta = $this->fetch_video_meta($provider, $video_id);
+        $thumb = $meta['thumb'];
+        $title = $meta['title'];
+
+        // Convert aspect ratio to CSS value
+        $ratio_map = [
+            '16:9' => '16 / 9',
+            '4:3'  => '4 / 3',
+            '1:1'  => '1 / 1',
+            '9:16' => '9 / 16',
+            '21:9' => '21 / 9',
+        ];
+        $ratio_val = isset($ratio_map[$m['aspect_ratio']]) ? $ratio_map[$m['aspect_ratio']] : '16 / 9';
+
+        // Play button SVG
+        $play_svg = '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="11" fill="currentColor" opacity="0.85"/><polygon points="10,8 16,12 10,16" fill="#fff"/></svg>';
+
+        ob_start();
+        ?>
+        <div class="up-video-card" data-up-popup-id="<?php echo esc_attr($post_id); ?>" style="--up-card-ratio: <?php echo esc_attr($ratio_val); ?>" tabindex="0" role="button" aria-label="<?php echo esc_attr($title ?: 'Play video'); ?>">
+            <div class="up-video-card__thumb" style="background-image: url('<?php echo esc_url($thumb); ?>')">
+                <span class="up-video-card__play"><?php echo $play_svg; ?></span>
+            </div>
+            <?php if ($title): ?>
+            <div class="up-video-card__meta">
+                <span class="up-video-card__title"><?php echo esc_html($title); ?></span>
+            </div>
+            <?php endif; ?>
         </div>
         <?php
         return ob_get_clean();

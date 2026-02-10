@@ -31,9 +31,6 @@ class Anchor_Social_Feed_Module {
             'facebook_app_secret'        => '',
             'facebook_page_access_token' => '',
             'facebook_page_id'           => '',
-            // Instagram Graph API
-            'instagram_access_token'     => '',
-            'instagram_user_id'          => '',
             // TikTok Display API
             'tiktok_client_key'          => '',
             'tiktok_client_secret'       => '',
@@ -90,6 +87,31 @@ class Anchor_Social_Feed_Module {
 
 .ssfs-card {
     overflow: hidden;
+}
+
+.ssfs-card-header {
+    padding: 0 0 14px;
+}
+
+.ssfs-card-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1.3;
+}
+
+.ssfs-card-handle {
+    display: inline-block;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+    text-decoration: none;
+    line-height: 1.3;
+    transition: color 0.2s ease;
+}
+
+.ssfs-card-handle:hover {
+    color: #fff;
+    text-decoration: underline;
 }
 
 .ssfs-item {
@@ -472,10 +494,10 @@ a.ssfs-item {
             );
         }
 
-        // Facebook Graph API section
-        add_settings_section('ssfs_facebook', 'Facebook Graph API', function () {
-            echo '<p>Provide a long-lived Page Access Token and Page ID to pull Facebook posts via the Graph API (v22.0).</p>';
-            echo '<p class="ssfs-note">Generate tokens at <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener">Graph API Explorer</a>. Required permissions: <code>pages_read_engagement</code>.</p>';
+        // Facebook + Instagram Graph API section
+        add_settings_section('ssfs_facebook', 'Facebook &amp; Instagram Graph API', function () {
+            echo '<p>Provide your App credentials and a User Access Token to pull Facebook posts and Instagram media via the Graph API (v22.0). The token is automatically exchanged for a long-lived Page token, and the Instagram Business account is resolved from the linked Page.</p>';
+            echo '<p class="ssfs-note">Generate tokens at <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener">Graph API Explorer</a>. Required permissions: <code>pages_read_engagement</code>, <code>instagram_basic</code>.</p>';
         }, self::PAGE_SLUG);
 
         $fb_fields = [
@@ -486,20 +508,6 @@ a.ssfs-item {
         ];
         foreach ($fb_fields as $key => $meta) {
             add_settings_field($key, esc_html($meta['label']), [$this, 'render_field'], self::PAGE_SLUG, 'ssfs_facebook', ['key' => $key, 'type' => $meta['type']]);
-        }
-
-        // Instagram Graph API section
-        add_settings_section('ssfs_instagram', 'Instagram Graph API', function () {
-            echo '<p>Uses the same Facebook App. Requires a Business or Creator Instagram account linked to a Facebook Page.</p>';
-            echo '<p class="ssfs-note">Required permission: <code>instagram_basic</code>. The User ID is the numeric IG Business Account ID.</p>';
-        }, self::PAGE_SLUG);
-
-        $ig_fields = [
-            'instagram_access_token' => ['label' => 'Instagram Access Token', 'type' => 'password'],
-            'instagram_user_id'      => ['label' => 'Instagram User ID (numeric)', 'type' => 'text'],
-        ];
-        foreach ($ig_fields as $key => $meta) {
-            add_settings_field($key, esc_html($meta['label']), [$this, 'render_field'], self::PAGE_SLUG, 'ssfs_instagram', ['key' => $key, 'type' => $meta['type']]);
         }
 
         // TikTok Display API section
@@ -550,7 +558,6 @@ a.ssfs-item {
             'facebook_app_id',
             'facebook_app_secret',
             'facebook_page_access_token',
-            'instagram_access_token',
             'tiktok_client_key',
             'tiktok_client_secret',
             'tiktok_access_token',
@@ -559,7 +566,7 @@ a.ssfs-item {
         }
 
         // Numeric ID fields — strip non-numeric
-        foreach (['facebook_page_id', 'instagram_user_id'] as $k) {
+        foreach (['facebook_page_id'] as $k) {
             $out[$k] = preg_replace('/[^0-9]/', '', sanitize_text_field($input[$k] ?? ''));
         }
 
@@ -598,10 +605,8 @@ a.ssfs-item {
             'spotify_artist_id'          => 'Example: 66CXWjxzNUsdJxJ2JdwvnR',
             'facebook_app_id'            => 'From your Meta App dashboard.',
             'facebook_app_secret'        => 'From your Meta App dashboard.',
-            'facebook_page_access_token' => 'Long-lived Page Access Token with pages_read_engagement permission.',
-            'facebook_page_id'           => 'Numeric Page ID (found in Page About section).',
-            'instagram_access_token'     => 'User Access Token with instagram_basic scope.',
-            'instagram_user_id'          => 'Numeric IG Business/Creator Account ID.',
+            'facebook_page_access_token' => 'User Access Token with pages_read_engagement and instagram_basic permissions. Exchanged automatically for a Page token.',
+            'facebook_page_id'           => 'Numeric Page ID (found in Page About section). Instagram is resolved automatically from this page.',
             'tiktok_client_key'          => 'From your TikTok developer app.',
             'tiktok_client_secret'       => 'From your TikTok developer app.',
             'tiktok_access_token'        => 'User Access Token with video.list scope.',
@@ -629,8 +634,9 @@ a.ssfs-item {
         echo '<p>YouTube options, <code>youtube_api</code> auto default or on or off, <code>youtube_limit</code> empty means no cap, <code>youtube_type</code> videos default or shorts or all, <code>exclude_hashtags</code> defaults to <code>short,shorts,testimonial</code>, <code>include_hashtags</code> optional, <code>min_seconds</code>, <code>max_seconds</code>, <code>since</code>, <code>until</code>, <code>max_age_days</code>, and <code>youtube_fetch_pages</code> default 10.</p>';
         echo '<p>Examples, <code>[social_feed platform="youtube"]</code>, <code>[social_feed platform="youtube" exclude_hashtags=""]</code>, <code>[social_feed platform="youtube" layout="carousel" min_seconds="400"]</code>.</p>';
         echo '<p>Facebook options: <code>[social_feed platform="facebook" facebook_limit="5"]</code>.</p>';
-        echo '<p>Instagram options: <code>[social_feed platform="instagram" instagram_limit="9"]</code>.</p>';
+        echo '<p>Instagram options (auto-resolved from Facebook credentials): <code>[social_feed platform="instagram" instagram_limit="9"]</code>.</p>';
         echo '<p>TikTok options: <code>[social_feed platform="tiktok" tiktok_limit="6"]</code>.</p>';
+        echo '<p>Display options: <code>show_title="yes"</code> (default) shows platform name and clickable handle above each feed. Use <code>show_title="no"</code> to hide.</p>';
         echo '</div>';
     }
 
@@ -656,6 +662,8 @@ a.ssfs-item {
             'facebook_limit'     => 10,
             'instagram_limit'    => 12,
             'tiktok_limit'       => 10,
+            // Display
+            'show_title'         => 'yes',
         ], $atts, 'social_feed');
 
         $layout = in_array($atts['layout'], ['grid','stack','carousel'], true) ? $atts['layout'] : 'grid';
@@ -669,33 +677,55 @@ a.ssfs-item {
             $targets = ['youtube', 'facebook', 'instagram', 'tiktok', 'twitter', 'spotify'];
         }
 
+        $show_title = in_array(strtolower($atts['show_title']), ['yes','true','1','on'], true);
+
         $html_parts = [];
         foreach ($targets as $p) {
             switch ($p) {
                 case 'youtube':
                     $embed = $this->render_youtube_api_feed($opts, $atts);
-                    if ($embed) $html_parts[] = $this->card('YouTube', $embed);
+                    $handle = trim($opts['youtube_channel_id'] ?? '');
+                    $yt_url = '';
+                    if ($handle) {
+                        if (stripos($handle, 'youtube.com') !== false) { $yt_url = $handle; }
+                        elseif ($handle[0] === '@') { $yt_url = 'https://www.youtube.com/' . $handle; }
+                        elseif (strpos($handle, 'UC') === 0) { $yt_url = 'https://www.youtube.com/channel/' . $handle; }
+                        else { $yt_url = 'https://www.youtube.com/@' . $handle; }
+                    }
+                    if ($embed) $html_parts[] = $this->card('YouTube', $embed, $show_title, $handle, $yt_url);
                     break;
                 case 'facebook':
                     $embed = $this->render_facebook_feed($opts, $atts);
-                    if ($embed) $html_parts[] = $this->card('Facebook', $embed);
+                    $fb_url = trim($opts['facebook_page_url'] ?? '');
+                    if (!$fb_url && trim($opts['facebook_page_id'] ?? '')) {
+                        $fb_url = 'https://www.facebook.com/' . trim($opts['facebook_page_id']);
+                    }
+                    if ($embed) $html_parts[] = $this->card('Facebook', $embed, $show_title, $fb_url ? basename(rtrim($fb_url, '/')) : '', $fb_url);
                     break;
                 case 'instagram':
                     $embed = $this->render_instagram_feed($opts, $atts);
-                    if ($embed) $html_parts[] = $this->card('Instagram', $embed);
+                    $ig_user = trim($opts['instagram_username'] ?? '');
+                    $ig_url  = $ig_user ? 'https://www.instagram.com/' . rawurlencode($ig_user) . '/' : '';
+                    if ($embed) $html_parts[] = $this->card('Instagram', $embed, $show_title, $ig_user ? '@' . $ig_user : '', $ig_url);
                     break;
                 case 'tiktok':
                     $embed = $this->render_tiktok_feed($opts, $atts);
-                    if ($embed) $html_parts[] = $this->card('TikTok', $embed);
+                    $tt_user = trim($opts['tiktok_username'] ?? '');
+                    $tt_url  = $tt_user ? 'https://www.tiktok.com/@' . rawurlencode($tt_user) : '';
+                    if ($embed) $html_parts[] = $this->card('TikTok', $embed, $show_title, $tt_user ? '@' . $tt_user : '', $tt_url);
                     break;
                 case 'twitter':
                 case 'x':
                     $embed = $this->embed_twitter($opts['twitter_username']);
-                    if ($embed) $html_parts[] = $this->card('X, Twitter', $embed);
+                    $tw_user = trim($opts['twitter_username'] ?? '');
+                    $tw_url  = $tw_user ? 'https://x.com/' . rawurlencode($tw_user) : '';
+                    if ($embed) $html_parts[] = $this->card('X', $embed, $show_title, $tw_user ? '@' . $tw_user : '', $tw_url);
                     break;
                 case 'spotify':
                     $embed = $this->embed_spotify($opts['spotify_artist_id']);
-                    if ($embed) $html_parts[] = $this->card('Spotify', $embed);
+                    $sp_id  = trim($opts['spotify_artist_id'] ?? '');
+                    $sp_url = $sp_id ? 'https://open.spotify.com/artist/' . rawurlencode($sp_id) : '';
+                    if ($embed) $html_parts[] = $this->card('Spotify', $embed, $show_title, '', $sp_url);
                     break;
             }
         }
@@ -735,8 +765,19 @@ a.ssfs-item {
         return $out;
     }
 
-    private function card($title, $embed_html) {
-        return '<div class="ssfs-card"><div class="ssfs-embed">' . $embed_html . '</div></div>';
+    private function card($title, $embed_html, $show_title = false, $handle = '', $profile_url = '') {
+        $header = '';
+        if ($show_title) {
+            $header .= '<div class="ssfs-card-header">';
+            $header .= '<div class="ssfs-card-title">' . esc_html($title) . '</div>';
+            if ($handle && $profile_url) {
+                $header .= '<a class="ssfs-card-handle" href="' . esc_url($profile_url) . '" target="_blank" rel="noopener">' . esc_html($handle) . '</a>';
+            } elseif ($profile_url) {
+                $header .= '<a class="ssfs-card-handle" href="' . esc_url($profile_url) . '" target="_blank" rel="noopener">View Profile</a>';
+            }
+            $header .= '</div>';
+        }
+        return '<div class="ssfs-card">' . $header . '<div class="ssfs-embed">' . $embed_html . '</div></div>';
     }
 
 /* ===================== YouTube, API only ===================== */

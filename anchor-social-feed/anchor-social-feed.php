@@ -1085,6 +1085,83 @@ private function ytapi_resolve_channel_id($input, $api_key){
 
 /* ===================== Facebook Graph API ===================== */
 
+/**
+ * Exchange the stored user token for a long-lived Page Access Token.
+ * Uses App ID + App Secret to perform the OAuth exchange, then picks
+ * the page token matching the configured Page ID.
+ */
+private function get_facebook_page_token($opts) {
+    $app_id     = trim($opts['facebook_app_id'] ?? '');
+    $app_secret = trim($opts['facebook_app_secret'] ?? '');
+    $token      = trim($opts['facebook_page_access_token'] ?? '');
+    $page_id    = trim($opts['facebook_page_id'] ?? '');
+
+    if (!$token || !$page_id) {
+        return new WP_Error('ssfs_fb_creds', 'Missing Access Token or Page ID.');
+    }
+
+    // Without app credentials, use the token as-is (must already be a valid Page token)
+    if (!$app_id || !$app_secret) return $token;
+
+    // Check cache first
+    $cache_key = 'ssfs_fb_page_token_' . md5($page_id . $app_id);
+    if (isset($_GET['ssfs_refresh']) && $_GET['ssfs_refresh'] == '1') delete_transient($cache_key);
+    $cached = get_transient($cache_key);
+    if ($cached) return $cached;
+
+    // Step 1: Exchange user token → long-lived user token
+    $url = add_query_arg([
+        'grant_type'        => 'fb_exchange_token',
+        'client_id'         => $app_id,
+        'client_secret'     => $app_secret,
+        'fb_exchange_token' => $token,
+    ], 'https://graph.facebook.com/v22.0/oauth/access_token');
+
+    $res = wp_remote_get($url, ['timeout' => 15]);
+    if (is_wp_error($res)) return $res;
+
+    $body = json_decode(wp_remote_retrieve_body($res), true);
+    if (isset($body['error'])) {
+        return new WP_Error('ssfs_fb_exchange', $body['error']['message'] ?? 'Token exchange failed.');
+    }
+
+    $long_token = $body['access_token'] ?? '';
+    if (!$long_token) {
+        return new WP_Error('ssfs_fb_exchange', 'No access token returned from exchange.');
+    }
+
+    // Step 2: Get page tokens from the long-lived user token
+    $url = add_query_arg([
+        'access_token' => $long_token,
+    ], 'https://graph.facebook.com/v22.0/me/accounts');
+
+    $res = wp_remote_get($url, ['timeout' => 15]);
+    if (is_wp_error($res)) return $res;
+
+    $body = json_decode(wp_remote_retrieve_body($res), true);
+    if (isset($body['error'])) {
+        return new WP_Error('ssfs_fb_pages', $body['error']['message'] ?? 'Could not retrieve page tokens.');
+    }
+
+    // Find the token for our configured Page ID
+    $page_token = '';
+    foreach (($body['data'] ?? []) as $page) {
+        if (($page['id'] ?? '') === $page_id) {
+            $page_token = $page['access_token'] ?? '';
+            break;
+        }
+    }
+
+    if (!$page_token) {
+        // Token might already be a valid Page Access Token — use as-is
+        return $token;
+    }
+
+    // Page tokens derived from long-lived user tokens don't expire
+    set_transient($cache_key, $page_token, 60 * DAY_IN_SECONDS);
+    return $page_token;
+}
+
 private function fetch_facebook_posts($page_id, $access_token, $limit = 10) {
     $cache_key = 'ssfs_fb_posts_' . md5($page_id);
     if (isset($_GET['ssfs_refresh']) && $_GET['ssfs_refresh'] == '1') delete_transient($cache_key);
@@ -1241,8 +1318,14 @@ private function render_facebook_feed($opts, $atts) {
         return '<p class="ssfs-note">Facebook Graph API credentials not configured. Add a Page ID and Access Token in settings.</p>';
     }
 
+    // Exchange user token → long-lived page token using app credentials
+    $page_token = $this->get_facebook_page_token($opts);
+    if (is_wp_error($page_token)) {
+        return '<p class="ssfs-note">Facebook token error: ' . esc_html($page_token->get_error_message()) . '</p>';
+    }
+
     $limit = max(1, intval($atts['facebook_limit'] ?? 10));
-    $posts = $this->fetch_facebook_posts($page_id, $token, $limit);
+    $posts = $this->fetch_facebook_posts($page_id, $page_token, $limit);
 
     if (is_wp_error($posts)) {
         return '<p class="ssfs-note">Facebook API error: ' . esc_html($posts->get_error_message()) . '</p>';

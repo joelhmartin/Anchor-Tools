@@ -626,17 +626,87 @@ a.ssfs-item {
         submit_button(__('Save Changes', 'anchor-tools'));
         echo '</form>';
 
+        // ── Shortcode Reference ──
         echo '<hr />';
-        echo '<h2>Shortcodes</h2>';
-        echo '<p>Use <code>[social_feed]</code> to render all configured platforms.</p>';
-        echo '<p>Limit to specific platforms with <code>[social_feed platforms="youtube,facebook,twitter,spotify"]</code>.</p>';
-        echo '<p>Override layout with <code>[social_feed layout="grid|stack|carousel"]</code>.</p>';
-        echo '<p>YouTube options, <code>youtube_api</code> auto default or on or off, <code>youtube_limit</code> empty means no cap, <code>youtube_type</code> videos default or shorts or all, <code>exclude_hashtags</code> defaults to <code>short,shorts,testimonial</code>, <code>include_hashtags</code> optional, <code>min_seconds</code>, <code>max_seconds</code>, <code>since</code>, <code>until</code>, <code>max_age_days</code>, and <code>youtube_fetch_pages</code> default 10.</p>';
-        echo '<p>Examples, <code>[social_feed platform="youtube"]</code>, <code>[social_feed platform="youtube" exclude_hashtags=""]</code>, <code>[social_feed platform="youtube" layout="carousel" min_seconds="400"]</code>.</p>';
-        echo '<p>Facebook options: <code>[social_feed platform="facebook" facebook_limit="5"]</code>.</p>';
-        echo '<p>Instagram options (auto-resolved from Facebook credentials): <code>[social_feed platform="instagram" instagram_limit="9"]</code>.</p>';
-        echo '<p>TikTok options: <code>[social_feed platform="tiktok" tiktok_limit="6"]</code>.</p>';
-        echo '<p>Display options: <code>show_title="yes"</code> (default) shows platform name and clickable handle above each feed. Use <code>show_title="no"</code> to hide.</p>';
+        echo '<h2>Shortcode Reference</h2>';
+        echo '<p>Use the <code>[social_feed]</code> shortcode to display feeds from your configured platforms.</p>';
+
+        // Basic usage
+        echo '<h3>Basic Usage</h3>';
+        echo '<table class="widefat striped" style="max-width:820px">';
+        echo '<thead><tr><th style="width:55%">Shortcode</th><th>Description</th></tr></thead><tbody>';
+        echo '<tr><td><code>[social_feed]</code></td><td>Display all configured platforms</td></tr>';
+        echo '<tr><td><code>[social_feed platform="facebook"]</code></td><td>Display a single platform</td></tr>';
+        echo '<tr><td><code>[social_feed platforms="youtube,facebook"]</code></td><td>Display multiple specific platforms</td></tr>';
+        echo '</tbody></table>';
+
+        // Layout & display
+        echo '<h3>Layout &amp; Display</h3>';
+        echo '<table class="widefat striped" style="max-width:820px">';
+        echo '<thead><tr><th style="width:30%">Attribute</th><th style="width:25%">Values</th><th>Description</th></tr></thead><tbody>';
+        echo '<tr><td><code>layout</code></td><td><code>grid</code> (default), <code>stack</code>, <code>carousel</code></td><td>Controls the feed layout</td></tr>';
+        echo '<tr><td><code>show_title</code></td><td><code>yes</code> (default), <code>no</code></td><td>Show or hide the platform name and handle above the feed</td></tr>';
+        echo '<tr><td><code>gradient</code></td><td>Two colors, one color, or <code>none</code></td><td>Override the feed background. Default is the teal gradient</td></tr>';
+        echo '</tbody></table>';
+
+        echo '<p style="margin-top:8px"><strong>Gradient examples:</strong></p>';
+        echo '<table class="widefat striped" style="max-width:820px">';
+        echo '<thead><tr><th style="width:55%">Shortcode</th><th>Result</th></tr></thead><tbody>';
+        echo '<tr><td><code>[social_feed gradient="none"]</code></td><td>No background (transparent)</td></tr>';
+        echo '<tr><td><code>[social_feed gradient="#1a1a2e,#16213e"]</code></td><td>Custom two-color gradient</td></tr>';
+        echo '<tr><td><code>[social_feed gradient="#000"]</code></td><td>Solid black background</td></tr>';
+        echo '</tbody></table>';
+
+        // Platform limits
+        echo '<h3>Platform Limits</h3>';
+        echo '<table class="widefat striped" style="max-width:820px">';
+        echo '<thead><tr><th style="width:30%">Attribute</th><th style="width:25%">Default</th><th>Description</th></tr></thead><tbody>';
+        echo '<tr><td><code>facebook_limit</code></td><td><code>10</code></td><td>Max Facebook posts to show</td></tr>';
+        echo '<tr><td><code>instagram_limit</code></td><td><code>12</code></td><td>Max Instagram items to show</td></tr>';
+        echo '<tr><td><code>tiktok_limit</code></td><td><code>10</code></td><td>Max TikTok videos to show</td></tr>';
+        echo '<tr><td><code>youtube_limit</code></td><td>no cap</td><td>Max YouTube videos to show (empty = all)</td></tr>';
+        echo '</tbody></table>';
+
+        // YouTube filters
+        echo '<h3>YouTube Options</h3>';
+        echo '<p>YouTube requires a Google API key configured in the main Anchor Tools settings.</p>';
+        echo '<table class="widefat striped" style="max-width:820px">';
+        echo '<thead><tr><th style="width:30%">Attribute</th><th style="width:25%">Default</th><th>Description</th></tr></thead><tbody>';
+        echo '<tr><td><code>youtube_api</code></td><td><code>auto</code></td><td><code>auto</code>, <code>on</code>, or <code>off</code></td></tr>';
+        echo '<tr><td><code>youtube_type</code></td><td><code>videos</code></td><td><code>videos</code>, <code>shorts</code>, or <code>all</code></td></tr>';
+        echo '<tr><td><code>exclude_hashtags</code></td><td><code>short,shorts,testimonial</code></td><td>Comma-separated hashtags to exclude. Set to <code>""</code> to disable</td></tr>';
+        echo '<tr><td><code>include_hashtags</code></td><td>(none)</td><td>Only show videos matching these hashtags</td></tr>';
+        echo '<tr><td><code>min_seconds</code></td><td>(none)</td><td>Minimum video duration in seconds</td></tr>';
+        echo '<tr><td><code>max_seconds</code></td><td>(none)</td><td>Maximum video duration in seconds</td></tr>';
+        echo '<tr><td><code>since</code></td><td>(none)</td><td>Only show videos published on or after this date (<code>YYYY-MM-DD</code>)</td></tr>';
+        echo '<tr><td><code>until</code></td><td>(none)</td><td>Only show videos published on or before this date (<code>YYYY-MM-DD</code>)</td></tr>';
+        echo '<tr><td><code>max_age_days</code></td><td>(none)</td><td>Only show videos published within this many days</td></tr>';
+        echo '<tr><td><code>youtube_fetch_pages</code></td><td><code>10</code></td><td>Number of API pages to fetch (max 20, each page = 50 videos)</td></tr>';
+        echo '</tbody></table>';
+
+        // Instagram note
+        echo '<h3>Instagram</h3>';
+        echo '<p>Instagram is automatically resolved from your Facebook App credentials. The Instagram Business or Creator account linked to your Facebook Page is detected and used. No separate Instagram credentials are needed.</p>';
+        echo '<p>Required Facebook App permission: <code>instagram_basic</code>.</p>';
+
+        // Examples
+        echo '<h3>Examples</h3>';
+        echo '<table class="widefat striped" style="max-width:820px">';
+        echo '<thead><tr><th style="width:55%">Shortcode</th><th>Description</th></tr></thead><tbody>';
+        echo '<tr><td><code>[social_feed platform="youtube" layout="carousel"]</code></td><td>YouTube carousel</td></tr>';
+        echo '<tr><td><code>[social_feed platform="youtube" min_seconds="400"]</code></td><td>Only long-form YouTube videos</td></tr>';
+        echo '<tr><td><code>[social_feed platform="youtube" youtube_type="shorts"]</code></td><td>Only YouTube Shorts</td></tr>';
+        echo '<tr><td><code>[social_feed platform="youtube" exclude_hashtags=""]</code></td><td>All YouTube videos, no hashtag filtering</td></tr>';
+        echo '<tr><td><code>[social_feed platform="facebook" facebook_limit="5"]</code></td><td>Latest 5 Facebook posts</td></tr>';
+        echo '<tr><td><code>[social_feed platform="instagram" instagram_limit="9" layout="grid"]</code></td><td>Instagram grid, 9 items</td></tr>';
+        echo '<tr><td><code>[social_feed platform="facebook" show_title="no" gradient="none"]</code></td><td>Facebook feed, no header, no background</td></tr>';
+        echo '<tr><td><code>[social_feed platforms="facebook,instagram" gradient="#1a1a2e,#16213e"]</code></td><td>Facebook + Instagram with custom gradient</td></tr>';
+        echo '</tbody></table>';
+
+        // Cache note
+        echo '<h3>Cache</h3>';
+        echo '<p>API responses are cached to reduce load. Append <code>?ssfs_refresh=1</code> to the page URL to force a fresh fetch from all APIs.</p>';
+
         echo '</div>';
     }
 
@@ -664,6 +734,7 @@ a.ssfs-item {
             'tiktok_limit'       => 10,
             // Display
             'show_title'         => 'yes',
+            'gradient'           => '',
         ], $atts, 'social_feed');
 
         $layout = in_array($atts['layout'], ['grid','stack','carousel'], true) ? $atts['layout'] : 'grid';
@@ -679,6 +750,20 @@ a.ssfs-item {
 
         $show_title = in_array(strtolower($atts['show_title']), ['yes','true','1','on'], true);
 
+        // Parse gradient attribute
+        $gradient_style = '';
+        $grad_val = trim($atts['gradient']);
+        if (strtolower($grad_val) === 'none') {
+            $gradient_style = 'background:none;';
+        } elseif ($grad_val !== '') {
+            $colors = array_map('trim', explode(',', $grad_val));
+            if (count($colors) >= 2) {
+                $gradient_style = 'background:linear-gradient(135deg,' . esc_attr($colors[0]) . ' 0%,' . esc_attr($colors[1]) . ' 100%);';
+            } elseif (count($colors) === 1) {
+                $gradient_style = 'background:' . esc_attr($colors[0]) . ';';
+            }
+        }
+
         $html_parts = [];
         foreach ($targets as $p) {
             switch ($p) {
@@ -692,7 +777,7 @@ a.ssfs-item {
                         elseif (strpos($handle, 'UC') === 0) { $yt_url = 'https://www.youtube.com/channel/' . $handle; }
                         else { $yt_url = 'https://www.youtube.com/@' . $handle; }
                     }
-                    if ($embed) $html_parts[] = $this->card('YouTube', $embed, $show_title, $handle, $yt_url);
+                    if ($embed) $html_parts[] = $this->card('YouTube', $embed, $show_title, $handle, $yt_url, $gradient_style);
                     break;
                 case 'facebook':
                     $embed = $this->render_facebook_feed($opts, $atts);
@@ -700,32 +785,32 @@ a.ssfs-item {
                     if (!$fb_url && trim($opts['facebook_page_id'] ?? '')) {
                         $fb_url = 'https://www.facebook.com/' . trim($opts['facebook_page_id']);
                     }
-                    if ($embed) $html_parts[] = $this->card('Facebook', $embed, $show_title, $fb_url ? basename(rtrim($fb_url, '/')) : '', $fb_url);
+                    if ($embed) $html_parts[] = $this->card('Facebook', $embed, $show_title, $fb_url ? basename(rtrim($fb_url, '/')) : '', $fb_url, $gradient_style);
                     break;
                 case 'instagram':
                     $embed = $this->render_instagram_feed($opts, $atts);
                     $ig_user = trim($opts['instagram_username'] ?? '');
                     $ig_url  = $ig_user ? 'https://www.instagram.com/' . rawurlencode($ig_user) . '/' : '';
-                    if ($embed) $html_parts[] = $this->card('Instagram', $embed, $show_title, $ig_user ? '@' . $ig_user : '', $ig_url);
+                    if ($embed) $html_parts[] = $this->card('Instagram', $embed, $show_title, $ig_user ? '@' . $ig_user : '', $ig_url, $gradient_style);
                     break;
                 case 'tiktok':
                     $embed = $this->render_tiktok_feed($opts, $atts);
                     $tt_user = trim($opts['tiktok_username'] ?? '');
                     $tt_url  = $tt_user ? 'https://www.tiktok.com/@' . rawurlencode($tt_user) : '';
-                    if ($embed) $html_parts[] = $this->card('TikTok', $embed, $show_title, $tt_user ? '@' . $tt_user : '', $tt_url);
+                    if ($embed) $html_parts[] = $this->card('TikTok', $embed, $show_title, $tt_user ? '@' . $tt_user : '', $tt_url, $gradient_style);
                     break;
                 case 'twitter':
                 case 'x':
                     $embed = $this->embed_twitter($opts['twitter_username']);
                     $tw_user = trim($opts['twitter_username'] ?? '');
                     $tw_url  = $tw_user ? 'https://x.com/' . rawurlencode($tw_user) : '';
-                    if ($embed) $html_parts[] = $this->card('X', $embed, $show_title, $tw_user ? '@' . $tw_user : '', $tw_url);
+                    if ($embed) $html_parts[] = $this->card('X', $embed, $show_title, $tw_user ? '@' . $tw_user : '', $tw_url, $gradient_style);
                     break;
                 case 'spotify':
                     $embed = $this->embed_spotify($opts['spotify_artist_id']);
                     $sp_id  = trim($opts['spotify_artist_id'] ?? '');
                     $sp_url = $sp_id ? 'https://open.spotify.com/artist/' . rawurlencode($sp_id) : '';
-                    if ($embed) $html_parts[] = $this->card('Spotify', $embed, $show_title, '', $sp_url);
+                    if ($embed) $html_parts[] = $this->card('Spotify', $embed, $show_title, '', $sp_url, $gradient_style);
                     break;
             }
         }
@@ -765,7 +850,7 @@ a.ssfs-item {
         return $out;
     }
 
-    private function card($title, $embed_html, $show_title = false, $handle = '', $profile_url = '') {
+    private function card($title, $embed_html, $show_title = false, $handle = '', $profile_url = '', $gradient_style = '') {
         $header = '';
         if ($show_title) {
             $header .= '<div class="ssfs-card-header">';
@@ -777,7 +862,8 @@ a.ssfs-item {
             }
             $header .= '</div>';
         }
-        return '<div class="ssfs-card">' . $header . '<div class="ssfs-embed">' . $embed_html . '</div></div>';
+        $style_attr = $gradient_style ? ' style="' . esc_attr($gradient_style) . '"' : '';
+        return '<div class="ssfs-card"><div class="ssfs-embed"' . $style_attr . '>' . $header . $embed_html . '</div></div>';
     }
 
 /* ===================== YouTube, API only ===================== */

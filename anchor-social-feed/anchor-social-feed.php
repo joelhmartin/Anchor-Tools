@@ -1207,6 +1207,50 @@ private function fetch_facebook_posts($page_id, $access_token, $limit = 10) {
 
 /* ===================== Instagram Graph API ===================== */
 
+/**
+ * Resolve Instagram credentials from Facebook app credentials.
+ * Looks up the IG Business Account linked to the configured Facebook Page.
+ * Returns ['user_id' => ..., 'token' => ...] or WP_Error.
+ */
+private function get_instagram_from_facebook($opts) {
+    $page_id = trim($opts['facebook_page_id'] ?? '');
+    if (!$page_id) {
+        return new WP_Error('ssfs_ig_fb', 'No Facebook Page ID configured.');
+    }
+
+    $page_token = $this->get_facebook_page_token($opts);
+    if (is_wp_error($page_token)) return $page_token;
+
+    // Check cache
+    $cache_key = 'ssfs_ig_from_fb_' . md5($page_id);
+    if (isset($_GET['ssfs_refresh']) && $_GET['ssfs_refresh'] == '1') delete_transient($cache_key);
+    $cached = get_transient($cache_key);
+    if (is_array($cached)) return $cached;
+
+    // Look up the IG Business Account linked to this Facebook Page
+    $url = add_query_arg([
+        'fields'       => 'instagram_business_account',
+        'access_token' => $page_token,
+    ], 'https://graph.facebook.com/v22.0/' . rawurlencode($page_id));
+
+    $res = wp_remote_get($url, ['timeout' => 15]);
+    if (is_wp_error($res)) return $res;
+
+    $body = json_decode(wp_remote_retrieve_body($res), true);
+    if (isset($body['error'])) {
+        return new WP_Error('ssfs_ig_fb', $body['error']['message'] ?? 'Could not look up Instagram account.');
+    }
+
+    $ig_id = $body['instagram_business_account']['id'] ?? '';
+    if (!$ig_id) {
+        return new WP_Error('ssfs_ig_fb', 'No Instagram Business account linked to this Facebook Page.');
+    }
+
+    $result = ['user_id' => $ig_id, 'token' => $page_token];
+    set_transient($cache_key, $result, 60 * DAY_IN_SECONDS);
+    return $result;
+}
+
 private function fetch_instagram_media($user_id, $access_token, $limit = 12) {
     $cache_key = 'ssfs_ig_media_' . md5($user_id);
     if (isset($_GET['ssfs_refresh']) && $_GET['ssfs_refresh'] == '1') delete_transient($cache_key);
@@ -1362,11 +1406,20 @@ private function render_instagram_feed($opts, $atts) {
     $user_id = trim($opts['instagram_user_id'] ?? '');
     $token   = trim($opts['instagram_access_token'] ?? '');
 
-    // Fall back to legacy profile link if no Graph API credentials
+    // If no dedicated IG credentials, derive from Facebook app credentials
+    if (!$user_id || !$token) {
+        $fb_ig = $this->get_instagram_from_facebook($opts);
+        if (!is_wp_error($fb_ig)) {
+            $user_id = $fb_ig['user_id'];
+            $token   = $fb_ig['token'];
+        }
+    }
+
+    // Fall back to legacy profile link if still no credentials
     if (!$user_id || !$token) {
         $legacy = $this->embed_instagram($opts['instagram_username'] ?? '');
         if ($legacy) return $legacy;
-        return '<p class="ssfs-note">Instagram Graph API credentials not configured. Add a User ID and Access Token in settings.</p>';
+        return '<p class="ssfs-note">Instagram Graph API credentials not configured. Add a User ID and Access Token in settings, or configure Facebook App credentials with instagram_basic permission.</p>';
     }
 
     $limit = max(1, intval($atts['instagram_limit'] ?? 12));

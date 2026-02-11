@@ -283,7 +283,7 @@ class Anchor_Video_Slider_Module {
         foreach ($defs as $key => $def) {
             $meta_key = 'avg_' . $key;
             if ($def['type'] === 'checkbox') {
-                $val = isset($_POST[$meta_key]) ? '1' : '';
+                $val = isset($_POST[$meta_key]) ? '1' : '0';
             } elseif ($def['type'] === 'number') {
                 $val = isset($_POST[$meta_key]) ? intval($_POST[$meta_key]) : $this->default_settings[$key];
                 if (isset($def['min'])) $val = max($def['min'], $val);

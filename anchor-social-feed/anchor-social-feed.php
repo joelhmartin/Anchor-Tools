@@ -123,6 +123,47 @@ class Anchor_Social_Feed_Module {
     text-decoration: underline;
 }
 
+/* Light theme */
+.ssfs-embed.ssfs-light {
+    background: none;
+}
+
+.ssfs-light .ssfs-card-title {
+    color: #153b37;
+}
+
+.ssfs-light .ssfs-card-handle {
+    color: #3c8a81;
+}
+
+.ssfs-light .ssfs-card-handle:hover {
+    color: #153b37;
+}
+
+.ssfs-light .ssfs-btn {
+    border-color: rgba(21, 59, 55, 0.25);
+    background: rgba(21, 59, 55, 0.06);
+    color: #153b37;
+}
+
+.ssfs-light .ssfs-btn:hover {
+    background: #3c8a81;
+    border-color: #3c8a81;
+    color: #fff;
+}
+
+.ssfs-light .ssfs-note {
+    color: #6b7280;
+}
+
+.ssfs-light .ssfs-carousel {
+    scrollbar-color: #3c8a81 rgba(21, 59, 55, 0.1);
+}
+
+.ssfs-light .ssfs-carousel::-webkit-scrollbar-track {
+    background: rgba(21, 59, 55, 0.1);
+}
+
 .ssfs-item {
     cursor: pointer;
     border-radius: 12px;
@@ -656,6 +697,7 @@ a.ssfs-item {
         echo '<tr><td><code>layout</code></td><td><code>grid</code> (default), <code>stack</code>, <code>carousel</code></td><td>Controls the feed layout</td></tr>';
         echo '<tr><td><code>show_title</code></td><td><code>yes</code> (default), <code>no</code></td><td>Show or hide the platform name and handle above the feed</td></tr>';
         echo '<tr><td><code>gradient</code></td><td>Two colors, one color, or <code>none</code></td><td>Override the feed background. Default is the teal gradient</td></tr>';
+        echo '<tr><td><code>theme</code></td><td><code>dark</code> (default), <code>light</code></td><td>Color scheme for title, buttons, and scrollbar. Auto-switches to <code>light</code> when <code>gradient="none"</code></td></tr>';
         echo '</tbody></table>';
 
         echo '<p style="margin-top:8px"><strong>Gradient examples:</strong></p>';
@@ -708,8 +750,10 @@ a.ssfs-item {
         echo '<tr><td><code>[social_feed platform="youtube" exclude_hashtags=""]</code></td><td>All YouTube videos, no hashtag filtering</td></tr>';
         echo '<tr><td><code>[social_feed platform="facebook" facebook_limit="5"]</code></td><td>Latest 5 Facebook posts</td></tr>';
         echo '<tr><td><code>[social_feed platform="instagram" instagram_limit="9" layout="grid"]</code></td><td>Instagram grid, 9 items</td></tr>';
-        echo '<tr><td><code>[social_feed platform="facebook" show_title="no" gradient="none"]</code></td><td>Facebook feed, no header, no background</td></tr>';
+        echo '<tr><td><code>[social_feed platform="facebook" gradient="none"]</code></td><td>Facebook feed on transparent background (auto light theme)</td></tr>';
+        echo '<tr><td><code>[social_feed platform="facebook" gradient="#000" theme="dark"]</code></td><td>Facebook feed on solid black with white text</td></tr>';
         echo '<tr><td><code>[social_feed platforms="facebook,instagram" gradient="#1a1a2e,#16213e"]</code></td><td>Facebook + Instagram with custom gradient</td></tr>';
+        echo '<tr><td><code>[social_feed platform="youtube" theme="light" gradient="none" show_title="no"]</code></td><td>Minimal YouTube feed, no chrome</td></tr>';
         echo '</tbody></table>';
 
         // Cache note
@@ -744,6 +788,7 @@ a.ssfs-item {
             // Display
             'show_title'         => 'yes',
             'gradient'           => '',
+            'theme'              => 'dark',
         ], $atts, 'social_feed');
 
         $layout = in_array($atts['layout'], ['grid','stack','carousel'], true) ? $atts['layout'] : 'grid';
@@ -759,11 +804,16 @@ a.ssfs-item {
 
         $show_title = in_array(strtolower($atts['show_title']), ['yes','true','1','on'], true);
 
+        // Theme: dark (default) or light
+        $theme = strtolower(trim($atts['theme']));
+        if (!in_array($theme, ['dark', 'light'], true)) $theme = 'dark';
+
         // Parse gradient attribute
         $gradient_style = '';
         $grad_val = trim($atts['gradient']);
         if (strtolower($grad_val) === 'none') {
             $gradient_style = 'background:none;';
+            if ($theme === 'dark') $theme = 'light'; // auto-switch when removing background
         } elseif ($grad_val !== '') {
             $colors = array_map('trim', explode(',', $grad_val));
             if (count($colors) >= 2) {
@@ -786,7 +836,7 @@ a.ssfs-item {
                         elseif (strpos($handle, 'UC') === 0) { $yt_url = 'https://www.youtube.com/channel/' . $handle; }
                         else { $yt_url = 'https://www.youtube.com/@' . $handle; }
                     }
-                    if ($embed) $html_parts[] = $this->card('YouTube', $embed, $show_title, $handle, $yt_url, $gradient_style);
+                    if ($embed) $html_parts[] = $this->card('YouTube', $embed, $show_title, $handle, $yt_url, $gradient_style, $theme);
                     break;
                 case 'facebook':
                     $embed = $this->render_facebook_feed($opts, $atts);
@@ -794,32 +844,32 @@ a.ssfs-item {
                     if (!$fb_url && trim($opts['facebook_page_id'] ?? '')) {
                         $fb_url = 'https://www.facebook.com/' . trim($opts['facebook_page_id']);
                     }
-                    if ($embed) $html_parts[] = $this->card('Facebook', $embed, $show_title, $fb_url ? basename(rtrim($fb_url, '/')) : '', $fb_url, $gradient_style);
+                    if ($embed) $html_parts[] = $this->card('Facebook', $embed, $show_title, $fb_url ? basename(rtrim($fb_url, '/')) : '', $fb_url, $gradient_style, $theme);
                     break;
                 case 'instagram':
                     $embed = $this->render_instagram_feed($opts, $atts);
                     $ig_user = trim($opts['instagram_username'] ?? '');
                     $ig_url  = $ig_user ? 'https://www.instagram.com/' . rawurlencode($ig_user) . '/' : '';
-                    if ($embed) $html_parts[] = $this->card('Instagram', $embed, $show_title, $ig_user ? '@' . $ig_user : '', $ig_url, $gradient_style);
+                    if ($embed) $html_parts[] = $this->card('Instagram', $embed, $show_title, $ig_user ? '@' . $ig_user : '', $ig_url, $gradient_style, $theme);
                     break;
                 case 'tiktok':
                     $embed = $this->render_tiktok_feed($opts, $atts);
                     $tt_user = trim($opts['tiktok_username'] ?? '');
                     $tt_url  = $tt_user ? 'https://www.tiktok.com/@' . rawurlencode($tt_user) : '';
-                    if ($embed) $html_parts[] = $this->card('TikTok', $embed, $show_title, $tt_user ? '@' . $tt_user : '', $tt_url, $gradient_style);
+                    if ($embed) $html_parts[] = $this->card('TikTok', $embed, $show_title, $tt_user ? '@' . $tt_user : '', $tt_url, $gradient_style, $theme);
                     break;
                 case 'twitter':
                 case 'x':
                     $embed = $this->embed_twitter($opts['twitter_username']);
                     $tw_user = trim($opts['twitter_username'] ?? '');
                     $tw_url  = $tw_user ? 'https://x.com/' . rawurlencode($tw_user) : '';
-                    if ($embed) $html_parts[] = $this->card('X', $embed, $show_title, $tw_user ? '@' . $tw_user : '', $tw_url, $gradient_style);
+                    if ($embed) $html_parts[] = $this->card('X', $embed, $show_title, $tw_user ? '@' . $tw_user : '', $tw_url, $gradient_style, $theme);
                     break;
                 case 'spotify':
                     $embed = $this->embed_spotify($opts['spotify_artist_id']);
                     $sp_id  = trim($opts['spotify_artist_id'] ?? '');
                     $sp_url = $sp_id ? 'https://open.spotify.com/artist/' . rawurlencode($sp_id) : '';
-                    if ($embed) $html_parts[] = $this->card('Spotify', $embed, $show_title, '', $sp_url, $gradient_style);
+                    if ($embed) $html_parts[] = $this->card('Spotify', $embed, $show_title, '', $sp_url, $gradient_style, $theme);
                     break;
             }
         }
@@ -859,7 +909,7 @@ a.ssfs-item {
         return $out;
     }
 
-    private function card($title, $embed_html, $show_title = false, $handle = '', $profile_url = '', $gradient_style = '') {
+    private function card($title, $embed_html, $show_title = false, $handle = '', $profile_url = '', $gradient_style = '', $theme = 'dark') {
         $header = '';
         if ($show_title) {
             // Pull nav out of embed HTML and into the header row
@@ -882,7 +932,8 @@ a.ssfs-item {
             $header .= '</div>';
         }
         $style_attr = $gradient_style ? ' style="' . esc_attr($gradient_style) . '"' : '';
-        return '<div class="ssfs-card"><div class="ssfs-embed"' . $style_attr . '>' . $header . $embed_html . '</div></div>';
+        $theme_class = ($theme === 'light') ? ' ssfs-light' : '';
+        return '<div class="ssfs-card"><div class="ssfs-embed' . $theme_class . '"' . $style_attr . '>' . $header . $embed_html . '</div></div>';
     }
 
 /* ===================== YouTube, API only ===================== */

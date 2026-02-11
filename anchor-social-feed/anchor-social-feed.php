@@ -91,6 +91,15 @@ class Anchor_Social_Feed_Module {
 
 .ssfs-card-header {
     padding: 0 0 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.ssfs-card-header .ssfs-nav {
+    margin-bottom: 0;
+    flex-shrink: 0;
 }
 
 .ssfs-card-title {
@@ -853,13 +862,23 @@ a.ssfs-item {
     private function card($title, $embed_html, $show_title = false, $handle = '', $profile_url = '', $gradient_style = '') {
         $header = '';
         if ($show_title) {
+            // Pull nav out of embed HTML and into the header row
+            $nav = '';
+            if (preg_match('/<div class="ssfs-nav">.*?<\/div>/s', $embed_html, $m)) {
+                $nav = $m[0];
+                $embed_html = str_replace($nav, '', $embed_html);
+            }
+
             $header .= '<div class="ssfs-card-header">';
+            $header .= '<div class="ssfs-card-header-text">';
             $header .= '<div class="ssfs-card-title">' . esc_html($title) . '</div>';
             if ($handle && $profile_url) {
                 $header .= '<a class="ssfs-card-handle" href="' . esc_url($profile_url) . '" target="_blank" rel="noopener">' . esc_html($handle) . '</a>';
             } elseif ($profile_url) {
                 $header .= '<a class="ssfs-card-handle" href="' . esc_url($profile_url) . '" target="_blank" rel="noopener">View Profile</a>';
             }
+            $header .= '</div>';
+            $header .= $nav;
             $header .= '</div>';
         }
         $style_attr = $gradient_style ? ' style="' . esc_attr($gradient_style) . '"' : '';

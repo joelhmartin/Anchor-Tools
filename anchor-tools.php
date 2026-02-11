@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.4.37
+ * Version: 3.4.38
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -2934,6 +2934,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Create custom forms that submit to CallTrackingMetrics FormReactors.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-ctm-forms/anchor-ctm-forms.php',
                 'class'       => 'Anchor_CTM_Forms_Module',
+            ],
+            'code_snippets' => [
+                'label'       => __( 'Anchor Code Snippets', 'anchor-schema' ),
+                'description' => __( 'Insert code snippets into header, body, or footer globally or per page.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-code-snippets/anchor-code-snippets.php',
+                'class'       => 'Anchor_Code_Snippets_Module',
             ],
         ];
     }

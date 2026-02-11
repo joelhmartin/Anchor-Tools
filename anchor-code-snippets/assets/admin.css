@@ -1,0 +1,67 @@
+/* ─── General ──────────────────────────────────────── */
+.acs-field { margin-bottom: 12px; }
+.acs-field label strong { display: block; margin-bottom: 4px; }
+.acs-field select { width: 100%; }
+
+/* ─── Code Editor ──────────────────────────────────── */
+.acs-field .CodeMirror { border: 1px solid #ddd; }
+
+/* ─── AI Panel ─────────────────────────────────────── */
+.acs-ai-panel textarea { width: 100%; margin-bottom: 6px; }
+.acs-ai-panel .button { vertical-align: middle; }
+.acs-ai-panel .spinner { vertical-align: middle; margin-top: 0; }
+.acs-ai-error { color: #d63638; font-size: 12px; display: inline-block; margin-left: 8px; vertical-align: middle; }
+
+/* ─── Page Search ──────────────────────────────────── */
+#acs_page_search { width: 100%; margin-bottom: 0; }
+
+.acs-search-results {
+    display: none;
+    border: 1px solid #ddd;
+    background: #fff;
+    max-height: 200px;
+    overflow-y: auto;
+    position: relative;
+    z-index: 10;
+}
+
+.acs-search-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #f0f0f0;
+}
+.acs-search-item:last-child { border-bottom: none; }
+.acs-search-item:hover { background: #f0f7ff; }
+.acs-search-type { font-size: 11px; color: #999; text-transform: uppercase; }
+
+/* ─── Page Tags ────────────────────────────────────── */
+.acs-page-tags { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+
+.acs-tag {
+    display: inline-flex;
+    align-items: center;
+    background: #f0f0f1;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.acs-tag-remove {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #a00;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 0 0 4px;
+    margin: 0;
+}
+.acs-tag-remove:hover { color: #d63638; }
+
+/* ─── Admin Column Badges ──────────────────────────── */
+.acs-badge { white-space: nowrap; }

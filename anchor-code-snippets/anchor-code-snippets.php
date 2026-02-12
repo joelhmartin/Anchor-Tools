@@ -9,6 +9,7 @@ class Anchor_Code_Snippets_Module {
     public function __construct() {
         add_action( 'init',                  [ $this, 'register_cpt' ] );
         add_action( 'add_meta_boxes',        [ $this, 'add_metaboxes' ] );
+        add_action( 'edit_form_after_title',  [ $this, 'render_code_after_title' ] );
         add_action( 'save_post',             [ $this, 'save_meta' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
 
@@ -45,38 +46,44 @@ class Anchor_Code_Snippets_Module {
     /* ─── Metaboxes ────────────────────────────────────────── */
 
     public function add_metaboxes() {
-        add_meta_box( 'acs_code',     'Code Editor', [ $this, 'render_box_code' ],     self::CPT, 'normal', 'high' );
-        add_meta_box( 'acs_settings', 'Settings',    [ $this, 'render_box_settings' ], self::CPT, 'side' );
+        add_meta_box( 'acs_settings', 'Settings', [ $this, 'render_box_settings' ], self::CPT, 'side' );
     }
 
-    public function render_box_code( $post ) {
+    /**
+     * Render code editor fields directly after the title field,
+     * so they appear immediately visible (same pattern as ACF).
+     */
+    public function render_code_after_title( $post ) {
+        if ( $post->post_type !== self::CPT ) return;
+
         wp_nonce_field( self::NONCE, self::NONCE );
 
         $language = get_post_meta( $post->ID, 'acs_language', true ) ?: 'javascript';
         $code     = get_post_meta( $post->ID, 'acs_code', true );
         ?>
-        <div class="acs-field">
-            <label><strong>Language</strong></label>
-            <select name="acs_language" id="acs_language">
-                <option value="javascript" <?php selected( $language, 'javascript' ); ?>>JavaScript</option>
-                <option value="css"        <?php selected( $language, 'css' ); ?>>CSS</option>
-                <option value="html"       <?php selected( $language, 'html' ); ?>>HTML</option>
-                <option value="php"        <?php selected( $language, 'php' ); ?>>PHP</option>
-                <option value="universal"  <?php selected( $language, 'universal' ); ?>>Universal (raw output)</option>
-            </select>
-        </div>
+        <div id="acs-code-editor-wrap" class="acs-code-editor-wrap">
+            <div class="acs-field acs-lang-row">
+                <label for="acs_language"><strong>Language</strong></label>
+                <select name="acs_language" id="acs_language">
+                    <option value="javascript" <?php selected( $language, 'javascript' ); ?>>JavaScript</option>
+                    <option value="css"        <?php selected( $language, 'css' ); ?>>CSS</option>
+                    <option value="html"       <?php selected( $language, 'html' ); ?>>HTML</option>
+                    <option value="php"        <?php selected( $language, 'php' ); ?>>PHP</option>
+                    <option value="universal"  <?php selected( $language, 'universal' ); ?>>Universal (raw output)</option>
+                </select>
+            </div>
 
-        <div class="acs-field acs-ai-panel">
-            <label><strong>AI Generate</strong></label>
-            <textarea id="acs_ai_prompt" rows="2" placeholder="Describe the code you want to generate&hellip;"></textarea>
-            <button type="button" id="acs_ai_btn" class="button">Generate</button>
-            <span id="acs_ai_spinner" class="spinner" style="float:none;"></span>
-            <span id="acs_ai_error" class="acs-ai-error"></span>
-        </div>
+            <div class="acs-field acs-ai-panel">
+                <label><strong>AI Generate</strong></label>
+                <textarea id="acs_ai_prompt" rows="2" placeholder="Describe the code you want to generate&hellip;"></textarea>
+                <button type="button" id="acs_ai_btn" class="button">Generate</button>
+                <span id="acs_ai_spinner" class="spinner" style="float:none;"></span>
+                <span id="acs_ai_error" class="acs-ai-error"></span>
+            </div>
 
-        <div class="acs-field">
-            <label><strong>Code</strong></label>
-            <textarea name="acs_code" id="acs_code" rows="18" class="large-text code"><?php echo esc_textarea( $code ); ?></textarea>
+            <div class="acs-field">
+                <textarea name="acs_code" id="acs_code" rows="18" class="large-text code"><?php echo esc_textarea( $code ); ?></textarea>
+            </div>
         </div>
         <?php
     }

@@ -1,7 +1,21 @@
+/* ─── Code Editor Wrap (after title) ───────────────── */
+.acs-code-editor-wrap {
+    margin: 20px 0 0;
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    box-shadow: 0 1px 1px rgba(0,0,0,.04);
+    padding: 16px;
+}
+
 /* ─── General ──────────────────────────────────────── */
 .acs-field { margin-bottom: 12px; }
 .acs-field label strong { display: block; margin-bottom: 4px; }
-.acs-field select { width: 100%; }
+.acs-code-editor-wrap .acs-field select { width: auto; min-width: 200px; }
+#acs_settings .acs-field select { width: 100%; }
+
+/* ─── Language Row ─────────────────────────────────── */
+.acs-lang-row { margin-bottom: 16px; }
+.acs-lang-row label strong { display: inline; margin-right: 8px; }
 
 /* ─── Code Editor ──────────────────────────────────── */
 .acs-field .CodeMirror { border: 1px solid #ddd; }

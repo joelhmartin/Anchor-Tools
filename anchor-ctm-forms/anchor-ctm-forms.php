@@ -718,7 +718,7 @@ class Anchor_CTM_Forms_Module {
         ob_start();
         ?>
         <div class="ctm-form-wrap" data-variant="<?php echo esc_attr( $post_id ); ?>">
-            <?php echo $html; ?>
+            <?php echo str_replace( 'id="ctmForm"', 'id="ctmForm-' . esc_attr( $post_id ) . '"', $html ); ?>
         </div>
         <script>
         (function(){

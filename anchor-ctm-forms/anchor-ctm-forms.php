@@ -18,6 +18,7 @@ class Anchor_CTM_Forms_Module {
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'add_meta_boxes', [ $this, 'add_variant_metabox' ] );
         add_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
+        add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
         add_shortcode( 'ctm_form_variant', [ $this, 'render_form_shortcode' ] );
 
@@ -27,16 +28,42 @@ class Anchor_CTM_Forms_Module {
         add_action( 'wp_ajax_anchor_ctm_generate', [ $this, 'ajax_generate_starter' ] );
         add_action( 'wp_ajax_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
         add_action( 'wp_ajax_nopriv_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
+        add_action( 'wp_ajax_ctm_builder_preview', [ $this, 'ajax_builder_preview' ] );
 
         /* ── Multi-Step: frontend asset registration ── */
         add_action( 'wp_enqueue_scripts', [ $this, 'register_frontend_assets' ] );
     }
 
-    /* ========================= Multi-Step: Register Frontend Assets ========================= */
+    /* ========================= Admin: Enqueue Builder Assets ========================= */
+    public function enqueue_admin_assets( $hook ) {
+        if ( ! in_array( $hook, [ 'post.php', 'post-new.php' ], true ) ) {
+            return;
+        }
+        $screen = get_current_screen();
+        if ( ! $screen || $screen->post_type !== 'ctm_form_variant' ) {
+            return;
+        }
+
+        $base = plugin_dir_url( __FILE__ ) . 'assets/';
+        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.0.0' );
+        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.0.0', true );
+
+        $reactors = $this->fetch_reactors_list();
+        wp_localize_script( 'ctm-builder', 'CTM_BUILDER', [
+            'ajaxUrl'   => admin_url( 'admin-ajax.php' ),
+            'nonce'     => wp_create_nonce( self::NONCE_ACTION ),
+            'nonceName' => self::NONCE_NAME,
+            'reactors'  => $reactors,
+        ] );
+    }
+
+    /* ========================= Multi-Step & Form Logic: Register Frontend Assets ========================= */
     public function register_frontend_assets() {
         $base = plugin_dir_url( __FILE__ ) . 'assets/';
         wp_register_style( 'ctm-multi-step', $base . 'multi-step.css', [], '1.0.0' );
         wp_register_script( 'ctm-multi-step', $base . 'multi-step.js', [], '1.0.0', true );
+        wp_register_style( 'ctm-form-logic', $base . 'form-logic.css', [], '1.0.0' );
+        wp_register_script( 'ctm-form-logic', $base . 'form-logic.js', [], '1.0.0', true );
     }
 
     /* ========================= Settings ========================= */
@@ -322,66 +349,81 @@ class Anchor_CTM_Forms_Module {
         add_meta_box( 'anchor_ctm_variant', __( 'CTM Form Builder', 'anchor-schema' ), [ $this, 'variant_metabox_cb' ], 'ctm_form_variant', 'normal', 'high' );
     }
 
-    /* ========================= Metabox: Form Builder ========================= */
+    /* ========================= Metabox: Form Builder (Tabbed) ========================= */
     public function variant_metabox_cb( $post ) {
         $reactor_id = get_post_meta( $post->ID, '_ctm_reactor_id', true );
         $html = get_post_meta( $post->ID, '_ctm_form_html', true );
+        $form_mode = get_post_meta( $post->ID, '_ctm_form_mode', true ) ?: 'reactor';
+        $form_config = get_post_meta( $post->ID, '_ctm_form_config', true );
         $reactors = $this->fetch_reactors_list();
+
+        // Builder-mode reactor (may differ from reactor-tab reactor)
+        $builder_reactor_id = get_post_meta( $post->ID, '_ctm_builder_reactor_id', true ) ?: $reactor_id;
 
         // Get per-form analytics overrides
         $analytics_override = get_post_meta( $post->ID, '_ctm_analytics_override', true ) ? true : false;
         $analytics = $this->get_form_analytics( $post->ID );
 
-        // Multi-step meta
+        // Multi-step meta (reactor tab)
         $ms_enabled = get_post_meta( $post->ID, '_ctm_multi_step', true );
         $tp_enabled = get_post_meta( $post->ID, '_ctm_title_page', true );
 
         wp_nonce_field( self::NONCE_ACTION, self::NONCE_NAME );
         ?>
-        <div class="ctm-box" style="border:1px solid #ddd;padding:12px;border-radius:8px;background:#fff;margin-bottom:12px">
-            <p><label><strong><?php esc_html_e( 'Choose Form Reactor', 'anchor-schema' ); ?></strong><br>
-                <select name="ctm_reactor_id" id="ctm_reactor_id" style="width:100%">
-                    <option value=""><?php esc_html_e( '— Select —', 'anchor-schema' ); ?></option>
-                    <?php foreach ( $reactors as $r ): ?>
-                    <option value="<?php echo esc_attr( $r['id'] ); ?>" <?php selected( $reactor_id, $r['id'] ); ?>>
-                        <?php echo esc_html( $r['name'] . ' — ' . $r['id'] ); ?>
-                    </option>
-                    <?php endforeach; ?>
-                </select>
-            </label></p>
+        <input type="hidden" name="ctm_form_mode" id="ctm_form_mode" value="<?php echo esc_attr( $form_mode ); ?>" />
 
-            <p style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                <button type="button" class="button" id="ctm-generate"><?php esc_html_e( 'Generate Starter Form', 'anchor-schema' ); ?></button>
-                <label style="display:inline-flex;align-items:center;gap:4px;">
-                    <input type="checkbox" id="ctm_floating_labels" value="1" />
-                    <?php esc_html_e( 'Floating labels', 'anchor-schema' ); ?>
-                </label>
-                <label style="display:inline-flex;align-items:center;gap:4px;">
-                    <input type="checkbox" name="ctm_multi_step" id="ctm_multi_step" value="1" <?php checked( $ms_enabled ); ?> />
-                    <?php esc_html_e( 'Multi-Step Form', 'anchor-schema' ); ?>
-                </label>
-                <label style="display:inline-flex;align-items:center;gap:4px;" id="ctm-title-page-label">
-                    <input type="checkbox" name="ctm_title_page" id="ctm_title_page" value="1" <?php checked( $tp_enabled ); ?> />
-                    <?php esc_html_e( 'Add Title Page?', 'anchor-schema' ); ?>
-                </label>
-            </p>
+        <!-- Tab bar -->
+        <div class="ctm-tabs">
+            <button type="button" class="ctm-tab-btn<?php echo $form_mode !== 'builder' ? ' active' : ''; ?>" data-tab="reactor"><?php esc_html_e( 'Use Existing Reactor', 'anchor-schema' ); ?></button>
+            <button type="button" class="ctm-tab-btn<?php echo $form_mode === 'builder' ? ' active' : ''; ?>" data-tab="builder"><?php esc_html_e( 'Build Custom Form', 'anchor-schema' ); ?></button>
+        </div>
 
-            <?php $tp_visible = $ms_enabled && $tp_enabled; ?>
-            <div id="ctm-title-page-fields" style="<?php echo $tp_visible ? '' : 'display:none;'; ?>margin-top:8px;padding:12px;border:1px solid #eee;border-radius:6px;background:#fafafa;">
-                <p><label><?php esc_html_e( 'Title Page Heading', 'anchor-schema' ); ?><br>
-                    <input type="text" name="ctm_title_heading" value="<?php echo esc_attr( get_post_meta( $post->ID, '_ctm_title_heading', true ) ); ?>" class="large-text" placeholder="e.g. Welcome to Our Quiz" />
+        <!-- ═══════════════ TAB 1: Reactor Mode ═══════════════ -->
+        <div id="ctm-tab-reactor" class="ctm-tab-panel<?php echo $form_mode !== 'builder' ? ' active' : ''; ?>">
+            <div class="ctm-box" style="border:1px solid #ddd;padding:12px;border-radius:8px;background:#fff;margin-bottom:12px">
+                <p><label><strong><?php esc_html_e( 'Choose Form Reactor', 'anchor-schema' ); ?></strong><br>
+                    <select name="ctm_reactor_id" id="ctm_reactor_id_reactor" style="width:100%">
+                        <option value=""><?php esc_html_e( '— Select —', 'anchor-schema' ); ?></option>
+                        <?php foreach ( $reactors as $r ): ?>
+                        <option value="<?php echo esc_attr( $r['id'] ); ?>" <?php selected( $reactor_id, $r['id'] ); ?>>
+                            <?php echo esc_html( $r['name'] . ' — ' . $r['id'] ); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
                 </label></p>
-                <p><label><?php esc_html_e( 'Title Page Description', 'anchor-schema' ); ?><br>
-                    <textarea name="ctm_title_desc" rows="3" class="large-text" placeholder="Brief description shown on the title page..."><?php echo esc_textarea( get_post_meta( $post->ID, '_ctm_title_desc', true ) ); ?></textarea>
-                </label></p>
-                <p><label><?php esc_html_e( 'Start Button Text', 'anchor-schema' ); ?><br>
-                    <input type="text" name="ctm_start_text" value="<?php echo esc_attr( get_post_meta( $post->ID, '_ctm_start_text', true ) ?: 'Get Started' ); ?>" class="regular-text" />
-                </label></p>
-            </div>
 
-            <div id="ctm-ms-instructions" style="<?php echo $ms_enabled ? '' : 'display:none;'; ?>margin-top:8px;padding:14px 16px;border:1px solid #c3d9e0;border-radius:6px;background:#f0f6f8;">
-                <p style="margin:0 0 8px;font-weight:600;color:#1b3a4b;"><?php esc_html_e( 'Multi-Step Setup', 'anchor-schema' ); ?></p>
-                <p style="margin:0 0 8px;color:#2c2c2c;"><?php esc_html_e( 'Wrap each group of fields in a step div. Each div becomes one step. The submit button must be inside the last step.', 'anchor-schema' ); ?></p>
+                <p style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <button type="button" class="button" id="ctm-generate"><?php esc_html_e( 'Generate Starter Form', 'anchor-schema' ); ?></button>
+                    <label style="display:inline-flex;align-items:center;gap:4px;">
+                        <input type="checkbox" id="ctm_floating_labels" value="1" />
+                        <?php esc_html_e( 'Floating labels', 'anchor-schema' ); ?>
+                    </label>
+                    <label style="display:inline-flex;align-items:center;gap:4px;">
+                        <input type="checkbox" name="ctm_multi_step" id="ctm_multi_step_reactor" value="1" <?php checked( $ms_enabled ); ?> />
+                        <?php esc_html_e( 'Multi-Step Form', 'anchor-schema' ); ?>
+                    </label>
+                    <label style="display:inline-flex;align-items:center;gap:4px;" id="ctm-title-page-label-reactor">
+                        <input type="checkbox" name="ctm_title_page" id="ctm_title_page_reactor" value="1" <?php checked( $tp_enabled ); ?> />
+                        <?php esc_html_e( 'Add Title Page?', 'anchor-schema' ); ?>
+                    </label>
+                </p>
+
+                <?php $tp_visible = $ms_enabled && $tp_enabled; ?>
+                <div id="ctm-title-page-fields-reactor" style="<?php echo $tp_visible ? '' : 'display:none;'; ?>margin-top:8px;padding:12px;border:1px solid #eee;border-radius:6px;background:#fafafa;">
+                    <p><label><?php esc_html_e( 'Title Page Heading', 'anchor-schema' ); ?><br>
+                        <input type="text" name="ctm_title_heading" value="<?php echo esc_attr( get_post_meta( $post->ID, '_ctm_title_heading', true ) ); ?>" class="large-text" placeholder="e.g. Welcome to Our Quiz" />
+                    </label></p>
+                    <p><label><?php esc_html_e( 'Title Page Description', 'anchor-schema' ); ?><br>
+                        <textarea name="ctm_title_desc" rows="3" class="large-text" placeholder="Brief description shown on the title page..."><?php echo esc_textarea( get_post_meta( $post->ID, '_ctm_title_desc', true ) ); ?></textarea>
+                    </label></p>
+                    <p><label><?php esc_html_e( 'Start Button Text', 'anchor-schema' ); ?><br>
+                        <input type="text" name="ctm_start_text" value="<?php echo esc_attr( get_post_meta( $post->ID, '_ctm_start_text', true ) ?: 'Get Started' ); ?>" class="regular-text" />
+                    </label></p>
+                </div>
+
+                <div id="ctm-ms-instructions" style="<?php echo $ms_enabled ? '' : 'display:none;'; ?>margin-top:8px;padding:14px 16px;border:1px solid #c3d9e0;border-radius:6px;background:#f0f6f8;">
+                    <p style="margin:0 0 8px;font-weight:600;color:#1b3a4b;"><?php esc_html_e( 'Multi-Step Setup', 'anchor-schema' ); ?></p>
+                    <p style="margin:0 0 8px;color:#2c2c2c;"><?php esc_html_e( 'Wrap each group of fields in a step div. Each div becomes one step. The submit button must be inside the last step.', 'anchor-schema' ); ?></p>
 <pre style="margin:0;padding:10px 12px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:12px;line-height:1.5;overflow-x:auto;color:#23282d;">&lt;form id="ctmForm" novalidate&gt;
 
   &lt;!-- Step 1 --&gt;
@@ -397,147 +439,176 @@ class Anchor_CTM_Forms_Module {
   &lt;/div&gt;
 
 &lt;/form&gt;</pre>
-                <p style="margin:8px 0 0;font-size:12px;color:#666;"><?php esc_html_e( 'Progress bar, step counter, and Back/Continue buttons are added automatically. The title page (if enabled) is injected before Step 1.', 'anchor-schema' ); ?></p>
-            </div>
+                    <p style="margin:8px 0 0;font-size:12px;color:#666;"><?php esc_html_e( 'Progress bar, step counter, and Back/Continue buttons are added automatically. The title page (if enabled) is injected before Step 1.', 'anchor-schema' ); ?></p>
+                </div>
 
-            <p><label><strong><?php esc_html_e( 'Form HTML', 'anchor-schema' ); ?></strong></label></p>
-            <p><textarea name="ctm_form_html" id="ctm_form_html" style="width:100%;height:420px" placeholder="<?php esc_attr_e( 'Starter HTML will appear here after you choose a reactor and click Generate.', 'anchor-schema' ); ?>"><?php echo esc_textarea( $html ); ?></textarea></p>
-
-            <p><strong><?php esc_html_e( 'Shortcode', 'anchor-schema' ); ?></strong></p>
-            <div style="display:flex;gap:8px;align-items:center">
-                <input type="text" readonly value="[ctm_form_variant id=&quot;<?php echo intval( $post->ID ); ?>&quot;]" id="ctm-shortcode-field" style="width:100%" />
-                <button type="button" class="button" id="ctm-copy-sc"><?php esc_html_e( 'Copy', 'anchor-schema' ); ?></button>
+                <p><label><strong><?php esc_html_e( 'Form HTML', 'anchor-schema' ); ?></strong></label></p>
+                <p><textarea name="ctm_form_html" id="ctm_form_html" style="width:100%;height:420px" placeholder="<?php esc_attr_e( 'Starter HTML will appear here after you choose a reactor and click Generate.', 'anchor-schema' ); ?>"><?php echo esc_textarea( $html ); ?></textarea></p>
             </div>
-            <p class="description"><?php esc_html_e( 'Embed this saved form variant using the shortcode.', 'anchor-schema' ); ?></p>
         </div>
 
-        <!-- Analytics Override Section -->
-        <div class="ctm-box" style="border:1px solid #ddd;padding:12px;border-radius:8px;background:#fff;margin-bottom:12px">
-            <p>
-                <label>
-                    <input type="checkbox" name="ctm_analytics_override" id="ctm_analytics_override" value="1" <?php checked( $analytics_override ); ?> />
-                    <strong><?php esc_html_e( 'Override Global Analytics Settings', 'anchor-schema' ); ?></strong>
-                </label>
-            </p>
-            <p class="description"><?php esc_html_e( 'Check to use custom tracking settings for this form instead of the global defaults.', 'anchor-schema' ); ?></p>
+        <!-- ═══════════════ TAB 2: Builder Mode ═══════════════ -->
+        <div id="ctm-tab-builder" class="ctm-tab-panel<?php echo $form_mode === 'builder' ? ' active' : ''; ?>">
+            <!-- Builder reactor dropdown -->
+            <div class="ctm-builder-reactor">
+                <p><label><strong><?php esc_html_e( 'Submit To Reactor', 'anchor-schema' ); ?></strong><br>
+                    <select name="ctm_builder_reactor_id" id="ctm_builder_reactor_id" style="width:100%">
+                        <option value=""><?php esc_html_e( '— Select —', 'anchor-schema' ); ?></option>
+                        <?php foreach ( $reactors as $r ): ?>
+                        <option value="<?php echo esc_attr( $r['id'] ); ?>" <?php selected( $builder_reactor_id, $r['id'] ); ?>>
+                            <?php echo esc_html( $r['name'] . ' — ' . $r['id'] ); ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label></p>
+            </div>
 
-            <div id="ctm-analytics-fields" style="<?php echo $analytics_override ? '' : 'display:none;'; ?>margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
-                <table class="form-table" style="margin:0;">
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;width:180px;"><?php esc_html_e( 'GA4 Event Name', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[ga4_event]" value="<?php echo esc_attr( $analytics['ga4_event'] ); ?>" class="regular-text" />
-                            <p class="description"><?php esc_html_e( 'Leave blank to disable GA4 tracking for this form.', 'anchor-schema' ); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'GA4 Parameters', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[ga4_params]" value="<?php echo esc_attr( $analytics['ga4_params'] ); ?>" class="large-text" />
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Google Ads Conversion', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[gads_conversion]" value="<?php echo esc_attr( $analytics['gads_conversion'] ); ?>" class="regular-text" />
-                            <p class="description"><?php esc_html_e( 'e.g., AW-123456789/AbCdEf', 'anchor-schema' ); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Facebook Pixel Event', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[fb_event]" value="<?php echo esc_attr( $analytics['fb_event'] ); ?>" class="regular-text" />
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Facebook Parameters', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[fb_params]" value="<?php echo esc_attr( $analytics['fb_params'] ); ?>" class="large-text" />
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'TikTok Pixel Event', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[tiktok_event]" value="<?php echo esc_attr( $analytics['tiktok_event'] ); ?>" class="regular-text" />
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'TikTok Parameters', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[tiktok_params]" value="<?php echo esc_attr( $analytics['tiktok_params'] ); ?>" class="large-text" />
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Bing UET Event', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[bing_event]" value="<?php echo esc_attr( $analytics['bing_event'] ); ?>" class="regular-text" />
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Bing Parameters', 'anchor-schema' ); ?></th>
-                        <td style="padding:8px 0;">
-                            <input type="text" name="ctm_analytics[bing_params]" value="<?php echo esc_attr( $analytics['bing_params'] ); ?>" class="large-text" />
-                        </td>
-                    </tr>
-                </table>
+            <!-- No-reactor warning -->
+            <div class="ctm-builder-warning" id="ctm-builder-no-reactor" style="<?php echo $builder_reactor_id ? 'display:none;' : ''; ?>">
+                <?php esc_html_e( 'Please select a reactor above. The form builder controls the UI, but a reactor is required to process submissions.', 'anchor-schema' ); ?>
+            </div>
+
+            <!-- Field palette -->
+            <div class="ctm-builder-palette">
+                <span class="palette-group-label"><?php esc_html_e( 'Input Fields', 'anchor-schema' ); ?></span>
+                <?php
+                $input_types = [ 'text', 'email', 'tel', 'number', 'url', 'textarea', 'select', 'checkbox', 'radio', 'hidden' ];
+                $icons = [
+                    'text' => 'dashicons-editor-textcolor', 'email' => 'dashicons-email', 'tel' => 'dashicons-phone',
+                    'number' => 'dashicons-calculator', 'url' => 'dashicons-admin-links', 'textarea' => 'dashicons-editor-paragraph',
+                    'select' => 'dashicons-arrow-down-alt2', 'checkbox' => 'dashicons-yes-alt', 'radio' => 'dashicons-marker',
+                    'hidden' => 'dashicons-hidden',
+                ];
+                foreach ( $input_types as $t ):
+                    $label = ucfirst( $t === 'tel' ? 'Phone' : $t );
+                ?>
+                    <button type="button" class="ctm-palette-btn" data-type="<?php echo esc_attr( $t ); ?>">
+                        <span class="dashicons <?php echo esc_attr( $icons[ $t ] ); ?>"></span> <?php echo esc_html( $label ); ?>
+                    </button>
+                <?php endforeach; ?>
+
+                <span class="palette-group-label"><?php esc_html_e( 'Layout', 'anchor-schema' ); ?></span>
+                <button type="button" class="ctm-palette-btn" data-type="heading"><span class="dashicons dashicons-heading"></span> <?php esc_html_e( 'Heading', 'anchor-schema' ); ?></button>
+                <button type="button" class="ctm-palette-btn" data-type="paragraph"><span class="dashicons dashicons-editor-alignleft"></span> <?php esc_html_e( 'Paragraph', 'anchor-schema' ); ?></button>
+                <button type="button" class="ctm-palette-btn" data-type="divider"><span class="dashicons dashicons-minus"></span> <?php esc_html_e( 'Divider', 'anchor-schema' ); ?></button>
+            </div>
+
+            <!-- Multi-step controls (shown when multi-step enabled in builder settings) -->
+            <div id="ctm-multistep-controls" class="ctm-multistep-controls" style="display:none;"></div>
+
+            <!-- Sortable field canvas -->
+            <div id="ctm-field-canvas" class="empty"><span><?php esc_html_e( 'Click a button above to add fields', 'anchor-schema' ); ?></span></div>
+
+            <!-- Form settings -->
+            <div class="ctm-builder-settings">
+                <h4><?php esc_html_e( 'Form Settings', 'anchor-schema' ); ?></h4>
+                <div id="ctm-builder-form-settings"></div>
+            </div>
+
+            <!-- Hidden config textarea -->
+            <textarea name="ctm_form_config" id="ctm_form_config" style="display:none;"><?php echo esc_textarea( $form_config ); ?></textarea>
+
+            <!-- Live preview -->
+            <div class="ctm-builder-preview">
+                <h4><?php esc_html_e( 'Preview', 'anchor-schema' ); ?></h4>
+                <div id="ctm-builder-preview-frame" class="ctm-builder-preview-frame">
+                    <div class="ctm-preview-empty"><?php esc_html_e( 'Preview will appear here', 'anchor-schema' ); ?></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════════════ SHARED: Shortcode + Analytics ═══════════════ -->
+        <div class="ctm-shared-section">
+            <div class="ctm-box" style="border:1px solid #ddd;padding:12px;border-radius:8px;background:#fff;margin-bottom:12px">
+                <p><strong><?php esc_html_e( 'Shortcode', 'anchor-schema' ); ?></strong></p>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <input type="text" readonly value="[ctm_form_variant id=&quot;<?php echo intval( $post->ID ); ?>&quot;]" id="ctm-shortcode-field" style="width:100%" />
+                    <button type="button" class="button" id="ctm-copy-sc"><?php esc_html_e( 'Copy', 'anchor-schema' ); ?></button>
+                </div>
+                <p class="description"><?php esc_html_e( 'Embed this saved form variant using the shortcode.', 'anchor-schema' ); ?></p>
+            </div>
+
+            <!-- Analytics Override Section -->
+            <div class="ctm-box" style="border:1px solid #ddd;padding:12px;border-radius:8px;background:#fff;margin-bottom:12px">
+                <p>
+                    <label>
+                        <input type="checkbox" name="ctm_analytics_override" id="ctm_analytics_override" value="1" <?php checked( $analytics_override ); ?> />
+                        <strong><?php esc_html_e( 'Override Global Analytics Settings', 'anchor-schema' ); ?></strong>
+                    </label>
+                </p>
+                <p class="description"><?php esc_html_e( 'Check to use custom tracking settings for this form instead of the global defaults.', 'anchor-schema' ); ?></p>
+
+                <div id="ctm-analytics-fields" style="<?php echo $analytics_override ? '' : 'display:none;'; ?>margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
+                    <table class="form-table" style="margin:0;">
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;width:180px;"><?php esc_html_e( 'GA4 Event Name', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[ga4_event]" value="<?php echo esc_attr( $analytics['ga4_event'] ); ?>" class="regular-text" />
+                                <p class="description"><?php esc_html_e( 'Leave blank to disable GA4 tracking for this form.', 'anchor-schema' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'GA4 Parameters', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[ga4_params]" value="<?php echo esc_attr( $analytics['ga4_params'] ); ?>" class="large-text" />
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Google Ads Conversion', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[gads_conversion]" value="<?php echo esc_attr( $analytics['gads_conversion'] ); ?>" class="regular-text" />
+                                <p class="description"><?php esc_html_e( 'e.g., AW-123456789/AbCdEf', 'anchor-schema' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Facebook Pixel Event', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[fb_event]" value="<?php echo esc_attr( $analytics['fb_event'] ); ?>" class="regular-text" />
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Facebook Parameters', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[fb_params]" value="<?php echo esc_attr( $analytics['fb_params'] ); ?>" class="large-text" />
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'TikTok Pixel Event', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[tiktok_event]" value="<?php echo esc_attr( $analytics['tiktok_event'] ); ?>" class="regular-text" />
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'TikTok Parameters', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[tiktok_params]" value="<?php echo esc_attr( $analytics['tiktok_params'] ); ?>" class="large-text" />
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Bing UET Event', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[bing_event]" value="<?php echo esc_attr( $analytics['bing_event'] ); ?>" class="regular-text" />
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row" style="padding:8px 10px 8px 0;"><?php esc_html_e( 'Bing Parameters', 'anchor-schema' ); ?></th>
+                            <td style="padding:8px 0;">
+                                <input type="text" name="ctm_analytics[bing_params]" value="<?php echo esc_attr( $analytics['bing_params'] ); ?>" class="large-text" />
+                            </td>
+                        </tr>
+                    </table>
+                </div>
             </div>
         </div>
 
         <script>
+        /* Builder reactor warning toggle */
         (function(){
-            const genBtn = document.getElementById('ctm-generate');
-            const sel = document.getElementById('ctm_reactor_id');
-            const ta = document.getElementById('ctm_form_html');
-            const copy = document.getElementById('ctm-copy-sc');
-            const scfld = document.getElementById('ctm-shortcode-field');
-
-            genBtn?.addEventListener('click', async () => {
-                const id = sel.value;
-                if (!id) { alert('Please choose a reactor first.'); return; }
-                const floatingLabels = document.getElementById('ctm_floating_labels')?.checked ? '1' : '0';
-                const fd = new FormData();
-                fd.append('action', 'anchor_ctm_generate');
-                fd.append('<?php echo esc_js( self::NONCE_NAME ); ?>', '<?php echo esc_js( wp_create_nonce( self::NONCE_ACTION ) ); ?>');
-                fd.append('reactor_id', id);
-                fd.append('floating_labels', floatingLabels);
-                const res = await fetch(ajaxurl, { method: 'POST', body: fd });
-                const data = await res.json();
-                if (data && data.success) {
-                    ta.value = data.data.html || '';
-                } else {
-                    alert((data && data.data) || 'Failed to generate form.');
-                }
-            });
-
-            copy?.addEventListener('click', () => {
-                scfld.select();
-                scfld.setSelectionRange(0, 99999);
-                document.execCommand('copy');
-                copy.textContent = 'Copied';
-                setTimeout(() => copy.textContent = 'Copy', 1200);
-            });
-
-            // Toggle analytics override fields
-            const overrideChk = document.getElementById('ctm_analytics_override');
-            const analyticsFields = document.getElementById('ctm-analytics-fields');
-            overrideChk?.addEventListener('change', () => {
-                analyticsFields.style.display = overrideChk.checked ? '' : 'none';
-            });
-
-            // Toggle multi-step title page fields + instructions
-            var msChk = document.getElementById('ctm_multi_step');
-            var tpChk = document.getElementById('ctm_title_page');
-            var tpLabel = document.getElementById('ctm-title-page-label');
-            var tpFields = document.getElementById('ctm-title-page-fields');
-            var msInstructions = document.getElementById('ctm-ms-instructions');
-            function toggleTitleFields() {
-                tpLabel.style.display = msChk.checked ? '' : 'none';
-                tpFields.style.display = (msChk.checked && tpChk.checked) ? '' : 'none';
-                msInstructions.style.display = msChk.checked ? '' : 'none';
+            var sel = document.getElementById('ctm_builder_reactor_id');
+            var warn = document.getElementById('ctm-builder-no-reactor');
+            if (sel && warn) {
+                sel.addEventListener('change', function(){ warn.style.display = sel.value ? 'none' : ''; });
             }
-            msChk?.addEventListener('change', toggleTitleFields);
-            tpChk?.addEventListener('change', toggleTitleFields);
-            toggleTitleFields();
         })();
         </script>
         <?php
@@ -722,14 +793,74 @@ class Anchor_CTM_Forms_Module {
             return;
         }
 
-        if ( isset( $_POST['ctm_form_html'] ) ) {
-            update_post_meta( $post_id, '_ctm_form_html', wp_unslash( $_POST['ctm_form_html'] ) );
-        }
-        if ( isset( $_POST['ctm_reactor_id'] ) ) {
-            update_post_meta( $post_id, '_ctm_reactor_id', sanitize_text_field( $_POST['ctm_reactor_id'] ) );
+        // Save form mode
+        $mode = isset( $_POST['ctm_form_mode'] ) ? sanitize_text_field( $_POST['ctm_form_mode'] ) : 'reactor';
+        update_post_meta( $post_id, '_ctm_form_mode', $mode );
+
+        if ( $mode === 'builder' ) {
+            // ── Builder mode ──
+            // Save config JSON
+            if ( isset( $_POST['ctm_form_config'] ) ) {
+                $raw_config = wp_unslash( $_POST['ctm_form_config'] );
+                update_post_meta( $post_id, '_ctm_form_config', $raw_config );
+
+                // Render config → HTML and store in _ctm_form_html
+                $config = json_decode( $raw_config, true );
+                if ( is_array( $config ) ) {
+                    $rendered_html = $this->render_config_to_html( $config );
+                    update_post_meta( $post_id, '_ctm_form_html', $rendered_html );
+
+                    // Set multi-step meta from builder config
+                    $settings = $config['settings'] ?? [];
+                    update_post_meta( $post_id, '_ctm_multi_step', ! empty( $settings['multiStep'] ) ? 1 : 0 );
+                    update_post_meta( $post_id, '_ctm_title_page', ! empty( $settings['titlePage']['enabled'] ) ? 1 : 0 );
+                    if ( ! empty( $settings['titlePage'] ) ) {
+                        update_post_meta( $post_id, '_ctm_title_heading', sanitize_text_field( $settings['titlePage']['heading'] ?? '' ) );
+                        update_post_meta( $post_id, '_ctm_title_desc', wp_kses_post( $settings['titlePage']['description'] ?? '' ) );
+                        $start = sanitize_text_field( $settings['titlePage']['buttonText'] ?? 'Get Started' );
+                        update_post_meta( $post_id, '_ctm_start_text', $start ?: 'Get Started' );
+                    }
+
+                    // Store success message from builder config
+                    if ( ! empty( $settings['successMessage'] ) ) {
+                        update_post_meta( $post_id, '_ctm_success_message', sanitize_text_field( $settings['successMessage'] ) );
+                    }
+                }
+            }
+
+            // Builder reactor ID
+            if ( isset( $_POST['ctm_builder_reactor_id'] ) ) {
+                $builder_reactor = sanitize_text_field( $_POST['ctm_builder_reactor_id'] );
+                update_post_meta( $post_id, '_ctm_builder_reactor_id', $builder_reactor );
+                // Also set as main reactor ID so frontend submission works
+                update_post_meta( $post_id, '_ctm_reactor_id', $builder_reactor );
+            }
+
+        } else {
+            // ── Reactor mode (existing behavior) ──
+            if ( isset( $_POST['ctm_form_html'] ) ) {
+                update_post_meta( $post_id, '_ctm_form_html', wp_unslash( $_POST['ctm_form_html'] ) );
+            }
+            if ( isset( $_POST['ctm_reactor_id'] ) ) {
+                update_post_meta( $post_id, '_ctm_reactor_id', sanitize_text_field( $_POST['ctm_reactor_id'] ) );
+            }
+
+            /* ── Multi-Step fields (reactor tab) ── */
+            update_post_meta( $post_id, '_ctm_multi_step', isset( $_POST['ctm_multi_step'] ) ? 1 : 0 );
+            update_post_meta( $post_id, '_ctm_title_page', isset( $_POST['ctm_title_page'] ) ? 1 : 0 );
+            if ( isset( $_POST['ctm_title_heading'] ) ) {
+                update_post_meta( $post_id, '_ctm_title_heading', sanitize_text_field( $_POST['ctm_title_heading'] ) );
+            }
+            if ( isset( $_POST['ctm_title_desc'] ) ) {
+                update_post_meta( $post_id, '_ctm_title_desc', wp_kses_post( wp_unslash( $_POST['ctm_title_desc'] ) ) );
+            }
+            if ( isset( $_POST['ctm_start_text'] ) ) {
+                $start = sanitize_text_field( $_POST['ctm_start_text'] );
+                update_post_meta( $post_id, '_ctm_start_text', $start ?: 'Get Started' );
+            }
         }
 
-        // Save analytics override setting
+        // Save analytics override setting (shared between modes)
         $override = isset( $_POST['ctm_analytics_override'] ) ? 1 : 0;
         update_post_meta( $post_id, '_ctm_analytics_override', $override );
 
@@ -741,20 +872,6 @@ class Anchor_CTM_Forms_Module {
                 $analytics[ $key ] = isset( $_POST['ctm_analytics'][ $key ] ) ? sanitize_text_field( $_POST['ctm_analytics'][ $key ] ) : '';
             }
             update_post_meta( $post_id, '_ctm_analytics', $analytics );
-        }
-
-        /* ── Multi-Step fields ── */
-        update_post_meta( $post_id, '_ctm_multi_step', isset( $_POST['ctm_multi_step'] ) ? 1 : 0 );
-        update_post_meta( $post_id, '_ctm_title_page', isset( $_POST['ctm_title_page'] ) ? 1 : 0 );
-        if ( isset( $_POST['ctm_title_heading'] ) ) {
-            update_post_meta( $post_id, '_ctm_title_heading', sanitize_text_field( $_POST['ctm_title_heading'] ) );
-        }
-        if ( isset( $_POST['ctm_title_desc'] ) ) {
-            update_post_meta( $post_id, '_ctm_title_desc', wp_kses_post( wp_unslash( $_POST['ctm_title_desc'] ) ) );
-        }
-        if ( isset( $_POST['ctm_start_text'] ) ) {
-            $start = sanitize_text_field( $_POST['ctm_start_text'] );
-            update_post_meta( $post_id, '_ctm_start_text', $start ?: 'Get Started' );
         }
     }
 
@@ -781,6 +898,304 @@ class Anchor_CTM_Forms_Module {
         wp_send_json_success( [ 'html' => $html ] );
     }
 
+    /* ========================= Builder: Config → HTML Renderer ========================= */
+    public function render_config_to_html( $config ) {
+        $settings = $config['settings'] ?? [];
+        $fields   = $config['fields'] ?? [];
+        if ( empty( $fields ) ) {
+            return '';
+        }
+
+        $label_style  = $settings['labelStyle'] ?? 'above';
+        $submit_text  = $settings['submitText'] ?? 'Submit';
+        $is_multi     = ! empty( $settings['multiStep'] );
+        $scoring      = $settings['scoring'] ?? [];
+        $scoring_on   = ! empty( $scoring['enabled'] );
+
+        // Core field names that should NOT get ctm-custom class
+        $core_names = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
+
+        // Group fields by step if multi-step
+        $steps = [];
+        if ( $is_multi ) {
+            foreach ( $fields as $f ) {
+                $s = (int) ( $f['step'] ?? 0 );
+                $steps[ $s ][] = $f;
+            }
+            ksort( $steps );
+        } else {
+            $steps[0] = $fields;
+        }
+
+        $html = "<form id=\"ctmForm\" novalidate>\n";
+
+        // Scoring data attribute on form if scoring enabled
+        if ( $scoring_on ) {
+            $scoring_data = wp_json_encode( [
+                'sendAs'    => $scoring['sendAs'] ?? 'custom_total_score',
+                'showTotal' => ! empty( $scoring['showTotal'] ),
+            ] );
+            $html = "<form id=\"ctmForm\" novalidate data-scoring='" . esc_attr( $scoring_data ) . "'>\n";
+        }
+
+        foreach ( $steps as $step_idx => $step_fields ) {
+            if ( $is_multi ) {
+                $html .= "  <div class=\"ctm-multi-step-item\">\n";
+            }
+
+            $html .= $this->render_fields_html( $step_fields, $label_style, $core_names, $scoring_on );
+
+            // Submit button in last step (or single step)
+            $step_keys = array_keys( $steps );
+            if ( $step_idx === end( $step_keys ) ) {
+                // Scoring display before submit
+                if ( $scoring_on ) {
+                    $show_total = ! empty( $scoring['showTotal'] );
+                    $total_label = esc_html( $scoring['totalLabel'] ?? 'Your Score' );
+                    $send_as = esc_attr( $scoring['sendAs'] ?? 'custom_total_score' );
+
+                    if ( $show_total ) {
+                        $html .= "    <div class=\"ctm-score-wrap\">\n";
+                        $html .= "      <span class=\"ctm-score-label\">{$total_label}:</span>\n";
+                        $html .= "      <span class=\"ctm-score-display\">0</span>\n";
+                        $html .= "    </div>\n";
+                    }
+                    $html .= "    <input type=\"hidden\" name=\"{$send_as}\" class=\"ctm-custom ctm-score-input\" value=\"0\" />\n";
+                }
+
+                $html .= "    <button type=\"submit\">" . esc_html( $submit_text ) . "</button>\n";
+            }
+
+            if ( $is_multi ) {
+                $html .= "  </div>\n";
+            }
+        }
+
+        $html .= "</form>";
+        return $html;
+    }
+
+    /**
+     * Render an array of field configs into HTML.
+     */
+    private function render_fields_html( $fields, $global_label_style, $core_names, $scoring_on ) {
+        $html = '';
+        $row_open = false;
+        $prev_width = 'full';
+
+        foreach ( $fields as $i => $f ) {
+            $type       = $f['type'] ?? 'text';
+            $label      = $f['label'] ?? '';
+            $name       = $f['name'] ?? '';
+            $placeholder = $f['placeholder'] ?? '';
+            $help_text  = $f['helpText'] ?? '';
+            $default    = $f['defaultValue'] ?? '';
+            $required   = ! empty( $f['required'] );
+            $is_custom  = isset( $f['isCustom'] ) ? (bool) $f['isCustom'] : ( ! in_array( $name, $core_names, true ) );
+            $width      = $f['width'] ?? 'full';
+            $css_class  = $f['cssClass'] ?? '';
+            $field_id   = $f['id'] ?? '';
+
+            // Determine label style for this field
+            $ls = ( $f['labelStyle'] ?? 'inherit' ) === 'inherit' ? $global_label_style : $f['labelStyle'];
+
+            // Conditions
+            $conditions  = $f['conditions'] ?? [];
+            $cond_logic  = $f['conditionLogic'] ?? 'all';
+            $has_conds   = ! empty( $conditions ) && ! empty( $conditions[0]['field'] );
+
+            // Condition data attributes
+            $cond_attrs = '';
+            if ( $has_conds ) {
+                $cond_attrs .= ' data-conditions="' . esc_attr( wp_json_encode( $conditions ) ) . '"';
+                $cond_attrs .= ' data-condition-logic="' . esc_attr( $cond_logic ) . '"';
+                $cond_attrs .= ' style="display:none;"';
+            }
+
+            // Field ID attribute
+            $fid_attr = $field_id ? ' data-field-id="' . esc_attr( $field_id ) . '"' : '';
+
+            // Column layout: wrap adjacent non-full fields in ctm-row
+            $width_class = 'ctm-col-' . $width;
+
+            if ( $width !== 'full' ) {
+                if ( ! $row_open ) {
+                    $html .= "    <div class=\"ctm-row\">\n";
+                    $row_open = true;
+                }
+            } else {
+                if ( $row_open ) {
+                    $html .= "    </div>\n";
+                    $row_open = false;
+                }
+            }
+
+            $wrapper_class = $width_class;
+            if ( $css_class ) {
+                $wrapper_class .= ' ' . $css_class;
+            }
+
+            // Layout elements
+            if ( $type === 'heading' ) {
+                $html .= "    <div class=\"{$wrapper_class}\"{$fid_attr}{$cond_attrs}><h3>" . esc_html( $label ) . "</h3></div>\n";
+                continue;
+            }
+            if ( $type === 'paragraph' ) {
+                $html .= "    <div class=\"{$wrapper_class}\"{$fid_attr}{$cond_attrs}><p>" . esc_html( $label ) . "</p></div>\n";
+                continue;
+            }
+            if ( $type === 'divider' ) {
+                $html .= "    <div class=\"{$wrapper_class}\"{$fid_attr}{$cond_attrs}><hr /></div>\n";
+                continue;
+            }
+
+            // Hidden field
+            if ( $type === 'hidden' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                $html .= "    <input type=\"hidden\" name=\"" . esc_attr( $name ) . "\" value=\"" . esc_attr( $default ) . "\"{$cls}{$fid_attr} />\n";
+                continue;
+            }
+
+            $req_attr = $required ? ' required' : '';
+            $ph_attr = $placeholder ? ' placeholder="' . esc_attr( $placeholder ) . '"' : '';
+            $val_attr = $default !== '' ? ' value="' . esc_attr( $default ) . '"' : '';
+
+            // Use floating labels?
+            $use_floating = ( $ls === 'floating' ) && in_array( $type, [ 'text', 'email', 'tel', 'number', 'url', 'textarea' ], true );
+            $hide_label = ( $ls === 'hidden' );
+
+            // Options for select/checkbox/radio
+            $options = $f['options'] ?? [];
+
+            // Wrapper open
+            $html .= "    <div class=\"{$wrapper_class}\"{$fid_attr}{$cond_attrs}>\n";
+
+            if ( $use_floating ) {
+                $input_cls = $is_custom ? 'ctm-custom input-field' : 'input-field';
+                $html .= "      <div class=\"input\">\n";
+                if ( $type === 'textarea' ) {
+                    $html .= "        <textarea name=\"" . esc_attr( $name ) . "\" class=\"{$input_cls}\"{$req_attr}{$ph_attr}>" . esc_textarea( $default ) . "</textarea>\n";
+                } else {
+                    $num_attrs = '';
+                    if ( $type === 'number' ) {
+                        if ( isset( $f['min'] ) && $f['min'] !== null && $f['min'] !== '' ) $num_attrs .= ' min="' . esc_attr( $f['min'] ) . '"';
+                        if ( isset( $f['max'] ) && $f['max'] !== null && $f['max'] !== '' ) $num_attrs .= ' max="' . esc_attr( $f['max'] ) . '"';
+                        if ( isset( $f['numStep'] ) && $f['numStep'] !== null && $f['numStep'] !== '' ) $num_attrs .= ' step="' . esc_attr( $f['numStep'] ) . '"';
+                    }
+                    $html .= "        <input class=\"{$input_cls}\" type=\"" . esc_attr( $type ) . "\" name=\"" . esc_attr( $name ) . "\"{$req_attr}{$ph_attr}{$val_attr}{$num_attrs} />\n";
+                }
+                $html .= "        <label class=\"input-label\">" . esc_html( $label ) . "</label>\n";
+                $html .= "      </div>\n";
+
+            } elseif ( $type === 'select' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                if ( ! $hide_label ) {
+                    $html .= "      <label>" . esc_html( $label ) . "\n";
+                }
+                $html .= "      <select name=\"" . esc_attr( $name ) . "\"{$cls}{$req_attr}>\n";
+                $html .= "        <option value=\"\">&mdash; Select &mdash;</option>\n";
+                foreach ( $options as $opt ) {
+                    $score_attr = $scoring_on && ! empty( $opt['score'] ) ? ' data-score="' . esc_attr( $opt['score'] ) . '"' : '';
+                    $html .= "        <option value=\"" . esc_attr( $opt['value'] ?? '' ) . "\"{$score_attr}>" . esc_html( $opt['label'] ?? '' ) . "</option>\n";
+                }
+                $html .= "      </select>\n";
+                if ( ! $hide_label ) {
+                    $html .= "      </label>\n";
+                }
+
+            } elseif ( $type === 'checkbox' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                $html .= "      <fieldset>\n";
+                if ( ! $hide_label ) {
+                    $html .= "        <legend>" . esc_html( $label ) . "</legend>\n";
+                }
+                foreach ( $options as $opt ) {
+                    $score_attr = $scoring_on && ! empty( $opt['score'] ) ? ' data-score="' . esc_attr( $opt['score'] ) . '"' : '';
+                    $html .= "        <label><input type=\"checkbox\" name=\"" . esc_attr( $name ) . "[]\" value=\"" . esc_attr( $opt['value'] ?? '' ) . "\"{$cls}{$score_attr} /> " . esc_html( $opt['label'] ?? '' ) . "</label>\n";
+                }
+                $html .= "      </fieldset>\n";
+
+            } elseif ( $type === 'radio' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                $html .= "      <fieldset>\n";
+                if ( ! $hide_label ) {
+                    $html .= "        <legend>" . esc_html( $label ) . "</legend>\n";
+                }
+                foreach ( $options as $opt ) {
+                    $score_attr = $scoring_on && ! empty( $opt['score'] ) ? ' data-score="' . esc_attr( $opt['score'] ) . '"' : '';
+                    $html .= "        <label><input type=\"radio\" name=\"" . esc_attr( $name ) . "\" value=\"" . esc_attr( $opt['value'] ?? '' ) . "\"{$cls}{$req_attr}{$score_attr} /> " . esc_html( $opt['label'] ?? '' ) . "</label>\n";
+                }
+                $html .= "      </fieldset>\n";
+
+            } elseif ( $type === 'textarea' ) {
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                if ( ! $hide_label ) {
+                    $html .= "      <label>" . esc_html( $label ) . "\n";
+                }
+                $html .= "      <textarea name=\"" . esc_attr( $name ) . "\"{$cls}{$req_attr}{$ph_attr}>" . esc_textarea( $default ) . "</textarea>\n";
+                if ( ! $hide_label ) {
+                    $html .= "      </label>\n";
+                }
+
+            } else {
+                // text, email, tel, number, url
+                $cls = $is_custom ? ' class="ctm-custom"' : '';
+                $num_attrs = '';
+                if ( $type === 'number' ) {
+                    if ( isset( $f['min'] ) && $f['min'] !== null && $f['min'] !== '' ) $num_attrs .= ' min="' . esc_attr( $f['min'] ) . '"';
+                    if ( isset( $f['max'] ) && $f['max'] !== null && $f['max'] !== '' ) $num_attrs .= ' max="' . esc_attr( $f['max'] ) . '"';
+                    if ( isset( $f['numStep'] ) && $f['numStep'] !== null && $f['numStep'] !== '' ) $num_attrs .= ' step="' . esc_attr( $f['numStep'] ) . '"';
+                }
+                if ( ! $hide_label ) {
+                    $html .= "      <label>" . esc_html( $label ) . "\n";
+                }
+                $html .= "      <input type=\"" . esc_attr( $type ) . "\" name=\"" . esc_attr( $name ) . "\"{$cls}{$req_attr}{$ph_attr}{$val_attr}{$num_attrs} />\n";
+                if ( ! $hide_label ) {
+                    $html .= "      </label>\n";
+                }
+            }
+
+            // Help text
+            if ( $help_text ) {
+                $html .= "      <small class=\"ctm-help-text\">" . esc_html( $help_text ) . "</small>\n";
+            }
+
+            // Wrapper close
+            $html .= "    </div>\n";
+
+            // Close row if next field is full width or end of fields
+            $next = $fields[ $i + 1 ] ?? null;
+            if ( $row_open && ( ! $next || ( $next['width'] ?? 'full' ) === 'full' ) ) {
+                $html .= "    </div>\n";
+                $row_open = false;
+            }
+        }
+
+        // Close any open row
+        if ( $row_open ) {
+            $html .= "    </div>\n";
+        }
+
+        return $html;
+    }
+
+    /* ========================= AJAX: Builder Preview ========================= */
+    public function ajax_builder_preview() {
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_send_json_error( 'Unauthorized' );
+        }
+        check_ajax_referer( self::NONCE_ACTION, self::NONCE_NAME );
+
+        $raw = isset( $_POST['config'] ) ? wp_unslash( $_POST['config'] ) : '';
+        $config = json_decode( $raw, true );
+        if ( ! is_array( $config ) ) {
+            wp_send_json_error( 'Invalid config' );
+        }
+
+        $html = $this->render_config_to_html( $config );
+        wp_send_json_success( [ 'html' => $html ] );
+    }
+
     /* ========================= Shortcode ========================= */
     public function render_form_shortcode( $atts ) {
         $atts = shortcode_atts( [ 'id' => 0 ], $atts );
@@ -796,11 +1211,24 @@ class Anchor_CTM_Forms_Module {
         }
 
         $is_multi_step = (bool) get_post_meta( $post_id, '_ctm_multi_step', true );
+        $form_mode     = get_post_meta( $post_id, '_ctm_form_mode', true ) ?: 'reactor';
         $ajax_url      = admin_url( 'admin-ajax.php' );
         $nonce         = wp_create_nonce( self::NONCE_ACTION );
 
         // Get analytics settings for this form
         $analytics = $this->get_form_analytics( $post_id );
+
+        // Enqueue form-logic assets if builder mode (conditionals + scoring + column layout)
+        if ( $form_mode === 'builder' ) {
+            wp_enqueue_style( 'ctm-form-logic' );
+            wp_enqueue_script( 'ctm-form-logic' );
+        }
+
+        // Success message (builder mode stores custom message, reactor mode uses default)
+        $success_message = get_post_meta( $post_id, '_ctm_success_message', true );
+        if ( ! $success_message ) {
+            $success_message = "Thanks! We'll be in touch shortly.";
+        }
 
         // If multi-step: enqueue assets, add class to the <form> tag
         if ( $is_multi_step ) {
@@ -846,7 +1274,8 @@ class Anchor_CTM_Forms_Module {
                 nonce: <?php echo wp_json_encode( $nonce ); ?>,
                 variantId: <?php echo wp_json_encode( $post_id ); ?>,
                 reactorId: <?php echo wp_json_encode( $reactor_id ); ?>,
-                analytics: <?php echo wp_json_encode( $analytics ); ?>
+                analytics: <?php echo wp_json_encode( $analytics ); ?>,
+                successMessage: <?php echo wp_json_encode( $success_message ); ?>
             };
 
             // Fire analytics tracking events on successful submission
@@ -984,7 +1413,7 @@ class Anchor_CTM_Forms_Module {
                         })();
 
                         if (data && data.success) {
-                            msg.textContent = 'Thanks! We\'ll be in touch shortly.';
+                            msg.textContent = CFG.successMessage;
                             msg.style.color = '#00a32a';
                             try { form.reset(); } catch(e) {}
 

@@ -1,0 +1,60 @@
+/* ══════════════════════════════════════════════════
+   CTM Form Logic — Frontend Styles
+   Column layout + conditional field transitions
+   ══════════════════════════════════════════════════ */
+
+/* ── Column layout ── */
+.ctm-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.ctm-col-full   { width: 100%; }
+.ctm-col-half   { width: calc(50% - 8px); }
+.ctm-col-third  { width: calc(33.333% - 11px); }
+.ctm-col-quarter { width: calc(25% - 12px); }
+
+/* ── Conditional field transitions ── */
+[data-conditions] {
+    transition: opacity .25s ease, max-height .3s ease;
+}
+
+/* ── Help text ── */
+.ctm-help-text {
+    display: block;
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+}
+
+/* ── Score display ── */
+.ctm-score-wrap {
+    padding: 12px 16px;
+    margin: 12px 0;
+    background: #f8f9fa;
+    border: 1px solid #e2e4e7;
+    border-radius: 6px;
+    text-align: center;
+}
+
+.ctm-score-label {
+    font-size: 14px;
+    color: #555;
+    margin-right: 8px;
+}
+
+.ctm-score-display {
+    font-size: 24px;
+    font-weight: 700;
+    color: #1b3a4b;
+}
+
+/* ── Responsive: stack columns on mobile ── */
+@media (max-width: 600px) {
+    .ctm-col-half,
+    .ctm-col-third,
+    .ctm-col-quarter {
+        width: 100%;
+    }
+}

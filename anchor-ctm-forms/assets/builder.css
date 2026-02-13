@@ -1,0 +1,702 @@
+/* ══════════════════════════════════════════════════
+   CTM Form Builder — Admin Styles
+   Plugin: Anchor CTM Forms
+   ══════════════════════════════════════════════════ */
+
+/* ── Tab bar ── */
+.ctm-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid #ddd;
+    margin: -12px -12px 16px;
+    padding: 0 12px;
+}
+
+.ctm-tab-btn {
+    padding: 10px 20px;
+    border: none;
+    background: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: #646970;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: color .2s, border-color .2s;
+}
+
+.ctm-tab-btn:hover {
+    color: #1d2327;
+}
+
+.ctm-tab-btn.active {
+    color: #2271b1;
+    border-bottom-color: #2271b1;
+}
+
+.ctm-tab-panel {
+    display: none;
+}
+
+.ctm-tab-panel.active {
+    display: block;
+}
+
+/* ── Field palette ── */
+.ctm-builder-palette {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 16px;
+    padding: 12px;
+    background: #f6f7f7;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+}
+
+.ctm-builder-palette .palette-group-label {
+    width: 100%;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: #646970;
+    margin: 4px 0 2px;
+}
+
+.ctm-builder-palette .palette-group-label:first-child {
+    margin-top: 0;
+}
+
+.ctm-palette-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    background: #fff;
+    font-size: 12px;
+    color: #1d2327;
+    cursor: pointer;
+    transition: border-color .2s, box-shadow .2s;
+    line-height: 1.4;
+}
+
+.ctm-palette-btn:hover {
+    border-color: #2271b1;
+    box-shadow: 0 0 0 1px #2271b1;
+    color: #2271b1;
+}
+
+.ctm-palette-btn .dashicons {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+    line-height: 14px;
+}
+
+/* ── Field canvas ── */
+#ctm-field-canvas {
+    min-height: 60px;
+    border: 1px dashed #c3c4c7;
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 16px;
+    background: #fff;
+}
+
+#ctm-field-canvas.empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+    color: #a7aaad;
+    font-style: italic;
+}
+
+/* ── Sortable placeholder ── */
+#ctm-field-canvas .ui-sortable-placeholder {
+    height: 42px;
+    border: 2px dashed #2271b1;
+    border-radius: 4px;
+    background: #f0f6fc;
+    margin-bottom: 4px;
+    visibility: visible !important;
+}
+
+/* ── Field row ── */
+.ctm-field-row {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fff;
+    margin-bottom: 4px;
+    transition: box-shadow .2s;
+}
+
+.ctm-field-row:hover {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .08);
+}
+
+.ctm-field-row.ui-sortable-helper {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, .15);
+}
+
+.ctm-field-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    cursor: default;
+}
+
+.ctm-drag-handle {
+    cursor: grab;
+    color: #a7aaad;
+    font-size: 16px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.ctm-drag-handle:active {
+    cursor: grabbing;
+}
+
+.ctm-drag-handle .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+}
+
+.ctm-field-type-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+    background: #e7e8ea;
+    color: #646970;
+    flex-shrink: 0;
+}
+
+.ctm-field-label-text {
+    font-weight: 500;
+    color: #1d2327;
+    font-size: 13px;
+    flex-shrink: 0;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ctm-field-name-text {
+    color: #a7aaad;
+    font-size: 11px;
+    font-family: monospace;
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ctm-field-badges {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.ctm-badge {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.ctm-badge-width {
+    background: #e7f5fe;
+    color: #2271b1;
+}
+
+.ctm-badge-required {
+    background: #fcf0f1;
+    color: #d63638;
+}
+
+.ctm-badge-step {
+    background: #f0f6e8;
+    color: #4a7c21;
+}
+
+.ctm-badge-conditions {
+    background: #fef8ee;
+    color: #996800;
+}
+
+.ctm-badge-custom {
+    background: #f0e6fa;
+    color: #7c3aed;
+}
+
+.ctm-field-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.ctm-field-actions button {
+    border: none;
+    background: none;
+    padding: 4px;
+    cursor: pointer;
+    color: #a7aaad;
+    border-radius: 3px;
+    transition: color .15s, background .15s;
+    line-height: 1;
+}
+
+.ctm-field-actions button:hover {
+    color: #1d2327;
+    background: #f0f0f1;
+}
+
+.ctm-field-actions button.ctm-btn-delete:hover {
+    color: #d63638;
+    background: #fcf0f1;
+}
+
+.ctm-field-actions .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+}
+
+/* ── Field settings panel (accordion) ── */
+.ctm-field-settings {
+    display: none;
+    padding: 12px;
+    border-top: 1px solid #eee;
+    background: #fafafa;
+}
+
+.ctm-field-row.expanded .ctm-field-settings {
+    display: block;
+}
+
+.ctm-field-settings .settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+}
+
+.ctm-field-settings .settings-grid .full-width {
+    grid-column: 1 / -1;
+}
+
+.ctm-field-settings label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: #1d2327;
+    margin-bottom: 3px;
+}
+
+.ctm-field-settings input[type="text"],
+.ctm-field-settings input[type="number"],
+.ctm-field-settings select,
+.ctm-field-settings textarea {
+    width: 100%;
+    padding: 4px 8px;
+    border: 1px solid #c3c4c7;
+    border-radius: 3px;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.ctm-field-settings textarea {
+    min-height: 48px;
+    resize: vertical;
+}
+
+.ctm-field-settings .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 4px;
+}
+
+.ctm-field-settings .checkbox-row input[type="checkbox"] {
+    margin: 0;
+}
+
+.ctm-field-settings .checkbox-row label {
+    margin-bottom: 0;
+    font-weight: 400;
+}
+
+.ctm-field-settings .settings-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: #646970;
+    margin: 12px 0 6px;
+    padding-top: 10px;
+    border-top: 1px solid #eee;
+    grid-column: 1 / -1;
+}
+
+.ctm-field-settings .settings-section-title:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
+/* ── Options editor (select/radio/checkbox) ── */
+.ctm-options-editor {
+    grid-column: 1 / -1;
+}
+
+.ctm-options-list {
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    background: #fff;
+}
+
+.ctm-option-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-bottom: 1px solid #f0f0f1;
+}
+
+.ctm-option-row:last-child {
+    border-bottom: none;
+}
+
+.ctm-option-row .opt-drag {
+    cursor: grab;
+    color: #c3c4c7;
+    flex-shrink: 0;
+}
+
+.ctm-option-row .opt-drag:active {
+    cursor: grabbing;
+}
+
+.ctm-option-row input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    padding: 3px 6px;
+    font-size: 12px;
+}
+
+.ctm-option-row input[type="number"] {
+    width: 60px;
+    flex-shrink: 0;
+    padding: 3px 6px;
+    font-size: 12px;
+}
+
+.ctm-option-row .opt-remove {
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: #a7aaad;
+    padding: 2px;
+    line-height: 1;
+}
+
+.ctm-option-row .opt-remove:hover {
+    color: #d63638;
+}
+
+.ctm-add-option {
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+}
+
+/* ── Conditions editor ── */
+.ctm-conditions-editor {
+    grid-column: 1 / -1;
+    margin-top: 4px;
+}
+
+.ctm-conditions-toggle {
+    margin-bottom: 8px;
+}
+
+.ctm-conditions-panel {
+    padding: 10px;
+    border: 1px solid #e2e4e7;
+    border-radius: 4px;
+    background: #fff;
+}
+
+.ctm-condition-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}
+
+.ctm-condition-row select {
+    flex: 1;
+    min-width: 100px;
+}
+
+.ctm-condition-row input[type="text"] {
+    flex: 1;
+    min-width: 80px;
+}
+
+.ctm-condition-row .cond-remove {
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: #a7aaad;
+    padding: 2px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.ctm-condition-row .cond-remove:hover {
+    color: #d63638;
+}
+
+.ctm-conditions-logic {
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+
+.ctm-conditions-logic select {
+    width: auto;
+    margin: 0 4px;
+}
+
+.ctm-add-condition {
+    font-size: 12px;
+    padding: 4px 10px;
+    margin-top: 4px;
+    cursor: pointer;
+}
+
+/* ── Multi-step controls ── */
+.ctm-multistep-controls {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border: 1px solid #c3d9e0;
+    border-radius: 6px;
+    background: #f0f6f8;
+}
+
+.ctm-step-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #c3d9e0;
+}
+
+.ctm-step-tab {
+    padding: 6px 14px;
+    border: none;
+    background: none;
+    font-size: 12px;
+    font-weight: 500;
+    color: #646970;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color .15s, border-color .15s;
+}
+
+.ctm-step-tab:hover {
+    color: #1d2327;
+}
+
+.ctm-step-tab.active {
+    color: #1b3a4b;
+    border-bottom-color: #1b3a4b;
+    font-weight: 600;
+}
+
+.ctm-step-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.ctm-step-actions button {
+    font-size: 12px;
+    padding: 3px 10px;
+    cursor: pointer;
+}
+
+/* ── Form settings section ── */
+.ctm-builder-settings {
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fafafa;
+    margin-bottom: 16px;
+}
+
+.ctm-builder-settings h4 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: #1d2327;
+}
+
+.ctm-builder-settings .settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+}
+
+.ctm-builder-settings .settings-grid .full-width {
+    grid-column: 1 / -1;
+}
+
+.ctm-builder-settings label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: #1d2327;
+    margin-bottom: 3px;
+}
+
+.ctm-builder-settings input[type="text"],
+.ctm-builder-settings select,
+.ctm-builder-settings textarea {
+    width: 100%;
+    padding: 4px 8px;
+    border: 1px solid #c3c4c7;
+    border-radius: 3px;
+    font-size: 12px;
+}
+
+.ctm-builder-settings .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ctm-builder-settings .checkbox-row input[type="checkbox"] {
+    margin: 0;
+}
+
+.ctm-builder-settings .checkbox-row label {
+    margin-bottom: 0;
+    font-weight: 400;
+}
+
+/* ── Scoring section within settings ── */
+.ctm-scoring-settings {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #ddd;
+}
+
+.ctm-scoring-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+    margin-top: 8px;
+}
+
+/* ── Title page settings ── */
+.ctm-titlepage-settings {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #ddd;
+}
+
+.ctm-titlepage-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 16px;
+    margin-top: 8px;
+}
+
+.ctm-titlepage-fields .full-width {
+    grid-column: 1 / -1;
+}
+
+/* ── Preview area ── */
+.ctm-builder-preview {
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fff;
+}
+
+.ctm-builder-preview h4 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: #1d2327;
+}
+
+.ctm-builder-preview-frame {
+    padding: 20px;
+    border: 1px solid #eee;
+    border-radius: 4px;
+    background: #fafafa;
+    min-height: 80px;
+    max-height: 500px;
+    overflow: auto;
+}
+
+.ctm-builder-preview-frame.loading {
+    opacity: .5;
+    pointer-events: none;
+}
+
+.ctm-builder-preview-frame .ctm-preview-empty {
+    text-align: center;
+    color: #a7aaad;
+    font-style: italic;
+    padding: 20px;
+}
+
+/* ── Warning banner ── */
+.ctm-builder-warning {
+    padding: 8px 12px;
+    border-left: 4px solid #dba617;
+    background: #fef8ee;
+    color: #996800;
+    font-size: 12px;
+    margin-bottom: 12px;
+    border-radius: 0 4px 4px 0;
+}
+
+/* ── Builder reactor dropdown (within builder tab) ── */
+.ctm-builder-reactor {
+    margin-bottom: 16px;
+}
+
+.ctm-builder-reactor select {
+    width: 100%;
+}
+
+/* ── Shared analytics box spacing ── */
+.ctm-shared-section {
+    margin-top: 12px;
+}
+
+/* ── Score column in options editor ── */
+.ctm-option-row .opt-score-label {
+    font-size: 10px;
+    color: #646970;
+    flex-shrink: 0;
+}

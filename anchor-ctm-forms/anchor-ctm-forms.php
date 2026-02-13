@@ -27,6 +27,16 @@ class Anchor_CTM_Forms_Module {
         add_action( 'wp_ajax_anchor_ctm_generate', [ $this, 'ajax_generate_starter' ] );
         add_action( 'wp_ajax_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
         add_action( 'wp_ajax_nopriv_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
+
+        /* ── Multi-Step: frontend asset registration ── */
+        add_action( 'wp_enqueue_scripts', [ $this, 'register_frontend_assets' ] );
+    }
+
+    /* ========================= Multi-Step: Register Frontend Assets ========================= */
+    public function register_frontend_assets() {
+        $base = plugin_dir_url( __FILE__ ) . 'assets/';
+        wp_register_style( 'ctm-multi-step', $base . 'multi-step.css', [], '1.0.0' );
+        wp_register_script( 'ctm-multi-step', $base . 'multi-step.js', [], '1.0.0', true );
     }
 
     /* ========================= Settings ========================= */
@@ -307,11 +317,12 @@ class Anchor_CTM_Forms_Module {
         return $body;
     }
 
-    /* ========================= Metabox (builder) ========================= */
+    /* ========================= Metaboxes ========================= */
     public function add_variant_metabox() {
         add_meta_box( 'anchor_ctm_variant', __( 'CTM Form Builder', 'anchor-schema' ), [ $this, 'variant_metabox_cb' ], 'ctm_form_variant', 'normal', 'high' );
     }
 
+    /* ========================= Metabox: Form Builder ========================= */
     public function variant_metabox_cb( $post ) {
         $reactor_id = get_post_meta( $post->ID, '_ctm_reactor_id', true );
         $html = get_post_meta( $post->ID, '_ctm_form_html', true );
@@ -320,6 +331,10 @@ class Anchor_CTM_Forms_Module {
         // Get per-form analytics overrides
         $analytics_override = get_post_meta( $post->ID, '_ctm_analytics_override', true ) ? true : false;
         $analytics = $this->get_form_analytics( $post->ID );
+
+        // Multi-step meta
+        $ms_enabled = get_post_meta( $post->ID, '_ctm_multi_step', true );
+        $tp_enabled = get_post_meta( $post->ID, '_ctm_title_page', true );
 
         wp_nonce_field( self::NONCE_ACTION, self::NONCE_NAME );
         ?>
@@ -335,13 +350,55 @@ class Anchor_CTM_Forms_Module {
                 </select>
             </label></p>
 
-            <p style="display:flex;align-items:center;gap:12px;">
+            <p style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                 <button type="button" class="button" id="ctm-generate"><?php esc_html_e( 'Generate Starter Form', 'anchor-schema' ); ?></button>
                 <label style="display:inline-flex;align-items:center;gap:4px;">
                     <input type="checkbox" id="ctm_floating_labels" value="1" />
                     <?php esc_html_e( 'Floating labels', 'anchor-schema' ); ?>
                 </label>
+                <label style="display:inline-flex;align-items:center;gap:4px;">
+                    <input type="checkbox" name="ctm_multi_step" id="ctm_multi_step" value="1" <?php checked( $ms_enabled ); ?> />
+                    <?php esc_html_e( 'Multi-Step Form', 'anchor-schema' ); ?>
+                </label>
+                <label style="display:inline-flex;align-items:center;gap:4px;" id="ctm-title-page-label">
+                    <input type="checkbox" name="ctm_title_page" id="ctm_title_page" value="1" <?php checked( $tp_enabled ); ?> />
+                    <?php esc_html_e( 'Add Title Page?', 'anchor-schema' ); ?>
+                </label>
             </p>
+
+            <?php $tp_visible = $ms_enabled && $tp_enabled; ?>
+            <div id="ctm-title-page-fields" style="<?php echo $tp_visible ? '' : 'display:none;'; ?>margin-top:8px;padding:12px;border:1px solid #eee;border-radius:6px;background:#fafafa;">
+                <p><label><?php esc_html_e( 'Title Page Heading', 'anchor-schema' ); ?><br>
+                    <input type="text" name="ctm_title_heading" value="<?php echo esc_attr( get_post_meta( $post->ID, '_ctm_title_heading', true ) ); ?>" class="large-text" placeholder="e.g. Welcome to Our Quiz" />
+                </label></p>
+                <p><label><?php esc_html_e( 'Title Page Description', 'anchor-schema' ); ?><br>
+                    <textarea name="ctm_title_desc" rows="3" class="large-text" placeholder="Brief description shown on the title page..."><?php echo esc_textarea( get_post_meta( $post->ID, '_ctm_title_desc', true ) ); ?></textarea>
+                </label></p>
+                <p><label><?php esc_html_e( 'Start Button Text', 'anchor-schema' ); ?><br>
+                    <input type="text" name="ctm_start_text" value="<?php echo esc_attr( get_post_meta( $post->ID, '_ctm_start_text', true ) ?: 'Get Started' ); ?>" class="regular-text" />
+                </label></p>
+            </div>
+
+            <div id="ctm-ms-instructions" style="<?php echo $ms_enabled ? '' : 'display:none;'; ?>margin-top:8px;padding:14px 16px;border:1px solid #c3d9e0;border-radius:6px;background:#f0f6f8;">
+                <p style="margin:0 0 8px;font-weight:600;color:#1b3a4b;"><?php esc_html_e( 'Multi-Step Setup', 'anchor-schema' ); ?></p>
+                <p style="margin:0 0 8px;color:#2c2c2c;"><?php esc_html_e( 'Wrap each group of fields in a step div. Each div becomes one step. The submit button must be inside the last step.', 'anchor-schema' ); ?></p>
+<pre style="margin:0;padding:10px 12px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:12px;line-height:1.5;overflow-x:auto;color:#23282d;">&lt;form id="ctmForm" novalidate&gt;
+
+  &lt;!-- Step 1 --&gt;
+  &lt;div class="ctm-multi-step-item"&gt;
+    &lt;label&gt;Name&lt;input type="text" name="caller_name"&gt;&lt;/label&gt;
+  &lt;/div&gt;
+
+  &lt;!-- Step 2 --&gt;
+  &lt;div class="ctm-multi-step-item"&gt;
+    &lt;label&gt;Phone&lt;input type="tel" name="phone_number" required&gt;&lt;/label&gt;
+    &lt;label&gt;Email&lt;input type="email" name="email"&gt;&lt;/label&gt;
+    &lt;button type="submit"&gt;Submit&lt;/button&gt;
+  &lt;/div&gt;
+
+&lt;/form&gt;</pre>
+                <p style="margin:8px 0 0;font-size:12px;color:#666;"><?php esc_html_e( 'Progress bar, step counter, and Back/Continue buttons are added automatically. The title page (if enabled) is injected before Step 1.', 'anchor-schema' ); ?></p>
+            </div>
 
             <p><label><strong><?php esc_html_e( 'Form HTML', 'anchor-schema' ); ?></strong></label></p>
             <p><textarea name="ctm_form_html" id="ctm_form_html" style="width:100%;height:420px" placeholder="<?php esc_attr_e( 'Starter HTML will appear here after you choose a reactor and click Generate.', 'anchor-schema' ); ?>"><?php echo esc_textarea( $html ); ?></textarea></p>
@@ -466,6 +523,21 @@ class Anchor_CTM_Forms_Module {
             overrideChk?.addEventListener('change', () => {
                 analyticsFields.style.display = overrideChk.checked ? '' : 'none';
             });
+
+            // Toggle multi-step title page fields + instructions
+            var msChk = document.getElementById('ctm_multi_step');
+            var tpChk = document.getElementById('ctm_title_page');
+            var tpLabel = document.getElementById('ctm-title-page-label');
+            var tpFields = document.getElementById('ctm-title-page-fields');
+            var msInstructions = document.getElementById('ctm-ms-instructions');
+            function toggleTitleFields() {
+                tpLabel.style.display = msChk.checked ? '' : 'none';
+                tpFields.style.display = (msChk.checked && tpChk.checked) ? '' : 'none';
+                msInstructions.style.display = msChk.checked ? '' : 'none';
+            }
+            msChk?.addEventListener('change', toggleTitleFields);
+            tpChk?.addEventListener('change', toggleTitleFields);
+            toggleTitleFields();
         })();
         </script>
         <?php
@@ -670,6 +742,20 @@ class Anchor_CTM_Forms_Module {
             }
             update_post_meta( $post_id, '_ctm_analytics', $analytics );
         }
+
+        /* ── Multi-Step fields ── */
+        update_post_meta( $post_id, '_ctm_multi_step', isset( $_POST['ctm_multi_step'] ) ? 1 : 0 );
+        update_post_meta( $post_id, '_ctm_title_page', isset( $_POST['ctm_title_page'] ) ? 1 : 0 );
+        if ( isset( $_POST['ctm_title_heading'] ) ) {
+            update_post_meta( $post_id, '_ctm_title_heading', sanitize_text_field( $_POST['ctm_title_heading'] ) );
+        }
+        if ( isset( $_POST['ctm_title_desc'] ) ) {
+            update_post_meta( $post_id, '_ctm_title_desc', wp_kses_post( wp_unslash( $_POST['ctm_title_desc'] ) ) );
+        }
+        if ( isset( $_POST['ctm_start_text'] ) ) {
+            $start = sanitize_text_field( $_POST['ctm_start_text'] );
+            update_post_meta( $post_id, '_ctm_start_text', $start ?: 'Get Started' );
+        }
     }
 
     /* ========================= AJAX: Generate starter ========================= */
@@ -709,11 +795,39 @@ class Anchor_CTM_Forms_Module {
             return '';
         }
 
-        $ajax_url = admin_url( 'admin-ajax.php' );
-        $nonce = wp_create_nonce( self::NONCE_ACTION );
+        $is_multi_step = (bool) get_post_meta( $post_id, '_ctm_multi_step', true );
+        $ajax_url      = admin_url( 'admin-ajax.php' );
+        $nonce         = wp_create_nonce( self::NONCE_ACTION );
 
         // Get analytics settings for this form
         $analytics = $this->get_form_analytics( $post_id );
+
+        // If multi-step: enqueue assets, add class to the <form> tag
+        if ( $is_multi_step ) {
+            wp_enqueue_style( 'ctm-multi-step' );
+            wp_enqueue_script( 'ctm-multi-step' );
+
+            // Add 'ctm-multi-step' class to the form tag
+            if ( preg_match( '/<form\b[^>]*class=["\']/', $html ) ) {
+                $html = preg_replace( '/(<form\b[^>]*class=["\'])/', '$1ctm-multi-step ', $html );
+            } else {
+                $html = preg_replace( '/(<form\b)/', '$1 class="ctm-multi-step"', $html );
+            }
+        }
+
+        // If title page enabled: prepend title div inside the form (after opening <form> tag)
+        if ( $is_multi_step && get_post_meta( $post_id, '_ctm_title_page', true ) ) {
+            $heading    = get_post_meta( $post_id, '_ctm_title_heading', true );
+            $desc       = get_post_meta( $post_id, '_ctm_title_desc', true );
+            $start_text = get_post_meta( $post_id, '_ctm_start_text', true ) ?: 'Get Started';
+
+            $title_html = '<div class="ctm-multi-step-title">'
+                . '<h2>' . esc_html( $heading ) . '</h2>'
+                . '<div class="ctm-ms-title-desc">' . wp_kses_post( $desc ) . '</div>'
+                . '<button type="button" class="ctm-ms-start">' . esc_html( $start_text ) . '</button>'
+                . '</div>';
+            $html = preg_replace( '/(<form[^>]*>)/', '$1' . $title_html, $html, 1 );
+        }
 
         ob_start();
         ?>
@@ -785,11 +899,28 @@ class Anchor_CTM_Forms_Module {
                 }
             }
 
+            // --- Attribution: collect UTMs + click IDs at page load, SID at submit ---
+            function getParam(name) {
+                try { return (new URLSearchParams(window.location.search)).get(name) || ''; }
+                catch(e) { return ''; }
+            }
+            var attribution = {};
+            var ref = document.referrer; if (ref) attribution.referring_url = ref;
+            attribution.page_url = window.location.href;
+            var paramKeys = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid','fbclid','msclkid'];
+            for (var p = 0; p < paramKeys.length; p++) {
+                var v = getParam(paramKeys[p]);
+                if (v) attribution[paramKeys[p]] = v;
+            }
+
             if (!form.getAttribute('method')) form.setAttribute('method', 'POST');
             if (!form.getAttribute('action')) form.setAttribute('action', CFG.ajax);
 
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
+
+                // Capture CTM visitor SID at submit time (async script may not be ready at page load)
+                try { if (window.__ctm && __ctm.config && __ctm.config.sid) attribution.visitor_sid = __ctm.config.sid; } catch(ex) {}
 
                 var core = {};
                 var custom = {};
@@ -840,6 +971,7 @@ class Anchor_CTM_Forms_Module {
                 fd.append('variant_id', CFG.variantId);
                 fd.append('core_json', JSON.stringify(core));
                 fd.append('custom_json', JSON.stringify(custom));
+                fd.append('attribution_json', JSON.stringify(attribution));
 
                 fetch(CFG.ajax, { method: 'POST', body: fd })
                     .then(function(r) { return r.json(); })
@@ -895,13 +1027,13 @@ class Anchor_CTM_Forms_Module {
         if ( isset( $_POST['core_json'] ) ) {
             $tmp = json_decode( wp_unslash( $_POST['core_json'] ), true );
             if ( is_array( $tmp ) ) {
-                $core = array_map( 'sanitize_text_field', $tmp );
+                $core = map_deep( $tmp, 'sanitize_text_field' );
             }
         }
         if ( isset( $_POST['custom_json'] ) ) {
             $tmp = json_decode( wp_unslash( $_POST['custom_json'] ), true );
             if ( is_array( $tmp ) ) {
-                $custom = array_map( 'sanitize_text_field', $tmp );
+                $custom = map_deep( $tmp, 'sanitize_text_field' );
             }
         }
 
@@ -926,7 +1058,25 @@ class Anchor_CTM_Forms_Module {
             unset( $core['name'] );
         }
 
-        $res = $this->send_submission_to_ctm( $reactor_id, $core, $custom );
+        // Parse attribution data from JS and enrich with server-side fields
+        $attribution = [];
+        if ( isset( $_POST['attribution_json'] ) ) {
+            $tmp = json_decode( wp_unslash( $_POST['attribution_json'] ), true );
+            if ( is_array( $tmp ) ) {
+                $allowed_attr = [ 'visitor_sid', 'referring_url', 'page_url', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'fbclid', 'msclkid' ];
+                foreach ( $allowed_attr as $key ) {
+                    if ( ! empty( $tmp[ $key ] ) ) {
+                        $attribution[ $key ] = sanitize_text_field( $tmp[ $key ] );
+                    }
+                }
+            }
+        }
+        $attribution['visitor_ip'] = $this->get_visitor_ip();
+        if ( ! empty( $_SERVER['HTTP_USER_AGENT'] ) ) {
+            $attribution['user_agent'] = sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) );
+        }
+
+        $res = $this->send_submission_to_ctm( $reactor_id, $core, $custom, $attribution );
 
         if ( is_wp_error( $res ) ) {
             wp_send_json_error( [ 'type' => 'server', 'message' => $res->get_error_message() ] );
@@ -936,13 +1086,30 @@ class Anchor_CTM_Forms_Module {
     }
 
     /**
+     * Resolve the visitor's real IP address from proxy headers.
+     */
+    private function get_visitor_ip() {
+        $headers = [ 'HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'REMOTE_ADDR' ];
+        foreach ( $headers as $header ) {
+            if ( ! empty( $_SERVER[ $header ] ) ) {
+                // X-Forwarded-For may contain comma-separated list; take the first
+                $ip = trim( explode( ',', $_SERVER[ $header ] )[0] );
+                if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
+                    return $ip;
+                }
+            }
+        }
+        return '';
+    }
+
+    /**
      * Send form submission to CTM FormReactor API.
      *
      * IMPORTANT: The submission endpoint is different from the list/detail endpoints!
      * - List/Detail: /api/v1/accounts/{account_id}/form_reactors/{id}
      * - Submit:      /api/v1/formreactor/{id}  (no account_id, singular "formreactor")
      */
-    private function send_submission_to_ctm( $reactor_id, $core, $custom = [] ) {
+    private function send_submission_to_ctm( $reactor_id, $core, $custom = [], $attribution = [] ) {
         $headers = $this->auth_headers();
         if ( ! $headers ) {
             return new WP_Error( 'ctm_missing_creds', 'API credentials not configured.' );
@@ -958,6 +1125,21 @@ class Anchor_CTM_Forms_Module {
                 // Ensure key has custom_ prefix
                 $prefixed_key = strpos( $key, 'custom_' ) === 0 ? $key : 'custom_' . $key;
                 $body[ $prefixed_key ] = $value;
+            }
+        }
+
+        // Attribution: visitor_sid is a top-level/core field for CTM session attribution
+        if ( ! empty( $attribution['visitor_sid'] ) ) {
+            $body['visitor_sid'] = $attribution['visitor_sid'];
+            unset( $attribution['visitor_sid'] );
+        }
+
+        // Remaining attribution fields sent as custom_ fields
+        if ( ! empty( $attribution ) ) {
+            foreach ( $attribution as $key => $value ) {
+                if ( $value !== '' ) {
+                    $body[ 'custom_' . $key ] = $value;
+                }
             }
         }
 

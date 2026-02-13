@@ -1,0 +1,168 @@
+/* ══════════════════════════════════════════════════
+   CTM Multi-Step Form — Styles
+   Plugin: Anchor CTM Forms
+   ══════════════════════════════════════════════════ */
+
+/* ── Variables ── */
+.ctm-multi-step {
+  --ms-primary: #1b3a4b;
+  --ms-accent: #3d8b7a;
+  --ms-accent-hover: #347a6b;
+  --ms-accent-light: #e8f5f1;
+  --ms-accent-glow: rgba(61, 139, 122, .15);
+  --ms-text: #2c2c2c;
+  --ms-muted: #8a8a8a;
+  --ms-border: #e2ddd5;
+  --ms-card: #ffffff;
+  --ms-radius: 14px;
+  --ms-shadow: 0 8px 40px rgba(27, 58, 75, .08);
+}
+
+/* ── Hide all steps and title until JS activates them ── */
+.ctm-multi-step .ctm-multi-step-item,
+.ctm-multi-step .ctm-multi-step-title {
+  display: none;
+}
+
+.ctm-multi-step .ctm-multi-step-item.active,
+.ctm-multi-step .ctm-multi-step-title.active {
+  display: block;
+}
+
+/* ── Progress bar ── */
+.ctm-ms-progress {
+  height: 4px;
+  background: var(--ms-border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.ctm-ms-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--ms-accent), #5bb8a5);
+  width: 0%;
+  transition: width .5s cubic-bezier(.4, 0, .2, 1);
+  border-radius: 2px;
+}
+
+/* ── Step counter text ── */
+.ctm-ms-step-counter {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--ms-accent);
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+/* ── Title page ── */
+.ctm-multi-step-title {
+  text-align: center;
+  padding: 32px 24px;
+}
+
+.ctm-multi-step-title h2 {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ms-primary);
+  margin: 0 0 12px;
+  line-height: 1.3;
+}
+
+.ctm-ms-title-desc {
+  font-size: 15px;
+  color: var(--ms-muted);
+  line-height: 1.7;
+  margin-bottom: 28px;
+}
+
+.ctm-ms-title-desc strong {
+  color: var(--ms-text);
+}
+
+/* ── Step items ── */
+.ctm-multi-step .ctm-multi-step-item {
+  animation: ctm-ms-fadeIn .35s ease;
+}
+
+@keyframes ctm-ms-fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Navigation buttons ── */
+.ctm-ms-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 28px;
+  gap: 12px;
+}
+
+/* Spacer to push Next to the right when no Prev */
+.ctm-ms-nav-spacer {
+  flex: 1;
+}
+
+.ctm-ms-start,
+.ctm-ms-next,
+.ctm-ms-prev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 32px;
+  border-radius: 50px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all .3s ease;
+  line-height: 1;
+}
+
+.ctm-ms-start,
+.ctm-ms-next {
+  background: var(--ms-accent);
+  color: #fff;
+}
+
+.ctm-ms-start:hover,
+.ctm-ms-next:hover {
+  background: var(--ms-accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px var(--ms-accent-glow);
+}
+
+.ctm-ms-prev {
+  background: transparent;
+  color: var(--ms-muted);
+  padding: 14px 20px;
+}
+
+.ctm-ms-prev:hover {
+  color: var(--ms-text);
+}
+
+/* ── Arrow SVG inside buttons ── */
+.ctm-ms-next svg,
+.ctm-ms-start svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ── Responsive ── */
+@media (max-width: 500px) {
+  .ctm-ms-start,
+  .ctm-ms-next,
+  .ctm-ms-prev {
+    padding: 12px 20px;
+    font-size: 14px;
+  }
+
+  .ctm-multi-step-title {
+    padding: 24px 16px;
+  }
+}

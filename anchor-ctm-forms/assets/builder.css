@@ -669,24 +669,22 @@
     padding: 20px;
 }
 
-/* ── Warning banner ── */
-.ctm-builder-warning {
+/* ── Builder info banner (linked reactor) ── */
+.ctm-builder-info {
     padding: 8px 12px;
-    border-left: 4px solid #dba617;
-    background: #fef8ee;
-    color: #996800;
+    border-left: 4px solid #00a32a;
+    background: #f0faf0;
+    color: #1a5e1a;
     font-size: 12px;
     margin-bottom: 12px;
     border-radius: 0 4px 4px 0;
 }
 
-/* ── Builder reactor dropdown (within builder tab) ── */
-.ctm-builder-reactor {
-    margin-bottom: 16px;
-}
-
-.ctm-builder-reactor select {
-    width: 100%;
+.ctm-builder-info code {
+    background: rgba(0, 0, 0, .06);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
 }
 
 /* ── Shared analytics box spacing ── */

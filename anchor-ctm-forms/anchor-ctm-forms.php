@@ -29,6 +29,7 @@ class Anchor_CTM_Forms_Module {
         add_action( 'wp_ajax_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
         add_action( 'wp_ajax_nopriv_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
         add_action( 'wp_ajax_ctm_builder_preview', [ $this, 'ajax_builder_preview' ] );
+        add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         /* ── Multi-Step: frontend asset registration ── */
         add_action( 'wp_enqueue_scripts', [ $this, 'register_frontend_assets' ] );
@@ -344,6 +345,150 @@ class Anchor_CTM_Forms_Module {
         return $body;
     }
 
+    /**
+     * Create a FormReactor in CTM from the builder config.
+     *
+     * @param  int   $post_id  The post ID (used for the reactor name).
+     * @param  array $config   The builder config array.
+     * @return string|WP_Error  The reactor ID on success, WP_Error on failure.
+     */
+    private function create_form_reactor( $post_id, $config ) {
+        $acc     = $this->account_id();
+        $headers = $this->auth_headers();
+        if ( ! $acc || ! $headers ) {
+            return new WP_Error( 'ctm_missing_creds', 'CTM API credentials not configured. Set them under CTM Forms settings.' );
+        }
+
+        $post_title = get_the_title( $post_id );
+        $fields     = $config['fields'] ?? [];
+
+        // Separate core vs custom fields
+        $core_names    = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
+        $include_name  = false;
+        $name_required = false;
+        $include_email = false;
+        $email_required = false;
+        $custom_fields = [];
+
+        foreach ( $fields as $f ) {
+            $fname = $f['name'] ?? '';
+            $ftype = $f['type'] ?? 'text';
+
+            // Skip layout elements
+            if ( in_array( $ftype, [ 'heading', 'paragraph', 'divider' ], true ) ) {
+                continue;
+            }
+
+            if ( $fname === 'caller_name' ) {
+                $include_name  = true;
+                $name_required = ! empty( $f['required'] );
+            } elseif ( $fname === 'email' ) {
+                $include_email  = true;
+                $email_required = ! empty( $f['required'] );
+            } elseif ( in_array( $fname, [ 'phone_number', 'phone', 'country_code' ], true ) ) {
+                // Core phone fields — handled by reactor automatically
+                continue;
+            } else {
+                // Custom field
+                $cf = [
+                    'name'     => $fname,
+                    'type'     => $ftype,
+                    'label'    => $f['label'] ?? ucfirst( $fname ),
+                    'required' => ! empty( $f['required'] ),
+                ];
+
+                // Options for select/checkbox/radio
+                if ( ! empty( $f['options'] ) && is_array( $f['options'] ) ) {
+                    $cf['options'] = array_map( function( $opt ) {
+                        return [
+                            'value' => $opt['value'] ?? '',
+                            'label' => $opt['label'] ?? '',
+                        ];
+                    }, $f['options'] );
+                }
+
+                // Log visible
+                if ( ! empty( $f['logVisible'] ) ) {
+                    $cf['log_visible'] = true;
+                }
+
+                $custom_fields[] = $cf;
+            }
+        }
+
+        // Build reactor creation body
+        $body = [
+            'name'           => $post_title ?: 'Form Variant #' . $post_id,
+            'include_name'   => $include_name,
+            'name_required'  => $name_required,
+            'include_email'  => $include_email,
+            'email_required' => $email_required,
+        ];
+
+        if ( ! empty( $custom_fields ) ) {
+            $body['custom_fields'] = $custom_fields;
+        }
+
+        $url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/form_reactors";
+
+        $response = wp_remote_post( $url, [
+            'headers' => array_merge( $headers, [ 'Content-Type' => 'application/json' ] ),
+            'timeout' => 30,
+            'body'    => wp_json_encode( $body ),
+        ] );
+
+        if ( is_wp_error( $response ) ) {
+            return new WP_Error( 'ctm_api_error', 'CTM API request failed: ' . $response->get_error_message() );
+        }
+
+        $code     = wp_remote_retrieve_response_code( $response );
+        $raw_body = wp_remote_retrieve_body( $response );
+        $data     = json_decode( $raw_body, true );
+
+        if ( $code >= 200 && $code < 300 && ! empty( $data['id'] ) ) {
+            return (string) $data['id'];
+        }
+
+        // Build a useful error message
+        $error_msg = 'CTM API returned ' . $code;
+        if ( ! empty( $data['error'] ) ) {
+            $error_msg .= ': ' . $data['error'];
+        } elseif ( ! empty( $data['message'] ) ) {
+            $error_msg .= ': ' . $data['message'];
+        } elseif ( ! empty( $data['errors'] ) ) {
+            $error_msg .= ': ' . ( is_array( $data['errors'] ) ? implode( ', ', $data['errors'] ) : $data['errors'] );
+        } else {
+            $error_msg .= '. Response: ' . substr( $raw_body, 0, 400 );
+        }
+
+        return new WP_Error( 'ctm_api_error', $error_msg );
+    }
+
+    /**
+     * Display admin notices for builder errors.
+     */
+    public function admin_notices() {
+        $screen = get_current_screen();
+        if ( ! $screen || $screen->post_type !== 'ctm_form_variant' ) {
+            return;
+        }
+
+        global $post;
+        if ( ! $post ) {
+            return;
+        }
+
+        $error = get_transient( 'ctm_builder_error_' . $post->ID );
+        if ( $error ) {
+            delete_transient( 'ctm_builder_error_' . $post->ID );
+            printf(
+                '<div class="notice notice-error is-dismissible"><p><strong>%s</strong> %s</p></div>',
+                esc_html__( 'CTM Form Reactor creation failed:', 'anchor-schema' ),
+                esc_html( $error )
+            );
+        }
+    }
+
     /* ========================= Metaboxes ========================= */
     public function add_variant_metabox() {
         add_meta_box( 'anchor_ctm_variant', __( 'CTM Form Builder', 'anchor-schema' ), [ $this, 'variant_metabox_cb' ], 'ctm_form_variant', 'normal', 'high' );
@@ -356,9 +501,6 @@ class Anchor_CTM_Forms_Module {
         $form_mode = get_post_meta( $post->ID, '_ctm_form_mode', true ) ?: 'reactor';
         $form_config = get_post_meta( $post->ID, '_ctm_form_config', true );
         $reactors = $this->fetch_reactors_list();
-
-        // Builder-mode reactor (may differ from reactor-tab reactor)
-        $builder_reactor_id = get_post_meta( $post->ID, '_ctm_builder_reactor_id', true ) ?: $reactor_id;
 
         // Get per-form analytics overrides
         $analytics_override = get_post_meta( $post->ID, '_ctm_analytics_override', true ) ? true : false;
@@ -449,24 +591,14 @@ class Anchor_CTM_Forms_Module {
 
         <!-- ═══════════════ TAB 2: Builder Mode ═══════════════ -->
         <div id="ctm-tab-builder" class="ctm-tab-panel<?php echo $form_mode === 'builder' ? ' active' : ''; ?>">
-            <!-- Builder reactor dropdown -->
-            <div class="ctm-builder-reactor">
-                <p><label><strong><?php esc_html_e( 'Submit To Reactor', 'anchor-schema' ); ?></strong><br>
-                    <select name="ctm_builder_reactor_id" id="ctm_builder_reactor_id" style="width:100%">
-                        <option value=""><?php esc_html_e( '— Select —', 'anchor-schema' ); ?></option>
-                        <?php foreach ( $reactors as $r ): ?>
-                        <option value="<?php echo esc_attr( $r['id'] ); ?>" <?php selected( $builder_reactor_id, $r['id'] ); ?>>
-                            <?php echo esc_html( $r['name'] . ' — ' . $r['id'] ); ?>
-                        </option>
-                        <?php endforeach; ?>
-                    </select>
-                </label></p>
-            </div>
-
-            <!-- No-reactor warning -->
-            <div class="ctm-builder-warning" id="ctm-builder-no-reactor" style="<?php echo $builder_reactor_id ? 'display:none;' : ''; ?>">
-                <?php esc_html_e( 'Please select a reactor above. The form builder controls the UI, but a reactor is required to process submissions.', 'anchor-schema' ); ?>
-            </div>
+            <?php
+            // Show reactor ID if already created
+            $existing_reactor = get_post_meta( $post->ID, '_ctm_builder_reactor_id', true );
+            if ( $existing_reactor ) : ?>
+                <div class="ctm-builder-info" style="padding:8px 12px;border-left:4px solid #00a32a;background:#f0faf0;color:#1a5e1a;font-size:12px;margin-bottom:12px;border-radius:0 4px 4px 0;">
+                    <?php printf( esc_html__( 'Linked to FormReactor: %s', 'anchor-schema' ), '<code>' . esc_html( $existing_reactor ) . '</code>' ); ?>
+                </div>
+            <?php endif; ?>
 
             <!-- Field palette -->
             <div class="ctm-builder-palette">
@@ -601,16 +733,6 @@ class Anchor_CTM_Forms_Module {
             </div>
         </div>
 
-        <script>
-        /* Builder reactor warning toggle */
-        (function(){
-            var sel = document.getElementById('ctm_builder_reactor_id');
-            var warn = document.getElementById('ctm-builder-no-reactor');
-            if (sel && warn) {
-                sel.addEventListener('change', function(){ warn.style.display = sel.value ? 'none' : ''; });
-            }
-        })();
-        </script>
         <?php
     }
 
@@ -799,14 +921,16 @@ class Anchor_CTM_Forms_Module {
 
         if ( $mode === 'builder' ) {
             // ── Builder mode ──
+            $config = null;
+
             // Save config JSON
             if ( isset( $_POST['ctm_form_config'] ) ) {
                 $raw_config = wp_unslash( $_POST['ctm_form_config'] );
                 update_post_meta( $post_id, '_ctm_form_config', $raw_config );
 
-                // Render config → HTML and store in _ctm_form_html
                 $config = json_decode( $raw_config, true );
                 if ( is_array( $config ) ) {
+                    // Render config → HTML and store in _ctm_form_html
                     $rendered_html = $this->render_config_to_html( $config );
                     update_post_meta( $post_id, '_ctm_form_html', $rendered_html );
 
@@ -828,12 +952,29 @@ class Anchor_CTM_Forms_Module {
                 }
             }
 
-            // Builder reactor ID
-            if ( isset( $_POST['ctm_builder_reactor_id'] ) ) {
-                $builder_reactor = sanitize_text_field( $_POST['ctm_builder_reactor_id'] );
-                update_post_meta( $post_id, '_ctm_builder_reactor_id', $builder_reactor );
-                // Also set as main reactor ID so frontend submission works
-                update_post_meta( $post_id, '_ctm_reactor_id', $builder_reactor );
+            // ── Auto-create FormReactor on publish ──
+            $post_status = get_post_status( $post_id );
+            $existing_reactor = get_post_meta( $post_id, '_ctm_builder_reactor_id', true );
+
+            if ( $post_status === 'publish' && empty( $existing_reactor ) && is_array( $config ) ) {
+                $result = $this->create_form_reactor( $post_id, $config );
+
+                if ( is_wp_error( $result ) ) {
+                    // Revert to draft on failure
+                    remove_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
+                    wp_update_post( [
+                        'ID'          => $post_id,
+                        'post_status' => 'draft',
+                    ] );
+                    add_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
+
+                    // Store error for admin notice
+                    set_transient( 'ctm_builder_error_' . $post_id, $result->get_error_message(), 60 );
+                } else {
+                    // Store reactor ID
+                    update_post_meta( $post_id, '_ctm_builder_reactor_id', $result );
+                    update_post_meta( $post_id, '_ctm_reactor_id', $result );
+                }
             }
 
         } else {

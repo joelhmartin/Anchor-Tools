@@ -615,8 +615,10 @@ class Module {
 
     public function field_shortcode( $atts ) {
         $atts = \shortcode_atts( [
-            'field' => '',
-            'id'    => '',
+            'field'  => '',
+            'id'     => '',
+            'format' => '',
+            'label'  => '',
         ], $atts, 'anchor_store_field' );
 
         $allowed = [
@@ -641,6 +643,33 @@ class Module {
         }
 
         $value = \get_post_meta( $post_id, $allowed[ $field ], true );
+        if ( ! $value ) {
+            return '';
+        }
+
+        $format = \sanitize_key( $atts['format'] );
+
+        if ( $format === 'tel' ) {
+            $tel = \preg_replace( '/[^0-9+]/', '', $value );
+            return '<a href="tel:' . \esc_attr( $tel ) . '">' . \esc_html( $value ) . '</a>';
+        }
+
+        if ( $format === 'email' ) {
+            return '<a href="mailto:' . \antispambot( $value ) . '">' . \esc_html( $value ) . '</a>';
+        }
+
+        if ( $format === 'link' ) {
+            return '<a href="' . \esc_url( $value ) . '" target="_blank" rel="noopener">' . \esc_html( $value ) . '</a>';
+        }
+
+        if ( $format === 'map' ) {
+            $maps_url = \get_post_meta( $post_id, '_anchor_store_maps_url', true );
+            if ( ! $maps_url ) {
+                $maps_url = 'https://www.google.com/maps/search/?api=1&query=' . \rawurlencode( $value );
+            }
+            $label = $atts['label'] ? $atts['label'] : $value;
+            return '<a href="' . \esc_url( $maps_url ) . '" target="_blank" rel="noopener">' . \esc_html( $label ) . '</a>';
+        }
 
         return \esc_html( $value );
     }

@@ -693,7 +693,7 @@ class Module {
         }
         $this->assets_enqueued = true;
 
-        \wp_enqueue_style( 'anchor-store-locator', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.0' );
+        \wp_enqueue_style( 'anchor-store-locator', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.1' );
 
         $api_key = $this->get_google_api_key();
         if ( ! $api_key ) {
@@ -702,7 +702,7 @@ class Module {
 
         $locations = $this->get_locations();
         \wp_enqueue_script( 'anchor-store-maps', 'https://maps.googleapis.com/maps/api/js?key=' . \rawurlencode( $api_key ) . '&libraries=places', [], null, true );
-        \wp_enqueue_script( 'anchor-store-locator', \plugins_url( 'assets/frontend.js', __FILE__ ), [ 'anchor-store-maps' ], '1.0.0', true );
+        \wp_enqueue_script( 'anchor-store-locator', \plugins_url( 'assets/frontend.js', __FILE__ ), [ 'anchor-store-maps' ], '1.0.1', true );
 
         \wp_localize_script( 'anchor-store-locator', 'ANCHOR_STORE_LOCATOR', [
             'locations' => $locations,

@@ -55,9 +55,19 @@
   var config = { settings: {}, fields: [] };
   var activeStep = 0;
   var previewTimer = null;
+  var selectedFieldId = null;
+  var accordionState = {
+    formSettings: true,
+    multiStep: false,
+    scoring: false,
+    fieldGeneral: true,
+    fieldOptions: false,
+    fieldAdvanced: false,
+    fieldConditions: false
+  };
 
   /* ── DOM refs ── */
-  var $canvas, $configInput, $previewFrame, $modeInput;
+  var $canvas, $configInput, $previewFrame, $modeInput, $sidebar;
 
   /* ═══════════════════════════════════════════════
      INIT
@@ -70,6 +80,7 @@
     $configInput = $('#ctm_form_config');
     $previewFrame = $('#ctm-builder-preview-frame');
     $modeInput   = $('#ctm_form_mode');
+    $sidebar     = $('#ctm-builder-sidebar');
 
     // Load existing config
     var raw = $configInput.val();
@@ -100,9 +111,14 @@
 
     // Initial render
     renderFieldList();
-    renderFormSettings();
+    renderSidebar();
     renderMultiStepControls();
     syncConfig();
+
+    // Initial sidebar visibility
+    if ($modeInput.val() !== 'builder') {
+      $('#anchor_ctm_builder_sidebar').hide();
+    }
 
     // Reactor tab inline JS (generate btn, copy btn, analytics toggle, multi-step toggle)
     initReactorTabLegacy();
@@ -134,6 +150,13 @@
       $('.ctm-tab-panel').removeClass('active');
       $('#ctm-tab-' + target).addClass('active');
       $modeInput.val(target === 'builder' ? 'builder' : 'reactor');
+
+      // Show/hide sidebar metabox
+      if (target === 'builder') {
+        $('#anchor_ctm_builder_sidebar').show();
+      } else {
+        $('#anchor_ctm_builder_sidebar').hide();
+      }
     });
   }
 
@@ -248,15 +271,19 @@
       f.step = activeStep;
     }
     config.fields.push(f);
+    selectedFieldId = f.id;
     renderFieldList();
+    renderSidebar();
     syncConfig();
-    // Expand the new field's settings
-    $canvas.find('[data-field-id="' + f.id + '"]').addClass('expanded');
   }
 
   function removeField(id) {
     config.fields = config.fields.filter(function (f) { return f.id !== id; });
+    if (selectedFieldId === id) {
+      selectedFieldId = null;
+    }
     renderFieldList();
+    renderSidebar();
     syncConfig();
   }
 
@@ -269,7 +296,9 @@
     // Insert after original
     var idx = config.fields.indexOf(orig);
     config.fields.splice(idx + 1, 0, copy);
+    selectedFieldId = copy.id;
     renderFieldList();
+    renderSidebar();
     syncConfig();
   }
 
@@ -297,11 +326,6 @@
      RENDER FIELD LIST
      ═══════════════════════════════════════════════ */
   function renderFieldList() {
-    var expandedIds = [];
-    $canvas.find('.ctm-field-row.expanded').each(function () {
-      expandedIds.push($(this).data('field-id'));
-    });
-
     $canvas.empty();
 
     var fields = config.fields;
@@ -319,12 +343,11 @@
     $canvas.removeClass('empty');
 
     fields.forEach(function (f) {
-      var isExpanded = expandedIds.indexOf(f.id) !== -1;
-      $canvas.append(renderFieldRow(f, isExpanded));
+      $canvas.append(renderFieldRow(f));
     });
   }
 
-  function renderFieldRow(f, expanded) {
+  function renderFieldRow(f) {
     var typeDef = FIELD_TYPES[f.type] || { label: f.type, icon: 'dashicons-admin-generic' };
     var badges = '';
 
@@ -345,9 +368,9 @@
     }
 
     var nameDisplay = f.name ? '(' + esc(f.name) + ')' : '';
-    var labelDisplay = f.label || (f.type === 'divider' ? '— Divider —' : 'Untitled');
+    var labelDisplay = f.label || (f.type === 'divider' ? '\u2014 Divider \u2014' : 'Untitled');
 
-    var html = '<div class="ctm-field-row' + (expanded ? ' expanded' : '') + '" data-field-id="' + f.id + '">';
+    var html = '<div class="ctm-field-row' + (f.id === selectedFieldId ? ' selected' : '') + '" data-field-id="' + f.id + '">';
     html += '<div class="ctm-field-header">';
     html += '<span class="ctm-drag-handle"><span class="dashicons dashicons-menu"></span></span>';
     html += '<span class="ctm-field-type-badge">' + esc(typeDef.label) + '</span>';
@@ -355,90 +378,206 @@
     html += '<span class="ctm-field-name-text">' + esc(nameDisplay) + '</span>';
     html += '<span class="ctm-field-badges">' + badges + '</span>';
     html += '<span class="ctm-field-actions">';
-    html += '<button type="button" class="ctm-btn-edit" title="Edit"><span class="dashicons dashicons-edit"></span></button>';
     html += '<button type="button" class="ctm-btn-dup" title="Duplicate"><span class="dashicons dashicons-admin-page"></span></button>';
     html += '<button type="button" class="ctm-btn-delete" title="Delete"><span class="dashicons dashicons-trash"></span></button>';
     html += '</span>';
     html += '</div>';
-    html += '<div class="ctm-field-settings">' + renderFieldSettings(f) + '</div>';
     html += '</div>';
 
     return html;
   }
 
   /* ═══════════════════════════════════════════════
-     RENDER FIELD SETTINGS PANEL
+     SIDEBAR RENDERING
      ═══════════════════════════════════════════════ */
-  function renderFieldSettings(f) {
-    var html = '<div class="settings-grid">';
-    var isLayout = f.type === 'heading' || f.type === 'paragraph' || f.type === 'divider';
-    var isHidden = f.type === 'hidden';
+  function renderSidebar() {
+    if (!$sidebar || !$sidebar.length) return;
+
+    var html = '';
+
+    // Form-level accordions (always shown)
+    html += renderAccordion('formSettings', 'Form Settings', renderFormSettingsContent());
+    html += renderAccordion('multiStep', 'Multi-Step', renderMultiStepContent());
+    html += renderAccordion('scoring', 'Scoring', renderScoringContent());
+
+    // Field settings (only when a field is selected)
+    if (selectedFieldId) {
+      var f = findField(selectedFieldId);
+      if (f) {
+        html += '<div class="ctm-sidebar-field-header">Field: \u201c' + esc(f.label || f.type) + '\u201d</div>';
+        html += '<div class="ctm-sidebar-field" data-field-id="' + f.id + '">';
+        html += renderFieldSettingsSidebar(f);
+        html += '</div>';
+      }
+    }
+
+    $sidebar.html(html);
+
+    // Init options sortable in sidebar
+    if (selectedFieldId) {
+      initOptionsSortable($sidebar);
+    }
+  }
+
+  function renderAccordion(key, title, content) {
+    var isOpen = !!accordionState[key];
+    var cls = 'ctm-accordion' + (isOpen ? ' open' : '');
+    return '<div class="' + cls + '" data-accordion="' + key + '">'
+      + '<div class="ctm-accordion-header"><span class="toggle-arrow">&#9654;</span> ' + esc(title) + '</div>'
+      + '<div class="ctm-accordion-body">' + content + '</div>'
+      + '</div>';
+  }
+
+  function renderFormSettingsContent() {
+    var s = config.settings;
+    var html = '';
+
+    html += '<label>Label Style</label>';
+    html += '<select id="bs-labelStyle">';
+    ['above', 'floating', 'hidden'].forEach(function (ls) {
+      html += '<option value="' + ls + '"' + (s.labelStyle === ls ? ' selected' : '') + '>' + ls.charAt(0).toUpperCase() + ls.slice(1) + '</option>';
+    });
+    html += '</select>';
+
+    html += '<label>Submit Button Text</label>';
+    html += '<input type="text" id="bs-submitText" value="' + esc(s.submitText) + '" />';
+
+    html += '<label>Success Message</label>';
+    html += '<input type="text" id="bs-successMessage" value="' + esc(s.successMessage) + '" />';
+
+    return html;
+  }
+
+  function renderMultiStepContent() {
+    var s = config.settings;
+    var html = '';
+
+    html += '<div class="checkbox-row">';
+    html += '<input type="checkbox" id="bs-multiStep"' + (s.multiStep ? ' checked' : '') + ' />';
+    html += '<label for="bs-multiStep">Enable Multi-Step</label>';
+    html += '</div>';
+
+    html += '<div class="checkbox-row" style="margin-top:6px;' + (s.multiStep ? '' : 'display:none;') + '" id="bs-progressBar-row">';
+    html += '<input type="checkbox" id="bs-progressBar"' + (s.progressBar ? ' checked' : '') + ' />';
+    html += '<label for="bs-progressBar">Show Progress Bar</label>';
+    html += '</div>';
+
+    html += '<div style="' + (s.multiStep ? '' : 'display:none;') + '" id="bs-titlepage-section">';
+    html += '<div class="checkbox-row" style="margin-top:6px;">';
+    html += '<input type="checkbox" id="bs-titlePageEnabled"' + (s.titlePage.enabled ? ' checked' : '') + ' />';
+    html += '<label for="bs-titlePageEnabled">Add Title Page</label>';
+    html += '</div>';
+    html += '<div id="bs-titlepage-fields" style="' + (s.titlePage.enabled ? '' : 'display:none;') + '">';
+    html += '<label>Heading</label><input type="text" id="bs-tpHeading" value="' + esc(s.titlePage.heading) + '" />';
+    html += '<label>Description</label><textarea id="bs-tpDescription">' + esc(s.titlePage.description) + '</textarea>';
+    html += '<label>Button Text</label><input type="text" id="bs-tpButtonText" value="' + esc(s.titlePage.buttonText) + '" />';
+    html += '</div>';
+    html += '</div>';
+
+    return html;
+  }
+
+  function renderScoringContent() {
+    var sc = config.settings.scoring;
+    var html = '';
+
+    html += '<div class="checkbox-row">';
+    html += '<input type="checkbox" id="bs-scoringEnabled"' + (sc.enabled ? ' checked' : '') + ' />';
+    html += '<label for="bs-scoringEnabled">Enable Scoring</label>';
+    html += '</div>';
+
+    html += '<div id="bs-scoring-fields" style="' + (sc.enabled ? '' : 'display:none;') + '">';
+    html += '<div class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="bs-showTotal"' + (sc.showTotal ? ' checked' : '') + ' /><label for="bs-showTotal">Show Total to User</label></div>';
+    html += '<label>Score Label</label><input type="text" id="bs-totalLabel" value="' + esc(sc.totalLabel) + '" />';
+    html += '<label>Send Score As</label><input type="text" id="bs-sendAs" value="' + esc(sc.sendAs) + '" />';
+    html += '</div>';
+
+    return html;
+  }
+
+  /* ═══════════════════════════════════════════════
+     FIELD SETTINGS (SIDEBAR ACCORDIONS)
+     ═══════════════════════════════════════════════ */
+  function renderFieldSettingsSidebar(f) {
+    var html = '';
     var hasOptions = f.type === 'select' || f.type === 'checkbox' || f.type === 'radio';
 
-    // Layout types: minimal settings
+    // General
+    html += renderAccordion('fieldGeneral', 'General', renderFieldGeneralContent(f));
+
+    // Options (only for option types)
+    if (hasOptions) {
+      html += renderAccordion('fieldOptions', 'Options', renderOptionsEditor(f));
+    }
+
+    // Advanced
+    html += renderAccordion('fieldAdvanced', 'Advanced', renderFieldAdvancedContent(f));
+
+    // Conditional Logic
+    html += renderAccordion('fieldConditions', 'Conditional Logic', renderConditionsContent(f));
+
+    return html;
+  }
+
+  function renderFieldGeneralContent(f) {
+    var html = '';
+
     if (f.type === 'divider') {
-      html += settingField('CSS Class', 'cssClass', f.cssClass, 'text', 'full-width');
-      html += '</div>';
-      html += renderConditionsEditor(f);
+      html += '<p style="color:#666;font-size:12px;margin:4px 0;">No general settings for dividers.</p>';
       return html;
     }
 
-    // Label (heading uses it as heading text, paragraph as body text)
     if (f.type === 'heading') {
-      html += settingField('Heading Text', 'label', f.label, 'text', 'full-width');
-      html += settingField('CSS Class', 'cssClass', f.cssClass, 'text', '');
-      html += '</div>';
-      html += renderConditionsEditor(f);
+      html += settingField('Heading Text', 'label', f.label, 'text', '');
       return html;
     }
 
     if (f.type === 'paragraph') {
-      html += settingField('Paragraph Text', 'label', f.label, 'textarea', 'full-width');
-      html += settingField('CSS Class', 'cssClass', f.cssClass, 'text', '');
-      html += '</div>';
-      html += renderConditionsEditor(f);
+      html += settingField('Paragraph Text', 'label', f.label, 'textarea', '');
       return html;
     }
 
-    // Hidden: name + default only
-    if (isHidden) {
+    if (f.type === 'hidden') {
       html += settingField('Field Name', 'name', f.name, 'text', '');
       html += settingField('Value', 'defaultValue', f.defaultValue, 'text', '');
-      html += settingCheckbox('Custom Field', 'isCustom', f.isCustom);
-      html += settingCheckbox('Log Visible', 'logVisible', f.logVisible);
-      html += '</div>';
       return html;
     }
 
-    // All input types: core settings
+    // All input types
     html += settingField('Label', 'label', f.label, 'text', '');
     html += settingField('Field Name', 'name', f.name, 'text', '');
     html += settingField('Placeholder', 'placeholder', f.placeholder || '', 'text', '');
     html += settingField('Default Value', 'defaultValue', f.defaultValue || '', 'text', '');
     html += settingCheckbox('Required', 'required', f.required);
-    html += settingField('Help Text', 'helpText', f.helpText || '', 'text', 'full-width');
+    html += settingField('Help Text', 'helpText', f.helpText || '', 'text', '');
 
     // Number-specific
     if (f.type === 'number') {
-      html += '<div class="settings-section-title">Number Settings</div>';
       html += settingField('Min', 'min', f.min != null ? f.min : '', 'number', '');
       html += settingField('Max', 'max', f.max != null ? f.max : '', 'number', '');
       html += settingField('Step', 'numStep', f.numStep != null ? f.numStep : '', 'number', '');
     }
 
-    // Options editor
-    if (hasOptions) {
-      html += '</div>'; // close settings-grid
-      html += renderOptionsEditor(f);
-      html += '<div class="settings-grid">';
+    return html;
+  }
+
+  function renderFieldAdvancedContent(f) {
+    var html = '';
+
+    if (f.type === 'heading' || f.type === 'paragraph' || f.type === 'divider') {
+      html += settingField('CSS Class', 'cssClass', f.cssClass || '', 'text', '');
+      return html;
     }
 
-    // Advanced section
-    html += '<div class="settings-section-title">Advanced</div>';
+    if (f.type === 'hidden') {
+      html += settingCheckbox('Custom Field', 'isCustom', f.isCustom);
+      html += settingCheckbox('Log Visible', 'logVisible', f.logVisible);
+      return html;
+    }
 
     // Width
     html += '<div><label>Width</label>';
-    html += '<select data-field-id="' + f.id + '" data-key="width">';
+    html += '<select data-key="width">';
     ['full', 'half', 'third', 'quarter'].forEach(function (w) {
       html += '<option value="' + w + '"' + (f.width === w ? ' selected' : '') + '>' + w.charAt(0).toUpperCase() + w.slice(1) + '</option>';
     });
@@ -446,7 +585,7 @@
 
     // Label style override
     html += '<div><label>Label Style</label>';
-    html += '<select data-field-id="' + f.id + '" data-key="labelStyle">';
+    html += '<select data-key="labelStyle">';
     ['inherit', 'above', 'floating', 'hidden'].forEach(function (s) {
       html += '<option value="' + s + '"' + (f.labelStyle === s ? ' selected' : '') + '>' + s.charAt(0).toUpperCase() + s.slice(1) + '</option>';
     });
@@ -460,21 +599,48 @@
     if (config.settings.multiStep) {
       var maxStep = getMaxStep();
       html += '<div><label>Step</label>';
-      html += '<select data-field-id="' + f.id + '" data-key="step">';
+      html += '<select data-key="step">';
       for (var s = 0; s <= maxStep; s++) {
         html += '<option value="' + s + '"' + ((f.step || 0) === s ? ' selected' : '') + '>Step ' + (s + 1) + '</option>';
       }
       html += '</select></div>';
     }
 
-    html += '</div>'; // close settings-grid
+    return html;
+  }
 
-    // Conditional logic
-    html += renderConditionsEditor(f);
+  function renderConditionsContent(f) {
+    var hasConditions = f.conditions && f.conditions.length > 0;
+    var html = '';
+
+    html += '<div class="ctm-conditions-toggle checkbox-row">';
+    html += '<input type="checkbox" class="cond-toggle" data-field-id="' + f.id + '"' + (hasConditions ? ' checked' : '') + ' />';
+    html += '<label>Show this field conditionally</label>';
+    html += '</div>';
+
+    html += '<div class="ctm-conditions-panel" style="' + (hasConditions ? '' : 'display:none;') + '" data-field-id="' + f.id + '">';
+
+    // Logic selector
+    html += '<div class="ctm-conditions-logic">Show when <select class="cond-logic" data-field-id="' + f.id + '">';
+    html += '<option value="all"' + ((f.conditionLogic || 'all') === 'all' ? ' selected' : '') + '>all</option>';
+    html += '<option value="any"' + (f.conditionLogic === 'any' ? ' selected' : '') + '>any</option>';
+    html += '</select> conditions match:</div>';
+
+    // Condition rows
+    var conditions = f.conditions || [];
+    conditions.forEach(function (cond, idx) {
+      html += renderConditionRow(f.id, idx, cond);
+    });
+
+    html += '<button type="button" class="button ctm-add-condition" data-field-id="' + f.id + '">+ Add Condition</button>';
+    html += '</div>';
 
     return html;
   }
 
+  /* ═══════════════════════════════════════════════
+     SHARED HELPERS
+     ═══════════════════════════════════════════════ */
   function settingField(label, key, value, inputType, extraClass) {
     var cls = extraClass ? ' class="' + extraClass + '"' : '';
     var fid = 'sf_' + uid();
@@ -501,7 +667,6 @@
     var showScore = config.settings.scoring && config.settings.scoring.enabled;
 
     var html = '<div class="ctm-options-editor">';
-    html += '<div class="settings-section-title" style="margin-top:12px;">Options</div>';
     html += '<div class="ctm-options-list" data-field-id="' + f.id + '">';
 
     opts.forEach(function (opt, idx) {
@@ -525,38 +690,8 @@
   }
 
   /* ═══════════════════════════════════════════════
-     CONDITIONS EDITOR
+     CONDITIONS — SINGLE ROW
      ═══════════════════════════════════════════════ */
-  function renderConditionsEditor(f) {
-    var hasConditions = f.conditions && f.conditions.length > 0;
-    var html = '<div class="ctm-conditions-editor">';
-    html += '<div class="settings-section-title">Conditional Logic</div>';
-    html += '<div class="ctm-conditions-toggle checkbox-row">';
-    html += '<input type="checkbox" class="cond-toggle" data-field-id="' + f.id + '"' + (hasConditions ? ' checked' : '') + ' />';
-    html += '<label>Show this field conditionally</label>';
-    html += '</div>';
-
-    html += '<div class="ctm-conditions-panel" style="' + (hasConditions ? '' : 'display:none;') + '" data-field-id="' + f.id + '">';
-
-    // Logic selector
-    html += '<div class="ctm-conditions-logic">Show when <select class="cond-logic" data-field-id="' + f.id + '">';
-    html += '<option value="all"' + ((f.conditionLogic || 'all') === 'all' ? ' selected' : '') + '>all</option>';
-    html += '<option value="any"' + (f.conditionLogic === 'any' ? ' selected' : '') + '>any</option>';
-    html += '</select> conditions match:</div>';
-
-    // Condition rows
-    var conditions = f.conditions || [];
-    conditions.forEach(function (cond, idx) {
-      html += renderConditionRow(f.id, idx, cond);
-    });
-
-    html += '<button type="button" class="button ctm-add-condition" data-field-id="' + f.id + '">+ Add Condition</button>';
-    html += '</div>';
-    html += '</div>';
-
-    return html;
-  }
-
   function renderConditionRow(fieldId, idx, cond) {
     // Build field dropdown (all other input-type fields)
     var otherFields = config.fields.filter(function (f) {
@@ -567,7 +702,7 @@
 
     // Field selector
     html += '<select class="cond-field">';
-    html += '<option value="">— Field —</option>';
+    html += '<option value="">\u2014 Field \u2014</option>';
     otherFields.forEach(function (f) {
       html += '<option value="' + f.id + '"' + (cond.field === f.id ? ' selected' : '') + '>' + esc(f.label || f.name) + '</option>';
     });
@@ -588,75 +723,6 @@
     html += '</div>';
 
     return html;
-  }
-
-  /* ═══════════════════════════════════════════════
-     FORM SETTINGS PANEL
-     ═══════════════════════════════════════════════ */
-  function renderFormSettings() {
-    var s = config.settings;
-    var $el = $('#ctm-builder-form-settings');
-    if (!$el.length) return;
-
-    var html = '<div class="settings-grid">';
-
-    // Label style
-    html += '<div><label>Label Style</label>';
-    html += '<select id="bs-labelStyle">';
-    ['above', 'floating', 'hidden'].forEach(function (ls) {
-      html += '<option value="' + ls + '"' + (s.labelStyle === ls ? ' selected' : '') + '>' + ls.charAt(0).toUpperCase() + ls.slice(1) + '</option>';
-    });
-    html += '</select></div>';
-
-    // Submit text
-    html += '<div><label>Submit Button Text</label>';
-    html += '<input type="text" id="bs-submitText" value="' + esc(s.submitText) + '" /></div>';
-
-    // Success message
-    html += '<div class="full-width"><label>Success Message</label>';
-    html += '<input type="text" id="bs-successMessage" value="' + esc(s.successMessage) + '" /></div>';
-
-    html += '</div>';
-
-    // Multi-step toggle
-    html += '<div class="checkbox-row" style="margin-top:10px;">';
-    html += '<input type="checkbox" id="bs-multiStep"' + (s.multiStep ? ' checked' : '') + ' />';
-    html += '<label for="bs-multiStep">Multi-Step Form</label>';
-    html += '</div>';
-
-    // Progress bar (shown when multi-step)
-    html += '<div class="checkbox-row" style="margin-top:6px;' + (s.multiStep ? '' : 'display:none;') + '" id="bs-progressBar-row">';
-    html += '<input type="checkbox" id="bs-progressBar"' + (s.progressBar ? ' checked' : '') + ' />';
-    html += '<label for="bs-progressBar">Show Progress Bar</label>';
-    html += '</div>';
-
-    // Title page (shown when multi-step)
-    html += '<div class="ctm-titlepage-settings" style="' + (s.multiStep ? '' : 'display:none;') + '" id="bs-titlepage-section">';
-    html += '<div class="checkbox-row">';
-    html += '<input type="checkbox" id="bs-titlePageEnabled"' + (s.titlePage.enabled ? ' checked' : '') + ' />';
-    html += '<label for="bs-titlePageEnabled">Add Title Page</label>';
-    html += '</div>';
-    html += '<div class="ctm-titlepage-fields" style="' + (s.titlePage.enabled ? '' : 'display:none;') + '" id="bs-titlepage-fields">';
-    html += '<div><label>Heading</label><input type="text" id="bs-tpHeading" value="' + esc(s.titlePage.heading) + '" /></div>';
-    html += '<div class="full-width"><label>Description</label><textarea id="bs-tpDescription">' + esc(s.titlePage.description) + '</textarea></div>';
-    html += '<div><label>Button Text</label><input type="text" id="bs-tpButtonText" value="' + esc(s.titlePage.buttonText) + '" /></div>';
-    html += '</div>';
-    html += '</div>';
-
-    // Scoring
-    html += '<div class="ctm-scoring-settings">';
-    html += '<div class="checkbox-row">';
-    html += '<input type="checkbox" id="bs-scoringEnabled"' + (s.scoring.enabled ? ' checked' : '') + ' />';
-    html += '<label for="bs-scoringEnabled">Enable Scoring</label>';
-    html += '</div>';
-    html += '<div class="ctm-scoring-fields" style="' + (s.scoring.enabled ? '' : 'display:none;') + '" id="bs-scoring-fields">';
-    html += '<div class="checkbox-row" style="grid-column:1/-1;"><input type="checkbox" id="bs-showTotal"' + (s.scoring.showTotal ? ' checked' : '') + ' /><label for="bs-showTotal">Show Total to User</label></div>';
-    html += '<div><label>Score Label</label><input type="text" id="bs-totalLabel" value="' + esc(s.scoring.totalLabel) + '" /></div>';
-    html += '<div><label>Send Score As (field name)</label><input type="text" id="bs-sendAs" value="' + esc(s.scoring.sendAs) + '" /></div>';
-    html += '</div>';
-    html += '</div>';
-
-    $el.html(html);
   }
 
   /* ═══════════════════════════════════════════════
@@ -736,31 +802,54 @@
      EVENTS (delegated)
      ═══════════════════════════════════════════════ */
   function initSettingsEvents() {
-    // Toggle field expand/collapse
-    $(document).on('click', '.ctm-btn-edit', function (e) {
-      e.stopPropagation();
-      var $row = $(this).closest('.ctm-field-row');
-      $row.toggleClass('expanded');
+
+    // ── Click field row to select/deselect ──
+    $(document).on('click', '.ctm-field-row .ctm-field-header', function (e) {
+      // Don't select if clicking action buttons or drag handle
+      if ($(e.target).closest('.ctm-field-actions').length) return;
+      if ($(e.target).closest('.ctm-drag-handle').length) return;
+
+      var id = $(this).closest('.ctm-field-row').data('field-id');
+      if (selectedFieldId === id) {
+        selectedFieldId = null;
+      } else {
+        selectedFieldId = id;
+      }
+
+      // Update visual selection
+      $canvas.find('.ctm-field-row').removeClass('selected');
+      if (selectedFieldId) {
+        $canvas.find('[data-field-id="' + selectedFieldId + '"]').addClass('selected');
+      }
+
+      renderSidebar();
     });
 
-    // Delete field
+    // ── Delete field ──
     $(document).on('click', '.ctm-btn-delete', function (e) {
       e.stopPropagation();
       var id = $(this).closest('.ctm-field-row').data('field-id');
       removeField(id);
     });
 
-    // Duplicate field
+    // ── Duplicate field ──
     $(document).on('click', '.ctm-btn-dup', function (e) {
       e.stopPropagation();
       var id = $(this).closest('.ctm-field-row').data('field-id');
       duplicateField(id);
     });
 
-    // Field settings input changes
-    $(document).on('input change', '.ctm-field-settings input[data-key], .ctm-field-settings select[data-key], .ctm-field-settings textarea[data-key]', function () {
-      var $row = $(this).closest('.ctm-field-row');
-      var id = $row.data('field-id');
+    // ── Accordion toggle ──
+    $(document).on('click', '#ctm-builder-sidebar .ctm-accordion-header', function () {
+      var $acc = $(this).closest('.ctm-accordion');
+      var key = $acc.data('accordion');
+      $acc.toggleClass('open');
+      accordionState[key] = $acc.hasClass('open');
+    });
+
+    // ── Field settings input changes (sidebar) ──
+    $(document).on('input change', '#ctm-builder-sidebar .ctm-sidebar-field [data-key]', function () {
+      if (!selectedFieldId) return;
       var key = $(this).data('key');
       var val;
 
@@ -775,16 +864,21 @@
       // Convert step to number
       if (key === 'step') val = parseInt(val, 10);
 
-      updateField(id, key, val);
+      updateField(selectedFieldId, key, val);
 
-      // Update header display
+      // Update header display in canvas
       if (key === 'label' || key === 'name' || key === 'width' || key === 'required') {
-        var f = findField(id);
-        if (f) {
+        var f = findField(selectedFieldId);
+        var $row = $canvas.find('[data-field-id="' + selectedFieldId + '"]');
+        if (f && $row.length) {
           $row.find('.ctm-field-label-text').text(f.label || 'Untitled');
           $row.find('.ctm-field-name-text').text(f.name ? '(' + f.name + ')' : '');
           // Rebuild badges
           renderBadges($row, f);
+        }
+        // Update sidebar field header text
+        if (key === 'label' && f) {
+          $sidebar.find('.ctm-sidebar-field-header').html('Field: \u201c' + esc(f.label || f.type) + '\u201d');
         }
       }
 
@@ -794,7 +888,7 @@
       }
     });
 
-    // Options editor: label/value/score changes
+    // ── Options editor: label/value/score changes ──
     $(document).on('input', '.ctm-option-row .opt-label, .ctm-option-row .opt-value, .ctm-option-row .opt-score', function () {
       var $list = $(this).closest('.ctm-options-list');
       var fieldId = $list.data('field-id');
@@ -811,7 +905,7 @@
       syncConfig();
     });
 
-    // Add option
+    // ── Add option ──
     $(document).on('click', '.ctm-add-option', function () {
       var fieldId = $(this).data('field-id');
       var f = findField(fieldId);
@@ -819,14 +913,11 @@
       if (!f.options) f.options = [];
       var n = f.options.length + 1;
       f.options.push({ label: 'Option ' + n, value: 'opt' + n, score: 0 });
-      // Re-render the field row settings
-      var $row = $canvas.find('[data-field-id="' + fieldId + '"]');
-      $row.find('.ctm-field-settings').html(renderFieldSettings(f));
-      initOptionsSortable($row);
+      renderSidebar();
       syncConfig();
     });
 
-    // Remove option
+    // ── Remove option ──
     $(document).on('click', '.opt-remove', function () {
       var $list = $(this).closest('.ctm-options-list');
       var fieldId = $list.data('field-id');
@@ -835,43 +926,35 @@
 
       var idx = $(this).closest('.ctm-option-row').data('opt-idx');
       f.options.splice(idx, 1);
-
-      var $row = $canvas.find('[data-field-id="' + fieldId + '"]');
-      $row.find('.ctm-field-settings').html(renderFieldSettings(f));
-      initOptionsSortable($row);
+      renderSidebar();
       syncConfig();
     });
 
-    // Condition toggle
+    // ── Condition toggle ──
     $(document).on('change', '.cond-toggle', function () {
       var fieldId = $(this).data('field-id');
       var f = findField(fieldId);
       if (!f) return;
 
-      var $panel = $(this).closest('.ctm-conditions-editor').find('.ctm-conditions-panel');
       if ($(this).prop('checked')) {
         if (!f.conditions || f.conditions.length === 0) {
           f.conditions = [{ field: '', operator: 'equals', value: '' }];
         }
-        $panel.show();
-        // Re-render
-        var $row = $canvas.find('[data-field-id="' + fieldId + '"]');
-        $row.find('.ctm-field-settings').html(renderFieldSettings(f));
       } else {
         f.conditions = [];
-        $panel.hide();
       }
+      renderSidebar();
       syncConfig();
       renderBadges($canvas.find('[data-field-id="' + fieldId + '"]'), f);
     });
 
-    // Condition logic change
+    // ── Condition logic change ──
     $(document).on('change', '.cond-logic', function () {
       var fieldId = $(this).data('field-id');
       updateField(fieldId, 'conditionLogic', $(this).val());
     });
 
-    // Condition row changes
+    // ── Condition row changes ──
     $(document).on('change input', '.ctm-condition-row select, .ctm-condition-row input', function () {
       var $panel = $(this).closest('.ctm-conditions-panel');
       var fieldId = $panel.data('field-id');
@@ -899,20 +982,18 @@
       }
     });
 
-    // Add condition
+    // ── Add condition ──
     $(document).on('click', '.ctm-add-condition', function () {
       var fieldId = $(this).data('field-id');
       var f = findField(fieldId);
       if (!f) return;
       if (!f.conditions) f.conditions = [];
       f.conditions.push({ field: '', operator: 'equals', value: '' });
-
-      var $row = $canvas.find('[data-field-id="' + fieldId + '"]');
-      $row.find('.ctm-field-settings').html(renderFieldSettings(f));
+      renderSidebar();
       syncConfig();
     });
 
-    // Remove condition
+    // ── Remove condition ──
     $(document).on('click', '.cond-remove', function () {
       var $panel = $(this).closest('.ctm-conditions-panel');
       var fieldId = $panel.data('field-id');
@@ -921,15 +1002,13 @@
 
       var idx = $(this).closest('.ctm-condition-row').data('cond-idx');
       f.conditions.splice(idx, 1);
-
-      var $row = $canvas.find('[data-field-id="' + fieldId + '"]');
-      $row.find('.ctm-field-settings').html(renderFieldSettings(f));
+      renderSidebar();
       syncConfig();
-      renderBadges($row, f);
+      renderBadges($canvas.find('[data-field-id="' + fieldId + '"]'), f);
     });
 
-    // Form settings changes
-    $(document).on('change input', '#ctm-builder-form-settings input, #ctm-builder-form-settings select, #ctm-builder-form-settings textarea', function () {
+    // ── Form settings changes (sidebar, bs-* IDs) ──
+    $(document).on('change input', '#ctm-builder-sidebar input[id^="bs-"], #ctm-builder-sidebar select[id^="bs-"], #ctm-builder-sidebar textarea[id^="bs-"]', function () {
       var id = $(this).attr('id');
       if (!id || !id.startsWith('bs-')) return;
       var key = id.substring(3);
@@ -954,17 +1033,16 @@
           break;
         case 'multiStep':
           config.settings.multiStep = val;
-          $('#bs-progressBar-row').toggle(val);
-          $('#bs-titlepage-section').toggle(val);
           renderMultiStepControls();
           renderFieldList();
+          renderSidebar();
           break;
         case 'progressBar':
           config.settings.progressBar = val;
           break;
         case 'titlePageEnabled':
           config.settings.titlePage.enabled = val;
-          $('#bs-titlepage-fields').toggle(val);
+          $sidebar.find('#bs-titlepage-fields').toggle(val);
           break;
         case 'tpHeading':
           config.settings.titlePage.heading = val;
@@ -977,9 +1055,8 @@
           break;
         case 'scoringEnabled':
           config.settings.scoring.enabled = val;
-          $('#bs-scoring-fields').toggle(val);
-          // Re-render field list to show/hide score columns
-          renderFieldList();
+          // Re-render to show/hide score columns in options editor
+          renderSidebar();
           break;
         case 'showTotal':
           config.settings.scoring.showTotal = val;
@@ -1016,8 +1093,8 @@
     $row.find('.ctm-field-badges').html(badges);
   }
 
-  function initOptionsSortable($row) {
-    $row.find('.ctm-options-list').sortable({
+  function initOptionsSortable($container) {
+    $container.find('.ctm-options-list').sortable({
       handle: '.opt-drag',
       items: '.ctm-option-row',
       update: function () {
@@ -1060,11 +1137,13 @@
 
     $previewFrame.addClass('loading');
 
-    $.post(CTM_BUILDER.ajaxUrl, {
+    var data = {
       action: 'ctm_builder_preview',
-      ctm_nonce: CTM_BUILDER.nonce,
       config: JSON.stringify(config)
-    }, function (res) {
+    };
+    data[CTM_BUILDER.nonceName] = CTM_BUILDER.nonce;
+
+    $.post(CTM_BUILDER.ajaxUrl, data, function (res) {
       $previewFrame.removeClass('loading');
       if (res && res.success && res.data && res.data.html) {
         $previewFrame.html(res.data.html);

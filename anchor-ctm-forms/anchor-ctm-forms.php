@@ -492,6 +492,16 @@ class Anchor_CTM_Forms_Module {
     /* ========================= Metaboxes ========================= */
     public function add_variant_metabox() {
         add_meta_box( 'anchor_ctm_variant', __( 'CTM Form Builder', 'anchor-schema' ), [ $this, 'variant_metabox_cb' ], 'ctm_form_variant', 'normal', 'high' );
+        add_meta_box( 'anchor_ctm_builder_sidebar', __( 'Builder Settings', 'anchor-schema' ), [ $this, 'builder_sidebar_cb' ], 'ctm_form_variant', 'side', 'default' );
+    }
+
+    /* ========================= Metabox: Builder Sidebar ========================= */
+    public function builder_sidebar_cb( $post ) {
+        ?>
+        <div id="ctm-builder-sidebar">
+            <p class="ctm-sidebar-empty" style="color:#666;font-style:italic;">Select the "Build Custom Form" tab to configure.</p>
+        </div>
+        <?php
     }
 
     /* ========================= Metabox: Form Builder (Tabbed) ========================= */
@@ -630,12 +640,6 @@ class Anchor_CTM_Forms_Module {
 
             <!-- Sortable field canvas -->
             <div id="ctm-field-canvas" class="empty"><span><?php esc_html_e( 'Click a button above to add fields', 'anchor-schema' ); ?></span></div>
-
-            <!-- Form settings -->
-            <div class="ctm-builder-settings">
-                <h4><?php esc_html_e( 'Form Settings', 'anchor-schema' ); ?></h4>
-                <div id="ctm-builder-form-settings"></div>
-            </div>
 
             <!-- Hidden config textarea -->
             <textarea name="ctm_form_config" id="ctm_form_config" style="display:none;"><?php echo esc_textarea( $form_config ); ?></textarea>

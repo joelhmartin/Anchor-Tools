@@ -9,6 +9,8 @@
     var $status = $('#anchor-store-status');
     var debounce = null;
 
+    var isPostEditor = !!$('#anchor_store_address').length;
+
     var fields = {
         placeId: $('#anchor-store-place-id'),
         title: $('#anchor-store-title'),
@@ -20,6 +22,20 @@
         email: $('#anchor-store-email'),
         mapsUrl: $('#anchor-store-maps')
     };
+
+    if (isPostEditor) {
+        fields = {
+            placeId: $('#anchor-store-place-id'),
+            title:   null,
+            address: $('#anchor_store_address'),
+            lat:     $('#anchor_store_lat'),
+            lng:     $('#anchor_store_lng'),
+            website: $('#anchor_store_website'),
+            phone:   $('#anchor_store_phone'),
+            email:   $('#anchor_store_email'),
+            mapsUrl: $('#anchor_store_maps_url')
+        };
+    }
 
     function escapeHtml(str) {
         if (str === null || str === undefined) return '';
@@ -123,14 +139,19 @@
     }
 
     function fillForm(details) {
-        if (fields.placeId.length) fields.placeId.val(details.place_id || '');
-        if (fields.title.length && details.name) fields.title.val(details.name);
-        if (fields.address.length && details.address) fields.address.val(details.address);
-        if (fields.lat.length && details.lat) fields.lat.val(details.lat);
-        if (fields.lng.length && details.lng) fields.lng.val(details.lng);
-        if (fields.website.length) fields.website.val(details.website || '');
-        if (fields.phone.length) fields.phone.val(details.phone || '');
-        if (fields.mapsUrl.length) fields.mapsUrl.val(details.maps_url || '');
+        if (fields.placeId && fields.placeId.length) fields.placeId.val(details.place_id || '');
+        if (fields.title && fields.title.length && details.name) fields.title.val(details.name);
+        if (fields.address && fields.address.length && details.address) fields.address.val(details.address);
+        if (fields.lat && fields.lat.length && details.lat) fields.lat.val(details.lat);
+        if (fields.lng && fields.lng.length && details.lng) fields.lng.val(details.lng);
+        if (fields.website && fields.website.length) fields.website.val(details.website || '');
+        if (fields.phone && fields.phone.length) fields.phone.val(details.phone || '');
+        if (fields.mapsUrl && fields.mapsUrl.length) fields.mapsUrl.val(details.maps_url || '');
+
+        if (isPostEditor && details.name) {
+            var $wpTitle = $('#title');
+            if ($wpTitle.length) $wpTitle.val(details.name).trigger('change');
+        }
     }
 
     $search.on('input', function(){

@@ -75,3 +75,77 @@
 .anchor-store-locator-admin .anchor-store-status.is-success {
     color: #1d6937;
 }
+
+/* Search panel in post editor metabox */
+.anchor-store-search-panel {
+    margin-bottom: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #dcdcdc;
+}
+
+.anchor-store-search-panel input[type="text"] {
+    margin-top: 6px;
+}
+
+.anchor-store-search-panel .anchor-store-results {
+    border: 1px solid #dcdcdc;
+    border-radius: 6px;
+    margin-top: 10px;
+    overflow: hidden;
+}
+
+.anchor-store-search-panel .anchor-store-result {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px;
+    border-top: 1px solid #e9e9e9;
+}
+
+.anchor-store-search-panel .anchor-store-result:first-child {
+    border-top: none;
+}
+
+.anchor-store-search-panel .anchor-store-meta {
+    flex: 1;
+}
+
+.anchor-store-search-panel .anchor-store-name {
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.anchor-store-search-panel .anchor-store-address {
+    color: #444;
+}
+
+.anchor-store-search-panel .anchor-store-badge {
+    display: inline-block;
+    background: #2271b1;
+    color: #fff;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.anchor-store-search-panel .anchor-store-empty {
+    padding: 12px;
+    text-align: center;
+    color: #444;
+}
+
+.anchor-store-search-panel .anchor-store-status {
+    margin: 8px 0 0;
+    font-weight: 600;
+}
+
+.anchor-store-search-panel .anchor-store-status.is-error {
+    color: #b32d2e;
+}
+
+.anchor-store-search-panel .anchor-store-status.is-success {
+    color: #1d6937;
+}

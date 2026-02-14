@@ -28,6 +28,7 @@ class Module {
         }
 
         \add_shortcode( 'anchor_store_locator', [ $this, 'shortcode' ] );
+        \add_shortcode( 'anchor_store_field', [ $this, 'field_shortcode' ] );
     }
 
     public function register_cpt() {
@@ -74,8 +75,16 @@ class Module {
         $email = \get_post_meta( $post->ID, '_anchor_store_email', true );
         $phone = \get_post_meta( $post->ID, '_anchor_store_phone', true );
         $maps_url = \get_post_meta( $post->ID, '_anchor_store_maps_url', true );
+        $place_id = \get_post_meta( $post->ID, '_anchor_store_place_id', true );
         ?>
         <div class="anchor-store-meta">
+            <div class="anchor-store-search-panel">
+                <strong><?php echo \esc_html__( 'Find a Google Listing', 'anchor-schema' ); ?></strong>
+                <input type="text" id="anchor-store-search" class="regular-text" placeholder="<?php echo \esc_attr__( 'Search business name or address...', 'anchor-schema' ); ?>" autocomplete="off" />
+                <div id="anchor-store-results" class="anchor-store-results" style="display:none;"></div>
+                <div id="anchor-store-status" class="anchor-store-status" aria-live="polite"></div>
+            </div>
+            <input type="hidden" name="anchor_store_place_id" id="anchor-store-place-id" value="<?php echo \esc_attr( $place_id ); ?>" />
             <p>
                 <label for="anchor_store_address"><strong><?php echo \esc_html__( 'Address', 'anchor-schema' ); ?></strong></label><br />
                 <input type="text" id="anchor_store_address" name="anchor_store_address" value="<?php echo \esc_attr( $address ); ?>" class="regular-text" required />
@@ -162,6 +171,10 @@ class Module {
 
         \update_post_meta( $post_id, '_anchor_store_lat', $lat_value );
         \update_post_meta( $post_id, '_anchor_store_lng', $lng_value );
+
+        if ( ! empty( $_POST['anchor_store_place_id'] ) ) {
+            \update_post_meta( $post_id, '_anchor_store_place_id', \sanitize_text_field( $_POST['anchor_store_place_id'] ) );
+        }
     }
 
     public function admin_notices() {
@@ -206,7 +219,11 @@ class Module {
     }
 
     public function enqueue_admin_assets( $hook ) {
-        if ( $hook !== 'settings_page_anchor-store-locator' ) {
+        $is_settings = ( $hook === 'settings_page_anchor-store-locator' );
+        $is_post_editor = in_array( $hook, [ 'post.php', 'post-new.php' ], true )
+            && \get_post_type() === self::CPT;
+
+        if ( ! $is_settings && ! $is_post_editor ) {
             return;
         }
 
@@ -594,6 +611,38 @@ class Module {
         $output .= '</div>';
 
         return $output;
+    }
+
+    public function field_shortcode( $atts ) {
+        $atts = \shortcode_atts( [
+            'field' => '',
+            'id'    => '',
+        ], $atts, 'anchor_store_field' );
+
+        $allowed = [
+            'address'  => '_anchor_store_address',
+            'lat'      => '_anchor_store_lat',
+            'lng'      => '_anchor_store_lng',
+            'website'  => '_anchor_store_website',
+            'email'    => '_anchor_store_email',
+            'phone'    => '_anchor_store_phone',
+            'maps_url' => '_anchor_store_maps_url',
+            'place_id' => '_anchor_store_place_id',
+        ];
+
+        $field = \sanitize_key( $atts['field'] );
+        if ( ! isset( $allowed[ $field ] ) ) {
+            return '';
+        }
+
+        $post_id = $atts['id'] ? (int) $atts['id'] : \get_the_ID();
+        if ( ! $post_id ) {
+            return '';
+        }
+
+        $value = \get_post_meta( $post_id, $allowed[ $field ], true );
+
+        return \esc_html( $value );
     }
 
     private function enqueue_frontend_assets() {

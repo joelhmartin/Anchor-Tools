@@ -49,7 +49,8 @@ class Module {
             'labels' => $labels,
             'public' => true,
             'show_in_rest' => true,
-            'has_archive' => true,
+            'has_archive' => false,
+            'rewrite' => [ 'slug' => 'for-doctors/find-a-tmj-centre-near-you', 'with_front' => false ],
             'supports' => [ 'title', 'editor', 'excerpt', 'thumbnail' ],
             'menu_icon' => 'dashicons-location-alt',
         ] );
@@ -730,7 +731,7 @@ class Module {
 
             $locations[] = [
                 'id' => $post->ID,
-                'title' => \wp_strip_all_tags( \get_the_title( $post ) ),
+                'title' => \html_entity_decode( \wp_strip_all_tags( \get_the_title( $post ) ), ENT_QUOTES, 'UTF-8' ),
                 'lat' => $lat,
                 'lng' => $lng,
                 'address' => $address,

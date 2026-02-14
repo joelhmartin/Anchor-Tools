@@ -9,7 +9,7 @@ class Module {
     const ADMIN_NONCE = 'anchor_store_locator_admin';
     const DEFAULT_LAT = 39.8283;
     const DEFAULT_LNG = -98.5795;
-    const DEFAULT_RADIUS_MILES = 50;
+    const DEFAULT_RADIUS_MILES = 100;
 
     private $assets_enqueued = false;
 
@@ -600,12 +600,24 @@ class Module {
             return '<div class="anchor-store-locator anchor-store-missing-key">' . \esc_html__( 'Google Maps API key is missing. Add it in Anchor Tools Settings.', 'anchor-schema' ) . '</div>';
         }
 
+        $radii = [ 25, 50, 100, 250, 500 ];
+
         $output = '<div class="anchor-store-locator" data-anchor-store-locator>';
         $output .= '<div class="anchor-store-controls">';
         $output .= '<label class="screen-reader-text" for="anchor-store-search">' . \esc_html__( 'Search location', 'anchor-schema' ) . '</label>';
         $output .= '<input id="anchor-store-search" class="anchor-store-search" type="text" placeholder="' . \esc_attr__( 'Search by city, ZIP, or address', 'anchor-schema' ) . '" aria-label="' . \esc_attr__( 'Search by city, ZIP, or address', 'anchor-schema' ) . '" data-anchor-store-search />';
+        $output .= '<select class="anchor-store-radius" data-anchor-store-radius aria-label="' . \esc_attr__( 'Search radius', 'anchor-schema' ) . '">';
+        foreach ( $radii as $r ) {
+            $selected = ( $r === self::DEFAULT_RADIUS_MILES ) ? ' selected' : '';
+            $output .= '<option value="' . $r . '"' . $selected . '>' . $r . ' ' . \esc_html__( 'miles', 'anchor-schema' ) . '</option>';
+        }
+        $output .= '</select>';
         $output .= '<button type="button" class="anchor-store-button" data-anchor-store-geolocate aria-label="' . \esc_attr__( 'Use My Current Location', 'anchor-schema' ) . '">' . \esc_html__( 'Use My Current Location', 'anchor-schema' ) . '</button>';
         $output .= '<span class="anchor-store-status" data-anchor-store-status aria-live="polite"></span>';
+        $output .= '</div>';
+        $output .= '<div class="anchor-store-text-search">';
+        $output .= '<input type="text" class="anchor-store-name-search" placeholder="' . \esc_attr__( 'Search by store name...', 'anchor-schema' ) . '" aria-label="' . \esc_attr__( 'Search by store name', 'anchor-schema' ) . '" data-anchor-store-name-search />';
+        $output .= '<div class="anchor-store-name-results" data-anchor-store-name-results style="display:none;"></div>';
         $output .= '</div>';
         $output .= '<div class="anchor-store-map" data-anchor-store-map aria-label="' . \esc_attr__( 'Store locations map', 'anchor-schema' ) . '"></div>';
         $output .= '<div class="anchor-store-results" data-anchor-store-results aria-live="polite"></div>';

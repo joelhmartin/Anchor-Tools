@@ -4,7 +4,7 @@
 
   var config = window.ANCHOR_STORE_LOCATOR;
   var locations = Array.isArray(config.locations) ? config.locations : [];
-  var radiusMiles = Number(config.radiusMiles || 50);
+  var radiusMiles = Number(config.radiusMiles || 100);
   var defaultCenter = {
     lat: Number(config.defaultLat || 0),
     lng: Number(config.defaultLng || 0)
@@ -33,6 +33,12 @@
       window.clearTimeout(timer);
       timer = window.setTimeout(function(){ fn.apply(null, args); }, delay);
     };
+  }
+
+  function escapeHtml(str){
+    var div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
   }
 
   function createCard(loc, distance){
@@ -75,22 +81,22 @@
 
     if(loc.phone){
       var phone = document.createElement('div');
-      phone.innerHTML = '<strong>Phone:</strong> ' + loc.phone;
+      phone.innerHTML = '<strong>Phone:</strong> ' + escapeHtml(loc.phone);
       meta.appendChild(phone);
     }
     if(loc.email){
       var email = document.createElement('div');
-      email.innerHTML = '<strong>Email:</strong> <a href="mailto:' + loc.email + '">' + loc.email + '</a>';
+      email.innerHTML = '<strong>Email:</strong> <a href="mailto:' + escapeHtml(loc.email) + '">' + escapeHtml(loc.email) + '</a>';
       meta.appendChild(email);
     }
     if(loc.website){
       var website = document.createElement('div');
-      website.innerHTML = '<strong>Website:</strong> <a href="' + loc.website + '" target="_blank" rel="noopener">Visit site</a>';
+      website.innerHTML = '<strong>Website:</strong> <a href="' + escapeHtml(loc.website) + '" target="_blank" rel="noopener">Visit site</a>';
       meta.appendChild(website);
     }
     if(loc.mapsUrl){
       var maps = document.createElement('div');
-      maps.innerHTML = '<a href="' + loc.mapsUrl + '" target="_blank" rel="noopener">View on Google Maps</a>';
+      maps.innerHTML = '<a href="' + escapeHtml(loc.mapsUrl) + '" target="_blank" rel="noopener">View on Google Maps</a>';
       meta.appendChild(maps);
     }
 
@@ -118,6 +124,9 @@
     var searchInput = root.querySelector('[data-anchor-store-search]');
     var geoButton = root.querySelector('[data-anchor-store-geolocate]');
     var statusEl = root.querySelector('[data-anchor-store-status]');
+    var radiusSelect = root.querySelector('[data-anchor-store-radius]');
+    var nameSearchInput = root.querySelector('[data-anchor-store-name-search]');
+    var nameResultsEl = root.querySelector('[data-anchor-store-name-results]');
 
     if(!mapEl || !listEl){ return; }
 
@@ -172,7 +181,7 @@
       });
 
       if(results.length === 0){
-        listEl.innerHTML = '<div class="anchor-store-empty">No locations within range.</div>';
+        listEl.innerHTML = '<div class="anchor-store-empty">No locations within ' + radiusMiles + ' miles.</div>';
       }
 
       results.forEach(function(item){
@@ -262,6 +271,66 @@
         if(e.key === 'Enter'){
           e.preventDefault();
           geocodeAddress(e.target.value || '');
+        }
+      });
+    }
+
+    // Radius selector
+    if(radiusSelect){
+      radiusSelect.addEventListener('change', function(){
+        radiusMiles = Number(radiusSelect.value) || 100;
+        renderResults();
+      });
+    }
+
+    // Name search — filters all stores by name, shows linked results
+    if(nameSearchInput && nameResultsEl){
+      var debouncedNameSearch = debounce(function(query){
+        if(!query || query.length < 2){
+          nameResultsEl.style.display = 'none';
+          nameResultsEl.innerHTML = '';
+          return;
+        }
+        var lower = query.toLowerCase();
+        var matches = locations.filter(function(loc){
+          return (loc.title || '').toLowerCase().indexOf(lower) !== -1
+            || (loc.address || '').toLowerCase().indexOf(lower) !== -1;
+        });
+
+        if(!matches.length){
+          nameResultsEl.innerHTML = '<div class="anchor-store-name-empty">No matching stores found.</div>';
+          nameResultsEl.style.display = '';
+          return;
+        }
+
+        var html = '';
+        matches.forEach(function(loc){
+          html += '<a class="anchor-store-name-item" href="' + escapeHtml(loc.permalink) + '">';
+          html += '<span class="anchor-store-name-title">' + escapeHtml(loc.title) + '</span>';
+          if(loc.address){
+            html += '<span class="anchor-store-name-addr">' + escapeHtml(loc.address) + '</span>';
+          }
+          html += '</a>';
+        });
+        nameResultsEl.innerHTML = html;
+        nameResultsEl.style.display = '';
+      }, 250);
+
+      nameSearchInput.addEventListener('input', function(){
+        debouncedNameSearch(nameSearchInput.value.trim());
+      });
+
+      // Close results when clicking outside
+      document.addEventListener('click', function(e){
+        if(!nameSearchInput.contains(e.target) && !nameResultsEl.contains(e.target)){
+          nameResultsEl.style.display = 'none';
+        }
+      });
+
+      // Reopen on focus if there's a query
+      nameSearchInput.addEventListener('focus', function(){
+        if(nameSearchInput.value.trim().length >= 2 && nameResultsEl.innerHTML){
+          nameResultsEl.style.display = '';
         }
       });
     }

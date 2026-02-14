@@ -160,7 +160,12 @@
       });
     }
 
+    function getRadius(){
+      return radiusSelect ? Number(radiusSelect.value) || radiusMiles : radiusMiles;
+    }
+
     function renderResults(){
+      var radius = getRadius();
       listEl.innerHTML = '';
       var results = locations.map(function(loc){
         var distance = null;
@@ -175,13 +180,13 @@
         if(item.distance === null || isNaN(item.distance)){
           return false;
         }
-        return item.distance <= radiusMiles;
+        return item.distance <= radius;
       }).sort(function(a, b){
         return a.distance - b.distance;
       });
 
       if(results.length === 0){
-        listEl.innerHTML = '<div class="anchor-store-empty">No locations within ' + radiusMiles + ' miles.</div>';
+        listEl.innerHTML = '<div class="anchor-store-empty">No locations within ' + radius + ' miles.</div>';
       }
 
       results.forEach(function(item){
@@ -212,9 +217,9 @@
       });
 
       if(results.length){
-        setStatus('Showing ' + results.length + ' locations within ' + radiusMiles + ' miles.');
+        setStatus('Showing ' + results.length + ' location' + (results.length !== 1 ? 's' : '') + ' within ' + radius + ' miles.');
       } else {
-        setStatus('No locations found within ' + radiusMiles + ' miles.');
+        setStatus('No locations found within ' + radius + ' miles.');
       }
     }
 
@@ -278,7 +283,6 @@
     // Radius selector
     if(radiusSelect){
       radiusSelect.addEventListener('change', function(){
-        radiusMiles = Number(radiusSelect.value) || 100;
         renderResults();
       });
     }

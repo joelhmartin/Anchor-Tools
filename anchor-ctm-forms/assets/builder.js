@@ -27,7 +27,8 @@
     hidden:    { label: 'Hidden',    icon: 'dashicons-hidden',           group: 'input' },
     heading:   { label: 'Heading',   icon: 'dashicons-heading',          group: 'layout' },
     paragraph: { label: 'Paragraph', icon: 'dashicons-editor-alignleft', group: 'layout' },
-    divider:   { label: 'Divider',   icon: 'dashicons-minus',            group: 'layout' }
+    divider:       { label: 'Divider',       icon: 'dashicons-minus',            group: 'layout' },
+    score_display: { label: 'Score Display', icon: 'dashicons-chart-bar',       group: 'layout' }
   };
 
   var OPERATORS = [
@@ -115,6 +116,9 @@
     renderMultiStepControls();
     syncConfig();
 
+    // Show/hide score_display palette button based on scoring
+    toggleScorePalette();
+
     // Initial sidebar visibility
     if ($modeInput.val() !== 'builder') {
       $('#anchor_ctm_builder_sidebar').hide();
@@ -137,6 +141,11 @@
     if (!s.titlePage) s.titlePage = { enabled: false, heading: '', description: '', buttonText: 'Get Started' };
     if (!s.scoring) s.scoring = { enabled: false, showTotal: false, totalLabel: 'Your Score', sendAs: 'custom_total_score' };
     if (!config.fields) config.fields = [];
+  }
+
+  function toggleScorePalette() {
+    var show = config.settings.scoring && config.settings.scoring.enabled;
+    $('#ctm-palette-score-display').toggle(!!show);
   }
 
   /* ═══════════════════════════════════════════════
@@ -254,10 +263,14 @@
       case 'divider':
         f.label = '';
         break;
+      case 'score_display':
+        f.label = 'Your Score';
+        f.name = 'custom_total_score';
+        break;
     }
 
     // Auto-generate field name
-    if (!f.name && type !== 'heading' && type !== 'paragraph' && type !== 'divider') {
+    if (!f.name && type !== 'heading' && type !== 'paragraph' && type !== 'divider' && type !== 'score_display') {
       f.name = 'custom_' + type + '_' + f.id.substr(2, 4);
     }
 
@@ -265,6 +278,14 @@
   }
 
   function addField(type) {
+    // Limit to one score_display per form
+    if (type === 'score_display') {
+      var exists = config.fields.some(function (f) { return f.type === 'score_display'; });
+      if (exists) {
+        alert('Only one Score Display field is allowed per form.');
+        return;
+      }
+    }
     var f = getFieldDefaults(type);
     // Assign to active step if multi-step
     if (config.settings.multiStep) {
@@ -494,11 +515,9 @@
     html += '<label for="bs-scoringEnabled">Enable Scoring</label>';
     html += '</div>';
 
-    html += '<div id="bs-scoring-fields" style="' + (sc.enabled ? '' : 'display:none;') + '">';
-    html += '<div class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="bs-showTotal"' + (sc.showTotal ? ' checked' : '') + ' /><label for="bs-showTotal">Show Total to User</label></div>';
-    html += '<label>Score Label</label><input type="text" id="bs-totalLabel" value="' + esc(sc.totalLabel) + '" />';
-    html += '<label>Send Score As</label><input type="text" id="bs-sendAs" value="' + esc(sc.sendAs) + '" />';
-    html += '</div>';
+    if (sc.enabled) {
+      html += '<p style="color:#666;font-size:12px;margin:8px 0 0;">Assign scores to options in each field\u2019s Options accordion. Add a \u201cScore Display\u201d field from the palette to show the total.</p>';
+    }
 
     return html;
   }
@@ -545,6 +564,12 @@
       return html;
     }
 
+    if (f.type === 'score_display') {
+      html += settingField('Score Label', 'label', f.label, 'text', '');
+      html += settingField('Send Score As', 'name', f.name, 'text', '');
+      return html;
+    }
+
     if (f.type === 'hidden') {
       html += settingField('Field Name', 'name', f.name, 'text', '');
       html += settingField('Value', 'defaultValue', f.defaultValue, 'text', '');
@@ -572,7 +597,7 @@
   function renderFieldAdvancedContent(f) {
     var html = '';
 
-    if (f.type === 'heading' || f.type === 'paragraph' || f.type === 'divider') {
+    if (f.type === 'heading' || f.type === 'paragraph' || f.type === 'divider' || f.type === 'score_display') {
       html += settingField('CSS Class', 'cssClass', f.cssClass || '', 'text', '');
       return html;
     }
@@ -682,11 +707,10 @@
       html += '<span class="opt-drag dashicons dashicons-menu"></span>';
       html += '<input type="text" class="opt-label" placeholder="Label" value="' + esc(opt.label) + '" />';
       html += '<input type="text" class="opt-value" placeholder="Value" value="' + esc(opt.value) + '" />';
-      if (showScore) {
-        html += '<span class="opt-score-label">Score:</span>';
-        html += '<input type="number" class="opt-score" value="' + (opt.score || 0) + '" />';
-      }
       html += '<button type="button" class="opt-remove" title="Remove"><span class="dashicons dashicons-no-alt"></span></button>';
+      if (showScore) {
+        html += '<div class="opt-score-row"><span class="opt-score-label">Score:</span><input type="number" class="opt-score" value="' + (opt.score || 0) + '" /></div>';
+      }
       html += '</div>';
     });
 
@@ -703,7 +727,7 @@
   function renderConditionRow(fieldId, idx, cond) {
     // Build field dropdown (all other input-type fields)
     var otherFields = config.fields.filter(function (f) {
-      return f.id !== fieldId && ['heading', 'paragraph', 'divider'].indexOf(f.type) === -1;
+      return f.id !== fieldId && ['heading', 'paragraph', 'divider', 'score_display'].indexOf(f.type) === -1;
     });
 
     var html = '<div class="ctm-condition-row" data-cond-idx="' + idx + '">';
@@ -1063,17 +1087,9 @@
           break;
         case 'scoringEnabled':
           config.settings.scoring.enabled = val;
+          toggleScorePalette();
           // Re-render to show/hide score columns in options editor
           renderSidebar();
-          break;
-        case 'showTotal':
-          config.settings.scoring.showTotal = val;
-          break;
-        case 'totalLabel':
-          config.settings.scoring.totalLabel = val;
-          break;
-        case 'sendAs':
-          config.settings.scoring.sendAs = val;
           break;
       }
 

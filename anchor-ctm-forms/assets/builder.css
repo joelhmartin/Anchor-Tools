@@ -302,6 +302,7 @@
     gap: 6px;
     padding: 5px 8px;
     border-bottom: 1px solid #f0f0f1;
+    flex-wrap: wrap;
 }
 
 .ctm-option-row:last-child {
@@ -318,9 +319,16 @@
     cursor: grabbing;
 }
 
-.ctm-option-row input[type="text"] {
+.ctm-option-row .opt-label {
+    flex: 2;
+    min-width: 60px;
+    padding: 3px 6px;
+    font-size: 12px;
+}
+
+.ctm-option-row .opt-value {
     flex: 1;
-    min-width: 0;
+    min-width: 60px;
     padding: 3px 6px;
     font-size: 12px;
 }
@@ -522,7 +530,16 @@
     margin-top: 12px;
 }
 
-/* ── Score column in options editor ── */
+/* ── Score row in options editor ── */
+.ctm-option-row .opt-score-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 20px;
+    padding-top: 2px;
+}
+
 .ctm-option-row .opt-score-label {
     font-size: 10px;
     color: #646970;

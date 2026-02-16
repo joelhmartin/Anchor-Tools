@@ -633,6 +633,7 @@ class Anchor_CTM_Forms_Module {
                 <button type="button" class="ctm-palette-btn" data-type="heading"><span class="dashicons dashicons-heading"></span> <?php esc_html_e( 'Heading', 'anchor-schema' ); ?></button>
                 <button type="button" class="ctm-palette-btn" data-type="paragraph"><span class="dashicons dashicons-editor-alignleft"></span> <?php esc_html_e( 'Paragraph', 'anchor-schema' ); ?></button>
                 <button type="button" class="ctm-palette-btn" data-type="divider"><span class="dashicons dashicons-minus"></span> <?php esc_html_e( 'Divider', 'anchor-schema' ); ?></button>
+                <span id="ctm-palette-score-display" style="display:none;"><button type="button" class="ctm-palette-btn" data-type="score_display"><span class="dashicons dashicons-chart-bar"></span> <?php esc_html_e( 'Score Display', 'anchor-schema' ); ?></button></span>
             </div>
 
             <!-- Multi-step controls (shown when multi-step enabled in builder settings) -->
@@ -1076,10 +1077,7 @@ class Anchor_CTM_Forms_Module {
 
         // Scoring data attribute on form if scoring enabled
         if ( $scoring_on ) {
-            $scoring_data = wp_json_encode( [
-                'sendAs'    => $scoring['sendAs'] ?? 'custom_total_score',
-                'showTotal' => ! empty( $scoring['showTotal'] ),
-            ] );
+            $scoring_data = wp_json_encode( [ 'enabled' => true ] );
             $html = "<form id=\"ctmForm\" novalidate data-scoring='" . esc_attr( $scoring_data ) . "'>\n";
         }
 
@@ -1093,21 +1091,6 @@ class Anchor_CTM_Forms_Module {
             // Submit button in last step (or single step)
             $step_keys = array_keys( $steps );
             if ( $step_idx === end( $step_keys ) ) {
-                // Scoring display before submit
-                if ( $scoring_on ) {
-                    $show_total = ! empty( $scoring['showTotal'] );
-                    $total_label = esc_html( $scoring['totalLabel'] ?? 'Your Score' );
-                    $send_as = esc_attr( $scoring['sendAs'] ?? 'custom_total_score' );
-
-                    if ( $show_total ) {
-                        $html .= "    <div class=\"ctm-score-wrap\">\n";
-                        $html .= "      <span class=\"ctm-score-label\">{$total_label}:</span>\n";
-                        $html .= "      <span class=\"ctm-score-display\">0</span>\n";
-                        $html .= "    </div>\n";
-                    }
-                    $html .= "    <input type=\"hidden\" name=\"{$send_as}\" class=\"ctm-custom ctm-score-input\" value=\"0\" />\n";
-                }
-
                 $html .= "    <button type=\"submit\">" . esc_html( $submit_text ) . "</button>\n";
             }
 
@@ -1191,6 +1174,18 @@ class Anchor_CTM_Forms_Module {
             }
             if ( $type === 'divider' ) {
                 $html .= "    <div class=\"{$wrapper_class}\"{$fid_attr}{$cond_attrs}><hr /></div>\n";
+                continue;
+            }
+            if ( $type === 'score_display' ) {
+                $score_label = esc_html( $label ?: 'Your Score' );
+                $score_name  = esc_attr( $name ?: 'custom_total_score' );
+                $html .= "    <div class=\"{$wrapper_class}\"{$fid_attr}{$cond_attrs}>\n";
+                $html .= "      <div class=\"ctm-score-wrap\">\n";
+                $html .= "        <span class=\"ctm-score-label\">{$score_label}:</span>\n";
+                $html .= "        <span class=\"ctm-score-display\">0</span>\n";
+                $html .= "      </div>\n";
+                $html .= "      <input type=\"hidden\" name=\"{$score_name}\" class=\"ctm-custom ctm-score-input\" value=\"0\" />\n";
+                $html .= "    </div>\n";
                 continue;
             }
 

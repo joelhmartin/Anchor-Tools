@@ -575,14 +575,34 @@
     display: block;
 }
 
-/* ── Sidebar field header ── */
-.ctm-sidebar-field-header {
-    padding: 8px 0;
-    margin-top: 12px;
-    border-top: 2px solid #2271b1;
+/* ── Sidebar panels ── */
+.ctm-sidebar-panel {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: #f9f9f9;
+    border: 1px solid #e2e4e7;
+    border-radius: 6px;
+}
+
+.ctm-sidebar-panel:last-child {
+    margin-bottom: 0;
+}
+
+.ctm-sidebar-panel-header {
     font-weight: 600;
-    color: #2271b1;
     font-size: 13px;
+    color: #1d2327;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #ddd;
+}
+
+.ctm-sidebar-panel-field {
+    border-top: 3px solid #2271b1;
+}
+
+.ctm-sidebar-panel-field .ctm-sidebar-panel-header {
+    color: #2271b1;
 }
 
 /* ── Sidebar input styling ── */
@@ -638,4 +658,262 @@
     color: #666;
     font-style: italic;
     font-size: 12px;
+    padding: 4px 0;
+}
+
+/* ══════════════════════════════════════════════════
+   METABOX — Reusable Box & Layout Classes
+   ══════════════════════════════════════════════════ */
+.ctm-box {
+    border: 1px solid #ddd;
+    padding: 12px;
+    border-radius: 8px;
+    background: #fff;
+    margin-bottom: 12px;
+}
+
+.ctm-reactor-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.ctm-reactor-row label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ctm-title-page-fields {
+    margin-top: 8px;
+    padding: 12px;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    background: #fafafa;
+}
+
+.ctm-ms-instructions {
+    margin-top: 8px;
+    padding: 14px 16px;
+    border: 1px solid #c3d9e0;
+    border-radius: 6px;
+    background: #f0f6f8;
+}
+
+.ctm-ms-instructions .ctm-ms-title {
+    margin: 0 0 8px;
+    font-weight: 600;
+    color: #1b3a4b;
+}
+
+.ctm-ms-instructions .ctm-ms-desc {
+    margin: 0 0 8px;
+    color: #2c2c2c;
+}
+
+.ctm-ms-instructions pre {
+    margin: 0;
+    padding: 10px 12px;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-x: auto;
+    color: #23282d;
+}
+
+.ctm-ms-instructions .ctm-ms-note {
+    margin: 8px 0 0;
+    font-size: 12px;
+    color: #666;
+}
+
+.ctm-form-html-editor {
+    width: 100%;
+    height: 420px;
+}
+
+.ctm-shortcode-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.ctm-shortcode-row input[type="text"] {
+    width: 100%;
+}
+
+.ctm-analytics-fields {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #eee;
+}
+
+.ctm-analytics-fields .form-table {
+    margin: 0;
+}
+
+.ctm-analytics-fields .form-table th {
+    padding: 8px 10px 8px 0;
+    width: 180px;
+}
+
+.ctm-analytics-fields .form-table td {
+    padding: 8px 0;
+}
+
+/* ══════════════════════════════════════════════════
+   PREVIEW FRAME — Scoped Frontend Form Styles
+   Mirrors form-logic.css so the admin preview
+   renders columns and styled form elements.
+   ══════════════════════════════════════════════════ */
+
+/* ── Column layout ── */
+.ctm-builder-preview-frame .ctm-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.ctm-builder-preview-frame .ctm-col-full    { width: 100%; }
+.ctm-builder-preview-frame .ctm-col-half    { width: calc(50% - 8px); }
+.ctm-builder-preview-frame .ctm-col-third   { width: calc(33.333% - 11px); }
+.ctm-builder-preview-frame .ctm-col-quarter { width: calc(25% - 12px); }
+
+/* ── Labels ── */
+.ctm-builder-preview-frame label {
+    display: block;
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 4px;
+    color: #1d2327;
+}
+
+/* ── Inputs, textarea, select ── */
+.ctm-builder-preview-frame input[type="text"],
+.ctm-builder-preview-frame input[type="email"],
+.ctm-builder-preview-frame input[type="tel"],
+.ctm-builder-preview-frame input[type="number"],
+.ctm-builder-preview-frame input[type="url"],
+.ctm-builder-preview-frame textarea,
+.ctm-builder-preview-frame select {
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    font-size: 14px;
+    line-height: 1.5;
+    box-sizing: border-box;
+    background: #fff;
+    color: #1d2327;
+}
+
+.ctm-builder-preview-frame textarea {
+    min-height: 80px;
+    resize: vertical;
+}
+
+.ctm-builder-preview-frame input:focus,
+.ctm-builder-preview-frame textarea:focus,
+.ctm-builder-preview-frame select:focus {
+    border-color: #2271b1;
+    box-shadow: 0 0 0 1px #2271b1;
+    outline: none;
+}
+
+/* ── Submit button ── */
+.ctm-builder-preview-frame button[type="submit"],
+.ctm-builder-preview-frame input[type="submit"] {
+    display: inline-block;
+    padding: 10px 24px;
+    background: #2271b1;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+}
+
+.ctm-builder-preview-frame button[type="submit"]:hover,
+.ctm-builder-preview-frame input[type="submit"]:hover {
+    background: #135e96;
+}
+
+/* ── Fieldset / legend ── */
+.ctm-builder-preview-frame fieldset {
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+
+.ctm-builder-preview-frame legend {
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 6px;
+}
+
+/* ── Checkbox / radio ── */
+.ctm-builder-preview-frame .ctm-check-label,
+.ctm-builder-preview-frame .ctm-radio-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 400;
+    margin-bottom: 4px;
+}
+
+/* ── Field wrapper spacing ── */
+.ctm-builder-preview-frame .ctm-field-wrap {
+    margin-bottom: 12px;
+}
+
+/* ── Floating label ── */
+.ctm-builder-preview-frame .input {
+    position: relative;
+}
+
+.ctm-builder-preview-frame .input label {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    font-size: 13px;
+    font-weight: 400;
+    color: #888;
+    pointer-events: none;
+    transition: all .2s ease;
+}
+
+/* ── Help text ── */
+.ctm-builder-preview-frame .ctm-help-text {
+    display: block;
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+}
+
+/* ── Score display ── */
+.ctm-builder-preview-frame .ctm-score-wrap {
+    padding: 12px 16px;
+    margin: 12px 0;
+    background: #f8f9fa;
+    border: 1px solid #e2e4e7;
+    border-radius: 6px;
+    text-align: center;
+}
+
+/* ── Headings / paragraphs / dividers ── */
+.ctm-builder-preview-frame h3 {
+    margin: 16px 0 8px;
+    font-size: 16px;
+}
+
+.ctm-builder-preview-frame hr {
+    border: none;
+    border-top: 1px solid #ddd;
+    margin: 12px 0;
 }

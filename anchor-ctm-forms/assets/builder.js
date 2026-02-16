@@ -395,21 +395,29 @@
 
     var html = '';
 
-    // Form-level accordions (always shown)
+    // ── Form Settings panel (always visible) ──
+    html += '<div class="ctm-sidebar-panel ctm-sidebar-panel-form">';
+    html += '<div class="ctm-sidebar-panel-header">Form Settings</div>';
     html += renderAccordion('formSettings', 'Form Settings', renderFormSettingsContent());
     html += renderAccordion('multiStep', 'Multi-Step', renderMultiStepContent());
     html += renderAccordion('scoring', 'Scoring', renderScoringContent());
+    html += '</div>';
 
-    // Field settings (only when a field is selected)
+    // ── Field Settings panel (only when a field is selected) ──
+    html += '<div class="ctm-sidebar-panel ctm-sidebar-panel-field">';
     if (selectedFieldId) {
       var f = findField(selectedFieldId);
       if (f) {
-        html += '<div class="ctm-sidebar-field-header">Field: \u201c' + esc(f.label || f.type) + '\u201d</div>';
+        html += '<div class="ctm-sidebar-panel-header">Field: \u201c' + esc(f.label || f.type) + '\u201d</div>';
         html += '<div class="ctm-sidebar-field" data-field-id="' + f.id + '">';
         html += renderFieldSettingsSidebar(f);
         html += '</div>';
       }
+    } else {
+      html += '<div class="ctm-sidebar-panel-header">Field Settings</div>';
+      html += '<p class="ctm-sidebar-empty">Click a field to edit its settings.</p>';
     }
+    html += '</div>';
 
     $sidebar.html(html);
 
@@ -876,9 +884,9 @@
           // Rebuild badges
           renderBadges($row, f);
         }
-        // Update sidebar field header text
+        // Update sidebar field panel header text
         if (key === 'label' && f) {
-          $sidebar.find('.ctm-sidebar-field-header').html('Field: \u201c' + esc(f.label || f.type) + '\u201d');
+          $sidebar.find('.ctm-sidebar-panel-field .ctm-sidebar-panel-header').html('Field: \u201c' + esc(f.label || f.type) + '\u201d');
         }
       }
 

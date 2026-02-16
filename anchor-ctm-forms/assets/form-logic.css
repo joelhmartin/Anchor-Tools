@@ -1,6 +1,7 @@
 /* ══════════════════════════════════════════════════
    CTM Form Logic — Frontend Styles
    Column layout + conditional field transitions
+   + base form element styles
    ══════════════════════════════════════════════════ */
 
 /* ── Column layout ── */
@@ -18,6 +19,159 @@
 /* ── Conditional field transitions ── */
 [data-conditions] {
     transition: opacity .25s ease, max-height .3s ease;
+}
+
+/* ══════════════════════════════════════════════════
+   Base Form Element Styles
+   Scoped to .ctm-form-wrap to avoid leaking.
+   ══════════════════════════════════════════════════ */
+
+/* ── Form layout ── */
+.ctm-form-wrap form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* ── Field wrapper spacing (for non-column fields) ── */
+.ctm-form-wrap .ctm-col-full {
+    margin-bottom: 4px;
+}
+
+/* ── Labels ── */
+.ctm-form-wrap label {
+    display: block;
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 4px;
+    color: #1d2327;
+}
+
+/* ── Inputs, textarea, select ── */
+.ctm-form-wrap input[type="text"],
+.ctm-form-wrap input[type="email"],
+.ctm-form-wrap input[type="tel"],
+.ctm-form-wrap input[type="number"],
+.ctm-form-wrap input[type="url"],
+.ctm-form-wrap textarea,
+.ctm-form-wrap select {
+    display: block;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    font-size: 15px;
+    line-height: 1.5;
+    box-sizing: border-box;
+    background: #fff;
+    color: #1d2327;
+    font-family: inherit;
+}
+
+.ctm-form-wrap textarea {
+    min-height: 100px;
+    resize: vertical;
+}
+
+.ctm-form-wrap input:focus,
+.ctm-form-wrap textarea:focus,
+.ctm-form-wrap select:focus {
+    border-color: #2271b1;
+    box-shadow: 0 0 0 1px #2271b1;
+    outline: none;
+}
+
+/* ── Submit button ── */
+.ctm-form-wrap button[type="submit"],
+.ctm-form-wrap input[type="submit"] {
+    display: inline-block;
+    padding: 12px 28px;
+    background: #2271b1;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    line-height: 1.5;
+    transition: background .2s;
+}
+
+.ctm-form-wrap button[type="submit"]:hover,
+.ctm-form-wrap input[type="submit"]:hover {
+    background: #135e96;
+}
+
+/* ── Fieldset / legend ── */
+.ctm-form-wrap fieldset {
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+
+.ctm-form-wrap legend {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 6px;
+    color: #1d2327;
+}
+
+/* ── Checkbox / radio labels ── */
+.ctm-form-wrap input[type="checkbox"] + label,
+.ctm-form-wrap input[type="radio"] + label {
+    display: inline;
+    font-weight: 400;
+}
+
+.ctm-form-wrap .ctm-check-label,
+.ctm-form-wrap .ctm-radio-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 400;
+    margin-bottom: 4px;
+    cursor: pointer;
+}
+
+/* ── Floating label wrapper ── */
+.ctm-form-wrap .input {
+    position: relative;
+}
+
+.ctm-form-wrap .input .input-label {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    font-size: 14px;
+    font-weight: 400;
+    color: #888;
+    pointer-events: none;
+    transition: all .2s ease;
+}
+
+.ctm-form-wrap .input .input-field:focus ~ .input-label,
+.ctm-form-wrap .input .input-field:not(:placeholder-shown) ~ .input-label,
+.ctm-form-wrap .input .input-field.has-value ~ .input-label {
+    top: -8px;
+    left: 8px;
+    font-size: 11px;
+    color: #2271b1;
+    background: #fff;
+    padding: 0 4px;
+}
+
+/* ── Headings in form ── */
+.ctm-form-wrap h3 {
+    font-size: 18px;
+    margin: 8px 0 4px;
+    color: #1d2327;
+}
+
+/* ── Dividers ── */
+.ctm-form-wrap hr {
+    border: none;
+    border-top: 1px solid #ddd;
+    margin: 8px 0;
 }
 
 /* ── Help text ── */

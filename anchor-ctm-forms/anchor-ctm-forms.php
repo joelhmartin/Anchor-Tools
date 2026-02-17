@@ -389,10 +389,20 @@ class Anchor_CTM_Forms_Module {
                 // Core phone fields — handled by reactor automatically
                 continue;
             } else {
+                // Map builder field types to CTM-accepted types
+                $ctm_type_map = [
+                    'email'    => 'text',
+                    'tel'      => 'text',
+                    'number'   => 'text',
+                    'url'      => 'text',
+                    'hidden'   => 'text',
+                ];
+                $ctm_type = $ctm_type_map[ $ftype ] ?? $ftype;
+
                 // Custom field
                 $cf = [
                     'name'     => $fname,
-                    'type'     => $ftype,
+                    'type'     => $ctm_type,
                     'label'    => $f['label'] ?? ucfirst( $fname ),
                     'required' => ! empty( $f['required'] ),
                 ];
@@ -452,11 +462,16 @@ class Anchor_CTM_Forms_Module {
         // Build a useful error message
         $error_msg = 'CTM API returned ' . $code;
         if ( ! empty( $data['error'] ) ) {
-            $error_msg .= ': ' . $data['error'];
+            $error_msg .= ': ' . ( is_array( $data['error'] ) ? wp_json_encode( $data['error'] ) : $data['error'] );
         } elseif ( ! empty( $data['message'] ) ) {
-            $error_msg .= ': ' . $data['message'];
+            $error_msg .= ': ' . ( is_array( $data['message'] ) ? wp_json_encode( $data['message'] ) : $data['message'] );
         } elseif ( ! empty( $data['errors'] ) ) {
-            $error_msg .= ': ' . ( is_array( $data['errors'] ) ? implode( ', ', $data['errors'] ) : $data['errors'] );
+            if ( is_array( $data['errors'] ) ) {
+                $parts = array_map( function( $e ) { return is_array( $e ) ? wp_json_encode( $e ) : $e; }, $data['errors'] );
+                $error_msg .= ': ' . implode( ', ', $parts );
+            } else {
+                $error_msg .= ': ' . $data['errors'];
+            }
         } else {
             $error_msg .= '. Response: ' . substr( $raw_body, 0, 400 );
         }

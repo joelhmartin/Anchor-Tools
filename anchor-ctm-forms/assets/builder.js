@@ -126,6 +126,9 @@
 
     // Reactor tab inline JS (generate btn, copy btn, analytics toggle, multi-step toggle)
     initReactorTabLegacy();
+
+    // AI Form Assistant
+    initAiAssistant();
   });
 
   /* ═══════════════════════════════════════════════
@@ -1171,6 +1174,9 @@
       $previewFrame.removeClass('loading');
       if (res && res.success && res.data && res.data.html) {
         $previewFrame.html(res.data.html);
+        // Strip required/name attrs so preview inputs don't block WP post form
+        $previewFrame.find('[required]').removeAttr('required');
+        $previewFrame.find('input,select,textarea').removeAttr('name');
       } else {
         $previewFrame.html('<div class="ctm-preview-empty">Preview will appear here</div>');
       }
@@ -1249,6 +1255,101 @@
     if (msChk) msChk.addEventListener('change', toggleTitleFields);
     if (tpChk) tpChk.addEventListener('change', toggleTitleFields);
     toggleTitleFields();
+  }
+
+  /* ═══════════════════════════════════════════════
+     AI FORM ASSISTANT
+     ═══════════════════════════════════════════════ */
+  function initAiAssistant() {
+    var $panel  = $('#ctm-ai-panel');
+    var $toggle = $('#ctm-ai-toggle');
+    var $body   = $('#ctm-ai-body');
+    var $input  = $('#ctm-ai-instruction');
+    var $apply  = $('#ctm-ai-apply');
+    var $spin   = $('#ctm-ai-spinner');
+    var $status = $('#ctm-ai-status');
+    var $error  = $('#ctm-ai-error');
+
+    if (!$panel.length) return;
+
+    // Toggle expand/collapse
+    $toggle.on('click', function () {
+      $panel.toggleClass('open');
+      $body.slideToggle(200);
+    });
+
+    // Apply click
+    $apply.on('click', doAiApply);
+
+    // Ctrl/Cmd+Enter shortcut
+    $input.on('keydown', function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.keyCode === 13) {
+        e.preventDefault();
+        doAiApply();
+      }
+    });
+
+    function doAiApply() {
+      var instruction = $.trim($input.val());
+      if (!instruction) {
+        showError('Please enter an instruction.');
+        return;
+      }
+
+      if (!CTM_BUILDER.hasApiKey) {
+        showError('No OpenAI API key configured. Add one in Settings \u2192 Anchor Tools.');
+        return;
+      }
+
+      // UI: loading state
+      $apply.prop('disabled', true);
+      $spin.addClass('is-active');
+      $status.text('');
+      $error.hide().text('');
+
+      var data = {
+        action: 'anchor_ctm_ai_assist',
+        instruction: instruction,
+        config: JSON.stringify(config)
+      };
+      data[CTM_BUILDER.nonceName] = CTM_BUILDER.nonce;
+
+      $.post(CTM_BUILDER.ajaxUrl, data, function (res) {
+        $apply.prop('disabled', false);
+        $spin.removeClass('is-active');
+
+        if (res && res.success && res.data && res.data.config) {
+          // Replace config state
+          config = res.data.config;
+          ensureDefaults();
+          selectedFieldId = null;
+          activeStep = 0;
+
+          // Re-render everything
+          renderFieldList();
+          renderSidebar();
+          renderMultiStepControls();
+          toggleScorePalette();
+          syncConfig();
+
+          // Clear input, flash success
+          $input.val('');
+          $status.text('Applied!');
+          setTimeout(function () { $status.text(''); }, 2000);
+        } else {
+          showError((res && res.data) || 'An unexpected error occurred.');
+        }
+      }).fail(function () {
+        $apply.prop('disabled', false);
+        $spin.removeClass('is-active');
+        showError('Request failed. Please try again.');
+      });
+    }
+
+    function showError(msg) {
+      $error.text(msg).show();
+      setTimeout(function () { $error.fadeOut(300); }, 5000);
+    }
   }
 
 })(jQuery);

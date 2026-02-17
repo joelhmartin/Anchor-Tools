@@ -29,6 +29,7 @@ class Anchor_CTM_Forms_Module {
         add_action( 'wp_ajax_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
         add_action( 'wp_ajax_nopriv_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
         add_action( 'wp_ajax_ctm_builder_preview', [ $this, 'ajax_builder_preview' ] );
+        add_action( 'wp_ajax_anchor_ctm_ai_assist', [ $this, 'ajax_ai_assist' ] );
         add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         /* ── Multi-Step: frontend asset registration ── */
@@ -46,8 +47,8 @@ class Anchor_CTM_Forms_Module {
         }
 
         $base = plugin_dir_url( __FILE__ ) . 'assets/';
-        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.1.0' );
-        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.1.0', true );
+        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.2.0' );
+        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.2.0', true );
 
         $reactors = $this->fetch_reactors_list();
         wp_localize_script( 'ctm-builder', 'CTM_BUILDER', [
@@ -55,6 +56,7 @@ class Anchor_CTM_Forms_Module {
             'nonce'     => wp_create_nonce( self::NONCE_ACTION ),
             'nonceName' => self::NONCE_NAME,
             'reactors'  => $reactors,
+            'hasApiKey' => ! empty( $this->get_openai_api_key() ),
         ] );
     }
 
@@ -321,6 +323,189 @@ class Anchor_CTM_Forms_Module {
         return $out;
     }
 
+    /* ========================= AI Form Assistant: Helpers ========================= */
+
+    /**
+     * Retrieve the OpenAI API key from Anchor Tools settings, env, or constant.
+     */
+    private function get_openai_api_key() {
+        $key = '';
+
+        if ( class_exists( 'Anchor_Schema_Admin' ) ) {
+            $global = get_option( Anchor_Schema_Admin::OPTION_KEY, [] );
+            $key = $global['api_key'] ?? '';
+            if ( ! $key && isset( $global['openai_api_key'] ) ) {
+                $key = $global['openai_api_key'];
+            }
+        }
+
+        if ( ! $key ) {
+            $key = getenv( 'OPENAI_API_KEY' ) ?: ( defined( 'OPENAI_API_KEY' ) ? OPENAI_API_KEY : '' );
+        }
+
+        return $key;
+    }
+
+    /**
+     * Make a chat completion request to OpenAI.
+     *
+     * @param string $api_key      OpenAI API key.
+     * @param string $system_prompt System message.
+     * @param string $user_message  User message.
+     * @param int    $max_tokens    Max response tokens.
+     * @return string|WP_Error      Response content or error.
+     */
+    private function call_openai_chat( $api_key, $system_prompt, $user_message, $max_tokens = 4096 ) {
+        $response = wp_remote_post( 'https://api.openai.com/v1/chat/completions', [
+            'timeout' => 60,
+            'headers' => [
+                'Content-Type'  => 'application/json',
+                'Authorization' => 'Bearer ' . $api_key,
+            ],
+            'body' => wp_json_encode( [
+                'model'       => 'gpt-4o-mini',
+                'temperature' => 0,
+                'max_tokens'  => $max_tokens,
+                'messages'    => [
+                    [ 'role' => 'system',  'content' => $system_prompt ],
+                    [ 'role' => 'user',    'content' => $user_message ],
+                ],
+            ] ),
+        ] );
+
+        if ( is_wp_error( $response ) ) {
+            return $response;
+        }
+
+        $code = wp_remote_retrieve_response_code( $response );
+        $body = json_decode( wp_remote_retrieve_body( $response ), true );
+
+        if ( $code < 200 || $code >= 300 ) {
+            $msg = $body['error']['message'] ?? "OpenAI API error (HTTP {$code})";
+            return new \WP_Error( 'openai_error', $msg );
+        }
+
+        $content = $body['choices'][0]['message']['content'] ?? '';
+        if ( empty( $content ) ) {
+            return new \WP_Error( 'openai_empty', 'OpenAI returned an empty response.' );
+        }
+
+        return $content;
+    }
+
+    /**
+     * Build the system prompt describing the form config schema for the AI.
+     */
+    private function build_ai_system_prompt() {
+        return <<<'PROMPT'
+You are an AI form-building assistant for a WordPress form builder. You receive the current form configuration as JSON and a natural-language instruction. You return an updated JSON configuration.
+
+## Config Structure
+```json
+{
+  "settings": {
+    "labelStyle": "above"|"floating"|"hidden",
+    "submitText": "Submit",
+    "successMessage": "Thanks! We'll be in touch shortly.",
+    "multiStep": false,
+    "progressBar": true,
+    "titlePage": { "enabled": false, "heading": "", "description": "", "buttonText": "Get Started" },
+    "scoring": { "enabled": false, "showTotal": false, "totalLabel": "Your Score", "sendAs": "custom_total_score" }
+  },
+  "fields": [ ... ]
+}
+```
+
+## Field Types
+Input: text, email, tel, number, url, textarea, select, checkbox, radio, hidden
+Layout: heading, paragraph, divider, score_display
+
+## Field Properties
+Every field has: id, type, label, name, placeholder, helpText, defaultValue, required (bool), isCustom (bool), width ("full"|"half"|"third"|"quarter"), labelStyle ("inherit"|"above"|"floating"|"hidden"), cssClass, step (0-indexed int), conditions (array), conditionLogic ("all"|"any"), logVisible (bool).
+
+Option-based fields (select, checkbox, radio) also have: options (array of {label, value, score}).
+Number fields also have: min, max, numStep.
+Score display fields only need: label, name.
+
+## Core CTM Field Names (CRITICAL)
+These field names are recognized by the CTM API and MUST have `isCustom: false`:
+- `caller_name` — the caller/contact name (use type "text")
+- `email` — email address (use type "email")
+- `phone_number` — phone number (use type "tel")
+- `phone` — alternative phone (use type "tel")
+- `country_code` — country code (use type "text")
+
+Any other field name is a custom field and MUST have `isCustom: true`. Custom field names should be descriptive snake_case (e.g. `custom_message`, `custom_company`).
+
+## Field ID Format
+Generate IDs as `f_` followed by 8 random alphanumeric characters (e.g. `f_a3b9c2d1`). Never reuse existing IDs.
+
+## Multi-Step Forms
+Set `settings.multiStep = true` and assign a `step` property (0-indexed) to each field. Fields with the same step number appear on the same page.
+
+## Scoring
+Set `settings.scoring.enabled = true`. Add `score` values to option objects (e.g. `{"label": "Yes", "value": "yes", "score": 10}`). Add a `score_display` field to show the total.
+
+## Conditional Logic
+Add conditions to a field's `conditions` array: `{"field": "<field_id>", "operator": "equals"|"not_equals"|"contains"|"is_empty"|"is_not_empty"|"greater_than"|"less_than", "value": "<value>"}`. Set `conditionLogic` to "all" or "any".
+
+## Rules
+1. Return ONLY the complete JSON config (settings + fields). No explanations, no markdown fences.
+2. Preserve existing field IDs — do not regenerate IDs for fields that already exist.
+3. Only modify what the instruction asks for. Keep unrelated fields and settings unchanged.
+4. When adding a contact/lead form, use the core fields: caller_name (text), email (email), phone_number (tel). Add a custom textarea for message.
+5. When asked to make a multi-step form, distribute fields logically across steps.
+6. Default new fields to required: false, width: "full", labelStyle: "inherit", step: 0.
+PROMPT;
+    }
+
+    /**
+     * AJAX handler for AI form assistant.
+     */
+    public function ajax_ai_assist() {
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_send_json_error( 'Unauthorized.' );
+        }
+        check_ajax_referer( self::NONCE_ACTION, self::NONCE_NAME );
+
+        $api_key = $this->get_openai_api_key();
+        if ( empty( $api_key ) ) {
+            wp_send_json_error( 'No OpenAI API key configured. Add one in Settings → Anchor Tools.' );
+        }
+
+        $instruction = isset( $_POST['instruction'] ) ? sanitize_textarea_field( wp_unslash( $_POST['instruction'] ) ) : '';
+        if ( empty( $instruction ) ) {
+            wp_send_json_error( 'Please enter an instruction.' );
+        }
+
+        $raw_config = isset( $_POST['config'] ) ? wp_unslash( $_POST['config'] ) : '{}';
+        $current_config = json_decode( $raw_config, true );
+        if ( ! is_array( $current_config ) ) {
+            $current_config = [ 'settings' => [], 'fields' => [] ];
+        }
+
+        $system_prompt = $this->build_ai_system_prompt();
+        $user_message  = "Current form config:\n```json\n" . wp_json_encode( $current_config, JSON_PRETTY_PRINT ) . "\n```\n\nInstruction: " . $instruction;
+
+        $result = $this->call_openai_chat( $api_key, $system_prompt, $user_message );
+
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( $result->get_error_message() );
+        }
+
+        // Strip markdown fences if present
+        $result = trim( $result );
+        $result = preg_replace( '/^```(?:json)?\s*/i', '', $result );
+        $result = preg_replace( '/\s*```$/', '', $result );
+
+        $new_config = json_decode( $result, true );
+        if ( ! is_array( $new_config ) || ! isset( $new_config['settings'] ) || ! isset( $new_config['fields'] ) ) {
+            wp_send_json_error( 'AI returned an invalid config. Please try rephrasing your instruction.' );
+        }
+
+        wp_send_json_success( [ 'config' => $new_config ] );
+    }
+
     private function fetch_reactor_detail( $reactor_id ) {
         $acc = $this->account_id();
         $headers = $this->auth_headers();
@@ -368,9 +553,6 @@ class Anchor_CTM_Forms_Module {
         if ( $code < 200 || $code >= 300 || ! is_array( $body ) ) {
             return [];
         }
-
-        // Debug: store raw response so we can inspect the structure
-        set_transient( 'ctm_numbers_debug', wp_json_encode( $body ), 300 );
 
         // CTM may nest numbers under various keys
         $items = $body['numbers'] ?? $body['tracking_numbers'] ?? $body;
@@ -818,6 +1000,25 @@ class Anchor_CTM_Forms_Module {
                     <?php echo esc_html( sprintf( __( '%d FormReactors linked (auto-routed by visitor source)', 'anchor-schema' ), count( $existing_map ) ) ); ?>
                 </div>
             <?php endif; ?>
+
+            <!-- AI Form Assistant -->
+            <div class="ctm-ai-panel" id="ctm-ai-panel">
+                <button type="button" class="ctm-ai-toggle" id="ctm-ai-toggle">
+                    <span class="dashicons dashicons-admin-generic"></span>
+                    <span class="ctm-ai-toggle-text"><?php esc_html_e( 'AI Form Assistant', 'anchor-schema' ); ?></span>
+                    <span class="ctm-ai-arrow dashicons dashicons-arrow-down-alt2"></span>
+                </button>
+                <div class="ctm-ai-body" id="ctm-ai-body" style="display:none;">
+                    <p class="ctm-ai-desc"><?php esc_html_e( 'Describe what you want and the AI will update your form. Examples: "Add fields for name, email, and phone" or "Make it a 2-step form".', 'anchor-schema' ); ?></p>
+                    <textarea id="ctm-ai-instruction" class="ctm-ai-instruction" rows="3" placeholder="<?php esc_attr_e( 'e.g. Add a contact form with name, email, phone, and message fields', 'anchor-schema' ); ?>"></textarea>
+                    <div class="ctm-ai-actions">
+                        <button type="button" class="button button-primary" id="ctm-ai-apply"><?php esc_html_e( 'Apply', 'anchor-schema' ); ?></button>
+                        <span class="spinner" id="ctm-ai-spinner"></span>
+                        <span class="ctm-ai-status" id="ctm-ai-status"></span>
+                    </div>
+                    <div class="ctm-ai-error" id="ctm-ai-error" style="display:none;"></div>
+                </div>
+            </div>
 
             <!-- Field palette -->
             <div class="ctm-builder-palette">

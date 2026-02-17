@@ -934,3 +934,107 @@
     border-top: 1px solid #ddd;
     margin: 12px 0;
 }
+
+/* ══════════════════════════════════════════════════
+   AI FORM ASSISTANT PANEL
+   ══════════════════════════════════════════════════ */
+.ctm-ai-panel {
+    margin-bottom: 12px;
+    border: 1px solid #c3d9e0;
+    border-radius: 6px;
+    background: #f8fbfc;
+    overflow: hidden;
+}
+
+.ctm-ai-panel.open {
+    border-color: #2271b1;
+}
+
+.ctm-ai-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 10px 12px;
+    border: none;
+    background: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1b3a4b;
+    cursor: pointer;
+    text-align: left;
+}
+
+.ctm-ai-toggle:hover {
+    color: #2271b1;
+}
+
+.ctm-ai-toggle .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+}
+
+.ctm-ai-toggle .ctm-ai-toggle-text {
+    flex: 1;
+}
+
+.ctm-ai-panel.open .ctm-ai-arrow {
+    transform: rotate(180deg);
+}
+
+.ctm-ai-body {
+    padding: 0 12px 12px;
+}
+
+.ctm-ai-desc {
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: #646970;
+}
+
+.ctm-ai-instruction {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1.5;
+    box-sizing: border-box;
+    resize: vertical;
+    min-height: 60px;
+}
+
+.ctm-ai-instruction:focus {
+    border-color: #2271b1;
+    box-shadow: 0 0 0 1px #2271b1;
+    outline: none;
+}
+
+.ctm-ai-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.ctm-ai-actions .spinner {
+    float: none;
+    margin: 0;
+}
+
+.ctm-ai-status {
+    font-size: 12px;
+    font-weight: 600;
+    color: #00a32a;
+}
+
+.ctm-ai-error {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-left: 4px solid #d63638;
+    background: #fcf0f1;
+    color: #8a1116;
+    font-size: 12px;
+    border-radius: 0 4px 4px 0;
+}

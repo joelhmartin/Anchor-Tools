@@ -785,7 +785,45 @@
    PREVIEW FRAME — Scoped Frontend Form Styles
    Mirrors form-logic.css so the admin preview
    renders columns and styled form elements.
+   Uses the same CSS custom properties for theming.
    ══════════════════════════════════════════════════ */
+
+/* ── Theme defaults (light) ── */
+.ctm-builder-preview-frame {
+    --ctm-bg: #ffffff;
+    --ctm-text: #1d2327;
+    --ctm-label: #1d2327;
+    --ctm-input-bg: #ffffff;
+    --ctm-input-border: #c3c4c7;
+    --ctm-input-text: #1d2327;
+    --ctm-focus: #2271b1;
+    --ctm-btn-bg: #2271b1;
+    --ctm-btn-hover: color-mix(in srgb, var(--ctm-btn-bg) 80%, #000);
+    --ctm-btn-text: #ffffff;
+    --ctm-muted: #666666;
+    --ctm-divider: #dddddd;
+    --ctm-score-bg: #f8f9fa;
+    --ctm-score-border: #e2e4e7;
+    --ctm-float-label: #888888;
+}
+
+/* ── Dark scheme ── */
+.ctm-builder-preview-frame.ctm-scheme-dark {
+    --ctm-bg: #1e1e2e;
+    --ctm-text: #e0e0e0;
+    --ctm-label: #cccccc;
+    --ctm-input-bg: #2a2a3c;
+    --ctm-input-border: #444466;
+    --ctm-input-text: #e0e0e0;
+    --ctm-focus: var(--ctm-btn-bg);
+    --ctm-muted: #999999;
+    --ctm-divider: #3a3a4c;
+    --ctm-score-bg: #2a2a3c;
+    --ctm-score-border: #444466;
+    --ctm-float-label: #888888;
+    background: var(--ctm-bg) !important;
+    color: var(--ctm-text);
+}
 
 /* ── Column layout ── */
 .ctm-builder-preview-frame .ctm-row {
@@ -805,7 +843,7 @@
     font-weight: 600;
     font-size: 13px;
     margin-bottom: 4px;
-    color: #1d2327;
+    color: var(--ctm-label);
 }
 
 /* ── Inputs, textarea, select ── */
@@ -819,13 +857,13 @@
     display: block;
     width: 100%;
     padding: 8px 10px;
-    border: 1px solid #c3c4c7;
+    border: 1px solid var(--ctm-input-border);
     border-radius: 4px;
     font-size: 14px;
     line-height: 1.5;
     box-sizing: border-box;
-    background: #fff;
-    color: #1d2327;
+    background: var(--ctm-input-bg);
+    color: var(--ctm-input-text);
 }
 
 .ctm-builder-preview-frame textarea {
@@ -836,8 +874,8 @@
 .ctm-builder-preview-frame input:focus,
 .ctm-builder-preview-frame textarea:focus,
 .ctm-builder-preview-frame select:focus {
-    border-color: #2271b1;
-    box-shadow: 0 0 0 1px #2271b1;
+    border-color: var(--ctm-focus);
+    box-shadow: 0 0 0 1px var(--ctm-focus);
     outline: none;
 }
 
@@ -846,8 +884,8 @@
 .ctm-builder-preview-frame input[type="submit"] {
     display: inline-block;
     padding: 10px 24px;
-    background: #2271b1;
-    color: #fff;
+    background: var(--ctm-btn-bg);
+    color: var(--ctm-btn-text);
     border: none;
     border-radius: 4px;
     font-size: 14px;
@@ -858,7 +896,7 @@
 
 .ctm-builder-preview-frame button[type="submit"]:hover,
 .ctm-builder-preview-frame input[type="submit"]:hover {
-    background: #135e96;
+    background: var(--ctm-btn-hover);
 }
 
 /* ── Fieldset / legend ── */
@@ -872,6 +910,7 @@
     font-weight: 600;
     font-size: 13px;
     margin-bottom: 6px;
+    color: var(--ctm-label);
 }
 
 /* ── Checkbox / radio ── */
@@ -900,7 +939,7 @@
     left: 10px;
     font-size: 13px;
     font-weight: 400;
-    color: #888;
+    color: var(--ctm-float-label);
     pointer-events: none;
     transition: all .2s ease;
 }
@@ -909,7 +948,7 @@
 .ctm-builder-preview-frame .ctm-help-text {
     display: block;
     font-size: 12px;
-    color: #666;
+    color: var(--ctm-muted);
     margin-top: 4px;
 }
 
@@ -917,8 +956,8 @@
 .ctm-builder-preview-frame .ctm-score-wrap {
     padding: 12px 16px;
     margin: 12px 0;
-    background: #f8f9fa;
-    border: 1px solid #e2e4e7;
+    background: var(--ctm-score-bg);
+    border: 1px solid var(--ctm-score-border);
     border-radius: 6px;
     text-align: center;
 }
@@ -927,11 +966,12 @@
 .ctm-builder-preview-frame h3 {
     margin: 16px 0 8px;
     font-size: 16px;
+    color: var(--ctm-text);
 }
 
 .ctm-builder-preview-frame hr {
     border: none;
-    border-top: 1px solid #ddd;
+    border-top: 1px solid var(--ctm-divider);
     margin: 12px 0;
 }
 

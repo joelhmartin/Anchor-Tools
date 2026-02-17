@@ -4,6 +4,41 @@
    + base form element styles
    ══════════════════════════════════════════════════ */
 
+/* ── Theme custom properties (light defaults) ── */
+.ctm-form-wrap {
+    --ctm-bg: #ffffff;
+    --ctm-text: #1d2327;
+    --ctm-label: #1d2327;
+    --ctm-input-bg: #ffffff;
+    --ctm-input-border: #c3c4c7;
+    --ctm-input-text: #1d2327;
+    --ctm-focus: #2271b1;
+    --ctm-btn-bg: #2271b1;
+    --ctm-btn-hover: color-mix(in srgb, var(--ctm-btn-bg) 80%, #000);
+    --ctm-btn-text: #ffffff;
+    --ctm-muted: #666666;
+    --ctm-divider: #dddddd;
+    --ctm-score-bg: #f8f9fa;
+    --ctm-score-border: #e2e4e7;
+    --ctm-float-label: #888888;
+}
+
+/* ── Dark scheme ── */
+.ctm-form-wrap.ctm-scheme-dark {
+    --ctm-bg: #1e1e2e;
+    --ctm-text: #e0e0e0;
+    --ctm-label: #cccccc;
+    --ctm-input-bg: #2a2a3c;
+    --ctm-input-border: #444466;
+    --ctm-input-text: #e0e0e0;
+    --ctm-focus: var(--ctm-btn-bg);
+    --ctm-muted: #999999;
+    --ctm-divider: #3a3a4c;
+    --ctm-score-bg: #2a2a3c;
+    --ctm-score-border: #444466;
+    --ctm-float-label: #888888;
+}
+
 /* ── Column layout ── */
 .ctm-row {
     display: flex;
@@ -27,6 +62,12 @@
    ══════════════════════════════════════════════════ */
 
 /* ── Form layout ── */
+.ctm-form-wrap {
+    background: var(--ctm-bg);
+    color: var(--ctm-text);
+    border-radius: 6px;
+}
+
 .ctm-form-wrap form {
     display: flex;
     flex-direction: column;
@@ -44,7 +85,7 @@
     font-weight: 600;
     font-size: 14px;
     margin-bottom: 4px;
-    color: #1d2327;
+    color: var(--ctm-label);
 }
 
 /* ── Inputs, textarea, select ── */
@@ -58,13 +99,13 @@
     display: block;
     width: 100%;
     padding: 10px 12px;
-    border: 1px solid #c3c4c7;
+    border: 1px solid var(--ctm-input-border);
     border-radius: 4px;
     font-size: 15px;
     line-height: 1.5;
     box-sizing: border-box;
-    background: #fff;
-    color: #1d2327;
+    background: var(--ctm-input-bg);
+    color: var(--ctm-input-text);
     font-family: inherit;
 }
 
@@ -76,8 +117,8 @@
 .ctm-form-wrap input:focus,
 .ctm-form-wrap textarea:focus,
 .ctm-form-wrap select:focus {
-    border-color: #2271b1;
-    box-shadow: 0 0 0 1px #2271b1;
+    border-color: var(--ctm-focus);
+    box-shadow: 0 0 0 1px var(--ctm-focus);
     outline: none;
 }
 
@@ -86,8 +127,8 @@
 .ctm-form-wrap input[type="submit"] {
     display: inline-block;
     padding: 12px 28px;
-    background: #2271b1;
-    color: #fff;
+    background: var(--ctm-btn-bg);
+    color: var(--ctm-btn-text);
     border: none;
     border-radius: 4px;
     font-size: 15px;
@@ -99,7 +140,7 @@
 
 .ctm-form-wrap button[type="submit"]:hover,
 .ctm-form-wrap input[type="submit"]:hover {
-    background: #135e96;
+    background: var(--ctm-btn-hover);
 }
 
 /* ── Fieldset / legend ── */
@@ -113,7 +154,7 @@
     font-weight: 600;
     font-size: 14px;
     margin-bottom: 6px;
-    color: #1d2327;
+    color: var(--ctm-label);
 }
 
 /* ── Checkbox / radio labels ── */
@@ -144,7 +185,7 @@
     left: 12px;
     font-size: 14px;
     font-weight: 400;
-    color: #888;
+    color: var(--ctm-float-label);
     pointer-events: none;
     transition: all .2s ease;
 }
@@ -155,8 +196,8 @@
     top: -8px;
     left: 8px;
     font-size: 11px;
-    color: #2271b1;
-    background: #fff;
+    color: var(--ctm-focus);
+    background: var(--ctm-input-bg);
     padding: 0 4px;
 }
 
@@ -164,13 +205,13 @@
 .ctm-form-wrap h3 {
     font-size: 18px;
     margin: 8px 0 4px;
-    color: #1d2327;
+    color: var(--ctm-text);
 }
 
 /* ── Dividers ── */
 .ctm-form-wrap hr {
     border: none;
-    border-top: 1px solid #ddd;
+    border-top: 1px solid var(--ctm-divider);
     margin: 8px 0;
 }
 
@@ -178,7 +219,7 @@
 .ctm-help-text {
     display: block;
     font-size: 12px;
-    color: #666;
+    color: var(--ctm-muted);
     margin-top: 4px;
 }
 
@@ -186,22 +227,22 @@
 .ctm-score-wrap {
     padding: 12px 16px;
     margin: 12px 0;
-    background: #f8f9fa;
-    border: 1px solid #e2e4e7;
+    background: var(--ctm-score-bg);
+    border: 1px solid var(--ctm-score-border);
     border-radius: 6px;
     text-align: center;
 }
 
 .ctm-score-label {
     font-size: 14px;
-    color: #555;
+    color: var(--ctm-muted);
     margin-right: 8px;
 }
 
 .ctm-score-display {
     font-size: 24px;
     font-weight: 700;
-    color: #1b3a4b;
+    color: var(--ctm-text);
 }
 
 /* ── Responsive: stack columns on mobile ── */

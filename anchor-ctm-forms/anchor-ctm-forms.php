@@ -1743,8 +1743,15 @@ PROMPT;
             wp_send_json_error( 'Invalid config' );
         }
 
-        $html = $this->render_config_to_html( $config );
-        wp_send_json_success( [ 'html' => $html ] );
+        $html         = $this->render_config_to_html( $config );
+        $settings     = $config['settings'] ?? [];
+        $color_scheme = $settings['colorScheme'] ?? 'light';
+        $colors       = $settings['colors'] ?? [];
+        wp_send_json_success( [
+            'html'        => $html,
+            'colorScheme' => $color_scheme,
+            'colors'      => (object) $colors,
+        ] );
     }
 
     /* ========================= Shortcode ========================= */
@@ -1808,9 +1815,45 @@ PROMPT;
             $html = preg_replace( '/(<form[^>]*>)/', '$1' . $title_html, $html, 1 );
         }
 
+        // Color settings from builder config
+        $raw_config   = get_post_meta( $post_id, '_ctm_form_config', true );
+        $form_config  = $raw_config ? json_decode( $raw_config, true ) : [];
+        $color_scheme = $form_config['settings']['colorScheme'] ?? 'light';
+        $colors       = $form_config['settings']['colors'] ?? [];
+
+        $wrap_class = 'ctm-form-wrap';
+        if ( $color_scheme === 'dark' ) {
+            $wrap_class .= ' ctm-scheme-dark';
+        }
+
+        // Map config keys to CSS custom properties
+        $color_var_map = [
+            'bg'          => '--ctm-bg',
+            'text'        => '--ctm-text',
+            'label'       => '--ctm-label',
+            'inputBg'     => '--ctm-input-bg',
+            'inputBorder' => '--ctm-input-border',
+            'inputText'   => '--ctm-input-text',
+            'focus'       => '--ctm-focus',
+            'btnBg'       => '--ctm-btn-bg',
+            'btnText'     => '--ctm-btn-text',
+        ];
+
+        $style_parts = [];
+        foreach ( $color_var_map as $key => $var ) {
+            if ( ! empty( $colors[ $key ] ) ) {
+                $style_parts[] = $var . ':' . esc_attr( $colors[ $key ] );
+            }
+        }
+
+        $wrap_style = '';
+        if ( $style_parts ) {
+            $wrap_style = ' style="' . implode( ';', $style_parts ) . ';"';
+        }
+
         ob_start();
         ?>
-        <div class="ctm-form-wrap" data-variant="<?php echo esc_attr( $post_id ); ?>">
+        <div class="<?php echo esc_attr( $wrap_class ); ?>"<?php echo $wrap_style; ?> data-variant="<?php echo esc_attr( $post_id ); ?>">
             <?php echo str_replace( 'id="ctmForm"', 'id="ctmForm-' . esc_attr( $post_id ) . '"', $html ); ?>
         </div>
         <script>

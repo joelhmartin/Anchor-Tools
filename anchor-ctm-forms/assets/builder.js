@@ -139,6 +139,8 @@
     if (!s.labelStyle)      s.labelStyle = 'above';
     if (!s.submitText)      s.submitText = 'Submit';
     if (!s.successMessage)  s.successMessage = "Thanks! We'll be in touch shortly.";
+    if (!s.colorScheme)     s.colorScheme = 'light';
+    if (!s.colors) s.colors = {};
     if (s.multiStep === undefined) s.multiStep = false;
     if (s.progressBar === undefined) s.progressBar = true;
     if (!s.titlePage) s.titlePage = { enabled: false, heading: '', description: '', buttonText: 'Get Started' };
@@ -470,6 +472,47 @@
       html += '<option value="' + ls + '"' + (s.labelStyle === ls ? ' selected' : '') + '>' + ls.charAt(0).toUpperCase() + ls.slice(1) + '</option>';
     });
     html += '</select>';
+
+    html += '<label>Color Scheme</label>';
+    html += '<select id="bs-colorScheme">';
+    ['light', 'dark'].forEach(function (cs) {
+      html += '<option value="' + cs + '"' + (s.colorScheme === cs ? ' selected' : '') + '>' + cs.charAt(0).toUpperCase() + cs.slice(1) + '</option>';
+    });
+    html += '</select>';
+
+    // Granular color controls
+    var c = s.colors || {};
+    var scheme = s.colorScheme || 'light';
+    var defaults = scheme === 'dark'
+      ? { bg:'#1e1e2e', text:'#e0e0e0', label:'#cccccc', inputBg:'#2a2a3c', inputBorder:'#444466', inputText:'#e0e0e0', focus:'#2271b1', btnBg:'#2271b1', btnText:'#ffffff' }
+      : { bg:'#ffffff', text:'#1d2327', label:'#1d2327', inputBg:'#ffffff', inputBorder:'#c3c4c7', inputText:'#1d2327', focus:'#2271b1', btnBg:'#2271b1', btnText:'#ffffff' };
+
+    var colorFields = [
+      { key: 'btnBg',       label: 'Button' },
+      { key: 'btnText',     label: 'Button Text' },
+      { key: 'focus',       label: 'Focus / Highlight' },
+      { key: 'label',       label: 'Labels' },
+      { key: 'bg',          label: 'Form Background' },
+      { key: 'text',        label: 'Text' },
+      { key: 'inputBg',     label: 'Input Background' },
+      { key: 'inputBorder', label: 'Input Border' },
+      { key: 'inputText',   label: 'Input Text' }
+    ];
+
+    html += '<div class="ctm-color-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;margin:8px 0 12px;">';
+    colorFields.forEach(function (cf) {
+      var val = c[cf.key] || defaults[cf.key];
+      html += '<div>';
+      html += '<label style="font-size:11px;margin-bottom:2px;">' + cf.label + '</label>';
+      html += '<div style="display:flex;align-items:center;gap:4px;">';
+      html += '<input type="color" id="bs-color-' + cf.key + '" value="' + val + '" style="width:32px;height:28px;padding:0;border:1px solid #ccc;border-radius:3px;cursor:pointer;" />';
+      html += '<input type="text" id="bs-colorhex-' + cf.key + '" value="' + val + '" maxlength="7" style="width:calc(100% - 36px);font-size:11px;padding:4px;font-family:monospace;" />';
+      html += '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+
+    html += '<button type="button" class="button" id="bs-resetColors" style="margin-bottom:10px;font-size:11px;">Reset to Scheme Defaults</button>';
 
     html += '<label>Submit Button Text</label>';
     html += '<input type="text" id="bs-submitText" value="' + esc(s.submitText) + '" />';
@@ -1060,6 +1103,11 @@
         case 'labelStyle':
           config.settings.labelStyle = val;
           break;
+        case 'colorScheme':
+          config.settings.colorScheme = val;
+          config.settings.colors = {};
+          renderSidebar();
+          break;
         case 'submitText':
           config.settings.submitText = val;
           break;
@@ -1096,6 +1144,34 @@
           break;
       }
 
+      syncConfig();
+    });
+
+    // ── Color picker changes ──
+    $(document).on('input change', '#ctm-builder-sidebar input[id^="bs-color-"]', function () {
+      var key = $(this).attr('id').replace('bs-color-', '');
+      var val = $(this).val();
+      if (!config.settings.colors) config.settings.colors = {};
+      config.settings.colors[key] = val;
+      // Sync the hex text input
+      $sidebar.find('#bs-colorhex-' + key).val(val);
+      syncConfig();
+    });
+
+    $(document).on('change', '#ctm-builder-sidebar input[id^="bs-colorhex-"]', function () {
+      var key = $(this).attr('id').replace('bs-colorhex-', '');
+      var val = $(this).val().trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+        if (!config.settings.colors) config.settings.colors = {};
+        config.settings.colors[key] = val;
+        $sidebar.find('#bs-color-' + key).val(val);
+        syncConfig();
+      }
+    });
+
+    $(document).on('click', '#bs-resetColors', function () {
+      config.settings.colors = {};
+      renderSidebar();
       syncConfig();
     });
   }
@@ -1177,6 +1253,20 @@
         // Strip required/name attrs so preview inputs don't block WP post form
         $previewFrame.find('[required]').removeAttr('required');
         $previewFrame.find('input,select,textarea').removeAttr('name');
+        // Apply color scheme and custom colors to preview
+        $previewFrame.removeClass('ctm-scheme-dark');
+        if (res.data.colorScheme === 'dark') {
+          $previewFrame.addClass('ctm-scheme-dark');
+        }
+        var colorMap = { bg:'--ctm-bg', text:'--ctm-text', label:'--ctm-label', inputBg:'--ctm-input-bg', inputBorder:'--ctm-input-border', inputText:'--ctm-input-text', focus:'--ctm-focus', btnBg:'--ctm-btn-bg', btnText:'--ctm-btn-text' };
+        var colors = res.data.colors || {};
+        Object.keys(colorMap).forEach(function(k) {
+          if (colors[k]) {
+            $previewFrame[0].style.setProperty(colorMap[k], colors[k]);
+          } else {
+            $previewFrame[0].style.removeProperty(colorMap[k]);
+          }
+        });
       } else {
         $previewFrame.html('<div class="ctm-preview-empty">Preview will appear here</div>');
       }

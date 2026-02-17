@@ -11,7 +11,7 @@
   if (typeof CTM_BUILDER === 'undefined') return;
 
   /* ── Core field names that CTM expects ── */
-  var CORE_FIELDS = ['caller_name', 'email', 'phone_number', 'phone', 'country_code'];
+  var CORE_FIELDS = ['caller_name', 'email', 'phone_number', 'phone', 'country_code', 'message'];
 
   /* ── Field type definitions ── */
   var FIELD_TYPES = {
@@ -245,9 +245,9 @@
       case 'message':
         f.type = 'textarea';
         f._displayType = 'message';
-        f.name = 'custom_message';
+        f.name = 'message';
         f.label = 'Message';
-        f.isCustom = true;
+        f.isCustom = false;
         f.placeholder = 'Your message';
         break;
       case 'email':
@@ -317,7 +317,7 @@
       }
     }
     if (type === 'message') {
-      if (config.fields.some(function (f) { return f.name === 'custom_message'; })) {
+      if (config.fields.some(function (f) { return f.name === 'message'; })) {
         alert('Only one Message field is allowed per form.');
         return;
       }

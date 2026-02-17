@@ -47,8 +47,8 @@ class Anchor_CTM_Forms_Module {
         }
 
         $base = plugin_dir_url( __FILE__ ) . 'assets/';
-        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.3.0' );
-        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.3.0', true );
+        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.4.0' );
+        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.4.0', true );
 
         $reactors = $this->fetch_reactors_list();
         wp_localize_script( 'ctm-builder', 'CTM_BUILDER', [
@@ -620,7 +620,7 @@ PROMPT;
             } elseif ( $fname === 'email' ) {
                 $include_email  = true;
                 $email_required = ! empty( $f['required'] );
-            } elseif ( in_array( $fname, [ 'phone_number', 'phone', 'country_code' ], true ) ) {
+            } elseif ( in_array( $fname, [ 'phone_number', 'phone', 'country_code', 'message' ], true ) ) {
                 continue;
             } else {
                 $ctm_type_map = [
@@ -1293,26 +1293,32 @@ PROMPT;
                 }
             }
 
-            // ── Auto-create FormReactor on publish ──
+            // ── Create / recreate FormReactor on publish when fields change ──
             $post_status   = get_post_status( $post_id );
-            $existing_rid  = get_post_meta( $post_id, '_ctm_builder_reactor_id', true );
 
-            if ( $post_status === 'publish' && empty( $existing_rid ) && is_array( $config ) ) {
-                $result = $this->create_form_reactor( $post_id, $config );
+            if ( $post_status === 'publish' && is_array( $config ) ) {
+                $reactor_fields = $this->build_reactor_fields( $config );
+                $fields_hash    = md5( wp_json_encode( $reactor_fields ) );
+                $stored_hash    = get_post_meta( $post_id, '_ctm_reactor_fields_hash', true );
 
-                if ( is_wp_error( $result ) ) {
-                    // Revert to draft on failure
-                    remove_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
-                    wp_update_post( [
-                        'ID'          => $post_id,
-                        'post_status' => 'draft',
-                    ] );
-                    add_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
+                if ( $fields_hash !== $stored_hash ) {
+                    $result = $this->create_form_reactor( $post_id, $config );
 
-                    set_transient( 'ctm_builder_error_' . $post_id, $result->get_error_message(), 60 );
-                } else {
-                    update_post_meta( $post_id, '_ctm_builder_reactor_id', $result );
-                    update_post_meta( $post_id, '_ctm_reactor_id', $result );
+                    if ( is_wp_error( $result ) ) {
+                        // Revert to draft on failure
+                        remove_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
+                        wp_update_post( [
+                            'ID'          => $post_id,
+                            'post_status' => 'draft',
+                        ] );
+                        add_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
+
+                        set_transient( 'ctm_builder_error_' . $post_id, $result->get_error_message(), 60 );
+                    } else {
+                        update_post_meta( $post_id, '_ctm_builder_reactor_id', $result );
+                        update_post_meta( $post_id, '_ctm_reactor_id', $result );
+                        update_post_meta( $post_id, '_ctm_reactor_fields_hash', $fields_hash );
+                    }
                 }
             }
 
@@ -1393,7 +1399,7 @@ PROMPT;
         $scoring_on   = ! empty( $scoring['enabled'] );
 
         // Core field names that should NOT get ctm-custom class
-        $core_names = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
+        $core_names = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code', 'message' ];
 
         // Group fields by step if multi-step
         $steps = [];

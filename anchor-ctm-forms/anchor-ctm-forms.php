@@ -736,7 +736,13 @@ PROMPT;
      *
      * @return array|WP_Error  Reactor map on success, WP_Error on failure.
      */
-    private function create_form_reactors( $post_id, $config ) {
+    /**
+     * Create a single FormReactor on publish using the default/website tracking number.
+     * CTM's visitor_sid (from their JS) handles source attribution automatically.
+     *
+     * @return string|WP_Error  Reactor ID on success.
+     */
+    private function create_form_reactor( $post_id, $config ) {
         $acc     = $this->account_id();
         $headers = $this->auth_headers();
         if ( ! $acc || ! $headers ) {
@@ -748,118 +754,21 @@ PROMPT;
             return new WP_Error( 'ctm_no_numbers', 'No tracking numbers found in CTM account. Add at least one number in your CTM dashboard.' );
         }
 
-        $post_title     = get_the_title( $post_id );
-        $reactor_fields = $this->build_reactor_fields( $config );
-        $reactor_map    = [];
-        $errors         = [];
-
+        // Pick the website/default tracking number
+        $chosen = end( $numbers ); // fallback to last
         foreach ( $numbers as $n ) {
-            $reactor_name = ( $post_title ?: 'Form #' . $post_id ) . ' — ' . $n['label'];
-            $result       = $this->create_single_reactor( $reactor_name, $n['id'], $reactor_fields );
-
-            if ( is_wp_error( $result ) ) {
-                $errors[] = $n['label'] . ': ' . $result->get_error_message();
-                continue;
-            }
-
-            $reactor_map[] = [
-                'number_id'   => $n['id'],
-                'reactor_id'  => $result,
-                'number_name' => $n['label'],
-            ];
-        }
-
-        if ( empty( $reactor_map ) ) {
-            return new WP_Error( 'ctm_api_error', 'Failed to create any reactors. ' . implode( ' | ', $errors ) );
-        }
-
-        return $reactor_map;
-    }
-
-    /**
-     * Pick the default/website reactor from the map for primary visitor_sid-based submissions.
-     */
-    private function pick_default_reactor( $reactor_map ) {
-        foreach ( $reactor_map as $entry ) {
-            $name = strtolower( $entry['number_name'] );
+            $name = strtolower( $n['label'] );
             if ( strpos( $name, 'website' ) !== false || strpos( $name, 'default' ) !== false || strpos( $name, 'direct' ) !== false ) {
-                return $entry['reactor_id'];
-            }
-        }
-        // Fall back to last entry
-        return end( $reactor_map )['reactor_id'];
-    }
-
-    /**
-     * Fallback: resolve the best reactor ID based on visitor attribution.
-     * Only used when visitor_sid is not available (CTM JS not loaded).
-     *
-     * Matches gclid → Google Ads, fbclid → Facebook, organic Google referrer, etc.
-     * Falls back to the default/website reactor.
-     */
-    private function resolve_reactor_for_attribution( $reactor_map, $attribution ) {
-        if ( count( $reactor_map ) === 1 ) {
-            return $reactor_map[0]['reactor_id'];
-        }
-
-        $referrer   = strtolower( $attribution['referring_url'] ?? '' );
-        $utm_source = strtolower( $attribution['utm_source'] ?? '' );
-        $utm_medium = strtolower( $attribution['utm_medium'] ?? '' );
-        $gclid      = $attribution['gclid'] ?? '';
-        $fbclid     = $attribution['fbclid'] ?? '';
-        $msclkid    = $attribution['msclkid'] ?? '';
-
-        // Build a lowercase name index for matching
-        $by_name = [];
-        foreach ( $reactor_map as $entry ) {
-            $by_name[ strtolower( $entry['number_name'] ) ] = $entry['reactor_id'];
-        }
-
-        // Google Ads: gclid present, or utm_source/medium indicate paid google
-        if ( $gclid || ( $utm_source === 'google' && in_array( $utm_medium, [ 'cpc', 'ppc', 'paid' ], true ) ) ) {
-            foreach ( $by_name as $name => $rid ) {
-                if ( strpos( $name, 'google' ) !== false && ( strpos( $name, 'ad' ) !== false || strpos( $name, 'paid' ) !== false || strpos( $name, 'ppc' ) !== false || strpos( $name, 'cpc' ) !== false ) ) {
-                    return $rid;
-                }
+                $chosen = $n;
+                break;
             }
         }
 
-        // Facebook Ads: fbclid present, or utm_source indicates facebook paid
-        if ( $fbclid || ( ( $utm_source === 'facebook' || $utm_source === 'fb' || $utm_source === 'instagram' || $utm_source === 'ig' ) && in_array( $utm_medium, [ 'cpc', 'ppc', 'paid', 'social' ], true ) ) ) {
-            foreach ( $by_name as $name => $rid ) {
-                if ( ( strpos( $name, 'facebook' ) !== false || strpos( $name, 'fb' ) !== false || strpos( $name, 'meta' ) !== false ) && ( strpos( $name, 'ad' ) !== false || strpos( $name, 'paid' ) !== false ) ) {
-                    return $rid;
-                }
-            }
-        }
+        $post_title     = get_the_title( $post_id );
+        $reactor_name   = $post_title ?: 'Form #' . $post_id;
+        $reactor_fields = $this->build_reactor_fields( $config );
 
-        // Microsoft/Bing Ads
-        if ( $msclkid || ( ( $utm_source === 'bing' || $utm_source === 'microsoft' ) && in_array( $utm_medium, [ 'cpc', 'ppc', 'paid' ], true ) ) ) {
-            foreach ( $by_name as $name => $rid ) {
-                if ( ( strpos( $name, 'bing' ) !== false || strpos( $name, 'microsoft' ) !== false ) && ( strpos( $name, 'ad' ) !== false || strpos( $name, 'paid' ) !== false ) ) {
-                    return $rid;
-                }
-            }
-        }
-
-        // Google Organic: referrer is google but no gclid, no paid UTMs
-        if ( ( strpos( $referrer, 'google.' ) !== false || $utm_source === 'google' ) && ! $gclid && ! in_array( $utm_medium, [ 'cpc', 'ppc', 'paid' ], true ) ) {
-            foreach ( $by_name as $name => $rid ) {
-                if ( strpos( $name, 'google' ) !== false && ( strpos( $name, 'organic' ) !== false || strpos( $name, 'seo' ) !== false || strpos( $name, 'search' ) !== false ) ) {
-                    return $rid;
-                }
-            }
-        }
-
-        // Fallback: look for a "website" / "web" / "default" / "direct" number
-        foreach ( $by_name as $name => $rid ) {
-            if ( strpos( $name, 'website' ) !== false || strpos( $name, 'web ' ) !== false || strpos( $name, 'default' ) !== false || strpos( $name, 'direct' ) !== false ) {
-                return $rid;
-            }
-        }
-
-        // Last resort: use the last entry (typically the base/website number)
-        return end( $reactor_map )['reactor_id'];
+        return $this->create_single_reactor( $reactor_name, $chosen['id'], $reactor_fields );
     }
 
     /**
@@ -895,19 +804,15 @@ PROMPT;
 
     /* ========================= Metabox: Builder Sidebar ========================= */
     public function builder_sidebar_cb( $post ) {
-        $reactor_map = get_post_meta( $post->ID, '_ctm_reactor_map', true );
+        $reactor_id = get_post_meta( $post->ID, '_ctm_builder_reactor_id', true );
         ?>
         <div id="ctm-builder-sidebar">
-            <?php if ( ! empty( $reactor_map ) && is_array( $reactor_map ) ) : ?>
-                <p><strong><?php esc_html_e( 'Linked Reactors', 'anchor-schema' ); ?></strong></p>
-                <ul class="ctm-reactor-list" style="margin:0;">
-                    <?php foreach ( $reactor_map as $entry ) : ?>
-                        <li style="margin:2px 0;font-size:12px;"><code><?php echo esc_html( $entry['number_name'] ); ?></code></li>
-                    <?php endforeach; ?>
-                </ul>
-                <p class="description"><?php esc_html_e( 'Submissions auto-route to the correct number based on visitor source (Google Ads, Facebook, organic, etc.).', 'anchor-schema' ); ?></p>
+            <?php if ( $reactor_id ) : ?>
+                <p><strong><?php esc_html_e( 'FormReactor', 'anchor-schema' ); ?></strong></p>
+                <p style="font-size:12px;"><code><?php echo esc_html( $reactor_id ); ?></code></p>
+                <p class="description"><?php esc_html_e( 'CTM visitor tracking handles source attribution automatically.', 'anchor-schema' ); ?></p>
             <?php else : ?>
-                <p class="ctm-sidebar-empty"><?php esc_html_e( 'Reactors will be created automatically for each tracking number when you publish.', 'anchor-schema' ); ?></p>
+                <p class="ctm-sidebar-empty"><?php esc_html_e( 'A FormReactor will be created automatically when you publish.', 'anchor-schema' ); ?></p>
             <?php endif; ?>
         </div>
         <?php
@@ -1011,11 +916,10 @@ PROMPT;
         <!-- ═══════════════ TAB 2: Builder Mode ═══════════════ -->
         <div id="ctm-tab-builder" class="ctm-tab-panel<?php echo $form_mode === 'builder' ? ' active' : ''; ?>">
             <?php
-            // Show reactor mapping if already created
-            $existing_map = get_post_meta( $post->ID, '_ctm_reactor_map', true );
-            if ( ! empty( $existing_map ) && is_array( $existing_map ) ) : ?>
+            $existing_rid = get_post_meta( $post->ID, '_ctm_builder_reactor_id', true );
+            if ( $existing_rid ) : ?>
                 <div class="ctm-builder-info">
-                    <?php echo esc_html( sprintf( __( '%d FormReactors linked (auto-routed by visitor source)', 'anchor-schema' ), count( $existing_map ) ) ); ?>
+                    <?php echo esc_html( sprintf( __( 'FormReactor: %s', 'anchor-schema' ), $existing_rid ) ); ?>
                 </div>
             <?php endif; ?>
 
@@ -1389,12 +1293,12 @@ PROMPT;
                 }
             }
 
-            // ── Auto-create FormReactors on publish (one per tracking number) ──
-            $post_status    = get_post_status( $post_id );
-            $existing_map   = get_post_meta( $post_id, '_ctm_reactor_map', true );
+            // ── Auto-create FormReactor on publish ──
+            $post_status   = get_post_status( $post_id );
+            $existing_rid  = get_post_meta( $post_id, '_ctm_builder_reactor_id', true );
 
-            if ( $post_status === 'publish' && empty( $existing_map ) && is_array( $config ) ) {
-                $result = $this->create_form_reactors( $post_id, $config );
+            if ( $post_status === 'publish' && empty( $existing_rid ) && is_array( $config ) ) {
+                $result = $this->create_form_reactor( $post_id, $config );
 
                 if ( is_wp_error( $result ) ) {
                     // Revert to draft on failure
@@ -1407,11 +1311,8 @@ PROMPT;
 
                     set_transient( 'ctm_builder_error_' . $post_id, $result->get_error_message(), 60 );
                 } else {
-                    // Store reactor map; pick the website/default number as primary
-                    update_post_meta( $post_id, '_ctm_reactor_map', $result );
-                    $default_reactor = $this->pick_default_reactor( $result );
-                    update_post_meta( $post_id, '_ctm_builder_reactor_id', $default_reactor );
-                    update_post_meta( $post_id, '_ctm_reactor_id', $default_reactor );
+                    update_post_meta( $post_id, '_ctm_builder_reactor_id', $result );
+                    update_post_meta( $post_id, '_ctm_reactor_id', $result );
                 }
             }
 
@@ -2120,16 +2021,8 @@ PROMPT;
             $attribution['user_agent'] = sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) );
         }
 
-        // Primary: use default reactor + visitor_sid (CTM handles attribution)
-        // Fallback: if no visitor_sid, match attribution to the right reactor
+        // Single reactor — CTM's visitor_sid handles source attribution
         $reactor_id = get_post_meta( $variant_id, '_ctm_reactor_id', true );
-
-        if ( empty( $attribution['visitor_sid'] ) ) {
-            $reactor_map = get_post_meta( $variant_id, '_ctm_reactor_map', true );
-            if ( ! empty( $reactor_map ) && is_array( $reactor_map ) ) {
-                $reactor_id = $this->resolve_reactor_for_attribution( $reactor_map, $attribution );
-            }
-        }
 
         if ( ! $reactor_id ) {
             wp_send_json_error( [ 'type' => 'validation', 'message' => 'Variant not configured.' ] );

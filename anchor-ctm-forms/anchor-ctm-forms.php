@@ -346,35 +346,62 @@ class Anchor_CTM_Forms_Module {
     }
 
     /**
-     * Create a FormReactor in CTM from the builder config.
-     *
-     * @param  int   $post_id  The post ID (used for the reactor name).
-     * @param  array $config   The builder config array.
-     * @return string|WP_Error  The reactor ID on success, WP_Error on failure.
+     * Fetch tracking numbers from the CTM API.
      */
-    private function create_form_reactor( $post_id, $config ) {
+    private function fetch_tracking_numbers() {
         $acc     = $this->account_id();
         $headers = $this->auth_headers();
         if ( ! $acc || ! $headers ) {
-            return new WP_Error( 'ctm_missing_creds', 'CTM API credentials not configured. Set them under CTM Forms settings.' );
+            return [];
         }
 
-        $post_title = get_the_title( $post_id );
-        $fields     = $config['fields'] ?? [];
+        $url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/numbers.json";
+        $res = wp_remote_get( $url, [ 'headers' => $headers, 'timeout' => 20 ] );
 
-        // Separate core vs custom fields
-        $core_names    = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
-        $include_name  = false;
-        $name_required = false;
-        $include_email = false;
+        if ( is_wp_error( $res ) ) {
+            return [];
+        }
+
+        $code = wp_remote_retrieve_response_code( $res );
+        $body = json_decode( wp_remote_retrieve_body( $res ), true );
+
+        if ( $code < 200 || $code >= 300 || ! is_array( $body ) ) {
+            return [];
+        }
+
+        $items = $body['numbers'] ?? $body;
+        $out   = [];
+
+        foreach ( (array) $items as $n ) {
+            if ( empty( $n['id'] ) ) continue;
+            $label = $n['name'] ?? $n['number'] ?? $n['id'];
+            if ( ! empty( $n['number'] ) && ! empty( $n['name'] ) ) {
+                $label = $n['name'] . ' (' . $n['number'] . ')';
+            }
+            $out[] = [
+                'id'    => (string) $n['id'],
+                'label' => (string) $label,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Build the shared reactor body fields from builder config (without number-specific data).
+     */
+    private function build_reactor_fields( $config ) {
+        $fields         = $config['fields'] ?? [];
+        $include_name   = false;
+        $name_required  = false;
+        $include_email  = false;
         $email_required = false;
-        $custom_fields = [];
+        $custom_fields  = [];
 
         foreach ( $fields as $f ) {
             $fname = $f['name'] ?? '';
             $ftype = $f['type'] ?? 'text';
 
-            // Skip layout elements
             if ( in_array( $ftype, [ 'heading', 'paragraph', 'divider' ], true ) ) {
                 continue;
             }
@@ -386,20 +413,17 @@ class Anchor_CTM_Forms_Module {
                 $include_email  = true;
                 $email_required = ! empty( $f['required'] );
             } elseif ( in_array( $fname, [ 'phone_number', 'phone', 'country_code' ], true ) ) {
-                // Core phone fields — handled by reactor automatically
                 continue;
             } else {
-                // Map builder field types to CTM-accepted types
                 $ctm_type_map = [
-                    'email'    => 'text',
-                    'tel'      => 'text',
-                    'number'   => 'text',
-                    'url'      => 'text',
-                    'hidden'   => 'text',
+                    'email'  => 'text',
+                    'tel'    => 'text',
+                    'number' => 'text',
+                    'url'    => 'text',
+                    'hidden' => 'text',
                 ];
                 $ctm_type = $ctm_type_map[ $ftype ] ?? $ftype;
 
-                // Custom field
                 $cf = [
                     'name'     => $fname,
                     'type'     => $ctm_type,
@@ -407,7 +431,6 @@ class Anchor_CTM_Forms_Module {
                     'required' => ! empty( $f['required'] ),
                 ];
 
-                // Options for select/checkbox/radio
                 if ( ! empty( $f['options'] ) && is_array( $f['options'] ) ) {
                     $cf['options'] = array_map( function( $opt ) {
                         return [
@@ -417,7 +440,6 @@ class Anchor_CTM_Forms_Module {
                     }, $f['options'] );
                 }
 
-                // Log visible
                 if ( ! empty( $f['logVisible'] ) ) {
                     $cf['log_visible'] = true;
                 }
@@ -426,21 +448,32 @@ class Anchor_CTM_Forms_Module {
             }
         }
 
-        // Build reactor creation body
+        return compact( 'include_name', 'name_required', 'include_email', 'email_required', 'custom_fields' );
+    }
+
+    /**
+     * Create a single FormReactor in CTM for a specific tracking number.
+     *
+     * @return string|WP_Error  Reactor ID on success.
+     */
+    private function create_single_reactor( $name, $phone_number_id, $reactor_fields ) {
+        $acc     = $this->account_id();
+        $headers = $this->auth_headers();
+
         $body = [
-            'name'           => $post_title ?: 'Form Variant #' . $post_id,
-            'include_name'   => $include_name,
-            'name_required'  => $name_required,
-            'include_email'  => $include_email,
-            'email_required' => $email_required,
+            'name'                    => $name,
+            'virtual_phone_number_id' => $phone_number_id,
+            'include_name'            => $reactor_fields['include_name'],
+            'name_required'           => $reactor_fields['name_required'],
+            'include_email'           => $reactor_fields['include_email'],
+            'email_required'          => $reactor_fields['email_required'],
         ];
 
-        if ( ! empty( $custom_fields ) ) {
-            $body['custom_fields'] = $custom_fields;
+        if ( ! empty( $reactor_fields['custom_fields'] ) ) {
+            $body['custom_fields'] = $reactor_fields['custom_fields'];
         }
 
-        $url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/form_reactors";
-
+        $url      = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/form_reactors";
         $response = wp_remote_post( $url, [
             'headers' => array_merge( $headers, [ 'Content-Type' => 'application/json' ] ),
             'timeout' => 30,
@@ -470,7 +503,6 @@ class Anchor_CTM_Forms_Module {
                 $parts = [];
                 foreach ( $data['errors'] as $key => $e ) {
                     $val = is_array( $e ) ? implode( ', ', $e ) : $e;
-                    // Include field name if it's a string key (Rails-style errors)
                     $parts[] = is_string( $key ) ? "{$key} {$val}" : $val;
                 }
                 $error_msg .= ': ' . implode( '; ', $parts );
@@ -482,6 +514,125 @@ class Anchor_CTM_Forms_Module {
         }
 
         return new WP_Error( 'ctm_api_error', $error_msg );
+    }
+
+    /**
+     * Create FormReactors for ALL tracking numbers in the account.
+     *
+     * Each number gets its own reactor so submissions can be dynamically
+     * routed based on visitor attribution (Google Ads, Facebook, organic, etc.).
+     *
+     * @return array|WP_Error  Reactor map on success, WP_Error on failure.
+     */
+    private function create_form_reactors( $post_id, $config ) {
+        $acc     = $this->account_id();
+        $headers = $this->auth_headers();
+        if ( ! $acc || ! $headers ) {
+            return new WP_Error( 'ctm_missing_creds', 'CTM API credentials not configured. Set them under CTM Forms settings.' );
+        }
+
+        $numbers = $this->fetch_tracking_numbers();
+        if ( empty( $numbers ) ) {
+            return new WP_Error( 'ctm_no_numbers', 'No tracking numbers found in CTM account. Add at least one number in your CTM dashboard.' );
+        }
+
+        $post_title     = get_the_title( $post_id );
+        $reactor_fields = $this->build_reactor_fields( $config );
+        $reactor_map    = [];
+        $errors         = [];
+
+        foreach ( $numbers as $n ) {
+            $reactor_name = ( $post_title ?: 'Form #' . $post_id ) . ' — ' . $n['label'];
+            $result       = $this->create_single_reactor( $reactor_name, $n['id'], $reactor_fields );
+
+            if ( is_wp_error( $result ) ) {
+                $errors[] = $n['label'] . ': ' . $result->get_error_message();
+                continue;
+            }
+
+            $reactor_map[] = [
+                'number_id'   => $n['id'],
+                'reactor_id'  => $result,
+                'number_name' => $n['label'],
+            ];
+        }
+
+        if ( empty( $reactor_map ) ) {
+            return new WP_Error( 'ctm_api_error', 'Failed to create any reactors. ' . implode( ' | ', $errors ) );
+        }
+
+        return $reactor_map;
+    }
+
+    /**
+     * Resolve the best reactor ID for a submission based on visitor attribution.
+     *
+     * Matches gclid → Google Ads, fbclid → Facebook, organic Google referrer, etc.
+     * Falls back to the last reactor in the map (typically the base website number).
+     */
+    private function resolve_reactor_for_attribution( $reactor_map, $attribution ) {
+        if ( count( $reactor_map ) === 1 ) {
+            return $reactor_map[0]['reactor_id'];
+        }
+
+        $referrer   = strtolower( $attribution['referring_url'] ?? '' );
+        $utm_source = strtolower( $attribution['utm_source'] ?? '' );
+        $utm_medium = strtolower( $attribution['utm_medium'] ?? '' );
+        $gclid      = $attribution['gclid'] ?? '';
+        $fbclid     = $attribution['fbclid'] ?? '';
+        $msclkid    = $attribution['msclkid'] ?? '';
+
+        // Build a lowercase name index for matching
+        $by_name = [];
+        foreach ( $reactor_map as $entry ) {
+            $by_name[ strtolower( $entry['number_name'] ) ] = $entry['reactor_id'];
+        }
+
+        // Google Ads: gclid present, or utm_source/medium indicate paid google
+        if ( $gclid || ( $utm_source === 'google' && in_array( $utm_medium, [ 'cpc', 'ppc', 'paid' ], true ) ) ) {
+            foreach ( $by_name as $name => $rid ) {
+                if ( strpos( $name, 'google' ) !== false && ( strpos( $name, 'ad' ) !== false || strpos( $name, 'paid' ) !== false || strpos( $name, 'ppc' ) !== false || strpos( $name, 'cpc' ) !== false ) ) {
+                    return $rid;
+                }
+            }
+        }
+
+        // Facebook Ads: fbclid present, or utm_source indicates facebook paid
+        if ( $fbclid || ( ( $utm_source === 'facebook' || $utm_source === 'fb' || $utm_source === 'instagram' || $utm_source === 'ig' ) && in_array( $utm_medium, [ 'cpc', 'ppc', 'paid', 'social' ], true ) ) ) {
+            foreach ( $by_name as $name => $rid ) {
+                if ( ( strpos( $name, 'facebook' ) !== false || strpos( $name, 'fb' ) !== false || strpos( $name, 'meta' ) !== false ) && ( strpos( $name, 'ad' ) !== false || strpos( $name, 'paid' ) !== false ) ) {
+                    return $rid;
+                }
+            }
+        }
+
+        // Microsoft/Bing Ads
+        if ( $msclkid || ( ( $utm_source === 'bing' || $utm_source === 'microsoft' ) && in_array( $utm_medium, [ 'cpc', 'ppc', 'paid' ], true ) ) ) {
+            foreach ( $by_name as $name => $rid ) {
+                if ( ( strpos( $name, 'bing' ) !== false || strpos( $name, 'microsoft' ) !== false ) && ( strpos( $name, 'ad' ) !== false || strpos( $name, 'paid' ) !== false ) ) {
+                    return $rid;
+                }
+            }
+        }
+
+        // Google Organic: referrer is google but no gclid, no paid UTMs
+        if ( ( strpos( $referrer, 'google.' ) !== false || $utm_source === 'google' ) && ! $gclid && ! in_array( $utm_medium, [ 'cpc', 'ppc', 'paid' ], true ) ) {
+            foreach ( $by_name as $name => $rid ) {
+                if ( strpos( $name, 'google' ) !== false && ( strpos( $name, 'organic' ) !== false || strpos( $name, 'seo' ) !== false || strpos( $name, 'search' ) !== false ) ) {
+                    return $rid;
+                }
+            }
+        }
+
+        // Fallback: look for a "website" / "web" / "default" / "direct" number
+        foreach ( $by_name as $name => $rid ) {
+            if ( strpos( $name, 'website' ) !== false || strpos( $name, 'web ' ) !== false || strpos( $name, 'default' ) !== false || strpos( $name, 'direct' ) !== false ) {
+                return $rid;
+            }
+        }
+
+        // Last resort: use the last entry (typically the base/website number)
+        return end( $reactor_map )['reactor_id'];
     }
 
     /**
@@ -517,9 +668,20 @@ class Anchor_CTM_Forms_Module {
 
     /* ========================= Metabox: Builder Sidebar ========================= */
     public function builder_sidebar_cb( $post ) {
+        $reactor_map = get_post_meta( $post->ID, '_ctm_reactor_map', true );
         ?>
         <div id="ctm-builder-sidebar">
-            <p class="ctm-sidebar-empty">Select the "Build Custom Form" tab to configure.</p>
+            <?php if ( ! empty( $reactor_map ) && is_array( $reactor_map ) ) : ?>
+                <p><strong><?php esc_html_e( 'Linked Reactors', 'anchor-schema' ); ?></strong></p>
+                <ul class="ctm-reactor-list" style="margin:0;">
+                    <?php foreach ( $reactor_map as $entry ) : ?>
+                        <li style="margin:2px 0;font-size:12px;"><code><?php echo esc_html( $entry['number_name'] ); ?></code></li>
+                    <?php endforeach; ?>
+                </ul>
+                <p class="description"><?php esc_html_e( 'Submissions auto-route to the correct number based on visitor source (Google Ads, Facebook, organic, etc.).', 'anchor-schema' ); ?></p>
+            <?php else : ?>
+                <p class="ctm-sidebar-empty"><?php esc_html_e( 'Reactors will be created automatically for each tracking number when you publish.', 'anchor-schema' ); ?></p>
+            <?php endif; ?>
         </div>
         <?php
     }
@@ -622,11 +784,11 @@ class Anchor_CTM_Forms_Module {
         <!-- ═══════════════ TAB 2: Builder Mode ═══════════════ -->
         <div id="ctm-tab-builder" class="ctm-tab-panel<?php echo $form_mode === 'builder' ? ' active' : ''; ?>">
             <?php
-            // Show reactor ID if already created
-            $existing_reactor = get_post_meta( $post->ID, '_ctm_builder_reactor_id', true );
-            if ( $existing_reactor ) : ?>
+            // Show reactor mapping if already created
+            $existing_map = get_post_meta( $post->ID, '_ctm_reactor_map', true );
+            if ( ! empty( $existing_map ) && is_array( $existing_map ) ) : ?>
                 <div class="ctm-builder-info">
-                    <?php printf( esc_html__( 'Linked to FormReactor: %s', 'anchor-schema' ), '<code>' . esc_html( $existing_reactor ) . '</code>' ); ?>
+                    <?php echo esc_html( sprintf( __( '%d FormReactors linked (auto-routed by visitor source)', 'anchor-schema' ), count( $existing_map ) ) ); ?>
                 </div>
             <?php endif; ?>
 
@@ -977,12 +1139,12 @@ class Anchor_CTM_Forms_Module {
                 }
             }
 
-            // ── Auto-create FormReactor on publish ──
-            $post_status = get_post_status( $post_id );
-            $existing_reactor = get_post_meta( $post_id, '_ctm_builder_reactor_id', true );
+            // ── Auto-create FormReactors on publish (one per tracking number) ──
+            $post_status    = get_post_status( $post_id );
+            $existing_map   = get_post_meta( $post_id, '_ctm_reactor_map', true );
 
-            if ( $post_status === 'publish' && empty( $existing_reactor ) && is_array( $config ) ) {
-                $result = $this->create_form_reactor( $post_id, $config );
+            if ( $post_status === 'publish' && empty( $existing_map ) && is_array( $config ) ) {
+                $result = $this->create_form_reactors( $post_id, $config );
 
                 if ( is_wp_error( $result ) ) {
                     // Revert to draft on failure
@@ -993,12 +1155,13 @@ class Anchor_CTM_Forms_Module {
                     ] );
                     add_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
 
-                    // Store error for admin notice
                     set_transient( 'ctm_builder_error_' . $post_id, $result->get_error_message(), 60 );
                 } else {
-                    // Store reactor ID
-                    update_post_meta( $post_id, '_ctm_builder_reactor_id', $result );
-                    update_post_meta( $post_id, '_ctm_reactor_id', $result );
+                    // Store reactor map and set the first reactor as the default
+                    update_post_meta( $post_id, '_ctm_reactor_map', $result );
+                    $default_reactor = $result[0]['reactor_id'];
+                    update_post_meta( $post_id, '_ctm_builder_reactor_id', $default_reactor );
+                    update_post_meta( $post_id, '_ctm_reactor_id', $default_reactor );
                 }
             }
 
@@ -1604,11 +1767,6 @@ class Anchor_CTM_Forms_Module {
             wp_send_json_error( [ 'type' => 'validation', 'message' => 'Missing variant.' ] );
         }
 
-        $reactor_id = get_post_meta( $variant_id, '_ctm_reactor_id', true );
-        if ( ! $reactor_id ) {
-            wp_send_json_error( [ 'type' => 'validation', 'message' => 'Variant not configured.' ] );
-        }
-
         // Parse JSON blobs from JS
         $core = [];
         $custom = [];
@@ -1663,6 +1821,19 @@ class Anchor_CTM_Forms_Module {
         $attribution['visitor_ip'] = $this->get_visitor_ip();
         if ( ! empty( $_SERVER['HTTP_USER_AGENT'] ) ) {
             $attribution['user_agent'] = sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) );
+        }
+
+        // Resolve the correct reactor based on visitor attribution
+        $reactor_map = get_post_meta( $variant_id, '_ctm_reactor_map', true );
+        if ( ! empty( $reactor_map ) && is_array( $reactor_map ) ) {
+            $reactor_id = $this->resolve_reactor_for_attribution( $reactor_map, $attribution );
+        } else {
+            // Legacy single-reactor fallback
+            $reactor_id = get_post_meta( $variant_id, '_ctm_reactor_id', true );
+        }
+
+        if ( ! $reactor_id ) {
+            wp_send_json_error( [ 'type' => 'validation', 'message' => 'Variant not configured.' ] );
         }
 
         $res = $this->send_submission_to_ctm( $reactor_id, $core, $custom, $attribution );

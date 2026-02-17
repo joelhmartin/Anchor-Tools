@@ -47,8 +47,8 @@ class Anchor_CTM_Forms_Module {
         }
 
         $base = plugin_dir_url( __FILE__ ) . 'assets/';
-        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.2.0' );
-        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.2.0', true );
+        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.3.0' );
+        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.3.0', true );
 
         $reactors = $this->fetch_reactors_list();
         wp_localize_script( 'ctm-builder', 'CTM_BUILDER', [
@@ -603,9 +603,12 @@ PROMPT;
         $email_required = false;
         $custom_fields  = [];
 
+        $type_aliases = [ 'fullname' => 'text', 'message' => 'textarea' ];
+
         foreach ( $fields as $f ) {
             $fname = $f['name'] ?? '';
             $ftype = $f['type'] ?? 'text';
+            $ftype = $type_aliases[ $ftype ] ?? $ftype;
 
             if ( in_array( $ftype, [ 'heading', 'paragraph', 'divider' ], true ) ) {
                 continue;
@@ -1541,8 +1544,12 @@ PROMPT;
         $row_open = false;
         $prev_width = 'full';
 
+        // Map palette-only types to their real HTML types
+        $type_aliases = [ 'fullname' => 'text', 'message' => 'textarea' ];
+
         foreach ( $fields as $i => $f ) {
             $type       = $f['type'] ?? 'text';
+            $type       = $type_aliases[ $type ] ?? $type;
             $label      = $f['label'] ?? '';
             $name       = $f['name'] ?? '';
             $placeholder = $f['placeholder'] ?? '';

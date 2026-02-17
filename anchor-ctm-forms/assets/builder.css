@@ -678,6 +678,20 @@
     padding: 4px 0;
 }
 
+/* ── Setting hint ── */
+.ctm-setting-hint {
+    margin: 2px 0 8px;
+    font-size: 11px;
+    color: #888;
+    line-height: 1.4;
+}
+.ctm-setting-hint code {
+    font-size: 10px;
+    background: #f0f0f1;
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
 /* ══════════════════════════════════════════════════
    METABOX — Reusable Box & Layout Classes
    ══════════════════════════════════════════════════ */

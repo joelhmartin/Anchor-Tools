@@ -15,12 +15,14 @@
 
   /* ── Field type definitions ── */
   var FIELD_TYPES = {
-    text:      { label: 'Text',      icon: 'dashicons-editor-textcolor', group: 'input' },
+    fullname:  { label: 'Full Name', icon: 'dashicons-admin-users',     group: 'input' },
     email:     { label: 'Email',     icon: 'dashicons-email',            group: 'input' },
     tel:       { label: 'Phone',     icon: 'dashicons-phone',            group: 'input' },
+    message:   { label: 'Message',   icon: 'dashicons-format-chat',     group: 'input' },
+    text:      { label: 'Text',      icon: 'dashicons-editor-textcolor', group: 'input' },
+    textarea:  { label: 'Textarea',  icon: 'dashicons-editor-paragraph', group: 'input' },
     number:    { label: 'Number',    icon: 'dashicons-calculator',       group: 'input' },
     url:       { label: 'URL',       icon: 'dashicons-admin-links',      group: 'input' },
-    textarea:  { label: 'Textarea',  icon: 'dashicons-editor-paragraph', group: 'input' },
     select:    { label: 'Select',    icon: 'dashicons-arrow-down-alt2',  group: 'input' },
     checkbox:  { label: 'Checkbox',  icon: 'dashicons-yes-alt',          group: 'input' },
     radio:     { label: 'Radio',     icon: 'dashicons-marker',           group: 'input' },
@@ -231,6 +233,23 @@
 
     // Type-specific defaults
     switch (type) {
+      case 'fullname':
+        f.type = 'text';
+        f._displayType = 'fullname';
+        f.name = 'caller_name';
+        f.label = 'Full Name';
+        f.isCustom = false;
+        f.placeholder = 'Your name';
+        f.required = true;
+        break;
+      case 'message':
+        f.type = 'textarea';
+        f._displayType = 'message';
+        f.name = 'custom_message';
+        f.label = 'Message';
+        f.isCustom = true;
+        f.placeholder = 'Your message';
+        break;
       case 'email':
         f.name = 'email';
         f.label = 'Email';
@@ -283,11 +302,23 @@
   }
 
   function addField(type) {
-    // Limit to one score_display per form
+    // Limit singleton field types to one per form
     if (type === 'score_display') {
       var exists = config.fields.some(function (f) { return f.type === 'score_display'; });
       if (exists) {
         alert('Only one Score Display field is allowed per form.');
+        return;
+      }
+    }
+    if (type === 'fullname') {
+      if (config.fields.some(function (f) { return f.name === 'caller_name'; })) {
+        alert('Only one Full Name field is allowed per form.');
+        return;
+      }
+    }
+    if (type === 'message') {
+      if (config.fields.some(function (f) { return f.name === 'custom_message'; })) {
+        alert('Only one Message field is allowed per form.');
         return;
       }
     }
@@ -374,7 +405,7 @@
   }
 
   function renderFieldRow(f) {
-    var typeDef = FIELD_TYPES[f.type] || { label: f.type, icon: 'dashicons-admin-generic' };
+    var typeDef = FIELD_TYPES[f._displayType || f.type] || { label: f.type, icon: 'dashicons-admin-generic' };
     var badges = '';
 
     if (f.width && f.width !== 'full') {
@@ -625,6 +656,7 @@
     // All input types
     html += settingField('Label', 'label', f.label, 'text', '');
     html += settingField('Field Name', 'name', f.name, 'text', '');
+    html += '<p class="ctm-setting-hint">CTM core names: <code>caller_name</code>, <code>email</code>, <code>phone_number</code>. Others become custom fields.</p>';
     html += settingField('Placeholder', 'placeholder', f.placeholder || '', 'text', '');
     html += settingField('Default Value', 'defaultValue', f.defaultValue || '', 'text', '');
     html += settingCheckbox('Required', 'required', f.required);

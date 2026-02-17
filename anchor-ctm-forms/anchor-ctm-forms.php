@@ -1038,16 +1038,20 @@ PROMPT;
             <!-- Field palette -->
             <div class="ctm-builder-palette">
                 <span class="palette-group-label"><?php esc_html_e( 'Input Fields', 'anchor-schema' ); ?></span>
+                <button type="button" class="ctm-palette-btn" data-type="fullname"><span class="dashicons dashicons-admin-users"></span> <?php esc_html_e( 'Full Name', 'anchor-schema' ); ?></button>
+                <button type="button" class="ctm-palette-btn" data-type="email"><span class="dashicons dashicons-email"></span> <?php esc_html_e( 'Email', 'anchor-schema' ); ?></button>
+                <button type="button" class="ctm-palette-btn" data-type="tel"><span class="dashicons dashicons-phone"></span> <?php esc_html_e( 'Phone', 'anchor-schema' ); ?></button>
+                <button type="button" class="ctm-palette-btn" data-type="message"><span class="dashicons dashicons-format-chat"></span> <?php esc_html_e( 'Message', 'anchor-schema' ); ?></button>
                 <?php
-                $input_types = [ 'text', 'email', 'tel', 'number', 'url', 'textarea', 'select', 'checkbox', 'radio', 'hidden' ];
+                $input_types = [ 'text', 'number', 'url', 'textarea', 'select', 'checkbox', 'radio', 'hidden' ];
                 $icons = [
-                    'text' => 'dashicons-editor-textcolor', 'email' => 'dashicons-email', 'tel' => 'dashicons-phone',
-                    'number' => 'dashicons-calculator', 'url' => 'dashicons-admin-links', 'textarea' => 'dashicons-editor-paragraph',
+                    'text' => 'dashicons-editor-textcolor', 'number' => 'dashicons-calculator',
+                    'url' => 'dashicons-admin-links', 'textarea' => 'dashicons-editor-paragraph',
                     'select' => 'dashicons-arrow-down-alt2', 'checkbox' => 'dashicons-yes-alt', 'radio' => 'dashicons-marker',
                     'hidden' => 'dashicons-hidden',
                 ];
                 foreach ( $input_types as $t ):
-                    $label = ucfirst( $t === 'tel' ? 'Phone' : $t );
+                    $label = ucfirst( $t );
                 ?>
                     <button type="button" class="ctm-palette-btn" data-type="<?php echo esc_attr( $t ); ?>">
                         <span class="dashicons <?php echo esc_attr( $icons[ $t ] ); ?>"></span> <?php echo esc_html( $label ); ?>
@@ -2176,18 +2180,12 @@ PROMPT;
             }
         }
 
-        // Attribution: visitor_sid is a top-level/core field for CTM session attribution
-        if ( ! empty( $attribution['visitor_sid'] ) ) {
-            $body['visitor_sid'] = $attribution['visitor_sid'];
-            unset( $attribution['visitor_sid'] );
-        }
-
-        // Remaining attribution fields sent as custom_ fields
-        if ( ! empty( $attribution ) ) {
-            foreach ( $attribution as $key => $value ) {
-                if ( $value !== '' ) {
-                    $body[ 'custom_' . $key ] = $value;
-                }
+        // Attribution fields — sent as top-level keys (NOT custom_ prefixed).
+        // CTM recognizes these natively for session/source tracking.
+        $top_level_attr = [ 'visitor_sid', 'referring_url', 'page_url', 'visitor_ip', 'user_agent' ];
+        foreach ( $top_level_attr as $key ) {
+            if ( ! empty( $attribution[ $key ] ) ) {
+                $body[ $key ] = $attribution[ $key ];
             }
         }
 

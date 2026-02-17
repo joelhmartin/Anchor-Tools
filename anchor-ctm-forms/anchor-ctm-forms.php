@@ -369,15 +369,38 @@ class Anchor_CTM_Forms_Module {
             return [];
         }
 
-        $items = $body['numbers'] ?? $body;
-        $out   = [];
+        // Debug: store raw response so we can inspect the structure
+        set_transient( 'ctm_numbers_debug', wp_json_encode( $body ), 300 );
+
+        // CTM may nest numbers under various keys
+        $items = $body['numbers'] ?? $body['tracking_numbers'] ?? $body;
+
+        // If it's a paginated response, look for the array inside
+        if ( isset( $items['page'] ) || isset( $items['total_entries'] ) ) {
+            $items = $items['numbers'] ?? $items['tracking_numbers'] ?? [];
+        }
+
+        $out = [];
 
         foreach ( (array) $items as $n ) {
-            if ( empty( $n['id'] ) ) continue;
-            $label = $n['name'] ?? $n['number'] ?? $n['id'];
-            if ( ! empty( $n['number'] ) && ! empty( $n['name'] ) ) {
-                $label = $n['name'] . ' (' . $n['number'] . ')';
+            if ( ! is_array( $n ) || empty( $n['id'] ) ) continue;
+            // Try common CTM field names for the display number and source name
+            $display_number = $n['display_number'] ?? $n['tracking_number'] ?? $n['number'] ?? $n['formatted'] ?? '';
+            $source_name    = $n['source'] ?? $n['tracking_source_name'] ?? $n['name'] ?? '';
+            if ( is_array( $source_name ) ) {
+                $source_name = $source_name['name'] ?? '';
             }
+
+            if ( $source_name && $display_number ) {
+                $label = $source_name . ' (' . $display_number . ')';
+            } elseif ( $source_name ) {
+                $label = $source_name;
+            } elseif ( $display_number ) {
+                $label = $display_number;
+            } else {
+                $label = (string) $n['id'];
+            }
+
             $out[] = [
                 'id'    => (string) $n['id'],
                 'label' => (string) $label,
@@ -488,8 +511,12 @@ class Anchor_CTM_Forms_Module {
         $raw_body = wp_remote_retrieve_body( $response );
         $data     = json_decode( $raw_body, true );
 
-        if ( $code >= 200 && $code < 300 && ! empty( $data['id'] ) ) {
-            return (string) $data['id'];
+        if ( $code >= 200 && $code < 300 ) {
+            // Response may nest under 'form_reactor' key
+            $reactor_id = $data['form_reactor']['id'] ?? $data['id'] ?? '';
+            if ( $reactor_id ) {
+                return (string) $reactor_id;
+            }
         }
 
         // Build a useful error message

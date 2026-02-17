@@ -774,10 +774,25 @@ PROMPT;
     }
 
     /**
-     * Resolve the best reactor ID for a submission based on visitor attribution.
+     * Pick the default/website reactor from the map for primary visitor_sid-based submissions.
+     */
+    private function pick_default_reactor( $reactor_map ) {
+        foreach ( $reactor_map as $entry ) {
+            $name = strtolower( $entry['number_name'] );
+            if ( strpos( $name, 'website' ) !== false || strpos( $name, 'default' ) !== false || strpos( $name, 'direct' ) !== false ) {
+                return $entry['reactor_id'];
+            }
+        }
+        // Fall back to last entry
+        return end( $reactor_map )['reactor_id'];
+    }
+
+    /**
+     * Fallback: resolve the best reactor ID based on visitor attribution.
+     * Only used when visitor_sid is not available (CTM JS not loaded).
      *
      * Matches gclid → Google Ads, fbclid → Facebook, organic Google referrer, etc.
-     * Falls back to the last reactor in the map (typically the base website number).
+     * Falls back to the default/website reactor.
      */
     private function resolve_reactor_for_attribution( $reactor_map, $attribution ) {
         if ( count( $reactor_map ) === 1 ) {
@@ -1385,9 +1400,9 @@ PROMPT;
 
                     set_transient( 'ctm_builder_error_' . $post_id, $result->get_error_message(), 60 );
                 } else {
-                    // Store reactor map and set the first reactor as the default
+                    // Store reactor map; pick the website/default number as primary
                     update_post_meta( $post_id, '_ctm_reactor_map', $result );
-                    $default_reactor = $result[0]['reactor_id'];
+                    $default_reactor = $this->pick_default_reactor( $result );
                     update_post_meta( $post_id, '_ctm_builder_reactor_id', $default_reactor );
                     update_post_meta( $post_id, '_ctm_reactor_id', $default_reactor );
                 }
@@ -2094,13 +2109,15 @@ PROMPT;
             $attribution['user_agent'] = sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) );
         }
 
-        // Resolve the correct reactor based on visitor attribution
-        $reactor_map = get_post_meta( $variant_id, '_ctm_reactor_map', true );
-        if ( ! empty( $reactor_map ) && is_array( $reactor_map ) ) {
-            $reactor_id = $this->resolve_reactor_for_attribution( $reactor_map, $attribution );
-        } else {
-            // Legacy single-reactor fallback
-            $reactor_id = get_post_meta( $variant_id, '_ctm_reactor_id', true );
+        // Primary: use default reactor + visitor_sid (CTM handles attribution)
+        // Fallback: if no visitor_sid, match attribution to the right reactor
+        $reactor_id = get_post_meta( $variant_id, '_ctm_reactor_id', true );
+
+        if ( empty( $attribution['visitor_sid'] ) ) {
+            $reactor_map = get_post_meta( $variant_id, '_ctm_reactor_map', true );
+            if ( ! empty( $reactor_map ) && is_array( $reactor_map ) ) {
+                $reactor_id = $this->resolve_reactor_for_attribution( $reactor_map, $attribution );
+            }
         }
 
         if ( ! $reactor_id ) {

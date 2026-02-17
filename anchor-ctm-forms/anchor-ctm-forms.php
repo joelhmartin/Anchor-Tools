@@ -467,8 +467,13 @@ class Anchor_CTM_Forms_Module {
             $error_msg .= ': ' . ( is_array( $data['message'] ) ? wp_json_encode( $data['message'] ) : $data['message'] );
         } elseif ( ! empty( $data['errors'] ) ) {
             if ( is_array( $data['errors'] ) ) {
-                $parts = array_map( function( $e ) { return is_array( $e ) ? wp_json_encode( $e ) : $e; }, $data['errors'] );
-                $error_msg .= ': ' . implode( ', ', $parts );
+                $parts = [];
+                foreach ( $data['errors'] as $key => $e ) {
+                    $val = is_array( $e ) ? implode( ', ', $e ) : $e;
+                    // Include field name if it's a string key (Rails-style errors)
+                    $parts[] = is_string( $key ) ? "{$key} {$val}" : $val;
+                }
+                $error_msg .= ': ' . implode( '; ', $parts );
             } else {
                 $error_msg .= ': ' . $data['errors'];
             }

@@ -369,6 +369,16 @@
   function updateField(id, key, val) {
     var f = findField(id);
     if (!f) return;
+
+    // Sanitize field name to a safe machine identifier
+    if (key === 'name') {
+      val = val.replace(/[^a-zA-Z0-9_\s-]/g, '')  // strip special chars
+               .trim().toLowerCase()
+               .replace(/[\s-]+/g, '_')             // spaces/hyphens → underscores
+               .replace(/_+/g, '_')                 // collapse multiple underscores
+               .replace(/^_|_$/g, '');              // trim leading/trailing underscores
+    }
+
     f[key] = val;
 
     // Auto-detect core fields when name changes
@@ -958,7 +968,7 @@
     });
 
     // ── Field settings input changes (sidebar) ──
-    $(document).on('input change', '#ctm-builder-sidebar .ctm-sidebar-field [data-key]', function () {
+    $(document).on('input change', '#ctm-builder-sidebar .ctm-sidebar-field [data-key]', function (e) {
       if (!selectedFieldId) return;
       var key = $(this).data('key');
       var val;
@@ -975,6 +985,12 @@
       if (key === 'step') val = parseInt(val, 10);
 
       updateField(selectedFieldId, key, val);
+
+      // On blur, reflect the sanitized name back into the input
+      if (key === 'name' && e.type === 'change') {
+        var f = findField(selectedFieldId);
+        if (f) $(this).val(f.name);
+      }
 
       // Update header display in canvas
       if (key === 'label' || key === 'name' || key === 'width' || key === 'required') {

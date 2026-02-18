@@ -11,7 +11,7 @@
   if (typeof CTM_BUILDER === 'undefined') return;
 
   /* ── Core field names that CTM expects ── */
-  var CORE_FIELDS = ['caller_name', 'email', 'phone_number', 'phone', 'country_code', 'message'];
+  var CORE_FIELDS = ['caller_name', 'email', 'phone_number', 'phone', 'country_code'];
 
   /* ── Field type definitions ── */
   var FIELD_TYPES = {
@@ -228,7 +228,7 @@
       step: 0,
       conditions: [],
       conditionLogic: 'all',
-      logVisible: false
+      logVisible: true
     };
 
     // Type-specific defaults
@@ -247,7 +247,7 @@
         f._displayType = 'message';
         f.name = 'message';
         f.label = 'Message';
-        f.isCustom = false;
+        f.isCustom = true;
         f.placeholder = 'Your message';
         break;
       case 'email':

@@ -620,7 +620,7 @@ PROMPT;
             } elseif ( $fname === 'email' ) {
                 $include_email  = true;
                 $email_required = ! empty( $f['required'] );
-            } elseif ( in_array( $fname, [ 'phone_number', 'phone', 'country_code', 'message' ], true ) ) {
+            } elseif ( in_array( $fname, [ 'phone_number', 'phone', 'country_code' ], true ) ) {
                 continue;
             } else {
                 $ctm_type_map = [
@@ -650,9 +650,8 @@ PROMPT;
                     $cf['items'] = implode( "\n", array_filter( $labels ) );
                 }
 
-                if ( ! empty( $f['logVisible'] ) ) {
-                    $cf['log_visible'] = true;
-                }
+                // Default to log-visible; only hide if explicitly disabled
+                $cf['log_visible'] = ! isset( $f['logVisible'] ) || ! empty( $f['logVisible'] );
 
                 $custom_fields[] = $cf;
             }
@@ -1401,7 +1400,7 @@ PROMPT;
         $scoring_on   = ! empty( $scoring['enabled'] );
 
         // Core field names that should NOT get ctm-custom class
-        $core_names = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code', 'message' ];
+        $core_names = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
 
         // Group fields by step if multi-step
         $steps = [];

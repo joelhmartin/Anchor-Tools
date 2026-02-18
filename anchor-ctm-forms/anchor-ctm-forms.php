@@ -47,8 +47,8 @@ class Anchor_CTM_Forms_Module {
         }
 
         $base = plugin_dir_url( __FILE__ ) . 'assets/';
-        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.4.0' );
-        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.4.0', true );
+        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.5.0' );
+        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.5.0', true );
 
         $reactors = $this->fetch_reactors_list();
         wp_localize_script( 'ctm-builder', 'CTM_BUILDER', [

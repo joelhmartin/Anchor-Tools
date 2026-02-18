@@ -595,6 +595,17 @@ PROMPT;
     /**
      * Build the shared reactor body fields from builder config (without number-specific data).
      */
+    /**
+     * Sanitize a field name to a safe machine identifier (lowercase, underscores).
+     */
+    private static function sanitize_field_name( $name ) {
+        $name = preg_replace( '/[^a-zA-Z0-9_\s-]/', '', $name );
+        $name = strtolower( trim( $name ) );
+        $name = preg_replace( '/[\s-]+/', '_', $name );
+        $name = preg_replace( '/_+/', '_', $name );
+        return trim( $name, '_' );
+    }
+
     private function build_reactor_fields( $config ) {
         $fields         = $config['fields'] ?? [];
         $include_name   = false;
@@ -609,6 +620,12 @@ PROMPT;
             $fname = $f['name'] ?? '';
             $ftype = $f['type'] ?? 'text';
             $ftype = $type_aliases[ $ftype ] ?? $ftype;
+
+            // Sanitize custom field names to safe identifiers (core names are already clean)
+            $core_names = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
+            if ( ! in_array( $fname, $core_names, true ) ) {
+                $fname = self::sanitize_field_name( $fname );
+            }
 
             if ( in_array( $ftype, [ 'heading', 'paragraph', 'divider' ], true ) ) {
                 continue;
@@ -1464,7 +1481,15 @@ PROMPT;
             $help_text  = $f['helpText'] ?? '';
             $default    = $f['defaultValue'] ?? '';
             $required   = ! empty( $f['required'] );
-            $is_custom  = isset( $f['isCustom'] ) ? (bool) $f['isCustom'] : ( ! in_array( $name, $core_names, true ) );
+
+            // Sanitize custom field names to safe identifiers
+            if ( ! in_array( $name, $core_names, true ) ) {
+                $name = self::sanitize_field_name( $name );
+            }
+
+            // If the name isn't a CTM core field, it must be custom regardless of config
+            $is_core    = in_array( $name, $core_names, true );
+            $is_custom  = $is_core ? false : true;
             $width      = $f['width'] ?? 'full';
             $css_class  = $f['cssClass'] ?? '';
             $field_id   = $f['id'] ?? '';

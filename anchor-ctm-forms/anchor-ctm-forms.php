@@ -624,11 +624,14 @@ PROMPT;
                 continue;
             } else {
                 $ctm_type_map = [
-                    'email'  => 'text',
-                    'tel'    => 'text',
-                    'number' => 'text',
-                    'url'    => 'text',
-                    'hidden' => 'text',
+                    'email'    => 'text',
+                    'tel'      => 'text',
+                    'number'   => 'text',
+                    'url'      => 'text',
+                    'hidden'   => 'text',
+                    'radio'    => 'list',
+                    'select'   => 'list',
+                    'checkbox' => 'checklist',
                 ];
                 $ctm_type = $ctm_type_map[ $ftype ] ?? $ftype;
 
@@ -639,13 +642,12 @@ PROMPT;
                     'required' => ! empty( $f['required'] ),
                 ];
 
+                // CTM expects options as a newline-separated "items" string, not a JSON array.
                 if ( ! empty( $f['options'] ) && is_array( $f['options'] ) ) {
-                    $cf['options'] = array_map( function( $opt ) {
-                        return [
-                            'value' => $opt['value'] ?? '',
-                            'label' => $opt['label'] ?? '',
-                        ];
+                    $labels = array_map( function( $opt ) {
+                        return $opt['label'] ?? $opt['value'] ?? '';
                     }, $f['options'] );
+                    $cf['items'] = implode( "\n", array_filter( $labels ) );
                 }
 
                 if ( ! empty( $f['logVisible'] ) ) {

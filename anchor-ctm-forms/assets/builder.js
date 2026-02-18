@@ -1475,11 +1475,14 @@
           $status.text('Applied!');
           setTimeout(function () { $status.text(''); }, 2000);
         } else {
-          showError((res && res.data) || 'An unexpected error occurred.');
+          var errMsg = (res && res.data) || 'An unexpected error occurred.';
+          console.error('[CTM AI]', errMsg, res);
+          showError(errMsg);
         }
-      }).fail(function () {
+      }).fail(function (xhr, status, err) {
         $apply.prop('disabled', false);
         $spin.removeClass('is-active');
+        console.error('[CTM AI] Request failed:', status, err);
         showError('Request failed. Please try again.');
       });
     }

@@ -355,7 +355,7 @@ class Anchor_CTM_Forms_Module {
      * @param int    $max_tokens    Max response tokens.
      * @return string|WP_Error      Response content or error.
      */
-    private function call_openai_chat( $api_key, $system_prompt, $user_message, $max_tokens = 4096 ) {
+    private function call_openai_chat( $api_key, $system_prompt, $user_message, $max_tokens = 8192 ) {
         $response = wp_remote_post( 'https://api.openai.com/v1/chat/completions', [
             'timeout' => 60,
             'headers' => [

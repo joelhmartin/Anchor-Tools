@@ -2039,6 +2039,7 @@ PROMPT;
         $res = $this->send_submission_to_ctm( $reactor_id, $core, $custom, $attribution );
 
         if ( is_wp_error( $res ) ) {
+            error_log( '[Anchor CTM Forms] Submission failed for variant ' . $variant_id . ': ' . $res->get_error_message() );
             wp_send_json_error( [ 'type' => 'server', 'message' => $res->get_error_message() ] );
         }
 
@@ -2084,7 +2085,8 @@ PROMPT;
             foreach ( $custom as $key => $value ) {
                 // Ensure key has custom_ prefix
                 $prefixed_key = strpos( $key, 'custom_' ) === 0 ? $key : 'custom_' . $key;
-                $body[ $prefixed_key ] = $value;
+                // CTM expects flat string values — flatten checkbox arrays.
+                $body[ $prefixed_key ] = is_array( $value ) ? implode( ', ', $value ) : $value;
             }
         }
 
@@ -2111,16 +2113,25 @@ PROMPT;
         $response = wp_remote_post( $url, $args );
 
         if ( is_wp_error( $response ) ) {
+            error_log( '[Anchor CTM Forms] wp_remote_post failed: ' . $response->get_error_message() );
             return $response;
         }
 
         $code = wp_remote_retrieve_response_code( $response );
+        $raw  = wp_remote_retrieve_body( $response );
 
         if ( $code >= 200 && $code < 300 ) {
+            // CTM may return HTTP 200 with a JSON error body — check for that.
+            $decoded = json_decode( $raw, true );
+            if ( is_array( $decoded ) && isset( $decoded['status'] ) && $decoded['status'] === 'error' ) {
+                $err_msg = $decoded['text'] ?? $decoded['message'] ?? 'Unknown CTM error';
+                error_log( '[Anchor CTM Forms] CTM rejected submission (HTTP ' . $code . '): ' . $err_msg );
+                return new WP_Error( 'ctm_rejected', $err_msg );
+            }
             return true;
         }
 
-        $raw = wp_remote_retrieve_body( $response );
+        error_log( '[Anchor CTM Forms] CTM API error (HTTP ' . $code . '): ' . substr( $raw, 0, 600 ) );
         return new WP_Error( 'ctm_api_error', 'CTM API error (' . $code . '): ' . substr( $raw, 0, 600 ) );
     }
 }

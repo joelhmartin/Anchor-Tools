@@ -381,11 +381,13 @@ class Module {
             'id' => 0,
         ], $atts, 'anchor_webinar' );
 
-        $post = null;
-        if ( is_numeric( $atts['id'] ) && (int) $atts['id'] > 0 ) {
-            $post = \get_post( (int) $atts['id'] );
+        $post_id = (int) $atts['id'];
+        if ( ! $post_id ) {
+            $post_id = \get_the_ID();
         }
-        if ( ! $post || $post->post_type !== self::CPT || $post->post_status !== 'publish' ) {
+
+        $post = $post_id ? \get_post( $post_id ) : null;
+        if ( ! $post || $post->post_status !== 'publish' ) {
             return '';
         }
 

@@ -21,6 +21,7 @@
             css:        'text/css',
             html:       'text/html',
             php:        'application/x-httpd-php',
+            shortcode:  'text/html',
             universal:  'text/html'
         };
         return map[ lang ] || 'text/html';

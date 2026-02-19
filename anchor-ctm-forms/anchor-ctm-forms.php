@@ -12,6 +12,21 @@ class Anchor_CTM_Forms_Module {
     const NONCE_ACTION  = 'anchor_ctm_forms_nonce';
     const NONCE_NAME    = 'anchor_ctm_nonce';
 
+    /** Meta keys safe to copy/export (excludes reactor IDs and fields hash). */
+    private static $portable_meta_keys = [
+        '_ctm_form_mode',
+        '_ctm_form_config',
+        '_ctm_form_html',
+        '_ctm_multi_step',
+        '_ctm_title_page',
+        '_ctm_title_heading',
+        '_ctm_title_desc',
+        '_ctm_start_text',
+        '_ctm_success_message',
+        '_ctm_analytics_override',
+        '_ctm_analytics',
+    ];
+
     public function __construct() {
         add_action( 'init', [ $this, 'register_cpt' ] );
         add_action( 'admin_menu', [ $this, 'admin_menu' ] );
@@ -31,6 +46,13 @@ class Anchor_CTM_Forms_Module {
         add_action( 'wp_ajax_ctm_builder_preview', [ $this, 'ajax_builder_preview' ] );
         add_action( 'wp_ajax_anchor_ctm_ai_assist', [ $this, 'ajax_ai_assist' ] );
         add_action( 'admin_notices', [ $this, 'admin_notices' ] );
+
+        /* ── Duplicate / Export / Import ── */
+        add_filter( 'post_row_actions', [ $this, 'row_actions' ], 10, 2 );
+        add_action( 'admin_post_anchor_ctm_duplicate', [ $this, 'handle_duplicate' ] );
+        add_action( 'admin_post_anchor_ctm_export', [ $this, 'handle_export' ] );
+        add_action( 'admin_post_anchor_ctm_import', [ $this, 'handle_import' ] );
+        add_action( 'admin_notices', [ $this, 'render_import_ui' ] );
 
         /* ── Multi-Step: frontend asset registration ── */
         add_action( 'wp_enqueue_scripts', [ $this, 'register_frontend_assets' ] );
@@ -268,6 +290,222 @@ class Anchor_CTM_Forms_Module {
         if ( $column === 'ctm_shortcode' ) {
             echo '<code>[ctm_form_variant id="' . intval( $post_id ) . '"]</code>';
         }
+    }
+
+    /* ========================= Duplicate / Export / Import ========================= */
+
+    /**
+     * Add Duplicate + Export JSON links to row actions on the CPT list table.
+     */
+    public function row_actions( $actions, $post ) {
+        if ( $post->post_type !== 'ctm_form_variant' || ! current_user_can( 'edit_posts' ) ) {
+            return $actions;
+        }
+
+        $dup_url = wp_nonce_url(
+            admin_url( 'admin-post.php?action=anchor_ctm_duplicate&post_id=' . $post->ID ),
+            'anchor_ctm_duplicate_' . $post->ID
+        );
+        $actions['duplicate'] = '<a href="' . esc_url( $dup_url ) . '">' . esc_html__( 'Duplicate', 'anchor-schema' ) . '</a>';
+
+        $exp_url = wp_nonce_url(
+            admin_url( 'admin-post.php?action=anchor_ctm_export&post_id=' . $post->ID ),
+            'anchor_ctm_export_' . $post->ID
+        );
+        $actions['export_json'] = '<a href="' . esc_url( $exp_url ) . '">' . esc_html__( 'Export JSON', 'anchor-schema' ) . '</a>';
+
+        return $actions;
+    }
+
+    /**
+     * Duplicate a form as a new draft.
+     */
+    public function handle_duplicate() {
+        $post_id = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0;
+
+        if ( ! $post_id || ! wp_verify_nonce( $_GET['_wpnonce'] ?? '', 'anchor_ctm_duplicate_' . $post_id ) ) {
+            wp_die( esc_html__( 'Invalid request.', 'anchor-schema' ) );
+        }
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_die( esc_html__( 'Permission denied.', 'anchor-schema' ) );
+        }
+
+        $source = get_post( $post_id );
+        if ( ! $source || $source->post_type !== 'ctm_form_variant' ) {
+            wp_die( esc_html__( 'Form not found.', 'anchor-schema' ) );
+        }
+
+        $new_id = wp_insert_post( [
+            'post_type'   => 'ctm_form_variant',
+            'post_status' => 'draft',
+            'post_title'  => $source->post_title . ' (Copy)',
+        ] );
+
+        if ( is_wp_error( $new_id ) ) {
+            wp_die( esc_html( $new_id->get_error_message() ) );
+        }
+
+        foreach ( self::$portable_meta_keys as $key ) {
+            $value = get_post_meta( $post_id, $key, true );
+            if ( $value !== '' && $value !== false ) {
+                update_post_meta( $new_id, $key, $value );
+            }
+        }
+
+        wp_safe_redirect( admin_url( 'post.php?action=edit&post=' . $new_id ) );
+        exit;
+    }
+
+    /**
+     * Export a form's config as a JSON file download.
+     */
+    public function handle_export() {
+        $post_id = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0;
+
+        if ( ! $post_id || ! wp_verify_nonce( $_GET['_wpnonce'] ?? '', 'anchor_ctm_export_' . $post_id ) ) {
+            wp_die( esc_html__( 'Invalid request.', 'anchor-schema' ) );
+        }
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_die( esc_html__( 'Permission denied.', 'anchor-schema' ) );
+        }
+
+        $source = get_post( $post_id );
+        if ( ! $source || $source->post_type !== 'ctm_form_variant' ) {
+            wp_die( esc_html__( 'Form not found.', 'anchor-schema' ) );
+        }
+
+        $meta = [];
+        foreach ( self::$portable_meta_keys as $key ) {
+            $value = get_post_meta( $post_id, $key, true );
+            // Decode _ctm_form_config so the JSON is readable (not double-encoded).
+            if ( $key === '_ctm_form_config' && is_string( $value ) ) {
+                $decoded = json_decode( $value, true );
+                $meta[ $key ] = is_array( $decoded ) ? $decoded : $value;
+            } else {
+                $meta[ $key ] = $value;
+            }
+        }
+
+        $payload = [
+            'anchor_ctm_form_export' => 1,
+            'version'                => '1.0',
+            'title'                  => $source->post_title,
+            'meta'                   => $meta,
+        ];
+
+        $filename = sanitize_file_name( $source->post_title ) . '.json';
+
+        header( 'Content-Type: application/json; charset=utf-8' );
+        header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+        header( 'Cache-Control: no-cache, no-store, must-revalidate' );
+
+        echo wp_json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
+        exit;
+    }
+
+    /**
+     * Render the import UI panel on the CTM Forms list page.
+     */
+    public function render_import_ui() {
+        $screen = get_current_screen();
+        if ( ! $screen || $screen->id !== 'edit-ctm_form_variant' ) {
+            return;
+        }
+
+        // Success / error notices from redirect.
+        if ( isset( $_GET['ctm_imported'] ) ) {
+            $id = absint( $_GET['ctm_imported'] );
+            printf(
+                '<div class="notice notice-success is-dismissible"><p>%s <a href="%s">%s</a></p></div>',
+                esc_html__( 'Form imported as draft.', 'anchor-schema' ),
+                esc_url( admin_url( 'post.php?action=edit&post=' . $id ) ),
+                esc_html__( 'Edit form', 'anchor-schema' )
+            );
+        }
+        if ( isset( $_GET['ctm_import_error'] ) ) {
+            $messages = [
+                'file'    => __( 'No file uploaded.', 'anchor-schema' ),
+                'parse'   => __( 'Invalid JSON file.', 'anchor-schema' ),
+                'format'  => __( 'File is not a valid CTM Form export.', 'anchor-schema' ),
+                'create'  => __( 'Could not create form post.', 'anchor-schema' ),
+            ];
+            $code = sanitize_key( $_GET['ctm_import_error'] );
+            $msg  = $messages[ $code ] ?? __( 'Import failed.', 'anchor-schema' );
+            printf(
+                '<div class="notice notice-error is-dismissible"><p>%s</p></div>',
+                esc_html( $msg )
+            );
+        }
+
+        ?>
+        <div class="wrap" style="margin: 0 0 20px; padding: 12px 16px; background: #fff; border: 1px solid #c3c4c7; border-radius: 4px;">
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <?php wp_nonce_field( 'anchor_ctm_import', '_wpnonce' ); ?>
+                <input type="hidden" name="action" value="anchor_ctm_import" />
+                <strong style="margin-right: 4px;"><?php esc_html_e( 'Import Form:', 'anchor-schema' ); ?></strong>
+                <input type="file" name="ctm_form_json" accept=".json,application/json" required />
+                <button type="submit" class="button button-secondary"><?php esc_html_e( 'Import JSON', 'anchor-schema' ); ?></button>
+            </form>
+        </div>
+        <?php
+    }
+
+    /**
+     * Handle form JSON import.
+     */
+    public function handle_import() {
+        if ( ! wp_verify_nonce( $_POST['_wpnonce'] ?? '', 'anchor_ctm_import' ) ) {
+            wp_die( esc_html__( 'Invalid request.', 'anchor-schema' ) );
+        }
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_die( esc_html__( 'Permission denied.', 'anchor-schema' ) );
+        }
+
+        $list_url = admin_url( 'edit.php?post_type=ctm_form_variant' );
+
+        if ( empty( $_FILES['ctm_form_json']['tmp_name'] ) ) {
+            wp_safe_redirect( add_query_arg( 'ctm_import_error', 'file', $list_url ) );
+            exit;
+        }
+
+        $raw  = file_get_contents( $_FILES['ctm_form_json']['tmp_name'] );
+        $data = json_decode( $raw, true );
+
+        if ( ! is_array( $data ) ) {
+            wp_safe_redirect( add_query_arg( 'ctm_import_error', 'parse', $list_url ) );
+            exit;
+        }
+        if ( empty( $data['anchor_ctm_form_export'] ) || ! isset( $data['meta'] ) ) {
+            wp_safe_redirect( add_query_arg( 'ctm_import_error', 'format', $list_url ) );
+            exit;
+        }
+
+        $title  = ! empty( $data['title'] ) ? sanitize_text_field( $data['title'] ) : __( 'Imported Form', 'anchor-schema' );
+        $new_id = wp_insert_post( [
+            'post_type'   => 'ctm_form_variant',
+            'post_status' => 'draft',
+            'post_title'  => $title . ' (Imported)',
+        ] );
+
+        if ( is_wp_error( $new_id ) ) {
+            wp_safe_redirect( add_query_arg( 'ctm_import_error', 'create', $list_url ) );
+            exit;
+        }
+
+        foreach ( self::$portable_meta_keys as $key ) {
+            if ( ! array_key_exists( $key, $data['meta'] ) ) {
+                continue;
+            }
+            $value = $data['meta'][ $key ];
+            // Re-encode _ctm_form_config back to a JSON string for storage.
+            if ( $key === '_ctm_form_config' && is_array( $value ) ) {
+                $value = wp_json_encode( $value );
+            }
+            update_post_meta( $new_id, $key, $value );
+        }
+
+        wp_safe_redirect( add_query_arg( 'ctm_imported', $new_id, $list_url ) );
+        exit;
     }
 
     /* ========================= API helpers ========================= */

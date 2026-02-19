@@ -69,6 +69,7 @@ class Anchor_Code_Snippets_Module {
                     <option value="css"        <?php selected( $language, 'css' ); ?>>CSS</option>
                     <option value="html"       <?php selected( $language, 'html' ); ?>>HTML</option>
                     <option value="php"        <?php selected( $language, 'php' ); ?>>PHP</option>
+                    <option value="shortcode"  <?php selected( $language, 'shortcode' ); ?>>Shortcode</option>
                     <option value="universal"  <?php selected( $language, 'universal' ); ?>>Universal (raw output)</option>
                 </select>
             </div>
@@ -203,6 +204,7 @@ class Anchor_Code_Snippets_Module {
             'css'        => 'text/css',
             'html'       => 'text/html',
             'php'        => 'application/x-httpd-php',
+            'shortcode'  => 'text/html',
             'universal'  => 'text/html',
         ];
         return isset( $map[ $lang ] ) ? $map[ $lang ] : 'text/html';
@@ -256,6 +258,7 @@ class Anchor_Code_Snippets_Module {
         }
 
         $lang_label = ucfirst( $language );
+        if ( $language === 'shortcode' ) $lang_label = 'WordPress Shortcode';
         if ( $language === 'universal' ) $lang_label = 'HTML/JS/CSS';
 
         $system_prompt = "You are a code generator. Output only clean {$lang_label} code with no explanation, no markdown fences, no commentary. Just the raw code.";
@@ -355,8 +358,9 @@ class Anchor_Code_Snippets_Module {
     private function output_snippet( $language, $code ) {
         switch ( $language ) {
             case 'php':
-                if ( ! current_user_can( 'unfiltered_html' ) ) return;
                 try {
+                    $code = preg_replace( '/^\s*<\?(?:php)?\s*/i', '', $code );
+                    $code = preg_replace( '/\s*\?>\s*$/', '', $code );
                     ob_start();
                     eval( $code );
                     echo ob_get_clean();
@@ -372,6 +376,10 @@ class Anchor_Code_Snippets_Module {
 
             case 'css':
                 echo '<style>' . $code . '</style>' . "\n";
+                break;
+
+            case 'shortcode':
+                echo do_shortcode( $code ) . "\n";
                 break;
 
             case 'html':
@@ -409,6 +417,7 @@ class Anchor_Code_Snippets_Module {
                     'css'        => '#264de4',
                     'html'       => '#e34c26',
                     'php'        => '#777bb4',
+                    'shortcode'  => '#21759b',
                     'universal'  => '#888',
                 ];
                 $bg = isset( $colors[ $lang ] ) ? $colors[ $lang ] : '#888';

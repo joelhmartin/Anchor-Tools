@@ -28,6 +28,8 @@ class Module {
         \add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
         \add_action( 'wp_enqueue_scripts', [ $this, 'frontend_assets' ] );
 
+        \add_shortcode( 'anchor_webinar', [ $this, 'render_shortcode' ] );
+
         \add_filter( 'template_include', [ $this, 'template_include' ] );
 
         \add_action( 'wp_ajax_anchor_webinar_log', [ $this, 'handle_watch_log' ] );
@@ -111,7 +113,9 @@ class Module {
 
         $this->maybe_fill_content_with_embed( $post_id, $vimeo_id, $webinar_date );
 
-        $settings = $this->get_settings();
+        $settings  = $this->get_settings();
+        $thumb_url = null;
+
         if ( $settings['vimeo_api_key'] && $vimeo_id ) {
             $response = \wp_remote_get(
                 'https://api.vimeo.com/videos/' . \rawurlencode( $vimeo_id ),
@@ -127,7 +131,49 @@ class Module {
                 \add_filter( 'redirect_post_location', function( $location ) {
                     return \add_query_arg( 'anchor_webinar_notice', 'vimeo_invalid', $location );
                 } );
+            } else {
+                $body = json_decode( \wp_remote_retrieve_body( $response ), true );
+                if ( ! empty( $body['pictures']['sizes'] ) ) {
+                    $best = null;
+                    foreach ( $body['pictures']['sizes'] as $size ) {
+                        if ( ! $best || $size['width'] > $best['width'] ) {
+                            $best = $size;
+                        }
+                    }
+                    if ( $best && ! empty( $best['link'] ) ) {
+                        $thumb_url = $best['link'];
+                    }
+                }
             }
+        } elseif ( $vimeo_id ) {
+            // oEmbed fallback — no API key required.
+            $oembed_url = 'https://vimeo.com/api/oembed.json?url=' . \rawurlencode( 'https://vimeo.com/' . $vimeo_id );
+            $response   = \wp_remote_get( $oembed_url, [ 'timeout' => 8 ] );
+            if ( ! \is_wp_error( $response ) && \wp_remote_retrieve_response_code( $response ) < 300 ) {
+                $body = json_decode( \wp_remote_retrieve_body( $response ), true );
+                if ( ! empty( $body['thumbnail_url'] ) ) {
+                    $thumb_url = $body['thumbnail_url'];
+                }
+            }
+        }
+
+        if ( $thumb_url ) {
+            $this->maybe_set_vimeo_thumbnail( $post_id, $thumb_url );
+        }
+    }
+
+    private function maybe_set_vimeo_thumbnail( $post_id, $thumbnail_url ) {
+        if ( \has_post_thumbnail( $post_id ) ) {
+            return;
+        }
+
+        require_once ABSPATH . 'wp-admin/includes/media.php';
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+
+        $attachment_id = \media_sideload_image( $thumbnail_url, $post_id, '', 'id' );
+        if ( ! \is_wp_error( $attachment_id ) ) {
+            \set_post_thumbnail( $post_id, $attachment_id );
         }
     }
 
@@ -288,27 +334,32 @@ class Module {
     }
 
     public function frontend_assets() {
-        if ( ! \is_singular( self::CPT ) ) {
+        if ( \is_singular( self::CPT ) ) {
+            \wp_enqueue_style( 'anchor-webinars-frontend', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-webinars/assets/frontend.css', [], '1.0.0' );
+        }
+        if ( \is_post_type_archive( self::CPT ) ) {
+            \wp_enqueue_style( 'anchor-webinars-frontend', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-webinars/assets/frontend.css', [], '1.0.0' );
+        }
+
+        if ( ! \is_singular( self::CPT ) || ! \is_user_logged_in() ) {
             return;
         }
-        if ( ! \is_user_logged_in() ) {
-            return;
-        }
-        $post_id = \get_the_ID();
+
+        $post_id  = \get_the_ID();
         $vimeo_id = \get_post_meta( $post_id, '_anchor_webinar_vimeo_id', true );
         if ( ! $vimeo_id ) {
             return;
         }
 
         \wp_enqueue_script( 'vimeo-player', 'https://player.vimeo.com/api/player.js', [], null, true );
-        \wp_enqueue_script( 'anchor-webinar-player', \plugins_url( 'assets/player.js', __FILE__ ), [ 'vimeo-player' ], '1.0.0', true );
+        \wp_enqueue_script( 'anchor-webinar-player', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-webinars/assets/player.js', [ 'vimeo-player' ], '1.0.0', true );
 
         \wp_localize_script( 'anchor-webinar-player', 'ANCHOR_WEBINAR', [
-            'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
-            'nonce' => \wp_create_nonce( 'anchor_webinar_log' ),
+            'ajaxUrl'   => \admin_url( 'admin-ajax.php' ),
+            'nonce'     => \wp_create_nonce( 'anchor_webinar_log' ),
             'webinarId' => $post_id,
-            'vimeoId' => $vimeo_id,
-            'userId' => \get_current_user_id(),
+            'vimeoId'   => $vimeo_id,
+            'userId'    => \get_current_user_id(),
         ] );
     }
 
@@ -323,6 +374,50 @@ class Module {
             return $this->locate_template( 'archive-webinar.php' );
         }
         return $template;
+    }
+
+    public function render_shortcode( $atts ) {
+        $atts = \shortcode_atts( [
+            'id' => 0,
+        ], $atts, 'anchor_webinar' );
+
+        $post = null;
+        if ( is_numeric( $atts['id'] ) && (int) $atts['id'] > 0 ) {
+            $post = \get_post( (int) $atts['id'] );
+        }
+        if ( ! $post || $post->post_type !== self::CPT || $post->post_status !== 'publish' ) {
+            return '';
+        }
+
+        $vimeo_id     = \get_post_meta( $post->ID, '_anchor_webinar_vimeo_id', true );
+        $webinar_date = \get_post_meta( $post->ID, '_anchor_webinar_date', true );
+
+        if ( ! $vimeo_id ) {
+            return '';
+        }
+
+        \wp_enqueue_style( 'anchor-webinars-frontend', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-webinars/assets/frontend.css', [], '1.0.0' );
+
+        $embed_url = 'https://player.vimeo.com/video/' . \rawurlencode( $vimeo_id ) . '?dnt=1';
+
+        \ob_start();
+        ?>
+        <div class="anchor-webinar-block">
+            <div class="anchor-webinar-block__player">
+                <iframe src="<?php echo \esc_url( $embed_url ); ?>"
+                    frameborder="0"
+                    allow="autoplay; fullscreen; picture-in-picture"
+                    allowfullscreen></iframe>
+            </div>
+            <?php if ( $webinar_date ) : ?>
+                <p class="anchor-webinar-block__date"><?php echo \esc_html( \date_i18n( 'F j, Y', \strtotime( $webinar_date ) ) ); ?></p>
+            <?php endif; ?>
+            <?php if ( $post->post_excerpt ) : ?>
+                <div class="anchor-webinar-block__excerpt"><?php echo \wp_kses_post( \wpautop( $post->post_excerpt ) ); ?></div>
+            <?php endif; ?>
+        </div>
+        <?php
+        return \ob_get_clean();
     }
 
     public function content_has_player_container( $post_id ) {

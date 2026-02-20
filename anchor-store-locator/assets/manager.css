@@ -1,0 +1,341 @@
+/* ==========================================================================
+   Anchor Store Manager — Front-end CRUD
+   ========================================================================== */
+
+.asm-wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+    font-size: 15px;
+    color: #1e1e1e;
+}
+
+/* ---- Toolbar ---- */
+.asm-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1em;
+    flex-wrap: wrap;
+    gap: .5em;
+}
+
+.asm-toolbar h2 {
+    margin: 0;
+    font-size: 1.4em;
+    font-weight: 600;
+}
+
+/* ---- Buttons ---- */
+.asm-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.3;
+    border: 1px solid #d0d5dd;
+    border-radius: 6px;
+    background: #fff;
+    color: #344054;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, box-shadow .15s;
+}
+
+.asm-btn:hover {
+    background: #f9fafb;
+    border-color: #98a2b3;
+}
+
+.asm-btn--primary {
+    background: #0f766e;
+    border-color: #0f766e;
+    color: #fff;
+}
+
+.asm-btn--primary:hover {
+    background: #0d6560;
+    border-color: #0d6560;
+}
+
+.asm-btn--danger {
+    color: #b42318;
+    border-color: #fda29b;
+}
+
+.asm-btn--danger:hover {
+    background: #fef3f2;
+}
+
+.asm-btn--sm {
+    padding: 4px 10px;
+    font-size: 13px;
+}
+
+.asm-btn--lg {
+    padding: 10px 24px;
+    font-size: 15px;
+}
+
+.asm-btn:disabled {
+    opacity: .6;
+    cursor: not-allowed;
+}
+
+/* ---- Table ---- */
+.asm-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+    border: 1px solid #e4e7ec;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.asm-table th,
+.asm-table td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid #e4e7ec;
+    vertical-align: middle;
+}
+
+.asm-table thead th {
+    background: #f9fafb;
+    font-weight: 600;
+    font-size: 13px;
+    color: #475467;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+}
+
+.asm-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.asm-table tbody tr:hover {
+    background: #f9fafb;
+}
+
+.asm-col-img {
+    width: 56px;
+}
+
+.asm-col-img img {
+    display: block;
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 6px;
+}
+
+.asm-no-img {
+    display: block;
+    width: 48px;
+    height: 48px;
+    background: #f2f4f7;
+    border-radius: 6px;
+}
+
+.asm-col-status {
+    width: 90px;
+}
+
+.asm-col-actions {
+    width: 140px;
+    white-space: nowrap;
+}
+
+.asm-col-actions .asm-btn + .asm-btn {
+    margin-left: 4px;
+}
+
+.asm-empty td {
+    text-align: center;
+    padding: 2em;
+    color: #667085;
+}
+
+/* ---- Badges ---- */
+.asm-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 12px;
+}
+
+.asm-badge--publish {
+    background: #ecfdf3;
+    color: #067647;
+}
+
+.asm-badge--draft {
+    background: #f2f4f7;
+    color: #475467;
+}
+
+.asm-badge--pending {
+    background: #fffaeb;
+    color: #b54708;
+}
+
+/* ---- Form ---- */
+.asm-form form {
+    background: #fff;
+    border: 1px solid #e4e7ec;
+    border-radius: 8px;
+    padding: 1.5em;
+}
+
+.asm-field {
+    margin-bottom: 1em;
+}
+
+.asm-field label {
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 500;
+    font-size: 14px;
+    color: #344054;
+}
+
+.asm-field label abbr {
+    color: #b42318;
+    text-decoration: none;
+}
+
+.asm-field input[type="text"],
+.asm-field input[type="url"],
+.asm-field input[type="email"],
+.asm-field textarea,
+.asm-field select {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 15px;
+    border: 1px solid #d0d5dd;
+    border-radius: 6px;
+    background: #fff;
+    color: #1e1e1e;
+    transition: border-color .15s, box-shadow .15s;
+    box-sizing: border-box;
+}
+
+.asm-field input:focus,
+.asm-field textarea:focus,
+.asm-field select:focus {
+    outline: none;
+    border-color: #0f766e;
+    box-shadow: 0 0 0 3px rgba(15, 118, 110, .15);
+}
+
+.asm-field select {
+    max-width: 200px;
+}
+
+.asm-row {
+    display: flex;
+    gap: 1em;
+}
+
+.asm-row .asm-field {
+    flex: 1;
+}
+
+/* ---- Image upload ---- */
+.asm-image-upload {
+    display: flex;
+    align-items: flex-start;
+    gap: 1em;
+}
+
+.asm-image-preview {
+    width: 120px;
+    min-height: 80px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f2f4f7;
+    flex-shrink: 0;
+}
+
+.asm-image-preview img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 6px;
+}
+
+.asm-image-preview:empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.asm-image-preview:empty::after {
+    content: "No image";
+    font-size: 12px;
+    color: #98a2b3;
+}
+
+.asm-image-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: .5em;
+}
+
+/* ---- Form actions ---- */
+.asm-form-actions {
+    display: flex;
+    gap: .75em;
+    margin-top: 1.5em;
+    padding-top: 1.5em;
+    border-top: 1px solid #e4e7ec;
+}
+
+/* ---- Toast ---- */
+.asm-toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #fff;
+    z-index: 99999;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,.15);
+}
+
+.asm-toast--success {
+    background: #067647;
+}
+
+.asm-toast--error {
+    background: #b42318;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 768px) {
+    .asm-row {
+        flex-direction: column;
+        gap: 0;
+    }
+
+    .asm-table th:nth-child(3),
+    .asm-table td:nth-child(3),
+    .asm-table th:nth-child(4),
+    .asm-table td:nth-child(4) {
+        display: none;
+    }
+
+    .asm-col-actions {
+        width: auto;
+    }
+
+    .asm-image-upload {
+        flex-direction: column;
+    }
+}

@@ -29,6 +29,11 @@ class Module {
 
         \add_shortcode( 'anchor_store_locator', [ $this, 'shortcode' ] );
         \add_shortcode( 'anchor_store_field', [ $this, 'field_shortcode' ] );
+        \add_shortcode( 'anchor_store_manager', [ $this, 'render_manager_shortcode' ] );
+
+        \add_action( 'wp_ajax_anchor_store_manager_save', [ $this, 'ajax_manager_save' ] );
+        \add_action( 'wp_ajax_anchor_store_manager_delete', [ $this, 'ajax_manager_delete' ] );
+        \add_action( 'wp_ajax_anchor_store_manager_get', [ $this, 'ajax_manager_get' ] );
     }
 
     public function register_cpt() {
@@ -761,6 +766,299 @@ class Module {
         }
 
         return $locations;
+    }
+
+    /* =====================================================================
+       Front-end Store Manager  [anchor_store_manager]
+       ===================================================================== */
+
+    public function render_manager_shortcode( $atts ) {
+        if ( ! \current_user_can( 'manage_options' ) ) {
+            return '<p>' . \esc_html__( 'You do not have permission to manage stores.', 'anchor-schema' ) . '</p>';
+        }
+
+        \wp_enqueue_media();
+        \wp_enqueue_style( 'anchor-store-manager', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-store-locator/assets/manager.css', [], '1.0.0' );
+        \wp_enqueue_script( 'anchor-store-manager', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-store-locator/assets/manager.js', [ 'jquery' ], '1.0.0', true );
+        \wp_localize_script( 'anchor-store-manager', 'ANCHOR_STORE_MGR', [
+            'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
+            'nonce'   => \wp_create_nonce( 'anchor_store_manager' ),
+        ] );
+
+        $stores = \get_posts( [
+            'post_type'   => self::CPT,
+            'numberposts' => -1,
+            'post_status' => [ 'publish', 'draft', 'pending' ],
+            'orderby'     => 'title',
+            'order'       => 'ASC',
+        ] );
+
+        \ob_start();
+        ?>
+        <div class="asm-wrap" id="anchor-store-manager">
+            <!-- ---- List view ---- -->
+            <div class="asm-list" id="asm-list">
+                <div class="asm-toolbar">
+                    <h2><?php echo \esc_html__( 'Store Locations', 'anchor-schema' ); ?></h2>
+                    <button type="button" class="asm-btn asm-btn--primary" data-action="add"><?php echo \esc_html__( 'Add Store', 'anchor-schema' ); ?></button>
+                </div>
+                <table class="asm-table">
+                    <thead>
+                        <tr>
+                            <th class="asm-col-img"><?php echo \esc_html__( 'Image', 'anchor-schema' ); ?></th>
+                            <th><?php echo \esc_html__( 'Name', 'anchor-schema' ); ?></th>
+                            <th><?php echo \esc_html__( 'Address', 'anchor-schema' ); ?></th>
+                            <th><?php echo \esc_html__( 'Phone', 'anchor-schema' ); ?></th>
+                            <th class="asm-col-status"><?php echo \esc_html__( 'Status', 'anchor-schema' ); ?></th>
+                            <th class="asm-col-actions"><?php echo \esc_html__( 'Actions', 'anchor-schema' ); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ( empty( $stores ) ) : ?>
+                            <tr class="asm-empty"><td colspan="6"><?php echo \esc_html__( 'No stores found.', 'anchor-schema' ); ?></td></tr>
+                        <?php else : ?>
+                            <?php foreach ( $stores as $store ) :
+                                $thumb = \get_the_post_thumbnail_url( $store->ID, 'thumbnail' );
+                                $address = \get_post_meta( $store->ID, '_anchor_store_address', true );
+                                $phone   = \get_post_meta( $store->ID, '_anchor_store_phone', true );
+                            ?>
+                                <tr data-id="<?php echo \esc_attr( $store->ID ); ?>">
+                                    <td class="asm-col-img">
+                                        <?php if ( $thumb ) : ?>
+                                            <img src="<?php echo \esc_url( $thumb ); ?>" alt="" />
+                                        <?php else : ?>
+                                            <span class="asm-no-img"></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo \esc_html( $store->post_title ); ?></td>
+                                    <td><?php echo \esc_html( $address ); ?></td>
+                                    <td><?php echo \esc_html( $phone ); ?></td>
+                                    <td class="asm-col-status"><span class="asm-badge asm-badge--<?php echo \esc_attr( $store->post_status ); ?>"><?php echo \esc_html( \ucfirst( $store->post_status ) ); ?></span></td>
+                                    <td class="asm-col-actions">
+                                        <button type="button" class="asm-btn asm-btn--sm" data-action="edit" data-id="<?php echo \esc_attr( $store->ID ); ?>"><?php echo \esc_html__( 'Edit', 'anchor-schema' ); ?></button>
+                                        <button type="button" class="asm-btn asm-btn--sm asm-btn--danger" data-action="delete" data-id="<?php echo \esc_attr( $store->ID ); ?>"><?php echo \esc_html__( 'Delete', 'anchor-schema' ); ?></button>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- ---- Form view ---- -->
+            <div class="asm-form" id="asm-form" style="display:none;">
+                <div class="asm-toolbar">
+                    <h2 id="asm-form-title"><?php echo \esc_html__( 'Add Store', 'anchor-schema' ); ?></h2>
+                    <button type="button" class="asm-btn" data-action="cancel"><?php echo \esc_html__( 'Back to List', 'anchor-schema' ); ?></button>
+                </div>
+                <form id="asm-form-el" autocomplete="off">
+                    <input type="hidden" name="store_id" id="asm-store-id" value="" />
+
+                    <div class="asm-field">
+                        <label for="asm-title"><?php echo \esc_html__( 'Store Name', 'anchor-schema' ); ?> <abbr>*</abbr></label>
+                        <input type="text" id="asm-title" name="title" required />
+                    </div>
+
+                    <div class="asm-field">
+                        <label for="asm-address"><?php echo \esc_html__( 'Address', 'anchor-schema' ); ?> <abbr>*</abbr></label>
+                        <textarea id="asm-address" name="address" rows="2" required></textarea>
+                    </div>
+
+                    <div class="asm-row">
+                        <div class="asm-field">
+                            <label for="asm-lat"><?php echo \esc_html__( 'Latitude', 'anchor-schema' ); ?></label>
+                            <input type="text" id="asm-lat" name="lat" />
+                        </div>
+                        <div class="asm-field">
+                            <label for="asm-lng"><?php echo \esc_html__( 'Longitude', 'anchor-schema' ); ?></label>
+                            <input type="text" id="asm-lng" name="lng" />
+                        </div>
+                    </div>
+
+                    <div class="asm-field">
+                        <label for="asm-website"><?php echo \esc_html__( 'Website URL', 'anchor-schema' ); ?></label>
+                        <input type="url" id="asm-website" name="website" />
+                    </div>
+
+                    <div class="asm-row">
+                        <div class="asm-field">
+                            <label for="asm-email"><?php echo \esc_html__( 'Email Address', 'anchor-schema' ); ?></label>
+                            <input type="email" id="asm-email" name="email" />
+                        </div>
+                        <div class="asm-field">
+                            <label for="asm-phone"><?php echo \esc_html__( 'Phone Number', 'anchor-schema' ); ?></label>
+                            <input type="text" id="asm-phone" name="phone" />
+                        </div>
+                    </div>
+
+                    <div class="asm-field">
+                        <label for="asm-maps-url"><?php echo \esc_html__( 'Google Maps Link', 'anchor-schema' ); ?></label>
+                        <input type="url" id="asm-maps-url" name="maps_url" />
+                    </div>
+
+                    <div class="asm-field">
+                        <label for="asm-status"><?php echo \esc_html__( 'Status', 'anchor-schema' ); ?></label>
+                        <select id="asm-status" name="status">
+                            <option value="publish"><?php echo \esc_html__( 'Published', 'anchor-schema' ); ?></option>
+                            <option value="draft"><?php echo \esc_html__( 'Draft', 'anchor-schema' ); ?></option>
+                        </select>
+                    </div>
+
+                    <div class="asm-field">
+                        <label><?php echo \esc_html__( 'Featured Image', 'anchor-schema' ); ?></label>
+                        <div class="asm-image-upload">
+                            <input type="hidden" name="thumbnail_id" id="asm-thumbnail-id" value="" />
+                            <div class="asm-image-preview" id="asm-image-preview"></div>
+                            <div class="asm-image-buttons">
+                                <button type="button" class="asm-btn" data-action="upload-image"><?php echo \esc_html__( 'Select Image', 'anchor-schema' ); ?></button>
+                                <button type="button" class="asm-btn asm-btn--danger" data-action="remove-image" style="display:none;"><?php echo \esc_html__( 'Remove', 'anchor-schema' ); ?></button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="asm-form-actions">
+                        <button type="submit" class="asm-btn asm-btn--primary asm-btn--lg"><?php echo \esc_html__( 'Save Store', 'anchor-schema' ); ?></button>
+                        <button type="button" class="asm-btn asm-btn--lg" data-action="cancel"><?php echo \esc_html__( 'Cancel', 'anchor-schema' ); ?></button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="asm-toast" id="asm-toast" style="display:none;"></div>
+        </div>
+        <?php
+        return \ob_get_clean();
+    }
+
+    public function ajax_manager_get() {
+        \check_ajax_referer( 'anchor_store_manager', 'nonce' );
+        if ( ! \current_user_can( 'manage_options' ) ) {
+            \wp_send_json_error( [ 'message' => 'Unauthorized' ] );
+        }
+
+        $post_id = (int) ( $_POST['store_id'] ?? 0 );
+        $post    = \get_post( $post_id );
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            \wp_send_json_error( [ 'message' => 'Store not found' ] );
+        }
+
+        $thumb_id  = \get_post_thumbnail_id( $post_id );
+        $thumb_url = $thumb_id ? \wp_get_attachment_image_url( $thumb_id, 'medium' ) : '';
+
+        \wp_send_json_success( [
+            'id'           => $post->ID,
+            'title'        => $post->post_title,
+            'status'       => $post->post_status,
+            'address'      => \get_post_meta( $post_id, '_anchor_store_address', true ),
+            'lat'          => \get_post_meta( $post_id, '_anchor_store_lat', true ),
+            'lng'          => \get_post_meta( $post_id, '_anchor_store_lng', true ),
+            'website'      => \get_post_meta( $post_id, '_anchor_store_website', true ),
+            'email'        => \get_post_meta( $post_id, '_anchor_store_email', true ),
+            'phone'        => \get_post_meta( $post_id, '_anchor_store_phone', true ),
+            'maps_url'     => \get_post_meta( $post_id, '_anchor_store_maps_url', true ),
+            'thumbnail_id' => $thumb_id ? (int) $thumb_id : 0,
+            'thumbnail_url' => $thumb_url,
+        ] );
+    }
+
+    public function ajax_manager_save() {
+        \check_ajax_referer( 'anchor_store_manager', 'nonce' );
+        if ( ! \current_user_can( 'manage_options' ) ) {
+            \wp_send_json_error( [ 'message' => 'Unauthorized' ] );
+        }
+
+        $store_id = (int) ( $_POST['store_id'] ?? 0 );
+        $title    = \sanitize_text_field( $_POST['title'] ?? '' );
+        $address  = \sanitize_text_field( $_POST['address'] ?? '' );
+        $status   = in_array( $_POST['status'] ?? '', [ 'publish', 'draft' ], true ) ? $_POST['status'] : 'draft';
+
+        if ( ! $title ) {
+            \wp_send_json_error( [ 'message' => \__( 'Store name is required.', 'anchor-schema' ) ] );
+        }
+
+        $post_data = [
+            'post_type'   => self::CPT,
+            'post_title'  => $title,
+            'post_status' => $status,
+        ];
+
+        if ( $store_id ) {
+            $existing = \get_post( $store_id );
+            if ( ! $existing || $existing->post_type !== self::CPT ) {
+                \wp_send_json_error( [ 'message' => \__( 'Store not found.', 'anchor-schema' ) ] );
+            }
+            $post_data['ID'] = $store_id;
+            $result = \wp_update_post( $post_data, true );
+        } else {
+            $result = \wp_insert_post( $post_data, true );
+        }
+
+        if ( \is_wp_error( $result ) ) {
+            \wp_send_json_error( [ 'message' => $result->get_error_message() ] );
+        }
+
+        $post_id = (int) $result;
+
+        // Save meta fields.
+        $lat = \sanitize_text_field( $_POST['lat'] ?? '' );
+        $lng = \sanitize_text_field( $_POST['lng'] ?? '' );
+        $lat_value = is_numeric( $lat ) ? (float) $lat : 0;
+        $lng_value = is_numeric( $lng ) ? (float) $lng : 0;
+
+        $prev_address = \get_post_meta( $post_id, '_anchor_store_address', true );
+        $needs_geocode = ( $address && ( ! $lat_value || ! $lng_value || $address !== $prev_address ) );
+        if ( $needs_geocode ) {
+            $coords = $this->geocode_address( $address );
+            if ( $coords ) {
+                $lat_value = $coords['lat'];
+                $lng_value = $coords['lng'];
+            }
+        }
+
+        \update_post_meta( $post_id, '_anchor_store_address', $address );
+        \update_post_meta( $post_id, '_anchor_store_lat', $lat_value );
+        \update_post_meta( $post_id, '_anchor_store_lng', $lng_value );
+        \update_post_meta( $post_id, '_anchor_store_website', \esc_url_raw( $_POST['website'] ?? '' ) );
+        \update_post_meta( $post_id, '_anchor_store_email', \sanitize_email( $_POST['email'] ?? '' ) );
+        \update_post_meta( $post_id, '_anchor_store_phone', \sanitize_text_field( $_POST['phone'] ?? '' ) );
+        \update_post_meta( $post_id, '_anchor_store_maps_url', \esc_url_raw( $_POST['maps_url'] ?? '' ) );
+
+        // Featured image.
+        $thumb_id = (int) ( $_POST['thumbnail_id'] ?? 0 );
+        if ( $thumb_id ) {
+            \set_post_thumbnail( $post_id, $thumb_id );
+        } else {
+            \delete_post_thumbnail( $post_id );
+        }
+
+        $thumb_url = $thumb_id ? \wp_get_attachment_image_url( $thumb_id, 'medium' ) : '';
+        $thumb_sm  = $thumb_id ? \wp_get_attachment_image_url( $thumb_id, 'thumbnail' ) : '';
+
+        \wp_send_json_success( [
+            'id'            => $post_id,
+            'title'         => $title,
+            'status'        => $status,
+            'address'       => $address,
+            'phone'         => \sanitize_text_field( $_POST['phone'] ?? '' ),
+            'thumbnail_url' => $thumb_url,
+            'thumbnail_sm'  => $thumb_sm,
+            'is_new'        => ! $store_id,
+        ] );
+    }
+
+    public function ajax_manager_delete() {
+        \check_ajax_referer( 'anchor_store_manager', 'nonce' );
+        if ( ! \current_user_can( 'manage_options' ) ) {
+            \wp_send_json_error( [ 'message' => 'Unauthorized' ] );
+        }
+
+        $store_id = (int) ( $_POST['store_id'] ?? 0 );
+        $post     = \get_post( $store_id );
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            \wp_send_json_error( [ 'message' => 'Store not found' ] );
+        }
+
+        \wp_trash_post( $store_id );
+        \wp_send_json_success( [ 'id' => $store_id ] );
     }
 
     private function geocode_address( $address ) {

@@ -920,9 +920,8 @@ PROMPT;
                 $ctm_type = $ctm_type_map[ $ftype ] ?? $ftype;
 
                 $cf = [
-                    'name'     => $fname,
+                    'name'     => $f['displayName'] ?? $f['label'] ?? ucfirst( $fname ),
                     'type'     => $ctm_type,
-                    'label'    => $f['label'] ?? ucfirst( $fname ),
                     'required' => ! empty( $f['required'] ),
                 ];
 

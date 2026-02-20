@@ -196,13 +196,22 @@
       tolerance: 'pointer',
       update: function () {
         // Reorder config.fields to match DOM
-        var newOrder = [];
+        var reordered = [];
         $canvas.children('.ctm-field-row').each(function () {
           var id = $(this).data('field-id');
           var f = findField(id);
-          if (f) newOrder.push(f);
+          if (f) reordered.push(f);
         });
-        config.fields = newOrder;
+
+        if (config.settings.multiStep) {
+          // Preserve fields from other steps, replace only active step's order
+          var otherStepFields = config.fields.filter(function (f) {
+            return (f.step || 0) !== activeStep;
+          });
+          config.fields = otherStepFields.concat(reordered);
+        } else {
+          config.fields = reordered;
+        }
         syncConfig();
       }
     });
@@ -298,6 +307,11 @@
       f.name = 'custom_' + type + '_' + f.id.substr(2, 4);
     }
 
+    // Set displayName — human-readable name for CTM
+    if (type !== 'heading' && type !== 'paragraph' && type !== 'divider') {
+      f.displayName = f.label;
+    }
+
     return f;
   }
 
@@ -349,6 +363,7 @@
     if (!orig) return;
     var copy = JSON.parse(JSON.stringify(orig));
     copy.id = uid();
+    copy.displayName = orig.displayName ? orig.displayName + ' (Copy)' : '';
     copy.name = orig.name ? orig.name + '_copy' : '';
     // Insert after original
     var idx = config.fields.indexOf(orig);
@@ -370,7 +385,18 @@
     var f = findField(id);
     if (!f) return;
 
-    // Sanitize field name to a safe machine identifier
+    // displayName: store as-is, auto-derive slug
+    if (key === 'displayName') {
+      f.displayName = val;
+      var slug = val.replace(/[^a-zA-Z0-9_\s-]/g, '').trim().toLowerCase()
+        .replace(/[\s-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+      f.name = slug;
+      f.isCustom = CORE_FIELDS.indexOf(slug) === -1;
+      syncConfig();
+      return;
+    }
+
+    // Sanitize field name to a safe machine identifier (direct name edits via override)
     if (key === 'name') {
       val = val.replace(/[^a-zA-Z0-9_\s-]/g, '')  // strip special chars
                .trim().toLowerCase()
@@ -434,7 +460,8 @@
       badges += '<span class="ctm-badge ctm-badge-custom">Core</span>';
     }
 
-    var nameDisplay = f.name ? '(' + esc(f.name) + ')' : '';
+    var nameRaw = f.displayName || f.name || '';
+    var nameDisplay = nameRaw ? '(' + esc(nameRaw) + ')' : '';
     var labelDisplay = f.label || (f.type === 'divider' ? '\u2014 Divider \u2014' : 'Untitled');
 
     var html = '<div class="ctm-field-row' + (f.id === selectedFieldId ? ' selected' : '') + '" data-field-id="' + f.id + '">';
@@ -442,7 +469,7 @@
     html += '<span class="ctm-drag-handle"><span class="dashicons dashicons-menu"></span></span>';
     html += '<span class="ctm-field-type-badge">' + esc(typeDef.label) + '</span>';
     html += '<span class="ctm-field-label-text">' + esc(labelDisplay) + '</span>';
-    html += '<span class="ctm-field-name-text">' + esc(nameDisplay) + '</span>';
+    html += '<span class="ctm-field-name-text">' + nameDisplay + '</span>';
     html += '<span class="ctm-field-badges">' + badges + '</span>';
     html += '<span class="ctm-field-actions">';
     html += '<button type="button" class="ctm-btn-dup" title="Duplicate"><span class="dashicons dashicons-admin-page"></span></button>';
@@ -658,15 +685,25 @@
     }
 
     if (f.type === 'hidden') {
-      html += settingField('Field Name', 'name', f.name, 'text', '');
+      html += settingField('Field Name', 'displayName', f.displayName || f.label || '', 'text', '');
+      html += '<p class="ctm-field-id-hint">Field ID: <code class="ctm-field-id-value">'
+            + esc(f.name) + '</code> <a href="#" class="ctm-edit-field-id">edit</a></p>';
+      html += '<div class="ctm-field-id-override" style="display:none;">'
+            + '<label>Field ID</label><input type="text" data-key="name" value="' + esc(f.name) + '" />'
+            + '</div>';
       html += settingField('Value', 'defaultValue', f.defaultValue, 'text', '');
       return html;
     }
 
     // All input types
     html += settingField('Label', 'label', f.label, 'text', '');
-    html += settingField('Field Name', 'name', f.name, 'text', '');
-    html += '<p class="ctm-setting-hint">CTM core names: <code>caller_name</code>, <code>email</code>, <code>phone_number</code>. Others become custom fields.</p>';
+    html += settingField('Field Name', 'displayName', f.displayName || f.label || '', 'text', '');
+    html += '<p class="ctm-field-id-hint">Field ID: <code class="ctm-field-id-value">'
+          + esc(f.name) + '</code> <a href="#" class="ctm-edit-field-id">edit</a></p>';
+    html += '<div class="ctm-field-id-override" style="display:none;">'
+          + '<label>Field ID</label><input type="text" data-key="name" value="' + esc(f.name) + '" />'
+          + '</div>';
+    html += '<p class="ctm-setting-hint">CTM core IDs: <code>caller_name</code>, <code>email</code>, <code>phone_number</code>. Others become custom fields.</p>';
     html += settingField('Placeholder', 'placeholder', f.placeholder || '', 'text', '');
     html += settingField('Default Value', 'defaultValue', f.defaultValue || '', 'text', '');
     html += settingCheckbox('Required', 'required', f.required);
@@ -959,6 +996,12 @@
       duplicateField(id);
     });
 
+    // ── Toggle Field ID override ──
+    $(document).on('click', '.ctm-edit-field-id', function (e) {
+      e.preventDefault();
+      $(this).closest('.ctm-field-id-hint').next('.ctm-field-id-override').toggle();
+    });
+
     // ── Accordion toggle ──
     $(document).on('click', '#ctm-builder-sidebar .ctm-accordion-header', function () {
       var $acc = $(this).closest('.ctm-accordion');
@@ -986,19 +1029,29 @@
 
       updateField(selectedFieldId, key, val);
 
-      // On blur, reflect the sanitized name back into the input
+      // When displayName changes, update the slug hint in sidebar
+      if (key === 'displayName') {
+        var f = findField(selectedFieldId);
+        if (f) {
+          $sidebar.find('.ctm-field-id-value').text(f.name);
+          $sidebar.find('.ctm-field-id-override input').val(f.name);
+        }
+      }
+
+      // On blur, reflect the sanitized name back into the input (override field)
       if (key === 'name' && e.type === 'change') {
         var f = findField(selectedFieldId);
         if (f) $(this).val(f.name);
       }
 
       // Update header display in canvas
-      if (key === 'label' || key === 'name' || key === 'width' || key === 'required') {
+      if (key === 'label' || key === 'name' || key === 'displayName' || key === 'width' || key === 'required') {
         var f = findField(selectedFieldId);
         var $row = $canvas.find('[data-field-id="' + selectedFieldId + '"]');
         if (f && $row.length) {
           $row.find('.ctm-field-label-text').text(f.label || 'Untitled');
-          $row.find('.ctm-field-name-text').text(f.name ? '(' + f.name + ')' : '');
+          var nd = f.displayName || f.name || '';
+          $row.find('.ctm-field-name-text').text(nd ? '(' + nd + ')' : '');
           // Rebuild badges
           renderBadges($row, f);
         }

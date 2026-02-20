@@ -59,6 +59,7 @@
   var activeStep = 0;
   var previewTimer = null;
   var selectedFieldId = null;
+  var isRendering = false;
   var accordionState = {
     formSettings: true,
     multiStep: false,
@@ -195,6 +196,9 @@
       placeholder: 'ui-sortable-placeholder',
       tolerance: 'pointer',
       update: function () {
+        // Ignore sortable events fired during programmatic DOM rebuilds
+        if (isRendering) return;
+
         // Reorder config.fields to match DOM
         var reordered = [];
         $canvas.children('.ctm-field-row').each(function () {
@@ -419,6 +423,7 @@
      RENDER FIELD LIST
      ═══════════════════════════════════════════════ */
   function renderFieldList() {
+    isRendering = true;
     $canvas.empty();
 
     var fields = config.fields;
@@ -430,6 +435,7 @@
 
     if (fields.length === 0) {
       $canvas.addClass('empty').html('<span>Click a button above to add fields</span>');
+      isRendering = false;
       return;
     }
 
@@ -438,6 +444,7 @@
     fields.forEach(function (f) {
       $canvas.append(renderFieldRow(f));
     });
+    isRendering = false;
   }
 
   function renderFieldRow(f) {

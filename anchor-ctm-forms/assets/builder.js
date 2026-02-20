@@ -93,6 +93,7 @@
         var parsed = JSON.parse(raw);
         if (parsed && parsed.fields) {
           config = parsed;
+          console.log('[INIT] loaded config: ' + config.fields.length + ' fields');
         }
       } catch (e) { /* ignore */ }
     }
@@ -197,7 +198,8 @@
       tolerance: 'pointer',
       update: function () {
         // Ignore sortable events fired during programmatic DOM rebuilds
-        if (isRendering) return;
+        if (isRendering) { console.log('[SORTABLE] blocked by isRendering guard'); return; }
+        console.trace('[SORTABLE] update fired, fields before=' + config.fields.length);
 
         // Reorder config.fields to match DOM
         var reordered = [];
@@ -1334,6 +1336,11 @@
      SYNC CONFIG → HIDDEN INPUT + TRIGGER PREVIEW
      ═══════════════════════════════════════════════ */
   function syncConfig() {
+    // DEBUG: trace every config write
+    console.log('[syncConfig] fields=' + config.fields.length, 'steps=' + config.fields.map(function(f){return f.step||0}).filter(function(v,i,a){return a.indexOf(v)===i}).sort().join(','));
+    if (config.fields.length === 0) {
+      console.trace('[syncConfig] WARNING: writing empty fields!');
+    }
     $configInput.val(JSON.stringify(config));
     triggerPreview();
   }
@@ -1518,6 +1525,7 @@
 
         if (res && res.success && res.data && res.data.config) {
           // Replace config state
+          console.log('[AI] replacing config, new fields=' + (res.data.config.fields||[]).length);
           config = res.data.config;
           ensureDefaults();
           selectedFieldId = null;

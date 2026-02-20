@@ -68,9 +68,10 @@ class Anchor_CTM_Forms_Module {
             return;
         }
 
-        $base = plugin_dir_url( __FILE__ ) . 'assets/';
-        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], '1.5.0' );
-        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], '1.5.0', true );
+        $base    = plugin_dir_url( __FILE__ ) . 'assets/';
+        $basedir = plugin_dir_path( __FILE__ ) . 'assets/';
+        wp_enqueue_style( 'ctm-builder', $base . 'builder.css', [], (string) filemtime( $basedir . 'builder.css' ) );
+        wp_enqueue_script( 'ctm-builder', $base . 'builder.js', [ 'jquery', 'jquery-ui-sortable' ], (string) filemtime( $basedir . 'builder.js' ), true );
 
         $reactors = $this->fetch_reactors_list();
         wp_localize_script( 'ctm-builder', 'CTM_BUILDER', [

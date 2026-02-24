@@ -2941,6 +2941,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-code-snippets/anchor-code-snippets.php',
                 'class'       => 'Anchor_Code_Snippets_Module',
             ],
+            'optimize' => [
+                'label'       => __( 'Anchor Optimize', 'anchor-schema' ),
+                'description' => __( 'Local image compression + WebP/AVIF conversion on upload. No external APIs.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-optimize/anchor-optimize.php',
+                'class'       => 'Anchor_Optimize_Module',
+            ],
         ];
     }
 }

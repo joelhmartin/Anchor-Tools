@@ -1235,12 +1235,12 @@ PROMPT;
                 <button type="button" class="ctm-palette-btn" data-type="tel"><span class="dashicons dashicons-phone"></span> <?php esc_html_e( 'Phone', 'anchor-schema' ); ?></button>
                 <button type="button" class="ctm-palette-btn" data-type="message"><span class="dashicons dashicons-format-chat"></span> <?php esc_html_e( 'Message', 'anchor-schema' ); ?></button>
                 <?php
-                $input_types = [ 'text', 'number', 'url', 'textarea', 'select', 'checkbox', 'radio', 'hidden' ];
+                $input_types = [ 'text', 'number', 'url', 'textarea', 'select', 'checkbox', 'radio', 'hidden', 'consent' ];
                 $icons = [
                     'text' => 'dashicons-editor-textcolor', 'number' => 'dashicons-calculator',
                     'url' => 'dashicons-admin-links', 'textarea' => 'dashicons-editor-paragraph',
                     'select' => 'dashicons-arrow-down-alt2', 'checkbox' => 'dashicons-yes-alt', 'radio' => 'dashicons-marker',
-                    'hidden' => 'dashicons-hidden',
+                    'hidden' => 'dashicons-hidden', 'consent' => 'dashicons-shield',
                 ];
                 foreach ( $input_types as $t ):
                     $label = ucfirst( $t );
@@ -1413,7 +1413,7 @@ PROMPT;
                     $type = strtolower( (string) ( $cf['type'] ?? 'text' ) );
 
                     // Supported field types
-                    $allowed_types = [ 'textarea', 'email', 'tel', 'text', 'number', 'url', 'select', 'checkbox', 'radio' ];
+                    $allowed_types = [ 'textarea', 'email', 'tel', 'text', 'number', 'url', 'select', 'checkbox', 'radio', 'consent' ];
                     if ( ! in_array( $type, $allowed_types, true ) ) {
                         $type = 'text';
                     }
@@ -1833,6 +1833,22 @@ PROMPT;
                 continue;
             }
 
+            if ( $type === 'consent' ) {
+                $cls         = $is_custom ? ' ctm-custom' : '';
+                $req_attr    = $required ? ' required' : '';
+                $consent_txt = $f['consentText'] ?? '';
+                $html .= "    <div class=\"{$wrapper_class} ctm-consent-wrap\"{$fid_attr}{$cond_attrs}>\n";
+                $html .= "      <label class=\"ctm-consent-label\">\n";
+                $html .= "        <input type=\"checkbox\" name=\"" . esc_attr( $name ) . "\" value=\"Yes\" class=\"ctm-consent-checkbox{$cls}\"{$req_attr} />\n";
+                $html .= "        <span class=\"ctm-consent-text\">" . wp_kses_post( $consent_txt ) . "</span>\n";
+                $html .= "      </label>\n";
+                if ( $help_text ) {
+                    $html .= "      <small class=\"ctm-help-text\">" . esc_html( $help_text ) . "</small>\n";
+                }
+                $html .= "    </div>\n";
+                continue;
+            }
+
             $req_attr = $required ? ' required' : '';
             $ph_attr = $placeholder ? ' placeholder="' . esc_attr( $placeholder ) . '"' : '';
             $val_attr = $default !== '' ? ' value="' . esc_attr( $default ) . '"' : '';
@@ -2186,8 +2202,13 @@ PROMPT;
 
                     // Handle checkbox arrays (name ends with [])
                     if (el.type === 'checkbox') {
-                        if (!el.checked) continue;
-                        val = el.value;
+                        // Consent checkboxes always submit: Yes when checked, No when unchecked
+                        if (el.classList.contains('ctm-consent-checkbox')) {
+                            val = el.checked ? 'Yes' : 'No';
+                        } else {
+                            if (!el.checked) continue;
+                            val = el.value;
+                        }
 
                         // Check if it's an array field (name ends with [])
                         if (name.endsWith('[]')) {

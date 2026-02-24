@@ -245,6 +245,31 @@
     color: var(--ctm-text);
 }
 
+/* ── Consent checkbox ── */
+.ctm-consent-wrap {
+    margin-bottom: 4px;
+}
+
+.ctm-consent-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-weight: 400;
+    cursor: pointer;
+}
+
+.ctm-consent-label input[type="checkbox"] {
+    width: auto;
+    margin-top: 3px;
+    flex-shrink: 0;
+}
+
+.ctm-consent-text {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ctm-muted);
+}
+
 /* ── Responsive: stack columns on mobile ── */
 @media (max-width: 600px) {
     .ctm-col-half,

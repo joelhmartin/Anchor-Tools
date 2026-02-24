@@ -27,6 +27,7 @@
     checkbox:  { label: 'Checkbox',  icon: 'dashicons-yes-alt',          group: 'input' },
     radio:     { label: 'Radio',     icon: 'dashicons-marker',           group: 'input' },
     hidden:    { label: 'Hidden',    icon: 'dashicons-hidden',           group: 'input' },
+    consent:   { label: 'Consent',   icon: 'dashicons-shield',           group: 'input' },
     heading:   { label: 'Heading',   icon: 'dashicons-heading',          group: 'layout' },
     paragraph: { label: 'Paragraph', icon: 'dashicons-editor-alignleft', group: 'layout' },
     divider:       { label: 'Divider',       icon: 'dashicons-minus',            group: 'layout' },
@@ -290,6 +291,11 @@
         break;
       case 'hidden':
         f.label = 'Hidden Field';
+        break;
+      case 'consent':
+        f.label = 'Consent Field';
+        f.consentText = 'I agree to the terms and conditions.';
+        f.labelStyle = 'hidden';
         break;
       case 'heading':
         f.label = 'Section Heading';
@@ -702,6 +708,18 @@
       return html;
     }
 
+    if (f.type === 'consent') {
+      html += settingField('Field Name', 'displayName', f.displayName || f.label || '', 'text', '');
+      html += '<p class="ctm-field-id-hint">Field ID: <code class="ctm-field-id-value">'
+            + esc(f.name) + '</code> <a href="#" class="ctm-edit-field-id">edit</a></p>';
+      html += '<div class="ctm-field-id-override" style="display:none;">'
+            + '<label>Field ID</label><input type="text" data-key="name" value="' + esc(f.name) + '" />'
+            + '</div>';
+      html += settingField('Consent Text', 'consentText', f.consentText || '', 'textarea', '');
+      html += settingCheckbox('Required', 'required', f.required);
+      return html;
+    }
+
     // All input types
     html += settingField('Label', 'label', f.label, 'text', '');
     html += settingField('Field Name', 'displayName', f.displayName || f.label || '', 'text', '');
@@ -734,7 +752,7 @@
       return html;
     }
 
-    if (f.type === 'hidden') {
+    if (f.type === 'hidden' || f.type === 'consent') {
       html += settingCheckbox('Custom Field', 'isCustom', f.isCustom);
       html += settingCheckbox('Log Visible', 'logVisible', f.logVisible);
       return html;

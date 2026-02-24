@@ -1,0 +1,66 @@
+/* Anchor Optimize — Bulk Processor Styles */
+
+.ao-progress-bar {
+    background: #e5e5e5;
+    border-radius: 4px;
+    height: 24px;
+    overflow: hidden;
+    width: 100%;
+    max-width: 600px;
+}
+
+.ao-progress-fill {
+    background: #0073aa;
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+#ao-bulk-progress-text {
+    color: #646970;
+    font-size: 13px;
+    margin-top: 6px;
+}
+
+#ao-bulk-summary .stat-box {
+    display: inline-block;
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-radius: 4px;
+    padding: 12px 20px;
+    text-align: center;
+    margin-right: 12px;
+    margin-bottom: 12px;
+}
+
+#ao-bulk-summary .stat-value {
+    font-size: 28px;
+    font-weight: 600;
+    color: #1d2327;
+    display: block;
+}
+
+#ao-bulk-summary .stat-label {
+    color: #646970;
+    font-size: 12px;
+    margin-top: 4px;
+    display: block;
+}
+
+#ao-bulk-log {
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+#ao-bulk-log .ao-log-entry {
+    padding: 2px 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+#ao-bulk-log .ao-log-success {
+    color: #46b450;
+}
+
+#ao-bulk-log .ao-log-error {
+    color: #dc3232;
+}

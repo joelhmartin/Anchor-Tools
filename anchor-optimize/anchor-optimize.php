@@ -23,12 +23,28 @@ class Anchor_Optimize_Module {
         require_once __DIR__ . '/includes/class-optimizer.php';
         require_once __DIR__ . '/includes/class-webp-converter.php';
         require_once __DIR__ . '/includes/class-settings.php';
+        require_once __DIR__ . '/includes/class-frontend-rewriter.php';
+        require_once __DIR__ . '/includes/class-media-library-ui.php';
+        require_once __DIR__ . '/includes/class-bulk-processor.php';
+        require_once __DIR__ . '/includes/class-background-image.php';
 
         $this->optimizer = new Anchor_Optimize_Optimizer();
         $this->settings  = Anchor_Optimize_Settings::get_settings();
 
         // Settings page.
         new Anchor_Optimize_Settings();
+
+        // Frontend rewriter (serves WebP/AVIF to browsers).
+        new Anchor_Optimize_Frontend_Rewriter();
+
+        // Media library UI (columns + attachment modal + AJAX optimize).
+        new Anchor_Optimize_Media_Library_UI();
+
+        // Bulk processor (Media > Bulk Optimize page).
+        new Anchor_Optimize_Bulk_Processor();
+
+        // Background image handler (responsive Divi bg images + WebP swap).
+        new Anchor_Optimize_Background_Image();
 
         // Auto-optimize on upload — fires after WP generates all thumbnails.
         add_filter( 'wp_generate_attachment_metadata', [ $this, 'process_on_upload' ], 10, 2 );

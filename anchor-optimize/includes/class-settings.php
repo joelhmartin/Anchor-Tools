@@ -24,6 +24,8 @@ class Anchor_Optimize_Settings {
         'avif_enabled'     => false,
         'avif_quality'     => 65,
         'backup_originals' => true,
+        'delivery_method'  => 'none',
+        'bg_images_enabled' => false,
     ];
 
     public function __construct() {
@@ -123,6 +125,14 @@ class Anchor_Optimize_Settings {
         add_settings_field( 'avif_enabled', __( 'AVIF Conversion', 'anchor-schema' ), [ $this, 'field_avif_enabled' ], self::PAGE_SLUG, 'ao_nextgen' );
         add_settings_field( 'avif_quality', __( 'AVIF Quality', 'anchor-schema' ), [ $this, 'field_avif_quality' ], self::PAGE_SLUG, 'ao_nextgen' );
 
+        /* -- Section: Delivery ---------------------------------------- */
+        add_settings_section( 'ao_delivery', __( 'Frontend Delivery', 'anchor-schema' ), function () {
+            echo '<p>' . esc_html__( 'How next-gen images are served to visitors.', 'anchor-schema' ) . '</p>';
+        }, self::PAGE_SLUG );
+
+        add_settings_field( 'delivery_method', __( 'Delivery Method', 'anchor-schema' ), [ $this, 'field_delivery_method' ], self::PAGE_SLUG, 'ao_delivery' );
+        add_settings_field( 'bg_images_enabled', __( 'Background Images', 'anchor-schema' ), [ $this, 'field_bg_images_enabled' ], self::PAGE_SLUG, 'ao_delivery' );
+
         /* -- Section: Server Info ----------------------------------- */
         add_settings_section( 'ao_server', __( 'Server Capabilities', 'anchor-schema' ), [ $this, 'render_server_info' ], self::PAGE_SLUG );
     }
@@ -143,6 +153,19 @@ class Anchor_Optimize_Settings {
         $out['webp_quality'] = max( 1, min( 100, (int) ( $input['webp_quality'] ?? 80 ) ) );
         $out['avif_enabled'] = ! empty( $input['avif_enabled'] );
         $out['avif_quality'] = max( 1, min( 100, (int) ( $input['avif_quality'] ?? 65 ) ) );
+
+        $out['delivery_method'] = in_array( $input['delivery_method'] ?? '', [ 'none', 'picture_tags', 'htaccess' ], true )
+            ? $input['delivery_method'] : 'none';
+
+        $out['bg_images_enabled'] = ! empty( $input['bg_images_enabled'] );
+
+        // If switching away from htaccess, remove the rules.
+        $old_settings = self::get_settings();
+        if ( 'htaccess' === ( $old_settings['delivery_method'] ?? '' ) && 'htaccess' !== $out['delivery_method'] ) {
+            if ( class_exists( 'Anchor_Optimize_Frontend_Rewriter' ) ) {
+                Anchor_Optimize_Frontend_Rewriter::remove_htaccess_rules();
+            }
+        }
 
         return $out;
     }
@@ -278,6 +301,33 @@ class Anchor_Optimize_Settings {
             (int) $val,
             self::OPTION_KEY
         );
+    }
+
+    public function field_bg_images_enabled() {
+        $val = self::get( 'bg_images_enabled' );
+        printf(
+            '<label><input type="checkbox" name="%s[bg_images_enabled]" value="1" %s /> %s</label>'
+            . '<p class="description">%s</p>',
+            self::OPTION_KEY,
+            checked( $val, true, false ),
+            esc_html__( 'Inject responsive CSS for background images.', 'anchor-schema' ),
+            esc_html__( 'Parses inline background-image URLs from Divi sections/rows and serves smaller thumbnails at tablet (980px) and mobile (480px) breakpoints. Also swaps to WebP when available.', 'anchor-schema' )
+        );
+    }
+
+    public function field_delivery_method() {
+        $val = self::get( 'delivery_method' );
+        $methods = [
+            'none'         => __( 'Disabled — generate next-gen files but don\'t serve them automatically', 'anchor-schema' ),
+            'picture_tags' => __( '<picture> tags — wrap images in <picture> elements with WebP/AVIF sources', 'anchor-schema' ),
+            'htaccess'     => __( '.htaccess rewrite — serve next-gen formats transparently via Apache (recommended)', 'anchor-schema' ),
+        ];
+        echo '<select name="' . self::OPTION_KEY . '[delivery_method]" id="ao-delivery-method">';
+        foreach ( $methods as $k => $label ) {
+            printf( '<option value="%s" %s>%s</option>', esc_attr( $k ), selected( $val, $k, false ), esc_html( $label ) );
+        }
+        echo '</select>';
+        echo '<p class="description">' . esc_html__( 'The .htaccess method is most compatible and fastest (no HTML parsing). The <picture> tag method works on any server but adds a small HTML processing overhead.', 'anchor-schema' ) . '</p>';
     }
 
     /* ────────────────────────────────────────────────────────

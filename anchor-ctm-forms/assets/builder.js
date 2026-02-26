@@ -147,6 +147,7 @@
     if (!s.colors) s.colors = {};
     if (s.multiStep === undefined) s.multiStep = false;
     if (s.progressBar === undefined) s.progressBar = true;
+    if (s.autoAdvance === undefined) s.autoAdvance = false;
     if (!s.titlePage) s.titlePage = { enabled: false, heading: '', description: '', buttonText: 'Get Started' };
     if (!s.scoring) s.scoring = { enabled: false, showTotal: false, totalLabel: 'Your Score', sendAs: 'custom_total_score' };
     if (!config.fields) config.fields = [];
@@ -242,7 +243,8 @@
       step: 0,
       conditions: [],
       conditionLogic: 'all',
-      logVisible: true
+      logVisible: true,
+      registerField: false
     };
 
     // Type-specific defaults
@@ -472,6 +474,9 @@
     if (!f.isCustom) {
       badges += '<span class="ctm-badge ctm-badge-custom">Core</span>';
     }
+    if (f.isCustom && f.registerField) {
+      badges += '<span class="ctm-badge ctm-badge-register">CTM</span>';
+    }
 
     var nameRaw = f.displayName || f.name || '';
     var nameDisplay = nameRaw ? '(' + esc(nameRaw) + ')' : '';
@@ -618,6 +623,12 @@
     html += '<label for="bs-progressBar">Show Progress Bar</label>';
     html += '</div>';
 
+    html += '<div class="checkbox-row" style="margin-top:6px;' + (s.multiStep ? '' : 'display:none;') + '" id="bs-autoAdvance-row">';
+    html += '<input type="checkbox" id="bs-autoAdvance"' + (s.autoAdvance ? ' checked' : '') + ' />';
+    html += '<label for="bs-autoAdvance">Auto-Advance Steps</label>';
+    html += '<p class="description" style="margin:2px 0 0 22px;color:#888;font-size:11px;">Automatically move to the next step once all visible fields are filled in.</p>';
+    html += '</div>';
+
     html += '<div style="' + (s.multiStep ? '' : 'display:none;') + '" id="bs-titlepage-section">';
     html += '<div class="checkbox-row" style="margin-top:6px;">';
     html += '<input type="checkbox" id="bs-titlePageEnabled"' + (s.titlePage.enabled ? ' checked' : '') + ' />';
@@ -755,6 +766,9 @@
     if (f.type === 'hidden' || f.type === 'consent') {
       html += settingCheckbox('Custom Field', 'isCustom', f.isCustom);
       html += settingCheckbox('Log Visible', 'logVisible', f.logVisible);
+      if (f.isCustom) {
+        html += renderRegisterFieldRow(f);
+      }
       return html;
     }
 
@@ -777,6 +791,9 @@
     html += settingField('CSS Class', 'cssClass', f.cssClass || '', 'text', '');
     html += settingCheckbox('Custom Field', 'isCustom', f.isCustom);
     html += settingCheckbox('Log Visible', 'logVisible', f.logVisible);
+    if (f.isCustom) {
+      html += renderRegisterFieldRow(f);
+    }
 
     // Step assignment (multi-step)
     if (config.settings.multiStep) {
@@ -841,6 +858,50 @@
     var fid = 'sf_' + uid();
     return '<div class="checkbox-row"><input type="checkbox" id="' + fid + '" data-key="' + key + '"' + (checked ? ' checked' : '') + ' /><label for="' + fid + '">' + esc(label) + '</label></div>';
   }
+
+  /* ── Account custom fields cache for "Register" status ── */
+  var accountFields = null; // null = not loaded, {} = loaded map of api_name → display name
+  var accountFieldsLoading = false;
+
+  function loadAccountFields(cb) {
+    if (accountFields !== null) { if (cb) cb(); return; }
+    if (accountFieldsLoading) return;
+    accountFieldsLoading = true;
+    $.post(CTM_BUILDER.ajaxUrl, {
+      action: 'anchor_ctm_account_fields',
+      [CTM_BUILDER.nonceName]: CTM_BUILDER.nonce
+    }, function (res) {
+      accountFieldsLoading = false;
+      accountFields = (res.success && res.data && res.data.fields) ? res.data.fields : {};
+      if (cb) cb();
+    }).fail(function () {
+      accountFieldsLoading = false;
+      accountFields = {};
+      if (cb) cb();
+    });
+  }
+
+  function sanitizeFieldName(name) {
+    return name.replace(/[^a-zA-Z0-9_\s-]/g, '').trim().toLowerCase()
+      .replace(/[\s-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+  }
+
+  function renderRegisterFieldRow(f) {
+    var fid = 'sf_' + uid();
+    var apiName = sanitizeFieldName(f.displayName || f.name || '');
+    var exists = accountFields && apiName && accountFields.hasOwnProperty(apiName);
+    var html = '<div class="checkbox-row ctm-register-row">';
+    html += '<input type="checkbox" id="' + fid + '" data-key="registerField"' + (f.registerField ? ' checked' : '') + ' />';
+    html += '<label for="' + fid + '">Register as CTM Account Field</label>';
+    if (exists) {
+      html += '<span class="ctm-field-exists-hint">Already registered — you can leave this checked or uncheck it.</span>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  // Load account fields on init so status is ready when editing fields.
+  loadAccountFields();
 
   /* ═══════════════════════════════════════════════
      OPTIONS EDITOR (select, checkbox, radio)
@@ -1249,6 +1310,9 @@
         case 'progressBar':
           config.settings.progressBar = val;
           break;
+        case 'autoAdvance':
+          config.settings.autoAdvance = val;
+          break;
         case 'titlePageEnabled':
           config.settings.titlePage.enabled = val;
           $sidebar.find('#bs-titlepage-fields').toggle(val);
@@ -1318,6 +1382,9 @@
     }
     if (!f.isCustom) {
       badges += '<span class="ctm-badge ctm-badge-custom">Core</span>';
+    }
+    if (f.isCustom && f.registerField) {
+      badges += '<span class="ctm-badge ctm-badge-register">CTM</span>';
     }
     $row.find('.ctm-field-badges').html(badges);
   }
@@ -1455,18 +1522,20 @@
       });
     }
 
-    // Reactor-tab multi-step + title page toggles
+    // Reactor-tab multi-step + title page + auto-advance toggles
     var msChk = document.getElementById('ctm_multi_step_reactor');
     var tpChk = document.getElementById('ctm_title_page_reactor');
     var tpLabel = document.getElementById('ctm-title-page-label-reactor');
     var tpFields = document.getElementById('ctm-title-page-fields-reactor');
     var msInstructions = document.getElementById('ctm-ms-instructions');
+    var aaLabel = document.getElementById('ctm-auto-advance-label-reactor');
 
     function toggleTitleFields() {
       if (!msChk) return;
       if (tpLabel) tpLabel.style.display = msChk.checked ? '' : 'none';
       if (tpFields) tpFields.style.display = (msChk.checked && tpChk && tpChk.checked) ? '' : 'none';
       if (msInstructions) msInstructions.style.display = msChk.checked ? '' : 'none';
+      if (aaLabel) aaLabel.style.display = msChk.checked ? '' : 'none';
     }
     if (msChk) msChk.addEventListener('change', toggleTitleFields);
     if (tpChk) tpChk.addEventListener('change', toggleTitleFields);
@@ -1570,5 +1639,70 @@
       setTimeout(function () { $error.fadeOut(300); }, 5000);
     }
   }
+
+  /* ═══════════════════════════════════════════════
+     REGISTER FIELDS LIST (bottom of metabox)
+     ═══════════════════════════════════════════════ */
+  var $regList = $('#ctm-register-fields-list');
+
+  function renderRegisterFieldsList() {
+    if (!$regList.length) return;
+    var fields = config.fields || [];
+    var custom = [];
+    fields.forEach(function (f) {
+      if (!f.isCustom) return;
+      if (['heading', 'paragraph', 'divider', 'score_display'].indexOf(f.type) !== -1) return;
+      var apiName = sanitizeFieldName(f.displayName || f.name || '');
+      if (!apiName) return;
+      custom.push({ field: f, apiName: apiName });
+    });
+
+    if (!custom.length) {
+      $regList.html('<p class="description"><em>No custom fields in this form.</em></p>');
+      return;
+    }
+
+    var html = '<ul class="ctm-register-list">';
+    custom.forEach(function (item) {
+      var f = item.field;
+      var exists = accountFields && accountFields.hasOwnProperty(item.apiName);
+      var checked = f.registerField ? ' checked' : '';
+      html += '<li class="ctm-register-item' + (exists ? ' ctm-field-exists' : '') + '">';
+      html += '<label>';
+      html += '<input type="checkbox" class="ctm-register-toggle" data-field-id="' + f.id + '"' + checked + ' /> ';
+      html += '<strong>' + esc(f.displayName || f.label || f.name) + '</strong>';
+      html += ' <code>' + esc(item.apiName) + '</code>';
+      html += '</label>';
+      if (exists) {
+        html += '<span class="ctm-exists-label">Already registered</span>';
+      }
+      html += '</li>';
+    });
+    html += '</ul>';
+    $regList.html(html);
+  }
+
+  // Update field config when register toggles change
+  $regList.on('change', '.ctm-register-toggle', function () {
+    var fid = $(this).data('field-id');
+    var checked = $(this).is(':checked');
+    var f = findField(fid);
+    if (f) {
+      f.registerField = checked;
+      syncConfig();
+    }
+  });
+
+  // Re-render register list when config changes
+  var origSync = syncConfig;
+  syncConfig = function () {
+    origSync();
+    renderRegisterFieldsList();
+  };
+
+  // Initial render (after account fields load)
+  loadAccountFields(function () {
+    renderRegisterFieldsList();
+  });
 
 })(jQuery);

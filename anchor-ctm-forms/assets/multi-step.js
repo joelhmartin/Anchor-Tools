@@ -73,12 +73,45 @@
     }
   }
 
+  /* ── Check if ALL visible, non-disabled fields in a step have values ── */
+  function isStepComplete(stepEl) {
+    var fields = stepEl.querySelectorAll('input, select, textarea');
+    var checked = {}; // track radio/checkbox groups we've already evaluated
+
+    for (var i = 0; i < fields.length; i++) {
+      var f = fields[i];
+      var type = f.type;
+
+      // Skip non-user-input elements
+      if (type === 'hidden' || type === 'submit' || type === 'button') continue;
+      if (f.disabled) continue;
+
+      // Skip fields inside the nav bar
+      if (f.closest('.ctm-ms-nav')) continue;
+
+      var name = f.name;
+
+      if (type === 'radio' || type === 'checkbox') {
+        if (checked[name]) continue; // already evaluated this group
+        checked[name] = true;
+        if (!stepEl.querySelector('input[name="' + name + '"]:checked')) return false;
+      } else if (f.tagName === 'SELECT') {
+        if (f.value === '') return false;
+      } else {
+        if (f.value.trim() === '') return false;
+      }
+    }
+    return true;
+  }
+
   function initForm(form) {
     var titlePage = form.querySelector('.ctm-multi-step-title');
     var steps = Array.from(form.querySelectorAll('.ctm-multi-step-item'));
 
     if (steps.length === 0) return; // nothing to do
 
+    var autoAdvance = form.hasAttribute('data-auto-advance');
+    var advanceTimer = null;
     var totalSteps = steps.length;
     var currentStep = 0;
 
@@ -131,10 +164,31 @@
 
       step.appendChild(nav);
 
-      // Clear validation errors on user interaction
-      step.addEventListener('input', function (e) { clearError(e.target); });
-      step.addEventListener('change', function (e) { clearError(e.target); });
+      // Clear validation errors on user interaction + auto-advance
+      step.addEventListener('input', function (e) {
+        clearError(e.target);
+        tryAutoAdvance(idx);
+      });
+      step.addEventListener('change', function (e) {
+        clearError(e.target);
+        tryAutoAdvance(idx);
+      });
     });
+
+    /* ── Auto-advance helper ── */
+    function tryAutoAdvance(idx) {
+      if (!autoAdvance) return;
+      if (idx >= totalSteps - 1) return; // never auto-advance on last step
+
+      if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
+
+      if (isStepComplete(steps[idx]) && validateStep(steps[idx])) {
+        advanceTimer = setTimeout(function () {
+          advanceTimer = null;
+          goTo(idx + 1);
+        }, 400);
+      }
+    }
 
     /* ── Step navigation ── */
     function goTo(idx) {

@@ -1,0 +1,502 @@
+/* ==========================================================================
+   Anchor Social Feed – Frontend Styles
+   ========================================================================== */
+
+/* ── Outer wrapper ── */
+.ssfs-wrap {
+    display: grid;
+    gap: 20px;
+}
+.ssfs-wrap.grid {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+/* ── Card / embed container ── */
+.ssfs-embed {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, #153b37 0%, #3c8a81 100%);
+    border-radius: 16px;
+    padding: 24px;
+}
+.ssfs-note {
+    font-size: 12px;
+    color: #9ca3af;
+}
+
+/* ── Inner grid ── */
+.ssfs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+}
+
+/* ── Card header ── */
+.ssfs-card-header {
+    padding: 0 0 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+.ssfs-card-header .ssfs-nav {
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+.ssfs-card-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1.3;
+}
+.ssfs-card-handle {
+    display: inline-block;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+    text-decoration: none;
+    line-height: 1.3;
+    transition: color 0.2s ease;
+}
+.ssfs-card-handle:hover {
+    color: #fff;
+    text-decoration: underline;
+}
+
+/* ── Light theme ── */
+.ssfs-embed.ssfs-light {
+    background: none;
+}
+.ssfs-light .ssfs-card-title {
+    color: #153b37;
+}
+.ssfs-light .ssfs-card-handle {
+    color: #3c8a81;
+}
+.ssfs-light .ssfs-card-handle:hover {
+    color: #153b37;
+}
+.ssfs-light .ssfs-btn {
+    border-color: rgba(21, 59, 55, 0.25);
+    background: rgba(21, 59, 55, 0.06);
+    color: #153b37;
+}
+.ssfs-light .ssfs-btn:hover {
+    background: #3c8a81;
+    border-color: #3c8a81;
+    color: #fff;
+}
+.ssfs-light .ssfs-note {
+    color: #6b7280;
+}
+.ssfs-light .ssfs-carousel {
+    scrollbar-color: #3c8a81 rgba(21, 59, 55, 0.1);
+}
+.ssfs-light .ssfs-carousel::-webkit-scrollbar-track {
+    background: rgba(21, 59, 55, 0.1);
+}
+
+/* ── Item tiles ── */
+.ssfs-item {
+    cursor: pointer;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.95);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 6px rgba(21, 59, 55, 0.1);
+}
+.ssfs-item:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 24px rgba(21, 59, 55, 0.2);
+    border-color: #3c8a81;
+}
+a.ssfs-item {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+}
+.ssfs-item--video {
+    cursor: pointer;
+}
+
+/* ── Thumbnails ── */
+.ssfs-thumb {
+    aspect-ratio: 16/9;
+    width: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.3s ease;
+}
+.ssfs-item:hover .ssfs-thumb {
+    transform: scale(1.05);
+}
+.ssfs-thumb-wrap {
+    position: relative;
+    overflow: hidden;
+}
+.ssfs-thumb--portrait {
+    aspect-ratio: 9/16;
+}
+
+/* ── Meta text ── */
+.ssfs-meta {
+    padding: 14px;
+    background: #fff;
+}
+.ssfs-title {
+    font-size: 14px;
+    margin: 0 0 6px;
+    color: #153b37;
+    font-weight: 600;
+    line-height: 1.4;
+}
+.ssfs-date {
+    font-size: 12px;
+    color: #3c8a81;
+    font-weight: 500;
+}
+
+/* ── Badges ── */
+.ssfs-play-badge {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    width: 32px;
+    height: 32px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    line-height: 1;
+    pointer-events: none;
+}
+.ssfs-carousel-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 28px;
+    height: 28px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    line-height: 1;
+    pointer-events: none;
+}
+
+/* ── Modal ── */
+.ssfs-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(21, 59, 55, 0.95);
+    backdrop-filter: blur(8px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 999999;
+}
+.ssfs-modal.is-open {
+    display: flex;
+}
+.ssfs-modal-inner {
+    width: min(100%, 980px);
+    aspect-ratio: 16/9;
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+}
+.ssfs-close {
+    position: absolute;
+    top: -40px;
+    right: 0;
+    background: #fff;
+    border: none;
+    border-radius: 999px;
+    width: 36px;
+    height: 36px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.2s ease;
+    color: #153b37;
+}
+.ssfs-close:hover {
+    background: #3c8a81;
+    color: #fff;
+    transform: rotate(90deg);
+}
+.ssfs-no-scroll {
+    overflow: hidden;
+}
+.ssfs-video-modal-inner {
+    width: min(100%, 480px);
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+}
+.ssfs-video-modal-inner video {
+    width: 100%;
+    display: block;
+    max-height: 85vh;
+}
+
+/* ── Carousel ── */
+.ssfs-carousel {
+    display: flex;
+    gap: 16px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    padding-bottom: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: #3c8a81 rgba(255, 255, 255, 0.2);
+}
+.ssfs-carousel::-webkit-scrollbar {
+    height: 8px;
+}
+.ssfs-carousel::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+.ssfs-carousel::-webkit-scrollbar-thumb {
+    background: #3c8a81;
+    border-radius: 4px;
+}
+.ssfs-carousel::-webkit-scrollbar-thumb:hover {
+    background: #153b37;
+}
+.ssfs-carousel .ssfs-item {
+    min-width: 320px;
+    scroll-snap-align: start;
+}
+
+/* ── Nav buttons ── */
+.ssfs-nav {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-bottom: 16px;
+}
+.ssfs-btn {
+    padding: 10px 20px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    border-radius: 8px;
+    cursor: pointer;
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+    transition: all 0.2s ease;
+}
+.ssfs-btn:hover {
+    background: #3c8a81;
+    border-color: #3c8a81;
+    transform: translateX(0);
+}
+.ssfs-btn:active {
+    transform: scale(0.95);
+}
+
+/* ── Facebook items ── */
+.ssfs-item--facebook .ssfs-meta:first-child {
+    min-height: 80px;
+}
+
+/* ==========================================================================
+   Profile Header Component
+   ========================================================================== */
+.asf-profile-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+.asf-profile-avatar {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    flex-shrink: 0;
+}
+.ssfs-light .asf-profile-avatar {
+    border-color: rgba(21, 59, 55, 0.15);
+}
+.asf-profile-info {
+    flex: 1;
+    min-width: 0;
+}
+.asf-profile-name {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1.3;
+    margin: 0;
+}
+.ssfs-light .asf-profile-name {
+    color: #153b37;
+}
+.asf-profile-handle {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.7);
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+.asf-profile-handle:hover {
+    color: #fff;
+    text-decoration: underline;
+}
+.ssfs-light .asf-profile-handle {
+    color: #3c8a81;
+}
+.ssfs-light .asf-profile-handle:hover {
+    color: #153b37;
+}
+.asf-profile-stats {
+    display: flex;
+    gap: 20px;
+    margin-top: 6px;
+}
+.asf-profile-stat {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.8);
+}
+.ssfs-light .asf-profile-stat {
+    color: #4b5563;
+}
+.asf-profile-stat strong {
+    font-weight: 700;
+    color: #fff;
+}
+.ssfs-light .asf-profile-stat strong {
+    color: #153b37;
+}
+.asf-follow-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 20px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.15);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+    text-decoration: none;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+}
+.asf-follow-btn:hover {
+    background: #3c8a81;
+    border-color: #3c8a81;
+    color: #fff;
+}
+.ssfs-light .asf-follow-btn {
+    background: rgba(21, 59, 55, 0.06);
+    border-color: rgba(21, 59, 55, 0.25);
+    color: #153b37;
+}
+.ssfs-light .asf-follow-btn:hover {
+    background: #3c8a81;
+    border-color: #3c8a81;
+    color: #fff;
+}
+
+/* ==========================================================================
+   Hover Overlay Grid Layout
+   ========================================================================== */
+.asf-hover-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--asf-cols-desktop, 4), 1fr);
+    gap: var(--asf-gap, 16px);
+}
+.asf-hover-tile {
+    position: relative;
+    aspect-ratio: 1/1;
+    overflow: hidden;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.asf-hover-tile img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.asf-hover-tile:hover img {
+    transform: scale(1.05);
+}
+.asf-hover-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+.asf-hover-tile:hover .asf-hover-overlay {
+    opacity: 1;
+}
+.asf-hover-caption {
+    color: #fff;
+    font-size: 14px;
+    line-height: 1.5;
+    text-align: center;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+}
+.asf-hover-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    line-height: 1;
+    pointer-events: none;
+    z-index: 1;
+}
+
+/* Responsive breakpoints */
+@media (max-width: 1024px) {
+    .asf-hover-grid {
+        grid-template-columns: repeat(var(--asf-cols-tablet, 3), 1fr);
+    }
+}
+@media (max-width: 640px) {
+    .asf-hover-grid {
+        grid-template-columns: repeat(var(--asf-cols-mobile, 2), 1fr);
+    }
+    .asf-profile-header {
+        gap: 12px;
+    }
+    .asf-profile-avatar {
+        width: 48px;
+        height: 48px;
+    }
+    .asf-profile-stats {
+        gap: 12px;
+    }
+}

@@ -22,6 +22,7 @@ class Anchor_CTM_Forms_Module {
         '_ctm_title_heading',
         '_ctm_title_desc',
         '_ctm_start_text',
+        '_ctm_auto_advance',
         '_ctm_success_message',
         '_ctm_analytics_override',
         '_ctm_analytics',
@@ -45,6 +46,7 @@ class Anchor_CTM_Forms_Module {
         add_action( 'wp_ajax_nopriv_anchor_ctm_submit', [ $this, 'ajax_submit' ] );
         add_action( 'wp_ajax_ctm_builder_preview', [ $this, 'ajax_builder_preview' ] );
         add_action( 'wp_ajax_anchor_ctm_ai_assist', [ $this, 'ajax_ai_assist' ] );
+        add_action( 'wp_ajax_anchor_ctm_account_fields', [ $this, 'ajax_account_fields' ] );
         add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         /* ── Duplicate / Export / Import ── */
@@ -387,10 +389,14 @@ class Anchor_CTM_Forms_Module {
             }
         }
 
+        // Decode HTML entities (curly quotes, apostrophes, etc.) so the
+        // exported JSON contains real characters instead of &#8217; sequences.
+        $meta = $this->decode_entities_recursive( $meta );
+
         $payload = [
             'anchor_ctm_form_export' => 1,
             'version'                => '1.0',
-            'title'                  => $source->post_title,
+            'title'                  => html_entity_decode( $source->post_title, ENT_QUOTES | ENT_HTML5, 'UTF-8' ),
             'meta'                   => $meta,
         ];
 
@@ -400,8 +406,24 @@ class Anchor_CTM_Forms_Module {
         header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
         header( 'Cache-Control: no-cache, no-store, must-revalidate' );
 
-        echo wp_json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
+        echo wp_json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
         exit;
+    }
+
+    /**
+     * Recursively decode HTML entities in strings so exported JSON contains
+     * real characters (e.g. ' instead of &#8217;).
+     */
+    private function decode_entities_recursive( $data ) {
+        if ( is_string( $data ) ) {
+            return html_entity_decode( $data, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        }
+        if ( is_array( $data ) ) {
+            foreach ( $data as $k => $v ) {
+                $data[ $k ] = $this->decode_entities_recursive( $v );
+            }
+        }
+        return $data;
     }
 
     /**
@@ -774,6 +796,31 @@ PROMPT;
         wp_send_json_success( [ 'config' => $new_config ] );
     }
 
+    /**
+     * AJAX: Return existing account-level custom fields for the admin UI.
+     */
+    public function ajax_account_fields() {
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_send_json_error( 'Unauthorized.' );
+        }
+        check_ajax_referer( self::NONCE_ACTION, self::NONCE_NAME );
+
+        $fields = $this->fetch_account_custom_fields();
+        if ( is_wp_error( $fields ) ) {
+            wp_send_json_error( $fields->get_error_message() );
+        }
+
+        // Return just api_name => name map for the UI.
+        $map = [];
+        foreach ( $fields as $f ) {
+            if ( ! empty( $f['api_name'] ) ) {
+                $map[ $f['api_name'] ] = $f['name'];
+            }
+        }
+
+        wp_send_json_success( [ 'fields' => $map ] );
+    }
+
     private function fetch_reactor_detail( $reactor_id ) {
         $acc = $this->account_id();
         $headers = $this->auth_headers();
@@ -858,6 +905,180 @@ PROMPT;
         }
 
         return $out;
+    }
+
+    /**
+     * Fetch account-level custom fields from the CTM API.
+     *
+     * @return array|WP_Error  Array of custom field objects on success.
+     */
+    private function fetch_account_custom_fields() {
+        $acc     = $this->account_id();
+        $headers = $this->auth_headers();
+        if ( ! $acc || ! $headers ) {
+            return new WP_Error( 'ctm_missing_creds', 'CTM API credentials not configured.' );
+        }
+
+        $url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/custom_fields.json?all=true";
+        $res = wp_remote_get( $url, [ 'headers' => $headers, 'timeout' => 20 ] );
+
+        if ( is_wp_error( $res ) ) {
+            return $res;
+        }
+
+        $code = wp_remote_retrieve_response_code( $res );
+        $body = json_decode( wp_remote_retrieve_body( $res ), true );
+
+        if ( $code < 200 || $code >= 300 ) {
+            return new WP_Error( 'ctm_api_error', sprintf( 'CTM custom fields API returned HTTP %d.', $code ) );
+        }
+
+        if ( ! is_array( $body ) || ! isset( $body['custom_fields'] ) ) {
+            return new WP_Error( 'ctm_bad_response', 'CTM custom fields API returned an unexpected response.' );
+        }
+
+        return $body['custom_fields'];
+    }
+
+    /**
+     * Create a single account-level custom field in CTM.
+     *
+     * @param  array  $field  Field definition (name, api_name, field_type, etc.).
+     * @return true|WP_Error
+     */
+    private function create_account_custom_field( $field ) {
+        $acc     = $this->account_id();
+        $headers = $this->auth_headers();
+        if ( ! $acc || ! $headers ) {
+            return new WP_Error( 'ctm_missing_creds', 'CTM API credentials not configured.' );
+        }
+
+        $url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/custom_fields.json";
+        $headers['Content-Type'] = 'application/json';
+
+        $res = wp_remote_post( $url, [
+            'headers' => $headers,
+            'body'    => wp_json_encode( [ 'custom_field' => $field ] ),
+            'timeout' => 20,
+        ] );
+
+        if ( is_wp_error( $res ) ) {
+            return $res;
+        }
+
+        $code = wp_remote_retrieve_response_code( $res );
+        if ( $code < 200 || $code >= 300 ) {
+            $body = json_decode( wp_remote_retrieve_body( $res ), true );
+            $msg  = $body['reason'] ?? $body['message'] ?? "HTTP {$code}";
+            return new WP_Error( 'ctm_api_error', sprintf( 'Failed to create custom field "%s": %s', $field['name'] ?? '', $msg ) );
+        }
+
+        return true;
+    }
+
+    /**
+     * Sync form custom fields to the CTM account.
+     *
+     * GET existing fields → determine missing → POST each new field.
+     * Never removes existing fields. Returns true if nothing to add.
+     * Only syncs fields that have registerField=true in the config.
+     *
+     * @param  array  $config  Builder config (with 'fields' key).
+     * @return true|WP_Error
+     */
+    private function sync_custom_fields_to_account( $config ) {
+        // Build whitelist of api_names that have registerField enabled.
+        $register_names = [];
+        foreach ( ( $config['fields'] ?? [] ) as $f ) {
+            if ( empty( $f['registerField'] ) ) {
+                continue;
+            }
+            $fname = $f['name'] ?? '';
+            $core  = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
+            if ( ! in_array( $fname, $core, true ) ) {
+                $fname = self::sanitize_field_name( $fname );
+            }
+            if ( $fname ) {
+                $register_names[ $fname ] = true;
+            }
+        }
+
+        if ( empty( $register_names ) ) {
+            return true; // No fields opted in for registration.
+        }
+
+        // Extract custom fields from the form config.
+        $reactor_fields = $this->build_reactor_fields( $config );
+        $form_custom    = $reactor_fields['custom_fields'] ?? [];
+
+        // Filter to only the opted-in fields.
+        $form_custom = array_filter( $form_custom, function( $cf ) use ( $register_names ) {
+            $api_name = self::sanitize_field_name( $cf['name'] ?? '' );
+            return isset( $register_names[ $api_name ] );
+        } );
+
+        if ( empty( $form_custom ) ) {
+            return true; // Nothing to sync.
+        }
+
+        // GET existing account-level custom fields.
+        $existing = $this->fetch_account_custom_fields();
+        if ( is_wp_error( $existing ) ) {
+            return $existing;
+        }
+
+        // Index existing fields by api_name for dedup.
+        $existing_names = [];
+        foreach ( $existing as $ef ) {
+            if ( ! empty( $ef['api_name'] ) ) {
+                $existing_names[ $ef['api_name'] ] = true;
+            }
+        }
+
+        // Create each missing field individually.
+        $errors = [];
+        foreach ( $form_custom as $cf ) {
+            $api_name = self::sanitize_field_name( $cf['name'] ?? '' );
+            if ( ! $api_name || isset( $existing_names[ $api_name ] ) ) {
+                continue;
+            }
+
+            // Map reactor field types to account-level types.
+            // Account API only accepts: text, textarea, number, email, date, float.
+            $type_map   = [
+                'list'      => 'text',
+                'checklist' => 'text',
+                'select'    => 'text',
+                'checkbox'  => 'text',
+                'radio'     => 'text',
+            ];
+            $field_type = $cf['type'] ?? 'text';
+            $field_type = $type_map[ $field_type ] ?? $field_type;
+
+            $result = $this->create_account_custom_field( [
+                'name'          => $cf['name'],
+                'api_name'      => $api_name,
+                'field_type'    => $field_type,
+                'object_type'   => 'Call',
+                'panel'         => 'contact',
+                'required'      => false,
+                'log_visible'   => ! empty( $cf['log_visible'] ),
+                'should_redact' => true,
+                'multipicker'   => false,
+            ] );
+
+            if ( is_wp_error( $result ) ) {
+                $errors[] = $result->get_error_message();
+            } else {
+                $existing_names[ $api_name ] = true;
+            }
+        }
+
+        if ( ! empty( $errors ) ) {
+            return new WP_Error( 'ctm_sync_partial', implode( ' | ', $errors ) );
+        }
+
+        return true;
     }
 
     /**
@@ -1079,6 +1300,16 @@ PROMPT;
                 esc_html( $error )
             );
         }
+
+        $sync_warning = get_transient( 'ctm_sync_warning_' . $post->ID );
+        if ( $sync_warning ) {
+            delete_transient( 'ctm_sync_warning_' . $post->ID );
+            printf(
+                '<div class="notice notice-warning is-dismissible"><p><strong>%s</strong> %s</p></div>',
+                esc_html__( 'CTM Custom Fields sync warning:', 'anchor-schema' ),
+                esc_html( $sync_warning )
+            );
+        }
     }
 
     /* ========================= Metaboxes ========================= */
@@ -1156,6 +1387,10 @@ PROMPT;
                     <label id="ctm-title-page-label-reactor">
                         <input type="checkbox" name="ctm_title_page" id="ctm_title_page_reactor" value="1" <?php checked( $tp_enabled ); ?> />
                         <?php esc_html_e( 'Add Title Page?', 'anchor-schema' ); ?>
+                    </label>
+                    <label id="ctm-auto-advance-label-reactor" style="<?php echo $ms_enabled ? '' : 'display:none;'; ?>">
+                        <input type="checkbox" name="ctm_auto_advance" id="ctm_auto_advance_reactor" value="1" <?php checked( get_post_meta( $post->ID, '_ctm_auto_advance', true ) ); ?> />
+                        <?php esc_html_e( 'Auto-Advance Steps', 'anchor-schema' ); ?>
                     </label>
                 </p>
 
@@ -1355,6 +1590,15 @@ PROMPT;
                             </td>
                         </tr>
                     </table>
+                </div>
+            </div>
+
+            <!-- Auto-Register Custom Fields -->
+            <div class="ctm-box" id="ctm-register-fields-box">
+                <p><strong><?php esc_html_e( 'Register Custom Fields in CTM', 'anchor-schema' ); ?></strong></p>
+                <p class="description"><?php esc_html_e( 'Check individual fields to register them as account-level custom fields in CTM when this form is published. Existing fields are never modified or removed.', 'anchor-schema' ); ?></p>
+                <div id="ctm-register-fields-list" style="margin-top:8px;">
+                    <p class="description"><em><?php esc_html_e( 'Custom fields from your form will appear here.', 'anchor-schema' ); ?></em></p>
                 </div>
             </div>
         </div>
@@ -1564,6 +1808,7 @@ PROMPT;
                     $settings = $config['settings'] ?? [];
                     update_post_meta( $post_id, '_ctm_multi_step', ! empty( $settings['multiStep'] ) ? 1 : 0 );
                     update_post_meta( $post_id, '_ctm_title_page', ! empty( $settings['titlePage']['enabled'] ) ? 1 : 0 );
+                    update_post_meta( $post_id, '_ctm_auto_advance', ! empty( $settings['autoAdvance'] ) ? 1 : 0 );
                     if ( ! empty( $settings['titlePage'] ) ) {
                         update_post_meta( $post_id, '_ctm_title_heading', sanitize_text_field( $settings['titlePage']['heading'] ?? '' ) );
                         update_post_meta( $post_id, '_ctm_title_desc', wp_kses_post( $settings['titlePage']['description'] ?? '' ) );
@@ -1603,6 +1848,15 @@ PROMPT;
                         update_post_meta( $post_id, '_ctm_builder_reactor_id', $result );
                         update_post_meta( $post_id, '_ctm_reactor_id', $result );
                         update_post_meta( $post_id, '_ctm_reactor_fields_hash', $fields_hash );
+
+                        // Sync per-field custom fields to CTM account.
+                        $sync = $this->sync_custom_fields_to_account( $config );
+                        if ( is_wp_error( $sync ) ) {
+                            update_post_meta( $post_id, '_ctm_custom_fields_sync_result', $sync->get_error_message() );
+                            set_transient( 'ctm_sync_warning_' . $post_id, $sync->get_error_message(), 60 );
+                        } else {
+                            update_post_meta( $post_id, '_ctm_custom_fields_sync_result', 'success' );
+                        }
                     }
                 }
             }
@@ -1629,6 +1883,7 @@ PROMPT;
                 $start = sanitize_text_field( $_POST['ctm_start_text'] );
                 update_post_meta( $post_id, '_ctm_start_text', $start ?: 'Get Started' );
             }
+            update_post_meta( $post_id, '_ctm_auto_advance', isset( $_POST['ctm_auto_advance'] ) ? 1 : 0 );
         }
 
         // Save analytics override setting (shared between modes)
@@ -1644,6 +1899,7 @@ PROMPT;
             }
             update_post_meta( $post_id, '_ctm_analytics', $analytics );
         }
+
     }
 
     /* ========================= AJAX: Generate starter ========================= */
@@ -2040,6 +2296,11 @@ PROMPT;
                 $html = preg_replace( '/(<form\b[^>]*class=["\'])/', '$1ctm-multi-step ', $html );
             } else {
                 $html = preg_replace( '/(<form\b)/', '$1 class="ctm-multi-step"', $html );
+            }
+
+            // Auto-advance attribute
+            if ( get_post_meta( $post_id, '_ctm_auto_advance', true ) ) {
+                $html = preg_replace( '/(<form\b)/', '$1 data-auto-advance="1"', $html, 1 );
             }
         }
 

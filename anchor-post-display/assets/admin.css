@@ -1,0 +1,27 @@
+/* Anchor Post Display — Admin Settings */
+
+.apd-shortcode-ref {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 8px;
+}
+
+.apd-shortcode-ref th,
+.apd-shortcode-ref td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid #e0e0e0;
+    font-size: 13px;
+}
+
+.apd-shortcode-ref th {
+    background: #f5f5f5;
+    font-weight: 600;
+}
+
+.apd-shortcode-ref code {
+    background: #f0f0f0;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+}

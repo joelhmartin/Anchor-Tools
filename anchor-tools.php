@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.4.86
+ * Version: 3.4.88
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -2875,11 +2875,6 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Display curated social feeds via shortcode.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-social-feed/anchor-social-feed.php',
                 'class'       => 'Anchor_Social_Feed_Module',
-                'setup'       => function () {
-                    add_filter( 'anchor_social_feed_parent_menu_slug', function () {
-                        return 'options-general.php';
-                    } );
-                },
             ],
             'mega_menu' => [
                 'label'       => __( 'Anchor Mega Menu', 'anchor-schema' ),
@@ -2946,6 +2941,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Local image compression + WebP/AVIF conversion on upload. No external APIs.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-optimize/anchor-optimize.php',
                 'class'       => 'Anchor_Optimize_Module',
+            ],
+            'post_display' => [
+                'label'       => __( 'Anchor Post Display', 'anchor-schema' ),
+                'description' => __( 'Search forms and post grids with AJAX live search and pagination.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-post-display/anchor-post-display.php',
+                'class'       => 'Anchor_Post_Display_Module',
             ],
         ];
     }

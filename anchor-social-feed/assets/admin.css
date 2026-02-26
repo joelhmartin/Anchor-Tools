@@ -1,0 +1,138 @@
+/* ==========================================================================
+   Anchor Social Feed – Admin Styles
+   ========================================================================== */
+
+/* ── Platform selector ── */
+.asf-platform-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0;
+}
+.asf-platform-list label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: 2px solid #ddd;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-weight: 500;
+}
+.asf-platform-list label:hover {
+    border-color: #3c8a81;
+}
+.asf-platform-list input[type="radio"]:checked + span {
+    color: #3c8a81;
+}
+.asf-platform-list label:has(input:checked) {
+    border-color: #3c8a81;
+    background: rgba(60, 138, 129, 0.06);
+}
+
+/* ── Conditional field sections ── */
+.asf-platform-fields {
+    display: none;
+    margin-top: 12px;
+    padding: 16px;
+    background: #f9f9f9;
+    border-radius: 6px;
+}
+.asf-platform-fields.is-active {
+    display: block;
+}
+.asf-platform-fields p {
+    margin: 8px 0;
+}
+.asf-platform-fields label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.asf-platform-fields input[type="text"],
+.asf-platform-fields input[type="url"],
+.asf-platform-fields input[type="number"],
+.asf-platform-fields select {
+    width: 100%;
+    max-width: 400px;
+}
+
+/* ── Profile header overrides section ── */
+.asf-profile-section {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #ddd;
+}
+.asf-profile-section h4 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #666;
+}
+.asf-profile-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 16px;
+}
+.asf-profile-grid p {
+    margin: 4px 0;
+}
+.asf-profile-grid label {
+    font-weight: 500;
+    font-size: 12px;
+    color: #555;
+}
+.asf-profile-grid input {
+    width: 100%;
+}
+
+/* ── Fetch Profile button ── */
+.asf-fetch-profile-btn {
+    margin-top: 8px;
+}
+.asf-fetch-profile-btn .spinner {
+    float: none;
+    margin-top: 0;
+}
+
+/* ── Setting defs conditional visibility ── */
+.asf-setting-row {
+    margin-bottom: 10px;
+}
+.asf-setting-row.is-hidden {
+    display: none;
+}
+.asf-setting-row label {
+    display: inline-block;
+    min-width: 160px;
+    font-weight: 500;
+}
+
+/* ── Shortcode column ── */
+.column-asf_shortcode code {
+    background: #f0f0f1;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.column-asf_shortcode code:hover {
+    background: #3c8a81;
+    color: #fff;
+}
+
+/* ── Preview box ── */
+#asf-preview-wrap {
+    min-height: 120px;
+    position: relative;
+}
+#asf-preview-wrap .spinner {
+    visibility: visible;
+    float: none;
+}
+.asf-preview-note {
+    color: #666;
+    font-style: italic;
+}

@@ -177,14 +177,14 @@ class Anchor_Universal_Popups_Module {
     }
 
     private function fetch_youtube_meta($id) {
-        $cache_key = 'up_yt_' . $id;
+        $cache_key = 'up_yt2_' . $id;
         $cached = get_transient($cache_key);
         if (is_array($cached)) {
             return $cached;
         }
 
         $meta = [
-            'thumb' => 'https://img.youtube.com/vi/' . $id . '/hqdefault.jpg',
+            'thumb' => 'https://img.youtube.com/vi/' . $id . '/maxresdefault.jpg',
             'title' => '',
             'duration' => '',
             'channel' => '',
@@ -206,7 +206,12 @@ class Anchor_Universal_Popups_Module {
                     $sn = $data['items'][0]['snippet'];
                     $meta['title'] = $sn['title'] ?? '';
                     $meta['channel'] = $sn['channelTitle'] ?? '';
-                    if (!empty($sn['thumbnails']['high']['url'])) {
+                    // Prefer highest resolution thumbnail available
+                    if (!empty($sn['thumbnails']['maxres']['url'])) {
+                        $meta['thumb'] = $sn['thumbnails']['maxres']['url'];
+                    } elseif (!empty($sn['thumbnails']['standard']['url'])) {
+                        $meta['thumb'] = $sn['thumbnails']['standard']['url'];
+                    } elseif (!empty($sn['thumbnails']['high']['url'])) {
                         $meta['thumb'] = $sn['thumbnails']['high']['url'];
                     } elseif (!empty($sn['thumbnails']['medium']['url'])) {
                         $meta['thumb'] = $sn['thumbnails']['medium']['url'];
@@ -223,7 +228,7 @@ class Anchor_Universal_Popups_Module {
     }
 
     private function fetch_vimeo_meta($id) {
-        $cache_key = 'up_vm_' . $id;
+        $cache_key = 'up_vm2_' . $id;
         $cached = get_transient($cache_key);
         if (is_array($cached)) {
             return $cached;
@@ -233,6 +238,7 @@ class Anchor_Universal_Popups_Module {
 
         $oembed_url = add_query_arg([
             'url' => 'https://vimeo.com/' . rawurlencode($id),
+            'width' => '1280',
             'dnt' => '1',
         ], 'https://vimeo.com/api/oembed.json');
 
@@ -241,8 +247,13 @@ class Anchor_Universal_Popups_Module {
             $data = json_decode(wp_remote_retrieve_body($res), true);
             if (is_array($data)) {
                 $meta['title'] = $data['title'] ?? '';
-                $meta['thumb'] = $data['thumbnail_url'] ?? '';
                 $meta['channel'] = $data['author_name'] ?? '';
+                // Request 1280px wide thumbnail from Vimeo
+                $thumb_url = $data['thumbnail_url'] ?? '';
+                if ( $thumb_url ) {
+                    // Vimeo thumbnail URLs end with _WIDTHxHEIGHT or similar — replace with 1280px width
+                    $meta['thumb'] = preg_replace( '/_\d+x\d+/', '_1280', $thumb_url );
+                }
                 if (!empty($data['duration'])) {
                     $meta['duration'] = $this->format_seconds_duration((int) $data['duration']);
                 }

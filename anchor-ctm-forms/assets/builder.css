@@ -482,9 +482,12 @@
     gap: 0;
     margin-bottom: 10px;
     border-bottom: 1px solid #c3d9e0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .ctm-step-tab {
+    flex-shrink: 0;
     padding: 6px 14px;
     border: none;
     background: none;

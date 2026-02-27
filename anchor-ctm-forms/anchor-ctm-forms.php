@@ -616,9 +616,9 @@ class Anchor_CTM_Forms_Module {
      * @param int    $max_tokens    Max response tokens.
      * @return string|WP_Error      Response content or error.
      */
-    private function call_openai_chat( $api_key, $system_prompt, $user_message, $max_tokens = 8192 ) {
+    private function call_openai_chat( $api_key, $system_prompt, $user_message, $max_tokens = 16384 ) {
         $response = wp_remote_post( 'https://api.openai.com/v1/chat/completions', [
-            'timeout' => 60,
+            'timeout' => 120,
             'headers' => [
                 'Content-Type'  => 'application/json',
                 'Authorization' => 'Bearer ' . $api_key,
@@ -670,6 +670,9 @@ You are an AI form-building assistant for a WordPress form builder that submits 
     "successMessage": "Thanks! We'll be in touch shortly.",
     "multiStep": false,
     "progressBar": true,
+    "autoAdvance": false,
+    "colorScheme": "light"|"dark",
+    "colors": { "bg":"","text":"","label":"","inputBg":"","inputBorder":"","inputText":"","focus":"","btnBg":"","btnText":"" },
     "titlePage": { "enabled": false, "heading": "", "description": "", "buttonText": "Get Started" },
     "scoring": { "enabled": false, "showTotal": false, "totalLabel": "Your Score", "sendAs": "custom_total_score" }
   },
@@ -678,14 +681,15 @@ You are an AI form-building assistant for a WordPress form builder that submits 
 ```
 
 ## Field Types
-Input: text, email, tel, number, url, textarea, select, checkbox, radio, hidden
+Input: text, email, tel, number, url, textarea, select, checkbox, radio, hidden, consent
 Layout: heading, paragraph, divider, score_display
 
 ## Field Properties
-Every field has: id, type, label, name, placeholder, helpText, defaultValue, required (bool), isCustom (bool), width ("full"|"half"|"third"|"quarter"), labelStyle ("inherit"|"above"|"floating"|"hidden"), cssClass, step (0-indexed int), conditions (array), conditionLogic ("all"|"any"), logVisible (bool).
+Every field has: id, type, label, name, placeholder, helpText, defaultValue, required (bool), isCustom (bool), width ("full"|"half"|"third"|"quarter"), labelStyle ("inherit"|"above"|"floating"|"hidden"), cssClass, step (0-indexed int), conditions (array), conditionLogic ("all"|"any"), logVisible (bool), registerField (bool).
 
 Option-based fields (select, checkbox, radio) also have: options (array of {label, value, score}).
 Number fields also have: min, max, numStep.
+Consent fields also have: consentText (string — the consent message displayed next to the checkbox).
 Score display fields only need: label, name.
 
 ## Core CTM Field Names (CRITICAL)
@@ -713,29 +717,46 @@ The `name` property holds the machine-safe identifier (e.g. "new_patient").
 Never use the label text as the name.
 
 ## CTM FormReactor Type Mapping
-The builder uses standard HTML field types, but CTM maps them differently:
+The builder uses standard HTML field types, but CTM maps them differently when creating reactors:
 - radio → CTM type "list" (single-select from options)
 - select → CTM type "list" (single-select from options)
 - checkbox → CTM type "checklist" (multi-select from options)
 - textarea → CTM type "textarea"
-- text, email, tel, number, url, hidden → CTM type "text"
+- text, email, tel, number, url, hidden, consent → CTM type "text"
 
 Option-based fields (select, radio, checkbox) have their options sent to CTM as a newline-separated string, not a JSON array. This is handled automatically — just provide the options array normally.
 
-## logVisible (Important)
+## Custom Fields & CTM Integration
+When a form is submitted, custom fields are sent to CTM's FormReactor API with a `custom_` prefix at the top level of the request body. For example, a field named `service_type` is sent as `custom_service_type`. This happens automatically.
+
+### registerField (Optional)
+Set `registerField: true` on a custom field to register it as an account-level custom field in CTM when the form is published. This makes the field searchable, filterable, and visible as a column in CTM reports. Without this, data is still captured on individual activities but isn't surfaced in reporting views. Default to `false` — the user can also register fields manually in the CTM dashboard later.
+
+### logVisible (Important)
 Set `logVisible: true` on custom fields so their values appear in CTM's activity log. Default to `true` for all fields unless there's a specific reason to hide them (e.g. hidden tracking fields). Without this, submitted data won't be visible in CTM's call/form log.
+
+## Consent Fields
+Use type `"consent"` for opt-in checkboxes (SMS consent, newsletter, terms acceptance). Consent fields:
+- Have a `consentText` property with the message shown next to the checkbox (supports HTML)
+- Always submit a value: `"Yes"` when checked, `"No"` when unchecked (normal checkboxes are skipped when unchecked)
+- Should have `required: false` (consent should be voluntary unless legally mandated)
+- Are always custom fields (`isCustom: true`)
+- Use descriptive names like `sms_consent`, `newsletter_opt_in`, `terms_accepted`
 
 ## Field ID Format
 Generate IDs as `f_` followed by 8 random alphanumeric characters (e.g. `f_a3b9c2d1`). Never reuse existing IDs.
 
 ## Multi-Step Forms
-Set `settings.multiStep = true` and assign a `step` property (0-indexed) to each field. Fields with the same step number appear on the same page.
+Set `settings.multiStep = true` and assign a `step` property (0-indexed) to each field. Fields with the same step number appear on the same page. Set `settings.autoAdvance = true` if steps with only radio/select fields should auto-advance when a selection is made.
+
+## Title Page
+Set `settings.titlePage.enabled = true` to show an intro screen before step 0 with a heading, description, and start button. Only applies when multiStep is also true.
 
 ## Scoring
-Set `settings.scoring.enabled = true`. Add `score` values to option objects (e.g. `{"label": "Yes", "value": "yes", "score": 10}`). Add a `score_display` field to show the total.
+Set `settings.scoring.enabled = true`. Add `score` values to option objects (e.g. `{"label": "Yes", "value": "yes", "score": 10}`). Add a `score_display` field to show the total. The accumulated score is sent as a custom field using the name in `settings.scoring.sendAs`.
 
 ## Conditional Logic
-Add conditions to a field's `conditions` array: `{"field": "<field_id>", "operator": "equals"|"not_equals"|"contains"|"is_empty"|"is_not_empty"|"greater_than"|"less_than", "value": "<value>"}`. Set `conditionLogic` to "all" or "any".
+Add conditions to a field's `conditions` array: `{"field": "<field_id>", "operator": "equals"|"not_equals"|"contains"|"is_empty"|"is_not_empty"|"greater_than"|"less_than", "value": "<value>"}`. Set `conditionLogic` to "all" or "any". Hidden fields are automatically disabled and do not submit data.
 
 ## Rules
 1. Return ONLY the complete JSON config (settings + fields). No explanations, no markdown fences.
@@ -743,9 +764,10 @@ Add conditions to a field's `conditions` array: `{"field": "<field_id>", "operat
 3. Only modify what the instruction asks for. Keep unrelated fields and settings unchanged.
 4. When adding a contact/lead form, always include: caller_name (text, isCustom:false, required:true), email (email, isCustom:false), phone_number (tel, isCustom:false, required:true). Add message as a custom textarea (name:"message", isCustom:true, logVisible:true).
 5. When asked to make a multi-step form, distribute fields logically across steps.
-6. Default new fields to: required: false, width: "full", labelStyle: "inherit", step: 0, logVisible: true.
+6. Default new fields to: required: false, width: "full", labelStyle: "inherit", step: 0, logVisible: true, registerField: false.
 7. phone_number should ALWAYS be required — CTM requires it for every FormReactor submission.
-8. For consent/opt-in checkboxes, use a single option with the consent text as the label and "Yes" as the value. Set required: false (consent should be voluntary).
+8. For consent/opt-in fields, use type "consent" with a consentText property. Set required: false.
+9. When generating a large form, include ALL fields in the response — never truncate or use placeholders like "...remaining fields...".
 PROMPT;
     }
 

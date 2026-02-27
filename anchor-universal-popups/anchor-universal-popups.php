@@ -85,9 +85,11 @@ class Anchor_Universal_Popups_Module {
             'video_url' => '',              // full YouTube/Vimeo URL
             'video_id' => '',               // id for youtube or vimeo (derived from URL or legacy)
             'aspect_ratio' => '16:9',       // thumbnail aspect ratio
+            'thumb_size' => 'maxres',       // maxres (1280x720), high (480x360), medium (320x180), default (120x90)
             'tile_style' => 'card',         // card, minimal, overlay, cinematic
             'theme' => 'dark',              // dark, light, auto
             'show_title' => '1',            // 0 or 1
+            'title_position' => 'bottom-left', // top-left, top-center, top-right, center, bottom-left, bottom-center, bottom-right
             'show_duration' => '0',         // 0 or 1
             'show_channel' => '0',          // 0 or 1
             'hover_effect' => 'lift',       // lift, zoom, glow, none
@@ -163,28 +165,38 @@ class Anchor_Universal_Popups_Module {
      * Fetch video metadata (thumbnail, title) for a given provider and ID.
      * @return array ['thumb' => '...', 'title' => '...']
      */
-    private function fetch_video_meta($provider, $id) {
+    private function fetch_video_meta($provider, $id, $thumb_size = 'maxres') {
         if (!$provider || !$id) return ['thumb' => '', 'title' => '', 'duration' => '', 'channel' => ''];
 
         if ($provider === 'youtube') {
-            return $this->fetch_youtube_meta($id);
+            return $this->fetch_youtube_meta($id, $thumb_size);
         }
         if ($provider === 'vimeo') {
-            return $this->fetch_vimeo_meta($id);
+            return $this->fetch_vimeo_meta($id, $thumb_size);
         }
 
         return ['thumb' => '', 'title' => '', 'duration' => '', 'channel' => ''];
     }
 
-    private function fetch_youtube_meta($id) {
-        $cache_key = 'up_yt2_' . $id;
+    private function fetch_youtube_meta($id, $thumb_size = 'maxres') {
+        $cache_key = 'up_yt_' . $thumb_size . '_' . $id;
         $cached = get_transient($cache_key);
         if (is_array($cached)) {
             return $cached;
         }
 
+        // YouTube direct-URL filenames per size
+        $yt_filenames = [
+            'maxres'   => 'maxresdefault.jpg',
+            'standard' => 'sddefault.jpg',
+            'high'     => 'hqdefault.jpg',
+            'medium'   => 'mqdefault.jpg',
+            'default'  => 'default.jpg',
+        ];
+        $fallback_file = $yt_filenames[ $thumb_size ] ?? 'maxresdefault.jpg';
+
         $meta = [
-            'thumb' => 'https://img.youtube.com/vi/' . $id . '/maxresdefault.jpg',
+            'thumb' => 'https://img.youtube.com/vi/' . $id . '/' . $fallback_file,
             'title' => '',
             'duration' => '',
             'channel' => '',
@@ -206,15 +218,15 @@ class Anchor_Universal_Popups_Module {
                     $sn = $data['items'][0]['snippet'];
                     $meta['title'] = $sn['title'] ?? '';
                     $meta['channel'] = $sn['channelTitle'] ?? '';
-                    // Prefer highest resolution thumbnail available
-                    if (!empty($sn['thumbnails']['maxres']['url'])) {
-                        $meta['thumb'] = $sn['thumbnails']['maxres']['url'];
-                    } elseif (!empty($sn['thumbnails']['standard']['url'])) {
-                        $meta['thumb'] = $sn['thumbnails']['standard']['url'];
-                    } elseif (!empty($sn['thumbnails']['high']['url'])) {
-                        $meta['thumb'] = $sn['thumbnails']['high']['url'];
-                    } elseif (!empty($sn['thumbnails']['medium']['url'])) {
-                        $meta['thumb'] = $sn['thumbnails']['medium']['url'];
+                    // Pick the requested size, falling back to progressively lower resolutions
+                    $priority = ['maxres', 'standard', 'high', 'medium', 'default'];
+                    $start = array_search($thumb_size, $priority, true);
+                    if ($start === false) $start = 0;
+                    for ($i = $start; $i < count($priority); $i++) {
+                        if (!empty($sn['thumbnails'][$priority[$i]]['url'])) {
+                            $meta['thumb'] = $sn['thumbnails'][$priority[$i]]['url'];
+                            break;
+                        }
                     }
                 }
                 if (!empty($data['items'][0]['contentDetails']['duration'])) {
@@ -227,18 +239,28 @@ class Anchor_Universal_Popups_Module {
         return $meta;
     }
 
-    private function fetch_vimeo_meta($id) {
-        $cache_key = 'up_vm2_' . $id;
+    private function fetch_vimeo_meta($id, $thumb_size = 'maxres') {
+        $cache_key = 'up_vm_' . $thumb_size . '_' . $id;
         $cached = get_transient($cache_key);
         if (is_array($cached)) {
             return $cached;
         }
 
+        // Map thumb_size to Vimeo pixel widths
+        $vimeo_widths = [
+            'maxres'   => '1280',
+            'standard' => '640',
+            'high'     => '480',
+            'medium'   => '320',
+            'default'  => '120',
+        ];
+        $width = $vimeo_widths[ $thumb_size ] ?? '1280';
+
         $meta = ['thumb' => '', 'title' => '', 'duration' => '', 'channel' => ''];
 
         $oembed_url = add_query_arg([
             'url' => 'https://vimeo.com/' . rawurlencode($id),
-            'width' => '1280',
+            'width' => $width,
             'dnt' => '1',
         ], 'https://vimeo.com/api/oembed.json');
 
@@ -248,11 +270,10 @@ class Anchor_Universal_Popups_Module {
             if (is_array($data)) {
                 $meta['title'] = $data['title'] ?? '';
                 $meta['channel'] = $data['author_name'] ?? '';
-                // Request 1280px wide thumbnail from Vimeo
                 $thumb_url = $data['thumbnail_url'] ?? '';
                 if ( $thumb_url ) {
-                    // Vimeo thumbnail URLs end with _WIDTHxHEIGHT or similar — replace with 1280px width
-                    $meta['thumb'] = preg_replace( '/_\d+x\d+/', '_1280', $thumb_url );
+                    // Vimeo thumbnail URLs end with _WIDTHxHEIGHT — replace with requested width
+                    $meta['thumb'] = preg_replace( '/_\d+x\d+/', '_' . $width, $thumb_url );
                 }
                 if (!empty($data['duration'])) {
                     $meta['duration'] = $this->format_seconds_duration((int) $data['duration']);
@@ -356,6 +377,18 @@ class Anchor_Universal_Popups_Module {
               <p class="description">Aspect ratio for the video card thumbnail displayed via shortcode.</p>
             </div>
 
+            <div class="up-field" data-up-show-when-mode="video">
+              <label><strong>Thumbnail Resolution</strong></label>
+              <select name="up_thumb_size" id="up_thumb_size">
+                <option value="maxres" <?php selected($m['thumb_size'], 'maxres'); ?>>Max (1280x720)</option>
+                <option value="standard" <?php selected($m['thumb_size'], 'standard'); ?>>Standard (640x480)</option>
+                <option value="high" <?php selected($m['thumb_size'], 'high'); ?>>High (480x360)</option>
+                <option value="medium" <?php selected($m['thumb_size'], 'medium'); ?>>Medium (320x180)</option>
+                <option value="default" <?php selected($m['thumb_size'], 'default'); ?>>Default (120x90)</option>
+              </select>
+              <p class="description">Thumbnail image quality. Lower resolutions load faster.</p>
+            </div>
+
             <div data-up-show-when-mode="video">
               <h4 style="margin:12px 0 8px;">Card Appearance</h4>
 
@@ -410,6 +443,19 @@ class Anchor_Universal_Popups_Module {
                   <input type="checkbox" name="up_show_title" value="1" <?php checked($m['show_title'], '1'); ?> />
                   Show Title
                 </label>
+              </div>
+
+              <div class="up-field">
+                <label><strong>Title Position</strong></label>
+                <select name="up_title_position" id="up_title_position">
+                  <option value="bottom-left" <?php selected($m['title_position'], 'bottom-left'); ?>>Bottom Left</option>
+                  <option value="bottom-center" <?php selected($m['title_position'], 'bottom-center'); ?>>Bottom Center</option>
+                  <option value="bottom-right" <?php selected($m['title_position'], 'bottom-right'); ?>>Bottom Right</option>
+                  <option value="top-left" <?php selected($m['title_position'], 'top-left'); ?>>Top Left</option>
+                  <option value="top-center" <?php selected($m['title_position'], 'top-center'); ?>>Top Center</option>
+                  <option value="top-right" <?php selected($m['title_position'], 'top-right'); ?>>Top Right</option>
+                  <option value="center" <?php selected($m['title_position'], 'center'); ?>>Center</option>
+                </select>
               </div>
 
               <div class="up-field">
@@ -544,8 +590,8 @@ class Anchor_Universal_Popups_Module {
         if (!current_user_can('edit_post', $post_id)) return;
 
         $fields = [
-            'mode','video_url','video_id','aspect_ratio',
-            'tile_style','theme','show_title','show_duration','show_channel',
+            'mode','video_url','video_id','aspect_ratio','thumb_size',
+            'tile_style','theme','show_title','title_position','show_duration','show_channel',
             'hover_effect','play_button_style','border_radius',
             'autoplay','close_color',
             'html','shortcode','css','js',
@@ -686,7 +732,7 @@ class Anchor_Universal_Popups_Module {
 
                 // Fetch metadata
                 if ($provider && $video_id) {
-                    $meta = $this->fetch_video_meta($provider, $video_id);
+                    $meta = $this->fetch_video_meta($provider, $video_id, $m['thumb_size']);
                     $video_thumb = $meta['thumb'];
                     $video_title = $meta['title'];
                     $video_duration = $meta['duration'];
@@ -807,7 +853,7 @@ class Anchor_Universal_Popups_Module {
         }
 
         // Fetch metadata
-        $meta = $this->fetch_video_meta($provider, $video_id);
+        $meta = $this->fetch_video_meta($provider, $video_id, $m['thumb_size']);
         $thumb = $meta['thumb'];
         $title = $meta['title'];
         $duration = $meta['duration'];
@@ -850,6 +896,7 @@ class Anchor_Universal_Popups_Module {
         $play_svg = $play_style !== 'none' ? $this->get_play_button_svg($play_style) : '';
 
         $has_meta = $show_title || $show_channel;
+        $title_pos = $m['title_position'] ?: 'bottom-left';
 
         // Build inline style
         $style = '--up-card-ratio: ' . esc_attr($ratio_val) . '; --up-card-radius: ' . esc_attr($radius) . 'px';
@@ -870,17 +917,17 @@ class Anchor_Universal_Popups_Module {
                 <?php if ($show_duration): ?>
                 <span class="up-video-card__duration"><?php echo esc_html($duration); ?></span>
                 <?php endif; ?>
-            </div>
-            <?php if ($has_meta): ?>
-            <div class="up-video-card__meta">
-                <?php if ($show_title && $title): ?>
-                <span class="up-video-card__title"><?php echo esc_html($title); ?></span>
+                <?php if ($has_meta): ?>
+                <div class="up-video-card__meta up-meta-<?php echo esc_attr($title_pos); ?>">
+                    <?php if ($show_title && $title): ?>
+                    <span class="up-video-card__title"><?php echo esc_html($title); ?></span>
+                    <?php endif; ?>
+                    <?php if ($show_channel): ?>
+                    <span class="up-video-card__channel"><?php echo esc_html($channel); ?></span>
+                    <?php endif; ?>
+                </div>
                 <?php endif; ?>
-                <?php if ($show_channel): ?>
-                <span class="up-video-card__channel"><?php echo esc_html($channel); ?></span>
-                <?php endif; ?>
             </div>
-            <?php endif; ?>
         </div>
         <?php
         return ob_get_clean();

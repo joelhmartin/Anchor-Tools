@@ -45,9 +45,10 @@
     }
   }
 
-  function buildModalShell(isVideo){
+  function buildModalShell(isVideo, popupStyle){
+    popupStyle = popupStyle || 'modal';
     var modal = document.createElement('div');
-    modal.className = 'up-modal';
+    modal.className = 'up-modal up-style-' + popupStyle;
     modal.setAttribute('role','dialog');
     modal.setAttribute('aria-modal','true');
     modal.hidden = true;
@@ -195,7 +196,7 @@
 
   function attach(sn){
     var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo' || sn.mode === 'video');
-    var modal = buildModalShell(isVideo);
+    var modal = buildModalShell(isVideo, sn.popup_style);
     wireClose(modal);
 
     // Store modal reference on snippet for card click handler

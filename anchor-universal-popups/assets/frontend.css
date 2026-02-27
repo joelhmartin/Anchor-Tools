@@ -86,6 +86,114 @@
 }
 
 /* ==========================================================================
+   Popup Style Variants
+   ========================================================================== */
+
+/* ── Theater (fullscreen) ── */
+.up-style-theater .up-modal__dialog {
+  width: 100vw;
+  max-height: 100vh;
+  border-radius: 0;
+  top: 0;
+  transform: none;
+  height: 100vh;
+}
+.up-style-theater .up-modal__frame {
+  flex: 1 1 auto;
+  aspect-ratio: auto;
+}
+.up-style-theater .up-content-wrap {
+  width: 100vw;
+  max-height: 100vh;
+  border-radius: 0;
+  top: 0;
+  transform: none;
+  height: 100vh;
+}
+.up-style-theater .up-content__inner {
+  max-height: calc(100vh - 48px);
+}
+
+/* ── Drawer (right) ── */
+.up-style-drawer-right .up-modal__dialog,
+.up-style-drawer-right .up-content-wrap {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  width: min(480px, 90vw);
+  max-height: 100vh;
+  height: 100vh;
+  margin: 0;
+  border-radius: 0;
+  transform: translateX(100%);
+  animation: up-slide-left .3s ease forwards;
+}
+.up-style-drawer-right .up-content__inner {
+  max-height: calc(100vh - 48px);
+}
+.up-style-drawer-right .up-modal__frame {
+  aspect-ratio: auto;
+  max-height: 50vh;
+}
+
+/* ── Drawer (left) ── */
+.up-style-drawer-left .up-modal__dialog,
+.up-style-drawer-left .up-content-wrap {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: auto;
+  bottom: 0;
+  width: min(480px, 90vw);
+  max-height: 100vh;
+  height: 100vh;
+  margin: 0;
+  border-radius: 0;
+  transform: translateX(-100%);
+  animation: up-slide-right .3s ease forwards;
+}
+.up-style-drawer-left .up-content__inner {
+  max-height: calc(100vh - 48px);
+}
+.up-style-drawer-left .up-modal__frame {
+  aspect-ratio: auto;
+  max-height: 50vh;
+}
+
+/* ── Drawer (bottom) ── */
+.up-style-drawer-bottom .up-modal__dialog,
+.up-style-drawer-bottom .up-content-wrap {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  top: auto;
+  width: 100%;
+  max-height: 80vh;
+  height: auto;
+  margin: 0;
+  border-radius: 12px 12px 0 0;
+  transform: translateY(100%);
+  animation: up-slide-up .3s ease forwards;
+}
+.up-style-drawer-bottom .up-content__inner {
+  max-height: calc(80vh - 48px);
+}
+
+/* ── Animations ── */
+@keyframes up-slide-left {
+  to { transform: translateX(0); }
+}
+@keyframes up-slide-right {
+  to { transform: translateX(0); }
+}
+@keyframes up-slide-up {
+  to { transform: translateY(0); }
+}
+
+/* ==========================================================================
    Video Card (shortcode-rendered clickable card)
    ========================================================================== */
 

@@ -86,6 +86,7 @@ class Anchor_Universal_Popups_Module {
             'video_id' => '',               // id for youtube or vimeo (derived from URL or legacy)
             'aspect_ratio' => '16:9',       // thumbnail aspect ratio
             'thumb_size' => 'maxres',       // maxres (1280x720), high (480x360), medium (320x180), default (120x90)
+            'custom_thumb' => '',           // custom thumbnail URL from media library (overrides auto-fetched)
             'tile_style' => 'card',         // card, minimal, overlay, cinematic
             'theme' => 'dark',              // dark, light, auto
             'show_title' => '1',            // 0 or 1
@@ -95,6 +96,7 @@ class Anchor_Universal_Popups_Module {
             'hover_effect' => 'lift',       // lift, zoom, glow, none
             'play_button_style' => 'circle', // circle, square, youtube, minimal, none
             'border_radius' => '12',        // 0-32
+            'popup_style' => 'modal',       // modal, theater, drawer-right, drawer-left, drawer-bottom
             'autoplay' => '0',              // 0 or 1 for video popups
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
@@ -389,6 +391,23 @@ class Anchor_Universal_Popups_Module {
               <p class="description">Thumbnail image quality. Lower resolutions load faster.</p>
             </div>
 
+            <div class="up-field" data-up-show-when-mode="video">
+              <label><strong>Custom Thumbnail</strong></label>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <input type="text" name="up_custom_thumb" id="up_custom_thumb" value="<?php echo esc_attr($m['custom_thumb']); ?>" class="widefat" placeholder="No custom thumbnail — uses auto-fetched" style="flex:1; min-width:200px;" />
+                <button type="button" class="button" id="up_custom_thumb_btn"><?php esc_html_e( 'Choose Image', 'anchor-schema' ); ?></button>
+                <button type="button" class="button" id="up_custom_thumb_clear" <?php echo $m['custom_thumb'] ? '' : 'style="display:none;"'; ?>><?php esc_html_e( 'Remove', 'anchor-schema' ); ?></button>
+              </div>
+              <?php if ( $m['custom_thumb'] ) : ?>
+              <div id="up_custom_thumb_preview" style="margin-top:8px;">
+                <img src="<?php echo esc_url($m['custom_thumb']); ?>" style="max-width:100%; max-height:120px; border-radius:6px; border:1px solid #ddd;" />
+              </div>
+              <?php else : ?>
+              <div id="up_custom_thumb_preview" style="margin-top:8px;"></div>
+              <?php endif; ?>
+              <p class="description">Overrides the auto-fetched video thumbnail. Leave empty to use the default.</p>
+            </div>
+
             <div data-up-show-when-mode="video">
               <h4 style="margin:12px 0 8px;">Card Appearance</h4>
 
@@ -511,6 +530,16 @@ class Anchor_Universal_Popups_Module {
             .up-color-row input[type="text"]{ flex:1; }
           </style>
 
+          <label><strong>Popup Style</strong></label>
+          <select name="up_popup_style" id="up_popup_style">
+            <option value="modal" <?php selected($m['popup_style'], 'modal'); ?>>Modal (centered)</option>
+            <option value="theater" <?php selected($m['popup_style'], 'theater'); ?>>Theater (fullscreen)</option>
+            <option value="drawer-right" <?php selected($m['popup_style'], 'drawer-right'); ?>>Drawer (right)</option>
+            <option value="drawer-left" <?php selected($m['popup_style'], 'drawer-left'); ?>>Drawer (left)</option>
+            <option value="drawer-bottom" <?php selected($m['popup_style'], 'drawer-bottom'); ?>>Drawer (bottom)</option>
+          </select>
+          <p class="description">How the popup appears. Theater fills the screen. Drawers slide in from an edge.</p>
+
           <label>Close Icon Color</label>
           <div class="up-color-row">
             <input type="color" id="up_close_color_picker" value="<?php echo esc_attr($m['close_color']); ?>" />
@@ -590,10 +619,10 @@ class Anchor_Universal_Popups_Module {
         if (!current_user_can('edit_post', $post_id)) return;
 
         $fields = [
-            'mode','video_url','video_id','aspect_ratio','thumb_size',
+            'mode','video_url','video_id','aspect_ratio','thumb_size','custom_thumb',
             'tile_style','theme','show_title','title_position','show_duration','show_channel',
             'hover_effect','play_button_style','border_radius',
-            'autoplay','close_color',
+            'popup_style','autoplay','close_color',
             'html','shortcode','css','js',
             'trigger_type','trigger_value','delay_ms',
             'frequency_mode','cooldown_minutes',
@@ -733,7 +762,7 @@ class Anchor_Universal_Popups_Module {
                 // Fetch metadata
                 if ($provider && $video_id) {
                     $meta = $this->fetch_video_meta($provider, $video_id, $m['thumb_size']);
-                    $video_thumb = $meta['thumb'];
+                    $video_thumb = ! empty( $m['custom_thumb'] ) ? $m['custom_thumb'] : $meta['thumb'];
                     $video_title = $meta['title'];
                     $video_duration = $meta['duration'];
                     $video_channel = $meta['channel'];
@@ -752,6 +781,7 @@ class Anchor_Universal_Popups_Module {
                 'video_duration' => $video_duration,
                 'video_channel' => $video_channel,
                 'aspect_ratio' => $aspect_ratio,
+                'popup_style' => $m['popup_style'] ?: 'modal',
                 'autoplay' => ($m['autoplay'] === '1'),
                 'close_color' => $m['close_color'],
                 'html' => $m['html'],
@@ -777,8 +807,9 @@ class Anchor_Universal_Popups_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.1.0');
-            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.1.0', true);
+            wp_enqueue_media();
+            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], '1.2.0');
+            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], '1.2.0', true);
         }
     }
 
@@ -854,7 +885,7 @@ class Anchor_Universal_Popups_Module {
 
         // Fetch metadata
         $meta = $this->fetch_video_meta($provider, $video_id, $m['thumb_size']);
-        $thumb = $meta['thumb'];
+        $thumb = ! empty( $m['custom_thumb'] ) ? $m['custom_thumb'] : $meta['thumb'];
         $title = $meta['title'];
         $duration = $meta['duration'];
         $channel = $meta['channel'];

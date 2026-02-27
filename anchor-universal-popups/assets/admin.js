@@ -126,5 +126,40 @@
       $('#up_html,#up_shortcode,#up_css,#up_js').on('input', applyPreview);
     }
     applyPreview();
+
+    // ── Custom Thumbnail Media Picker ──
+    var upMediaFrame;
+    $('#up_custom_thumb_btn').on('click', function(e){
+      e.preventDefault();
+      if (upMediaFrame) {
+        upMediaFrame.open();
+        return;
+      }
+      upMediaFrame = wp.media({
+        title: 'Choose Custom Thumbnail',
+        button: { text: 'Use This Image' },
+        multiple: false,
+        library: { type: 'image' }
+      });
+      upMediaFrame.on('select', function(){
+        var attachment = upMediaFrame.state().get('selection').first().toJSON();
+        var url = attachment.url;
+        // Prefer 'large' size if available, fall back to full
+        if (attachment.sizes && attachment.sizes.large) {
+          url = attachment.sizes.large.url;
+        }
+        $('#up_custom_thumb').val(url);
+        $('#up_custom_thumb_preview').html('<img src="' + url + '" style="max-width:100%; max-height:120px; border-radius:6px; border:1px solid #ddd;" />');
+        $('#up_custom_thumb_clear').show();
+      });
+      upMediaFrame.open();
+    });
+
+    $('#up_custom_thumb_clear').on('click', function(e){
+      e.preventDefault();
+      $('#up_custom_thumb').val('');
+      $('#up_custom_thumb_preview').empty();
+      $(this).hide();
+    });
   });
 })(jQuery);

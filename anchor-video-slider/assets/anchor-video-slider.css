@@ -624,9 +624,14 @@
 
 .avg-theater {
   position: fixed;
-  inset: 0;
+  inset: 5%;
   z-index: 999999;
+  max-width: 90vw;
+  max-height: 90vh;
+  margin: auto;
   background: #000;
+  border-radius: 8px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.85);
   display: flex;
   flex-direction: column;
 }

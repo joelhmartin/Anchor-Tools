@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.4.98
+ * Version: 3.4.99
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -43,6 +43,9 @@ if ( ! class_exists( 'Anchor_Schema_Logger' ) ) {
 }
 if ( ! class_exists( 'Anchor_Schema_Helper' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-schema-helper.php';
+}
+if ( ! class_exists( 'Anchor_Settings_Page' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-settings-page.php';
 }
 if ( ! class_exists( 'Anchor_Schema_Admin' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-schema-admin.php';
@@ -108,6 +111,9 @@ add_action(
 add_action(
     'plugins_loaded',
     function() {
+        if ( is_admin() && class_exists( 'Anchor_Settings_Page' ) ) {
+            new Anchor_Settings_Page();
+        }
         if ( is_admin() && class_exists( 'Anchor_Schema_Admin' ) ) {
             new Anchor_Schema_Admin();
         }

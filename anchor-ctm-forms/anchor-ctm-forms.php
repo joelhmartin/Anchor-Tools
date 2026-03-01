@@ -30,7 +30,7 @@ class Anchor_CTM_Forms_Module {
 
     public function __construct() {
         add_action( 'init', [ $this, 'register_cpt' ] );
-        add_action( 'admin_menu', [ $this, 'admin_menu' ] );
+        add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 30 );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'add_meta_boxes', [ $this, 'add_variant_metabox' ] );
         add_action( 'save_post_ctm_form_variant', [ $this, 'save_variant' ] );
@@ -95,26 +95,12 @@ class Anchor_CTM_Forms_Module {
     }
 
     /* ========================= Settings ========================= */
-    public function admin_menu() {
-        $parent = apply_filters( 'anchor_ctm_forms_parent_menu_slug', 'options-general.php' );
-        if ( 'options-general.php' === $parent ) {
-            add_options_page(
-                __( 'CTM Forms', 'anchor-schema' ),
-                __( 'CTM Forms', 'anchor-schema' ),
-                'manage_options',
-                'anchor-ctm-forms',
-                [ $this, 'settings_page' ]
-            );
-        } else {
-            add_submenu_page(
-                $parent,
-                __( 'CTM Forms', 'anchor-schema' ),
-                __( 'CTM Forms', 'anchor-schema' ),
-                'manage_options',
-                'anchor-ctm-forms',
-                [ $this, 'settings_page' ]
-            );
-        }
+    public function register_tab( $tabs ) {
+        $tabs['ctm_forms'] = [
+            'label'    => __( 'CTM Forms', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
     }
 
     public function register_settings() {
@@ -258,16 +244,13 @@ class Anchor_CTM_Forms_Module {
         return wp_parse_args( get_option( self::OPTION_KEY, [] ), $defaults );
     }
 
-    public function settings_page() {
+    public function render_tab_content() {
         ?>
-        <div class="wrap">
-            <h1><?php esc_html_e( 'CTM Forms Settings', 'anchor-schema' ); ?></h1>
-            <form method="post" action="options.php">
-                <?php settings_fields( 'anchor_ctm_forms_group' ); ?>
-                <?php do_settings_sections( 'anchor-ctm-forms' ); ?>
-                <?php submit_button(); ?>
-            </form>
-        </div>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'anchor_ctm_forms_group' ); ?>
+            <?php do_settings_sections( 'anchor-ctm-forms' ); ?>
+            <?php submit_button(); ?>
+        </form>
         <?php
     }
 

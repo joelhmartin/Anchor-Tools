@@ -29,7 +29,7 @@ class Anchor_Optimize_Settings {
     ];
 
     public function __construct() {
-        add_action( 'admin_menu', [ $this, 'add_settings_page' ] );
+        add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 80 );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
     }
@@ -63,18 +63,17 @@ class Anchor_Optimize_Settings {
        Admin Menu & Assets
        ──────────────────────────────────────────────────────── */
 
-    public function add_settings_page() {
-        add_options_page(
-            __( 'Anchor Optimize', 'anchor-schema' ),
-            __( 'Anchor Optimize', 'anchor-schema' ),
-            'manage_options',
-            self::PAGE_SLUG,
-            [ $this, 'render_page' ]
-        );
+    public function register_tab( $tabs ) {
+        $tabs['optimize'] = [
+            'label'    => __( 'Optimize', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
     }
 
     public function enqueue_assets( $hook ) {
-        if ( 'settings_page_' . self::PAGE_SLUG !== $hook ) {
+        if ( 'settings_page_anchor-schema' !== $hook
+            || ! isset( $_GET['tab'] ) || $_GET['tab'] !== 'optimize' ) {
             return;
         }
         wp_enqueue_style(
@@ -380,21 +379,18 @@ class Anchor_Optimize_Settings {
        Settings Page Render
        ──────────────────────────────────────────────────────── */
 
-    public function render_page() {
+    public function render_tab_content() {
         if ( ! current_user_can( 'manage_options' ) ) {
             return;
         }
         ?>
-        <div class="wrap">
-            <h1><?php esc_html_e( 'Anchor Optimize', 'anchor-schema' ); ?></h1>
-            <form method="post" action="options.php">
-                <?php
-                settings_fields( 'anchor_optimize_group' );
-                do_settings_sections( self::PAGE_SLUG );
-                submit_button();
-                ?>
-            </form>
-        </div>
+        <form method="post" action="options.php">
+            <?php
+            settings_fields( 'anchor_optimize_group' );
+            do_settings_sections( self::PAGE_SLUG );
+            submit_button();
+            ?>
+        </form>
         <?php
     }
 }

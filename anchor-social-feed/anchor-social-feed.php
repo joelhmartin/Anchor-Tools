@@ -20,7 +20,7 @@ class Anchor_Social_Feed_Module {
         add_action('save_post',             [$this, 'save_meta'], 10, 2);
         add_action('admin_enqueue_scripts', [$this, 'admin_enqueue']);
         add_action('wp_enqueue_scripts',    [$this, 'frontend_enqueue']);
-        add_action('admin_menu',            [$this, 'add_credentials_page']);
+        add_filter('anchor_settings_tabs',   [$this, 'register_tab'], 70);
 
         add_shortcode('social_feed',        [$this, 'shortcode_handler']);
         add_shortcode('anchor_social_feed', [$this, 'shortcode_handler']);
@@ -129,18 +129,15 @@ class Anchor_Social_Feed_Module {
        Global Credentials Page
        ══════════════════════════════════════════════════════════ */
 
-    public function add_credentials_page() {
-        add_submenu_page(
-            'edit.php?post_type=' . self::CPT,
-            __('API Credentials', 'anchor-schema'),
-            __('API Credentials', 'anchor-schema'),
-            'manage_options',
-            'asf-credentials',
-            [$this, 'render_credentials_page']
-        );
+    public function register_tab( $tabs ) {
+        $tabs['social_feed'] = [
+            'label'    => __( 'Social Feed', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
     }
 
-    public function render_credentials_page() {
+    public function render_tab_content() {
         if (!current_user_can('manage_options')) return;
 
         if (isset($_POST['asf_creds_nonce']) && wp_verify_nonce($_POST['asf_creds_nonce'], 'asf_save_creds')) {
@@ -158,10 +155,8 @@ class Anchor_Social_Feed_Module {
 
         $creds = get_option(self::GLOBAL_OPT, []);
         ?>
-        <div class="wrap">
-            <h1><?php esc_html_e('Social Feed API Credentials', 'anchor-schema'); ?></h1>
-            <p><?php esc_html_e('These credentials are shared across all Social Feed posts. YouTube API key is managed in the main Anchor Tools settings.', 'anchor-schema'); ?></p>
-            <form method="post">
+            <p><?php esc_html_e('These credentials are shared across all Social Feed posts. YouTube API key is managed in the General tab.', 'anchor-schema'); ?></p>
+            <form method="post" action="<?php echo esc_url( add_query_arg( [ 'page' => 'anchor-schema', 'tab' => 'social_feed' ], admin_url( 'options-general.php' ) ) ); ?>">
                 <?php wp_nonce_field('asf_save_creds', 'asf_creds_nonce'); ?>
                 <h2><?php esc_html_e('Facebook & Instagram Graph API', 'anchor-schema'); ?></h2>
                 <p class="description"><?php esc_html_e('Provide your App credentials and a User Access Token. The token is automatically exchanged for a long-lived Page token. Instagram is resolved from the linked Page.', 'anchor-schema'); ?></p>
@@ -200,7 +195,6 @@ class Anchor_Social_Feed_Module {
                 </tbody></table>
                 <?php submit_button(__('Save Credentials', 'anchor-schema')); ?>
             </form>
-        </div>
         <?php
     }
 

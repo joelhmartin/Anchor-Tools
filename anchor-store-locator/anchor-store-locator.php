@@ -20,7 +20,7 @@ class Module {
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         if ( \is_admin() ) {
-            \add_action( 'admin_menu', [ $this, 'register_settings_page' ] );
+            \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 60 );
             \add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
             \add_action( 'admin_post_anchor_store_locator_create', [ $this, 'handle_store_creation' ] );
             \add_action( 'wp_ajax_anchor_store_locator_place_search', [ $this, 'ajax_place_search' ] );
@@ -214,18 +214,17 @@ class Module {
         }
     }
 
-    public function register_settings_page() {
-        \add_options_page(
-            \__( 'Anchor Store Locator', 'anchor-schema' ),
-            \__( 'Store Locator', 'anchor-schema' ),
-            'manage_options',
-            'anchor-store-locator',
-            [ $this, 'render_settings_page' ]
-        );
+    public function register_tab( $tabs ) {
+        $tabs['store_locator'] = [
+            'label'    => \__( 'Store Locator', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
     }
 
     public function enqueue_admin_assets( $hook ) {
-        $is_settings = ( $hook === 'settings_page_anchor-store-locator' );
+        $is_settings = ( $hook === 'settings_page_anchor-schema' )
+            && isset( $_GET['tab'] ) && $_GET['tab'] === 'store_locator';
         $is_post_editor = in_array( $hook, [ 'post.php', 'post-new.php' ], true )
             && \get_post_type() === self::CPT;
 
@@ -265,15 +264,14 @@ class Module {
         ] );
     }
 
-    public function render_settings_page() {
+    public function render_tab_content() {
         if ( ! \current_user_can( 'manage_options' ) ) {
             return;
         }
 
         $api_key = $this->get_google_api_key();
         ?>
-        <div class="wrap anchor-store-locator-admin">
-            <h1><?php echo \esc_html__( 'Store Locator', 'anchor-schema' ); ?></h1>
+        <div class="anchor-store-locator-admin">
             <p class="description"><?php echo \esc_html__( 'Search live Google listings, populate store fields, and create Store Location drafts.', 'anchor-schema' ); ?></p>
 
             <?php if ( ! $api_key ) : ?>
@@ -586,7 +584,8 @@ class Module {
         $url = \add_query_arg(
             \array_merge(
                 [
-                    'page' => 'anchor-store-locator',
+                    'page' => 'anchor-schema',
+                    'tab'  => 'store_locator',
                     'anchor_store_notice' => $notice,
                 ],
                 $args

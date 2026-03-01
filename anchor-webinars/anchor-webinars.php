@@ -20,7 +20,7 @@ class Module {
         \add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
 
-        \add_action( 'admin_menu', [ $this, 'register_settings_page' ] );
+        \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 50 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
         \add_action( 'admin_menu', [ $this, 'register_analytics_page' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
@@ -187,14 +187,12 @@ class Module {
         }
     }
 
-    public function register_settings_page() {
-        \add_options_page(
-            \__( 'Anchor Webinars Settings', 'anchor-schema' ),
-            \__( 'Anchor Webinars', 'anchor-schema' ),
-            'manage_options',
-            'anchor-webinars',
-            [ $this, 'render_settings_page' ]
-        );
+    public function register_tab( $tabs ) {
+        $tabs['webinars'] = [
+            'label'    => \__( 'Webinars', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
     }
 
     public function register_analytics_page() {
@@ -232,13 +230,12 @@ class Module {
         ];
     }
 
-    public function render_settings_page() {
-        echo '<div class="wrap"><h1>' . \esc_html__( 'Anchor Webinars Settings', 'anchor-schema' ) . '</h1>';
+    public function render_tab_content() {
         echo '<form method="post" action="options.php">';
         \settings_fields( 'anchor_webinars_group' );
         \do_settings_sections( 'anchor_webinars_settings' );
         \submit_button();
-        echo '</form></div>';
+        echo '</form>';
     }
 
     public function render_analytics_page() {

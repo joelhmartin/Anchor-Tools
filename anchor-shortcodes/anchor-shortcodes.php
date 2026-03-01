@@ -11,7 +11,7 @@ class Anchor_Shortcodes_Module {
     const PAGE_SLUG = 'anchor-shortcodes';
 
     public function __construct() {
-        add_action( 'admin_menu', [ $this, 'add_settings_page' ] );
+        add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 20 );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'init', [ $this, 'register_static_shortcodes' ] );
         add_action( 'init', [ $this, 'register_custom_shortcodes' ] );
@@ -19,29 +19,12 @@ class Anchor_Shortcodes_Module {
     }
 
     /* ---------------- Admin UI ---------------- */
-    public function add_settings_page() {
-        $parent = apply_filters( 'anchor_shortcodes_parent_menu_slug', 'options-general.php' );
-        $menu_title = apply_filters( 'anchor_shortcodes_menu_title', __( 'Anchor Shortcodes', 'anchor-tools' ) );
-        $callback = [ $this, 'render_settings_page' ];
-
-        if ( 'options-general.php' === $parent ) {
-            add_options_page(
-                __( 'Anchor Shortcodes', 'anchor-tools' ),
-                $menu_title,
-                'manage_options',
-                self::PAGE_SLUG,
-                $callback
-            );
-        } else {
-            add_submenu_page(
-                $parent,
-                __( 'Anchor Shortcodes', 'anchor-tools' ),
-                $menu_title,
-                'manage_options',
-                self::PAGE_SLUG,
-                $callback
-            );
-        }
+    public function register_tab( $tabs ) {
+        $tabs['shortcodes'] = [
+            'label'    => __( 'Shortcodes', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
     }
 
     public function register_settings() {
@@ -249,43 +232,38 @@ $fields = [
         }
     }
 
-    public function render_settings_page() {
+    public function render_tab_content() {
         ?>
-        <div class="wrap">
-            <h1><?php esc_html_e( 'Anchor Shortcodes', 'anchor-tools' ); ?></h1>
-            <form method="post" action="options.php">
-                <?php settings_fields( 'anchor_shortcodes_group' ); ?>
-                <?php do_settings_sections( self::PAGE_SLUG ); ?>
-                <?php submit_button(); ?>
-            </form>
-            <hr>
-            <h2>Available Default Shortcodes</h2>
-            <ul>
-                <li><code>[current_year]</code></li>
-                <li><code>[site_title]</code></li>
-                <li><code>[site_image_url]</code></li>
-                <li><code>[site_icon_url]</code></li>
-                <li><code>[site_image_horizontal]</code></li>
-                <li><code>[site_image_horizontal_white]</code></li>
-                <li><code>[site_image_white]</code></li>
-                <li><code>[business_name]</code></li>
-                <li><code>[address]</code></li>
-                <li><code>[phone]</code></li>
-                <li><code>[phone_href]</code></li>
-                <li><code>[email]</code></li>
-                <li><code>[business_hours]</code></li>
-            </ul>
-        </div>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'anchor_shortcodes_group' ); ?>
+            <?php do_settings_sections( self::PAGE_SLUG ); ?>
+            <?php submit_button(); ?>
+        </form>
+        <hr>
+        <h2>Available Default Shortcodes</h2>
+        <ul>
+            <li><code>[current_year]</code></li>
+            <li><code>[site_title]</code></li>
+            <li><code>[site_image_url]</code></li>
+            <li><code>[site_icon_url]</code></li>
+            <li><code>[site_image_horizontal]</code></li>
+            <li><code>[site_image_horizontal_white]</code></li>
+            <li><code>[site_image_white]</code></li>
+            <li><code>[business_name]</code></li>
+            <li><code>[address]</code></li>
+            <li><code>[phone]</code></li>
+            <li><code>[phone_href]</code></li>
+            <li><code>[email]</code></li>
+            <li><code>[business_hours]</code></li>
+        </ul>
         <?php
     }
     public function admin_inline_js() {
         $screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
-        $allowed_ids = [
-            'settings_page_' . self::PAGE_SLUG,      // when parent is options-general.php
-            'anchor-tools_page_' . self::PAGE_SLUG,  // if parent slug is anchor-tools
-            self::PAGE_SLUG,                         // fallback
-        ];
-        if ( ! $screen || ! in_array( $screen->id, $allowed_ids, true ) ) {
+        $is_shortcodes_tab = $screen
+            && $screen->id === 'settings_page_anchor-schema'
+            && isset( $_GET['tab'] ) && $_GET['tab'] === 'shortcodes';
+        if ( ! $is_shortcodes_tab ) {
             return;
         }
         ?>

@@ -36,7 +36,7 @@ class Anchor_Post_Display_Module {
 
     public function __construct() {
         // Admin.
-        add_action( 'admin_menu',            [ $this, 'add_settings_page' ] );
+        add_filter( 'anchor_settings_tabs',  [ $this, 'register_tab' ], 90 );
         add_action( 'admin_init',            [ $this, 'register_settings' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
 
@@ -72,16 +72,12 @@ class Anchor_Post_Display_Module {
        Admin — Settings page
        ================================================================ */
 
-    public function add_settings_page() {
-        $parent = apply_filters( 'anchor_post_display_parent_menu_slug', 'options-general.php' );
-        add_submenu_page(
-            $parent,
-            __( 'Anchor Post Display', 'anchor-schema' ),
-            __( 'Anchor Post Display', 'anchor-schema' ),
-            'manage_options',
-            self::PAGE_SLUG,
-            [ $this, 'render_settings_page' ]
-        );
+    public function register_tab( $tabs ) {
+        $tabs['post_display'] = [
+            'label'    => __( 'Post Display', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
     }
 
     public function register_settings() {
@@ -160,21 +156,18 @@ class Anchor_Post_Display_Module {
         return $clean;
     }
 
-    public function render_settings_page() {
+    public function render_tab_content() {
         ?>
-        <div class="wrap">
-            <h1><?php esc_html_e( 'Anchor Post Display', 'anchor-schema' ); ?></h1>
-            <form method="post" action="options.php">
-                <?php
-                settings_fields( 'anchor_post_display_group' );
-                do_settings_sections( self::PAGE_SLUG );
-                submit_button();
-                ?>
-            </form>
-            <hr>
-            <h2><?php esc_html_e( 'Shortcode Reference', 'anchor-schema' ); ?></h2>
-            <?php $this->render_shortcode_reference(); ?>
-        </div>
+        <form method="post" action="options.php">
+            <?php
+            settings_fields( 'anchor_post_display_group' );
+            do_settings_sections( self::PAGE_SLUG );
+            submit_button();
+            ?>
+        </form>
+        <hr>
+        <h2><?php esc_html_e( 'Shortcode Reference', 'anchor-schema' ); ?></h2>
+        <?php $this->render_shortcode_reference(); ?>
         <?php
     }
 
@@ -234,7 +227,8 @@ class Anchor_Post_Display_Module {
     }
 
     public function admin_assets( $hook ) {
-        if ( false === strpos( $hook, self::PAGE_SLUG ) ) return;
+        if ( 'settings_page_anchor-schema' !== $hook
+            || ! isset( $_GET['tab'] ) || $_GET['tab'] !== 'post_display' ) return;
         wp_enqueue_style( 'apd-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-post-display/assets/admin.css', [], self::VERSION );
     }
 

@@ -7,7 +7,7 @@ class Anchor_Schema_Admin {
     const META_KEY   = '_anchor_schema_items';
 
     public function __construct(){
-        add_action('admin_menu', [ $this, 'add_settings_page' ]);
+        add_filter('anchor_settings_tabs', [ $this, 'register_tabs' ], 10 );
         add_action('admin_init', [ $this, 'register_settings' ]);
         add_action('add_meta_boxes', [ $this, 'register_metabox' ]);
         add_action('admin_enqueue_scripts', [ $this, 'enqueue_assets' ]);
@@ -19,21 +19,16 @@ class Anchor_Schema_Admin {
         add_action('wp_ajax_anchor_reviews_place_search', [ $this, 'ajax_reviews_place_search' ]);
     }
 
-    public function add_settings_page(){
-        add_options_page(
-            __('Anchor Tools Settings', 'anchor-schema'),
-            __('Anchor Tools', 'anchor-schema'),
-            'manage_options',
-            'anchor-schema',
-            [ $this, 'render_settings_page' ]
-        );
-        add_options_page(
-            __('Anchor Reviews Settings', 'anchor-schema'),
-            __('Anchor Reviews', 'anchor-schema'),
-            'manage_options',
-            'anchor-reviews',
-            [ $this, 'render_reviews_settings_page' ]
-        );
+    public function register_tabs( $tabs ) {
+        $tabs['general'] = [
+            'label'    => __( 'General', 'anchor-schema' ),
+            'callback' => [ $this, 'render_settings_page' ],
+        ];
+        $tabs['reviews'] = [
+            'label'    => __( 'Reviews', 'anchor-schema' ),
+            'callback' => [ $this, 'render_reviews_settings_page' ],
+        ];
+        return $tabs;
     }
 
     public function register_settings(){
@@ -273,7 +268,6 @@ class Anchor_Schema_Admin {
     }
 
     public function render_settings_page(){
-        echo '<div class="wrap"><h1>' . esc_html__('Anchor Tools Settings', 'anchor-schema') . '</h1>';
         if ( isset( $_GET['anchor_reviews_refresh'] ) ) {
             $status = sanitize_text_field( $_GET['anchor_reviews_refresh'] );
             if ( $status === 'success' ) {
@@ -287,11 +281,10 @@ class Anchor_Schema_Admin {
         settings_fields('anchor_schema_group');
         do_settings_sections('anchor_schema_settings');
         submit_button();
-        echo '</form></div>';
+        echo '</form>';
     }
 
     public function render_reviews_settings_page(){
-        echo '<div class="wrap"><h1>' . esc_html__('Anchor Reviews Settings', 'anchor-schema') . '</h1>';
         echo '<p>' . esc_html__( 'Use these shortcodes in posts, pages, or widgets to display your reviews.', 'anchor-schema' ) . '</p>';
         echo '<p><code>[anchor_reviews]</code> ' . esc_html__( 'Uses the saved Place ID from this settings page.', 'anchor-schema' ) . '</p>';
         echo '<p><code>[anchor_reviews place_id="YOUR_PLACE_ID"]</code> ' . esc_html__( 'Overrides the Place ID for a single embed.', 'anchor-schema' ) . '</p>';
@@ -309,7 +302,7 @@ class Anchor_Schema_Admin {
         settings_fields('anchor_reviews_group');
         do_settings_sections('anchor_reviews_settings');
         submit_button();
-        echo '</form></div>';
+        echo '</form>';
     }
 
     public function register_metabox(){
@@ -370,7 +363,9 @@ class Anchor_Schema_Admin {
 
     public function enqueue_assets($hook){
         $screen = function_exists('get_current_screen') ? get_current_screen() : null;
-        if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || in_array($screen->id, [ 'settings_page_anchor-schema', 'settings_page_anchor-reviews' ], true)) ) {
+        $is_settings_page = $screen && $screen->id === 'settings_page_anchor-schema';
+
+        if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || $is_settings_page) ) {
             wp_enqueue_style('anchor-schema-admin', ANCHOR_SCHEMA_URL . 'assets/admin.css', [], ANCHOR_SCHEMA_VERSION);
         }
         if ( $screen && in_array($screen->base, [ 'post', 'page' ], true) ) {
@@ -385,7 +380,9 @@ class Anchor_Schema_Admin {
                 ]
             ]);
         }
-        if ( $screen && $screen->id === 'settings_page_anchor-reviews' ) {
+        // Reviews tab assets — load via per-tab enqueue action.
+        $current_tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'general';
+        if ( $is_settings_page && $current_tab === 'reviews' ) {
             wp_enqueue_script('anchor-reviews-admin', ANCHOR_SCHEMA_URL . 'assets/reviews-admin.js', [ 'jquery' ], ANCHOR_SCHEMA_VERSION, true);
             wp_localize_script('anchor-reviews-admin', 'ANCHOR_REVIEWS', [
                 'ajax'   => admin_url('admin-ajax.php'),

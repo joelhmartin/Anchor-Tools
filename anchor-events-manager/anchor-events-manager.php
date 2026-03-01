@@ -42,7 +42,7 @@ class Module {
         \add_shortcode( 'event_calendar', [ $this, 'shortcode_event_calendar' ] );
         \add_shortcode( 'featured_events', [ $this, 'shortcode_featured_events' ] );
 
-        \add_action( 'admin_menu', [ $this, 'register_settings_page' ] );
+        \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 40 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
@@ -1199,14 +1199,12 @@ class Module {
         exit;
     }
 
-    public function register_settings_page() {
-        \add_options_page(
-            __( 'Anchor Events Settings', 'anchor-schema' ),
-            __( 'Anchor Events', 'anchor-schema' ),
-            'manage_options',
-            'anchor-events',
-            [ $this, 'render_settings_page' ]
-        );
+    public function register_tab( $tabs ) {
+        $tabs['events'] = [
+            'label'    => \__( 'Events', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
     }
 
     public function register_settings() {
@@ -1320,20 +1318,19 @@ class Module {
         return $output;
     }
 
-    public function render_settings_page() {
-        echo '<div class="wrap"><h1>' . esc_html__( 'Anchor Events Settings', 'anchor-schema' ) . '</h1>';
-        echo '<p>' . esc_html__( 'Display events with these shortcodes:', 'anchor-schema' ) . '</p>';
+    public function render_tab_content() {
+        echo '<p>' . \esc_html__( 'Display events with these shortcodes:', 'anchor-schema' ) . '</p>';
         echo '<ul style="margin-left:18px;list-style:disc;">';
-        echo '<li><code>[events_list]</code> ' . esc_html__( 'List events. Attributes: category, tag, type, status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
-        echo '<li><code>[featured_events]</code> ' . esc_html__( 'Show featured events. Attributes: limit, orderby (priority|date), order (ASC|DESC).', 'anchor-schema' ) . '</li>';
-        echo '<li><code>[event_calendar]</code> ' . esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[events_list]</code> ' . \esc_html__( 'List events. Attributes: category, tag, type, status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[featured_events]</code> ' . \esc_html__( 'Show featured events. Attributes: limit, orderby (priority|date), order (ASC|DESC).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_calendar]</code> ' . \esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '</ul>';
-        echo '<p>' . esc_html__( 'You can also link to the events archive at /event/ (or your custom slug).', 'anchor-schema' ) . '</p>';
+        echo '<p>' . \esc_html__( 'You can also link to the events archive at /event/ (or your custom slug).', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="options.php">';
         \settings_fields( 'anchor_events_group' );
         \do_settings_sections( 'anchor_events_settings' );
         \submit_button();
-        echo '</form></div>';
+        echo '</form>';
     }
 
     public function handle_settings_update( $old, $new ) {

@@ -145,6 +145,13 @@
     if (!s.successMessage)  s.successMessage = "Thanks! We'll be in touch shortly.";
     if (!s.colorScheme)     s.colorScheme = 'light';
     if (!s.colors) s.colors = {};
+    // Clean up empty-string color values (e.g. from AI-generated configs)
+    // so they don't interfere with the || fallback in renderFormSettingsContent.
+    if (s.colors && typeof s.colors === 'object') {
+      Object.keys(s.colors).forEach(function (k) {
+        if (!s.colors[k]) delete s.colors[k];
+      });
+    }
     if (s.multiStep === undefined) s.multiStep = false;
     if (s.progressBar === undefined) s.progressBar = true;
     if (s.autoAdvance === undefined) s.autoAdvance = false;

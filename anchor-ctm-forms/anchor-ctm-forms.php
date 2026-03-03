@@ -654,8 +654,6 @@ You are an AI form-building assistant for a WordPress form builder that submits 
     "multiStep": false,
     "progressBar": true,
     "autoAdvance": false,
-    "colorScheme": "light"|"dark",
-    "colors": { "bg":"","text":"","label":"","inputBg":"","inputBorder":"","inputText":"","focus":"","btnBg":"","btnText":"" },
     "titlePage": { "enabled": false, "heading": "", "description": "", "buttonText": "Get Started" },
     "scoring": { "enabled": false, "showTotal": false, "totalLabel": "Your Score", "sendAs": "custom_total_score" }
   },
@@ -1801,7 +1799,9 @@ PROMPT;
             // Save config JSON
             if ( isset( $_POST['ctm_form_config'] ) ) {
                 $raw_config = wp_unslash( $_POST['ctm_form_config'] );
-                update_post_meta( $post_id, '_ctm_form_config', $raw_config );
+                // wp_slash to counteract the wp_unslash inside update_metadata,
+                // preventing double-stripping of backslashes in JSON values.
+                update_post_meta( $post_id, '_ctm_form_config', wp_slash( $raw_config ) );
 
                 $config = json_decode( $raw_config, true );
                 if ( is_array( $config ) ) {

@@ -818,8 +818,9 @@ class Anchor_Social_Feed_Module {
         $custom_css = trim($settings['asf_custom_css'] ?? '');
         $css_block = $custom_css ? '<style>' . wp_strip_all_tags($custom_css) . '</style>' : '';
 
-        // Wrap in card
-        $out = $this->card($title, $header_html . $embed, $show_title, $handle, $profile_url, $gradient_style, $theme);
+        // Wrap in card — suppress the default card header when profile header is shown
+        $card_show_title = $show_header ? false : $show_title;
+        $out = $this->card($title, $header_html . $embed, $card_show_title, $handle, $profile_url, $gradient_style, $theme);
 
         // Footer scripts
         if (strpos($out, 'twitter-timeline') !== false) {

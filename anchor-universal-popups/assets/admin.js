@@ -34,6 +34,14 @@
     });
   }
 
+  function togglePopupStyleFields(){
+    var style = $('select[name="up_popup_style"]').val() || 'modal';
+    $('[data-up-show-when-style]').each(function(){
+      var allowed = String($(this).attr('data-up-show-when-style')).split(',').map($.trim).filter(Boolean);
+      $(this).toggle(allowed.indexOf(style) !== -1);
+    });
+  }
+
   function toggleCinematic(){
     var tileStyle = $('#up_tile_style').val() || 'card';
     var $ratio = $('#up_aspect_ratio');
@@ -87,8 +95,10 @@
   $(document).ready(function(){
     toggleTriggerFields();
     toggleModeFields();
+    togglePopupStyleFields();
     toggleCinematic();
     $(document).on('change', 'select[name="up_trigger_type"]', toggleTriggerFields);
+    $(document).on('change', 'select[name="up_popup_style"]', togglePopupStyleFields);
     $(document).on('change', 'select[name="up_mode"]', function(){
       toggleModeFields();
       applyPreview();

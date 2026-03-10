@@ -197,6 +197,9 @@
   function attach(sn){
     var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo' || sn.mode === 'video');
     var modal = buildModalShell(isVideo, sn.popup_style);
+    if (sn.popup_style === 'modal' && sn.modal_max_width) {
+      modal.style.setProperty('--up-modal-max-width', sn.modal_max_width);
+    }
     wireClose(modal);
 
     // Store modal reference on snippet for card click handler

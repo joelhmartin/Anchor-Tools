@@ -49,6 +49,10 @@ class Anchor_CTM_Forms_Module {
         add_action( 'wp_ajax_anchor_ctm_account_fields', [ $this, 'ajax_account_fields' ] );
         add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
+        /* ── Clean up FormReactor on delete ── */
+        add_action( 'before_delete_post', [ $this, 'delete_form_reactor' ], 10, 2 );
+        add_action( 'wp_trash_post',      [ $this, 'delete_form_reactor' ] );
+
         /* ── Duplicate / Export / Import ── */
         add_filter( 'post_row_actions', [ $this, 'row_actions' ], 10, 2 );
         add_action( 'admin_post_anchor_ctm_duplicate', [ $this, 'handle_duplicate' ] );
@@ -992,16 +996,21 @@ PROMPT;
     private function sync_custom_fields_to_account( $config ) {
         // Build whitelist of api_names that have registerField enabled.
         $register_names = [];
+        // Core fields handled natively by CTM — never register these at the account level.
+        $core  = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
+        // Known CTM form fields that work as reactor custom_fields but should NOT be
+        // created as account-level custom fields (causes duplicate/broken fields in CTM).
+        $skip_register = [ 'message' ];
+
         foreach ( ( $config['fields'] ?? [] ) as $f ) {
             if ( empty( $f['registerField'] ) ) {
                 continue;
             }
             $fname = $f['name'] ?? '';
-            $core  = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
             if ( ! in_array( $fname, $core, true ) ) {
                 $fname = self::sanitize_field_name( $fname );
             }
-            if ( $fname ) {
+            if ( $fname && ! in_array( $fname, $skip_register, true ) ) {
                 $register_names[ $fname ] = true;
             }
         }
@@ -1235,6 +1244,42 @@ PROMPT;
         }
 
         return new WP_Error( 'ctm_api_error', $error_msg );
+    }
+
+    /**
+     * Delete the FormReactor in CTM when a form variant is trashed or permanently deleted.
+     *
+     * @param int      $post_id Post ID.
+     * @param WP_Post  $post    Post object (only provided by before_delete_post).
+     */
+    public function delete_form_reactor( $post_id, $post = null ) {
+        if ( ! $post ) {
+            $post = get_post( $post_id );
+        }
+        if ( ! $post || $post->post_type !== 'ctm_form_variant' ) {
+            return;
+        }
+
+        $reactor_id = get_post_meta( $post_id, '_ctm_builder_reactor_id', true );
+        if ( ! $reactor_id ) {
+            $reactor_id = get_post_meta( $post_id, '_ctm_reactor_id', true );
+        }
+        if ( ! $reactor_id ) {
+            return;
+        }
+
+        $acc     = $this->account_id();
+        $headers = $this->auth_headers();
+        if ( ! $acc || ! $headers ) {
+            return;
+        }
+
+        $url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/form_reactors/" . rawurlencode( $reactor_id );
+        wp_remote_request( $url, [
+            'method'  => 'DELETE',
+            'headers' => $headers,
+            'timeout' => 15,
+        ] );
     }
 
     /**

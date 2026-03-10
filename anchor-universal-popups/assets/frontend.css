@@ -17,7 +17,8 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  width: min(960px, 92vw);
+  width: 100%;
+  max-width: var(--up-modal-max-width, min(960px, 92vw));
   max-height: min(90vh, 860px);
   margin: auto;
   top: 50%;
@@ -54,7 +55,8 @@
 .up-content-wrap {
   background: #fff;
   color: #111;
-  width: min(960px, 92vw);
+  width: 100%;
+  max-width: var(--up-modal-max-width, min(960px, 92vw));
   max-height: min(86vh, 720px);
   margin: auto;
   top: 50%;

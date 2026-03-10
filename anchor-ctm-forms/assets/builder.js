@@ -13,6 +13,10 @@
   /* ── Core field names that CTM expects ── */
   var CORE_FIELDS = ['caller_name', 'email', 'phone_number', 'phone', 'country_code'];
 
+  /* ── Fields that work as reactor custom_fields but must NOT be registered as
+       account-level custom fields (causes broken/duplicate fields in CTM). ── */
+  var SKIP_REGISTER = ['message'];
+
   /* ── Field type definitions ── */
   var FIELD_TYPES = {
     fullname:  { label: 'Full Name', icon: 'dashicons-admin-users',     group: 'input' },
@@ -894,8 +898,12 @@
   }
 
   function renderRegisterFieldRow(f) {
-    var fid = 'sf_' + uid();
     var apiName = sanitizeFieldName(f.displayName || f.name || '');
+    // Skip registration UI for fields that shouldn't be registered at account level
+    if (SKIP_REGISTER.indexOf(apiName) !== -1) {
+      return '';
+    }
+    var fid = 'sf_' + uid();
     var exists = accountFields && apiName && accountFields.hasOwnProperty(apiName);
     var html = '<div class="checkbox-row ctm-register-row">';
     html += '<input type="checkbox" id="' + fid + '" data-key="registerField"' + (f.registerField ? ' checked' : '') + ' />';
@@ -1661,6 +1669,11 @@
       if (['heading', 'paragraph', 'divider', 'score_display'].indexOf(f.type) !== -1) return;
       var apiName = sanitizeFieldName(f.displayName || f.name || '');
       if (!apiName) return;
+      if (SKIP_REGISTER.indexOf(apiName) !== -1) {
+        // Auto-clear registerField flag for fields that shouldn't be registered
+        if (f.registerField) { f.registerField = false; }
+        return;
+      }
       custom.push({ field: f, apiName: apiName });
     });
 

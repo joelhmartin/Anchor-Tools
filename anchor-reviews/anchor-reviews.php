@@ -130,6 +130,12 @@ class Anchor_Reviews_Display_Module {
                 'min' => 1, 'max' => 4,
                 'show_for_layout' => 'slider',
             ],
+            'ard_show_cta' => [
+                'type' => 'checkbox', 'label' => 'Show "Write a Review" CTA', 'default' => 0,
+            ],
+            'ard_cta_text' => [
+                'type' => 'text', 'label' => 'CTA Button Text', 'default' => 'Write us a review',
+            ],
             'ard_custom_css' => [
                 'type' => 'textarea', 'label' => 'Custom CSS', 'default' => '',
             ],
@@ -485,6 +491,11 @@ class Anchor_Reviews_Display_Module {
             echo '</div>'; // .ard-reviews
         }
 
+        // CTA block.
+        if ( intval( $s['ard_show_cta'] ) ) {
+            $this->render_cta( $cache, $s['ard_cta_text'] );
+        }
+
         echo '</div>'; // .ard-wrap
 
         return ob_get_clean();
@@ -514,6 +525,47 @@ class Anchor_Reviews_Display_Module {
             echo '<a class="ard-header-link" href="' . esc_url( $url ) . '" target="_blank" rel="noopener">View on Google</a>';
         }
         echo '</div>'; // .ard-header
+    }
+
+    private function render_cta( $cache, $button_text ) {
+        $name   = $cache['business_name'] ?? '';
+        $rating = (float) ( $cache['rating'] ?? 0 );
+        $place_id = $cache['place_id'] ?? '';
+        $btn    = trim( $button_text ) ?: 'Write us a review';
+
+        // Google review URL uses place_id.
+        $review_url = $place_id
+            ? 'https://search.google.com/local/writereview?placeid=' . urlencode( $place_id )
+            : ( $cache['business_url'] ?? '' );
+
+        if ( ! $review_url ) return;
+
+        $label = $this->rating_label( $rating );
+
+        echo '<div class="ard-cta">';
+        echo '<div class="ard-cta-inner">';
+        echo '<div class="ard-cta-info">';
+        if ( $name ) {
+            echo '<div class="ard-cta-name">' . esc_html( $name ) . '</div>';
+        }
+        echo '<div class="ard-cta-rating">';
+        echo '<span class="ard-cta-label">' . esc_html( $label ) . '</span>';
+        echo $this->render_stars( $rating );
+        echo '<span class="ard-cta-score">' . esc_html( number_format( $rating, 1 ) ) . '</span>';
+        echo '</div>';
+        echo '</div>'; // .ard-cta-info
+        echo '<a class="ard-cta-button" href="' . esc_url( $review_url ) . '" target="_blank" rel="noopener">' . esc_html( $btn ) . '</a>';
+        echo '</div>'; // .ard-cta-inner
+        echo '</div>'; // .ard-cta
+    }
+
+    private function rating_label( $rating ) {
+        if ( $rating >= 4.5 ) return 'Excellent';
+        if ( $rating >= 4.0 ) return 'Very Good';
+        if ( $rating >= 3.5 ) return 'Good';
+        if ( $rating >= 2.5 ) return 'Average';
+        if ( $rating >= 1.5 ) return 'Below Average';
+        return 'Poor';
     }
 
     private function render_card( $review, $show_date, $show_avatar, $excerpt_words ) {

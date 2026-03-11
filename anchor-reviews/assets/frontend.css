@@ -238,6 +238,61 @@ a.ard-card-name:hover {
     background: var(--ard-border);
 }
 
+/* ═══════ CTA Block ═══════ */
+
+.ard-cta {
+    margin-top: var(--ard-gap);
+    background: var(--ard-card-bg);
+    border: 1px solid var(--ard-border);
+    border-radius: var(--ard-radius);
+    padding: 20px 24px;
+}
+.ard-cta-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+.ard-cta-name {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--ard-text);
+    margin-bottom: 4px;
+}
+.ard-cta-rating {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.ard-cta-label {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ard-star-color);
+}
+.ard-cta-score {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ard-text-muted);
+}
+.ard-cta-button {
+    display: inline-block;
+    padding: 10px 22px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    background: #4285F4;
+    border-radius: 6px;
+    text-decoration: none;
+    transition: background .2s;
+    white-space: nowrap;
+}
+.ard-cta-button:hover {
+    background: #3367d6;
+    color: #fff;
+}
+
 /* ═══════ Empty / Note ═══════ */
 
 .ard-empty,

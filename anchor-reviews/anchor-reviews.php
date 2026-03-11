@@ -12,7 +12,7 @@ class Anchor_Reviews_Display_Module {
     const VERSION = '1.0.0';
 
     public function __construct() {
-        add_action( 'init',                  [ $this, 'register_cpt' ] );
+        add_action( 'init', [ $this, 'register_cpt' ] );
         add_action( 'add_meta_boxes',        [ $this, 'add_metaboxes' ] );
         add_action( 'save_post',             [ $this, 'save_meta' ], 10, 2 );
         add_action( 'admin_enqueue_scripts', [ $this, 'admin_enqueue' ] );

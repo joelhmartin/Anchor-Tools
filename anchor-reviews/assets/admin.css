@@ -1,0 +1,27 @@
+/* Anchor Reviews Display — Admin */
+
+.ard-setting-row {
+    margin-bottom: 12px;
+}
+.ard-setting-row label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.ard-setting-row select,
+.ard-setting-row .small-text {
+    width: 100%;
+    max-width: 200px;
+}
+.ard-setting-row textarea {
+    font-family: monospace;
+    font-size: 12px;
+}
+.ard-setting-row .description {
+    font-size: 12px;
+    color: #666;
+    margin-top: 2px;
+}
+.ard-cache-status {
+    font-size: 13px;
+}

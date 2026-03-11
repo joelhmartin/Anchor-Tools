@@ -11,7 +11,7 @@ class Anchor_Post_Display_Module {
 
     const OPTION_KEY = 'anchor_post_display_options';
     const PAGE_SLUG  = 'anchor-post-display';
-    const VERSION    = '1.0.0';
+    const VERSION    = '1.1.0';
 
     private $defaults = [
         'placeholder'  => 'Search...',
@@ -202,6 +202,7 @@ class Anchor_Post_Display_Module {
             [ 'no_results',        'No results found.', 'No results message' ],
             [ 'id',                '(auto)',            'HTML id for search targeting' ],
             [ 'teaser_words',      '26',                'Excerpt word limit' ],
+            [ 'fields',            '(default)',         'Comma-separated field names &amp; display order (see below)' ],
         ];
         ?>
         <h3><code>[anchor_search]</code></h3>
@@ -222,6 +223,44 @@ class Anchor_Post_Display_Module {
             <?php endforeach; ?>
             </tbody>
         </table>
+        <h3>Custom Fields (<code>fields</code> attribute)</h3>
+        <p>Use the <code>fields</code> attribute to control <strong>which fields appear</strong> on each card and <strong>in what order</strong>. Provide a comma-separated list of field names.</p>
+
+        <table class="apd-shortcode-ref widefat">
+            <thead><tr><th>Built-in Token</th><th>Renders</th></tr></thead>
+            <tbody>
+                <tr><td><code>image</code></td><td>Featured image</td></tr>
+                <tr><td><code>title</code></td><td>Post title</td></tr>
+                <tr><td><code>date</code></td><td>Publish date</td></tr>
+                <tr><td><code>type</code></td><td>Post type badge</td></tr>
+                <tr><td><code>excerpt</code></td><td>Teaser / excerpt text</td></tr>
+            </tbody>
+        </table>
+
+        <p>Any other name is looked up as an <strong>ACF field</strong> first, then as raw <code>post_meta</code>. If the field is empty or doesn&rsquo;t exist, it is silently skipped.</p>
+
+        <p><strong>ACF field types supported:</strong></p>
+        <ul style="list-style:disc;margin-left:20px;">
+            <li><strong>Image fields</strong> (array or ID return format) &mdash; rendered as an <code>&lt;img&gt;</code></li>
+            <li><strong>Text, textarea, WYSIWYG, URL, email</strong> &mdash; rendered as text content</li>
+            <li><strong>Any scalar value</strong> &mdash; rendered as-is</li>
+        </ul>
+
+        <p><strong>Examples:</strong></p>
+        <p><code>[anchor_post_grid fields="image,title,team_member_title,excerpt"]</code><br>
+        Shows the featured image, title, a custom &ldquo;Team Member Title&rdquo; ACF field, then the excerpt.</p>
+
+        <p><code>[anchor_post_grid fields="image,title,date"]</code><br>
+        Shows only the image, title, and date &mdash; no excerpt or type badge.</p>
+
+        <p><code>[anchor_post_grid fields="title,team_photo,team_member_title"]</code><br>
+        Title first, then a custom ACF image field, then a custom text field.</p>
+
+        <p>When <code>fields</code> is omitted, cards render in the default order: image &rarr; title &rarr; date/type &rarr; excerpt.</p>
+
+        <p style="margin-top:12px;"><strong>CSS targeting:</strong> Each custom field gets a class of <code>anchor-post-grid-field-{name}</code> for styling, e.g. <code>.anchor-post-grid-field-team_member_title</code>.</p>
+
+        <hr>
         <p><strong>Legacy aliases:</strong> <code>[simple_search]</code> and <code>[post_grid]</code> also work.</p>
         <?php
     }
@@ -353,6 +392,7 @@ class Anchor_Post_Display_Module {
             'no_results'       => $opts['no_results'],
             'id'               => '',
             'teaser_words'     => $opts['teaser_words'],
+            'fields'           => '',
         ], $atts, 'anchor_post_grid' );
 
         $this->enqueue_assets();
@@ -519,6 +559,17 @@ class Anchor_Post_Display_Module {
         $image_size = sanitize_text_field( $params['image_size'] );
         $word_limit = max( 1, intval( $params['teaser_words'] ) );
 
+        // Custom field order: comma-separated list of field names.
+        // Built-in tokens: image, title, date, type, excerpt.
+        // Anything else is treated as an ACF / post_meta field key.
+        $fields = array_filter( array_map( 'trim', explode( ',', $params['fields'] ?? '' ) ) );
+        $use_custom_fields = ! empty( $fields );
+
+        // Default field order when none specified (preserves legacy behavior).
+        if ( ! $use_custom_fields ) {
+            $fields = [ 'image', 'title', 'meta', 'excerpt' ];
+        }
+
         $html = '';
         while ( $query->have_posts() ) {
             $query->the_post();
@@ -527,41 +578,125 @@ class Anchor_Post_Display_Module {
 
             $html .= '<a class="anchor-post-grid-card" href="' . esc_url( get_permalink() ) . '">';
 
-            // Image.
-            if ( has_post_thumbnail() ) {
-                $html .= '<div class="anchor-post-grid-image">';
-                $html .= get_the_post_thumbnail( $pid, $image_size, [ 'alt' => esc_attr( get_the_title() ) ] );
-                $html .= '</div>';
-            }
+            $body_started = false;
 
-            $html .= '<div class="anchor-post-grid-body">';
+            foreach ( $fields as $field ) {
 
-            // Title.
-            $html .= '<h3 class="anchor-post-grid-title">' . esc_html( get_the_title() ) . '</h3>';
+                // --- Built-in: image ---
+                if ( 'image' === $field ) {
+                    if ( has_post_thumbnail() ) {
+                        $html .= '<div class="anchor-post-grid-image">';
+                        $html .= get_the_post_thumbnail( $pid, $image_size, [ 'alt' => esc_attr( get_the_title() ) ] );
+                        $html .= '</div>';
+                    }
+                    continue;
+                }
 
-            // Meta.
-            if ( $show_date || $show_type ) {
-                $html .= '<div class="anchor-post-grid-meta">';
-                if ( $show_date ) {
+                // Everything after image goes inside .body wrapper.
+                if ( ! $body_started ) {
+                    $html .= '<div class="anchor-post-grid-body">';
+                    $body_started = true;
+                }
+
+                // --- Built-in: title ---
+                if ( 'title' === $field ) {
+                    $html .= '<h3 class="anchor-post-grid-title">' . esc_html( get_the_title() ) . '</h3>';
+                    continue;
+                }
+
+                // --- Built-in: date ---
+                if ( 'date' === $field ) {
                     $html .= '<span class="anchor-post-grid-date">' . esc_html( get_the_date() ) . '</span>';
+                    continue;
                 }
-                if ( $show_type && $pto ) {
-                    $html .= '<span class="anchor-post-grid-type-badge">' . esc_html( $pto->labels->singular_name ) . '</span>';
+
+                // --- Built-in: type ---
+                if ( 'type' === $field ) {
+                    if ( $pto ) {
+                        $html .= '<span class="anchor-post-grid-type-badge">' . esc_html( $pto->labels->singular_name ) . '</span>';
+                    }
+                    continue;
                 }
-                $html .= '</div>';
+
+                // --- Built-in: meta (legacy combo of date + type) ---
+                if ( 'meta' === $field ) {
+                    if ( $show_date || $show_type ) {
+                        $html .= '<div class="anchor-post-grid-meta">';
+                        if ( $show_date ) {
+                            $html .= '<span class="anchor-post-grid-date">' . esc_html( get_the_date() ) . '</span>';
+                        }
+                        if ( $show_type && $pto ) {
+                            $html .= '<span class="anchor-post-grid-type-badge">' . esc_html( $pto->labels->singular_name ) . '</span>';
+                        }
+                        $html .= '</div>';
+                    }
+                    continue;
+                }
+
+                // --- Built-in: excerpt ---
+                if ( 'excerpt' === $field ) {
+                    $teaser = $this->get_teaser( $pid, $word_limit );
+                    if ( $teaser ) {
+                        $html .= '<p class="anchor-post-grid-excerpt">' . $teaser . '</p>';
+                    }
+                    continue;
+                }
+
+                // --- ACF / custom field (fail silently if empty) ---
+                $value = $this->get_custom_field_html( $pid, $field, $image_size );
+                if ( $value ) {
+                    $html .= $value;
+                }
             }
 
-            // Teaser.
-            $teaser = $this->get_teaser( $pid, $word_limit );
-            if ( $teaser ) {
-                $html .= '<p class="anchor-post-grid-excerpt">' . $teaser . '</p>';
+            if ( ! $body_started ) {
+                $html .= '<div class="anchor-post-grid-body">';
             }
-
             $html .= '</div>'; // .body
             $html .= '</a>';
         }
         wp_reset_postdata();
         return $html;
+    }
+
+    /**
+     * Resolve a custom / ACF field value and return HTML.
+     * Returns empty string if the field is empty or doesn't exist (fail silently).
+     */
+    private function get_custom_field_html( $post_id, $field_name, $image_size = 'medium' ) {
+        $value = null;
+
+        // Try ACF first (handles repeaters, groups, images, etc.).
+        if ( function_exists( 'get_field' ) ) {
+            $value = get_field( $field_name, $post_id );
+        }
+
+        // Fallback to raw post_meta.
+        if ( null === $value || '' === $value ) {
+            $value = get_post_meta( $post_id, $field_name, true );
+        }
+
+        if ( empty( $value ) ) {
+            return '';
+        }
+
+        $safe_class = 'anchor-post-grid-field-' . sanitize_html_class( $field_name );
+
+        // ACF image field — returns array with url/sizes, or attachment ID.
+        if ( is_array( $value ) && ! empty( $value['url'] ) ) {
+            $url = $value['sizes'][ $image_size ] ?? $value['url'];
+            return '<div class="anchor-post-grid-image ' . $safe_class . '"><img src="' . esc_url( $url ) . '" alt="' . esc_attr( $value['alt'] ?? '' ) . '" /></div>';
+        }
+        if ( is_numeric( $value ) && wp_attachment_is_image( (int) $value ) ) {
+            return '<div class="anchor-post-grid-image ' . $safe_class . '">' . wp_get_attachment_image( (int) $value, $image_size ) . '</div>';
+        }
+
+        // Scalar text / HTML value.
+        if ( is_scalar( $value ) ) {
+            return '<div class="' . $safe_class . '">' . wp_kses_post( $value ) . '</div>';
+        }
+
+        return '';
     }
 
     /* ================================================================
@@ -618,6 +753,7 @@ class Anchor_Post_Display_Module {
             'no_results'       => sanitize_text_field( $input['no_results'] ?? $opts['no_results'] ),
             'id'               => sanitize_html_class( $input['id'] ?? '' ),
             'teaser_words'     => max( 1, intval( $input['teaser_words'] ?? $opts['teaser_words'] ) ),
+            'fields'           => sanitize_text_field( $input['fields'] ?? '' ),
         ];
     }
 
@@ -638,6 +774,7 @@ class Anchor_Post_Display_Module {
             'exclude_taxonomy' => 'exclude-taxonomy',
             'exclude_terms'    => 'exclude-terms',
             'pagination' => 'pagination',
+            'fields'     => 'fields',
         ];
         foreach ( $keys as $param_key => $data_key ) {
             $val = $params[ $param_key ] ?? '';

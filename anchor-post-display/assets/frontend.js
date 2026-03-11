@@ -216,6 +216,7 @@
             exclude_taxonomy: grid.dataset.excludeTaxonomy || '',
             exclude_terms:    grid.dataset.excludeTerms    || '',
             pagination: grid.dataset.pagination || 'none',
+            fields:     grid.dataset.fields    || '',
             page:       String(page)
         };
         ajax('anchor_post_display_load', params, function (data) {

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.5.04
+ * Version: 3.5.05
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -2953,6 +2953,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Search forms and post grids with AJAX live search and pagination.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-post-display/anchor-post-display.php',
                 'class'       => 'Anchor_Post_Display_Module',
+            ],
+            'reviews_display' => [
+                'label'       => __( 'Anchor Reviews Display', 'anchor-schema' ),
+                'description' => __( 'Display Google Reviews with slider, grid, masonry, and list layouts.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-reviews/anchor-reviews.php',
+                'class'       => 'Anchor_Reviews_Display_Module',
             ],
         ];
     }

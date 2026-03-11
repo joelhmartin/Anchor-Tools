@@ -1,0 +1,272 @@
+/* ═══════════════════════════════════════════════════════
+   Anchor Reviews Display — Frontend
+   ═══════════════════════════════════════════════════════ */
+
+/* Variables */
+.ard-wrap {
+    --ard-cols-d: 3;
+    --ard-cols-t: 2;
+    --ard-cols-m: 1;
+    --ard-gap: 16px;
+    --ard-bg: #fff;
+    --ard-card-bg: #f9f9f9;
+    --ard-text: #222;
+    --ard-text-muted: #666;
+    --ard-border: #e0e0e0;
+    --ard-star-color: #fbbc05;
+    --ard-radius: 8px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.5;
+}
+
+/* Dark theme */
+.ard-theme-dark {
+    --ard-bg: #1a1a2e;
+    --ard-card-bg: #222244;
+    --ard-text: #f0f0f0;
+    --ard-text-muted: #aaa;
+    --ard-border: #333355;
+}
+
+/* ═══════ Header ═══════ */
+
+.ard-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 16px 20px;
+    margin-bottom: var(--ard-gap);
+    background: var(--ard-card-bg);
+    border: 1px solid var(--ard-border);
+    border-radius: var(--ard-radius);
+}
+.ard-header-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.ard-header-icon {
+    flex-shrink: 0;
+}
+.ard-header-name {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--ard-text);
+}
+.ard-header-rating {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.ard-header-score {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ard-text);
+}
+.ard-header-count {
+    font-size: 13px;
+    color: var(--ard-text-muted);
+}
+.ard-header-link {
+    display: inline-block;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #4285F4;
+    border: 1px solid #4285F4;
+    border-radius: 4px;
+    text-decoration: none;
+    transition: background .2s, color .2s;
+}
+.ard-header-link:hover {
+    background: #4285F4;
+    color: #fff;
+}
+
+/* ═══════ Stars ═══════ */
+
+.ard-stars {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    color: var(--ard-star-color);
+}
+.ard-star {
+    display: inline-block;
+    vertical-align: middle;
+}
+
+/* ═══════ Cards ═══════ */
+
+.ard-card {
+    background: var(--ard-card-bg);
+    border: 1px solid var(--ard-border);
+    border-radius: var(--ard-radius);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: relative;
+}
+.ard-card-author {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.ard-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+.ard-avatar-initial {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #4285F4;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+}
+.ard-card-author-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.ard-card-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--ard-text);
+    text-decoration: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+a.ard-card-name:hover {
+    text-decoration: underline;
+}
+.ard-card-date {
+    font-size: 12px;
+    color: var(--ard-text-muted);
+}
+.ard-card-stars {
+    line-height: 1;
+}
+.ard-card-text {
+    font-size: 14px;
+    color: var(--ard-text);
+    line-height: 1.6;
+}
+.ard-card-source {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    opacity: .5;
+}
+
+/* ═══════ Grid Layout ═══════ */
+
+.ard-layout-grid .ard-reviews {
+    display: grid;
+    grid-template-columns: repeat(var(--ard-cols-d), 1fr);
+    gap: var(--ard-gap);
+}
+
+/* ═══════ Masonry Layout ═══════ */
+
+.ard-layout-masonry .ard-reviews {
+    columns: var(--ard-cols-d);
+    column-gap: var(--ard-gap);
+}
+.ard-layout-masonry .ard-card {
+    break-inside: avoid;
+    margin-bottom: var(--ard-gap);
+}
+
+/* ═══════ List Layout ═══════ */
+
+.ard-layout-list .ard-reviews {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ard-gap);
+    max-width: 680px;
+}
+
+/* ═══════ Slider Layout ═══════ */
+
+.ard-slider-viewport {
+    overflow: hidden;
+    position: relative;
+}
+.ard-slider-track {
+    display: flex;
+    gap: var(--ard-gap);
+    transition: transform .4s ease;
+}
+.ard-slider-track .ard-card {
+    flex: 0 0 100%;
+    min-width: 0;
+}
+.ard-slider-nav {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 12px;
+}
+.ard-slider-prev,
+.ard-slider-next {
+    background: var(--ard-card-bg);
+    border: 1px solid var(--ard-border);
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ard-text);
+    transition: background .2s;
+}
+.ard-slider-prev:hover,
+.ard-slider-next:hover {
+    background: var(--ard-border);
+}
+
+/* ═══════ Empty / Note ═══════ */
+
+.ard-empty,
+.ard-note {
+    padding: 20px;
+    text-align: center;
+    color: #666;
+    font-style: italic;
+}
+
+/* ═══════ Responsive ═══════ */
+
+@media (max-width: 1024px) {
+    .ard-layout-grid .ard-reviews {
+        grid-template-columns: repeat(var(--ard-cols-t), 1fr);
+    }
+    .ard-layout-masonry .ard-reviews {
+        columns: var(--ard-cols-t);
+    }
+}
+@media (max-width: 640px) {
+    .ard-layout-grid .ard-reviews {
+        grid-template-columns: repeat(var(--ard-cols-m), 1fr);
+    }
+    .ard-layout-masonry .ard-reviews {
+        columns: var(--ard-cols-m);
+    }
+    .ard-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}

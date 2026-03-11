@@ -13,14 +13,10 @@ class Anchor_Quick_Edit_Module {
     const NONCE_ACTION = 'ac_yqep_nonce_action';
     const NONCE_NAME   = 'ac_yqep_nonce';
 
-    private $post_types = ['post', 'page'];
+    private $post_types = [];
 
     public function __construct() {
-        add_filter('manage_post_posts_columns', [$this, 'add_columns']);
-        add_action('manage_post_posts_custom_column', [$this, 'render_columns'], 10, 2);
-
-        add_filter('manage_page_posts_columns', [$this, 'add_columns']);
-        add_action('manage_page_posts_custom_column', [$this, 'render_columns'], 10, 2);
+        add_action('init', [$this, 'register_column_hooks'], 99);
 
         add_action('quick_edit_custom_box', [$this, 'render_quick_edit'], 10, 2);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
@@ -31,6 +27,15 @@ class Anchor_Quick_Edit_Module {
         add_action('wp_ajax_ac_yqep_set_featured', [$this, 'ajax_set_featured']);
         add_action('wp_ajax_ac_yqep_remove_featured', [$this, 'ajax_remove_featured']);
         add_action('wp_ajax_ac_yqep_generate_seo', [$this, 'ajax_generate_seo']);
+    }
+
+    public function register_column_hooks() {
+        $this->post_types = get_post_types(['public' => true], 'names');
+
+        foreach ($this->post_types as $pt) {
+            add_filter("manage_{$pt}_posts_columns", [$this, 'add_columns']);
+            add_action("manage_{$pt}_posts_custom_column", [$this, 'render_columns'], 10, 2);
+        }
     }
 
     private function get_assets_url() {
@@ -67,8 +72,18 @@ class Anchor_Quick_Edit_Module {
         }
     }
 
+    private function get_supported_post_types() {
+        if (!empty($this->post_types)) {
+            return $this->post_types;
+        }
+        return get_post_types(['public' => true], 'names');
+    }
+
     public function enqueue_admin_assets($hook) {
         if ($hook !== 'edit.php') return;
+
+        $screen = get_current_screen();
+        if (!$screen || !in_array($screen->post_type, $this->get_supported_post_types(), true)) return;
 
         $base = $this->get_assets_url();
 
@@ -85,7 +100,7 @@ class Anchor_Quick_Edit_Module {
         wp_localize_script('ac-yqep-admin', 'AC_YQEP', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce'   => wp_create_nonce(self::NONCE_ACTION),
-            'postTypes' => $this->post_types,
+            'postTypes' => array_values($this->get_supported_post_types()),
             'i18n' => [
                 'selectImage' => __('Select Featured Image', 'anchor-schema'),
                 'useImage' => __('Set as Featured Image', 'anchor-schema'),
@@ -94,7 +109,7 @@ class Anchor_Quick_Edit_Module {
     }
 
     public function render_quick_edit($column_name, $post_type) {
-        if (!in_array($post_type, $this->post_types, true)) return;
+        if (!in_array($post_type, $this->get_supported_post_types(), true)) return;
 
         // Print once per row
         if ($column_name !== 'ac_yqep_yoast_title') return;
@@ -204,7 +219,7 @@ class Anchor_Quick_Edit_Module {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
         if (!isset($_POST['ac_yqep_quick_edit_nonce']) || !wp_verify_nonce($_POST['ac_yqep_quick_edit_nonce'], 'ac_yqep_quick_edit')) return;
         if (!current_user_can('edit_post', $post_id)) return;
-        if (!in_array($post->post_type, $this->post_types, true)) return;
+        if (!in_array($post->post_type, $this->get_supported_post_types(), true)) return;
 
         if (isset($_POST[self::META_TITLE])) {
             update_post_meta($post_id, self::META_TITLE, sanitize_text_field(wp_unslash($_POST[self::META_TITLE])));

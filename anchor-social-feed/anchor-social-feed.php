@@ -538,7 +538,7 @@ class Anchor_Social_Feed_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function frontend_enqueue() {
-        wp_enqueue_style('asf-front', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-social-feed/assets/anchor-social-feed.css', [], '1.0.0');
+        wp_enqueue_style('asf-front', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-social-feed/assets/anchor-social-feed.css', [], '1.1.0');
         wp_enqueue_script('asf-front', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-social-feed/assets/anchor-social-feed.js', [], '1.0.0', true);
     }
 
@@ -1146,7 +1146,7 @@ class Anchor_Social_Feed_Module {
 
         $html = '<div class="asf-profile-header">';
         if ($avatar) {
-            $html .= '<img class="asf-profile-avatar" src="' . esc_url($avatar) . '" alt="' . esc_attr($name) . '" loading="lazy" />';
+            $html .= '<img class="asf-profile-avatar" src="' . esc_url($avatar) . '" alt="' . esc_attr($name) . '" loading="lazy" onerror="this.style.display=\'none\'" />';
         }
         $html .= '<div class="asf-profile-info">';
         if ($name) $html .= '<div class="asf-profile-name">' . esc_html($name) . '</div>';

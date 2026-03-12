@@ -489,14 +489,42 @@ a.ssfs-item {
     .asf-hover-grid {
         grid-template-columns: repeat(var(--asf-cols-mobile, 2), 1fr);
     }
+
+    /* Grid → horizontal scroll carousel on mobile */
+    .ssfs-grid {
+        display: flex;
+        gap: 12px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 8px;
+        scrollbar-width: thin;
+        scrollbar-color: #3c8a81 rgba(255, 255, 255, 0.2);
+    }
+    .ssfs-grid > * {
+        min-width: 260px;
+        flex: 0 0 80%;
+        scroll-snap-align: start;
+    }
+
+    /* Profile header: column layout on mobile */
     .asf-profile-header {
+        flex-direction: column;
+        align-items: flex-start;
         gap: 12px;
     }
     .asf-profile-avatar {
         width: 48px;
         height: 48px;
     }
+    .asf-profile-info {
+        width: 100%;
+    }
     .asf-profile-stats {
         gap: 12px;
+    }
+    .asf-follow-btn {
+        align-self: flex-start;
     }
 }

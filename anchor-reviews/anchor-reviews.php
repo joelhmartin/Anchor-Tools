@@ -7,7 +7,7 @@
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Anchor_Reviews_Display_Module {
-    const CPT     = 'anchor_review_display';
+    const CPT     = 'anchor_reviews';
     const NONCE   = 'ard_nonce';
     const VERSION = '1.0.0';
 

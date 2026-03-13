@@ -1063,6 +1063,7 @@ PROMPT;
                 'select'    => 'text',
                 'checkbox'  => 'text',
                 'radio'     => 'text',
+                'consent'   => 'text',
             ];
             $field_type = $cf['type'] ?? 'text';
             $field_type = $type_map[ $field_type ] ?? $field_type;
@@ -1147,6 +1148,7 @@ PROMPT;
                     'number'   => 'text',
                     'url'      => 'text',
                     'hidden'   => 'text',
+                    'consent'  => 'text',
                     'radio'    => 'list',
                     'select'   => 'list',
                     'checkbox' => 'checklist',

@@ -15,7 +15,7 @@
 
   /* ── Fields that work as reactor custom_fields but must NOT be registered as
        account-level custom fields (causes broken/duplicate fields in CTM). ── */
-  var SKIP_REGISTER = ['message'];
+  var SKIP_REGISTER = [];
 
   /* ── Field type definitions ── */
   var FIELD_TYPES = {

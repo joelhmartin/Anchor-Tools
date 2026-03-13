@@ -1000,7 +1000,7 @@ PROMPT;
         $core  = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
         // Known CTM form fields that work as reactor custom_fields but should NOT be
         // created as account-level custom fields (causes duplicate/broken fields in CTM).
-        $skip_register = [ 'message' ];
+        $skip_register = [];
 
         foreach ( ( $config['fields'] ?? [] ) as $f ) {
             if ( empty( $f['registerField'] ) ) {
@@ -1025,7 +1025,7 @@ PROMPT;
 
         // Filter to only the opted-in fields.
         $form_custom = array_filter( $form_custom, function( $cf ) use ( $register_names ) {
-            $api_name = self::sanitize_field_name( $cf['name'] ?? '' );
+            $api_name = $cf['api_name'] ?? self::sanitize_field_name( $cf['name'] ?? '' );
             return isset( $register_names[ $api_name ] );
         } );
 
@@ -1155,6 +1155,7 @@ PROMPT;
 
                 $cf = [
                     'name'     => $f['displayName'] ?? $f['label'] ?? ucfirst( $fname ),
+                    'api_name' => $fname,
                     'type'     => $ctm_type,
                     'required' => ! empty( $f['required'] ),
                 ];

@@ -354,13 +354,18 @@ The `visitor_sid` is the key to CTM's source attribution. When included in a for
 
 **How to capture it**:
 ```js
-// CTM's JS sets window.__ctm when ready
+// CTM WP plugin exposes __ctm.tracker.getSessionId()
 // Capture at SUBMIT TIME (not page load) because the async script may not be ready yet
 try {
-  if (window.__ctm && __ctm.config && __ctm.config.sid) {
-    attribution.visitor_sid = __ctm.config.sid;
+  if (typeof __ctm !== 'undefined' && __ctm.tracker && __ctm.tracker.getSessionId) {
+    attribution.visitor_sid = __ctm.tracker.getSessionId();
   }
 } catch(ex) {}
+// Fallback: ctm_session_id cookie set by CTM WP plugin
+if (!attribution.visitor_sid) {
+  var m = document.cookie.match(/(?:^|;\s*)ctm_session_id=([^;]+)/);
+  if (m) attribution.visitor_sid = m[1];
+}
 ```
 
 **Important**: The `visitor_sid` must be captured at submit time, not page load, because CTM's JavaScript loads asynchronously.
@@ -371,7 +376,7 @@ These are sent as **top-level keys** (NOT prefixed with `custom_`):
 
 | Field | Source | Purpose |
 |-------|--------|---------|
-| `visitor_sid` | `window.__ctm.config.sid` | CTM session ID for source attribution |
+| `visitor_sid` | `__ctm.tracker.getSessionId()` | CTM session ID for source attribution |
 | `referring_url` | `document.referrer` | Where the visitor came from |
 | `page_url` | `window.location.href` | Which page the form is on |
 | `visitor_ip` | Server-side (`X-Forwarded-For` or `REMOTE_ADDR`) | Visitor IP address |

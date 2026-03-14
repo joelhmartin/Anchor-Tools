@@ -2505,7 +2505,19 @@ PROMPT;
                 e.preventDefault();
 
                 // Capture CTM visitor SID at submit time (async script may not be ready at page load)
-                try { if (window.__ctm && __ctm.config && __ctm.config.sid) attribution.visitor_sid = __ctm.config.sid; } catch(ex) {}
+                // Primary: CTM WP plugin exposes __ctm.tracker.getSessionId()
+                try {
+                    if (typeof __ctm !== 'undefined' && __ctm.tracker && __ctm.tracker.getSessionId) {
+                        attribution.visitor_sid = __ctm.tracker.getSessionId();
+                    }
+                } catch(ex) {}
+                // Fallback: ctm_session_id cookie set by CTM WP plugin
+                if (!attribution.visitor_sid) {
+                    try {
+                        var m = document.cookie.match(/(?:^|;\s*)ctm_session_id=([^;]+)/);
+                        if (m) attribution.visitor_sid = m[1];
+                    } catch(ex) {}
+                }
 
                 var core = {};
                 var custom = {};

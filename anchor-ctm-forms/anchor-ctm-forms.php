@@ -1177,16 +1177,11 @@ PROMPT;
                 // Default to log-visible; only hide if explicitly disabled
                 $cf['log_visible'] = ! isset( $f['logVisible'] ) || ! empty( $f['logVisible'] );
 
-                // Bridge reactor field → account-level custom field when registered.
-                // save_to_custom tells CTM to write the submitted value into the
-                // account-level custom field with the given api_name, making it
-                // available as a contact variable, in reports, triggers, etc.
-                // IMPORTANT: Account-level api_name is prefixed with "cf_" to avoid
-                // colliding with the reactor field name. When names match, CTM
-                // auto-links them and removes the message from the submissions list
-                // center column display. The prefix keeps them separate so data
-                // appears in both the UI message area and the account custom fields.
-                $cf['save_to_custom'] = ! empty( $f['registerField'] ) ? 'cf_' . $fname : null;
+                // NOTE: We intentionally do NOT set save_to_custom here.
+                // When save_to_custom is set on a reactor field, CTM moves the
+                // field's display from the submissions list center column to the
+                // contact area. Instead, account-level custom fields are populated
+                // via a post-submission /modify.json call (see send_submission_to_ctm).
 
                 $custom_fields[] = $cf;
             }
@@ -2696,6 +2691,37 @@ PROMPT;
             wp_send_json_error( [ 'type' => 'server', 'message' => $res->get_error_message() ] );
         }
 
+        // Post-submission: populate account-level custom fields via /modify.json.
+        // This is done separately (not via save_to_custom on the reactor) to preserve
+        // the message display in CTM's submissions list center column.
+        $trackback_id = is_string( $res ) ? $res : '';
+        if ( $trackback_id && ! empty( $custom ) ) {
+            $form_config = get_post_meta( $variant_id, '_ctm_form_config', true );
+            $config      = is_string( $form_config ) ? json_decode( $form_config, true ) : $form_config;
+            $fields      = is_array( $config ) ? ( $config['fields'] ?? [] ) : [];
+
+            // Build the cf_* field values from submitted custom data.
+            $cf_values = [];
+            $core_names = [ 'caller_name', 'email', 'phone_number', 'phone', 'country_code' ];
+            foreach ( $fields as $f ) {
+                if ( empty( $f['registerField'] ) ) {
+                    continue;
+                }
+                $fname = $f['name'] ?? '';
+                if ( in_array( $fname, $core_names, true ) ) {
+                    continue;
+                }
+                $fname = self::sanitize_field_name( $fname );
+                if ( $fname && isset( $custom[ $fname ] ) ) {
+                    $cf_values[ 'cf_' . $fname ] = is_array( $custom[ $fname ] ) ? implode( ', ', $custom[ $fname ] ) : $custom[ $fname ];
+                }
+            }
+
+            if ( ! empty( $cf_values ) ) {
+                $this->set_call_custom_fields( $trackback_id, $cf_values );
+            }
+        }
+
         wp_send_json_success( [ 'message' => 'Success' ] );
     }
 
@@ -2781,10 +2807,64 @@ PROMPT;
                 error_log( '[Anchor CTM Forms] CTM rejected submission (HTTP ' . $code . '): ' . $err_msg );
                 return new WP_Error( 'ctm_rejected', $err_msg );
             }
-            return true;
+            // Return the trackback_id so we can look up the call for post-submission updates.
+            return $decoded['trackback_id'] ?? true;
         }
 
         error_log( '[Anchor CTM Forms] CTM API error (HTTP ' . $code . '): ' . substr( $raw, 0, 600 ) );
         return new WP_Error( 'ctm_api_error', 'CTM API error (' . $code . '): ' . substr( $raw, 0, 600 ) );
+    }
+
+    /**
+     * Set account-level custom fields on a call via CTM's /modify.json endpoint.
+     *
+     * This is called AFTER a successful form reactor submission to populate
+     * account-level custom fields without using save_to_custom on the reactor
+     * (which would remove the message from the submissions list center column).
+     *
+     * @param  string $trackback_id  Trackback ID from the submission response.
+     * @param  array  $custom_fields Associative array of cf_* field values.
+     */
+    private function set_call_custom_fields( $trackback_id, $custom_fields ) {
+        if ( empty( $custom_fields ) || empty( $trackback_id ) ) {
+            return;
+        }
+
+        $acc     = $this->account_id();
+        $headers = $this->auth_headers();
+        if ( ! $acc || ! $headers ) {
+            return;
+        }
+
+        // Search for the call by trackback_id. CTM indexes quickly but we
+        // allow a short retry window in case of delay.
+        $search_url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/calls.json?search=" . rawurlencode( $trackback_id ) . '&per_page=1';
+        $call_id    = null;
+
+        for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+            $res  = wp_remote_get( $search_url, [ 'headers' => $headers, 'timeout' => 10 ] );
+            $body = is_wp_error( $res ) ? null : json_decode( wp_remote_retrieve_body( $res ), true );
+
+            if ( ! empty( $body['calls'][0]['id'] ) ) {
+                $call_id = $body['calls'][0]['id'];
+                break;
+            }
+            if ( $attempt < 2 ) {
+                usleep( 500000 ); // 0.5s
+            }
+        }
+
+        if ( ! $call_id ) {
+            error_log( '[Anchor CTM Forms] Could not find call for trackback ' . $trackback_id . ' to set custom fields.' );
+            return;
+        }
+
+        // POST /modify.json to set account-level custom fields on the call.
+        $modify_url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/calls/{$call_id}/modify.json";
+        wp_remote_post( $modify_url, [
+            'headers' => array_merge( $headers, [ 'Content-Type' => 'application/json' ] ),
+            'timeout' => 10,
+            'body'    => wp_json_encode( [ 'custom_fields' => $custom_fields ] ),
+        ] );
     }
 }

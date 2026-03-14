@@ -1025,7 +1025,7 @@ PROMPT;
 
         // Filter to only the opted-in fields.
         $form_custom = array_filter( $form_custom, function( $cf ) use ( $register_names ) {
-            $api_name = $cf['api_name'] ?? self::sanitize_field_name( $cf['name'] ?? '' );
+            $api_name = self::sanitize_field_name( $cf['name'] ?? '' );
             return isset( $register_names[ $api_name ] );
         } );
 
@@ -1069,7 +1069,7 @@ PROMPT;
             $field_type = $type_map[ $field_type ] ?? $field_type;
 
             $result = $this->create_account_custom_field( [
-                'name'          => $cf['name'],
+                'name'          => $cf['label'] ?? ucfirst( $cf['name'] ),
                 'api_name'      => $api_name,
                 'field_type'    => $field_type,
                 'object_type'   => 'Call',
@@ -1156,8 +1156,8 @@ PROMPT;
                 $ctm_type = $ctm_type_map[ $ftype ] ?? $ftype;
 
                 $cf = [
-                    'name'     => $f['displayName'] ?? $f['label'] ?? ucfirst( $fname ),
-                    'api_name' => $fname,
+                    'name'     => $fname,
+                    'label'    => $f['displayName'] ?? $f['label'] ?? ucfirst( $fname ),
                     'type'     => $ctm_type,
                     'required' => ! empty( $f['required'] ),
                 ];

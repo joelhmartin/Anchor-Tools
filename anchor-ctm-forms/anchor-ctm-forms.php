@@ -1048,9 +1048,13 @@ PROMPT;
         }
 
         // Create each missing field individually.
+        // Account-level api_names are prefixed with "cf_" to avoid colliding with
+        // reactor field names. When they share the same name, CTM auto-links them
+        // and removes the data from the submissions list center column display.
         $errors = [];
         foreach ( $form_custom as $cf ) {
-            $api_name = self::sanitize_field_name( $cf['name'] ?? '' );
+            $base_name = self::sanitize_field_name( $cf['name'] ?? '' );
+            $api_name  = $base_name ? 'cf_' . $base_name : '';
             if ( ! $api_name || isset( $existing_names[ $api_name ] ) ) {
                 continue;
             }
@@ -1069,7 +1073,7 @@ PROMPT;
             $field_type = $type_map[ $field_type ] ?? $field_type;
 
             $result = $this->create_account_custom_field( [
-                'name'          => $cf['label'] ?? ucfirst( $cf['name'] ),
+                'name'          => $cf['label'] ?? ucfirst( $cf['name'] ?? $base_name ),
                 'api_name'      => $api_name,
                 'field_type'    => $field_type,
                 'object_type'   => 'Call',
@@ -1177,7 +1181,12 @@ PROMPT;
                 // save_to_custom tells CTM to write the submitted value into the
                 // account-level custom field with the given api_name, making it
                 // available as a contact variable, in reports, triggers, etc.
-                $cf['save_to_custom'] = ! empty( $f['registerField'] ) ? $fname : null;
+                // IMPORTANT: Account-level api_name is prefixed with "cf_" to avoid
+                // colliding with the reactor field name. When names match, CTM
+                // auto-links them and removes the message from the submissions list
+                // center column display. The prefix keeps them separate so data
+                // appears in both the UI message area and the account custom fields.
+                $cf['save_to_custom'] = ! empty( $f['registerField'] ) ? 'cf_' . $fname : null;
 
                 $custom_fields[] = $cf;
             }

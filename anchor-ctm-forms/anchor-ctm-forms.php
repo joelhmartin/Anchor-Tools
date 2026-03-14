@@ -1173,6 +1173,12 @@ PROMPT;
                 // Default to log-visible; only hide if explicitly disabled
                 $cf['log_visible'] = ! isset( $f['logVisible'] ) || ! empty( $f['logVisible'] );
 
+                // Bridge reactor field → account-level custom field when registered.
+                // save_to_custom tells CTM to write the submitted value into the
+                // account-level custom field with the given api_name, making it
+                // available as a contact variable, in reports, triggers, etc.
+                $cf['save_to_custom'] = ! empty( $f['registerField'] ) ? $fname : null;
+
                 $custom_fields[] = $cf;
             }
         }

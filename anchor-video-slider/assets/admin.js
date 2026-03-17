@@ -64,7 +64,7 @@
   }
 
   // Add an item row (video or image)
-  function addItemRow(type, url, title, attachmentId){
+  function addItemRow(type, url, title, attachmentId, thumbUrl){
     var idx = $('#avg-video-list .avg-video-row').length;
     type = type || 'video';
     var isImage = (type === 'image');
@@ -80,6 +80,7 @@
       + '<div class="avg-image-fields"'+ (!isImage ? ' style="display:none"' : '') +'>'
       + '<input type="hidden" name="avg_videos['+ idx +'][attachment_id]" value="'+ (attachmentId||0) +'" class="avg-attachment-id" />'
       + '<button type="button" class="button avg-choose-image">Choose Image</button>'
+      + (thumbUrl ? '<img src="'+ thumbUrl +'" class="avg-image-preview" />' : '')
       + '</div>'
       + '<input type="text" name="avg_videos['+ idx +'][title]" value="'+ (title||'') +'" placeholder="Optional title" class="avg-video-title" />'
       + '<button type="button" class="button avg-remove-video">&times;</button>'
@@ -87,7 +88,7 @@
     $('#avg-video-list').append(html);
   }
 
-  // Open WP Media Library picker
+  // Open WP Media Library picker (single image — for per-row "Choose Image" button)
   function openMediaPicker($row) {
     var frame = wp.media({
       title: 'Choose Image',
@@ -100,9 +101,42 @@
       var attachment = frame.state().get('selection').first().toJSON();
       var thumbUrl = attachment.sizes && attachment.sizes.thumbnail ? attachment.sizes.thumbnail.url : attachment.url;
       $row.find('.avg-attachment-id').val(attachment.id);
-      // Update or add preview image
       $row.find('.avg-image-preview').remove();
       $row.find('.avg-image-fields').append('<img src="'+ thumbUrl +'" class="avg-image-preview" />');
+    });
+
+    frame.open();
+  }
+
+  // Open WP Media Library picker (multi-select — for "+ Add Image" button)
+  function openBulkMediaPicker() {
+    var frame = wp.media({
+      title: 'Add Images',
+      library: { type: 'image' },
+      multiple: true,
+      button: { text: 'Add Selected Images' }
+    });
+
+    frame.on('select', function(){
+      var selection = frame.state().get('selection');
+
+      // Remove single empty row before adding
+      var $rows = $('#avg-video-list .avg-video-row');
+      if ($rows.length === 1) {
+        var $first = $rows.first();
+        var type = $first.find('.avg-item-type').val();
+        var hasUrl = $first.find('.avg-video-url').val().trim();
+        var hasAtt = parseInt($first.find('.avg-attachment-id').val()) > 0;
+        if ((type === 'video' && !hasUrl) || (type === 'image' && !hasAtt)) {
+          $first.remove();
+        }
+      }
+
+      selection.each(function(attachment){
+        var data = attachment.toJSON();
+        var thumbUrl = data.sizes && data.sizes.thumbnail ? data.sizes.thumbnail.url : data.url;
+        addItemRow('image', '', '', data.id, thumbUrl);
+      });
     });
 
     frame.open();
@@ -133,9 +167,9 @@
       addItemRow('video', '', '');
     });
 
-    // Add image
+    // Add image(s) via media library (multi-select)
     $('#avg-add-image').on('click', function(){
-      addItemRow('image', '', '', 0);
+      openBulkMediaPicker();
     });
 
     // Choose image via media library

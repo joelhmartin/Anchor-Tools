@@ -12,6 +12,34 @@ class Anchor_CTM_Forms_Module {
     const NONCE_ACTION  = 'anchor_ctm_forms_nonce';
     const NONCE_NAME    = 'anchor_ctm_nonce';
 
+    /** Default thank-you popup HTML used when the field is left empty. */
+    public static function default_thankyou_html() {
+        return '<div style="padding: 3rem 2.5rem;max-width: 440px;width: 100%;text-align: center">
+
+  <div style="width: 64px;height: 64px;border-radius: 50%;background: #f0faf4;align-items: center;justify-content: center;margin: 0 auto 1.5rem">
+
+  </div>
+
+  <p style="font-size: 12px;font-weight: 500;letter-spacing: 0.12em;text-transform: uppercase;color: #888;margin: 0 0 0.5rem">Message received</p>
+
+  <h2 style="font-size: 26px;font-weight: 500;color: #111111;margin: 0 0 1rem;line-height: 1.25">Thank you, {caller_name}!</h2>
+
+  <p style="font-size: 15px;color: #555555;line-height: 1.7;margin: 0 0 1.75rem">We\'ve got your info and someone from our team will be reaching out to you shortly. Keep an eye on your inbox — we\'ll be in touch soon.</p>
+
+  <div style="border-top: 1px solid #eeeeee;padding-top: 1.5rem;flex-direction: column;gap: 10px">
+    <div style="align-items: center;gap: 10px;font-size: 13px;color: #666">
+
+      Typical response time: <strong style="color: #111111;font-weight: 500">within 1 business day</strong>
+    </div>
+    <div style="align-items: center;gap: 10px;font-size: 13px;color: #666">
+
+      We may also give you a call at the number provided
+    </div>
+  </div>
+
+</div>';
+    }
+
     /** Meta keys safe to copy/export (excludes reactor IDs and fields hash). */
     private static $portable_meta_keys = [
         '_ctm_form_mode',
@@ -1590,6 +1618,9 @@ PROMPT;
             $submit_action   = get_post_meta( $post->ID, '_ctm_submit_action', true ) ?: 'message';
             $redirect_url    = get_post_meta( $post->ID, '_ctm_redirect_url', true );
             $thankyou_html   = get_post_meta( $post->ID, '_ctm_thankyou_html', true );
+            if ( $thankyou_html === '' || $thankyou_html === false ) {
+                $thankyou_html = self::default_thankyou_html();
+            }
             $success_msg     = get_post_meta( $post->ID, '_ctm_success_message', true );
             ?>
             <div class="ctm-box">
@@ -1627,7 +1658,7 @@ PROMPT;
 
                 <div id="ctm-action-popup" class="ctm-action-panel" style="<?php echo $submit_action === 'popup' ? '' : 'display:none;'; ?>">
                     <p><label><?php esc_html_e( 'Thank-You Popup HTML', 'anchor-schema' ); ?><br>
-                        <textarea name="ctm_thankyou_html" rows="8" class="large-text" placeholder="<h2>Thank you, {caller_name}!</h2>&#10;<p>We received your submission and will contact you at {email}.</p>"><?php echo esc_textarea( $thankyou_html ); ?></textarea>
+                        <textarea name="ctm_thankyou_html" rows="12" class="large-text"><?php echo esc_textarea( $thankyou_html ); ?></textarea>
                     </label></p>
                     <p class="description"><?php esc_html_e( 'Use {field_name} to insert submitted values. Available variables include all form field names (e.g. {caller_name}, {email}, {phone_number}) plus any custom fields.', 'anchor-schema' ); ?></p>
                 </div>
@@ -2044,7 +2075,20 @@ PROMPT;
             update_post_meta( $post_id, '_ctm_redirect_url', esc_url_raw( $_POST['ctm_redirect_url'] ) );
         }
         if ( isset( $_POST['ctm_thankyou_html'] ) ) {
-            update_post_meta( $post_id, '_ctm_thankyou_html', wp_kses_post( wp_unslash( $_POST['ctm_thankyou_html'] ) ) );
+            $allowed = wp_kses_allowed_html( 'post' );
+            // Allow inline SVGs in thank-you popup HTML
+            $svg_tags = [
+                'svg'      => [ 'width' => true, 'height' => true, 'viewbox' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true, 'xmlns' => true, 'class' => true, 'style' => true ],
+                'path'     => [ 'd' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true ],
+                'circle'   => [ 'cx' => true, 'cy' => true, 'r' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true ],
+                'rect'     => [ 'x' => true, 'y' => true, 'width' => true, 'height' => true, 'rx' => true, 'ry' => true, 'fill' => true, 'stroke' => true ],
+                'line'     => [ 'x1' => true, 'y1' => true, 'x2' => true, 'y2' => true, 'stroke' => true, 'stroke-width' => true ],
+                'polyline' => [ 'points' => true, 'fill' => true, 'stroke' => true, 'stroke-width' => true, 'stroke-linecap' => true, 'stroke-linejoin' => true ],
+                'polygon'  => [ 'points' => true, 'fill' => true, 'stroke' => true ],
+                'g'        => [ 'fill' => true, 'stroke' => true, 'transform' => true ],
+            ];
+            $allowed = array_merge( $allowed, $svg_tags );
+            update_post_meta( $post_id, '_ctm_thankyou_html', wp_kses( wp_unslash( $_POST['ctm_thankyou_html'] ), $allowed ) );
         }
 
     }
@@ -2438,6 +2482,9 @@ PROMPT;
         $submit_action = get_post_meta( $post_id, '_ctm_submit_action', true ) ?: 'message';
         $redirect_url  = get_post_meta( $post_id, '_ctm_redirect_url', true );
         $thankyou_html = get_post_meta( $post_id, '_ctm_thankyou_html', true );
+        if ( $thankyou_html === '' || $thankyou_html === false ) {
+            $thankyou_html = self::default_thankyou_html();
+        }
 
         // If multi-step: enqueue assets, add class to the <form> tag
         if ( $is_multi_step ) {
@@ -2660,17 +2707,26 @@ PROMPT;
                 e.preventDefault();
 
                 // Capture CTM visitor SID at submit time (async script may not be ready at page load)
-                try {
-                    if (typeof __ctm !== 'undefined' && __ctm.tracker && __ctm.tracker.getSessionId) {
-                        attribution.visitor_sid = __ctm.tracker.getSessionId();
-                    }
-                } catch(ex) {}
-                if (!attribution.visitor_sid) {
+                function getCtmSid() {
                     try {
-                        var m = document.cookie.match(/(?:^|;\s*)ctm_session_id=([^;]+)/);
-                        if (m) attribution.visitor_sid = m[1];
+                        if (typeof __ctm !== 'undefined') {
+                            if (__ctm.tracker && __ctm.tracker.getSessionId) return __ctm.tracker.getSessionId();
+                            if (__ctm.session) return __ctm.session;
+                            if (__ctm.sid) return __ctm.sid;
+                        }
                     } catch(ex) {}
+                    // Cookie fallback — try known CTM cookie names
+                    var cookieNames = ['__ctmid', '__ctm_uid', 'ctm_session_id'];
+                    for (var ci = 0; ci < cookieNames.length; ci++) {
+                        try {
+                            var re = new RegExp('(?:^|;\\s*)' + cookieNames[ci] + '=([^;]+)');
+                            var m = document.cookie.match(re);
+                            if (m) return m[1];
+                        } catch(ex) {}
+                    }
+                    return '';
                 }
+                attribution.visitor_sid = getCtmSid();
 
                 var core = {};
                 var custom = {};
@@ -2737,10 +2793,7 @@ PROMPT;
                                 doRedirect(allFields);
                                 return;
                             }
-                            if (CFG.submitAction === 'popup') {
-                                if (!CFG.thankyouHtml) {
-                                    CFG.thankyouHtml = '<h2>Thank you!</h2><p>Your submission has been received.</p>';
-                                }
+                            if (CFG.submitAction === 'popup' && CFG.thankyouHtml) {
                                 try { form.reset(); } catch(e) {}
                                 showThankyouPopup(allFields);
                                 return;
@@ -2949,7 +3002,7 @@ PROMPT;
 
         // Attribution fields — sent as top-level keys (NOT custom_ prefixed).
         // CTM recognizes these natively for session/source tracking.
-        $top_level_attr = [ 'visitor_sid', 'referring_url', 'page_url', 'visitor_ip', 'user_agent' ];
+        $top_level_attr = [ 'visitor_sid', 'referring_url', 'page_url', 'visitor_ip', 'user_agent', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'fbclid', 'msclkid' ];
         foreach ( $top_level_attr as $key ) {
             if ( ! empty( $attribution[ $key ] ) ) {
                 $body[ $key ] = $attribution[ $key ];

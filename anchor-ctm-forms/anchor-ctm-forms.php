@@ -2737,7 +2737,10 @@ PROMPT;
                                 doRedirect(allFields);
                                 return;
                             }
-                            if (CFG.submitAction === 'popup' && CFG.thankyouHtml) {
+                            if (CFG.submitAction === 'popup') {
+                                if (!CFG.thankyouHtml) {
+                                    CFG.thankyouHtml = '<h2>Thank you!</h2><p>Your submission has been received.</p>';
+                                }
                                 try { form.reset(); } catch(e) {}
                                 showThankyouPopup(allFields);
                                 return;

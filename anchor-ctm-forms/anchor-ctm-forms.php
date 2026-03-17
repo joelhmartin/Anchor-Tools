@@ -16,8 +16,8 @@ class Anchor_CTM_Forms_Module {
     public static function default_thankyou_html() {
         return '<div style="padding: 3rem 2.5rem;max-width: 440px;width: 100%;text-align: center">
 
-  <div style="width: 64px;height: 64px;border-radius: 50%;background: #f0faf4;align-items: center;justify-content: center;margin: 0 auto 1.5rem">
-
+  <div style="width: 64px;height: 64px;border-radius: 50%;background: #f0faf4;display: flex;align-items: center;justify-content: center;margin: 0 auto 1.5rem">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2a9d60" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
   </div>
 
   <p style="font-size: 12px;font-weight: 500;letter-spacing: 0.12em;text-transform: uppercase;color: #888;margin: 0 0 0.5rem">Message received</p>
@@ -26,13 +26,13 @@ class Anchor_CTM_Forms_Module {
 
   <p style="font-size: 15px;color: #555555;line-height: 1.7;margin: 0 0 1.75rem">We\'ve got your info and someone from our team will be reaching out to you shortly. Keep an eye on your inbox — we\'ll be in touch soon.</p>
 
-  <div style="border-top: 1px solid #eeeeee;padding-top: 1.5rem;flex-direction: column;gap: 10px">
-    <div style="align-items: center;gap: 10px;font-size: 13px;color: #666">
-
+  <div style="border-top: 1px solid #eeeeee;padding-top: 1.5rem;display: flex;flex-direction: column;gap: 10px">
+    <div style="display: flex;align-items: center;gap: 10px;font-size: 13px;color: #666">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       Typical response time: <strong style="color: #111111;font-weight: 500">within 1 business day</strong>
     </div>
-    <div style="align-items: center;gap: 10px;font-size: 13px;color: #666">
-
+    <div style="display: flex;align-items: center;gap: 10px;font-size: 13px;color: #666">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#aaa" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 014.69 12 19.79 19.79 0 011.61 3.4 2 2 0 013.6 1.22h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L7.91 8.96a16 16 0 006.13 6.13l.96-.96a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
       We may also give you a call at the number provided
     </div>
   </div>

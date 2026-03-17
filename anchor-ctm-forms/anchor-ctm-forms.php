@@ -24,6 +24,9 @@ class Anchor_CTM_Forms_Module {
         '_ctm_start_text',
         '_ctm_auto_advance',
         '_ctm_success_message',
+        '_ctm_submit_action',
+        '_ctm_redirect_url',
+        '_ctm_thankyou_html',
         '_ctm_analytics_override',
         '_ctm_analytics',
     ];
@@ -94,7 +97,7 @@ class Anchor_CTM_Forms_Module {
         $base = plugin_dir_url( __FILE__ ) . 'assets/';
         wp_register_style( 'ctm-multi-step', $base . 'multi-step.css', [], '1.0.0' );
         wp_register_script( 'ctm-multi-step', $base . 'multi-step.js', [], '1.0.0', true );
-        wp_register_style( 'ctm-form-logic', $base . 'form-logic.css', [], '1.1.0' );
+        wp_register_style( 'ctm-form-logic', $base . 'form-logic.css', [], '1.2.0' );
         wp_register_script( 'ctm-form-logic', $base . 'form-logic.js', [], '1.1.0', true );
     }
 
@@ -1582,6 +1585,70 @@ PROMPT;
                 <p class="description"><?php esc_html_e( 'Embed this saved form variant using the shortcode.', 'anchor-schema' ); ?></p>
             </div>
 
+            <!-- After Submission Settings -->
+            <?php
+            $submit_action   = get_post_meta( $post->ID, '_ctm_submit_action', true ) ?: 'message';
+            $redirect_url    = get_post_meta( $post->ID, '_ctm_redirect_url', true );
+            $thankyou_html   = get_post_meta( $post->ID, '_ctm_thankyou_html', true );
+            $success_msg     = get_post_meta( $post->ID, '_ctm_success_message', true );
+            ?>
+            <div class="ctm-box">
+                <p><strong><?php esc_html_e( 'After Submission', 'anchor-schema' ); ?></strong></p>
+                <p>
+                    <label>
+                        <input type="radio" name="ctm_submit_action" value="message" <?php checked( $submit_action, 'message' ); ?> />
+                        <?php esc_html_e( 'Show inline success message', 'anchor-schema' ); ?>
+                    </label><br>
+                    <label>
+                        <input type="radio" name="ctm_submit_action" value="redirect" <?php checked( $submit_action, 'redirect' ); ?> />
+                        <?php esc_html_e( 'Redirect to URL', 'anchor-schema' ); ?>
+                    </label><br>
+                    <label>
+                        <input type="radio" name="ctm_submit_action" value="popup" <?php checked( $submit_action, 'popup' ); ?> />
+                        <?php esc_html_e( 'Show thank-you popup', 'anchor-schema' ); ?>
+                    </label>
+                </p>
+
+                <div id="ctm-action-message" class="ctm-action-panel" style="<?php echo $submit_action === 'message' ? '' : 'display:none;'; ?>">
+                    <p><label><?php esc_html_e( 'Success Message', 'anchor-schema' ); ?><br>
+                        <input type="text" name="ctm_success_message" value="<?php echo esc_attr( $success_msg ); ?>" class="large-text" placeholder="Thanks! We'll be in touch shortly." />
+                    </label></p>
+                </div>
+
+                <div id="ctm-action-redirect" class="ctm-action-panel" style="<?php echo $submit_action === 'redirect' ? '' : 'display:none;'; ?>">
+                    <p><label><?php esc_html_e( 'Redirect URL', 'anchor-schema' ); ?><br>
+                        <input type="url" name="ctm_redirect_url" value="<?php echo esc_attr( $redirect_url ); ?>" class="large-text" placeholder="https://example.com/thank-you/" />
+                    </label></p>
+                    <p class="description"><?php esc_html_e( 'Use {field_name} to pass form values as URL parameters. Example:', 'anchor-schema' ); ?><br>
+                        <code>https://example.com/thanks/?name={caller_name}&amp;email={email}&amp;phone={phone_number}</code><br>
+                        <?php esc_html_e( 'Any {field_name} token will be replaced with the submitted value and URL-encoded.', 'anchor-schema' ); ?>
+                    </p>
+                </div>
+
+                <div id="ctm-action-popup" class="ctm-action-panel" style="<?php echo $submit_action === 'popup' ? '' : 'display:none;'; ?>">
+                    <p><label><?php esc_html_e( 'Thank-You Popup HTML', 'anchor-schema' ); ?><br>
+                        <textarea name="ctm_thankyou_html" rows="8" class="large-text" placeholder="<h2>Thank you, {caller_name}!</h2>&#10;<p>We received your submission and will contact you at {email}.</p>"><?php echo esc_textarea( $thankyou_html ); ?></textarea>
+                    </label></p>
+                    <p class="description"><?php esc_html_e( 'Use {field_name} to insert submitted values. Available variables include all form field names (e.g. {caller_name}, {email}, {phone_number}) plus any custom fields.', 'anchor-schema' ); ?></p>
+                </div>
+            </div>
+
+            <script>
+            (function(){
+                var radios = document.querySelectorAll('input[name="ctm_submit_action"]');
+                var panels = {
+                    message: document.getElementById('ctm-action-message'),
+                    redirect: document.getElementById('ctm-action-redirect'),
+                    popup: document.getElementById('ctm-action-popup')
+                };
+                function toggle() {
+                    var val = document.querySelector('input[name="ctm_submit_action"]:checked').value;
+                    for (var k in panels) panels[k].style.display = k === val ? '' : 'none';
+                }
+                for (var i = 0; i < radios.length; i++) radios[i].addEventListener('change', toggle);
+            })();
+            </script>
+
             <!-- Analytics Override Section -->
             <div class="ctm-box">
                 <p>
@@ -1963,6 +2030,23 @@ PROMPT;
             update_post_meta( $post_id, '_ctm_analytics', $analytics );
         }
 
+        // Save after-submission settings (shared between modes)
+        $submit_action = isset( $_POST['ctm_submit_action'] ) ? sanitize_text_field( $_POST['ctm_submit_action'] ) : 'message';
+        if ( ! in_array( $submit_action, [ 'message', 'redirect', 'popup' ], true ) ) {
+            $submit_action = 'message';
+        }
+        update_post_meta( $post_id, '_ctm_submit_action', $submit_action );
+
+        if ( isset( $_POST['ctm_success_message'] ) ) {
+            update_post_meta( $post_id, '_ctm_success_message', sanitize_text_field( $_POST['ctm_success_message'] ) );
+        }
+        if ( isset( $_POST['ctm_redirect_url'] ) ) {
+            update_post_meta( $post_id, '_ctm_redirect_url', esc_url_raw( $_POST['ctm_redirect_url'] ) );
+        }
+        if ( isset( $_POST['ctm_thankyou_html'] ) ) {
+            update_post_meta( $post_id, '_ctm_thankyou_html', wp_kses_post( wp_unslash( $_POST['ctm_thankyou_html'] ) ) );
+        }
+
     }
 
     /* ========================= AJAX: Generate starter ========================= */
@@ -2337,9 +2421,10 @@ PROMPT;
         // Get analytics settings for this form
         $analytics = $this->get_form_analytics( $post_id );
 
-        // Enqueue form-logic assets if builder mode (conditionals + scoring + column layout)
+        // Enqueue form-logic CSS always (loading overlay, thank-you popup styles)
+        // JS only needed in builder mode (conditionals + scoring)
+        wp_enqueue_style( 'ctm-form-logic' );
         if ( $form_mode === 'builder' ) {
-            wp_enqueue_style( 'ctm-form-logic' );
             wp_enqueue_script( 'ctm-form-logic' );
         }
 
@@ -2348,6 +2433,11 @@ PROMPT;
         if ( ! $success_message ) {
             $success_message = "Thanks! We'll be in touch shortly.";
         }
+
+        // After-submission behavior
+        $submit_action = get_post_meta( $post_id, '_ctm_submit_action', true ) ?: 'message';
+        $redirect_url  = get_post_meta( $post_id, '_ctm_redirect_url', true );
+        $thankyou_html = get_post_meta( $post_id, '_ctm_thankyou_html', true );
 
         // If multi-step: enqueue assets, add class to the <form> tag
         if ( $is_multi_step ) {
@@ -2435,8 +2525,69 @@ PROMPT;
                 variantId: <?php echo wp_json_encode( $post_id ); ?>,
                 reactorId: <?php echo wp_json_encode( $reactor_id ); ?>,
                 analytics: <?php echo wp_json_encode( $analytics ); ?>,
-                successMessage: <?php echo wp_json_encode( $success_message ); ?>
+                successMessage: <?php echo wp_json_encode( $success_message ); ?>,
+                submitAction: <?php echo wp_json_encode( $submit_action ); ?>,
+                redirectUrl: <?php echo wp_json_encode( $redirect_url ); ?>,
+                thankyouHtml: <?php echo wp_json_encode( $thankyou_html ); ?>
             };
+
+            var ERROR_MSG = 'There has been an error submitting the form. Please try again later.';
+
+            /* ── Loading overlay helpers ── */
+            function showLoading() {
+                wrap.classList.add('ctm-submitting');
+                if (!wrap.querySelector('.ctm-form-loading')) {
+                    var overlay = document.createElement('div');
+                    overlay.className = 'ctm-form-loading';
+                    overlay.innerHTML = '<div class="ctm-form-spinner"></div>';
+                    wrap.appendChild(overlay);
+                }
+            }
+            function hideLoading() {
+                wrap.classList.remove('ctm-submitting');
+                var overlay = wrap.querySelector('.ctm-form-loading');
+                if (overlay) overlay.remove();
+            }
+
+            /* ── Replace {field_name} tokens with submitted values ── */
+            function replaceTokens(template, allFields) {
+                return template.replace(/\{([^}]+)\}/g, function(match, key) {
+                    return allFields.hasOwnProperty(key) ? allFields[key] : match;
+                });
+            }
+
+            /* ── Thank-you popup ── */
+            function showThankyouPopup(allFields) {
+                var html = replaceTokens(CFG.thankyouHtml || '', allFields);
+                var overlay = document.createElement('div');
+                overlay.className = 'ctm-thankyou-overlay';
+                overlay.innerHTML = '<div class="ctm-thankyou-box">'
+                    + '<button type="button" class="ctm-thankyou-close" aria-label="Close">&times;</button>'
+                    + '<div class="ctm-thankyou-body">' + html + '</div>'
+                    + '</div>';
+                document.body.appendChild(overlay);
+                overlay.offsetHeight; // reflow
+                overlay.classList.add('ctm-active');
+                overlay.querySelector('.ctm-thankyou-close').addEventListener('click', function() {
+                    overlay.classList.remove('ctm-active');
+                    setTimeout(function() { overlay.remove(); }, 300);
+                });
+                overlay.addEventListener('click', function(ev) {
+                    if (ev.target === overlay) {
+                        overlay.classList.remove('ctm-active');
+                        setTimeout(function() { overlay.remove(); }, 300);
+                    }
+                });
+            }
+
+            /* ── Redirect with token replacement ── */
+            function doRedirect(allFields) {
+                var url = CFG.redirectUrl || '';
+                url = url.replace(/\{([^}]+)\}/g, function(match, key) {
+                    return allFields.hasOwnProperty(key) ? encodeURIComponent(allFields[key]) : match;
+                });
+                window.location.href = url;
+            }
 
             // Fire analytics tracking events on successful submission
             function fireAnalyticsEvents() {
@@ -2509,13 +2660,11 @@ PROMPT;
                 e.preventDefault();
 
                 // Capture CTM visitor SID at submit time (async script may not be ready at page load)
-                // Primary: CTM WP plugin exposes __ctm.tracker.getSessionId()
                 try {
                     if (typeof __ctm !== 'undefined' && __ctm.tracker && __ctm.tracker.getSessionId) {
                         attribution.visitor_sid = __ctm.tracker.getSessionId();
                     }
                 } catch(ex) {}
-                // Fallback: ctm_session_id cookie set by CTM WP plugin
                 if (!attribution.visitor_sid) {
                     try {
                         var m = document.cookie.match(/(?:^|;\s*)ctm_session_id=([^;]+)/);
@@ -2536,22 +2685,16 @@ PROMPT;
                     var isCustom = el.classList.contains('ctm-custom');
                     var target = isCustom ? custom : core;
 
-                    // Handle checkbox arrays (name ends with [])
                     if (el.type === 'checkbox') {
-                        // Consent checkboxes always submit: Yes when checked, No when unchecked
                         if (el.classList.contains('ctm-consent-checkbox')) {
                             val = el.checked ? 'Yes' : 'No';
                         } else {
                             if (!el.checked) continue;
                             val = el.value;
                         }
-
-                        // Check if it's an array field (name ends with [])
                         if (name.endsWith('[]')) {
                             var baseName = name.slice(0, -2);
-                            if (!target[baseName]) {
-                                target[baseName] = [];
-                            }
+                            if (!target[baseName]) target[baseName] = [];
                             target[baseName].push(val);
                             continue;
                         }
@@ -2563,13 +2706,16 @@ PROMPT;
                     }
 
                     if (val === '') continue;
-
-                    if (isCustom) {
-                        custom[name] = val;
-                    } else {
-                        core[name] = val;
-                    }
+                    if (isCustom) { custom[name] = val; } else { core[name] = val; }
                 }
+
+                // Merge all fields for token replacement (core + custom, flat)
+                var allFields = {};
+                var k;
+                for (k in core) allFields[k] = Array.isArray(core[k]) ? core[k].join(', ') : core[k];
+                for (k in custom) allFields[k] = Array.isArray(custom[k]) ? custom[k].join(', ') : custom[k];
+
+                showLoading();
 
                 var fd = new FormData();
                 fd.append('action', 'anchor_ctm_submit');
@@ -2582,28 +2728,52 @@ PROMPT;
                 fetch(CFG.ajax, { method: 'POST', body: fd })
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
+                        hideLoading();
+
+                        if (data && data.success) {
+                            fireAnalyticsEvents();
+
+                            if (CFG.submitAction === 'redirect' && CFG.redirectUrl) {
+                                doRedirect(allFields);
+                                return;
+                            }
+                            if (CFG.submitAction === 'popup' && CFG.thankyouHtml) {
+                                try { form.reset(); } catch(e) {}
+                                showThankyouPopup(allFields);
+                                return;
+                            }
+
+                            // Default: inline success message
+                            var msg = form.querySelector('.ctm-form-msg') || (function() {
+                                var m = document.createElement('div');
+                                m.className = 'ctm-form-msg';
+                                form.appendChild(m);
+                                return m;
+                            })();
+                            msg.textContent = CFG.successMessage;
+                            msg.style.color = '#00a32a';
+                            try { form.reset(); } catch(e) {}
+                        } else {
+                            var msg = form.querySelector('.ctm-form-msg') || (function() {
+                                var m = document.createElement('div');
+                                m.className = 'ctm-form-msg';
+                                form.appendChild(m);
+                                return m;
+                            })();
+                            msg.textContent = ERROR_MSG;
+                            msg.style.color = '#d63638';
+                        }
+                    })
+                    .catch(function() {
+                        hideLoading();
                         var msg = form.querySelector('.ctm-form-msg') || (function() {
                             var m = document.createElement('div');
                             m.className = 'ctm-form-msg';
                             form.appendChild(m);
                             return m;
                         })();
-
-                        if (data && data.success) {
-                            msg.textContent = CFG.successMessage;
-                            msg.style.color = '#00a32a';
-                            try { form.reset(); } catch(e) {}
-
-                            // Fire analytics events on successful submission
-                            fireAnalyticsEvents();
-                        } else {
-                            msg.textContent = (data && data.data && (data.data.message || data.data)) || 'Something went wrong.';
-                            msg.style.color = '#d63638';
-                        }
-                    })
-                    .catch(function() {
-                        var msg = form.querySelector('.ctm-form-msg');
-                        if (msg) msg.textContent = 'Network error. Please try again.';
+                        msg.textContent = ERROR_MSG;
+                        msg.style.color = '#d63638';
                     });
             });
         })();
@@ -2616,9 +2786,12 @@ PROMPT;
     public function ajax_submit() {
         check_ajax_referer( self::NONCE_ACTION, self::NONCE_NAME );
 
+        $generic_error = 'There has been an error submitting the form. Please try again later.';
+
         $variant_id = isset( $_POST['variant_id'] ) ? intval( $_POST['variant_id'] ) : 0;
         if ( ! $variant_id ) {
-            wp_send_json_error( [ 'type' => 'validation', 'message' => 'Missing variant.' ] );
+            error_log( '[Anchor CTM Forms] Submission missing variant_id.' );
+            wp_send_json_error( [ 'message' => $generic_error ] );
         }
 
         // Parse JSON blobs from JS
@@ -2644,7 +2817,8 @@ PROMPT;
             unset( $core['phone'] );
         }
         if ( empty( $core['phone_number'] ) ) {
-            wp_send_json_error( [ 'type' => 'validation', 'message' => 'Phone number is required.' ] );
+            error_log( '[Anchor CTM Forms] Submission for variant ' . $variant_id . ' missing phone_number.' );
+            wp_send_json_error( [ 'message' => $generic_error ] );
         }
 
         $core['phone_number'] = preg_replace( '/\D+/', '', $core['phone_number'] );
@@ -2681,14 +2855,15 @@ PROMPT;
         $reactor_id = get_post_meta( $variant_id, '_ctm_reactor_id', true );
 
         if ( ! $reactor_id ) {
-            wp_send_json_error( [ 'type' => 'validation', 'message' => 'Variant not configured.' ] );
+            error_log( '[Anchor CTM Forms] Variant ' . $variant_id . ' has no reactor_id configured.' );
+            wp_send_json_error( [ 'message' => $generic_error ] );
         }
 
         $res = $this->send_submission_to_ctm( $reactor_id, $core, $custom, $attribution );
 
         if ( is_wp_error( $res ) ) {
             error_log( '[Anchor CTM Forms] Submission failed for variant ' . $variant_id . ': ' . $res->get_error_message() );
-            wp_send_json_error( [ 'type' => 'server', 'message' => $res->get_error_message() ] );
+            wp_send_json_error( [ 'message' => $generic_error ] );
         }
 
         // Post-submission: populate account-level custom fields via /modify.json.

@@ -270,6 +270,93 @@
     color: var(--ctm-muted);
 }
 
+/* ── Loading overlay ── */
+.ctm-form-wrap {
+    position: relative;
+}
+
+.ctm-form-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.7);
+    z-index: 100;
+    border-radius: 6px;
+}
+
+.ctm-form-wrap.ctm-scheme-dark .ctm-form-loading {
+    background: rgba(30, 30, 46, 0.7);
+}
+
+.ctm-form-spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid var(--ctm-input-border);
+    border-top-color: var(--ctm-btn-bg);
+    border-radius: 50%;
+    animation: ctm-spin 0.7s linear infinite;
+}
+
+@keyframes ctm-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Disabled buttons during submit */
+.ctm-form-wrap.ctm-submitting button[type="submit"],
+.ctm-form-wrap.ctm-submitting input[type="submit"] {
+    opacity: 0.6;
+    pointer-events: none;
+    cursor: not-allowed;
+}
+
+/* ── Thank-you popup overlay ── */
+.ctm-thankyou-overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 999999;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+}
+
+.ctm-thankyou-overlay.ctm-active {
+    opacity: 1;
+}
+
+.ctm-thankyou-box {
+    position: relative;
+    background: #fff;
+    border-radius: 8px;
+    padding: 32px 28px 24px;
+    max-width: 520px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.ctm-thankyou-close {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    background: none;
+    border: none;
+    font-size: 22px;
+    cursor: pointer;
+    color: #666;
+    line-height: 1;
+    padding: 4px;
+}
+
+.ctm-thankyou-close:hover {
+    color: #333;
+}
+
 /* ── Responsive: stack columns on mobile ── */
 @media (max-width: 600px) {
     .ctm-col-half,

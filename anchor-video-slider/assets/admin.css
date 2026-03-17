@@ -1,4 +1,4 @@
-/* Anchor Video Gallery – Admin (CPT metabox) */
+/* Anchor Gallery – Admin (CPT metabox) */
 
 /* Bulk import */
 .avg-bulk-wrap {
@@ -14,15 +14,27 @@
   padding: 6px 8px;
 }
 
-/* Video rows */
+/* Item rows */
 .avg-video-row {
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
 }
-.avg-video-row .avg-video-url {
+.avg-video-row .avg-item-type {
+  flex: 0 0 80px;
+}
+.avg-video-row .avg-video-fields {
   flex: 2;
+}
+.avg-video-row .avg-video-fields .avg-video-url {
+  width: 100%;
+}
+.avg-video-row .avg-image-fields {
+  flex: 2;
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 .avg-video-row .avg-video-title {
   flex: 1;
@@ -30,6 +42,11 @@
 .avg-video-row .avg-remove-video {
   flex-shrink: 0;
   color: #b32d2e;
+}
+.avg-image-preview {
+  max-height: 40px;
+  border-radius: 3px;
+  border: 1px solid #dcdcde;
 }
 
 /* Sidebar settings */

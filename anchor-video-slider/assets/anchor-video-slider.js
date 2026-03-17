@@ -97,10 +97,28 @@
     if (closeBtn) closeBtn.focus();
   }
 
+  function openImageLightbox(fullUrl, alt) {
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getLightboxModal() } }));
+
+    var modal = getLightboxModal();
+    var frame = modal.querySelector('[data-frame]');
+    var dialog = modal.querySelector('.avg-modal-dialog');
+
+    dialog.classList.add('avg-modal-image');
+    frame.innerHTML = '<img src="' + fullUrl + '" alt="' + (alt || '') + '" style="width:100%;height:auto;display:block;" />';
+    modal.hidden = false;
+    document.body.style.overflow = 'hidden';
+
+    var closeBtn = modal.querySelector('.avg-modal-close');
+    if (closeBtn) closeBtn.focus();
+  }
+
   function closeLightbox() {
     if (!lightboxModal) return;
     var frame = lightboxModal.querySelector('[data-frame]');
     if (frame) frame.innerHTML = '';
+    var dialog = lightboxModal.querySelector('.avg-modal-dialog');
+    if (dialog) dialog.classList.remove('avg-modal-image');
     lightboxModal.hidden = true;
     document.body.style.overflow = '';
   }
@@ -357,6 +375,24 @@
 
     e.preventDefault();
 
+    var itemType = tile.getAttribute('data-type') || 'video';
+
+    // Handle image tiles
+    if (itemType === 'image') {
+      var fullUrl = tile.getAttribute('data-full-url');
+      if (!fullUrl) return;
+      var titleEl = tile.querySelector('.avg-title');
+      var titleText = titleEl ? titleEl.textContent : '';
+      var popupStyle = gallery.getAttribute('data-popup') || 'lightbox';
+      if (popupStyle === 'none') {
+        window.open(fullUrl, '_blank');
+      } else {
+        openImageLightbox(fullUrl, titleText);
+      }
+      return;
+    }
+
+    // Handle video tiles
     var provider = tile.getAttribute('data-provider');
     var videoId = tile.getAttribute('data-video-id');
     var url = tile.getAttribute('data-url');
@@ -641,6 +677,10 @@
   function initGalleries() {
     var galleries = document.querySelectorAll('.anchor-video-gallery');
     galleries.forEach(function(gallery) {
+      var layout = gallery.getAttribute('data-layout');
+      // Skip logo_carousel — pure CSS, no JS needed
+      if (layout === 'logo_carousel') return;
+
       initSliderNavigation(gallery);
       initPagination(gallery);
 
@@ -670,6 +710,9 @@
   function initContainer(container) {
     var galleries = container.querySelectorAll('.anchor-video-gallery');
     galleries.forEach(function(gallery) {
+      var layout = gallery.getAttribute('data-layout');
+      if (layout === 'logo_carousel') return;
+
       initSliderNavigation(gallery);
       initPagination(gallery);
 

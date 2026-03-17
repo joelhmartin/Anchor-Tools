@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Anchor Video Gallery - Frontend Styles
+   Anchor Gallery - Frontend Styles
    ========================================================================== */
 
 /* CSS Custom Properties */
@@ -84,7 +84,7 @@
   width: 100%;
   aspect-ratio: var(--avg-thumb-ratio, 16 / 9);
   background: linear-gradient(135deg, var(--avg-bg), var(--avg-border));
-  background-size: cover;
+  background-size: var(--avg-object-fit, cover);
   background-position: center;
   overflow: hidden;
 }
@@ -265,6 +265,56 @@
 
 .avg-tiles-cinematic .avg-channel {
   color: rgba(255,255,255,0.6);
+}
+
+/* ==========================================================================
+   Title Overlay (on-image title)
+   ========================================================================== */
+
+.avg-title-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 32px 14px 12px;
+  background: linear-gradient(transparent, rgba(0,0,0,0.7));
+  z-index: 1;
+}
+
+.avg-title-overlay .avg-title {
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+
+/* ==========================================================================
+   Equal Height & Max Height
+   ========================================================================== */
+
+.avg-equal-height .avg-track {
+  align-items: stretch;
+}
+
+.avg-equal-height .avg-tile-inner {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.avg-equal-height .avg-thumb {
+  flex: 1;
+  aspect-ratio: auto;
+}
+
+.anchor-video-gallery[style*="--avg-max-height"] .avg-thumb {
+  max-height: var(--avg-max-height);
+}
+
+/* ==========================================================================
+   Object Fit
+   ========================================================================== */
+
+.avg-thumb {
+  background-size: var(--avg-object-fit, cover);
 }
 
 /* ==========================================================================
@@ -462,6 +512,70 @@
 }
 
 /* ==========================================================================
+   Layout: Logo Carousel (Marquee)
+   ========================================================================== */
+
+.avg-layout-logo-carousel {
+  overflow: hidden;
+}
+
+.avg-marquee-row {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent);
+}
+
+.avg-marquee-row + .avg-marquee-row {
+  margin-top: var(--avg-marquee-gap, 40px);
+}
+
+.avg-marquee {
+  display: flex;
+  width: max-content;
+  animation: avg-scroll-x var(--avg-marquee-speed, 30s) linear infinite;
+}
+
+.avg-marquee-group {
+  display: flex;
+  gap: var(--avg-marquee-gap, 40px);
+  padding-right: var(--avg-marquee-gap, 40px);
+  flex-shrink: 0;
+}
+
+.avg-marquee-item {
+  flex: 0 0 var(--avg-marquee-item-width, 150px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avg-marquee-item img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: var(--avg-object-fit, contain);
+  border-radius: var(--avg-radius, 0);
+}
+
+@keyframes avg-scroll-x {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.avg-marquee-reverse .avg-marquee {
+  animation-direction: reverse;
+}
+
+.avg-marquee-pause:hover .avg-marquee {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avg-marquee {
+    animation-play-state: paused;
+  }
+}
+
+/* ==========================================================================
    Pagination
    ========================================================================== */
 
@@ -572,6 +686,16 @@
   animation: avgSlideUp 0.3s ease;
 }
 
+.avg-modal-dialog.avg-modal-image {
+  width: auto;
+  max-width: min(1200px, 92vw);
+  background: transparent;
+}
+
+.avg-modal-dialog.avg-modal-image .avg-modal-frame img {
+  border-radius: 8px;
+}
+
 @keyframes avgSlideUp {
   from {
     opacity: 0;
@@ -586,6 +710,11 @@
 .avg-modal-frame {
   aspect-ratio: 16 / 9;
   background: #000;
+}
+
+.avg-modal-dialog.avg-modal-image .avg-modal-frame {
+  aspect-ratio: auto;
+  background: transparent;
 }
 
 .avg-modal-frame iframe {

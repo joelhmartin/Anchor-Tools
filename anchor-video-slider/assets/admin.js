@@ -63,15 +63,49 @@
     }
   }
 
-  // Add a video row
-  function addVideoRow(url, title){
+  // Add an item row (video or image)
+  function addItemRow(type, url, title, attachmentId){
     var idx = $('#avg-video-list .avg-video-row').length;
+    type = type || 'video';
+    var isImage = (type === 'image');
+
     var html = '<div class="avg-video-row" data-index="'+ idx +'">'
+      + '<select name="avg_videos['+ idx +'][type]" class="avg-item-type">'
+      + '<option value="video"'+ (type === 'video' ? ' selected' : '') +'>Video</option>'
+      + '<option value="image"'+ (type === 'image' ? ' selected' : '') +'>Image</option>'
+      + '</select>'
+      + '<div class="avg-video-fields"'+ (isImage ? ' style="display:none"' : '') +'>'
       + '<input type="url" name="avg_videos['+ idx +'][url]" value="'+ (url||'') +'" placeholder="https://youtube.com/watch?v=..." class="avg-video-url" />'
+      + '</div>'
+      + '<div class="avg-image-fields"'+ (!isImage ? ' style="display:none"' : '') +'>'
+      + '<input type="hidden" name="avg_videos['+ idx +'][attachment_id]" value="'+ (attachmentId||0) +'" class="avg-attachment-id" />'
+      + '<button type="button" class="button avg-choose-image">Choose Image</button>'
+      + '</div>'
       + '<input type="text" name="avg_videos['+ idx +'][title]" value="'+ (title||'') +'" placeholder="Optional title" class="avg-video-title" />'
       + '<button type="button" class="button avg-remove-video">&times;</button>'
       + '</div>';
     $('#avg-video-list').append(html);
+  }
+
+  // Open WP Media Library picker
+  function openMediaPicker($row) {
+    var frame = wp.media({
+      title: 'Choose Image',
+      library: { type: 'image' },
+      multiple: false,
+      button: { text: 'Use Image' }
+    });
+
+    frame.on('select', function(){
+      var attachment = frame.state().get('selection').first().toJSON();
+      var thumbUrl = attachment.sizes && attachment.sizes.thumbnail ? attachment.sizes.thumbnail.url : attachment.url;
+      $row.find('.avg-attachment-id').val(attachment.id);
+      // Update or add preview image
+      $row.find('.avg-image-preview').remove();
+      $row.find('.avg-image-fields').append('<img src="'+ thumbUrl +'" class="avg-image-preview" />');
+    });
+
+    frame.open();
   }
 
   $(function(){
@@ -86,16 +120,35 @@
     updateVisibility();
     updateAspectRatioState();
 
-    // Add video
-    $('#avg-add-video').on('click', function(){
-      addVideoRow('','');
+    // Type toggle: show/hide video-fields vs image-fields
+    $(document).on('change', '.avg-item-type', function(){
+      var $row = $(this).closest('.avg-video-row');
+      var type = $(this).val();
+      $row.find('.avg-video-fields').toggle(type === 'video');
+      $row.find('.avg-image-fields').toggle(type === 'image');
     });
 
-    // Remove video
+    // Add video
+    $('#avg-add-video').on('click', function(){
+      addItemRow('video', '', '');
+    });
+
+    // Add image
+    $('#avg-add-image').on('click', function(){
+      addItemRow('image', '', '', 0);
+    });
+
+    // Choose image via media library
+    $(document).on('click', '.avg-choose-image', function(){
+      var $row = $(this).closest('.avg-video-row');
+      openMediaPicker($row);
+    });
+
+    // Remove item
     $(document).on('click', '.avg-remove-video', function(){
       $(this).closest('.avg-video-row').remove();
       if ($('#avg-video-list .avg-video-row').length === 0) {
-        addVideoRow('','');
+        addItemRow('video', '', '');
       }
     });
 
@@ -117,7 +170,7 @@
         if (!line) return;
         // Basic YouTube/Vimeo check
         if (/youtu\.?be|vimeo\.com/.test(line)) {
-          addVideoRow(line, '');
+          addItemRow('video', line, '');
           added++;
         }
       });

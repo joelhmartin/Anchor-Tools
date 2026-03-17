@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.5.18
+ * Version: 3.5.19
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -2919,8 +2919,8 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'class'       => 'Anchor_Shortcodes_Module',
             ],
             'video_slider' => [
-                'label'       => __( 'Anchor Video Gallery', 'anchor-schema' ),
-                'description' => __( 'Create video galleries with slider, grid, carousel, and masonry layouts.', 'anchor-schema' ),
+                'label'       => __( 'Anchor Gallery', 'anchor-schema' ),
+                'description' => __( 'Create galleries with slider, grid, carousel, masonry, and logo marquee layouts.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/anchor-video-slider.php',
                 'class'       => 'Anchor_Video_Slider_Module',
             ],

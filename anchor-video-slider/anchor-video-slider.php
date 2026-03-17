@@ -1,9 +1,10 @@
 <?php
 /**
- * Anchor Tools module: Anchor Video Gallery.
+ * Anchor Tools module: Anchor Gallery.
  *
- * Custom Post Type based video gallery with multiple display modes.
- * Supports: slider, grid, carousel, masonry layouts.
+ * Custom Post Type based gallery with multiple display modes.
+ * Supports: videos (YouTube/Vimeo), images (WP media library).
+ * Layouts: slider, grid, carousel, masonry, logo_carousel.
  * Popup styles: lightbox, inline, theater, side panel, none.
  */
 
@@ -12,7 +13,8 @@ if (!defined('ABSPATH')) {
 }
 
 class Anchor_Video_Slider_Module {
-    const CPT        = 'anchor_video_gallery';
+    const CPT        = 'anchor_gallery';
+    const OLD_CPT    = 'anchor_video_gallery';
     const NONCE      = 'avg_nonce';
     const LEGACY_KEY = 'anchor_video_slider_items';
 
@@ -51,36 +53,50 @@ class Anchor_Video_Slider_Module {
         'slider_autoplay_speed' => 5000,
         'carousel_loop' => true,
         'carousel_center' => false,
+        'equal_height' => false,
+        'max_height' => 0,
+        'object_fit' => 'cover',
+        'title_position' => 'hidden',
+        'marquee_speed' => 30,
+        'marquee_gap' => 40,
+        'marquee_item_width' => 150,
+        'marquee_pause_on_hover' => true,
+        'marquee_direction' => 'left',
+        'marquee_reverse_row' => false,
     ];
 
     /* ── Setting definitions for metabox rendering & save ── */
 
     private function get_setting_defs() {
         return [
-            'layout' => ['type' => 'select', 'label' => 'Layout', 'options' => ['slider' => 'Slider', 'grid' => 'Grid', 'carousel' => 'Carousel', 'masonry' => 'Masonry']],
-            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link']],
-            'theme' => ['type' => 'select', 'label' => 'Theme', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto']],
-            'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic']],
+            'layout' => ['type' => 'select', 'label' => 'Layout', 'options' => ['slider' => 'Slider', 'grid' => 'Grid', 'carousel' => 'Carousel', 'masonry' => 'Masonry', 'logo_carousel' => 'Logo Carousel']],
+            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'show_for' => 'slider,grid,carousel,masonry'],
+            'theme' => ['type' => 'select', 'label' => 'Theme', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto'], 'show_for' => 'slider,grid,carousel,masonry'],
+            'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic'], 'show_for' => 'slider,grid,carousel,masonry'],
             'thumb_aspect_ratio' => ['type' => 'select', 'label' => 'Thumbnail Aspect Ratio', 'options' => [
                 '16:9' => '16:9 (Widescreen)',
                 '4:3'  => '4:3 (Classic)',
                 '1:1'  => '1:1 (Square)',
                 '9:16' => '9:16 (Portrait)',
                 '21:9' => '21:9 (Cinematic)',
-            ]],
-            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None']],
-            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden']],
+            ], 'show_for' => 'slider,grid,carousel,masonry'],
+            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'show_for' => 'slider,grid,carousel,masonry'],
+            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'show_for' => 'slider,grid,carousel,masonry'],
             'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'min' => 0, 'max' => 32, 'step' => 2],
             'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'min' => 2, 'max' => 6, 'show_for' => 'grid,masonry'],
             'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'min' => 1, 'max' => 4, 'show_for' => 'grid,masonry'],
             'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'min' => 1, 'max' => 2, 'show_for' => 'grid,masonry'],
             'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'min' => 0, 'max' => 60, 'step' => 4],
-            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title'],
-            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration'],
-            'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel'],
-            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open'],
+            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'show_for' => 'slider,grid,carousel,masonry'],
+            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'show_for' => 'slider,grid,carousel,masonry'],
+            'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'show_for' => 'slider,grid,carousel,masonry'],
+            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'show_for' => 'grid,masonry,slider,carousel'],
+            'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'show_for' => 'grid,masonry,slider,carousel'],
+            'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'min' => 0, 'max' => 1200, 'step' => 10, 'show_for' => 'grid,masonry,slider,carousel'],
+            'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
+            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'show_for' => 'slider,grid,carousel,masonry'],
             'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'show_for' => 'grid,masonry'],
-            'videos_per_page' => ['type' => 'number', 'label' => 'Videos Per Page', 'min' => 1, 'max' => 100, 'show_for' => 'grid,masonry'],
+            'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'min' => 1, 'max' => 100, 'show_for' => 'grid,masonry'],
             'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'show_for' => 'grid,masonry'],
             'slider_arrows' => ['type' => 'checkbox', 'label' => 'Navigation Arrows', 'show_for' => 'slider,carousel'],
             'slider_dots' => ['type' => 'checkbox', 'label' => 'Dots Navigation', 'show_for' => 'slider,carousel'],
@@ -88,6 +104,12 @@ class Anchor_Video_Slider_Module {
             'slider_autoplay_speed' => ['type' => 'number', 'label' => 'Autoplay Speed (ms)', 'min' => 1000, 'max' => 15000, 'step' => 500, 'show_for' => 'slider,carousel'],
             'carousel_loop' => ['type' => 'checkbox', 'label' => 'Loop Continuously', 'show_for' => 'carousel'],
             'carousel_center' => ['type' => 'checkbox', 'label' => 'Center Active Slide', 'show_for' => 'carousel'],
+            'marquee_speed' => ['type' => 'number', 'label' => 'Scroll Speed (seconds)', 'min' => 5, 'max' => 120, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_gap' => ['type' => 'number', 'label' => 'Item Gap (px)', 'min' => 0, 'max' => 120, 'step' => 4, 'show_for' => 'logo_carousel'],
+            'marquee_item_width' => ['type' => 'number', 'label' => 'Item Width (px)', 'min' => 50, 'max' => 400, 'step' => 10, 'show_for' => 'logo_carousel'],
+            'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'show_for' => 'logo_carousel'],
+            'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'options' => ['left' => 'Left', 'right' => 'Right'], 'show_for' => 'logo_carousel'],
+            'marquee_reverse_row' => ['type' => 'checkbox', 'label' => 'Add Reverse Row', 'show_for' => 'logo_carousel'],
         ];
     }
 
@@ -104,6 +126,7 @@ class Anchor_Video_Slider_Module {
         add_action('wp_ajax_avg_preview', [$this, 'ajax_preview']);
         add_shortcode('anchor_video_slider', [$this, 'render_gallery']);
         add_shortcode('anchor_video_gallery', [$this, 'render_gallery']);
+        add_shortcode('anchor_gallery', [$this, 'render_gallery']);
 
         add_filter('manage_' . self::CPT . '_posts_columns', [$this, 'admin_columns']);
         add_action('manage_' . self::CPT . '_posts_custom_column', [$this, 'admin_column_content'], 10, 2);
@@ -114,22 +137,50 @@ class Anchor_Video_Slider_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function register_cpt() {
+        $this->migrate_cpt_slug();
         $this->migrate_legacy_data();
 
         register_post_type(self::CPT, [
             'labels' => [
-                'name'          => 'Anchor Video Galleries',
-                'singular_name' => 'Anchor Video Gallery',
-                'add_new_item'  => 'Add New Video Gallery',
-                'edit_item'     => 'Edit Video Gallery',
-                'menu_name'     => 'Anchor Video Galleries',
+                'name'          => 'Anchor Galleries',
+                'singular_name' => 'Anchor Gallery',
+                'add_new_item'  => 'Add New Gallery',
+                'edit_item'     => 'Edit Gallery',
+                'menu_name'     => 'Anchor Galleries',
             ],
             'public'       => false,
             'show_ui'      => true,
             'show_in_menu' => apply_filters('anchor_video_gallery_parent_menu', true),
-            'menu_icon'    => 'dashicons-video-alt3',
+            'menu_icon'    => 'dashicons-format-gallery',
             'supports'     => ['title'],
         ]);
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       CPT Slug Migration (anchor_video_gallery → anchor_gallery)
+       ══════════════════════════════════════════════════════════ */
+
+    private function migrate_cpt_slug() {
+        if (get_option('avg_cpt_migrated')) return;
+
+        global $wpdb;
+        $count = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = %s",
+            self::OLD_CPT
+        ));
+
+        if ($count > 0) {
+            $wpdb->update(
+                $wpdb->posts,
+                ['post_type' => self::CPT],
+                ['post_type' => self::OLD_CPT],
+                ['%s'],
+                ['%s']
+            );
+            clean_post_cache(0);
+        }
+
+        update_option('avg_cpt_migrated', 1, false);
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -143,7 +194,7 @@ class Anchor_Video_Slider_Module {
             if ($k === 'title') {
                 $new['avg_shortcode'] = 'Shortcode';
                 $new['avg_layout']    = 'Layout';
-                $new['avg_videos']    = 'Videos';
+                $new['avg_items']     = 'Items';
             }
         }
         return $new;
@@ -151,10 +202,10 @@ class Anchor_Video_Slider_Module {
 
     public function admin_column_content($column, $post_id) {
         if ($column === 'avg_shortcode') {
-            echo '<code>[anchor_video_gallery id="' . esc_attr($post_id) . '"]</code>';
+            echo '<code>[anchor_gallery id="' . esc_attr($post_id) . '"]</code>';
         } elseif ($column === 'avg_layout') {
-            echo esc_html(ucfirst(get_post_meta($post_id, 'avg_layout', true) ?: 'slider'));
-        } elseif ($column === 'avg_videos') {
+            echo esc_html(ucfirst(str_replace('_', ' ', get_post_meta($post_id, 'avg_layout', true) ?: 'slider')));
+        } elseif ($column === 'avg_items') {
             $videos = get_post_meta($post_id, 'avg_videos', true);
             echo is_array($videos) ? count($videos) : 0;
         }
@@ -165,16 +216,16 @@ class Anchor_Video_Slider_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function add_metaboxes() {
-        add_meta_box('avg_videos', 'Videos', [$this, 'render_box_videos'], self::CPT, 'normal', 'high');
+        add_meta_box('avg_videos', 'Gallery Items', [$this, 'render_box_videos'], self::CPT, 'normal', 'high');
         add_meta_box('avg_settings', 'Gallery Settings', [$this, 'render_box_settings'], self::CPT, 'side');
         add_meta_box('avg_preview', 'Live Preview', [$this, 'render_box_preview'], self::CPT, 'normal', 'default');
     }
 
     public function render_box_videos($post) {
         wp_nonce_field(self::NONCE, self::NONCE);
-        $videos = get_post_meta($post->ID, 'avg_videos', true);
-        if (!is_array($videos) || empty($videos)) {
-            $videos = [['url' => '', 'title' => '']];
+        $items = get_post_meta($post->ID, 'avg_videos', true);
+        if (!is_array($items) || empty($items)) {
+            $items = [['type' => 'video', 'url' => '', 'title' => '', 'attachment_id' => 0]];
         }
         ?>
         <div class="avg-bulk-wrap">
@@ -183,16 +234,36 @@ class Anchor_Video_Slider_Module {
         </div>
 
         <div id="avg-video-list">
-            <?php foreach ($videos as $i => $v): ?>
+            <?php foreach ($items as $i => $v):
+                $type = $v['type'] ?? 'video';
+                $att_id = intval($v['attachment_id'] ?? 0);
+                $img_preview = $att_id ? wp_get_attachment_image_url($att_id, 'thumbnail') : '';
+            ?>
             <div class="avg-video-row" data-index="<?php echo esc_attr($i); ?>">
-                <input type="url" name="avg_videos[<?php echo esc_attr($i); ?>][url]" value="<?php echo esc_attr($v['url'] ?? ''); ?>" placeholder="https://youtube.com/watch?v=..." class="avg-video-url" />
+                <select name="avg_videos[<?php echo esc_attr($i); ?>][type]" class="avg-item-type">
+                    <option value="video"<?php selected($type, 'video'); ?>>Video</option>
+                    <option value="image"<?php selected($type, 'image'); ?>>Image</option>
+                </select>
+                <div class="avg-video-fields"<?php echo $type === 'image' ? ' style="display:none"' : ''; ?>>
+                    <input type="url" name="avg_videos[<?php echo esc_attr($i); ?>][url]" value="<?php echo esc_attr($v['url'] ?? ''); ?>" placeholder="https://youtube.com/watch?v=..." class="avg-video-url" />
+                </div>
+                <div class="avg-image-fields"<?php echo $type === 'video' ? ' style="display:none"' : ''; ?>>
+                    <input type="hidden" name="avg_videos[<?php echo esc_attr($i); ?>][attachment_id]" value="<?php echo esc_attr($att_id); ?>" class="avg-attachment-id" />
+                    <button type="button" class="button avg-choose-image">Choose Image</button>
+                    <?php if ($img_preview): ?>
+                    <img src="<?php echo esc_url($img_preview); ?>" class="avg-image-preview" />
+                    <?php endif; ?>
+                </div>
                 <input type="text" name="avg_videos[<?php echo esc_attr($i); ?>][title]" value="<?php echo esc_attr($v['title'] ?? ''); ?>" placeholder="Optional title" class="avg-video-title" />
                 <button type="button" class="button avg-remove-video">&times;</button>
             </div>
             <?php endforeach; ?>
         </div>
 
-        <p><button type="button" class="button" id="avg-add-video">+ Add Video</button></p>
+        <p>
+            <button type="button" class="button" id="avg-add-video">+ Add Video</button>
+            <button type="button" class="button" id="avg-add-image">+ Add Image</button>
+        </p>
         <?php
     }
 
@@ -250,7 +321,7 @@ class Anchor_Video_Slider_Module {
             <div class="avg-preview-content">
                 <?php echo $this->render_output('avg-preview-init', $preview_videos, $settings); ?>
             </div>
-            <p class="avg-preview-note">Preview uses sample videos. Your actual videos appear on the front end.</p>
+            <p class="avg-preview-note">Preview uses sample videos. Your actual content appears on the front end.</p>
         </div>
         <?php
     }
@@ -264,19 +335,35 @@ class Anchor_Video_Slider_Module {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
         if (!current_user_can('edit_post', $post_id)) return;
 
-        // Save videos
-        $raw_videos = isset($_POST['avg_videos']) && is_array($_POST['avg_videos']) ? $_POST['avg_videos'] : [];
-        $videos = [];
-        foreach ($raw_videos as $v) {
+        // Save items (videos + images)
+        $raw_items = isset($_POST['avg_videos']) && is_array($_POST['avg_videos']) ? $_POST['avg_videos'] : [];
+        $items = [];
+        foreach ($raw_items as $v) {
             if (!is_array($v)) continue;
-            $url = esc_url_raw(trim($v['url'] ?? ''));
-            if ($url === '') continue;
-            $videos[] = [
-                'url'   => $url,
-                'title' => sanitize_text_field($v['title'] ?? ''),
-            ];
+            $type = sanitize_text_field($v['type'] ?? 'video');
+            if (!in_array($type, ['video', 'image'])) $type = 'video';
+
+            if ($type === 'video') {
+                $url = esc_url_raw(trim($v['url'] ?? ''));
+                if ($url === '') continue;
+                $items[] = [
+                    'type'          => 'video',
+                    'url'           => $url,
+                    'title'         => sanitize_text_field($v['title'] ?? ''),
+                    'attachment_id' => 0,
+                ];
+            } else {
+                $att_id = absint($v['attachment_id'] ?? 0);
+                if ($att_id === 0) continue;
+                $items[] = [
+                    'type'          => 'image',
+                    'url'           => '',
+                    'title'         => sanitize_text_field($v['title'] ?? ''),
+                    'attachment_id' => $att_id,
+                ];
+            }
         }
-        update_post_meta($post_id, 'avg_videos', $videos);
+        update_post_meta($post_id, 'avg_videos', $items);
 
         // Save settings
         $defs = $this->get_setting_defs();
@@ -307,6 +394,8 @@ class Anchor_Video_Slider_Module {
     public function enqueue_admin_assets($hook) {
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT) {
+            wp_enqueue_media();
+
             $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/assets/';
             $base_url = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-video-slider/assets/';
             $ver = filemtime($base_dir . 'admin.js');
@@ -408,7 +497,7 @@ class Anchor_Video_Slider_Module {
             }
             if (!$post) {
                 $found = get_posts([
-                    'post_type'      => self::CPT,
+                    'post_type'      => [self::CPT, self::OLD_CPT],
                     'name'           => $gallery_id,
                     'posts_per_page' => 1,
                     'post_status'    => 'publish',
@@ -459,7 +548,7 @@ class Anchor_Video_Slider_Module {
         if ($atts['autoplay'] !== '') {
             $settings['autoplay'] = ($atts['autoplay'] === '1' || $atts['autoplay'] === 'true');
         }
-        if ($atts['layout'] !== '' && in_array($atts['layout'], ['slider', 'grid', 'carousel', 'masonry'])) {
+        if ($atts['layout'] !== '' && in_array($atts['layout'], ['slider', 'grid', 'carousel', 'masonry', 'logo_carousel'])) {
             $settings['layout'] = $atts['layout'];
         }
         if ($atts['columns'] !== '') {
@@ -473,6 +562,11 @@ class Anchor_Video_Slider_Module {
         }
 
         $videos = $this->hydrate_video_metadata($videos);
+
+        if ($settings['layout'] === 'logo_carousel') {
+            return $this->render_logo_carousel('avg-' . uniqid(), $videos, $settings);
+        }
+
         return $this->render_output('avg-' . uniqid(), $videos, $settings);
     }
 
@@ -511,8 +605,10 @@ class Anchor_Video_Slider_Module {
             foreach (($gallery['videos'] ?? []) as $v) {
                 if (!is_array($v) || empty($v['url'])) continue;
                 $videos[] = [
-                    'url'   => $v['url'],
-                    'title' => $v['title'] ?? '',
+                    'type'          => 'video',
+                    'url'           => $v['url'],
+                    'title'         => $v['title'] ?? '',
+                    'attachment_id' => 0,
                 ];
             }
             update_post_meta($post_id, 'avg_videos', $videos);
@@ -534,7 +630,7 @@ class Anchor_Video_Slider_Module {
     }
 
     /* ══════════════════════════════════════════════════════════
-       Frontend Rendering (unchanged)
+       Frontend Rendering: Standard Layouts
        ══════════════════════════════════════════════════════════ */
 
     private function render_output($uid, $videos, $settings) {
@@ -547,6 +643,12 @@ class Anchor_Video_Slider_Module {
             'avg-hover-' . $settings['hover_effect'],
             'avg-play-' . $settings['play_button_style'],
         ];
+
+        if (!empty($settings['equal_height'])) {
+            $classes[] = 'avg-equal-height';
+        }
+
+        $title_position = $settings['title_position'] ?? 'hidden';
 
         $data_attrs = [
             'data-autoplay' => $settings['autoplay'] ? '1' : '0',
@@ -591,7 +693,13 @@ class Anchor_Video_Slider_Module {
             '--avg-cols-tablet: ' . intval($settings['columns_tablet']),
             '--avg-cols-mobile: ' . intval($settings['columns_mobile']),
             '--avg-thumb-ratio: ' . $thumb_ratio,
+            '--avg-object-fit: ' . esc_attr($settings['object_fit']),
         ];
+
+        $max_height = intval($settings['max_height']);
+        if ($max_height > 0) {
+            $style_vars[] = '--avg-max-height: ' . $max_height . 'px';
+        }
 
         ob_start();
         ?>
@@ -616,31 +724,55 @@ class Anchor_Video_Slider_Module {
 
                 foreach ($videos as $i => $video):
                     $hidden = $paginate && $i >= $per_page;
+                    $item_type = $video['provider'] === 'image' ? 'image' : 'video';
+                    $is_image = ($item_type === 'image');
                 ?>
                 <div class="avg-tile<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                      data-index="<?php echo esc_attr($i); ?>"
+                     data-type="<?php echo esc_attr($item_type); ?>"
+                     <?php if (!$is_image): ?>
                      data-provider="<?php echo esc_attr($video['provider']); ?>"
                      data-video-id="<?php echo esc_attr($video['id']); ?>"
                      data-url="<?php echo esc_attr($video['raw_url'] ?? ''); ?>"
-                     <?php if (!empty($video['duration'])): ?>data-duration="<?php echo esc_attr($video['duration']); ?>"<?php endif; ?>>
+                     <?php if (!empty($video['duration'])): ?>data-duration="<?php echo esc_attr($video['duration']); ?>"<?php endif; ?>
+                     <?php else: ?>
+                     data-full-url="<?php echo esc_url($video['full_url'] ?? $video['thumb']); ?>"
+                     <?php endif; ?>>
                     <div class="avg-tile-inner">
                         <div class="avg-thumb"<?php echo !empty($video['thumb']) ? ' style="background-image:url(\'' . esc_url($video['thumb']) . '\')"' : ''; ?>>
-                            <?php if ($settings['play_button_style'] !== 'none'): ?>
+                            <?php if (!$is_image && $settings['play_button_style'] !== 'none'): ?>
                             <span class="avg-play" aria-hidden="true">
                                 <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>
                             </span>
                             <?php endif; ?>
-                            <?php if ($settings['show_duration'] && !empty($video['duration'])): ?>
+                            <?php if (!$is_image && $settings['show_duration'] && !empty($video['duration'])): ?>
                             <span class="avg-duration"><?php echo esc_html($video['duration']); ?></span>
                             <?php endif; ?>
-                        </div>
-                        <?php if ($settings['show_title'] || $settings['show_channel']): ?>
-                        <div class="avg-meta">
-                            <?php if ($settings['show_title']): ?>
-                            <span class="avg-title"><?php echo esc_html($video['label']); ?></span>
+                            <?php if ($title_position === 'overlay' && !empty($video['label'])): ?>
+                            <div class="avg-title-overlay">
+                                <span class="avg-title"><?php echo esc_html($video['label']); ?></span>
+                            </div>
                             <?php endif; ?>
-                            <?php if ($settings['show_channel'] && !empty($video['channel'])): ?>
-                            <span class="avg-channel"><?php echo esc_html($video['channel']); ?></span>
+                        </div>
+                        <?php
+                        $show_meta_below = false;
+                        if ($title_position === 'below' && !empty($video['label'])) {
+                            $show_meta_below = true;
+                        } elseif ($title_position === 'hidden' && ($settings['show_title'] || $settings['show_channel'])) {
+                            $show_meta_below = true;
+                        }
+                        ?>
+                        <?php if ($show_meta_below): ?>
+                        <div class="avg-meta">
+                            <?php if ($title_position === 'below'): ?>
+                            <span class="avg-title"><?php echo esc_html($video['label']); ?></span>
+                            <?php else: ?>
+                                <?php if ($settings['show_title']): ?>
+                                <span class="avg-title"><?php echo esc_html($video['label']); ?></span>
+                                <?php endif; ?>
+                                <?php if ($settings['show_channel'] && !empty($video['channel'])): ?>
+                                <span class="avg-channel"><?php echo esc_html($video['channel']); ?></span>
+                                <?php endif; ?>
                             <?php endif; ?>
                         </div>
                         <?php endif; ?>
@@ -673,6 +805,84 @@ class Anchor_Video_Slider_Module {
         return ob_get_clean();
     }
 
+    /* ══════════════════════════════════════════════════════════
+       Frontend Rendering: Logo Carousel (Marquee)
+       ══════════════════════════════════════════════════════════ */
+
+    private function render_logo_carousel($uid, $items, $settings) {
+        if (empty($items)) return '';
+
+        $pause_class = !empty($settings['marquee_pause_on_hover']) ? ' avg-marquee-pause' : '';
+        $direction = ($settings['marquee_direction'] === 'right') ? 'reverse' : 'normal';
+
+        $style_vars = [
+            '--avg-marquee-speed: ' . intval($settings['marquee_speed']) . 's',
+            '--avg-marquee-gap: ' . intval($settings['marquee_gap']) . 'px',
+            '--avg-marquee-item-width: ' . intval($settings['marquee_item_width']) . 'px',
+            '--avg-radius: ' . intval($settings['border_radius']) . 'px',
+            '--avg-object-fit: ' . esc_attr($settings['object_fit']),
+        ];
+
+        ob_start();
+        ?>
+        <div class="anchor-video-gallery avg-layout-logo-carousel"
+             id="<?php echo esc_attr($uid); ?>"
+             data-layout="logo_carousel"
+             style="<?php echo esc_attr(implode('; ', $style_vars)); ?>">
+
+            <div class="avg-marquee-row<?php echo esc_attr($pause_class); ?>">
+                <div class="avg-marquee" style="animation-direction: <?php echo esc_attr($direction); ?>">
+                    <div class="avg-marquee-group">
+                        <?php foreach ($items as $item): ?>
+                        <div class="avg-marquee-item">
+                            <?php if (!empty($item['thumb'])): ?>
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="<?php echo esc_attr($item['label'] ?? ''); ?>" loading="lazy" />
+                            <?php endif; ?>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="avg-marquee-group" aria-hidden="true">
+                        <?php foreach ($items as $item): ?>
+                        <div class="avg-marquee-item">
+                            <?php if (!empty($item['thumb'])): ?>
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="lazy" />
+                            <?php endif; ?>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            </div>
+
+            <?php if (!empty($settings['marquee_reverse_row'])): ?>
+            <div class="avg-marquee-row avg-marquee-reverse<?php echo esc_attr($pause_class); ?>">
+                <div class="avg-marquee" style="animation-direction: <?php echo esc_attr($direction === 'normal' ? 'reverse' : 'normal'); ?>">
+                    <div class="avg-marquee-group">
+                        <?php foreach ($items as $item): ?>
+                        <div class="avg-marquee-item">
+                            <?php if (!empty($item['thumb'])): ?>
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="<?php echo esc_attr($item['label'] ?? ''); ?>" loading="lazy" />
+                            <?php endif; ?>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="avg-marquee-group" aria-hidden="true">
+                        <?php foreach ($items as $item): ?>
+                        <div class="avg-marquee-item">
+                            <?php if (!empty($item['thumb'])): ?>
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="lazy" />
+                            <?php endif; ?>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            </div>
+            <?php endif; ?>
+
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
     private function get_play_button_svg($style) {
         switch ($style) {
             case 'youtube':
@@ -688,7 +898,7 @@ class Anchor_Video_Slider_Module {
     }
 
     /* ══════════════════════════════════════════════════════════
-       Video Parsing & Hydration (unchanged)
+       Video Parsing & Hydration
        ══════════════════════════════════════════════════════════ */
 
     private function parse_videos($raw) {
@@ -713,6 +923,32 @@ class Anchor_Video_Slider_Module {
         $out = [];
         foreach ($rows as $row) {
             if (!is_array($row)) continue;
+            $type = $row['type'] ?? 'video';
+
+            if ($type === 'image') {
+                $att_id = absint($row['attachment_id'] ?? 0);
+                if ($att_id === 0) continue;
+                $img_url = wp_get_attachment_image_url($att_id, 'large');
+                $full_url = wp_get_attachment_image_url($att_id, 'full');
+                if (!$img_url) continue;
+                $title = trim((string) ($row['title'] ?? ''));
+                if ($title === '') {
+                    $title = get_the_title($att_id) ?: basename(get_attached_file($att_id) ?: '');
+                }
+                $out[] = [
+                    'provider'  => 'image',
+                    'id'        => (string) $att_id,
+                    'thumb'     => $img_url,
+                    'full_url'  => $full_url ?: $img_url,
+                    'label'     => $title,
+                    'raw_url'   => '',
+                    'duration'  => '',
+                    'channel'   => '',
+                ];
+                continue;
+            }
+
+            // Video type
             $url = trim((string) ($row['url'] ?? ''));
             if ($url === '') continue;
             $video = $this->normalize_video_url($url);
@@ -764,6 +1000,7 @@ class Anchor_Video_Slider_Module {
         $yt_ids = [];
         $vm_ids = [];
         foreach ($videos as $video) {
+            if ($video['provider'] === 'image') continue;
             if ($video['provider'] === 'youtube') $yt_ids[] = $video['id'];
             elseif ($video['provider'] === 'vimeo') $vm_ids[] = $video['id'];
         }
@@ -772,6 +1009,8 @@ class Anchor_Video_Slider_Module {
         $vm_details = $this->fetch_vimeo_details($vm_ids);
 
         foreach ($videos as &$video) {
+            if ($video['provider'] === 'image') continue;
+
             $custom_title = isset($video['custom_title']) ? (string) $video['custom_title'] : '';
             $custom_thumb = isset($video['custom_thumb']) ? (string) $video['custom_thumb'] : '';
 

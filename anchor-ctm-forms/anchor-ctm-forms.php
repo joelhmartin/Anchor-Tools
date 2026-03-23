@@ -57,6 +57,8 @@ class Anchor_CTM_Forms_Module {
         '_ctm_thankyou_html',
         '_ctm_analytics_override',
         '_ctm_analytics',
+        '_ctm_dupe_phone',
+        '_ctm_dupe_phone_href',
     ];
 
     public function __construct() {
@@ -1680,6 +1682,22 @@ PROMPT;
             })();
             </script>
 
+            <!-- Duplicate Submission Protection -->
+            <?php
+            $dupe_phone      = get_post_meta( $post->ID, '_ctm_dupe_phone', true );
+            $dupe_phone_href = get_post_meta( $post->ID, '_ctm_dupe_phone_href', true );
+            ?>
+            <div class="ctm-box">
+                <p><strong><?php esc_html_e( 'Duplicate Submission Protection', 'anchor-schema' ); ?></strong></p>
+                <p class="description"><?php esc_html_e( 'When a phone number is provided, visitors who submit this form will be prevented from resubmitting for 15 minutes. Leave blank to disable.', 'anchor-schema' ); ?></p>
+                <p><label><?php esc_html_e( 'Office Phone (display)', 'anchor-schema' ); ?><br>
+                    <input type="text" name="ctm_dupe_phone" value="<?php echo esc_attr( $dupe_phone ); ?>" class="regular-text" placeholder="(469) 555-1234" />
+                </label></p>
+                <p><label><?php esc_html_e( 'Office Phone (tel: href)', 'anchor-schema' ); ?><br>
+                    <input type="tel" name="ctm_dupe_phone_href" value="<?php echo esc_attr( $dupe_phone_href ); ?>" class="regular-text" placeholder="+14695551234" />
+                </label></p>
+            </div>
+
             <!-- Analytics Override Section -->
             <div class="ctm-box">
                 <p>
@@ -2074,6 +2092,13 @@ PROMPT;
         if ( isset( $_POST['ctm_redirect_url'] ) ) {
             update_post_meta( $post_id, '_ctm_redirect_url', esc_url_raw( $_POST['ctm_redirect_url'] ) );
         }
+        if ( isset( $_POST['ctm_dupe_phone'] ) ) {
+            update_post_meta( $post_id, '_ctm_dupe_phone', sanitize_text_field( $_POST['ctm_dupe_phone'] ) );
+        }
+        if ( isset( $_POST['ctm_dupe_phone_href'] ) ) {
+            update_post_meta( $post_id, '_ctm_dupe_phone_href', sanitize_text_field( $_POST['ctm_dupe_phone_href'] ) );
+        }
+
         if ( isset( $_POST['ctm_thankyou_html'] ) ) {
             $allowed = wp_kses_allowed_html( 'post' );
             // Allow inline SVGs in thank-you popup HTML
@@ -2478,6 +2503,10 @@ PROMPT;
             $success_message = "Thanks! We'll be in touch shortly.";
         }
 
+        // Duplicate submission protection
+        $dupe_phone      = get_post_meta( $post_id, '_ctm_dupe_phone', true );
+        $dupe_phone_href = get_post_meta( $post_id, '_ctm_dupe_phone_href', true );
+
         // After-submission behavior
         $submit_action = get_post_meta( $post_id, '_ctm_submit_action', true ) ?: 'message';
         $redirect_url  = get_post_meta( $post_id, '_ctm_redirect_url', true );
@@ -2575,7 +2604,9 @@ PROMPT;
                 successMessage: <?php echo wp_json_encode( $success_message ); ?>,
                 submitAction: <?php echo wp_json_encode( $submit_action ); ?>,
                 redirectUrl: <?php echo wp_json_encode( $redirect_url ); ?>,
-                thankyouHtml: <?php echo wp_json_encode( $thankyou_html ); ?>
+                thankyouHtml: <?php echo wp_json_encode( $thankyou_html ); ?>,
+                dupePhone: <?php echo wp_json_encode( $dupe_phone ?: '' ); ?>,
+                dupePhoneHref: <?php echo wp_json_encode( $dupe_phone_href ?: '' ); ?>
             };
 
             var ERROR_MSG = 'There has been an error submitting the form. Please try again later.';
@@ -2703,8 +2734,51 @@ PROMPT;
             if (!form.getAttribute('method')) form.setAttribute('method', 'POST');
             if (!form.getAttribute('action')) form.setAttribute('action', CFG.ajax);
 
+            // --- Duplicate submission protection (localStorage, 15 min) ---
+            var DUPE_TTL = 900000; // 15 minutes in ms
+            var DUPE_KEY = 'ctm_dupe_' + CFG.variantId;
+
+            function isDupeSubmission() {
+                try {
+                    var ts = parseInt(localStorage.getItem(DUPE_KEY), 10);
+                    if (!ts || Date.now() - ts > DUPE_TTL) {
+                        localStorage.removeItem(DUPE_KEY);
+                        return false;
+                    }
+                    return true;
+                } catch(e) { return false; }
+            }
+
+            function markSubmitted() {
+                try { localStorage.setItem(DUPE_KEY, String(Date.now())); } catch(e) {}
+            }
+
+            function showDupeMessage() {
+                var phoneHtml = '';
+                if (CFG.dupePhone && CFG.dupePhoneHref) {
+                    phoneHtml = ' call us now at <a href="tel:' + CFG.dupePhoneHref + '">' + CFG.dupePhone + '</a>';
+                } else if (CFG.dupePhone) {
+                    phoneHtml = ' call us now at ' + CFG.dupePhone;
+                }
+                var msg = form.querySelector('.ctm-form-msg') || (function() {
+                    var m = document.createElement('div');
+                    m.className = 'ctm-form-msg';
+                    form.appendChild(m);
+                    return m;
+                })();
+                msg.innerHTML = 'We noticed you already sent a message. Please give us 24 hours to respond.'
+                    + (phoneHtml ? ' If you need immediate help,' + phoneHtml + '.' : '');
+                msg.style.color = '#b45309';
+            }
+
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
+
+                // Duplicate submission guard (only when phone configured)
+                if (CFG.dupePhone && isDupeSubmission()) {
+                    showDupeMessage();
+                    return;
+                }
 
                 // Capture CTM visitor SID at submit time (async script may not be ready at page load)
                 function getCtmSid() {
@@ -2787,6 +2861,8 @@ PROMPT;
                         hideLoading();
 
                         if (data && data.success) {
+                            // Record successful submission for duplicate protection
+                            if (CFG.dupePhone) { markSubmitted(); }
                             fireAnalyticsEvents();
 
                             if (CFG.submitAction === 'redirect' && CFG.redirectUrl) {

@@ -3067,26 +3067,31 @@ PROMPT;
             return;
         }
 
-        // Search for the call by trackback_id. CTM indexes quickly but we
-        // allow a short retry window in case of delay.
+        // Search for the call by trackback_id. CTM's search is broad (tokenized),
+        // so we MUST verify the returned call's SID matches our trackback_id to
+        // avoid writing custom fields to the wrong call (race condition).
         $search_url = "https://api.calltrackingmetrics.com/api/v1/accounts/{$acc}/calls.json?search=" . rawurlencode( $trackback_id ) . '&per_page=1';
         $call_id    = null;
 
-        for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+        for ( $attempt = 0; $attempt < 5; $attempt++ ) {
             $res  = wp_remote_get( $search_url, [ 'headers' => $headers, 'timeout' => 10 ] );
             $body = is_wp_error( $res ) ? null : json_decode( wp_remote_retrieve_body( $res ), true );
 
             if ( ! empty( $body['calls'][0]['id'] ) ) {
-                $call_id = $body['calls'][0]['id'];
-                break;
+                // Verify the found call is actually ours — the generic search
+                // can return unrelated calls if our new one isn't indexed yet.
+                if ( ( $body['calls'][0]['sid'] ?? '' ) === $trackback_id ) {
+                    $call_id = $body['calls'][0]['id'];
+                    break;
+                }
             }
-            if ( $attempt < 2 ) {
-                usleep( 500000 ); // 0.5s
+            if ( $attempt < 4 ) {
+                sleep( 1 );
             }
         }
 
         if ( ! $call_id ) {
-            error_log( '[Anchor CTM Forms] Could not find call for trackback ' . $trackback_id . ' to set custom fields.' );
+            error_log( '[Anchor CTM Forms] Could not find call for trackback ' . $trackback_id . ' after 5 attempts to set custom fields.' );
             return;
         }
 

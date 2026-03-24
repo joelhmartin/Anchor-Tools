@@ -1134,7 +1134,7 @@ class Anchor_Video_Slider_Module {
         }
 
         $yt_details = $this->fetch_youtube_details($yt_ids, $thumb_size);
-        $vm_details = $this->fetch_vimeo_details($vm_ids);
+        $vm_details = $this->fetch_vimeo_details($vm_ids, $thumb_size);
 
         foreach ($videos as &$video) {
             if ($video['provider'] === 'image') continue;
@@ -1248,13 +1248,22 @@ class Anchor_Video_Slider_Module {
         return $out;
     }
 
-    private function fetch_vimeo_details($ids) {
+    private function fetch_vimeo_details($ids, $thumb_size = 'maxres') {
         $ids = array_values(array_unique(array_filter($ids)));
         if (empty($ids)) return [];
 
+        $vimeo_widths = [
+            'maxres'   => '1280',
+            'standard' => '640',
+            'high'     => '480',
+            'medium'   => '320',
+            'default'  => '120',
+        ];
+        $width = $vimeo_widths[$thumb_size] ?? '1280';
+
         $out = [];
         foreach ($ids as $id) {
-            $cache_key = 'anchor_vs_vm_' . md5($id);
+            $cache_key = 'anchor_vs_vm_' . $thumb_size . '_' . md5($id);
             $cached = get_transient($cache_key);
             if (is_array($cached)) {
                 $out[$id] = $cached;
@@ -1262,8 +1271,9 @@ class Anchor_Video_Slider_Module {
             }
 
             $oembed = add_query_arg([
-                'url' => 'https://vimeo.com/' . rawurlencode($id),
-                'dnt' => '1',
+                'url'   => 'https://vimeo.com/' . rawurlencode($id),
+                'width' => $width,
+                'dnt'   => '1',
             ], 'https://vimeo.com/api/oembed.json');
 
             $res = wp_remote_get($oembed, ['timeout' => 12]);
@@ -1271,9 +1281,15 @@ class Anchor_Video_Slider_Module {
             $data = json_decode(wp_remote_retrieve_body($res), true);
             if (!is_array($data)) continue;
 
+            $thumb_url = $data['thumbnail_url'] ?? '';
+            if ($thumb_url) {
+                // Vimeo thumbnail URLs end with _WIDTHxHEIGHT — replace with requested width
+                $thumb_url = preg_replace('/_\d+x\d+/', '_' . $width, $thumb_url);
+            }
+
             $meta = [
                 'title'    => $data['title'] ?? '',
-                'thumb'    => $data['thumbnail_url'] ?? '',
+                'thumb'    => $thumb_url,
                 'duration' => !empty($data['duration']) ? $this->format_seconds_duration((int) $data['duration']) : '',
                 'channel'  => $data['author_name'] ?? '',
             ];

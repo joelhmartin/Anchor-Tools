@@ -160,6 +160,18 @@ class Anchor_CTM_Forms_Module {
         add_settings_field( 'secret_key', __( 'Secret Key', 'anchor-schema' ), [ $this, 'field_password' ], 'anchor-ctm-forms', 'anchor_ctm_main', [ 'key' => 'secret_key' ] );
         add_settings_field( 'account_id', __( 'Account ID', 'anchor-schema' ), [ $this, 'field_text' ], 'anchor-ctm-forms', 'anchor_ctm_main', [ 'key' => 'account_id' ] );
 
+        // reCAPTCHA Section
+        add_settings_section(
+            'anchor_ctm_recaptcha',
+            __( 'reCAPTCHA v3', 'anchor-schema' ),
+            function() {
+                echo '<p>' . esc_html__( 'Add your Google reCAPTCHA v3 keys to protect forms from spam. Get keys at g.co/recaptcha.', 'anchor-schema' ) . '</p>';
+            },
+            'anchor-ctm-forms'
+        );
+        add_settings_field( 'recaptcha_site_key', __( 'Site Key', 'anchor-schema' ), [ $this, 'field_text' ], 'anchor-ctm-forms', 'anchor_ctm_recaptcha', [ 'key' => 'recaptcha_site_key', 'description' => __( 'Public key — embedded in the page.', 'anchor-schema' ) ] );
+        add_settings_field( 'recaptcha_secret_key', __( 'Secret Key', 'anchor-schema' ), [ $this, 'field_password' ], 'anchor-ctm-forms', 'anchor_ctm_recaptcha', [ 'key' => 'recaptcha_secret_key', 'description' => __( 'Private key — used server-side to verify tokens.', 'anchor-schema' ) ] );
+
         // Analytics Settings Section
         add_settings_section(
             'anchor_ctm_analytics',
@@ -242,6 +254,8 @@ class Anchor_CTM_Forms_Module {
         $out['access_key'] = isset( $input['access_key'] ) ? sanitize_text_field( $input['access_key'] ) : '';
         $out['secret_key'] = isset( $input['secret_key'] ) ? sanitize_text_field( $input['secret_key'] ) : '';
         $out['account_id'] = isset( $input['account_id'] ) ? preg_replace( '/[^0-9]/', '', $input['account_id'] ) : '';
+        $out['recaptcha_site_key']   = isset( $input['recaptcha_site_key'] ) ? sanitize_text_field( $input['recaptcha_site_key'] ) : '';
+        $out['recaptcha_secret_key'] = isset( $input['recaptcha_secret_key'] ) ? sanitize_text_field( $input['recaptcha_secret_key'] ) : '';
 
         // Analytics fields
         $analytics_fields = [
@@ -267,6 +281,8 @@ class Anchor_CTM_Forms_Module {
             'access_key' => '',
             'secret_key' => '',
             'account_id' => '',
+            'recaptcha_site_key'   => '',
+            'recaptcha_secret_key' => '',
             // Analytics - Global defaults
             'analytics_ga4_event'       => 'form_submit',
             'analytics_ga4_params'      => '',
@@ -2497,6 +2513,19 @@ PROMPT;
             wp_enqueue_script( 'ctm-form-logic' );
         }
 
+        // reCAPTCHA v3
+        $opts = $this->get_options();
+        $recaptcha_site_key = $opts['recaptcha_site_key'] ?? '';
+        if ( $recaptcha_site_key ) {
+            wp_enqueue_script(
+                'google-recaptcha-v3',
+                'https://www.google.com/recaptcha/api.js?render=' . rawurlencode( $recaptcha_site_key ),
+                [],
+                null,
+                true
+            );
+        }
+
         // Success message (builder mode stores custom message, reactor mode uses default)
         $success_message = get_post_meta( $post_id, '_ctm_success_message', true );
         if ( ! $success_message ) {
@@ -2606,7 +2635,8 @@ PROMPT;
                 redirectUrl: <?php echo wp_json_encode( $redirect_url ); ?>,
                 thankyouHtml: <?php echo wp_json_encode( $thankyou_html ); ?>,
                 dupePhone: <?php echo wp_json_encode( $dupe_phone ?: '' ); ?>,
-                dupePhoneHref: <?php echo wp_json_encode( $dupe_phone_href ?: '' ); ?>
+                dupePhoneHref: <?php echo wp_json_encode( $dupe_phone_href ?: '' ); ?>,
+                recaptchaSiteKey: <?php echo wp_json_encode( $recaptcha_site_key ); ?>
             };
 
             var ERROR_MSG = 'There has been an error submitting the form. Please try again later.';
@@ -2855,7 +2885,27 @@ PROMPT;
                 fd.append('custom_json', JSON.stringify(custom));
                 fd.append('attribution_json', JSON.stringify(attribution));
 
-                fetch(CFG.ajax, { method: 'POST', body: fd })
+                function doFetch() {
+                    return fetch(CFG.ajax, { method: 'POST', body: fd });
+                }
+
+                var fetchPromise;
+                if (CFG.recaptchaSiteKey && typeof grecaptcha !== 'undefined') {
+                    fetchPromise = new Promise(function(resolve, reject) {
+                        grecaptcha.ready(function() {
+                            grecaptcha.execute(CFG.recaptchaSiteKey, { action: 'submit' })
+                                .then(function(token) {
+                                    fd.append('recaptcha_token', token);
+                                    resolve(doFetch());
+                                })
+                                .catch(reject);
+                        });
+                    }).then(function(r) { return r; });
+                } else {
+                    fetchPromise = doFetch();
+                }
+
+                fetchPromise
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         hideLoading();
@@ -2919,6 +2969,33 @@ PROMPT;
         check_ajax_referer( self::NONCE_ACTION, self::NONCE_NAME );
 
         $generic_error = 'There has been an error submitting the form. Please try again later.';
+
+        // reCAPTCHA v3 verification (only if a secret key is configured)
+        $opts           = $this->get_options();
+        $recaptcha_secret = $opts['recaptcha_secret_key'] ?? '';
+        if ( $recaptcha_secret ) {
+            $token = isset( $_POST['recaptcha_token'] ) ? sanitize_text_field( wp_unslash( $_POST['recaptcha_token'] ) ) : '';
+            if ( ! $token ) {
+                wp_send_json_error( [ 'message' => $generic_error ] );
+            }
+            $verify = wp_remote_post( 'https://www.google.com/recaptcha/api/siteverify', [
+                'body' => [
+                    'secret'   => $recaptcha_secret,
+                    'response' => $token,
+                    'remoteip' => $this->get_visitor_ip(),
+                ],
+                'timeout' => 10,
+            ] );
+            if ( is_wp_error( $verify ) ) {
+                error_log( '[Anchor CTM Forms] reCAPTCHA verify request failed: ' . $verify->get_error_message() );
+                wp_send_json_error( [ 'message' => $generic_error ] );
+            }
+            $verify_body = json_decode( wp_remote_retrieve_body( $verify ), true );
+            if ( empty( $verify_body['success'] ) || ( isset( $verify_body['score'] ) && $verify_body['score'] < 0.5 ) ) {
+                error_log( '[Anchor CTM Forms] reCAPTCHA failed. Score: ' . ( $verify_body['score'] ?? 'n/a' ) . ' Action: ' . ( $verify_body['action'] ?? 'n/a' ) );
+                wp_send_json_error( [ 'message' => $generic_error ] );
+            }
+        }
 
         $variant_id = isset( $_POST['variant_id'] ) ? intval( $_POST['variant_id'] ) : 0;
         if ( ! $variant_id ) {

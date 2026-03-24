@@ -547,19 +547,6 @@
   // Gallery Layout (Featured + Strip)
   // ============================================================================
 
-  // Try to upgrade an element's background-image to a higher-res URL.
-  // Aborts silently if the HD image is YouTube's 120×90 "no thumbnail" placeholder.
-  function loadHdThumb(el, hdUrl) {
-    if (!hdUrl || !el) return;
-    var img = new Image();
-    img.onload = function() {
-      if (img.naturalWidth > 120) {
-        el.style.backgroundImage = "url('" + hdUrl + "')";
-      }
-    };
-    img.src = hdUrl;
-  }
-
   // Inject a <link> tag into <head> once, identified by href.
   function ensureLink(rel, href, as) {
     var sel = 'link[rel="' + rel + '"][href="' + href + '"]';
@@ -580,13 +567,6 @@
 
     if (!featured || !strip || thumbs.length === 0) return;
 
-    // Upgrade the initial featured thumbnail to HD immediately
-    var featThumbEl = featured.querySelector('.avg-thumb');
-    if (featThumbEl) {
-      var initHd = featThumbEl.getAttribute('data-thumb-hd');
-      if (initHd) loadHdThumb(featThumbEl, initHd);
-    }
-
     function setFeatured(index) {
       var thumb = thumbs[index];
       if (!thumb) return;
@@ -601,7 +581,6 @@
       var url       = thumb.getAttribute('data-url') || '';
       var fullUrl   = thumb.getAttribute('data-full-url') || '';
       var thumbUrl  = thumb.getAttribute('data-thumb') || '';
-      var thumbHd   = thumb.getAttribute('data-thumb-hd') || '';
       var label     = thumb.getAttribute('data-label') || '';
       var duration  = thumb.getAttribute('data-duration') || '';
       var type      = thumb.getAttribute('data-type') || 'video';
@@ -618,11 +597,10 @@
         featured.removeAttribute('data-full-url');
       }
 
-      // Set regular thumb immediately, then try to upgrade to HD
+      // Update featured thumbnail
       var featThumb = featured.querySelector('.avg-thumb');
-      if (featThumb) {
-        if (thumbUrl) featThumb.style.backgroundImage = "url('" + thumbUrl + "')";
-        if (thumbHd)  loadHdThumb(featThumb, thumbHd);
+      if (featThumb && thumbUrl) {
+        featThumb.style.backgroundImage = "url('" + thumbUrl + "')";
       }
 
       // Update duration badge

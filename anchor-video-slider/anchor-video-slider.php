@@ -55,6 +55,7 @@ class Anchor_Video_Slider_Module {
         'carousel_center' => false,
         'equal_height' => false,
         'max_height' => 0,
+        'thumb_size' => 'maxres',
         'object_fit' => 'cover',
         'title_position' => 'hidden',
         'marquee_speed' => 30,
@@ -93,6 +94,12 @@ class Anchor_Video_Slider_Module {
             'title_position' => ['type' => 'select', 'label' => 'Title Position', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'show_for' => 'grid,masonry,slider,carousel'],
             'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'show_for' => 'grid,masonry,slider,carousel'],
             'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'min' => 0, 'max' => 1200, 'step' => 10, 'show_for' => 'grid,masonry,slider,carousel'],
+            'thumb_size' => ['type' => 'select', 'label' => 'Thumbnail Resolution', 'options' => [
+                'maxres'   => 'Max (1280×720)',
+                'standard' => 'Standard (640×480)',
+                'high'     => 'High (480×360)',
+                'medium'   => 'Medium (320×180)',
+            ], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
             'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'show_for' => 'grid,masonry'],
@@ -561,7 +568,7 @@ class Anchor_Video_Slider_Module {
             $settings['popup_style'] = $atts['popup'];
         }
 
-        $videos = $this->hydrate_video_metadata($videos);
+        $videos = $this->hydrate_video_metadata($videos, $settings['thumb_size'] ?? 'maxres');
 
         return $this->render_dispatch('avg-' . uniqid(), $videos, $settings);
     }
@@ -854,11 +861,6 @@ class Anchor_Video_Slider_Module {
              style="<?php echo esc_attr(implode('; ', $style_vars)); ?>">
 
             <!-- Featured video -->
-            <?php
-            $first_hd_thumb = ($first['provider'] === 'youtube' && !empty($first['id']))
-                ? 'https://i.ytimg.com/vi/' . $first['id'] . '/maxresdefault.jpg'
-                : ($first['thumb'] ?? '');
-            ?>
             <div class="avg-tile avg-gallery-featured"
                  tabindex="0" role="button"
                  data-index="0"
@@ -870,8 +872,7 @@ class Anchor_Video_Slider_Module {
                  <?php else: ?>
                  data-full-url="<?php echo esc_url($first['full_url'] ?? $first['thumb']); ?>"
                  <?php endif; ?>>
-                <div class="avg-thumb"<?php echo !empty($first['thumb']) ? ' style="background-image:url(\'' . esc_url($first['thumb']) . '\')"' : ''; ?>
-                     <?php echo $first_hd_thumb ? 'data-thumb-hd="' . esc_url($first_hd_thumb) . '"' : ''; ?>>
+                <div class="avg-thumb"<?php echo !empty($first['thumb']) ? ' style="background-image:url(\'' . esc_url($first['thumb']) . '\')"' : ''; ?>>
                     <?php if (!$first_img && $settings['play_button_style'] !== 'none'): ?>
                     <span class="avg-play" aria-hidden="true">
                         <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>
@@ -895,9 +896,6 @@ class Anchor_Video_Slider_Module {
                     <?php foreach ($videos as $i => $video):
                         $item_type = $video['provider'] === 'image' ? 'image' : 'video';
                         $is_image  = $item_type === 'image';
-                        $hd_thumb  = ($video['provider'] === 'youtube' && !empty($video['id']))
-                            ? 'https://i.ytimg.com/vi/' . $video['id'] . '/maxresdefault.jpg'
-                            : ($video['thumb'] ?? '');
                     ?>
                     <div class="avg-gallery-thumb<?php echo $i === 0 ? ' active' : ''; ?>"
                          data-index="<?php echo esc_attr($i); ?>"
@@ -910,7 +908,6 @@ class Anchor_Video_Slider_Module {
                          data-full-url="<?php echo esc_url($video['full_url'] ?? $video['thumb']); ?>"
                          <?php endif; ?>
                          data-thumb="<?php echo esc_url($video['thumb'] ?? ''); ?>"
-                         data-thumb-hd="<?php echo esc_url($hd_thumb); ?>"
                          data-label="<?php echo esc_attr($video['label'] ?? ''); ?>"
                          data-duration="<?php echo esc_attr($video['duration'] ?? ''); ?>"
                          title="<?php echo esc_attr($video['label'] ?? ''); ?>">
@@ -1125,7 +1122,7 @@ class Anchor_Video_Slider_Module {
         return null;
     }
 
-    private function hydrate_video_metadata($videos) {
+    private function hydrate_video_metadata($videos, $thumb_size = 'maxres') {
         if (empty($videos)) return [];
 
         $yt_ids = [];
@@ -1136,7 +1133,7 @@ class Anchor_Video_Slider_Module {
             elseif ($video['provider'] === 'vimeo') $vm_ids[] = $video['id'];
         }
 
-        $yt_details = $this->fetch_youtube_details($yt_ids);
+        $yt_details = $this->fetch_youtube_details($yt_ids, $thumb_size);
         $vm_details = $this->fetch_vimeo_details($vm_ids);
 
         foreach ($videos as &$video) {
@@ -1181,15 +1178,31 @@ class Anchor_Video_Slider_Module {
         return '';
     }
 
-    private function fetch_youtube_details($ids) {
+    private function fetch_youtube_details($ids, $thumb_size = 'maxres') {
         $ids = array_values(array_unique(array_filter($ids)));
         if (empty($ids)) return [];
         $api_key = $this->get_google_api_key();
-        if (!$api_key) return [];
+
+        // YouTube direct-URL filenames per size (used for fallback without API key)
+        $yt_filenames = [
+            'maxres'   => 'maxresdefault.jpg',
+            'standard' => 'sddefault.jpg',
+            'high'     => 'hqdefault.jpg',
+            'medium'   => 'mqdefault.jpg',
+        ];
+        $fallback_file = $yt_filenames[$thumb_size] ?? 'maxresdefault.jpg';
+
+        if (!$api_key) {
+            $out = [];
+            foreach ($ids as $id) {
+                $out[$id] = ['thumb' => 'https://img.youtube.com/vi/' . $id . '/' . $fallback_file, 'title' => '', 'duration' => '', 'channel' => ''];
+            }
+            return $out;
+        }
 
         $out = [];
         foreach (array_chunk($ids, 50) as $chunk) {
-            $cache_key = 'anchor_vs_yt_' . md5(implode(',', $chunk));
+            $cache_key = 'anchor_vs_yt_' . $thumb_size . '_' . md5(implode(',', $chunk));
             $cached = get_transient($cache_key);
             if (is_array($cached)) {
                 $out = array_merge($out, $cached);
@@ -1211,16 +1224,20 @@ class Anchor_Video_Slider_Module {
                 $cd = $item['contentDetails'] ?? [];
                 $vid = $item['id'] ?? '';
                 if (!$vid) continue;
+                // Pick the requested size, falling back to progressively lower resolutions
+                $priority = ['maxres', 'standard', 'high', 'medium', 'default'];
+                $start = array_search($thumb_size, $priority, true);
+                if ($start === false) $start = 0;
                 $thumb = '';
-                if (!empty($sn['thumbnails']['high']['url'])) {
-                    $thumb = $sn['thumbnails']['high']['url'];
-                } elseif (!empty($sn['thumbnails'])) {
-                    $first = reset($sn['thumbnails']);
-                    $thumb = $first['url'] ?? '';
+                for ($pi = $start; $pi < count($priority); $pi++) {
+                    if (!empty($sn['thumbnails'][$priority[$pi]]['url'])) {
+                        $thumb = $sn['thumbnails'][$priority[$pi]]['url'];
+                        break;
+                    }
                 }
                 $batch[$vid] = [
                     'title'    => $sn['title'] ?? '',
-                    'thumb'    => $thumb ?: 'https://i.ytimg.com/vi/' . $vid . '/hqdefault.jpg',
+                    'thumb'    => $thumb ?: 'https://img.youtube.com/vi/' . $vid . '/' . $fallback_file,
                     'duration' => !empty($cd['duration']) ? $this->format_iso_duration($cd['duration']) : '',
                     'channel'  => $sn['channelTitle'] ?? '',
                 ];

@@ -547,6 +547,30 @@
   // Gallery Layout (Featured + Strip)
   // ============================================================================
 
+  // Try to upgrade an element's background-image to a higher-res URL.
+  // Aborts silently if the HD image is YouTube's 120×90 "no thumbnail" placeholder.
+  function loadHdThumb(el, hdUrl) {
+    if (!hdUrl || !el) return;
+    var img = new Image();
+    img.onload = function() {
+      if (img.naturalWidth > 120) {
+        el.style.backgroundImage = "url('" + hdUrl + "')";
+      }
+    };
+    img.src = hdUrl;
+  }
+
+  // Inject a <link> tag into <head> once, identified by href.
+  function ensureLink(rel, href, as) {
+    var sel = 'link[rel="' + rel + '"][href="' + href + '"]';
+    if (document.querySelector(sel)) return;
+    var link = document.createElement('link');
+    link.rel = rel;
+    link.href = href;
+    if (as) link.setAttribute('as', as);
+    document.head.appendChild(link);
+  }
+
   function initGalleryLayout(gallery) {
     var featured = gallery.querySelector('.avg-gallery-featured');
     var strip = gallery.querySelector('.avg-gallery-strip');
@@ -555,6 +579,13 @@
     var nextBtn = gallery.querySelector('.avg-nav-next');
 
     if (!featured || !strip || thumbs.length === 0) return;
+
+    // Upgrade the initial featured thumbnail to HD immediately
+    var featThumbEl = featured.querySelector('.avg-thumb');
+    if (featThumbEl) {
+      var initHd = featThumbEl.getAttribute('data-thumb-hd');
+      if (initHd) loadHdThumb(featThumbEl, initHd);
+    }
 
     function setFeatured(index) {
       var thumb = thumbs[index];
@@ -570,6 +601,7 @@
       var url       = thumb.getAttribute('data-url') || '';
       var fullUrl   = thumb.getAttribute('data-full-url') || '';
       var thumbUrl  = thumb.getAttribute('data-thumb') || '';
+      var thumbHd   = thumb.getAttribute('data-thumb-hd') || '';
       var label     = thumb.getAttribute('data-label') || '';
       var duration  = thumb.getAttribute('data-duration') || '';
       var type      = thumb.getAttribute('data-type') || 'video';
@@ -586,10 +618,11 @@
         featured.removeAttribute('data-full-url');
       }
 
-      // Update featured thumbnail
+      // Set regular thumb immediately, then try to upgrade to HD
       var featThumb = featured.querySelector('.avg-thumb');
-      if (featThumb && thumbUrl) {
-        featThumb.style.backgroundImage = "url('" + thumbUrl + "')";
+      if (featThumb) {
+        if (thumbUrl) featThumb.style.backgroundImage = "url('" + thumbUrl + "')";
+        if (thumbHd)  loadHdThumb(featThumb, thumbHd);
       }
 
       // Update duration badge
@@ -632,6 +665,37 @@
       nextBtn.addEventListener('click', function() {
         strip.scrollBy({ left: 200, behavior: 'smooth' });
       });
+    }
+
+    // Lazy-preload video embeds: when gallery nears the viewport, issue
+    // preconnect + prefetch hints so browsers start the handshake before
+    // anyone clicks play. Strip thumbnails are already in the DOM and load
+    // as normal CSS background-images, so no special handling needed.
+    if ('IntersectionObserver' in window) {
+      var preloadObserver = new IntersectionObserver(function(entries) {
+        if (!entries[0].isIntersecting) return;
+        preloadObserver.unobserve(gallery);
+
+        // Preconnect to video CDN origins
+        ensureLink('preconnect', 'https://www.youtube-nocookie.com');
+        ensureLink('preconnect', 'https://player.vimeo.com');
+        ensureLink('dns-prefetch', 'https://i.ytimg.com');
+
+        // Prefetch each video's embed URL
+        thumbs.forEach(function(thumb) {
+          var provider = thumb.getAttribute('data-provider');
+          var videoId  = thumb.getAttribute('data-video-id');
+          if (!provider || !videoId) return;
+
+          var embedUrl = provider === 'youtube'
+            ? 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(videoId)
+            : 'https://player.vimeo.com/video/' + encodeURIComponent(videoId);
+
+          ensureLink('prefetch', embedUrl, 'document');
+        });
+      }, { rootMargin: '200px' });
+
+      preloadObserver.observe(gallery);
     }
   }
 

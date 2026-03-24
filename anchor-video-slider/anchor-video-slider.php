@@ -854,6 +854,11 @@ class Anchor_Video_Slider_Module {
              style="<?php echo esc_attr(implode('; ', $style_vars)); ?>">
 
             <!-- Featured video -->
+            <?php
+            $first_hd_thumb = ($first['provider'] === 'youtube' && !empty($first['id']))
+                ? 'https://i.ytimg.com/vi/' . $first['id'] . '/maxresdefault.jpg'
+                : ($first['thumb'] ?? '');
+            ?>
             <div class="avg-tile avg-gallery-featured"
                  tabindex="0" role="button"
                  data-index="0"
@@ -865,7 +870,8 @@ class Anchor_Video_Slider_Module {
                  <?php else: ?>
                  data-full-url="<?php echo esc_url($first['full_url'] ?? $first['thumb']); ?>"
                  <?php endif; ?>>
-                <div class="avg-thumb"<?php echo !empty($first['thumb']) ? ' style="background-image:url(\'' . esc_url($first['thumb']) . '\')"' : ''; ?>>
+                <div class="avg-thumb"<?php echo !empty($first['thumb']) ? ' style="background-image:url(\'' . esc_url($first['thumb']) . '\')"' : ''; ?>
+                     <?php echo $first_hd_thumb ? 'data-thumb-hd="' . esc_url($first_hd_thumb) . '"' : ''; ?>>
                     <?php if (!$first_img && $settings['play_button_style'] !== 'none'): ?>
                     <span class="avg-play" aria-hidden="true">
                         <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>
@@ -889,6 +895,9 @@ class Anchor_Video_Slider_Module {
                     <?php foreach ($videos as $i => $video):
                         $item_type = $video['provider'] === 'image' ? 'image' : 'video';
                         $is_image  = $item_type === 'image';
+                        $hd_thumb  = ($video['provider'] === 'youtube' && !empty($video['id']))
+                            ? 'https://i.ytimg.com/vi/' . $video['id'] . '/maxresdefault.jpg'
+                            : ($video['thumb'] ?? '');
                     ?>
                     <div class="avg-gallery-thumb<?php echo $i === 0 ? ' active' : ''; ?>"
                          data-index="<?php echo esc_attr($i); ?>"
@@ -901,6 +910,7 @@ class Anchor_Video_Slider_Module {
                          data-full-url="<?php echo esc_url($video['full_url'] ?? $video['thumb']); ?>"
                          <?php endif; ?>
                          data-thumb="<?php echo esc_url($video['thumb'] ?? ''); ?>"
+                         data-thumb-hd="<?php echo esc_url($hd_thumb); ?>"
                          data-label="<?php echo esc_attr($video['label'] ?? ''); ?>"
                          data-duration="<?php echo esc_attr($video['duration'] ?? ''); ?>"
                          title="<?php echo esc_attr($video['label'] ?? ''); ?>">

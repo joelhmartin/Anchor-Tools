@@ -653,6 +653,16 @@ class Anchor_Universal_Popups_Module {
             $parsed = $this->parse_video_url($video_url);
             if ($parsed) {
                 update_post_meta($post_id, 'up_video_id', $parsed['id']);
+                // Clear cached thumbnails so next render re-fetches at current
+                // resolution and picks up any changes on the provider side.
+                $sizes = ['maxres', 'standard', 'high', 'medium', 'default'];
+                foreach ($sizes as $size) {
+                    if ($parsed['provider'] === 'youtube') {
+                        delete_transient('up_yt_' . $size . '_' . $parsed['id']);
+                    } elseif ($parsed['provider'] === 'vimeo') {
+                        delete_transient('up_vm_' . $size . '_' . $parsed['id']);
+                    }
+                }
             }
         }
     }

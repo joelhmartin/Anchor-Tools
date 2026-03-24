@@ -392,6 +392,32 @@ class Anchor_Video_Slider_Module {
             }
             update_post_meta($post_id, $meta_key, $val);
         }
+
+        // Clear cached thumbnails so the next page load re-fetches at the
+        // current resolution and picks up any changes on the provider side.
+        $this->clear_video_transients($post_id);
+    }
+
+    private function clear_video_transients($post_id) {
+        $items = get_post_meta($post_id, 'avg_videos', true);
+        if (!is_array($items)) return;
+
+        $sizes = ['maxres', 'standard', 'high', 'medium', 'default'];
+
+        foreach ($items as $item) {
+            $parsed = $this->normalize_video_url($item['url'] ?? '');
+            if (!$parsed || empty($parsed['id'])) continue;
+            $id       = $parsed['id'];
+            $provider = $parsed['provider'];
+
+            foreach ($sizes as $size) {
+                if ($provider === 'youtube') {
+                    delete_transient('anchor_vs_yt_' . $size . '_' . $id);
+                } elseif ($provider === 'vimeo') {
+                    delete_transient('anchor_vs_vm_' . $size . '_' . md5($id));
+                }
+            }
+        }
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -1200,34 +1226,38 @@ class Anchor_Video_Slider_Module {
             return $out;
         }
 
+        // Check per-video cache first, collect what's missing
         $out = [];
-        foreach (array_chunk($ids, 50) as $chunk) {
-            $cache_key = 'anchor_vs_yt_' . $thumb_size . '_' . md5(implode(',', $chunk));
-            $cached = get_transient($cache_key);
+        $uncached = [];
+        foreach ($ids as $id) {
+            $cached = get_transient('anchor_vs_yt_' . $thumb_size . '_' . $id);
             if (is_array($cached)) {
-                $out = array_merge($out, $cached);
-                continue;
+                $out[$id] = $cached;
+            } else {
+                $uncached[] = $id;
             }
+        }
 
+        // Fetch uncached IDs in batches of 50 (API limit)
+        foreach (array_chunk($uncached, 50) as $chunk) {
             $url = add_query_arg([
                 'part' => 'snippet,contentDetails',
                 'id'   => implode(',', $chunk),
                 'key'  => $api_key,
             ], 'https://www.googleapis.com/youtube/v3/videos');
 
-            $res = wp_remote_get($url, ['timeout' => 12]);
-            if (is_wp_error($res)) continue;
-            $data = json_decode(wp_remote_retrieve_body($res), true);
-            $batch = [];
+            $res  = wp_remote_get($url, ['timeout' => 12]);
+            $data = !is_wp_error($res) ? json_decode(wp_remote_retrieve_body($res), true) : [];
+
+            $priority = ['maxres', 'standard', 'high', 'medium', 'default'];
+            $start    = array_search($thumb_size, $priority, true) ?: 0;
+
             foreach (($data['items'] ?? []) as $item) {
-                $sn = $item['snippet'] ?? [];
-                $cd = $item['contentDetails'] ?? [];
+                $sn  = $item['snippet'] ?? [];
+                $cd  = $item['contentDetails'] ?? [];
                 $vid = $item['id'] ?? '';
                 if (!$vid) continue;
-                // Pick the requested size, falling back to progressively lower resolutions
-                $priority = ['maxres', 'standard', 'high', 'medium', 'default'];
-                $start = array_search($thumb_size, $priority, true);
-                if ($start === false) $start = 0;
+
                 $thumb = '';
                 for ($pi = $start; $pi < count($priority); $pi++) {
                     if (!empty($sn['thumbnails'][$priority[$pi]]['url'])) {
@@ -1235,15 +1265,24 @@ class Anchor_Video_Slider_Module {
                         break;
                     }
                 }
-                $batch[$vid] = [
+                $meta = [
                     'title'    => $sn['title'] ?? '',
                     'thumb'    => $thumb ?: 'https://img.youtube.com/vi/' . $vid . '/' . $fallback_file,
                     'duration' => !empty($cd['duration']) ? $this->format_iso_duration($cd['duration']) : '',
                     'channel'  => $sn['channelTitle'] ?? '',
                 ];
+                $out[$vid] = $meta;
+                set_transient('anchor_vs_yt_' . $thumb_size . '_' . $vid, $meta, 12 * HOUR_IN_SECONDS);
             }
-            set_transient($cache_key, $batch, 12 * HOUR_IN_SECONDS);
-            $out = array_merge($out, $batch);
+
+            // Any IDs the API didn't return get the direct-URL fallback
+            foreach ($chunk as $vid) {
+                if (!isset($out[$vid])) {
+                    $meta = ['title' => '', 'thumb' => 'https://img.youtube.com/vi/' . $vid . '/' . $fallback_file, 'duration' => '', 'channel' => ''];
+                    $out[$vid] = $meta;
+                    set_transient('anchor_vs_yt_' . $thumb_size . '_' . $vid, $meta, 12 * HOUR_IN_SECONDS);
+                }
+            }
         }
         return $out;
     }

@@ -322,15 +322,15 @@
    ========================================================================== */
 
 .avg-layout-slider {
-  overflow-x: auto;
-  overflow-y: hidden;
-  -webkit-overflow-scrolling: touch;
   padding: 8px 0;
-  scrollbar-width: thin;
 }
 
 .avg-layout-slider .avg-track {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
   scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
   padding-bottom: 4px;
 }
 

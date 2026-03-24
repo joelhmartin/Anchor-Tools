@@ -108,6 +108,15 @@ add_action(
     }
 );
 
+add_filter(
+    'plugin_action_links_' . plugin_basename( __FILE__ ),
+    function( $links ) {
+        $settings_link = '<a href="' . esc_url( admin_url( 'options-general.php?page=anchor-schema' ) ) . '">' . __( 'Settings', 'anchor-schema' ) . '</a>';
+        array_unshift( $links, $settings_link );
+        return $links;
+    }
+);
+
 add_action(
     'plugins_loaded',
     function() {

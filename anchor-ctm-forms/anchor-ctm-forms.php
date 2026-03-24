@@ -171,6 +171,7 @@ class Anchor_CTM_Forms_Module {
         );
         add_settings_field( 'recaptcha_site_key', __( 'Site Key', 'anchor-schema' ), [ $this, 'field_text' ], 'anchor-ctm-forms', 'anchor_ctm_recaptcha', [ 'key' => 'recaptcha_site_key', 'description' => __( 'Public key — embedded in the page.', 'anchor-schema' ) ] );
         add_settings_field( 'recaptcha_secret_key', __( 'Secret Key', 'anchor-schema' ), [ $this, 'field_password' ], 'anchor-ctm-forms', 'anchor_ctm_recaptcha', [ 'key' => 'recaptcha_secret_key', 'description' => __( 'Private key — used server-side to verify tokens.', 'anchor-schema' ) ] );
+        add_settings_field( 'recaptcha_min_score', __( 'Minimum Score', 'anchor-schema' ), [ $this, 'field_recaptcha_score' ], 'anchor-ctm-forms', 'anchor_ctm_recaptcha', [ 'key' => 'recaptcha_min_score' ] );
 
         // Analytics Settings Section
         add_settings_section(
@@ -249,6 +250,20 @@ class Anchor_CTM_Forms_Module {
         printf( '<input type="password" name="%s[%s]" value="%s" class="regular-text" autocomplete="off" />', esc_attr( self::OPTION_KEY ), esc_attr( $args['key'] ), $val );
     }
 
+    public function field_recaptcha_score( $args ) {
+        $opts  = $this->get_options();
+        $val   = (float) ( $opts['recaptcha_min_score'] ?? 0.5 );
+        $name  = esc_attr( self::OPTION_KEY ) . '[recaptcha_min_score]';
+        $steps = [ '0.1', '0.2', '0.3', '0.4', '0.5', '0.6', '0.7', '0.8', '0.9', '1.0' ];
+        echo '<select name="' . $name . '">';
+        foreach ( $steps as $step ) {
+            $selected = selected( (float) $step, $val, false );
+            echo '<option value="' . esc_attr( $step ) . '"' . $selected . '>' . esc_html( $step ) . '</option>';
+        }
+        echo '</select>';
+        echo '<p class="description">' . esc_html__( 'Submissions scoring below this threshold are rejected. Google recommends 0.5 as a starting point.', 'anchor-schema' ) . '</p>';
+    }
+
     public function sanitize_options( $input ) {
         $out = $this->get_options();
         $out['access_key'] = isset( $input['access_key'] ) ? sanitize_text_field( $input['access_key'] ) : '';
@@ -256,6 +271,10 @@ class Anchor_CTM_Forms_Module {
         $out['account_id'] = isset( $input['account_id'] ) ? preg_replace( '/[^0-9]/', '', $input['account_id'] ) : '';
         $out['recaptcha_site_key']   = isset( $input['recaptcha_site_key'] ) ? sanitize_text_field( $input['recaptcha_site_key'] ) : '';
         $out['recaptcha_secret_key'] = isset( $input['recaptcha_secret_key'] ) ? sanitize_text_field( $input['recaptcha_secret_key'] ) : '';
+        if ( isset( $input['recaptcha_min_score'] ) ) {
+            $score = (float) $input['recaptcha_min_score'];
+            $out['recaptcha_min_score'] = (string) max( 0.0, min( 1.0, $score ) );
+        }
 
         // Analytics fields
         $analytics_fields = [
@@ -283,6 +302,7 @@ class Anchor_CTM_Forms_Module {
             'account_id' => '',
             'recaptcha_site_key'   => '',
             'recaptcha_secret_key' => '',
+            'recaptcha_min_score'  => '0.5',
             // Analytics - Global defaults
             'analytics_ga4_event'       => 'form_submit',
             'analytics_ga4_params'      => '',
@@ -2990,8 +3010,9 @@ PROMPT;
                 error_log( '[Anchor CTM Forms] reCAPTCHA verify request failed: ' . $verify->get_error_message() );
                 wp_send_json_error( [ 'message' => $generic_error ] );
             }
-            $verify_body = json_decode( wp_remote_retrieve_body( $verify ), true );
-            if ( empty( $verify_body['success'] ) || ( isset( $verify_body['score'] ) && $verify_body['score'] < 0.5 ) ) {
+            $verify_body  = json_decode( wp_remote_retrieve_body( $verify ), true );
+            $min_score    = (float) ( $opts['recaptcha_min_score'] ?? 0.5 );
+            if ( empty( $verify_body['success'] ) || ( isset( $verify_body['score'] ) && $verify_body['score'] < $min_score ) ) {
                 error_log( '[Anchor CTM Forms] reCAPTCHA failed. Score: ' . ( $verify_body['score'] ?? 'n/a' ) . ' Action: ' . ( $verify_body['action'] ?? 'n/a' ) );
                 wp_send_json_error( [ 'message' => $generic_error ] );
             }

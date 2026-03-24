@@ -16,6 +16,9 @@ class Anchor_Shortcodes_Module {
         add_action( 'init', [ $this, 'register_static_shortcodes' ] );
         add_action( 'init', [ $this, 'register_custom_shortcodes' ] );
         add_action( 'admin_footer', [ $this, 'admin_inline_js' ] );
+        add_action( 'anchor_settings_enqueue_shortcodes', function() {
+            wp_enqueue_media();
+        } );
     }
 
     /* ---------------- Admin UI ---------------- */
@@ -48,11 +51,11 @@ $fields = [
     [ 'phone', 'Phone', 'text', '+1 (555) 123-4567' ],
     [ 'email', 'Email', 'text', get_option( 'admin_email' ) ],
     [ 'business_hours', 'Business Hours', 'textarea', 'Mon–Fri 9–5' ],
-    [ 'site_icon_url', 'Site Icon URL', 'text', get_site_icon_url() ],
-    [ 'site_image_url', 'Site Image URL', 'text', site_url() . '/wp-content/uploads/' ],
-    [ 'site_image_white', 'Site Image White', 'text', site_url() . '/wp-content/uploads/' ],
-    [ 'site_image_horizontal', 'Site Image Horizontal', 'text', site_url() . '/wp-content/uploads/' ],
-    [ 'site_image_horizontal_white', 'Site Image Horizontal White', 'text', site_url() . '/wp-content/uploads/' ],
+    [ 'site_icon_url', 'Site Icon URL', 'image_url', '' ],
+    [ 'site_image_url', 'Site Image URL', 'image_url', '' ],
+    [ 'site_image_white', 'Site Image White', 'image_url', '' ],
+    [ 'site_image_horizontal', 'Site Image Horizontal', 'image_url', '' ],
+    [ 'site_image_horizontal_white', 'Site Image Horizontal White', 'image_url', '' ],
 ];
 
         foreach ( $fields as $f ) {
@@ -155,6 +158,21 @@ $fields = [
         $val = esc_textarea( $opts[$args['key']] ?? '' );
         $ph  = esc_attr( $args['placeholder'] ?? '' );
         echo "<textarea class='large-text code' rows='3' name='" . self::OPTION_KEY . "[{$args['key']}]' placeholder='$ph'>$val</textarea>";
+    }
+
+    public function field_image_url( $args ) {
+        $opts    = $this->get_options();
+        $key     = $args['key'];
+        $val     = esc_attr( $opts[$key] ?? '' );
+        $name    = self::OPTION_KEY . "[$key]";
+        $preview = $opts[$key] ? '<img src="' . esc_url( $opts[$key] ) . '" style="display:block;max-width:200px;max-height:80px;object-fit:contain;margin-top:6px;border:1px solid #ddd;border-radius:4px;padding:3px;background:#f9f9f9;" />' : '';
+        echo "
+        <div class='cgsl-image-field' data-key='$key'>
+            <input type='text' class='regular-text cgsl-image-url' name='$name' value='$val' />
+            <button type='button' class='button cgsl-select-image' style='margin-left:4px;'>Select Image</button>
+            <button type='button' class='button-link cgsl-remove-image' style='margin-left:6px;color:#b32d2e;" . ( $val ? '' : 'display:none;' ) . "'>Remove</button>
+            <div class='cgsl-image-preview'>$preview</div>
+        </div>";
     }
 
     public function field_custom_shortcodes() {
@@ -270,6 +288,7 @@ $fields = [
         <script>
         (function($){
             $(function(){
+                // Custom shortcodes table
                 const $tbody = $('.cgsl-rows'), tmpl = $('#tmpl-cgsl-row').html();
                 $('#cgsl-add-row').on('click',function(){
                     let index=$tbody.find('tr.cgsl-row').length;
@@ -277,6 +296,39 @@ $fields = [
                 });
                 $tbody.on('click','.cgsl-remove-row',function(){
                     $(this).closest('tr').remove();
+                });
+
+                // Image URL media picker
+                var mediaFrame;
+                $(document).on('click', '.cgsl-select-image', function(e) {
+                    e.preventDefault();
+                    var $field = $(this).closest('.cgsl-image-field');
+
+                    mediaFrame = wp.media({
+                        title: 'Select Image',
+                        button: { text: 'Use this image' },
+                        multiple: false,
+                        library: { type: 'image' }
+                    });
+
+                    mediaFrame.on('select', function() {
+                        var attachment = mediaFrame.state().get('selection').first().toJSON();
+                        var url = attachment.url;
+                        $field.find('.cgsl-image-url').val(url);
+                        $field.find('.cgsl-remove-image').show();
+                        var $preview = $field.find('.cgsl-image-preview');
+                        $preview.html('<img src="' + url + '" style="display:block;max-width:200px;max-height:80px;object-fit:contain;margin-top:6px;border:1px solid #ddd;border-radius:4px;padding:3px;background:#f9f9f9;" />');
+                    });
+
+                    mediaFrame.open();
+                });
+
+                $(document).on('click', '.cgsl-remove-image', function(e) {
+                    e.preventDefault();
+                    var $field = $(this).closest('.cgsl-image-field');
+                    $field.find('.cgsl-image-url').val('');
+                    $field.find('.cgsl-image-preview').html('');
+                    $(this).hide();
                 });
             });
         })(jQuery);

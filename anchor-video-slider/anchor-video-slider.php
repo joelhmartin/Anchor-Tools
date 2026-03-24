@@ -69,9 +69,9 @@ class Anchor_Video_Slider_Module {
 
     private function get_setting_defs() {
         return [
-            'layout' => ['type' => 'select', 'label' => 'Layout', 'options' => ['slider' => 'Slider', 'grid' => 'Grid', 'carousel' => 'Carousel', 'masonry' => 'Masonry', 'logo_carousel' => 'Logo Carousel']],
-            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'show_for' => 'slider,grid,carousel,masonry'],
-            'theme' => ['type' => 'select', 'label' => 'Theme', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto'], 'show_for' => 'slider,grid,carousel,masonry'],
+            'layout' => ['type' => 'select', 'label' => 'Layout', 'options' => ['slider' => 'Slider', 'grid' => 'Grid', 'carousel' => 'Carousel', 'masonry' => 'Masonry', 'gallery' => 'Gallery', 'logo_carousel' => 'Logo Carousel']],
+            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
+            'theme' => ['type' => 'select', 'label' => 'Theme', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic'], 'show_for' => 'slider,grid,carousel,masonry'],
             'thumb_aspect_ratio' => ['type' => 'select', 'label' => 'Thumbnail Aspect Ratio', 'options' => [
                 '16:9' => '16:9 (Widescreen)',
@@ -81,20 +81,20 @@ class Anchor_Video_Slider_Module {
                 '21:9' => '21:9 (Cinematic)',
             ], 'show_for' => 'slider,grid,carousel,masonry'],
             'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'show_for' => 'slider,grid,carousel,masonry'],
-            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'show_for' => 'slider,grid,carousel,masonry'],
+            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'min' => 0, 'max' => 32, 'step' => 2],
             'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'min' => 2, 'max' => 6, 'show_for' => 'grid,masonry'],
             'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'min' => 1, 'max' => 4, 'show_for' => 'grid,masonry'],
             'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'min' => 1, 'max' => 2, 'show_for' => 'grid,masonry'],
             'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'min' => 0, 'max' => 60, 'step' => 4],
-            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'show_for' => 'slider,grid,carousel,masonry'],
-            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'show_for' => 'slider,grid,carousel,masonry'],
+            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
+            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'show_for' => 'slider,grid,carousel,masonry'],
             'title_position' => ['type' => 'select', 'label' => 'Title Position', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'show_for' => 'grid,masonry,slider,carousel'],
             'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'show_for' => 'grid,masonry,slider,carousel'],
             'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'min' => 0, 'max' => 1200, 'step' => 10, 'show_for' => 'grid,masonry,slider,carousel'],
             'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
-            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'show_for' => 'slider,grid,carousel,masonry'],
+            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'show_for' => 'grid,masonry'],
             'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'min' => 1, 'max' => 100, 'show_for' => 'grid,masonry'],
             'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'show_for' => 'grid,masonry'],
@@ -319,7 +319,7 @@ class Anchor_Video_Slider_Module {
         ?>
         <div class="avg-preview-wrap">
             <div class="avg-preview-content">
-                <?php echo $this->render_output('avg-preview-init', $preview_videos, $settings); ?>
+                <?php echo $this->render_dispatch('avg-preview-init', $preview_videos, $settings); ?>
             </div>
             <p class="avg-preview-note">Preview uses sample videos. Your actual content appears on the front end.</p>
         </div>
@@ -463,7 +463,7 @@ class Anchor_Video_Slider_Module {
             $v['raw_url'] = 'https://youtube.com/watch?v=' . $v['id'];
         }
 
-        $html = $this->render_output('avg-preview-' . uniqid(), $videos, $settings);
+        $html = $this->render_dispatch('avg-preview-' . uniqid(), $videos, $settings);
         wp_send_json_success(['html' => $html]);
     }
 
@@ -563,11 +563,7 @@ class Anchor_Video_Slider_Module {
 
         $videos = $this->hydrate_video_metadata($videos);
 
-        if ($settings['layout'] === 'logo_carousel') {
-            return $this->render_logo_carousel('avg-' . uniqid(), $videos, $settings);
-        }
-
-        return $this->render_output('avg-' . uniqid(), $videos, $settings);
+        return $this->render_dispatch('avg-' . uniqid(), $videos, $settings);
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -800,6 +796,131 @@ class Anchor_Video_Slider_Module {
                 <?php endif; ?>
             </div>
             <?php endif; ?>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       Frontend Rendering: Dispatch
+       ══════════════════════════════════════════════════════════ */
+
+    private function render_dispatch($uid, $videos, $settings) {
+        if ($settings['layout'] === 'logo_carousel') {
+            return $this->render_logo_carousel($uid, $videos, $settings);
+        }
+        if ($settings['layout'] === 'gallery') {
+            return $this->render_gallery_layout($uid, $videos, $settings);
+        }
+        return $this->render_output($uid, $videos, $settings);
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       Frontend Rendering: Gallery Layout (Featured + Strip)
+       ══════════════════════════════════════════════════════════ */
+
+    private function render_gallery_layout($uid, $videos, $settings) {
+        if (empty($videos)) return '';
+
+        $classes = [
+            'anchor-video-gallery',
+            'avg-layout-gallery',
+            'avg-theme-' . $settings['theme'],
+            'avg-play-' . $settings['play_button_style'],
+        ];
+
+        $style_vars = [
+            '--avg-gap: '    . intval($settings['gap']) . 'px',
+            '--avg-radius: ' . intval($settings['border_radius']) . 'px',
+        ];
+
+        $data_attrs = [
+            'data-layout'   => 'gallery',
+            'data-popup'    => $settings['popup_style'],
+            'data-autoplay' => $settings['autoplay'] ? '1' : '0',
+        ];
+
+        $first      = $videos[0];
+        $first_type = $first['provider'] === 'image' ? 'image' : 'video';
+        $first_img  = $first_type === 'image';
+
+        ob_start();
+        ?>
+        <div class="<?php echo esc_attr(implode(' ', $classes)); ?>"
+             id="<?php echo esc_attr($uid); ?>"
+             <?php foreach ($data_attrs as $key => $val): ?>
+                <?php echo esc_attr($key); ?>="<?php echo esc_attr($val); ?>"
+             <?php endforeach; ?>
+             style="<?php echo esc_attr(implode('; ', $style_vars)); ?>">
+
+            <!-- Featured video -->
+            <div class="avg-tile avg-gallery-featured"
+                 tabindex="0" role="button"
+                 data-index="0"
+                 data-type="<?php echo esc_attr($first_type); ?>"
+                 <?php if (!$first_img): ?>
+                 data-provider="<?php echo esc_attr($first['provider']); ?>"
+                 data-video-id="<?php echo esc_attr($first['id']); ?>"
+                 data-url="<?php echo esc_attr($first['raw_url'] ?? ''); ?>"
+                 <?php else: ?>
+                 data-full-url="<?php echo esc_url($first['full_url'] ?? $first['thumb']); ?>"
+                 <?php endif; ?>>
+                <div class="avg-thumb"<?php echo !empty($first['thumb']) ? ' style="background-image:url(\'' . esc_url($first['thumb']) . '\')"' : ''; ?>>
+                    <?php if (!$first_img && $settings['play_button_style'] !== 'none'): ?>
+                    <span class="avg-play" aria-hidden="true">
+                        <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>
+                    </span>
+                    <?php endif; ?>
+                    <?php if (!$first_img && $settings['show_duration'] && !empty($first['duration'])): ?>
+                    <span class="avg-duration"><?php echo esc_html($first['duration']); ?></span>
+                    <?php endif; ?>
+                </div>
+                <?php if ($settings['show_title'] && !empty($first['label'])): ?>
+                <div class="avg-gallery-featured-title"><?php echo esc_html($first['label']); ?></div>
+                <?php endif; ?>
+            </div>
+
+            <!-- Thumbnail strip -->
+            <div class="avg-gallery-strip-wrapper">
+                <button type="button" class="avg-nav avg-nav-prev" aria-label="<?php esc_attr_e('Previous', 'anchor-schema'); ?>">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15,6 9,12 15,18"></polyline></svg>
+                </button>
+                <div class="avg-gallery-strip">
+                    <?php foreach ($videos as $i => $video):
+                        $item_type = $video['provider'] === 'image' ? 'image' : 'video';
+                        $is_image  = $item_type === 'image';
+                    ?>
+                    <div class="avg-gallery-thumb<?php echo $i === 0 ? ' active' : ''; ?>"
+                         data-index="<?php echo esc_attr($i); ?>"
+                         data-type="<?php echo esc_attr($item_type); ?>"
+                         <?php if (!$is_image): ?>
+                         data-provider="<?php echo esc_attr($video['provider']); ?>"
+                         data-video-id="<?php echo esc_attr($video['id']); ?>"
+                         data-url="<?php echo esc_attr($video['raw_url'] ?? ''); ?>"
+                         <?php else: ?>
+                         data-full-url="<?php echo esc_url($video['full_url'] ?? $video['thumb']); ?>"
+                         <?php endif; ?>
+                         data-thumb="<?php echo esc_url($video['thumb'] ?? ''); ?>"
+                         data-label="<?php echo esc_attr($video['label'] ?? ''); ?>"
+                         data-duration="<?php echo esc_attr($video['duration'] ?? ''); ?>"
+                         title="<?php echo esc_attr($video['label'] ?? ''); ?>">
+                        <div class="avg-gallery-thumb-img"<?php echo !empty($video['thumb']) ? ' style="background-image:url(\'' . esc_url($video['thumb']) . '\')"' : ''; ?>>
+                            <?php if (!$is_image && $settings['play_button_style'] !== 'none'): ?>
+                            <span class="avg-play" aria-hidden="true">
+                                <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>
+                            </span>
+                            <?php endif; ?>
+                            <?php if (!$is_image && $settings['show_duration'] && !empty($video['duration'])): ?>
+                            <span class="avg-duration"><?php echo esc_html($video['duration']); ?></span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <button type="button" class="avg-nav avg-nav-next" aria-label="<?php esc_attr_e('Next', 'anchor-schema'); ?>">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9,6 15,12 9,18"></polyline></svg>
+                </button>
+            </div>
         </div>
         <?php
         return ob_get_clean();

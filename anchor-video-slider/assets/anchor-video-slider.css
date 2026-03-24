@@ -512,6 +512,161 @@
 }
 
 /* ==========================================================================
+   Layout: Gallery (Featured + Strip)
+   ========================================================================== */
+
+.avg-layout-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: var(--avg-gap);
+}
+
+/* Featured video tile */
+.avg-gallery-featured {
+  width: 100%;
+  cursor: pointer;
+  border-radius: var(--avg-radius);
+  overflow: hidden;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.avg-gallery-featured .avg-thumb {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+}
+
+.avg-gallery-featured .avg-play svg {
+  width: 72px;
+  height: 72px;
+}
+
+.avg-gallery-featured-title {
+  padding: 14px 18px;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--avg-text);
+  background: var(--avg-bg);
+}
+
+.avg-gallery-featured:hover .avg-play,
+.avg-gallery-featured:focus .avg-play {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+/* Thumbnail strip */
+.avg-gallery-strip-wrapper {
+  position: relative;
+}
+
+.avg-gallery-strip {
+  display: flex;
+  gap: var(--avg-gap);
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+  padding: 4px 0 8px;
+}
+
+.avg-gallery-thumb {
+  flex: 0 0 auto;
+  width: 160px;
+  cursor: pointer;
+  border-radius: calc(var(--avg-radius) * 0.7);
+  overflow: hidden;
+  scroll-snap-align: start;
+  opacity: 0.55;
+  transition: opacity 0.2s, outline-color 0.2s;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+.avg-gallery-thumb:hover {
+  opacity: 0.85;
+}
+
+.avg-gallery-thumb.active {
+  opacity: 1;
+  outline-color: var(--avg-text);
+}
+
+.avg-gallery-thumb-img {
+  aspect-ratio: 16 / 9;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+}
+
+.avg-gallery-thumb .avg-play {
+  opacity: 0.7;
+}
+
+.avg-gallery-thumb .avg-play svg {
+  width: 32px;
+  height: 32px;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.5));
+}
+
+.avg-gallery-thumb .avg-duration {
+  font-size: 10px;
+  padding: 1px 5px;
+}
+
+/* Nav arrows sit inside strip-wrapper */
+.avg-gallery-strip-wrapper .avg-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--avg-play-bg);
+  color: var(--avg-play-color);
+  cursor: pointer;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  transition: transform 0.15s, opacity 0.15s;
+  opacity: 0;
+}
+
+.avg-gallery-strip-wrapper:hover .avg-nav {
+  opacity: 1;
+}
+
+.avg-gallery-strip-wrapper .avg-nav:hover {
+  transform: translateY(-50%) scale(1.1);
+}
+
+.avg-gallery-strip-wrapper .avg-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.avg-gallery-strip-wrapper .avg-nav svg {
+  width: 18px;
+  height: 18px;
+}
+
+.avg-gallery-strip-wrapper .avg-nav-prev {
+  left: 0;
+}
+
+.avg-gallery-strip-wrapper .avg-nav-next {
+  right: 0;
+}
+
+/* ==========================================================================
    Layout: Logo Carousel (Marquee)
    ========================================================================== */
 

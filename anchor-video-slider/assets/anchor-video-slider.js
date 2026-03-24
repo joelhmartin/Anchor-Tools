@@ -544,6 +544,98 @@
   }
 
   // ============================================================================
+  // Gallery Layout (Featured + Strip)
+  // ============================================================================
+
+  function initGalleryLayout(gallery) {
+    var featured = gallery.querySelector('.avg-gallery-featured');
+    var strip = gallery.querySelector('.avg-gallery-strip');
+    var thumbs = gallery.querySelectorAll('.avg-gallery-thumb');
+    var prevBtn = gallery.querySelector('.avg-nav-prev');
+    var nextBtn = gallery.querySelector('.avg-nav-next');
+
+    if (!featured || !strip || thumbs.length === 0) return;
+
+    function setFeatured(index) {
+      var thumb = thumbs[index];
+      if (!thumb) return;
+
+      // Update active strip state
+      thumbs.forEach(function(t) { t.classList.remove('active'); });
+      thumb.classList.add('active');
+
+      // Pull data from the clicked thumb
+      var provider  = thumb.getAttribute('data-provider') || '';
+      var videoId   = thumb.getAttribute('data-video-id') || '';
+      var url       = thumb.getAttribute('data-url') || '';
+      var fullUrl   = thumb.getAttribute('data-full-url') || '';
+      var thumbUrl  = thumb.getAttribute('data-thumb') || '';
+      var label     = thumb.getAttribute('data-label') || '';
+      var duration  = thumb.getAttribute('data-duration') || '';
+      var type      = thumb.getAttribute('data-type') || 'video';
+
+      // Update featured data attrs (used by handleTileClick for popup)
+      featured.setAttribute('data-index', index);
+      featured.setAttribute('data-type', type);
+      featured.setAttribute('data-provider', provider);
+      featured.setAttribute('data-video-id', videoId);
+      featured.setAttribute('data-url', url);
+      if (fullUrl) {
+        featured.setAttribute('data-full-url', fullUrl);
+      } else {
+        featured.removeAttribute('data-full-url');
+      }
+
+      // Update featured thumbnail
+      var featThumb = featured.querySelector('.avg-thumb');
+      if (featThumb && thumbUrl) {
+        featThumb.style.backgroundImage = "url('" + thumbUrl + "')";
+      }
+
+      // Update duration badge
+      var durationEl = featured.querySelector('.avg-duration');
+      if (durationEl) {
+        durationEl.textContent = duration;
+        durationEl.style.display = duration ? '' : 'none';
+      }
+
+      // Update title
+      var titleEl = featured.querySelector('.avg-gallery-featured-title');
+      if (titleEl) {
+        titleEl.textContent = label;
+      }
+
+      // Scroll active thumb into view within the strip
+      thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+
+    // Thumbnail clicks
+    thumbs.forEach(function(thumb, i) {
+      thumb.setAttribute('tabindex', '0');
+      thumb.setAttribute('role', 'button');
+      thumb.addEventListener('click', function() { setFeatured(i); });
+      thumb.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          setFeatured(i);
+        }
+      });
+    });
+
+    // Strip nav arrows scroll the strip
+    if (prevBtn) {
+      prevBtn.addEventListener('click', function() {
+        strip.scrollBy({ left: -200, behavior: 'smooth' });
+      });
+    }
+    if (nextBtn) {
+      nextBtn.addEventListener('click', function() {
+        strip.scrollBy({ left: 200, behavior: 'smooth' });
+      });
+    }
+  }
+
+  // ============================================================================
   // Pagination
   // ============================================================================
 
@@ -681,6 +773,11 @@
       // Skip logo_carousel — pure CSS, no JS needed
       if (layout === 'logo_carousel') return;
 
+      if (layout === 'gallery') {
+        initGalleryLayout(gallery);
+        return;
+      }
+
       initSliderNavigation(gallery);
       initPagination(gallery);
 
@@ -712,6 +809,11 @@
     galleries.forEach(function(gallery) {
       var layout = gallery.getAttribute('data-layout');
       if (layout === 'logo_carousel') return;
+
+      if (layout === 'gallery') {
+        initGalleryLayout(gallery);
+        return;
+      }
 
       initSliderNavigation(gallery);
       initPagination(gallery);

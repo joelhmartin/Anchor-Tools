@@ -151,6 +151,10 @@
         var widget = document.getElementById('anchor-a11y-widget');
         if (!widget) return;
 
+        // Move widget outside <body> so body-level CSS filters
+        // (contrast, grayscale) don't break position:fixed
+        document.documentElement.appendChild(widget);
+
         // Apply saved preferences immediately
         applyAll();
 

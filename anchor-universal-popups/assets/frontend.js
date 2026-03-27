@@ -140,6 +140,26 @@
     return 'https://player.vimeo.com/video/' + encodeURIComponent(id) + '?' + p.toString();
   }
 
+  /**
+   * Activate <script> tags inside a container after innerHTML insertion.
+   * innerHTML does not execute scripts, so we replace each <script> with
+   * a fresh element the browser will load/run.
+   */
+  function activateScripts(container){
+    var scripts = container.querySelectorAll('script');
+    for(var i = 0; i < scripts.length; i++){
+      var old = scripts[i];
+      var s   = document.createElement('script');
+      // Copy all attributes (src, async, type, etc.)
+      for(var j = 0; j < old.attributes.length; j++){
+        s.setAttribute(old.attributes[j].name, old.attributes[j].value);
+      }
+      // Copy inline content
+      if(old.textContent) s.textContent = old.textContent;
+      old.parentNode.replaceChild(s, old);
+    }
+  }
+
   function openVideo(modal, provider, id, autoplay, extra){
     var frameWrap = modal.querySelector('[data-frame]');
     if(!frameWrap) return;
@@ -154,6 +174,7 @@
       var css = extra && extra.css ? '<style>'+extra.css+'</style>' : '';
       var html = extra && extra.html ? extra.html : '';
       after.innerHTML = css + html;
+      activateScripts(after);
       try{ new Function(extra && extra.js ? extra.js : '')(); }catch(e){}
     }
 
@@ -167,6 +188,7 @@
     if(!content) return;
     var style = '<style>'+ (css || '') +'</style>';
     content.innerHTML = style + (html || '');
+    activateScripts(content);
     try{ new Function(js || '')(); }catch(e){}
     modal.hidden = false;
     var closeBtn = modal.querySelector('.up-modal__close');

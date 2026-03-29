@@ -17,8 +17,23 @@ class Anchor_Accessibility_Module {
         return [
             'widget_color'       => '#0073aa',
             'accent_color'       => '#005177',
-            'position'           => 'bottom-right', // bottom-left | bottom-right
-            'icon_size'          => '56',            // px
+            'position'           => 'bottom-left', // bottom-left | bottom-right
+            'icon_size'          => '56',           // px
+            'offset_x'           => '20',           // px from side edge
+            'offset_y'           => '20',           // px from bottom edge
+
+            // Tablet overrides (empty = inherit desktop)
+            'tablet_breakpoint'  => '1024',
+            'tablet_icon_size'   => '',
+            'tablet_offset_x'    => '',
+            'tablet_offset_y'    => '',
+
+            // Mobile overrides (empty = inherit tablet/desktop)
+            'mobile_breakpoint'  => '768',
+            'mobile_icon_size'   => '',
+            'mobile_offset_x'    => '',
+            'mobile_offset_y'    => '',
+
             'enable_font_size'   => '1',
             'enable_contrast'    => '1',
             'enable_grayscale'   => '1',
@@ -80,6 +95,34 @@ class Anchor_Accessibility_Module {
         add_settings_field( 'accent_color', __( 'Accent Color', 'anchor-schema' ), [ $this, 'field_color' ], self::PAGE_SLUG, 'aa_appearance', [ 'key' => 'accent_color' ] );
         add_settings_field( 'position', __( 'Position', 'anchor-schema' ), [ $this, 'field_position' ], self::PAGE_SLUG, 'aa_appearance', [ 'key' => 'position' ] );
         add_settings_field( 'icon_size', __( 'Button Size (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_appearance', [ 'key' => 'icon_size', 'min' => 40, 'max' => 80 ] );
+        add_settings_field( 'offset_x', __( 'Horizontal Offset (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_appearance', [ 'key' => 'offset_x', 'min' => 0, 'max' => 500, 'suffix' => 'distance from side edge' ] );
+        add_settings_field( 'offset_y', __( 'Vertical Offset (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_appearance', [ 'key' => 'offset_y', 'min' => 0, 'max' => 500, 'suffix' => 'distance from bottom' ] );
+
+        /* --- Tablet section --- */
+        add_settings_section(
+            'aa_tablet',
+            __( 'Tablet Settings (iPad)', 'anchor-schema' ),
+            fn() => print '<p>' . esc_html__( 'Override widget size and position for tablet devices. Leave blank to inherit desktop values.', 'anchor-schema' ) . '</p>',
+            self::PAGE_SLUG
+        );
+
+        add_settings_field( 'tablet_breakpoint', __( 'Breakpoint (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_tablet', [ 'key' => 'tablet_breakpoint', 'min' => 320, 'max' => 2560, 'suffix' => 'applies at this width and below' ] );
+        add_settings_field( 'tablet_icon_size', __( 'Button Size (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_tablet', [ 'key' => 'tablet_icon_size', 'min' => 30, 'max' => 100, 'placeholder' => 'Inherit' ] );
+        add_settings_field( 'tablet_offset_x', __( 'Horizontal Offset (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_tablet', [ 'key' => 'tablet_offset_x', 'min' => 0, 'max' => 500, 'placeholder' => 'Inherit' ] );
+        add_settings_field( 'tablet_offset_y', __( 'Vertical Offset (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_tablet', [ 'key' => 'tablet_offset_y', 'min' => 0, 'max' => 500, 'placeholder' => 'Inherit' ] );
+
+        /* --- Mobile section --- */
+        add_settings_section(
+            'aa_mobile',
+            __( 'Mobile Settings', 'anchor-schema' ),
+            fn() => print '<p>' . esc_html__( 'Override widget size and position for mobile devices. Leave blank to inherit tablet or desktop values.', 'anchor-schema' ) . '</p>',
+            self::PAGE_SLUG
+        );
+
+        add_settings_field( 'mobile_breakpoint', __( 'Breakpoint (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_mobile', [ 'key' => 'mobile_breakpoint', 'min' => 320, 'max' => 2560, 'suffix' => 'applies at this width and below' ] );
+        add_settings_field( 'mobile_icon_size', __( 'Button Size (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_mobile', [ 'key' => 'mobile_icon_size', 'min' => 30, 'max' => 100, 'placeholder' => 'Inherit' ] );
+        add_settings_field( 'mobile_offset_x', __( 'Horizontal Offset (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_mobile', [ 'key' => 'mobile_offset_x', 'min' => 0, 'max' => 500, 'placeholder' => 'Inherit' ] );
+        add_settings_field( 'mobile_offset_y', __( 'Vertical Offset (px)', 'anchor-schema' ), [ $this, 'field_number' ], self::PAGE_SLUG, 'aa_mobile', [ 'key' => 'mobile_offset_y', 'min' => 0, 'max' => 500, 'placeholder' => 'Inherit' ] );
 
         /* --- Features section --- */
         add_settings_section(
@@ -150,15 +193,20 @@ class Anchor_Accessibility_Module {
     }
 
     public function field_number( $args ) {
-        $opts = $this->get_options();
+        $opts  = $this->get_options();
+        $value = $opts[ $args['key'] ] ?? '';
         printf(
-            '<input type="number" name="%s[%s]" value="%s" min="%d" max="%d" class="small-text" />',
+            '<input type="number" name="%s[%s]" value="%s" min="%s" max="%s" class="small-text"%s />',
             esc_attr( self::OPTION_KEY ),
             esc_attr( $args['key'] ),
-            esc_attr( $opts[ $args['key'] ] ),
-            (int) ( $args['min'] ?? 0 ),
-            (int) ( $args['max'] ?? 999 )
+            esc_attr( $value ),
+            esc_attr( $args['min'] ?? 0 ),
+            esc_attr( $args['max'] ?? 999 ),
+            ! empty( $args['placeholder'] ) ? ' placeholder="' . esc_attr( $args['placeholder'] ) . '"' : ''
         );
+        if ( ! empty( $args['suffix'] ) ) {
+            echo ' <span class="description">' . esc_html( $args['suffix'] ) . '</span>';
+        }
     }
 
     public function field_checkbox( $args ) {
@@ -203,6 +251,22 @@ class Anchor_Accessibility_Module {
 
         // Icon size
         $out['icon_size'] = max( 40, min( 80, (int) ( $input['icon_size'] ?? $defs['icon_size'] ) ) );
+
+        // Offsets
+        $out['offset_x'] = max( 0, min( 500, (int) ( $input['offset_x'] ?? $defs['offset_x'] ) ) );
+        $out['offset_y'] = max( 0, min( 500, (int) ( $input['offset_y'] ?? $defs['offset_y'] ) ) );
+
+        // Tablet overrides (empty = inherit)
+        $out['tablet_breakpoint'] = max( 320, min( 2560, (int) ( $input['tablet_breakpoint'] ?? $defs['tablet_breakpoint'] ) ) );
+        $out['tablet_icon_size']  = ( $input['tablet_icon_size'] ?? '' ) !== '' ? (string) max( 30, min( 100, (int) $input['tablet_icon_size'] ) ) : '';
+        $out['tablet_offset_x']   = ( $input['tablet_offset_x'] ?? '' ) !== '' ? (string) max( 0, min( 500, (int) $input['tablet_offset_x'] ) ) : '';
+        $out['tablet_offset_y']   = ( $input['tablet_offset_y'] ?? '' ) !== '' ? (string) max( 0, min( 500, (int) $input['tablet_offset_y'] ) ) : '';
+
+        // Mobile overrides (empty = inherit)
+        $out['mobile_breakpoint'] = max( 320, min( 2560, (int) ( $input['mobile_breakpoint'] ?? $defs['mobile_breakpoint'] ) ) );
+        $out['mobile_icon_size']  = ( $input['mobile_icon_size'] ?? '' ) !== '' ? (string) max( 30, min( 100, (int) $input['mobile_icon_size'] ) ) : '';
+        $out['mobile_offset_x']   = ( $input['mobile_offset_x'] ?? '' ) !== '' ? (string) max( 0, min( 500, (int) $input['mobile_offset_x'] ) ) : '';
+        $out['mobile_offset_y']   = ( $input['mobile_offset_y'] ?? '' ) !== '' ? (string) max( 0, min( 500, (int) $input['mobile_offset_y'] ) ) : '';
 
         // Checkboxes
         foreach ( $defs as $k => $v ) {
@@ -294,7 +358,7 @@ class Anchor_Accessibility_Module {
         ?>
         <div id="anchor-a11y-widget"
              class="anchor-a11y-widget anchor-a11y-<?php echo esc_attr( $pos ); ?>"
-             style="--aa-color:<?php echo $color; ?>;--aa-accent:<?php echo $accent; ?>;--aa-size:<?php echo $size; ?>px;"
+             style="--aa-color:<?php echo $color; ?>;--aa-accent:<?php echo $accent; ?>;--aa-size:<?php echo $size; ?>px;--aa-offset-x:<?php echo (int) $opts['offset_x']; ?>px;--aa-offset-y:<?php echo (int) $opts['offset_y']; ?>px;"
              aria-label="<?php esc_attr_e( 'Accessibility options', 'anchor-schema' ); ?>"
              role="region">
 
@@ -356,5 +420,32 @@ class Anchor_Accessibility_Module {
             </div>
         </div>
         <?php
+        // Responsive overrides
+        $responsive_css = '';
+
+        $tablet_bp = (int) $opts['tablet_breakpoint'];
+        $tablet_rules = [];
+        if ( $opts['tablet_icon_size'] !== '' ) $tablet_rules[] = '--aa-size:' . (int) $opts['tablet_icon_size'] . 'px';
+        if ( $opts['tablet_offset_x'] !== '' ) $tablet_rules[] = '--aa-offset-x:' . (int) $opts['tablet_offset_x'] . 'px';
+        if ( $opts['tablet_offset_y'] !== '' ) $tablet_rules[] = '--aa-offset-y:' . (int) $opts['tablet_offset_y'] . 'px';
+        if ( $tablet_rules ) {
+            $responsive_css .= '@media(max-width:' . $tablet_bp . 'px){#anchor-a11y-widget{' . implode( ';', $tablet_rules ) . '}}';
+        }
+
+        $mobile_bp = (int) $opts['mobile_breakpoint'];
+        $mobile_rules = [];
+        if ( $opts['mobile_icon_size'] !== '' ) $mobile_rules[] = '--aa-size:' . (int) $opts['mobile_icon_size'] . 'px';
+        if ( $opts['mobile_offset_x'] !== '' ) $mobile_rules[] = '--aa-offset-x:' . (int) $opts['mobile_offset_x'] . 'px';
+        if ( $opts['mobile_offset_y'] !== '' ) $mobile_rules[] = '--aa-offset-y:' . (int) $opts['mobile_offset_y'] . 'px';
+        if ( $mobile_rules ) {
+            $responsive_css .= '@media(max-width:' . $mobile_bp . 'px){#anchor-a11y-widget{' . implode( ';', $mobile_rules ) . '}}';
+        }
+
+        // Mobile panel full-width
+        $responsive_css .= '@media(max-width:' . $mobile_bp . 'px){.anchor-a11y-panel{width:calc(100vw - 40px);max-height:60vh}}';
+
+        if ( $responsive_css ) {
+            echo '<style id="anchor-a11y-responsive">' . $responsive_css . '</style>';
+        }
     }
 }

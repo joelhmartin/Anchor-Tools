@@ -17,13 +17,13 @@
 }
 
 .anchor-a11y-bottom-right {
-    bottom: 20px;
-    right: 20px;
+    bottom: var(--aa-offset-y, 20px);
+    right: var(--aa-offset-x, 20px);
 }
 
 .anchor-a11y-bottom-left {
-    bottom: 20px;
-    left: 20px;
+    bottom: var(--aa-offset-y, 20px);
+    left: var(--aa-offset-x, 20px);
 }
 
 /* --- Toggle button --- */
@@ -311,13 +311,4 @@
     outline-offset: 3px !important;
 }
 
-/* ==========================================================================
-   Responsive
-   ========================================================================== */
-
-@media (max-width: 480px) {
-    .anchor-a11y-panel {
-        width: calc(100vw - 40px);
-        max-height: 60vh;
-    }
-}
+/* Responsive overrides are generated dynamically via inline <style> in PHP */

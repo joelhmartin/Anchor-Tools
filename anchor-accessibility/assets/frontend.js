@@ -45,11 +45,11 @@
     /* ------------------------------------------------------------------ */
 
     function applyAll() {
-        // Font size
+        // Font size — use zoom for compatibility with themes using px values
         if (state.fontStep !== 0) {
-            root.style.fontSize = (100 + state.fontStep * 10) + '%';
+            body.style.zoom = 1 + (state.fontStep * 0.1);
         } else {
-            root.style.fontSize = '';
+            body.style.zoom = '';
         }
 
         toggle('aa-contrast', state.contrast);

@@ -441,12 +441,21 @@
     if (!track || tiles.length === 0) return;
 
     var currentIndex = 0;
+    var loopEnabled = gallery.getAttribute('data-loop') === '1';
+    var centerMode = gallery.getAttribute('data-center') === '1';
+
+    /* -- Responsive visible count ------------------------------------ */
 
     function getVisibleCount() {
-      if (window.innerWidth < 768) return 1;
-      if (window.innerWidth < 1024) return 2;
-      return 3;
+      var cols = parseInt(gallery.getAttribute('data-cols-desktop')) || 3;
+      var colsTablet = parseInt(gallery.getAttribute('data-cols-tablet')) || Math.min(cols, 2);
+      var colsMobile = parseInt(gallery.getAttribute('data-cols-mobile')) || 1;
+      if (window.innerWidth < 768) return colsMobile;
+      if (window.innerWidth < 1024) return colsTablet;
+      return cols;
     }
+
+    /* -- Carousel transform update ----------------------------------- */
 
     function updateCarousel() {
       if (layout !== 'carousel') return;
@@ -454,18 +463,53 @@
       var visibleCount = getVisibleCount();
       var tileWidth = tiles[0].offsetWidth;
       var gap = parseInt(getComputedStyle(gallery).getPropertyValue('--avg-gap')) || 16;
-      var offset = currentIndex * (tileWidth + gap);
+      var step = tileWidth + gap;
+      var offset = currentIndex * step;
+
+      // Center mode: shift so the active slide(s) sit in the middle
+      if (centerMode && tiles.length > visibleCount) {
+        var containerWidth = gallery.offsetWidth;
+        var groupWidth = visibleCount * tileWidth + (visibleCount - 1) * gap;
+        var centerShift = (containerWidth - groupWidth) / 2;
+        offset = currentIndex * step - centerShift;
+        if (offset < 0) offset = 0;
+      }
 
       track.style.transform = 'translateX(-' + offset + 'px)';
 
-      // Update active states
+      // Update active / inactive states
       tiles.forEach(function(tile, i) {
         tile.classList.toggle('active', i >= currentIndex && i < currentIndex + visibleCount);
       });
 
-      // Update button states
-      if (prevBtn) prevBtn.disabled = currentIndex === 0;
-      if (nextBtn) nextBtn.disabled = currentIndex >= tiles.length - visibleCount;
+      // Update arrow states (loop = never disabled)
+      if (loopEnabled) {
+        if (prevBtn) prevBtn.disabled = false;
+        if (nextBtn) nextBtn.disabled = false;
+      } else {
+        if (prevBtn) prevBtn.disabled = currentIndex === 0;
+        if (nextBtn) nextBtn.disabled = currentIndex >= tiles.length - visibleCount;
+      }
+
+      // Sync dots
+      updateDots();
+    }
+
+    /* -- Slide navigation -------------------------------------------- */
+
+    function goToSlide(index) {
+      var visibleCount = getVisibleCount();
+      var maxIndex = tiles.length - visibleCount;
+
+      if (loopEnabled) {
+        if (index > maxIndex) index = 0;
+        else if (index < 0) index = maxIndex;
+      } else {
+        index = Math.max(0, Math.min(maxIndex, index));
+      }
+
+      currentIndex = index;
+      updateCarousel();
     }
 
     function scrollSlider(direction) {
@@ -475,9 +519,7 @@
         var scrollAmount = (tileWidth + gap) * direction;
         track.scrollBy({ left: scrollAmount, behavior: 'smooth' });
       } else {
-        var visibleCount = getVisibleCount();
-        currentIndex = Math.max(0, Math.min(tiles.length - visibleCount, currentIndex + direction));
-        updateCarousel();
+        goToSlide(currentIndex + direction);
       }
     }
 
@@ -489,57 +531,117 @@
       nextBtn.addEventListener('click', function() { scrollSlider(1); });
     }
 
-    // Initialize carousel
-    if (layout === 'carousel') {
-      updateCarousel();
-      window.addEventListener('resize', updateCarousel);
-    }
+    /* -- Dots navigation (one dot per slide) ------------------------- */
 
-    // Dots navigation
     var dotsContainer = gallery.querySelector('.avg-dots');
-    if (dotsContainer && layout === 'carousel') {
-      var dotCount = Math.ceil(tiles.length / getVisibleCount());
-      for (var i = 0; i < dotCount; i++) {
+    var dots = [];
+
+    function buildDots() {
+      if (!dotsContainer || layout !== 'carousel') return;
+      dotsContainer.innerHTML = '';
+      dots = [];
+
+      for (var i = 0; i < tiles.length; i++) {
         var dot = document.createElement('button');
-        dot.className = 'avg-dot' + (i === 0 ? ' active' : '');
+        dot.className = 'avg-dot' + (i === currentIndex ? ' active' : '');
         dot.setAttribute('aria-label', 'Go to slide ' + (i + 1));
         dot.setAttribute('data-index', i);
+        dots.push(dot);
         dotsContainer.appendChild(dot);
       }
 
       dotsContainer.addEventListener('click', function(e) {
-        var dot = e.target.closest('.avg-dot');
-        if (!dot) return;
-
-        var index = parseInt(dot.getAttribute('data-index'));
-        currentIndex = index * getVisibleCount();
-        updateCarousel();
-
-        dotsContainer.querySelectorAll('.avg-dot').forEach(function(d, i) {
-          d.classList.toggle('active', i === index);
-        });
+        var d = e.target.closest('.avg-dot');
+        if (!d) return;
+        goToSlide(parseInt(d.getAttribute('data-index')));
       });
     }
 
-    // Auto-advance
+    function updateDots() {
+      for (var i = 0; i < dots.length; i++) {
+        dots[i].classList.toggle('active', i === currentIndex);
+      }
+    }
+
+    /* -- Touch / swipe support --------------------------------------- */
+
+    (function initTouch() {
+      var startX = 0, startY = 0, deltaX = 0, swiping = false;
+      var threshold = 40;
+
+      track.addEventListener('touchstart', function(e) {
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        deltaX = 0;
+        swiping = true;
+      }, { passive: true });
+
+      track.addEventListener('touchmove', function(e) {
+        if (!swiping) return;
+        deltaX = e.touches[0].clientX - startX;
+        var deltaY = e.touches[0].clientY - startY;
+        // If vertical scroll is dominant, release the swipe
+        if (Math.abs(deltaY) > Math.abs(deltaX)) { swiping = false; return; }
+        if (layout === 'carousel') e.preventDefault();
+      }, { passive: false });
+
+      track.addEventListener('touchend', function() {
+        if (!swiping) return;
+        swiping = false;
+        if (Math.abs(deltaX) > threshold) {
+          scrollSlider(deltaX < 0 ? 1 : -1);
+        }
+      }, { passive: true });
+    })();
+
+    /* -- Keyboard navigation ----------------------------------------- */
+
+    gallery.setAttribute('tabindex', '0');
+    gallery.addEventListener('keydown', function(e) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); scrollSlider(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); scrollSlider(1); }
+    });
+
+    /* -- Initialize carousel ----------------------------------------- */
+
+    if (layout === 'carousel') {
+      buildDots();
+      updateCarousel();
+
+      var resizeTimer;
+      window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(updateCarousel, 100);
+      });
+    }
+
+    /* -- Autoplay with pause/resume ---------------------------------- */
+
     var autoplayEnabled = gallery.getAttribute('data-slider-autoplay') === '1';
     var autoplaySpeed = parseInt(gallery.getAttribute('data-autoplay-speed')) || 5000;
 
     if (autoplayEnabled && layout === 'carousel') {
-      var autoplayInterval = setInterval(function() {
-        var visibleCount = getVisibleCount();
-        if (currentIndex >= tiles.length - visibleCount) {
-          currentIndex = 0;
-        } else {
-          currentIndex++;
-        }
-        updateCarousel();
-      }, autoplaySpeed);
+      var autoplayInterval = null;
 
-      // Pause on hover
-      gallery.addEventListener('mouseenter', function() {
-        clearInterval(autoplayInterval);
-      });
+      function startAutoplay() {
+        stopAutoplay();
+        autoplayInterval = setInterval(function() {
+          goToSlide(currentIndex + 1);
+        }, autoplaySpeed);
+      }
+
+      function stopAutoplay() {
+        if (autoplayInterval) { clearInterval(autoplayInterval); autoplayInterval = null; }
+      }
+
+      startAutoplay();
+
+      gallery.addEventListener('mouseenter', stopAutoplay);
+      gallery.addEventListener('mouseleave', startAutoplay);
+      gallery.addEventListener('touchstart', stopAutoplay, { passive: true });
+      gallery.addEventListener('touchend', function() {
+        setTimeout(startAutoplay, 3000);
+      }, { passive: true });
     }
   }
 

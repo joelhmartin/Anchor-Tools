@@ -84,9 +84,9 @@ class Anchor_Video_Slider_Module {
             'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'show_for' => 'slider,grid,carousel,masonry'],
             'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'min' => 0, 'max' => 32, 'step' => 2],
-            'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'min' => 2, 'max' => 6, 'show_for' => 'grid,masonry'],
-            'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'min' => 1, 'max' => 4, 'show_for' => 'grid,masonry'],
-            'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'min' => 1, 'max' => 2, 'show_for' => 'grid,masonry'],
+            'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'min' => 1, 'max' => 6, 'show_for' => 'grid,masonry,carousel'],
+            'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'min' => 1, 'max' => 4, 'show_for' => 'grid,masonry,carousel'],
+            'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'min' => 1, 'max' => 2, 'show_for' => 'grid,masonry,carousel'],
             'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'min' => 0, 'max' => 60, 'step' => 4],
             'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
@@ -704,8 +704,11 @@ class Anchor_Video_Slider_Module {
             $data_attrs['data-autoplay-speed']   = $settings['slider_autoplay_speed'];
 
             if ($layout === 'carousel') {
-                $data_attrs['data-loop']   = $settings['carousel_loop'] ? '1' : '0';
-                $data_attrs['data-center'] = $settings['carousel_center'] ? '1' : '0';
+                $data_attrs['data-loop']         = $settings['carousel_loop'] ? '1' : '0';
+                $data_attrs['data-center']       = $settings['carousel_center'] ? '1' : '0';
+                $data_attrs['data-cols-desktop'] = $settings['columns_desktop'];
+                $data_attrs['data-cols-tablet']  = $settings['columns_tablet'];
+                $data_attrs['data-cols-mobile']  = $settings['columns_mobile'];
             }
         }
 

@@ -1313,9 +1313,13 @@ class Anchor_Video_Slider_Module {
                 'url'   => 'https://vimeo.com/' . rawurlencode($id),
                 'width' => $width,
                 'dnt'   => '1',
+                '_'     => time(),
             ], 'https://vimeo.com/api/oembed.json');
 
-            $res = wp_remote_get($oembed, ['timeout' => 12]);
+            $res = wp_remote_get($oembed, [
+                'timeout' => 12,
+                'headers' => ['Cache-Control' => 'no-cache'],
+            ]);
             if (is_wp_error($res)) continue;
             $data = json_decode(wp_remote_retrieve_body($res), true);
             if (!is_array($data)) continue;

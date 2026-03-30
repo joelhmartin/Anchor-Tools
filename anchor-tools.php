@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.5.39
+ * Version: 3.5.40
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -2974,6 +2974,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Floating accessibility toolbar with font sizing, contrast, grayscale, and more.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-accessibility/anchor-accessibility.php',
                 'class'       => 'Anchor_Accessibility_Module',
+            ],
+            'translate' => [
+                'label'       => __( 'Anchor Translate', 'anchor-schema' ),
+                'description' => __( 'Server-side translation with Google Cloud Translation and per-page caching.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/anchor-translate.php',
+                'class'       => 'Anchor_Translate_Module',
             ],
         ];
     }

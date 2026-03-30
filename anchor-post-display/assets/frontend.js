@@ -88,6 +88,7 @@
                 exclude_taxonomy: grid.dataset.excludeTaxonomy || '',
                 exclude_terms:    grid.dataset.excludeTerms    || '',
                 pagination: grid.dataset.pagination || 'none',
+                fields:     grid.dataset.fields     || '',
                 page:      '1'
             };
             ajax('anchor_post_display_load', params, function (data) {

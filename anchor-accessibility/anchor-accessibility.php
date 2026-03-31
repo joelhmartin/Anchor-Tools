@@ -394,7 +394,7 @@ class Anchor_Accessibility_Module {
         ?>
         <div id="anchor-a11y-widget"
              class="anchor-a11y-widget anchor-a11y-<?php echo esc_attr( $pos ); ?>"
-             style="--aa-color:<?php echo $color; ?>;--aa-accent:<?php echo $accent; ?>;--aa-size:<?php echo $size; ?>px;--aa-offset-x:<?php echo (int) $opts['offset_x']; ?>px;--aa-offset-y:<?php echo (int) $opts['offset_y']; ?>px;"
+             style="--aa-color:<?php echo $color; ?>;--aa-accent:<?php echo $accent; ?>;"
              aria-label="<?php esc_attr_e( 'Accessibility options', 'anchor-schema' ); ?>"
              role="region">
 
@@ -456,8 +456,10 @@ class Anchor_Accessibility_Module {
             </div>
         </div>
         <?php
-        // Responsive overrides
-        $responsive_css = '';
+        // Build responsive CSS: desktop base + tablet/mobile overrides.
+        // These MUST be in a <style> block (not inline style attribute)
+        // so that media query overrides can take effect.
+        $css = '#anchor-a11y-widget{--aa-size:' . $size . 'px;--aa-offset-x:' . (int) $opts['offset_x'] . 'px;--aa-offset-y:' . (int) $opts['offset_y'] . 'px}';
 
         $tablet_bp = (int) $opts['tablet_breakpoint'];
         $tablet_rules = [];
@@ -465,7 +467,7 @@ class Anchor_Accessibility_Module {
         if ( $opts['tablet_offset_x'] !== '' ) $tablet_rules[] = '--aa-offset-x:' . (int) $opts['tablet_offset_x'] . 'px';
         if ( $opts['tablet_offset_y'] !== '' ) $tablet_rules[] = '--aa-offset-y:' . (int) $opts['tablet_offset_y'] . 'px';
         if ( $tablet_rules ) {
-            $responsive_css .= '@media(max-width:' . $tablet_bp . 'px){#anchor-a11y-widget{' . implode( ';', $tablet_rules ) . '}}';
+            $css .= '@media(max-width:' . $tablet_bp . 'px){#anchor-a11y-widget{' . implode( ';', $tablet_rules ) . '}}';
         }
 
         $mobile_bp = (int) $opts['mobile_breakpoint'];
@@ -474,14 +476,12 @@ class Anchor_Accessibility_Module {
         if ( $opts['mobile_offset_x'] !== '' ) $mobile_rules[] = '--aa-offset-x:' . (int) $opts['mobile_offset_x'] . 'px';
         if ( $opts['mobile_offset_y'] !== '' ) $mobile_rules[] = '--aa-offset-y:' . (int) $opts['mobile_offset_y'] . 'px';
         if ( $mobile_rules ) {
-            $responsive_css .= '@media(max-width:' . $mobile_bp . 'px){#anchor-a11y-widget{' . implode( ';', $mobile_rules ) . '}}';
+            $css .= '@media(max-width:' . $mobile_bp . 'px){#anchor-a11y-widget{' . implode( ';', $mobile_rules ) . '}}';
         }
 
         // Mobile panel full-width
-        $responsive_css .= '@media(max-width:' . $mobile_bp . 'px){.anchor-a11y-panel{width:calc(100vw - 40px);max-height:60vh}}';
+        $css .= '@media(max-width:' . $mobile_bp . 'px){.anchor-a11y-panel{width:calc(100vw - 40px);max-height:60vh}}';
 
-        if ( $responsive_css ) {
-            echo '<style id="anchor-a11y-responsive">' . $responsive_css . '</style>';
-        }
+        echo '<style id="anchor-a11y-responsive">' . $css . '</style>';
     }
 }

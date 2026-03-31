@@ -62,6 +62,42 @@ class Anchor_Accessibility_Module {
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_frontend' ] );
         add_action( 'wp_footer', [ $this, 'render_widget' ] );
+
+        // Purge page caches when settings change so inline styles update immediately.
+        add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'purge_page_caches' ] );
+    }
+
+    /** Flush known page caches so the new inline styles are served. */
+    public function purge_page_caches() {
+        // WordPress object cache.
+        if ( function_exists( 'wp_cache_flush' ) ) {
+            wp_cache_flush();
+        }
+        // Kinsta (MU-plugin).
+        if ( class_exists( 'Developer_Tools_Settings' ) && function_exists( 'developer_tools_clear_cache' ) ) {
+            developer_tools_clear_cache();
+        }
+        if ( class_exists( '\Jeedo\KinstaMUPlugins\Cache\CachePurge' ) ) {
+            wp_remote_get( home_url( '/?kinsta-clear-cache-all' ), [ 'blocking' => false ] );
+        }
+        // WP Rocket.
+        if ( function_exists( 'rocket_clean_domain' ) ) {
+            rocket_clean_domain();
+        }
+        // WP Super Cache.
+        if ( function_exists( 'wp_cache_clear_cache' ) ) {
+            wp_cache_clear_cache();
+        }
+        // W3 Total Cache.
+        if ( function_exists( 'w3tc_flush_all' ) ) {
+            w3tc_flush_all();
+        }
+        // LiteSpeed Cache.
+        if ( class_exists( 'LiteSpeed\Purge' ) ) {
+            do_action( 'litespeed_purge_all' );
+        }
+        // Generic: trigger the common purge action used by many cache plugins.
+        do_action( 'anchor_cache_purged' );
     }
 
     /* ------------------------------------------------------------------ */

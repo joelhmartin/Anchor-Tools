@@ -339,6 +339,8 @@ class Anchor_Accessibility_Module {
 
     public function enqueue_frontend() {
         if ( is_admin() ) return;
+        if ( function_exists( 'et_core_is_fb_enabled' ) && et_core_is_fb_enabled() ) return;
+        if ( isset( $_GET['et_fb'] ) || isset( $_GET['et_pb_preview'] ) ) return;
 
         $base = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-accessibility/assets/';
         $dir  = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-accessibility/assets/';
@@ -383,6 +385,10 @@ class Anchor_Accessibility_Module {
 
     public function render_widget() {
         if ( is_admin() ) return;
+
+        // Skip when Divi builder is active (visual builder or theme builder preview).
+        if ( function_exists( 'et_core_is_fb_enabled' ) && et_core_is_fb_enabled() ) return;
+        if ( isset( $_GET['et_fb'] ) || isset( $_GET['et_pb_preview'] ) ) return;
 
         $opts     = $this->get_options();
         $pos      = $opts['position'];

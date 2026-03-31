@@ -10,11 +10,22 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Anchor_Translate_DOM_Parser {
 
-    /** Tags whose entire subtree is never translated. */
-    private static $skip_tags = [
-        'script', 'style', 'code', 'pre', 'svg', 'noscript',
-        'textarea', 'input', 'select', 'option', 'head',
-        'iframe', 'object', 'embed', 'canvas', 'math',
+    /**
+     * Raw-content tags: their inner content is NOT HTML and must not be
+     * parsed for nested tags. We skip everything until the matching close
+     * tag, ignoring any tag-like patterns inside (e.g. HTML strings in JS).
+     */
+    private static $raw_skip_tags = [
+        'script', 'style', 'svg', 'noscript', 'textarea', 'head',
+    ];
+
+    /**
+     * Structural skip tags: their subtree IS valid HTML so we depth-track
+     * open/close to know when we exit, but we never translate their text.
+     */
+    private static $structural_skip_tags = [
+        'code', 'pre', 'iframe', 'object', 'canvas', 'math',
+        'select', 'option',
     ];
 
     /** Void (self-closing) elements that don't push nesting depth. */
@@ -23,8 +34,8 @@ class Anchor_Translate_DOM_Parser {
         'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
     ];
 
-    private $exclude_classes = [];
-    private $exclude_ids     = [];
+    private $exclude_classes  = [];
+    private $exclude_ids      = [];
     private $preserve_phrases = [];
 
     public function __construct( array $exclude_selectors = [], array $preserve_phrases = [] ) {
@@ -96,45 +107,75 @@ class Anchor_Translate_DOM_Parser {
     /**
      * Split HTML into segments and identify translatable text.
      *
+     * Uses two distinct skip modes:
+     *
+     *   1. RAW SKIP — for script, style, svg, noscript, textarea, head.
+     *      Content is NOT HTML; we ignore everything until the exact
+     *      matching close tag (e.g. </script>). This prevents Divi's
+     *      inline JS strings like '<div>' from corrupting the parser.
+     *
+     *   2. STRUCTURAL SKIP — for code, pre, iframe, select, etc.
+     *      Content IS valid HTML; we depth-track open/close tags to
+     *      know when we exit the subtree, but never translate text.
+     *
      * @return array [ $parts, $segments ]
-     *   $parts    — alternating tag/text pieces (array).
-     *   $segments — [ { index, text, original } ] for translatable pieces.
      */
     private function parse( $html ) {
         $parts = preg_split( '/(<[^>]+>)/s', $html, -1, PREG_SPLIT_DELIM_CAPTURE );
 
-        $skip_depth = 0;
-        $segments   = [];
+        $raw_skip_tag      = '';   // Non-empty when inside a raw-content skip.
+        $structural_depth  = 0;    // > 0 when inside a structural skip subtree.
+        $segments          = [];
 
         foreach ( $parts as $i => $part ) {
             // Is this an HTML tag?
-            if ( isset( $part[0] ) && $part[0] === '<' && preg_match( '/^<(\/?)\s*([a-zA-Z][a-zA-Z0-9]*)/s', $part, $tm ) ) {
+            if ( isset( $part[0] ) && $part[0] === '<'
+                && preg_match( '/^<(\/?)\s*([a-zA-Z][a-zA-Z0-9]*)/s', $part, $tm )
+            ) {
                 $is_closing = ( $tm[1] === '/' );
                 $tag_name   = strtolower( $tm[2] );
                 $is_void    = in_array( $tag_name, self::$void_tags, true );
 
-                if ( $skip_depth > 0 ) {
-                    // Inside a skipped subtree: track nesting.
+                /* ── Mode 1: inside a raw-content skip ────────────── */
+                if ( $raw_skip_tag !== '' ) {
+                    // Only the matching close tag exits the skip.
+                    if ( $is_closing && $tag_name === $raw_skip_tag ) {
+                        $raw_skip_tag = '';
+                    }
+                    // Everything else (tags, text) is ignored.
+                    continue;
+                }
+
+                /* ── Mode 2: inside a structural skip ─────────────── */
+                if ( $structural_depth > 0 ) {
                     if ( $is_closing ) {
-                        $skip_depth--;
+                        $structural_depth--;
                     } elseif ( ! $is_void ) {
-                        $skip_depth++;
+                        $structural_depth++;
                     }
                     continue;
                 }
 
-                // Not in skip region — check if this opening tag starts one.
+                /* ── Not skipping — check if this tag starts a skip ─ */
                 if ( ! $is_closing && ! $is_void ) {
+                    // Raw-content tags: skip until matching close tag.
+                    if ( in_array( $tag_name, self::$raw_skip_tags, true ) ) {
+                        $raw_skip_tag = $tag_name;
+                        continue;
+                    }
+
+                    // Structural skip tags, data-no-translate, excluded selectors.
                     if ( $this->should_skip_tag( $tag_name, $part ) ) {
-                        $skip_depth = 1;
+                        $structural_depth = 1;
+                        continue;
                     }
                 }
 
                 continue;
             }
 
-            // Text segment.
-            if ( $skip_depth > 0 ) continue;
+            /* ── Text segment ─────────────────────────────────────── */
+            if ( $raw_skip_tag !== '' || $structural_depth > 0 ) continue;
 
             $trimmed = trim( $part );
             if ( $trimmed === '' ) continue;
@@ -154,11 +195,12 @@ class Anchor_Translate_DOM_Parser {
     }
 
     /**
-     * Decide whether an opening tag should trigger a skip region.
+     * Decide whether an opening tag should trigger a structural skip.
+     * (Raw-content tags are handled before this method is called.)
      */
     private function should_skip_tag( $tag_name, $tag_html ) {
-        // Hardcoded skip tags.
-        if ( in_array( $tag_name, self::$skip_tags, true ) ) return true;
+        // Structural skip tags.
+        if ( in_array( $tag_name, self::$structural_skip_tags, true ) ) return true;
 
         // data-no-translate attribute.
         if ( stripos( $tag_html, 'data-no-translate' ) !== false ) return true;

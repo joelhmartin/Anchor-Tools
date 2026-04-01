@@ -43,8 +43,43 @@ class Anchor_Translate_Hooks {
         if ( wp_is_post_revision( $post_id ) ) return;
         if ( wp_is_post_autosave( $post_id ) ) return;
 
-        $codes = array_keys( $this->language->get_enabled() );
+        $post = get_post( $post_id );
+        if ( ! $post || $post->post_status !== 'publish' ) return;
+        if ( ! in_array( $post->post_type, [ 'page', 'post' ], true ) ) return;
+
+        $default = $this->language->get_default();
+        $codes   = array_keys( $this->language->get_enabled() );
+
+        // Invalidate stale caches.
         $this->cache->invalidate_post( $post_id, $codes );
+
+        // Re-warm: fire a non-blocking request to each translated URL
+        // so the cache is ready before a visitor hits a cold page.
+        $permalink = get_permalink( $post_id );
+        if ( ! $permalink ) return;
+
+        $home_url  = home_url();
+        $home_path = wp_parse_url( $home_url, PHP_URL_PATH ) ?: '';
+
+        foreach ( $codes as $code ) {
+            if ( $code === $default ) continue;
+
+            if ( $home_path !== '' && strpos( $permalink, $home_url ) === 0 ) {
+                $after      = substr( $permalink, strlen( $home_url ) ) ?: '/';
+                $target_url = $home_url . '/' . $code . $after;
+            } else {
+                $parsed     = wp_parse_url( $permalink );
+                $path       = $parsed['path'] ?? '/';
+                $target_url = ( $parsed['scheme'] ?? 'https' ) . '://' . ( $parsed['host'] ?? '' )
+                            . '/' . $code . $path;
+            }
+
+            wp_remote_get( $target_url, [
+                'timeout'  => 0.01,
+                'blocking' => false,
+                'sslverify' => false,
+            ] );
+        }
     }
 
     /* ------------------------------------------------------------------ */

@@ -93,17 +93,60 @@ class Anchor_Translate_Module {
             $buffer->init();
         }
 
-        // Client-side link interceptor: catches every internal link click and
-        // ensures the language prefix is present, even for links the server-side
-        // rewriter missed (Divi dynamic links, JS-generated content, etc.).
         if ( ! is_admin() ) {
             $this->language = $language;
+            // Language-persistence redirect: tiny <head> script that checks the
+            // cookie and redirects to the prefixed URL before content renders.
+            // This is the PRIMARY mechanism for language persistence across navigation.
+            add_action( 'wp_head', [ $this, 'render_lang_redirect_script' ], 1 );
+            // Belt-and-suspenders: also rewrite links on click (for smooth UX
+            // without redirect flash on pages that already have the interceptor).
             add_action( 'wp_footer', [ $this, 'render_link_interceptor' ], 999 );
         }
     }
 
     /** @var Anchor_Translate_Language|null */
     private $language;
+
+    /**
+     * Inject a cookie-based redirect script in <head> on EVERY page.
+     *
+     * If the user previously chose Spanish (cookie = "es") and they land on
+     * an English URL (/about/), this redirects to /es/about/ instantly —
+     * before any content renders. This is the bulletproof mechanism that
+     * makes language sticky regardless of how links are generated.
+     *
+     * Runs on English AND translated pages so the cookie check is universal.
+     */
+    public function render_lang_redirect_script() {
+        if ( ! $this->language ) return;
+
+        $default   = $this->language->get_default();
+        $enabled   = $this->language->get_enabled();
+        $home_path = wp_parse_url( home_url(), PHP_URL_PATH ) ?: '';
+
+        // Build a JS array of valid non-default language codes.
+        $codes = [];
+        foreach ( $enabled as $code => $label ) {
+            if ( $code !== $default ) $codes[] = $code;
+        }
+        if ( empty( $codes ) ) return;
+
+        $codes_js = wp_json_encode( $codes );
+        ?>
+        <script data-no-translate="true">
+        (function(){
+            var m=document.cookie.match(/(?:^|;\s*)anchor_translate_lang=([^;]+)/);
+            if(!m)return;
+            var lang=m[1],codes=<?php echo $codes_js; ?>,hp='<?php echo esc_js( $home_path ); ?>';
+            if(codes.indexOf(lang)===-1)return;
+            var p=window.location.pathname,pfx=hp+'/'+lang;
+            if(p.indexOf(pfx+'/')===0||p===pfx||p===pfx+'/')return;
+            window.location.replace(pfx+(hp&&p.indexOf(hp)===0?p.substr(hp.length):p)+window.location.search+window.location.hash);
+        })();
+        </script>
+        <?php
+    }
 
     /**
      * Inject a tiny JS that intercepts clicks on internal links and adds

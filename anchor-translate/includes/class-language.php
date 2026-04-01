@@ -51,6 +51,7 @@ class Anchor_Translate_Language {
             $lang_prefix = $home_path . '/' . $code;
             if ( preg_match( '#^' . preg_quote( $lang_prefix, '#' ) . '(?=/|$)#', $path ) ) {
                 $this->current = $code;
+                $this->set_cookie( $code );
                 // Strip the /xx segment, keep home_path.
                 $_SERVER['REQUEST_URI'] = preg_replace(
                     '#^(' . preg_quote( $home_path, '#' ) . ')/' . preg_quote( $code, '#' ) . '(?=/|$)#',
@@ -80,8 +81,10 @@ class Anchor_Translate_Language {
         $query = parse_url( $clean, PHP_URL_QUERY );
 
         if ( $lang === $this->get_default() ) {
+            $this->clear_cookie();
             $url = $path;
         } else {
+            $this->set_cookie( $lang );
             $home_path = parse_url( home_url(), PHP_URL_PATH ) ?: '';
             if ( $home_path !== '' && strpos( $path, $home_path ) === 0 ) {
                 $relative = substr( $path, strlen( $home_path ) ) ?: '/';
@@ -228,6 +231,32 @@ class Anchor_Translate_Language {
     /* ------------------------------------------------------------------ */
     /*  Helpers                                                           */
     /* ------------------------------------------------------------------ */
+
+    private function set_cookie( $lang ) {
+        if ( headers_sent() ) return;
+        setcookie( self::COOKIE_NAME, $lang, [
+            'expires'  => time() + ( 30 * DAY_IN_SECONDS ),
+            'path'     => COOKIEPATH,
+            'domain'   => COOKIE_DOMAIN,
+            'secure'   => is_ssl(),
+            'httponly'  => false,
+            'samesite' => 'Lax',
+        ] );
+        $_COOKIE[ self::COOKIE_NAME ] = $lang;
+    }
+
+    private function clear_cookie() {
+        if ( headers_sent() ) return;
+        setcookie( self::COOKIE_NAME, '', [
+            'expires'  => time() - 3600,
+            'path'     => COOKIEPATH,
+            'domain'   => COOKIE_DOMAIN,
+            'secure'   => is_ssl(),
+            'httponly'  => false,
+            'samesite' => 'Lax',
+        ] );
+        unset( $_COOKIE[ self::COOKIE_NAME ] );
+    }
 
     private function is_non_frontend() {
         if ( is_admin() )      return true;

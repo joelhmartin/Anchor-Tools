@@ -31,8 +31,9 @@ class Anchor_Translate_Hooks {
         add_action( 'switch_theme',                [ $this, 'bump_global' ] );
         add_action( 'update_option_sidebars_widgets', [ $this, 'bump_global' ] );
 
-        // SEO noindex on translated pages.
+        // SEO noindex + suppress browser auto-translate on translated pages.
         add_action( 'wp_head', [ $this, 'maybe_noindex' ], 1 );
+        add_action( 'wp_head', [ $this, 'suppress_browser_translate' ], 1 );
     }
 
     /* ------------------------------------------------------------------ */
@@ -100,5 +101,16 @@ class Anchor_Translate_Hooks {
         if ( ( $this->options['noindex'] ?? '1' ) === '0' ) return;
 
         echo '<meta name="robots" content="noindex, nofollow" />' . "\n";
+    }
+
+    /**
+     * Tell Chrome / Edge / browsers not to offer their built-in translate bar.
+     * We're already serving translated content — the browser popup is redundant.
+     */
+    public function suppress_browser_translate() {
+        if ( is_admin() ) return;
+        if ( $this->language->is_default() ) return;
+
+        echo '<meta name="google" content="notranslate" />' . "\n";
     }
 }

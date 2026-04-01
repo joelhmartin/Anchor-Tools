@@ -266,8 +266,9 @@
 }
 
 .up-video-card__play svg {
-  width: 60px;
-  height: 60px;
+  width: 20%;
+  max-width: 150px;
+  height: auto;
   color: var(--up-play-bg);
   filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
 }
@@ -370,21 +371,24 @@
 
 /* Play style: YouTube */
 .up-play-youtube .up-video-card__play svg {
-  width: 68px;
-  height: 48px;
+  width: 18%;
+  max-width: 136px;
+  height: auto;
 }
 
 /* Play style: Minimal */
 .up-play-minimal .up-video-card__play svg {
-  width: 48px;
-  height: 48px;
+  width: 16%;
+  max-width: 120px;
+  height: auto;
   color: rgba(255, 255, 255, 0.95);
 }
 
 /* Play style: Square */
 .up-play-square .up-video-card__play svg {
-  width: 50px;
-  height: 50px;
+  width: 16%;
+  max-width: 120px;
+  height: auto;
   color: var(--up-play-bg);
 }
 

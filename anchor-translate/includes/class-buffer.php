@@ -129,18 +129,6 @@ class Anchor_Translate_Buffer {
      * e.g. /about/ → /es/about/, https://site.com/about/ → https://site.com/es/about/
      */
     private function rewrite_links( $html, $lang ) {
-        // Protect data-no-translate blocks (e.g. language switcher) from rewriting.
-        $protected = [];
-        $html = preg_replace_callback(
-            '#<(\w+)\b[^>]*?\bdata-no-translate\b[^>]*>.*?</\1>#is',
-            function ( $m ) use ( &$protected ) {
-                $key = "\x00NR" . count( $protected ) . "\x00";
-                $protected[ $key ] = $m[0];
-                return $key;
-            },
-            $html
-        );
-
         $home_url  = home_url();
         $home_path = parse_url( $home_url, PHP_URL_PATH ) ?: '';
 
@@ -178,11 +166,6 @@ class Anchor_Translate_Buffer {
             },
             $html
         );
-
-        // Restore protected blocks.
-        if ( $protected ) {
-            $html = str_replace( array_keys( $protected ), array_values( $protected ), $html );
-        }
 
         return $html;
     }

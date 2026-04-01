@@ -208,24 +208,14 @@ class Anchor_Translate_Language {
 
     /**
      * Build a URL to switch to the given language on the current page.
-     * Uses path-prefix URLs for full-page-cache compatibility.
+     *
+     * Returns ?lang=xx format. This is intentional — the link rewriter
+     * only touches path-based href values, so ?lang=xx links survive
+     * untouched. handle_switch() redirects ?lang=xx to the correct
+     * /xx/path/ URL on click.
      */
     public function get_switch_url( $code ) {
-        // REQUEST_URI has been stripped of the language prefix already.
-        $uri       = remove_query_arg( 'lang', $_SERVER['REQUEST_URI'] ?? '/' );
-        $prefix    = $this->get_prefix( $code );
-        $home_path = parse_url( home_url(), PHP_URL_PATH ) ?: '';
-
-        if ( $prefix === '' ) {
-            return $uri;
-        }
-
-        if ( $home_path !== '' && strpos( $uri, $home_path ) === 0 ) {
-            $relative = substr( $uri, strlen( $home_path ) ) ?: '/';
-            return $home_path . $prefix . $relative;
-        }
-
-        return $prefix . $uri;
+        return '?lang=' . urlencode( $code );
     }
 
     /* ------------------------------------------------------------------ */

@@ -136,6 +136,7 @@ class Anchor_Translate_Module {
         ?>
         <script data-no-translate="true">
         (function(){
+            if(window.location.search.indexOf('lang=')!==-1)return;
             var m=document.cookie.match(/(?:^|;\s*)anchor_translate_lang=([^;]+)/);
             if(!m)return;
             var lang=m[1],codes=<?php echo $codes_js; ?>,hp='<?php echo esc_js( $home_path ); ?>';
@@ -169,8 +170,9 @@ class Anchor_Translate_Module {
             document.addEventListener('click',function(e){
                 var a=e.target.closest('a[href]');
                 if(!a)return;
+                if(a.hasAttribute('data-lang'))return;
                 var hr=a.getAttribute('href');
-                if(!hr||hr.charAt(0)==='#')return;
+                if(!hr||hr.charAt(0)==='#'||hr.charAt(0)==='?')return;
                 if(/^(javascript|mailto|tel|data):/i.test(hr))return;
                 if(/\.(js|css|png|jpe?g|gif|svg|pdf|zip|mp[34]|webp|ico|woff2?|ttf|eot)(\?|#|$)/i.test(hr))return;
                 if(/^\/(wp-admin|wp-content|wp-includes|wp-json|feed|xmlrpc)/i.test(hr))return;

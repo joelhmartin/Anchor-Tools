@@ -1,6 +1,11 @@
 <?php
 /**
- * Anchor Translate — Language registry, detection, and cookie persistence.
+ * Anchor Translate — Language registry, URL-based detection, and routing.
+ *
+ * Language is determined by URL path prefix (/es/, /fr/, etc.).
+ * The prefix is stripped from REQUEST_URI so WordPress resolves the correct page.
+ * This approach works with full-page caches (Kinsta, Cloudflare, etc.) because
+ * each language variant lives at its own URL.
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -22,24 +27,107 @@ class Anchor_Translate_Language {
     /* ------------------------------------------------------------------ */
 
     public function init() {
+        $this->detect_and_strip_prefix();
         add_action( 'init', [ $this, 'handle_switch' ], 1 );
+        add_filter( 'redirect_canonical', [ $this, 'fix_canonical_redirect' ], 10, 2 );
     }
 
     /**
-     * If ?lang=xx is present and valid, set cookie and redirect to clean URL.
+     * Detect language from URL path prefix and strip it from REQUEST_URI
+     * so WordPress resolves the correct page.
+     *
+     * Runs at plugins_loaded time (before WordPress parses the request).
+     */
+    private function detect_and_strip_prefix() {
+        if ( $this->is_non_frontend() ) return;
+
+        $uri       = $_SERVER['REQUEST_URI'] ?? '';
+        $path      = parse_url( $uri, PHP_URL_PATH ) ?: '';
+        $home_path = parse_url( home_url(), PHP_URL_PATH ) ?: '';
+        $default   = $this->get_default();
+
+        foreach ( $this->get_enabled() as $code => $label ) {
+            if ( $code === $default ) continue;
+            $lang_prefix = $home_path . '/' . $code;
+            if ( preg_match( '#^' . preg_quote( $lang_prefix, '#' ) . '(?=/|$)#', $path ) ) {
+                $this->current = $code;
+                // Strip the /xx segment, keep home_path.
+                $_SERVER['REQUEST_URI'] = preg_replace(
+                    '#^(' . preg_quote( $home_path, '#' ) . ')/' . preg_quote( $code, '#' ) . '(?=/|$)#',
+                    '$1',
+                    $uri,
+                    1
+                );
+                if ( $_SERVER['REQUEST_URI'] === '' ) {
+                    $_SERVER['REQUEST_URI'] = '/';
+                }
+                break;
+            }
+        }
+    }
+
+    /**
+     * Handle ?lang=xx — redirect to /xx/ prefixed URL (backward compat).
      */
     public function handle_switch() {
-        if ( is_admin() || wp_doing_ajax() || wp_doing_cron() ) return;
-        if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) return;
+        if ( $this->is_non_frontend() ) return;
 
         $lang = isset( $_GET['lang'] ) ? sanitize_text_field( wp_unslash( $_GET['lang'] ) ) : '';
         if ( $lang === '' || ! $this->is_enabled( $lang ) ) return;
 
-        $this->set_cookie( $lang );
-
         $clean = remove_query_arg( 'lang' );
-        wp_redirect( $clean, 302 );
+        $path  = parse_url( $clean, PHP_URL_PATH ) ?: '/';
+        $query = parse_url( $clean, PHP_URL_QUERY );
+
+        if ( $lang === $this->get_default() ) {
+            $url = $path;
+        } else {
+            $home_path = parse_url( home_url(), PHP_URL_PATH ) ?: '';
+            if ( $home_path !== '' && strpos( $path, $home_path ) === 0 ) {
+                $relative = substr( $path, strlen( $home_path ) ) ?: '/';
+                $url = $home_path . '/' . $lang . $relative;
+            } else {
+                $url = '/' . $lang . $path;
+            }
+        }
+
+        if ( $query ) $url .= '?' . $query;
+
+        wp_redirect( $url, 302 );
         exit;
+    }
+
+    /**
+     * When WordPress issues a canonical redirect (e.g. trailing-slash fix),
+     * re-add the language prefix so the browser stays on the correct URL.
+     */
+    public function fix_canonical_redirect( $redirect_url, $requested_url ) {
+        $prefix = $this->get_prefix();
+        if ( $prefix === '' ) return $redirect_url;
+
+        $parsed = parse_url( $redirect_url );
+        $path   = $parsed['path'] ?? '/';
+
+        $home_path = parse_url( home_url(), PHP_URL_PATH ) ?: '';
+        $full_prefix = $home_path . $prefix;
+
+        // Already has language prefix.
+        if ( strpos( $path, $full_prefix . '/' ) === 0 || $path === $full_prefix ) {
+            return $redirect_url;
+        }
+
+        // Insert language segment after home_path.
+        if ( $home_path !== '' && strpos( $path, $home_path ) === 0 ) {
+            $relative = substr( $path, strlen( $home_path ) ) ?: '/';
+            $new_path = $home_path . $prefix . $relative;
+        } else {
+            $new_path = $prefix . $path;
+        }
+
+        return ( isset( $parsed['scheme'] ) ? $parsed['scheme'] . '://' . ( $parsed['host'] ?? '' ) : '' )
+             . $new_path
+             . ( isset( $parsed['query'] ) ? '?' . $parsed['query'] : '' )
+             . ( isset( $parsed['fragment'] ) ? '#' . $parsed['fragment'] : '' );
     }
 
     /* ------------------------------------------------------------------ */
@@ -50,7 +138,7 @@ class Anchor_Translate_Language {
     public function get_current() {
         if ( $this->current ) return $this->current;
 
-        // 1. Query param (before redirect fires)
+        // Query param (before redirect fires).
         if ( isset( $_GET['lang'] ) ) {
             $q = sanitize_text_field( wp_unslash( $_GET['lang'] ) );
             if ( $this->is_enabled( $q ) ) {
@@ -59,16 +147,7 @@ class Anchor_Translate_Language {
             }
         }
 
-        // 2. Cookie
-        if ( isset( $_COOKIE[ self::COOKIE_NAME ] ) ) {
-            $c = sanitize_text_field( wp_unslash( $_COOKIE[ self::COOKIE_NAME ] ) );
-            if ( $this->is_enabled( $c ) ) {
-                $this->current = $c;
-                return $c;
-            }
-        }
-
-        // 3. Default
+        // Default — no language prefix in URL.
         $this->current = $this->get_default();
         return $this->current;
     }
@@ -116,24 +195,45 @@ class Anchor_Translate_Language {
         return $this->get_current() === $this->get_default();
     }
 
-    /** Build a URL to switch to the given language on the current page. */
+    /**
+     * URL path segment for a language code (e.g. '/es'), or '' for default.
+     */
+    public function get_prefix( $code = null ) {
+        $code = $code ?: $this->get_current();
+        return ( $code === $this->get_default() ) ? '' : '/' . $code;
+    }
+
+    /**
+     * Build a URL to switch to the given language on the current page.
+     * Uses path-prefix URLs for full-page-cache compatibility.
+     */
     public function get_switch_url( $code ) {
-        return add_query_arg( 'lang', $code );
+        // REQUEST_URI has been stripped of the language prefix already.
+        $uri       = remove_query_arg( 'lang', $_SERVER['REQUEST_URI'] ?? '/' );
+        $prefix    = $this->get_prefix( $code );
+        $home_path = parse_url( home_url(), PHP_URL_PATH ) ?: '';
+
+        if ( $prefix === '' ) {
+            return $uri;
+        }
+
+        if ( $home_path !== '' && strpos( $uri, $home_path ) === 0 ) {
+            $relative = substr( $uri, strlen( $home_path ) ) ?: '/';
+            return $home_path . $prefix . $relative;
+        }
+
+        return $prefix . $uri;
     }
 
     /* ------------------------------------------------------------------ */
-    /*  Cookie                                                            */
+    /*  Helpers                                                           */
     /* ------------------------------------------------------------------ */
 
-    private function set_cookie( $lang ) {
-        setcookie( self::COOKIE_NAME, $lang, [
-            'expires'  => time() + ( 30 * DAY_IN_SECONDS ),
-            'path'     => COOKIEPATH,
-            'domain'   => COOKIE_DOMAIN,
-            'secure'   => is_ssl(),
-            'httponly'  => false,
-            'samesite' => 'Lax',
-        ] );
-        $_COOKIE[ self::COOKIE_NAME ] = $lang;
+    private function is_non_frontend() {
+        if ( is_admin() )      return true;
+        if ( wp_doing_ajax() ) return true;
+        if ( wp_doing_cron() ) return true;
+        if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) return true;
+        return false;
     }
 }

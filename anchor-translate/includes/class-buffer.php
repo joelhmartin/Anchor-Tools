@@ -73,6 +73,13 @@ class Anchor_Translate_Buffer {
             }
         );
 
+        // Rewrite internal links and html lang attribute.
+        $prefix = $this->language->get_prefix();
+        if ( $prefix !== '' ) {
+            $translated_html = $this->rewrite_links( $translated_html, $lang );
+            $translated_html = $this->update_html_lang( $translated_html, $lang );
+        }
+
         // Store in cache.
         if ( ( $this->options['cache_enabled'] ?? '1' ) !== '0' && $post_id ) {
             $this->cache->set( $post_id, $lang, $translated_html );
@@ -111,6 +118,87 @@ class Anchor_Translate_Buffer {
         }
 
         return false;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  Link rewriting                                                    */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Rewrite internal href attributes to include the language path prefix.
+     * e.g. /about/ → /es/about/, https://site.com/about/ → https://site.com/es/about/
+     */
+    private function rewrite_links( $html, $lang ) {
+        $home_url  = home_url();
+        $home_path = parse_url( $home_url, PHP_URL_PATH ) ?: '';
+
+        // 1. Absolute internal URLs: href="https://example.com/path"
+        $escaped_home = preg_quote( $home_url, '#' );
+        $html = preg_replace_callback(
+            '#(href\s*=\s*["\'])(' . $escaped_home . ')(\/[^"\']*?|)(["\'])#i',
+            function ( $m ) use ( $lang ) {
+                $rest = $m[3] ?: '/';
+                if ( $this->should_skip_rewrite( $rest, $lang ) ) return $m[0];
+                return $m[1] . $m[2] . '/' . $lang . $rest . $m[4];
+            },
+            $html
+        );
+
+        // 2. Root-relative URLs: href="/path" (not "//protocol-relative")
+        $html = preg_replace_callback(
+            '#(href\s*=\s*["\'])(\/(?!\/)[^"\']*?)(["\'])#i',
+            function ( $m ) use ( $lang, $home_path ) {
+                $path = $m[2];
+
+                // Must be under WordPress home path.
+                if ( $home_path !== '' && strpos( $path, $home_path ) !== 0 ) {
+                    return $m[0];
+                }
+
+                $relative = $home_path !== '' ? ( substr( $path, strlen( $home_path ) ) ?: '/' ) : $path;
+
+                if ( $this->should_skip_rewrite( $relative, $lang ) ) return $m[0];
+
+                if ( $home_path !== '' ) {
+                    return $m[1] . $home_path . '/' . $lang . $relative . $m[3];
+                }
+                return $m[1] . '/' . $lang . $path . $m[3];
+            },
+            $html
+        );
+
+        return $html;
+    }
+
+    /**
+     * Whether a relative path (after home_path) should NOT be rewritten.
+     */
+    private function should_skip_rewrite( $relative_path, $lang ) {
+        if ( $relative_path === '' || $relative_path[0] === '#' ) return true;
+
+        // Already has language prefix.
+        if ( preg_match( '#^/' . preg_quote( $lang, '#' ) . '(?=/|$)#', $relative_path ) ) return true;
+
+        // WordPress core / asset paths.
+        if ( preg_match( '#^/(wp-admin|wp-content|wp-includes|wp-json|feed|xmlrpc)#', $relative_path ) ) return true;
+
+        // Static files (has a file extension).
+        $url_path = parse_url( $relative_path, PHP_URL_PATH ) ?: '';
+        if ( preg_match( '/\.\w{2,4}$/', $url_path ) ) return true;
+
+        return false;
+    }
+
+    /**
+     * Update the <html lang="..."> attribute to the target language.
+     */
+    private function update_html_lang( $html, $lang ) {
+        return preg_replace(
+            '/<html([^>]*?)lang\s*=\s*["\'][^"\']*["\']/',
+            '<html$1lang="' . esc_attr( $lang ) . '"',
+            $html,
+            1
+        );
     }
 
     private function parse_lines( $value ) {

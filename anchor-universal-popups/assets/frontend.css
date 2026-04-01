@@ -91,29 +91,27 @@
    Popup Style Variants
    ========================================================================== */
 
-/* ── Theater (fullscreen) ── */
+/* ── Theater ── */
 .up-style-theater .up-modal__dialog {
-  width: 100vw;
-  max-height: 100vh;
-  border-radius: 0;
-  top: 0;
-  transform: none;
-  height: 100vh;
+  width: var(--up-theater-max-width, 90%);
+  max-width: var(--up-theater-max-width, 90%);
+  height: var(--up-theater-max-height, 90vh);
+  max-height: var(--up-theater-max-height, 90vh);
+  border-radius: 8px;
 }
 .up-style-theater .up-modal__frame {
   flex: 1 1 auto;
   aspect-ratio: auto;
 }
 .up-style-theater .up-content-wrap {
-  width: 100vw;
-  max-height: 100vh;
-  border-radius: 0;
-  top: 0;
-  transform: none;
-  height: 100vh;
+  width: var(--up-theater-max-width, 90%);
+  max-width: var(--up-theater-max-width, 90%);
+  height: var(--up-theater-max-height, 90vh);
+  max-height: var(--up-theater-max-height, 90vh);
+  border-radius: 8px;
 }
 .up-style-theater .up-content__inner {
-  max-height: calc(100vh - 48px);
+  max-height: calc(var(--up-theater-max-height, 90vh) - 48px);
 }
 
 /* ── Drawer (right) ── */

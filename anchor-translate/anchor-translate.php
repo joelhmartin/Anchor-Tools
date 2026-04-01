@@ -48,6 +48,7 @@ class Anchor_Translate_Module {
         add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 100 );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'admin_init', [ $this, 'handle_cache_clear' ] );
+        add_action( 'wp_ajax_anchor_translate_precache', [ $this, 'ajax_precache' ] );
 
         // Frontend pipeline.
         $this->boot_frontend();
@@ -91,6 +92,55 @@ class Anchor_Translate_Module {
             $buffer   = new Anchor_Translate_Buffer( $language, $parser, $provider, $cache, $opts );
             $buffer->init();
         }
+
+        // Client-side link interceptor: catches every internal link click and
+        // ensures the language prefix is present, even for links the server-side
+        // rewriter missed (Divi dynamic links, JS-generated content, etc.).
+        if ( ! is_admin() ) {
+            $this->language = $language;
+            add_action( 'wp_footer', [ $this, 'render_link_interceptor' ], 999 );
+        }
+    }
+
+    /** @var Anchor_Translate_Language|null */
+    private $language;
+
+    /**
+     * Inject a tiny JS that intercepts clicks on internal links and adds
+     * the language path prefix when missing. Runs on every frontend page
+     * so navigation always stays in the chosen language.
+     */
+    public function render_link_interceptor() {
+        if ( ! $this->language || $this->language->is_default() ) return;
+
+        $prefix    = $this->language->get_prefix();
+        $home_url  = home_url();
+        $home_path = wp_parse_url( $home_url, PHP_URL_PATH ) ?: '';
+        ?>
+        <script data-no-translate="true">
+        (function(){
+            var p='<?php echo esc_js( $prefix ); ?>';
+            var h='<?php echo esc_js( $home_url ); ?>';
+            var hp='<?php echo esc_js( $home_path ); ?>';
+            if(!p)return;
+            document.addEventListener('click',function(e){
+                var a=e.target.closest('a[href]');
+                if(!a)return;
+                var hr=a.getAttribute('href');
+                if(!hr||hr.charAt(0)==='#')return;
+                if(/^(javascript|mailto|tel|data):/i.test(hr))return;
+                if(/\.(js|css|png|jpe?g|gif|svg|pdf|zip|mp[34]|webp|ico|woff2?|ttf|eot)(\?|#|$)/i.test(hr))return;
+                if(/^\/(wp-admin|wp-content|wp-includes|wp-json|feed|xmlrpc)/i.test(hr))return;
+                var abs=hr.indexOf(h)===0;
+                var rel=!abs&&hr.charAt(0)==='/';
+                if(!abs&&!rel)return;
+                var full=hp+p;
+                if(abs){var after=hr.substr(h.length)||'/';if(after.indexOf(p+'/')===0||after===p)return;a.setAttribute('href',h+p+after)}
+                else if(rel){if(hp&&hr.indexOf(hp)===0){var r=hr.substr(hp.length)||'/';if(r.indexOf(p+'/')===0||r===p)return;a.setAttribute('href',hp+p+r)}else{if(hr.indexOf(p+'/')===0||hr===p)return;a.setAttribute('href',p+hr)}}
+            },true);
+        })();
+        </script>
+        <?php
     }
 
     /* ------------------------------------------------------------------ */
@@ -283,6 +333,61 @@ class Anchor_Translate_Module {
         </form>
 
         <hr />
+        <h2><?php esc_html_e( 'Bulk Pre-Cache', 'anchor-schema' ); ?></h2>
+        <p><?php esc_html_e( 'Pre-translate all published pages so visitors never wait for a first-time translation.', 'anchor-schema' ); ?></p>
+        <button type="button" id="at-precache-btn" class="button button-secondary"><?php esc_html_e( 'Pre-Cache All Pages', 'anchor-schema' ); ?></button>
+        <span id="at-precache-status" style="margin-left:12px;"></span>
+        <div id="at-precache-log" style="max-height:200px;overflow-y:auto;margin-top:8px;font-family:monospace;font-size:12px;"></div>
+        <script>
+        (function(){
+            var btn = document.getElementById('at-precache-btn');
+            var status = document.getElementById('at-precache-status');
+            var log = document.getElementById('at-precache-log');
+            if (!btn) return;
+
+            btn.addEventListener('click', function() {
+                btn.disabled = true;
+                status.textContent = 'Starting…';
+                log.innerHTML = '';
+                runNext(0);
+            });
+
+            function runNext(offset) {
+                var fd = new FormData();
+                fd.append('action', 'anchor_translate_precache');
+                fd.append('_wpnonce', '<?php echo wp_create_nonce( 'anchor_translate_precache' ); ?>');
+                fd.append('offset', offset);
+
+                fetch(ajaxurl, { method: 'POST', body: fd })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (!data.success) {
+                            status.textContent = 'Error: ' + (data.data || 'Unknown');
+                            btn.disabled = false;
+                            return;
+                        }
+                        var d = data.data;
+                        d.log.forEach(function(msg) {
+                            log.innerHTML += msg + '<br>';
+                            log.scrollTop = log.scrollHeight;
+                        });
+                        status.textContent = d.done + ' / ' + d.total + ' pages';
+                        if (d.done < d.total) {
+                            runNext(d.done);
+                        } else {
+                            status.textContent += ' — Complete!';
+                            btn.disabled = false;
+                        }
+                    })
+                    .catch(function(err) {
+                        status.textContent = 'Request failed: ' + err;
+                        btn.disabled = false;
+                    });
+            }
+        })();
+        </script>
+
+        <hr />
         <h2><?php esc_html_e( 'Shortcode', 'anchor-schema' ); ?></h2>
         <p><?php esc_html_e( 'Place this shortcode anywhere to display the language switcher:', 'anchor-schema' ); ?></p>
         <code>[anchor_translate_switcher]</code>
@@ -305,6 +410,90 @@ class Anchor_Translate_Module {
         add_action( 'admin_notices', function () {
             echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Translation cache cleared.', 'anchor-schema' ) . '</p></div>';
         } );
+    }
+
+    /* ------------------------------------------------------------------ */
+    /*  Bulk pre-cache via AJAX                                           */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Process a batch of pages: fetch their translated URLs server-to-server
+     * so the translation pipeline runs and caches each one.
+     */
+    public function ajax_precache() {
+        check_ajax_referer( 'anchor_translate_precache' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( 'Permission denied.' );
+        }
+
+        $offset = (int) ( $_POST['offset'] ?? 0 );
+        $batch  = 5; // pages per AJAX request
+
+        $post_ids = get_posts( [
+            'post_type'      => [ 'page', 'post' ],
+            'post_status'    => 'publish',
+            'fields'         => 'ids',
+            'posts_per_page' => -1,
+            'orderby'        => 'ID',
+            'order'          => 'ASC',
+        ] );
+
+        $total   = count( $post_ids );
+        $chunk   = array_slice( $post_ids, $offset, $batch );
+        $log     = [];
+        $opts    = $this->get_options();
+        $default = $opts['default_language'] ?: 'en';
+
+        // Build list of non-default languages.
+        $lang_obj  = new Anchor_Translate_Language( $opts );
+        $languages = $lang_obj->get_enabled();
+        unset( $languages[ $default ] );
+
+        if ( empty( $languages ) ) {
+            wp_send_json_error( 'No non-default languages enabled.' );
+        }
+
+        foreach ( $chunk as $pid ) {
+            $url = get_permalink( $pid );
+            if ( ! $url ) continue;
+            $title = get_the_title( $pid );
+
+            foreach ( $languages as $lang_code => $lang_label ) {
+                // Build the translated URL: insert /es/ after home path.
+                $home_url  = home_url();
+                $home_path = wp_parse_url( $home_url, PHP_URL_PATH ) ?: '';
+
+                if ( $home_path !== '' && strpos( $url, $home_url ) === 0 ) {
+                    $after      = substr( $url, strlen( $home_url ) ) ?: '/';
+                    $target_url = $home_url . '/' . $lang_code . $after;
+                } else {
+                    $parsed     = wp_parse_url( $url );
+                    $path       = $parsed['path'] ?? '/';
+                    $target_url = ( $parsed['scheme'] ?? 'https' ) . '://' . ( $parsed['host'] ?? '' )
+                                . '/' . $lang_code . $path;
+                }
+
+                // Fire a non-blocking GET to trigger the translation pipeline.
+                $response = wp_remote_get( $target_url, [
+                    'timeout'   => 60,
+                    'sslverify' => false,
+                    'cookies'   => [],
+                ] );
+
+                if ( is_wp_error( $response ) ) {
+                    $log[] = '✗ ' . esc_html( $title ) . ' [' . $lang_code . '] — ' . esc_html( $response->get_error_message() );
+                } else {
+                    $code = wp_remote_retrieve_response_code( $response );
+                    $log[] = '✓ ' . esc_html( $title ) . ' [' . $lang_code . '] — HTTP ' . $code;
+                }
+            }
+        }
+
+        wp_send_json_success( [
+            'total' => $total,
+            'done'  => min( $total, $offset + $batch ),
+            'log'   => $log,
+        ] );
     }
 
     /* ------------------------------------------------------------------ */

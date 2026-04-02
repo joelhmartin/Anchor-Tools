@@ -2,7 +2,8 @@
 /**
  * Anchor Translate — [anchor_translate_switcher] shortcode.
  *
- * Renders flag icons via flagcdn.com + language labels.
+ * Renders flag icons that trigger client-side Google Translate widget.
+ * Protected from translation via skiptranslate / notranslate classes.
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -48,7 +49,6 @@ class Anchor_Translate_Shortcode {
         $links = [];
         foreach ( $languages as $code => $label ) {
             $active = ( $code === $current ) ? ' active' : '';
-            $url    = esc_url( $this->language->get_switch_url( $code ) );
 
             $show_flag = in_array( $style, [ 'flags', 'both', 'flags_code' ], true );
             $show_full = in_array( $style, [ 'text', 'both' ], true );
@@ -75,9 +75,9 @@ class Anchor_Translate_Shortcode {
             }
 
             $links[] = sprintf(
-                '<a class="anchor-translate-link%s" href="%s" data-lang="%s" title="%s">%s%s</a>',
+                '<a class="anchor-translate-link%s" href="#" onclick="anchorTranslateSwitchLang(\'%s\'); return false;" data-lang="%s" title="%s">%s%s</a>',
                 $active,
-                $url,
+                esc_js( $code ),
                 esc_attr( $code ),
                 esc_attr( $label ),
                 $flag_html,
@@ -85,12 +85,8 @@ class Anchor_Translate_Shortcode {
             );
         }
 
-        return '<div class="anchor-translate-switcher" data-no-translate="true">'
+        return '<div class="anchor-translate-switcher skiptranslate notranslate">'
             . implode( '', $links )
-            . '<style>.anchor-translate-switcher{display:inline-flex;align-items:center;gap:8px}'
-            . '.anchor-translate-link{display:inline-flex;align-items:center;gap:4px;text-decoration:none;opacity:.6;transition:opacity .2s}'
-            . '.anchor-translate-link:hover,.anchor-translate-link.active{opacity:1}'
-            . '.anchor-translate-flag{display:block;border-radius:2px;box-shadow:0 0 0 1px rgba(0,0,0,.1)}'
-            . '</style></div>';
+            . '</div>';
     }
 }

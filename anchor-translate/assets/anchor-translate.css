@@ -1,0 +1,16 @@
+/* Hide Google Translate injected UI */
+.goog-te-banner-frame { display: none !important; }
+#goog-gt-tt { display: none !important; }
+.goog-te-balloon-frame { display: none !important; }
+body { top: 0 !important; }
+#google_translate_element,
+#anchor_translate_element { display: none !important; }
+.skiptranslate.goog-te-gadget { display: none !important; }
+.goog-te-spinner-pos { display: none !important; }
+
+/* Switcher */
+.anchor-translate-switcher { display: inline-flex; align-items: center; gap: 8px; }
+.anchor-translate-link { display: inline-flex; align-items: center; gap: 4px; text-decoration: none; opacity: .6; transition: opacity .2s; cursor: pointer; }
+.anchor-translate-link:hover,
+.anchor-translate-link.active { opacity: 1; }
+.anchor-translate-flag { display: block; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,.1); }

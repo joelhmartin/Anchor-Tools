@@ -2977,7 +2977,7 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
             ],
             'translate' => [
                 'label'       => __( 'Anchor Translate', 'anchor-schema' ),
-                'description' => __( 'Server-side translation with Google Cloud Translation and per-page caching.', 'anchor-schema' ),
+                'description' => __( 'Client-side translation with Google Translate widget and cookie-based language persistence.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/anchor-translate.php',
                 'class'       => 'Anchor_Translate_Module',
             ],

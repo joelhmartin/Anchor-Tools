@@ -86,18 +86,23 @@ class Anchor_Translate_Module {
         $base = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-translate/assets/';
         $dir  = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/assets/';
 
+        $css_file = $dir . 'anchor-translate.css';
+        $js_file  = $dir . 'anchor-translate.js';
+        $css_ver  = file_exists( $css_file ) ? filemtime( $css_file ) : time();
+        $js_ver   = file_exists( $js_file )  ? filemtime( $js_file )  : time();
+
         wp_enqueue_style(
             'anchor-translate',
             $base . 'anchor-translate.css',
             [],
-            filemtime( $dir . 'anchor-translate.css' )
+            $css_ver
         );
 
         wp_enqueue_script(
             'anchor-translate',
             $base . 'anchor-translate.js',
             [ 'jquery' ],
-            filemtime( $dir . 'anchor-translate.js' ),
+            $js_ver,
             true
         );
 

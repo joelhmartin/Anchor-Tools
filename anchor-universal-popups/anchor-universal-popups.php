@@ -21,6 +21,8 @@ class Anchor_Universal_Popups_Module {
         add_shortcode('anchor_popup', [$this, 'shortcode_render']);
         add_filter('manage_' . self::CPT . '_posts_columns', [$this, 'admin_columns']);
         add_action('manage_' . self::CPT . '_posts_custom_column', [$this, 'admin_column_content'], 10, 2);
+        add_filter('post_row_actions', [$this, 'row_actions'], 10, 2);
+        add_action('admin_post_anchor_popup_duplicate', [$this, 'handle_duplicate']);
     }
 
     public function register_cpt(){
@@ -61,6 +63,48 @@ class Anchor_Universal_Popups_Module {
             if (in_array($mode, ['youtube', 'vimeo'], true)) $mode = 'video';
             echo esc_html(ucfirst($mode ?: 'html'));
         }
+    }
+
+    public function row_actions($actions, $post) {
+        if ($post->post_type !== self::CPT || !current_user_can('edit_posts')) {
+            return $actions;
+        }
+        $dup_url = wp_nonce_url(
+            admin_url('admin-post.php?action=anchor_popup_duplicate&post_id=' . $post->ID),
+            'anchor_popup_duplicate_' . $post->ID
+        );
+        $actions['duplicate'] = '<a href="' . esc_url($dup_url) . '">' . esc_html__('Duplicate', 'anchor-schema') . '</a>';
+        return $actions;
+    }
+
+    public function handle_duplicate() {
+        $post_id = isset($_GET['post_id']) ? absint($_GET['post_id']) : 0;
+        if (!$post_id || !wp_verify_nonce($_GET['_wpnonce'] ?? '', 'anchor_popup_duplicate_' . $post_id)) {
+            wp_die(esc_html__('Invalid request.', 'anchor-schema'));
+        }
+        if (!current_user_can('edit_posts')) {
+            wp_die(esc_html__('Permission denied.', 'anchor-schema'));
+        }
+        $source = get_post($post_id);
+        if (!$source || $source->post_type !== self::CPT) {
+            wp_die(esc_html__('Popup not found.', 'anchor-schema'));
+        }
+        $new_id = wp_insert_post([
+            'post_type'   => self::CPT,
+            'post_status' => 'draft',
+            'post_title'  => $source->post_title . ' (Copy)',
+        ]);
+        if (is_wp_error($new_id)) {
+            wp_die(esc_html($new_id->get_error_message()));
+        }
+        foreach (array_keys($this->defaults()) as $key) {
+            $value = get_post_meta($post_id, "up_$key", true);
+            if ($value !== '' && $value !== false) {
+                update_post_meta($new_id, "up_$key", $value);
+            }
+        }
+        wp_safe_redirect(admin_url('post.php?action=edit&post=' . $new_id));
+        exit;
     }
 
     private function maybe_migrate_legacy_posts(){

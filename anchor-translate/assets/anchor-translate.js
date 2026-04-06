@@ -92,8 +92,79 @@
 
     /* ---- Trigger translation programmatically ---- */
 
+    function normalizeText(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function uniquePush(list, value) {
+        value = normalizeText(value);
+        if (value && list.indexOf(value) === -1) {
+            list.push(value);
+        }
+    }
+
+    function getLanguageLabels(code) {
+        var labels = [];
+        var canonical = String(code || '').replace(/_/g, '-');
+        var primary = canonical.split('-')[0];
+
+        if (config.languages && config.languages[code]) {
+            uniquePush(labels, config.languages[code]);
+        }
+
+        try {
+            if (window.Intl && typeof Intl.DisplayNames === 'function') {
+                var displayNames = new Intl.DisplayNames(['en'], { type: 'language' });
+                uniquePush(labels, displayNames.of(canonical));
+                if (primary !== canonical) {
+                    uniquePush(labels, displayNames.of(primary));
+                }
+            }
+        } catch (e) {}
+
+        uniquePush(labels, primary.toUpperCase());
+        uniquePush(labels, canonical.toUpperCase());
+
+        return labels;
+    }
+
+    function getSimpleWidgetButton() {
+        return document.querySelector('.VIpgJd-ZVi9od-xl07Ob-lTBxed') ||
+            document.querySelector('.goog-te-gadget-simple a');
+    }
+
+    function findSimpleWidgetMenuItem(langCode) {
+        var labels = getLanguageLabels(langCode);
+        var frames = document.querySelectorAll('iframe');
+
+        for (var i = 0; i < frames.length; i++) {
+            var doc = null;
+
+            try {
+                doc = frames[i].contentDocument || (frames[i].contentWindow && frames[i].contentWindow.document);
+            } catch (e) {
+                doc = null;
+            }
+
+            if (!doc) continue;
+
+            var items = doc.querySelectorAll('.VIpgJd-ZVi9od-vH1Gmf-ibnC6b, .VIpgJd-ZVi9od-vH1Gmf-ibnC6b-gk6SMd');
+            for (var j = 0; j < items.length; j++) {
+                var textNode = items[j].querySelector('.text');
+                var text = normalizeText(textNode ? textNode.textContent : items[j].textContent);
+                if (labels.indexOf(text) !== -1) {
+                    return items[j];
+                }
+            }
+        }
+
+        return null;
+    }
+
     function triggerTranslation(langCode) {
         var attempts = 0;
+        var simpleWidgetOpened = false;
+
         var interval = setInterval(function() {
             var select = document.querySelector('.goog-te-combo');
             if (select) {
@@ -101,7 +172,23 @@
                 select.value = langCode;
                 select.dispatchEvent(new Event('change'));
                 updateSwitcherUI(langCode);
+                return;
             }
+
+            var menuItem = findSimpleWidgetMenuItem(langCode);
+            if (menuItem) {
+                clearInterval(interval);
+                menuItem.click();
+                updateSwitcherUI(langCode);
+                return;
+            }
+
+            var simpleWidgetButton = getSimpleWidgetButton();
+            if (simpleWidgetButton && (!simpleWidgetOpened || attempts % 10 === 0)) {
+                simpleWidgetButton.click();
+                simpleWidgetOpened = true;
+            }
+
             if (++attempts > 50) clearInterval(interval);
         }, 100);
     }

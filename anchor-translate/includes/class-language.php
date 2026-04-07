@@ -82,7 +82,11 @@ class Anchor_Translate_Language {
 
     public function get_source_url_for_current_request() {
         $path = $this->get_request_path();
-        $url  = home_url( $path ? '/' . $path . '/' : '/' );
+        if ( $this->is_front_page_path( $path ) ) {
+            $url = home_url( '/' );
+        } else {
+            $url = home_url( $path ? '/' . $path . '/' : '/' );
+        }
         $qs   = isset( $_SERVER['QUERY_STRING'] ) ? (string) $_SERVER['QUERY_STRING'] : '';
 
         if ( $qs ) {
@@ -109,6 +113,22 @@ class Anchor_Translate_Language {
         $home = trailingslashit( home_url( '/' ) );
         if ( ! $this->is_internal_url( $url ) ) {
             return $url;
+        }
+
+        if ( $this->is_front_page_url( $url ) ) {
+            $localized = $this->is_default( $lang )
+                ? $home
+                : trailingslashit( $home . $lang );
+
+            $parts = wp_parse_url( $url );
+            if ( ! empty( $parts['query'] ) ) {
+                $localized .= '?' . $parts['query'];
+            }
+            if ( ! empty( $parts['fragment'] ) ) {
+                $localized .= '#' . $parts['fragment'];
+            }
+
+            return $localized;
         }
 
         $parts = wp_parse_url( $url );
@@ -160,5 +180,52 @@ class Anchor_Translate_Language {
         if ( empty( $home['host'] ) ) return false;
 
         return strtolower( $target['host'] ) === strtolower( $home['host'] );
+    }
+
+    private function is_front_page_url( $url ) {
+        $normalized = $this->normalize_internal_path( $url );
+        if ( $normalized === '' ) {
+            return true;
+        }
+
+        $front_path = $this->get_front_page_path();
+        return $front_path !== '' && $normalized === $front_path;
+    }
+
+    private function is_front_page_path( $path ) {
+        $normalized = trim( (string) $path, '/' );
+        if ( $normalized === '' ) {
+            return true;
+        }
+
+        $front_path = $this->get_front_page_path();
+        return $front_path !== '' && $normalized === $front_path;
+    }
+
+    private function get_front_page_path() {
+        $page_on_front = (int) get_option( 'page_on_front' );
+        if ( ! $page_on_front ) {
+            return '';
+        }
+
+        $permalink = get_permalink( $page_on_front );
+        if ( ! $permalink ) {
+            return '';
+        }
+
+        return $this->normalize_internal_path( $permalink );
+    }
+
+    private function normalize_internal_path( $url ) {
+        $parts = wp_parse_url( $url );
+        $path  = isset( $parts['path'] ) ? ltrim( (string) $parts['path'], '/' ) : '';
+        $home_parts = wp_parse_url( home_url( '/' ) );
+        $home_path  = isset( $home_parts['path'] ) ? ltrim( (string) $home_parts['path'], '/' ) : '';
+
+        if ( $home_path && strpos( $path, $home_path ) === 0 ) {
+            $path = ltrim( substr( $path, strlen( $home_path ) ), '/' );
+        }
+
+        return trim( $path, '/' );
     }
 }

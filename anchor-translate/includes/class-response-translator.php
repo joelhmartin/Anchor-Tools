@@ -8,7 +8,9 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Anchor_Translate_Response_Translator {
 
     const CACHE_PREFIX = 'anchor_translate_render_';
-    const CACHE_VERSION = '2';
+    const CACHE_VERSION = '3';
+    const RAW_BLOCK_TOKEN = 'ANCHOR_TRANSLATE_RAW_BLOCK_';
+    const EXCLUDED_BLOCK_TOKEN = 'ANCHOR_TRANSLATE_EXCLUDED_BLOCK_';
 
     private $provider;
     private $language;
@@ -25,7 +27,8 @@ class Anchor_Translate_Response_Translator {
             return $html;
         }
 
-        $preserved = $this->preserve_excluded_blocks( $html );
+        $raw = $this->preserve_raw_blocks( $html );
+        $preserved = $this->preserve_excluded_blocks( $raw['html'] );
         $working_html = $preserved['html'];
 
         $cache_key = self::CACHE_PREFIX . md5( wp_json_encode( [
@@ -59,6 +62,12 @@ class Anchor_Translate_Response_Translator {
 
         $translated = $dom->saveHTML();
         $translated = $this->restore_preserved_blocks( $translated, $preserved['blocks'] );
+        $translated = $this->restore_preserved_blocks( $translated, $raw['blocks'] );
+
+        if ( $this->has_unrestored_placeholders( $translated ) ) {
+            return $html;
+        }
+
         if ( is_string( $translated ) && $translated !== '' ) {
             set_transient( $cache_key, $translated, WEEK_IN_SECONDS );
             return $translated;
@@ -326,6 +335,27 @@ class Anchor_Translate_Response_Translator {
         return $lines;
     }
 
+    private function preserve_raw_blocks( $html ) {
+        $blocks = [];
+        $index = 0;
+
+        $working = preg_replace_callback(
+            '/<(script|style)\b[^>]*>.*?<\/\1>/is',
+            function( $matches ) use ( &$blocks, &$index ) {
+                $placeholder = '<!--' . self::RAW_BLOCK_TOKEN . $index . '-->';
+                $blocks[ $placeholder ] = $matches[0];
+                $index++;
+                return $placeholder;
+            },
+            $html
+        );
+
+        return [
+            'html'   => $working,
+            'blocks' => $blocks,
+        ];
+    }
+
     private function preserve_excluded_blocks( $html ) {
         $selectors = $this->parse_lines( $this->options['exclude_selectors'] ?? '' );
         if ( empty( $selectors ) ) {
@@ -335,10 +365,9 @@ class Anchor_Translate_Response_Translator {
             ];
         }
 
-        $masked = $this->mask_raw_blocks_for_scanning( $html );
         preg_match_all(
             '/<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)(?:"[^"]*"|\'[^\']*\'|[^\'">])*?>/s',
-            $masked,
+            $html,
             $matches,
             PREG_OFFSET_CAPTURE
         );
@@ -420,7 +449,7 @@ class Anchor_Translate_Response_Translator {
         $blocks = [];
         $working = $html;
         foreach ( $ranges as $index => $range ) {
-            $placeholder = '<!--ANCHOR_TRANSLATE_EXCLUDED_BLOCK_' . $index . '-->';
+            $placeholder = '<!--' . self::EXCLUDED_BLOCK_TOKEN . $index . '-->';
             $original = substr( $working, $range['start'], $range['end'] - $range['start'] );
             $working = substr_replace( $working, $placeholder, $range['start'], $range['end'] - $range['start'] );
             $blocks[ $placeholder ] = $original;
@@ -440,20 +469,12 @@ class Anchor_Translate_Response_Translator {
         return strtr( $html, $blocks );
     }
 
-    private function mask_raw_blocks_for_scanning( $html ) {
-        $patterns = [
-            '/<script\b[^>]*>.*?<\/script>/is',
-            '/<style\b[^>]*>.*?<\/style>/is',
-        ];
-
-        $masked = $html;
-        foreach ( $patterns as $pattern ) {
-            $masked = preg_replace_callback( $pattern, static function( $matches ) {
-                return str_repeat( ' ', strlen( $matches[0] ) );
-            }, $masked );
+    private function has_unrestored_placeholders( $html ) {
+        if ( ! is_string( $html ) || $html === '' ) {
+            return false;
         }
 
-        return $masked;
+        return strpos( $html, self::RAW_BLOCK_TOKEN ) !== false || strpos( $html, self::EXCLUDED_BLOCK_TOKEN ) !== false;
     }
 
     private function tag_matches_exclusion_selector( $tag, array $selectors ) {

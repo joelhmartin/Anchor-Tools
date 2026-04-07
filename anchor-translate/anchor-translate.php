@@ -2,10 +2,9 @@
 /**
  * Anchor Tools module: Anchor Translate.
  *
- * Client-side translation via the Google Translate widget.
- * Language preference persisted with a cookie; same cached HTML
- * served to every visitor — fully compatible with Kinsta / Cloudflare
- * full-page caches.
+ * Client-side translation via Google Cloud Translation API.
+ * Language preference is persisted with a cookie while cached HTML
+ * remains identical for every visitor.
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -39,9 +38,16 @@ class Anchor_Translate_Module {
     public function __construct() {
         $this->load_includes();
 
+        $this->provider = new Anchor_Translate_Google_Provider();
+
         // Admin.
         add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 100 );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
+        add_action( 'admin_post_anchor_translate_test_api', [ $this, 'handle_api_test' ] );
+
+        // AJAX translation endpoint.
+        add_action( 'wp_ajax_anchor_translate_translate', [ $this, 'ajax_translate' ] );
+        add_action( 'wp_ajax_nopriv_anchor_translate_translate', [ $this, 'ajax_translate' ] );
 
         // Frontend.
         if ( ! is_admin() ) {
@@ -54,6 +60,7 @@ class Anchor_Translate_Module {
 
     private function load_includes() {
         $dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/includes/';
+        require_once $dir . 'class-google-provider.php';
         require_once $dir . 'class-language.php';
         require_once $dir . 'class-shortcode.php';
     }
@@ -70,13 +77,14 @@ class Anchor_Translate_Module {
         $this->opts     = $opts;
 
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_frontend' ] );
-        add_action( 'wp_footer',          [ $this, 'render_widget_container' ], 5 );
     }
 
     /** @var Anchor_Translate_Language|null */
     private $language;
     /** @var array */
     private $opts = [];
+    /** @var Anchor_Translate_Google_Provider */
+    private $provider;
 
     /* ------------------------------------------------------------------ */
     /*  Frontend assets                                                   */
@@ -112,23 +120,14 @@ class Anchor_Translate_Module {
             'languageCodes'    => array_keys( $this->language->get_enabled() ),
             'excludeSelectors' => $this->parse_lines( $this->opts['exclude_selectors'] ?? '' ),
             'preservePhrases'  => $this->parse_lines( $this->opts['preserve_phrases'] ?? '' ),
+            'ajaxUrl'          => admin_url( 'admin-ajax.php' ),
+            'nonce'            => wp_create_nonce( 'anchor_translate_nonce' ),
+            'hasApiKey'        => $this->provider->has_api_key(),
+            'messages'         => [
+                'missingApiKey'   => __( 'Google Cloud API key is not configured for Anchor Translate.', 'anchor-schema' ),
+                'translateFailed' => __( 'Translation failed. Check the Google Cloud Translation API key and configuration.', 'anchor-schema' ),
+            ],
         ] );
-
-        // Google Translate Element API.
-        wp_enqueue_script(
-            'google-translate-element',
-            '//translate.google.com/translate_a/element.js?cb=anchorTranslateInit',
-            [ 'anchor-translate' ],
-            null,
-            true
-        );
-    }
-
-    /**
-     * Hidden container required by Google Translate Element API.
-     */
-    public function render_widget_container() {
-        echo '<div id="anchor_translate_element" class="skiptranslate notranslate"></div>';
     }
 
     /* ------------------------------------------------------------------ */
@@ -160,6 +159,15 @@ class Anchor_Translate_Module {
 
         add_settings_field( 'default_language', __( 'Default Language Code', 'anchor-schema' ), [ $this, 'field_text' ], self::PAGE_SLUG, 'at_languages', [ 'key' => 'default_language', 'placeholder' => 'en', 'class' => 'small-text' ] );
         add_settings_field( 'languages', __( 'Enabled Languages', 'anchor-schema' ), [ $this, 'field_textarea' ], self::PAGE_SLUG, 'at_languages', [ 'key' => 'languages', 'placeholder' => "en:English\nes:Español", 'rows' => 6 ] );
+
+        add_settings_section(
+            'at_api',
+            __( 'Google Cloud Translation API', 'anchor-schema' ),
+            fn() => print '<p>' . esc_html__( 'Anchor Translate uses the shared Google Cloud API key from the General tab and sends translation requests through your WordPress site instead of the legacy Google widget.', 'anchor-schema' ) . '</p>',
+            self::PAGE_SLUG
+        );
+
+        add_settings_field( 'api_status', __( 'Shared API Key', 'anchor-schema' ), [ $this, 'field_api_status' ], self::PAGE_SLUG, 'at_api' );
 
         /* --- Exclusions section --- */
         add_settings_section(
@@ -206,6 +214,30 @@ class Anchor_Translate_Module {
         }
     }
 
+    public function field_api_status() {
+        $has_key = $this->provider->has_api_key();
+        $status  = $has_key
+            ? __( 'Configured in Anchor Tools > General.', 'anchor-schema' )
+            : __( 'Missing. Add a Google Cloud API key in Anchor Tools > General.', 'anchor-schema' );
+
+        echo '<p><strong>' . esc_html( $status ) . '</strong></p>';
+
+        if ( $has_key ) {
+            $url = wp_nonce_url(
+                add_query_arg(
+                    [
+                        'action' => 'anchor_translate_test_api',
+                    ],
+                    admin_url( 'admin-post.php' )
+                ),
+                'anchor_translate_test_api'
+            );
+            echo '<p><a class="button" href="' . esc_url( $url ) . '">' . esc_html__( 'Test Translation API', 'anchor-schema' ) . '</a></p>';
+        }
+
+        echo '<p class="description">' . esc_html__( 'The API key must allow server-side requests and have Cloud Translation API enabled in Google Cloud.', 'anchor-schema' ) . '</p>';
+    }
+
     /* ------------------------------------------------------------------ */
     /*  Sanitize                                                          */
     /* ------------------------------------------------------------------ */
@@ -224,6 +256,14 @@ class Anchor_Translate_Module {
     /* ------------------------------------------------------------------ */
 
     public function render_tab_content() {
+        $api_test = isset( $_GET['anchor_translate_api_test'] ) ? sanitize_text_field( $_GET['anchor_translate_api_test'] ) : '';
+        $message  = isset( $_GET['anchor_translate_message'] ) ? sanitize_text_field( wp_unslash( $_GET['anchor_translate_message'] ) ) : '';
+
+        if ( $api_test ) {
+            $class = $api_test === 'success' ? 'notice notice-success' : 'notice notice-error';
+            echo '<div class="' . esc_attr( $class ) . '"><p>' . esc_html( $message ) . '</p></div>';
+        }
+
         ?>
         <form method="post" action="options.php">
             <?php
@@ -239,6 +279,94 @@ class Anchor_Translate_Module {
         <code>[anchor_translate_switcher]</code>
         <p class="description"><?php esc_html_e( 'Styles: flags (default), text, both, code, flags_code. Example: [anchor_translate_switcher style="both"]', 'anchor-schema' ); ?></p>
         <?php
+    }
+
+    public function handle_api_test() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( esc_html__( 'You do not have permission to do that.', 'anchor-schema' ) );
+        }
+
+        check_admin_referer( 'anchor_translate_test_api' );
+
+        $opts      = $this->get_options();
+        $language  = new Anchor_Translate_Language( $opts );
+        $enabled   = array_keys( $language->get_enabled() );
+        $default   = $language->get_default();
+        $target    = $default === 'es' ? 'en' : 'es';
+
+        foreach ( $enabled as $code ) {
+            if ( $code !== $default ) {
+                $target = $code;
+                break;
+            }
+        }
+
+        $result = $this->provider->test_connection( $default, $target );
+        if ( is_wp_error( $result ) ) {
+            $status  = 'error';
+            $message = $result->get_error_message();
+        } else {
+            $status  = 'success';
+            $message = sprintf(
+                /* translators: 1: language code, 2: translated sample text */
+                __( 'Translation API is working. Sample response for %1$s: %2$s', 'anchor-schema' ),
+                $target,
+                $result
+            );
+        }
+
+        $url = add_query_arg(
+            [
+                'page'                       => 'anchor-schema',
+                'tab'                        => 'translate',
+                'anchor_translate_api_test'  => $status,
+                'anchor_translate_message'   => $message,
+            ],
+            admin_url( 'options-general.php' )
+        );
+
+        wp_safe_redirect( $url );
+        exit;
+    }
+
+    public function ajax_translate() {
+        check_ajax_referer( 'anchor_translate_nonce', 'nonce' );
+
+        $opts     = $this->get_options();
+        $language = new Anchor_Translate_Language( $opts );
+        $source   = sanitize_text_field( wp_unslash( $_POST['source'] ?? $language->get_default() ) );
+        $target   = sanitize_text_field( wp_unslash( $_POST['target'] ?? '' ) );
+        $texts    = isset( $_POST['texts'] ) ? (array) wp_unslash( $_POST['texts'] ) : [];
+
+        if ( ! $language->is_enabled( $target ) ) {
+            wp_send_json_error( [ 'message' => __( 'Requested language is not enabled.', 'anchor-schema' ) ], 400 );
+        }
+        if ( $source && ! $language->is_enabled( $source ) ) {
+            wp_send_json_error( [ 'message' => __( 'Source language is not enabled.', 'anchor-schema' ) ], 400 );
+        }
+
+        $texts = array_values( array_filter( array_map( 'strval', $texts ), static function( $text ) {
+            return $text !== '';
+        } ) );
+
+        if ( empty( $texts ) ) {
+            wp_send_json_success( [ 'translations' => [] ] );
+        }
+        if ( count( $texts ) > 100 ) {
+            wp_send_json_error( [ 'message' => __( 'Too many text fragments requested at once.', 'anchor-schema' ) ], 400 );
+        }
+
+        $total_chars = array_sum( array_map( 'mb_strlen', $texts ) );
+        if ( $total_chars > 20000 ) {
+            wp_send_json_error( [ 'message' => __( 'Requested translation payload is too large.', 'anchor-schema' ) ], 400 );
+        }
+
+        $result = $this->provider->translate_texts( $texts, $target, $source );
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( [ 'message' => $result->get_error_message() ], 502 );
+        }
+
+        wp_send_json_success( [ 'translations' => $result ] );
     }
 
     /* ------------------------------------------------------------------ */

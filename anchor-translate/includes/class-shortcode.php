@@ -2,7 +2,7 @@
 /**
  * Anchor Translate — [anchor_translate_switcher] shortcode.
  *
- * Renders flag icons that trigger client-side Google Translate widget.
+ * Renders flag icons that trigger the Anchor Translate frontend controller.
  * Protected from translation via skiptranslate / notranslate classes.
  */
 

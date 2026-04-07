@@ -2,7 +2,7 @@
 /**
  * Anchor Translate — [anchor_translate_switcher] shortcode.
  *
- * Renders flag icons that trigger the Anchor Translate frontend controller.
+ * Renders flag icons as real localized links.
  * Protected from translation via skiptranslate / notranslate classes.
  */
 
@@ -75,9 +75,10 @@ class Anchor_Translate_Shortcode {
             }
 
             $links[] = sprintf(
-                '<a class="anchor-translate-link%s" href="#" onclick="anchorTranslateSwitchLang(\'%s\'); return false;" data-lang="%s" title="%s">%s%s</a>',
+                '<a class="anchor-translate-link%s" href="%s" data-lang="%s" hreflang="%s" title="%s">%s%s</a>',
                 $active,
-                esc_js( $code ),
+                esc_url( $this->language->get_current_url( $code ) ),
+                esc_attr( $code ),
                 esc_attr( $code ),
                 esc_attr( $label ),
                 $flag_html,

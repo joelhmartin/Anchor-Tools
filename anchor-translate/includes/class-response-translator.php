@@ -37,9 +37,6 @@ class Anchor_Translate_Response_Translator {
             return $cached;
         }
 
-        $preserved_blocks = [];
-        $html = $this->preserve_raw_blocks( $html, $preserved_blocks );
-
         $dom = new DOMDocument( '1.0', 'UTF-8' );
         $previous = libxml_use_internal_errors( true );
         $loaded = $dom->loadHTML( $html, LIBXML_NOWARNING | LIBXML_NOERROR | LIBXML_COMPACT | LIBXML_PARSEHUGE );
@@ -57,7 +54,6 @@ class Anchor_Translate_Response_Translator {
 
         $translated = $dom->saveHTML();
         if ( is_string( $translated ) && $translated !== '' ) {
-            $translated = $this->restore_raw_blocks( $translated, $preserved_blocks );
             set_transient( $cache_key, $translated, WEEK_IN_SECONDS );
             return $translated;
         }
@@ -281,26 +277,6 @@ class Anchor_Translate_Response_Translator {
         }
 
         return false;
-    }
-
-    private function preserve_raw_blocks( $html, array &$blocks ) {
-        return preg_replace_callback(
-            '#<(script|style)\b[^>]*>.*?</\1>#is',
-            function( $matches ) use ( &$blocks ) {
-                $token = '__ANCHOR_TRANSLATE_RAW_BLOCK_' . count( $blocks ) . '__';
-                $blocks[ $token ] = $matches[0];
-                return $token;
-            },
-            $html
-        );
-    }
-
-    private function restore_raw_blocks( $html, array $blocks ) {
-        if ( empty( $blocks ) ) {
-            return $html;
-        }
-
-        return strtr( $html, $blocks );
     }
 
     private function tokenize_preserve_phrases( $text, array $phrases ) {

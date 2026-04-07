@@ -44,6 +44,7 @@ class Anchor_Translate_Module {
         add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 100 );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'admin_post_anchor_translate_test_api', [ $this, 'handle_api_test' ] );
+        add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'purge_page_caches' ] );
 
         add_action( 'init', [ $this, 'register_rewrite_rules' ] );
         add_action( 'init', [ $this, 'maybe_flush_rewrite_rules' ], 20 );
@@ -112,6 +113,34 @@ class Anchor_Translate_Module {
 
         flush_rewrite_rules( false );
         update_option( self::REWRITE_OPTION, self::REWRITE_VERSION, false );
+    }
+
+    public function purge_page_caches() {
+        if ( function_exists( 'wp_cache_flush' ) ) {
+            wp_cache_flush();
+        }
+
+        if ( class_exists( 'Developer_Tools_Settings' ) && function_exists( 'developer_tools_clear_cache' ) ) {
+            developer_tools_clear_cache();
+        }
+        if ( class_exists( '\Jeedo\KinstaMUPlugins\Cache\CachePurge' ) ) {
+            wp_remote_get( home_url( '/?kinsta-clear-cache-all' ), [ 'blocking' => false ] );
+        }
+
+        if ( function_exists( 'rocket_clean_domain' ) ) {
+            rocket_clean_domain();
+        }
+        if ( function_exists( 'wp_cache_clear_cache' ) ) {
+            wp_cache_clear_cache();
+        }
+        if ( function_exists( 'w3tc_flush_all' ) ) {
+            w3tc_flush_all();
+        }
+        if ( class_exists( 'LiteSpeed\Purge' ) ) {
+            do_action( 'litespeed_purge_all' );
+        }
+
+        do_action( 'anchor_cache_purged' );
     }
 
     public function register_query_vars( $vars ) {

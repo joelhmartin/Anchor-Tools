@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Anchor_Translate_Response_Translator {
 
     const CACHE_PREFIX = 'anchor_translate_render_';
+    const CACHE_VERSION = '2';
 
     private $provider;
     private $language;
@@ -24,7 +25,11 @@ class Anchor_Translate_Response_Translator {
             return $html;
         }
 
+        $preserved = $this->preserve_excluded_blocks( $html );
+        $working_html = $preserved['html'];
+
         $cache_key = self::CACHE_PREFIX . md5( wp_json_encode( [
+            'version'   => self::CACHE_VERSION,
             'lang'      => $target_lang,
             'source'    => $source_url,
             'content'   => md5( $html ),
@@ -39,7 +44,7 @@ class Anchor_Translate_Response_Translator {
 
         $dom = new DOMDocument( '1.0', 'UTF-8' );
         $previous = libxml_use_internal_errors( true );
-        $loaded = $dom->loadHTML( $html, LIBXML_NOWARNING | LIBXML_NOERROR | LIBXML_COMPACT | LIBXML_PARSEHUGE );
+        $loaded = $dom->loadHTML( $working_html, LIBXML_NOWARNING | LIBXML_NOERROR | LIBXML_COMPACT | LIBXML_PARSEHUGE );
         libxml_clear_errors();
         libxml_use_internal_errors( $previous );
 
@@ -53,6 +58,7 @@ class Anchor_Translate_Response_Translator {
         $this->update_document_metadata( $dom, $xpath, $target_lang, $source_url );
 
         $translated = $dom->saveHTML();
+        $translated = $this->restore_preserved_blocks( $translated, $preserved['blocks'] );
         if ( is_string( $translated ) && $translated !== '' ) {
             set_transient( $cache_key, $translated, WEEK_IN_SECONDS );
             return $translated;
@@ -318,5 +324,166 @@ class Anchor_Translate_Response_Translator {
             return strlen( $b ) <=> strlen( $a );
         } );
         return $lines;
+    }
+
+    private function preserve_excluded_blocks( $html ) {
+        $selectors = $this->parse_lines( $this->options['exclude_selectors'] ?? '' );
+        if ( empty( $selectors ) ) {
+            return [
+                'html'   => $html,
+                'blocks' => [],
+            ];
+        }
+
+        $masked = $this->mask_raw_blocks_for_scanning( $html );
+        preg_match_all(
+            '/<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)(?:"[^"]*"|\'[^\']*\'|[^\'">])*?>/s',
+            $masked,
+            $matches,
+            PREG_OFFSET_CAPTURE
+        );
+
+        $void_tags = [
+            'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+            'link', 'meta', 'param', 'source', 'track', 'wbr',
+        ];
+        $stack = [];
+        $ranges = [];
+
+        foreach ( $matches[0] as $index => $token_match ) {
+            $token  = $token_match[0];
+            $offset = $token_match[1];
+            $length = strlen( $token );
+            $is_closing = $matches[1][ $index ][0] === '/';
+            $tag = strtolower( $matches[2][ $index ][0] );
+            $is_self_closing = substr( rtrim( $token ), -2 ) === '/>' || in_array( $tag, $void_tags, true );
+
+            if ( $is_closing ) {
+                for ( $i = count( $stack ) - 1; $i >= 0; $i-- ) {
+                    if ( $stack[ $i ]['tag'] !== $tag ) {
+                        continue;
+                    }
+
+                    $entry = $stack[ $i ];
+                    array_splice( $stack, $i, 1 );
+
+                    if ( $entry['matched'] && ! $entry['inside_matched'] ) {
+                        $ranges[] = [
+                            'start' => $entry['start'],
+                            'end'   => $offset + $length,
+                        ];
+                    }
+                    break;
+                }
+                continue;
+            }
+
+            $inside_matched = false;
+            foreach ( $stack as $entry ) {
+                if ( $entry['matched'] ) {
+                    $inside_matched = true;
+                    break;
+                }
+            }
+
+            $matched = $this->tag_matches_exclusion_selector( $token, $selectors );
+
+            if ( $is_self_closing ) {
+                if ( $matched && ! $inside_matched ) {
+                    $ranges[] = [
+                        'start' => $offset,
+                        'end'   => $offset + $length,
+                    ];
+                }
+                continue;
+            }
+
+            $stack[] = [
+                'tag'            => $tag,
+                'start'          => $offset,
+                'matched'        => $matched,
+                'inside_matched' => $inside_matched,
+            ];
+        }
+
+        if ( empty( $ranges ) ) {
+            return [
+                'html'   => $html,
+                'blocks' => [],
+            ];
+        }
+
+        usort( $ranges, static function( $a, $b ) {
+            return $b['start'] <=> $a['start'];
+        } );
+
+        $blocks = [];
+        $working = $html;
+        foreach ( $ranges as $index => $range ) {
+            $placeholder = '<!--ANCHOR_TRANSLATE_EXCLUDED_BLOCK_' . $index . '-->';
+            $original = substr( $working, $range['start'], $range['end'] - $range['start'] );
+            $working = substr_replace( $working, $placeholder, $range['start'], $range['end'] - $range['start'] );
+            $blocks[ $placeholder ] = $original;
+        }
+
+        return [
+            'html'   => $working,
+            'blocks' => $blocks,
+        ];
+    }
+
+    private function restore_preserved_blocks( $html, array $blocks ) {
+        if ( ! is_string( $html ) || empty( $blocks ) ) {
+            return $html;
+        }
+
+        return strtr( $html, $blocks );
+    }
+
+    private function mask_raw_blocks_for_scanning( $html ) {
+        $patterns = [
+            '/<script\b[^>]*>.*?<\/script>/is',
+            '/<style\b[^>]*>.*?<\/style>/is',
+        ];
+
+        $masked = $html;
+        foreach ( $patterns as $pattern ) {
+            $masked = preg_replace_callback( $pattern, static function( $matches ) {
+                return str_repeat( ' ', strlen( $matches[0] ) );
+            }, $masked );
+        }
+
+        return $masked;
+    }
+
+    private function tag_matches_exclusion_selector( $tag, array $selectors ) {
+        if ( empty( $selectors ) ) {
+            return false;
+        }
+
+        $class_attr = '';
+        $id_attr = '';
+
+        if ( preg_match( '/\bclass\s*=\s*([\'"])(.*?)\1/is', $tag, $class_match ) ) {
+            $class_attr = ' ' . preg_replace( '/\s+/', ' ', trim( $class_match[2] ) ) . ' ';
+        }
+        if ( preg_match( '/\bid\s*=\s*([\'"])(.*?)\1/is', $tag, $id_match ) ) {
+            $id_attr = trim( $id_match[2] );
+        }
+
+        foreach ( $selectors as $selector ) {
+            if ( strpos( $selector, '.' ) === 0 ) {
+                $class_name = substr( $selector, 1 );
+                if ( $class_name && strpos( $class_attr, ' ' . $class_name . ' ' ) !== false ) {
+                    return true;
+                }
+            } elseif ( strpos( $selector, '#' ) === 0 ) {
+                if ( $id_attr === substr( $selector, 1 ) ) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 }

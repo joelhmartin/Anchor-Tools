@@ -72,6 +72,10 @@ class Anchor_Translate_Language {
             return trim( (string) $path, '/' );
         }
 
+        if ( get_query_var( self::QUERY_VAR_LANG ) ) {
+            return '';
+        }
+
         $request = '';
         if ( isset( $GLOBALS['wp']->request ) ) {
             $request = (string) $GLOBALS['wp']->request;

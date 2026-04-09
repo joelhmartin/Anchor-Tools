@@ -226,6 +226,9 @@
       if (sn.theater_max_width) modal.style.setProperty('--up-theater-max-width', sn.theater_max_width);
       if (sn.theater_max_height) modal.style.setProperty('--up-theater-max-height', sn.theater_max_height);
     }
+    if (sn.popup_style && sn.popup_style.indexOf('flyin') === 0 && sn.flyin_max_width) {
+      modal.style.setProperty('--up-flyin-max-width', sn.flyin_max_width);
+    }
     wireClose(modal);
 
     // Store modal reference on snippet for card click handler

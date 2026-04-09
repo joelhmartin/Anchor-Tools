@@ -182,6 +182,83 @@
   max-height: calc(80vh - 48px);
 }
 
+/* ── Fly-in (shared) ── */
+.up-style-flyin-bottom,
+.up-style-flyin-bottom-left,
+.up-style-flyin-bottom-right {
+  pointer-events: none;
+}
+.up-style-flyin-bottom .up-modal__backdrop,
+.up-style-flyin-bottom-left .up-modal__backdrop,
+.up-style-flyin-bottom-right .up-modal__backdrop {
+  background: transparent;
+  pointer-events: none;
+}
+.up-style-flyin-bottom .up-modal__dialog,
+.up-style-flyin-bottom .up-content-wrap,
+.up-style-flyin-bottom-left .up-modal__dialog,
+.up-style-flyin-bottom-left .up-content-wrap,
+.up-style-flyin-bottom-right .up-modal__dialog,
+.up-style-flyin-bottom-right .up-content-wrap {
+  position: fixed;
+  bottom: 20px;
+  top: auto;
+  width: var(--up-flyin-max-width, 400px);
+  max-width: min(var(--up-flyin-max-width, 400px), calc(100vw - 40px));
+  max-height: 80vh;
+  height: auto;
+  margin: 0;
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0,0,0,0.08);
+  transform: translateY(calc(100% + 40px));
+  animation: up-flyin-up .35s cubic-bezier(.22,.61,.36,1) forwards;
+  pointer-events: auto;
+}
+
+/* ── Fly-in (bottom center) ── */
+.up-style-flyin-bottom .up-modal__dialog,
+.up-style-flyin-bottom .up-content-wrap {
+  left: 50%;
+  right: auto;
+  transform: translate(-50%, calc(100% + 40px));
+  animation: up-flyin-up-center .35s cubic-bezier(.22,.61,.36,1) forwards;
+}
+
+/* ── Fly-in (bottom left) ── */
+.up-style-flyin-bottom-left .up-modal__dialog,
+.up-style-flyin-bottom-left .up-content-wrap {
+  left: 20px;
+  right: auto;
+}
+
+/* ── Fly-in (bottom right) ── */
+.up-style-flyin-bottom-right .up-modal__dialog,
+.up-style-flyin-bottom-right .up-content-wrap {
+  right: 20px;
+  left: auto;
+}
+
+.up-style-flyin-bottom .up-modal__frame,
+.up-style-flyin-bottom-left .up-modal__frame,
+.up-style-flyin-bottom-right .up-modal__frame {
+  aspect-ratio: auto;
+  max-height: 40vh;
+}
+
+.up-style-flyin-bottom .up-content__inner,
+.up-style-flyin-bottom-left .up-content__inner,
+.up-style-flyin-bottom-right .up-content__inner {
+  max-height: calc(80vh - 48px);
+}
+
+/* Fly-in close button: dark by default since content bg is white */
+.up-style-flyin-bottom .up-content-wrap .up-modal__close,
+.up-style-flyin-bottom-left .up-content-wrap .up-modal__close,
+.up-style-flyin-bottom-right .up-content-wrap .up-modal__close {
+  color: #333;
+  text-shadow: none;
+}
+
 /* ── Animations ── */
 @keyframes up-slide-left {
   to { transform: translateX(0); }
@@ -191,6 +268,12 @@
 }
 @keyframes up-slide-up {
   to { transform: translateY(0); }
+}
+@keyframes up-flyin-up {
+  to { transform: translateY(0); }
+}
+@keyframes up-flyin-up-center {
+  to { transform: translate(-50%, 0); }
 }
 
 /* ==========================================================================

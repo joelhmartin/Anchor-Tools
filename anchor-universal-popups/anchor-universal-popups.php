@@ -140,10 +140,11 @@ class Anchor_Universal_Popups_Module {
             'hover_effect' => 'lift',       // lift, zoom, glow, none
             'play_button_style' => 'circle', // circle, square, youtube, minimal, none
             'border_radius' => '12',        // 0-32
-            'popup_style' => 'modal',       // modal, theater, drawer-right, drawer-left, drawer-bottom
+            'popup_style' => 'modal',       // modal, theater, drawer-right, drawer-left, drawer-bottom, flyin-bottom, flyin-bottom-left, flyin-bottom-right
             'modal_max_width' => '',        // e.g. 1200px or 80%, blank = default 960px
             'theater_max_width' => '',      // e.g. 90% or 1600px, blank = default 90%
             'theater_max_height' => '',     // e.g. 90% or 900px, blank = default 90%
+            'flyin_max_width' => '',        // e.g. 420px or 30%, blank = default 400px
             'autoplay' => '0',              // 0 or 1 for video popups
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
@@ -584,8 +585,11 @@ class Anchor_Universal_Popups_Module {
             <option value="drawer-right" <?php selected($m['popup_style'], 'drawer-right'); ?>>Drawer (right)</option>
             <option value="drawer-left" <?php selected($m['popup_style'], 'drawer-left'); ?>>Drawer (left)</option>
             <option value="drawer-bottom" <?php selected($m['popup_style'], 'drawer-bottom'); ?>>Drawer (bottom)</option>
+            <option value="flyin-bottom" <?php selected($m['popup_style'], 'flyin-bottom'); ?>>Fly-in (bottom center)</option>
+            <option value="flyin-bottom-left" <?php selected($m['popup_style'], 'flyin-bottom-left'); ?>>Fly-in (bottom left)</option>
+            <option value="flyin-bottom-right" <?php selected($m['popup_style'], 'flyin-bottom-right'); ?>>Fly-in (bottom right)</option>
           </select>
-          <p class="description">How the popup appears. Theater fills the screen. Drawers slide in from an edge.</p>
+          <p class="description">How the popup appears. Theater fills the screen. Drawers slide in from an edge. Fly-ins appear as a compact card without a backdrop overlay.</p>
 
           <div data-up-show-when-style="modal">
             <label>Modal Max Width</label>
@@ -601,6 +605,12 @@ class Anchor_Universal_Popups_Module {
             <label>Theater Max Height</label>
             <input type="text" name="up_theater_max_height" value="<?php echo esc_attr($m['theater_max_height']); ?>" placeholder="e.g. 90% or 900px" />
             <p class="description">Leave blank for default (90%).</p>
+          </div>
+
+          <div data-up-show-when-style="flyin-bottom,flyin-bottom-left,flyin-bottom-right">
+            <label>Fly-in Max Width</label>
+            <input type="text" name="up_flyin_max_width" value="<?php echo esc_attr($m['flyin_max_width']); ?>" placeholder="e.g. 420px or 30%" />
+            <p class="description">Leave blank for default (400px).</p>
           </div>
 
           <label>Close Icon Color</label>
@@ -685,7 +695,7 @@ class Anchor_Universal_Popups_Module {
             'mode','video_url','video_id','aspect_ratio','thumb_size','custom_thumb',
             'tile_style','theme','show_title','title_position','show_duration','show_channel',
             'hover_effect','play_button_style','border_radius',
-            'popup_style','modal_max_width','theater_max_width','theater_max_height','autoplay','close_color',
+            'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','autoplay','close_color',
             'html','shortcode','css','js',
             'trigger_type','trigger_value','delay_ms',
             'frequency_mode','cooldown_minutes',
@@ -858,6 +868,7 @@ class Anchor_Universal_Popups_Module {
                 'modal_max_width' => $m['modal_max_width'],
                 'theater_max_width' => $m['theater_max_width'],
                 'theater_max_height' => $m['theater_max_height'],
+                'flyin_max_width' => $m['flyin_max_width'],
                 'autoplay' => ($m['autoplay'] === '1'),
                 'close_color' => $m['close_color'],
                 'html' => $m['html'],

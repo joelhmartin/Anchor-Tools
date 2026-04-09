@@ -182,79 +182,90 @@
   max-height: calc(80vh - 48px);
 }
 
-/* ── Fly-in (shared) ── */
-.up-style-flyin-bottom,
-.up-style-flyin-bottom-left,
-.up-style-flyin-bottom-right {
+/* ── Fly-in (shared) ──
+   No backdrop overlay, page stays interactive behind the popup.
+   Must reset every base property from .up-modal, .up-content-wrap, .up-modal__dialog. */
+.up-modal.up-style-flyin-bottom,
+.up-modal.up-style-flyin-bottom-left,
+.up-modal.up-style-flyin-bottom-right {
   pointer-events: none;
-}
-.up-style-flyin-bottom .up-modal__backdrop,
-.up-style-flyin-bottom-left .up-modal__backdrop,
-.up-style-flyin-bottom-right .up-modal__backdrop {
   background: transparent;
-  pointer-events: none;
 }
-.up-style-flyin-bottom .up-modal__dialog,
-.up-style-flyin-bottom .up-content-wrap,
-.up-style-flyin-bottom-left .up-modal__dialog,
-.up-style-flyin-bottom-left .up-content-wrap,
-.up-style-flyin-bottom-right .up-modal__dialog,
-.up-style-flyin-bottom-right .up-content-wrap {
+.up-modal.up-style-flyin-bottom > .up-modal__backdrop,
+.up-modal.up-style-flyin-bottom-left > .up-modal__backdrop,
+.up-modal.up-style-flyin-bottom-right > .up-modal__backdrop {
+  display: none;
+}
+.up-modal.up-style-flyin-bottom .up-modal__dialog,
+.up-modal.up-style-flyin-bottom .up-content-wrap,
+.up-modal.up-style-flyin-bottom-left .up-modal__dialog,
+.up-modal.up-style-flyin-bottom-left .up-content-wrap,
+.up-modal.up-style-flyin-bottom-right .up-modal__dialog,
+.up-modal.up-style-flyin-bottom-right .up-content-wrap {
   position: fixed;
-  bottom: 20px;
   top: auto;
+  bottom: 20px;
   width: var(--up-flyin-max-width, 400px);
   max-width: min(var(--up-flyin-max-width, 400px), calc(100vw - 40px));
   max-height: 80vh;
   height: auto;
   margin: 0;
   border-radius: 12px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0,0,0,0.08);
+  overflow: hidden;
+  background: #fff;
+  color: #111;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.08);
   transform: translateY(calc(100% + 40px));
-  animation: up-flyin-up .35s cubic-bezier(.22,.61,.36,1) forwards;
+  animation: up-flyin-up .35s cubic-bezier(.22, .61, .36, 1) forwards;
   pointer-events: auto;
+}
+/* Video dialog: keep dark bg for the player area */
+.up-modal.up-style-flyin-bottom .up-modal__dialog,
+.up-modal.up-style-flyin-bottom-left .up-modal__dialog,
+.up-modal.up-style-flyin-bottom-right .up-modal__dialog {
+  background: #000;
 }
 
 /* ── Fly-in (bottom center) ── */
-.up-style-flyin-bottom .up-modal__dialog,
-.up-style-flyin-bottom .up-content-wrap {
+.up-modal.up-style-flyin-bottom .up-modal__dialog,
+.up-modal.up-style-flyin-bottom .up-content-wrap {
   left: 50%;
   right: auto;
   transform: translate(-50%, calc(100% + 40px));
-  animation: up-flyin-up-center .35s cubic-bezier(.22,.61,.36,1) forwards;
+  animation: up-flyin-up-center .35s cubic-bezier(.22, .61, .36, 1) forwards;
 }
 
 /* ── Fly-in (bottom left) ── */
-.up-style-flyin-bottom-left .up-modal__dialog,
-.up-style-flyin-bottom-left .up-content-wrap {
+.up-modal.up-style-flyin-bottom-left .up-modal__dialog,
+.up-modal.up-style-flyin-bottom-left .up-content-wrap {
   left: 20px;
   right: auto;
 }
 
 /* ── Fly-in (bottom right) ── */
-.up-style-flyin-bottom-right .up-modal__dialog,
-.up-style-flyin-bottom-right .up-content-wrap {
+.up-modal.up-style-flyin-bottom-right .up-modal__dialog,
+.up-modal.up-style-flyin-bottom-right .up-content-wrap {
   right: 20px;
   left: auto;
 }
 
-.up-style-flyin-bottom .up-modal__frame,
-.up-style-flyin-bottom-left .up-modal__frame,
-.up-style-flyin-bottom-right .up-modal__frame {
+.up-modal.up-style-flyin-bottom .up-modal__frame,
+.up-modal.up-style-flyin-bottom-left .up-modal__frame,
+.up-modal.up-style-flyin-bottom-right .up-modal__frame {
   aspect-ratio: auto;
   max-height: 40vh;
 }
 
-.up-style-flyin-bottom .up-content__inner,
-.up-style-flyin-bottom-left .up-content__inner,
-.up-style-flyin-bottom-right .up-content__inner {
+.up-modal.up-style-flyin-bottom .up-content__inner,
+.up-modal.up-style-flyin-bottom-left .up-content__inner,
+.up-modal.up-style-flyin-bottom-right .up-content__inner {
   max-height: calc(80vh - 48px);
 }
 
-/* Fly-in close button: dark by default since content bg is white */
-.up-style-flyin-bottom .up-content-wrap .up-modal__close,
-.up-style-flyin-bottom-left .up-content-wrap .up-modal__close,
-.up-style-flyin-bottom-right .up-content-wrap .up-modal__close {
+/* Fly-in close button: dark on content-wrap since bg is white */
+.up-modal.up-style-flyin-bottom .up-content-wrap .up-modal__close,
+.up-modal.up-style-flyin-bottom-left .up-content-wrap .up-modal__close,
+.up-modal.up-style-flyin-bottom-right .up-content-wrap .up-modal__close {
   color: #333;
   text-shadow: none;
 }

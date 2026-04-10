@@ -239,6 +239,28 @@ $fields = [
             $raw = preg_replace( '/[^\d\+]/', '', $opts['phone'] );
             return $raw ? 'tel:' . esc_attr( $raw ) : '';
         });
+
+        add_shortcode( 'page_title', function() {
+            if ( is_singular() ) {
+                return esc_html( get_the_title() );
+            }
+            if ( is_post_type_archive() ) {
+                return esc_html( post_type_archive_title( '', false ) );
+            }
+            if ( is_category() || is_tag() || is_tax() ) {
+                return esc_html( single_term_title( '', false ) );
+            }
+            if ( is_author() ) {
+                return esc_html( get_the_author() );
+            }
+            if ( is_search() ) {
+                return esc_html( get_search_query() );
+            }
+            if ( is_home() && get_option( 'page_for_posts' ) ) {
+                return esc_html( get_the_title( get_option( 'page_for_posts' ) ) );
+            }
+            return esc_html( wp_get_document_title() );
+        });
     }
 
     public function register_custom_shortcodes() {

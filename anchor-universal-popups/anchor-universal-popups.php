@@ -174,7 +174,57 @@ class Anchor_Universal_Popups_Module {
             $meta[$k] = get_post_meta($post_id, "up_$k", true);
             if ($meta[$k] === '') $meta[$k] = $v;
         }
+        $meta['popup_style'] = $this->normalize_popup_style($meta['popup_style'], $meta['title_position']);
         return $meta;
+    }
+
+    private function normalize_popup_style($popup_style, $position = ''){
+        $popup_style = sanitize_key((string) $popup_style);
+        $position = sanitize_key((string) $position);
+
+        $allowed = [
+            'modal',
+            'theater',
+            'drawer-right',
+            'drawer-left',
+            'drawer-bottom',
+            'flyin-bottom',
+            'flyin-bottom-left',
+            'flyin-bottom-right',
+        ];
+
+        if (in_array($popup_style, $allowed, true)) {
+            return $popup_style;
+        }
+
+        $flyin_left_positions = ['bottom-left', 'top-left'];
+        $flyin_right_positions = ['bottom-right', 'top-right'];
+        $flyin_center_positions = ['bottom-center', 'top-center', 'center'];
+
+        if (in_array($popup_style, ['flyin', 'fly-in', 'flyin-bottom-center', 'flyin-center'], true)) {
+            if (in_array($position, $flyin_left_positions, true)) {
+                return 'flyin-bottom-left';
+            }
+            if (in_array($position, $flyin_right_positions, true)) {
+                return 'flyin-bottom-right';
+            }
+            if (in_array($position, $flyin_center_positions, true)) {
+                return 'flyin-bottom';
+            }
+            return 'flyin-bottom';
+        }
+
+        if (in_array($popup_style, ['flyin-left', 'flyin-bottom-left'], true)) {
+            return 'flyin-bottom-left';
+        }
+        if (in_array($popup_style, ['flyin-right', 'flyin-bottom-right'], true)) {
+            return 'flyin-bottom-right';
+        }
+        if (in_array($popup_style, ['flyin-bottom', 'flyin-bottom-center'], true)) {
+            return 'flyin-bottom';
+        }
+
+        return $this->defaults()['popup_style'];
     }
 
     /**

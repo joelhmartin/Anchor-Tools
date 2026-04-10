@@ -110,6 +110,21 @@
     return modal;
   }
 
+  function normalizePopupStyle(style){
+    style = String(style || '').toLowerCase().trim();
+    if(!style) return 'modal';
+    if(style === 'flyin' || style === 'fly-in' || style === 'flyin-center' || style === 'flyin-bottom-center'){
+      return 'flyin-bottom';
+    }
+    if(style === 'flyin-left'){
+      return 'flyin-bottom-left';
+    }
+    if(style === 'flyin-right'){
+      return 'flyin-bottom-right';
+    }
+    return style;
+  }
+
   function buildYouTubeSrc(id, opts){
     opts = opts || {};
     var p = new URLSearchParams({
@@ -178,6 +193,7 @@
       try{ new Function(extra && extra.js ? extra.js : '')(); }catch(e){}
     }
 
+    modal._openedAt = (window.performance && performance.now) ? performance.now() : Date.now();
     modal.hidden = false;
     var closeBtn = modal.querySelector('.up-modal__close');
     if(closeBtn){ closeBtn.focus(); }
@@ -190,6 +206,7 @@
     content.innerHTML = style + (html || '');
     activateScripts(content);
     try{ new Function(js || '')(); }catch(e){}
+    modal._openedAt = (window.performance && performance.now) ? performance.now() : Date.now();
     modal.hidden = false;
     var closeBtn = modal.querySelector('.up-modal__close');
     if(closeBtn){ closeBtn.focus(); }
@@ -211,6 +228,18 @@
         closeModal(modal);
       }
     });
+    document.addEventListener('click', function(e){
+      if(modal.hidden) return;
+      var now = (typeof e.timeStamp === 'number' && e.timeStamp > 0)
+        ? e.timeStamp
+        : ((window.performance && performance.now) ? performance.now() : Date.now());
+      if(modal._openedAt && (now - modal._openedAt) < 50) return;
+
+      var shell = modal.querySelector('.up-modal__dialog, .up-content-wrap');
+      if(!shell) return;
+      if(shell.contains(e.target)) return;
+      closeModal(modal);
+    }, true);
     window.addEventListener('keydown', function(e){
       if(e.key === 'Escape' && !modal.hidden) closeModal(modal);
     });
@@ -218,15 +247,16 @@
 
   function attach(sn){
     var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo' || sn.mode === 'video');
-    var modal = buildModalShell(isVideo, sn.popup_style);
-    if (sn.popup_style === 'modal' && sn.modal_max_width) {
+    var popupStyle = normalizePopupStyle(sn.popup_style);
+    var modal = buildModalShell(isVideo, popupStyle);
+    if (popupStyle === 'modal' && sn.modal_max_width) {
       modal.style.setProperty('--up-modal-max-width', sn.modal_max_width);
     }
-    if (sn.popup_style === 'theater') {
+    if (popupStyle === 'theater') {
       if (sn.theater_max_width) modal.style.setProperty('--up-theater-max-width', sn.theater_max_width);
       if (sn.theater_max_height) modal.style.setProperty('--up-theater-max-height', sn.theater_max_height);
     }
-    if (sn.popup_style && sn.popup_style.indexOf('flyin') === 0 && sn.flyin_max_width) {
+    if (popupStyle.indexOf('flyin') === 0 && sn.flyin_max_width) {
       modal.style.setProperty('--up-flyin-max-width', sn.flyin_max_width);
     }
     wireClose(modal);

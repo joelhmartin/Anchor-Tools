@@ -100,9 +100,19 @@
                 processed++;
 
                 var logClass = r.success ? 'ao-log-success' : 'ao-log-error';
-                var logText  = r.success
-                    ? r.title + ' — saved ' + r.savings_pct + '% (' + r.savings_size + ')'
-                    : 'ID ' + r.id + ' — ' + (r.message || 'Error');
+                var logText;
+                if (r.success) {
+                    logText = r.title + ' — saved ' + r.savings_pct + '% (' + r.savings_size + ')';
+                    var tags = [];
+                    if (r.has_webp) tags.push('WebP');
+                    if (r.has_avif) tags.push('AVIF');
+                    if (tags.length) logText += ' · ' + tags.join('+');
+                    if (r.errors && r.errors.length) {
+                        logText += ' <span style="color:#dc3232;">(' + r.errors.join('; ') + ')</span>';
+                    }
+                } else {
+                    logText = 'ID ' + r.id + ' — ' + (r.message || 'Error');
+                }
 
                 $('#ao-bulk-log').prepend('<div class="ao-log-entry ' + logClass + '">' + logText + '</div>');
             }

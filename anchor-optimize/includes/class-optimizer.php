@@ -72,6 +72,9 @@ class Anchor_Optimize_Optimizer {
         ];
 
         if ( ! file_exists( $file_path ) || 'none' === $this->engine ) {
+            if ( 'none' === $this->engine ) {
+                self::log( 'No image engine available (neither Imagick nor GD)' );
+            }
             return $result;
         }
 
@@ -174,6 +177,7 @@ class Anchor_Optimize_Optimizer {
 
             return true;
         } catch ( \Exception $e ) {
+            self::log( "Imagick compress failed: {$e->getMessage()}" );
             return false;
         }
     }
@@ -256,5 +260,16 @@ class Anchor_Optimize_Optimizer {
 
         $supported = [ 'image/jpeg', 'image/png', 'image/gif', 'image/webp' ];
         return in_array( $mime, $supported, true ) ? $mime : false;
+    }
+
+    /**
+     * Log a debug message.
+     *
+     * @param string $message
+     */
+    private static function log( $message ) {
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            error_log( '[Anchor Optimize] ' . $message );
+        }
     }
 }

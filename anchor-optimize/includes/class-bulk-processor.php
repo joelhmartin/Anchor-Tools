@@ -52,7 +52,7 @@ class Anchor_Optimize_Bulk_Processor {
             'anchor-optimize-bulk',
             ANCHOR_TOOLS_PLUGIN_URL . 'anchor-optimize/assets/bulk.js',
             [ 'jquery' ],
-            '1.0.0',
+            '1.1.0',
             true
         );
         wp_localize_script( 'anchor-optimize-bulk', 'AO_Bulk', [
@@ -167,23 +167,20 @@ class Anchor_Optimize_Bulk_Processor {
         $results = [];
 
         foreach ( $ids as $attachment_id ) {
-            $metadata = wp_get_attachment_metadata( $attachment_id );
-            if ( ! $metadata ) {
+            // Run the optimization pipeline (static method — no module re-instantiation).
+            $stats = Anchor_Optimize_Module::optimize_attachment( $attachment_id );
+
+            if ( false === $stats ) {
                 $results[] = [
                     'id'      => $attachment_id,
                     'success' => false,
-                    'message' => __( 'No metadata.', 'anchor-schema' ),
+                    'message' => __( 'File not found or not an image.', 'anchor-schema' ),
                 ];
                 continue;
             }
 
-            // Use the module's upload processor.
-            $module = new Anchor_Optimize_Module();
-            $module->process_on_upload( $metadata, $attachment_id );
-
-            $meta = get_post_meta( $attachment_id, Anchor_Optimize_Module::META_KEY, true );
-            $original = $meta['original_size'] ?? 0;
-            $savings  = $meta['total_savings'] ?? 0;
+            $original = $stats['original_size'] ?? 0;
+            $savings  = $stats['total_savings'] ?? 0;
             $pct      = $original > 0 ? round( $savings / $original * 100, 1 ) : 0;
 
             $title = get_the_title( $attachment_id );
@@ -194,6 +191,9 @@ class Anchor_Optimize_Bulk_Processor {
                 'title'        => $title,
                 'savings_pct'  => $pct,
                 'savings_size' => size_format( $savings ),
+                'has_webp'     => ! empty( $stats['webp_files'] ),
+                'has_avif'     => ! empty( $stats['avif_files'] ),
+                'errors'       => $stats['errors'] ?? [],
             ];
         }
 

@@ -160,27 +160,29 @@ class Anchor_Optimize_Media_Library_UI {
             wp_send_json_error( [ 'message' => __( 'Not an image.', 'anchor-schema' ) ] );
         }
 
-        // Trigger the same processing pipeline used on upload.
-        $metadata = wp_get_attachment_metadata( $attachment_id );
-        if ( ! $metadata ) {
-            wp_send_json_error( [ 'message' => __( 'No metadata found.', 'anchor-schema' ) ] );
+        // Run the optimization pipeline (static method — no module re-instantiation).
+        $stats = Anchor_Optimize_Module::optimize_attachment( $attachment_id );
+
+        if ( false === $stats ) {
+            wp_send_json_error( [ 'message' => __( 'Optimization failed — file not found or not an image.', 'anchor-schema' ) ] );
         }
 
-        // Re-instantiate the module to run process_on_upload.
-        $module = new Anchor_Optimize_Module();
-        $module->process_on_upload( $metadata, $attachment_id );
-
-        // Return updated stats.
-        $meta = get_post_meta( $attachment_id, Anchor_Optimize_Module::META_KEY, true );
-        $original = $meta['original_size'] ?? 0;
-        $savings  = $meta['total_savings'] ?? 0;
+        $original = $stats['original_size'] ?? 0;
+        $savings  = $stats['total_savings'] ?? 0;
         $pct      = $original > 0 ? round( $savings / $original * 100, 1 ) : 0;
 
+        $settings = Anchor_Optimize_Settings::get_settings();
+
         wp_send_json_success( [
-            'savings_pct'  => $pct,
-            'savings_size' => size_format( $savings ),
-            'has_webp'     => ! empty( $meta['webp_files'] ),
-            'has_avif'     => ! empty( $meta['avif_files'] ),
+            'savings_pct'    => $pct,
+            'savings_size'   => size_format( $savings ),
+            'has_webp'       => ! empty( $stats['webp_files'] ),
+            'has_avif'       => ! empty( $stats['avif_files'] ),
+            'compressed'     => ! empty( $stats['compressed'] ),
+            'webp_enabled'   => ! empty( $settings['webp_enabled'] ),
+            'avif_enabled'   => ! empty( $settings['avif_enabled'] ),
+            'errors'         => $stats['errors'] ?? [],
+            'engine'         => $stats['engine'] ?? 'unknown',
         ] );
     }
 
@@ -198,7 +200,7 @@ class Anchor_Optimize_Media_Library_UI {
             'anchor-optimize-media',
             ANCHOR_TOOLS_PLUGIN_URL . 'anchor-optimize/assets/media.js',
             [ 'jquery' ],
-            '1.0.0',
+            '1.1.0',
             true
         );
         wp_localize_script( 'anchor-optimize-media', 'AO_Media', [

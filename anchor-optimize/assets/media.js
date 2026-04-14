@@ -23,11 +23,39 @@
                 if (d.has_webp) tags.push('WebP');
                 if (d.has_avif) tags.push('AVIF');
 
-                $btn.replaceWith(
-                    '<span style="color:#46b450; font-weight:600;">Saved ' + d.savings_pct + '%</span>' +
-                    ' <span style="color:#666;">(' + d.savings_size + ')</span>' +
-                    (tags.length ? '<br><small>' + tags.join(' + ') + ' generated</small>' : '')
-                );
+                var html = '';
+
+                // Show compression result.
+                if (d.compressed && d.savings_pct > 0) {
+                    html += '<span style="color:#46b450; font-weight:600;">Saved ' + d.savings_pct + '%</span>';
+                    html += ' <span style="color:#666;">(' + d.savings_size + ')</span>';
+                } else if (d.compressed) {
+                    html += '<span style="color:#666;">Compressed (no size change)</span>';
+                } else {
+                    html += '<span style="color:#dc3232;">Compression failed</span>';
+                }
+
+                // Show next-gen format results.
+                if (tags.length) {
+                    html += '<br><small style="color:#46b450;">' + tags.join(' + ') + ' generated</small>';
+                } else if (d.webp_enabled || d.avif_enabled) {
+                    // Next-gen was enabled but no files were created.
+                    var failed = [];
+                    if (d.webp_enabled && !d.has_webp) failed.push('WebP');
+                    if (d.avif_enabled && !d.has_avif) failed.push('AVIF');
+                    if (failed.length) {
+                        html += '<br><small style="color:#dc3232;">' + failed.join(' + ') + ' conversion failed — check server capabilities</small>';
+                    }
+                }
+
+                // Show errors if any.
+                if (d.errors && d.errors.length) {
+                    html += '<br><small style="color:#999;">Errors: ' + d.errors.join('; ') + '</small>';
+                }
+
+                html += '<br><small style="color:#999;">Engine: ' + (d.engine || 'unknown').toUpperCase() + '</small>';
+
+                $btn.replaceWith(html);
             } else {
                 $btn.prop('disabled', false).text('Optimize Now');
                 $status.css('color', '#dc3232').text(response.data.message || 'Error');

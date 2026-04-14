@@ -21,6 +21,7 @@ class Anchor_Optimize_WebP_Converter {
         $result = [ 'success' => false, 'path' => '', 'size' => 0 ];
 
         if ( ! file_exists( $source_path ) ) {
+            self::log( "WebP convert: source not found: {$source_path}" );
             return $result;
         }
 
@@ -36,15 +37,21 @@ class Anchor_Optimize_WebP_Converter {
                 $im->clear();
                 $im->destroy();
 
+                clearstatcache( true, $output );
                 if ( file_exists( $output ) && filesize( $output ) > 0 ) {
+                    self::log( "WebP created via Imagick: {$output} (" . filesize( $output ) . " bytes)" );
                     $result['success'] = true;
                     $result['path']    = $output;
                     $result['size']    = filesize( $output );
                     return $result;
                 }
+                self::log( "Imagick wrote WebP but file missing or empty: {$output}" );
             } catch ( \Exception $e ) {
+                self::log( "Imagick WebP failed: {$e->getMessage()}" );
                 // Fall through to GD.
             }
+        } else {
+            self::log( 'Imagick not available for WebP conversion' );
         }
 
         // Try GD.
@@ -57,15 +64,24 @@ class Anchor_Optimize_WebP_Converter {
 
                 if ( imagewebp( $im, $output, $quality ) ) {
                     imagedestroy( $im );
+                    clearstatcache( true, $output );
                     if ( file_exists( $output ) && filesize( $output ) > 0 ) {
+                        self::log( "WebP created via GD: {$output} (" . filesize( $output ) . " bytes)" );
                         $result['success'] = true;
                         $result['path']    = $output;
                         $result['size']    = filesize( $output );
                         return $result;
                     }
+                    self::log( "GD imagewebp() returned true but file missing or empty: {$output}" );
+                } else {
+                    self::log( 'GD imagewebp() returned false' );
                 }
                 imagedestroy( $im );
+            } else {
+                self::log( "GD could not create image from source: {$source_path}" );
             }
+        } else {
+            self::log( 'GD imagewebp() function not available' );
         }
 
         // Try cwebp binary.
@@ -76,10 +92,19 @@ class Anchor_Optimize_WebP_Converter {
             @exec( "cwebp -q {$quality} {$src_safe} -o {$out_safe} 2>&1", $out_lines, $code );
 
             if ( 0 === $code && file_exists( $output ) && filesize( $output ) > 0 ) {
+                self::log( "WebP created via cwebp binary: {$output}" );
                 $result['success'] = true;
                 $result['path']    = $output;
                 $result['size']    = filesize( $output );
+            } else {
+                self::log( "cwebp binary failed (exit code {$code}): " . implode( ' ', $out_lines ) );
             }
+        } else {
+            self::log( 'cwebp binary not available' );
+        }
+
+        if ( ! $result['success'] ) {
+            self::log( "ALL WebP conversion methods FAILED for: {$source_path}" );
         }
 
         return $result;
@@ -96,6 +121,7 @@ class Anchor_Optimize_WebP_Converter {
         $result = [ 'success' => false, 'path' => '', 'size' => 0 ];
 
         if ( ! file_exists( $source_path ) ) {
+            self::log( "AVIF convert: source not found: {$source_path}" );
             return $result;
         }
 
@@ -111,13 +137,17 @@ class Anchor_Optimize_WebP_Converter {
                 $im->clear();
                 $im->destroy();
 
+                clearstatcache( true, $output );
                 if ( file_exists( $output ) && filesize( $output ) > 0 ) {
+                    self::log( "AVIF created via Imagick: {$output}" );
                     $result['success'] = true;
                     $result['path']    = $output;
                     $result['size']    = filesize( $output );
                     return $result;
                 }
+                self::log( "Imagick wrote AVIF but file missing or empty: {$output}" );
             } catch ( \Exception $e ) {
+                self::log( "Imagick AVIF failed: {$e->getMessage()}" );
                 // Fall through to GD.
             }
         }
@@ -131,7 +161,9 @@ class Anchor_Optimize_WebP_Converter {
 
                 if ( imageavif( $im, $output, $quality ) ) {
                     imagedestroy( $im );
+                    clearstatcache( true, $output );
                     if ( file_exists( $output ) && filesize( $output ) > 0 ) {
+                        self::log( "AVIF created via GD: {$output}" );
                         $result['success'] = true;
                         $result['path']    = $output;
                         $result['size']    = filesize( $output );
@@ -140,6 +172,10 @@ class Anchor_Optimize_WebP_Converter {
                 }
                 imagedestroy( $im );
             }
+        }
+
+        if ( ! $result['success'] ) {
+            self::log( "ALL AVIF conversion methods FAILED for: {$source_path}" );
         }
 
         return $result;
@@ -216,5 +252,16 @@ class Anchor_Optimize_WebP_Converter {
         if ( ! function_exists( 'exec' ) ) return false;
         @exec( 'which cwebp 2>&1', $output, $code );
         return 0 === $code;
+    }
+
+    /**
+     * Log a debug message.
+     *
+     * @param string $message
+     */
+    private static function log( $message ) {
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            error_log( '[Anchor Optimize] ' . $message );
+        }
     }
 }

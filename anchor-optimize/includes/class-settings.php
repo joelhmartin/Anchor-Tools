@@ -337,13 +337,16 @@ class Anchor_Optimize_Settings {
         $engine  = Anchor_Optimize_Optimizer::detect_engine();
         $webp    = Anchor_Optimize_WebP_Converter::supports_webp();
         $avif    = Anchor_Optimize_WebP_Converter::supports_avif();
-        $cwebp   = function_exists( 'exec' );
 
         $yes = '<span style="color:#46b450;">&#10003;</span>';
         $no  = '<span style="color:#dc3232;">&#10007;</span>';
 
+        // Run a real WebP conversion test with a tiny generated image.
+        $webp_test = self::run_conversion_test( 'webp' );
+        $avif_test = self::run_conversion_test( 'avif' );
+
         echo '<div class="anchor-optimize-server-info">';
-        echo '<table class="widefat fixed" style="max-width:500px;">';
+        echo '<table class="widefat fixed" style="max-width:600px;">';
         echo '<tbody>';
         printf( '<tr><td>%s</td><td><strong>%s</strong></td></tr>',
             esc_html__( 'Image Engine', 'anchor-schema' ),
@@ -354,11 +357,34 @@ class Anchor_Optimize_Settings {
             extension_loaded( 'imagick' ) ? $yes : $no,
             extension_loaded( 'imagick' ) ? esc_html__( 'Loaded', 'anchor-schema' ) : esc_html__( 'Not available', 'anchor-schema' )
         );
+        if ( extension_loaded( 'imagick' ) ) {
+            $imagick_formats = Imagick::queryFormats();
+            $has_webp_delegate = in_array( 'WEBP', $imagick_formats, true );
+            $has_avif_delegate = in_array( 'AVIF', $imagick_formats, true );
+            printf( '<tr><td style="padding-left:30px;">%s</td><td>%s</td></tr>',
+                esc_html__( 'Imagick WebP delegate', 'anchor-schema' ),
+                $has_webp_delegate ? $yes . ' Available' : $no . ' Not compiled in'
+            );
+            printf( '<tr><td style="padding-left:30px;">%s</td><td>%s</td></tr>',
+                esc_html__( 'Imagick AVIF delegate', 'anchor-schema' ),
+                $has_avif_delegate ? $yes . ' Available' : $no . ' Not compiled in'
+            );
+        }
         printf( '<tr><td>%s</td><td>%s %s</td></tr>',
             esc_html__( 'GD Library', 'anchor-schema' ),
             function_exists( 'imagecreatefromjpeg' ) ? $yes : $no,
             function_exists( 'imagecreatefromjpeg' ) ? esc_html__( 'Available', 'anchor-schema' ) : esc_html__( 'Not available', 'anchor-schema' )
         );
+        if ( function_exists( 'imagecreatefromjpeg' ) ) {
+            printf( '<tr><td style="padding-left:30px;">%s</td><td>%s</td></tr>',
+                esc_html__( 'GD imagewebp()', 'anchor-schema' ),
+                function_exists( 'imagewebp' ) ? $yes . ' Available' : $no . ' Not available'
+            );
+            printf( '<tr><td style="padding-left:30px;">%s</td><td>%s</td></tr>',
+                esc_html__( 'GD imageavif()', 'anchor-schema' ),
+                function_exists( 'imageavif' ) ? $yes . ' Available' : $no . ' Not available'
+            );
+        }
         printf( '<tr><td>%s</td><td>%s</td></tr>',
             esc_html__( 'WebP Support', 'anchor-schema' ),
             $webp ? $yes . ' ' . esc_html__( 'Supported', 'anchor-schema' ) : $no . ' ' . esc_html__( 'Not supported', 'anchor-schema' )
@@ -367,12 +393,92 @@ class Anchor_Optimize_Settings {
             esc_html__( 'AVIF Support', 'anchor-schema' ),
             $avif ? $yes . ' ' . esc_html__( 'Supported', 'anchor-schema' ) : $no . ' ' . esc_html__( 'Not supported', 'anchor-schema' )
         );
+
+        // Real conversion test results.
+        echo '<tr><td colspan="2" style="padding-top:15px;"><strong>' . esc_html__( 'Live Conversion Test', 'anchor-schema' ) . '</strong></td></tr>';
+        printf( '<tr><td>%s</td><td>%s</td></tr>',
+            esc_html__( 'WebP test conversion', 'anchor-schema' ),
+            $webp_test['success']
+                ? $yes . ' ' . esc_html( $webp_test['message'] )
+                : $no . ' <span style="color:#dc3232;">' . esc_html( $webp_test['message'] ) . '</span>'
+        );
+        printf( '<tr><td>%s</td><td>%s</td></tr>',
+            esc_html__( 'AVIF test conversion', 'anchor-schema' ),
+            $avif_test['success']
+                ? $yes . ' ' . esc_html( $avif_test['message'] )
+                : $no . ' <span style="color:#dc3232;">' . esc_html( $avif_test['message'] ) . '</span>'
+        );
+
+        // Uploads directory writable check.
+        $uploads = wp_upload_dir();
+        $writable = wp_is_writable( $uploads['basedir'] );
+        printf( '<tr><td>%s</td><td>%s %s</td></tr>',
+            esc_html__( 'Uploads writable', 'anchor-schema' ),
+            $writable ? $yes : $no,
+            $writable ? esc_html( $uploads['basedir'] ) : esc_html__( 'Uploads directory is not writable!', 'anchor-schema' )
+        );
+
         printf( '<tr><td>%s</td><td>%s</td></tr>',
             'PHP',
             esc_html( PHP_VERSION )
         );
         echo '</tbody></table>';
         echo '</div>';
+    }
+
+    /**
+     * Run a real conversion test by creating a tiny JPEG and converting it.
+     *
+     * @param string $format 'webp' or 'avif'.
+     * @return array { success: bool, message: string }
+     */
+    private static function run_conversion_test( $format ) {
+        $result = [ 'success' => false, 'message' => '' ];
+
+        // Create a tiny 4x4 JPEG in the temp directory.
+        $tmp_dir  = get_temp_dir();
+        $test_jpg = $tmp_dir . 'anchor-optimize-test-' . uniqid() . '.jpg';
+
+        if ( ! function_exists( 'imagecreatetruecolor' ) ) {
+            $result['message'] = 'GD not available — cannot create test image.';
+            return $result;
+        }
+
+        $im = imagecreatetruecolor( 4, 4 );
+        if ( ! $im || ! imagejpeg( $im, $test_jpg, 90 ) ) {
+            imagedestroy( $im );
+            $result['message'] = 'Could not create test JPEG in temp directory.';
+            return $result;
+        }
+        imagedestroy( $im );
+
+        if ( ! file_exists( $test_jpg ) ) {
+            $result['message'] = 'Test JPEG was not written to disk.';
+            return $result;
+        }
+
+        // Attempt the conversion.
+        if ( 'webp' === $format ) {
+            $converted = Anchor_Optimize_WebP_Converter::convert( $test_jpg, 80 );
+        } else {
+            $converted = Anchor_Optimize_WebP_Converter::convert_avif( $test_jpg, 65 );
+        }
+
+        // Clean up.
+        @unlink( $test_jpg );
+        $test_output = $test_jpg . '.' . $format;
+
+        if ( $converted['success'] && file_exists( $test_output ) ) {
+            $size = filesize( $test_output );
+            @unlink( $test_output );
+            $result['success'] = true;
+            $result['message'] = sprintf( 'OK — test file created (%s bytes)', $size );
+        } else {
+            @unlink( $test_output ); // clean up partial files
+            $result['message'] = 'Conversion returned failure — check debug.log with WP_DEBUG enabled for details.';
+        }
+
+        return $result;
     }
 
     /* ────────────────────────────────────────────────────────

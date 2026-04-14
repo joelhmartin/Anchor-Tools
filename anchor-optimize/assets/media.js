@@ -1,9 +1,13 @@
 (function($) {
     'use strict';
 
-    // Handle "Optimize Now" button in attachment detail modal.
+    // Enhanced handler for "Optimize Now" button.
+    // The button also has an inline onclick fallback, so this is an upgrade path
+    // that adds richer feedback (engine info, detailed errors).
     $(document).on('click', '.ao-optimize-btn', function(e) {
         e.preventDefault();
+        // Skip if the inline handler already disabled the button (avoid double-fire).
+        if (this.disabled) return;
 
         var $btn    = $(this);
         var $status = $btn.siblings('.ao-optimize-status');

@@ -26,8 +26,11 @@ class Anchor_Optimize_Media_Library_UI {
         // AJAX: one-click optimize.
         add_action( 'wp_ajax_anchor_optimize_single', [ $this, 'ajax_optimize_single' ] );
 
-        // Admin assets for media pages.
-        add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_media_assets' ] );
+        // Load media.js wherever the media modal is used (admin AND frontend builders).
+        add_action( 'wp_enqueue_media', [ $this, 'enqueue_media_script' ] );
+
+        // Admin-only assets (column width CSS).
+        add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_styles' ] );
     }
 
     /* ────────────────────────────────────────────────────────
@@ -121,10 +124,31 @@ class Anchor_Optimize_Media_Library_UI {
                 sprintf( __( 'Engine: %s', 'anchor-schema' ), strtoupper( $meta['engine'] ?? 'unknown' ) )
             ) . '</small>';
         } else {
+            $ajax_url = admin_url( 'admin-ajax.php' );
+            $nonce    = wp_create_nonce( 'anchor_optimize_nonce' );
+
             $html  = '<span style="color:#999;">' . esc_html__( 'Not optimized', 'anchor-schema' ) . '</span>';
             $html .= sprintf(
-                ' <button type="button" class="button button-small ao-optimize-btn" data-id="%d">%s</button>',
+                ' <button type="button" class="button button-small ao-optimize-btn"'
+                . ' data-id="%d" data-ajax="%s" data-nonce="%s"'
+                . ' onclick="var b=this;b.disabled=true;b.textContent=\'Optimizing…\';'
+                . 'jQuery.post(b.dataset.ajax,{action:\'anchor_optimize_single\','
+                . 'nonce:b.dataset.nonce,attachment_id:b.dataset.id},function(r){'
+                . 'if(r.success){var d=r.data,t=[];if(d.has_webp)t.push(\'WebP\');'
+                . 'if(d.has_avif)t.push(\'AVIF\');var h=\'<span style=color:#46b450;font-weight:600>Saved \''
+                . '+d.savings_pct+\'%%</span> <span style=color:#666>(\'+d.savings_size+\')</span>\';'
+                . 'if(t.length)h+=\'<br><small>\'+t.join(\' + \')+\' generated</small>\';'
+                . 'if(d.errors&&d.errors.length)h+=\'<br><small style=color:#dc3232>\'+d.errors.join(\'; \')+\'</small>\';'
+                . 'b.parentNode.innerHTML=h;}'
+                . 'else{b.disabled=false;b.textContent=\'Optimize Now\';'
+                . 'b.nextElementSibling.style.color=\'#dc3232\';'
+                . 'b.nextElementSibling.textContent=r.data.message||\'Error\';}}'
+                . ').fail(function(){b.disabled=false;b.textContent=\'Optimize Now\';'
+                . 'b.nextElementSibling.textContent=\'Request failed\';});"'
+                . '>%s</button>',
                 $post->ID,
+                esc_attr( $ajax_url ),
+                esc_attr( $nonce ),
                 esc_html__( 'Optimize Now', 'anchor-schema' )
             );
             $html .= '<span class="ao-optimize-status" style="margin-left:8px;"></span>';
@@ -187,14 +211,23 @@ class Anchor_Optimize_Media_Library_UI {
     }
 
     /* ────────────────────────────────────────────────────────
-       Admin Assets
+       Assets
        ──────────────────────────────────────────────────────── */
 
-    public function enqueue_media_assets( $hook ) {
-        // Load on media library pages and any page that uses wp.media (post editors, etc.).
-        if ( ! in_array( $hook, [ 'upload.php', 'post.php', 'post-new.php' ], true ) ) {
+    /**
+     * Enqueue the media.js click handler wherever wp.media is loaded.
+     *
+     * Fires on the wp_enqueue_media action, which triggers on admin pages
+     * AND frontend page builders (Divi VB, Elementor, etc.) — anywhere
+     * the media modal can appear.
+     */
+    public function enqueue_media_script() {
+        // Prevent double-enqueue in the same request.
+        static $enqueued = false;
+        if ( $enqueued ) {
             return;
         }
+        $enqueued = true;
 
         wp_enqueue_script(
             'anchor-optimize-media',
@@ -207,8 +240,15 @@ class Anchor_Optimize_Media_Library_UI {
             'ajaxUrl' => admin_url( 'admin-ajax.php' ),
             'nonce'   => wp_create_nonce( 'anchor_optimize_nonce' ),
         ] );
+    }
 
-        // Inline CSS for the column width.
+    /**
+     * Admin-only styles (media list column width).
+     */
+    public function enqueue_admin_styles( $hook ) {
+        if ( 'upload.php' !== $hook ) {
+            return;
+        }
         wp_add_inline_style( 'wp-admin', '.column-anchor_optimize { width: 120px; }' );
     }
 }

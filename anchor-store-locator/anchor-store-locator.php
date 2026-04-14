@@ -659,6 +659,11 @@ class Module {
             return '';
         }
 
+        $post = \get_post( $post_id );
+        if ( ! $post || $post->post_type !== self::CPT || $post->post_status !== 'publish' ) {
+            return '';
+        }
+
         $value = \get_post_meta( $post_id, $allowed[ $field ], true );
         if ( ! $value ) {
             return '';

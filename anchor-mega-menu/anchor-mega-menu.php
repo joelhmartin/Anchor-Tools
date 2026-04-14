@@ -297,6 +297,14 @@ class Anchor_Mega_Menu_Module {
         return $items;
     }
 
+    private function get_renderable_snippet($post_id){
+        $post = get_post((int) $post_id);
+        if (!$post || $post->post_type !== self::CPT || $post->post_status !== 'publish') {
+            return null;
+        }
+        return $post;
+    }
+
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
@@ -321,6 +329,7 @@ class Anchor_Mega_Menu_Module {
         $atts = shortcode_atts(['id' => 0], $atts);
         $post_id = (int)$atts['id'];
         if (!$post_id) return '';
+        if (!$this->get_renderable_snippet($post_id)) return '';
         $this->ensure_embed_assets();
         $meta = $this->get_meta($post_id);
         $max_h = $this->normalize_max_height($meta['max_height']);

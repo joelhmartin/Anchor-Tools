@@ -941,6 +941,14 @@ class Anchor_Universal_Popups_Module {
         return $items;
     }
 
+    private function get_renderable_popup($post_id){
+        $post = get_post((int) $post_id);
+        if (!$post || $post->post_type !== self::CPT || $post->post_status !== 'publish') {
+            return null;
+        }
+        return $post;
+    }
+
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
@@ -971,6 +979,7 @@ class Anchor_Universal_Popups_Module {
         $atts = shortcode_atts(['id' => 0, 'width' => ''], $atts);
         $post_id = (int)$atts['id'];
         if (!$post_id) return '';
+        if (!$this->get_renderable_popup($post_id)) return '';
         $m = $this->get_meta($post_id);
 
         // Video mode: render a clickable video card

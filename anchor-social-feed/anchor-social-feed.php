@@ -643,6 +643,14 @@ class Anchor_Social_Feed_Module {
         return array_merge($atts, $overrides);
     }
 
+    private function get_renderable_feed_post($post_id) {
+        $post = get_post((int) $post_id);
+        if (!$post || $post->post_type !== self::CPT || $post->post_status !== 'publish') {
+            return null;
+        }
+        return $post;
+    }
+
     /* ══════════════════════════════════════════════════════════
        Shortcode Handler
        ══════════════════════════════════════════════════════════ */
@@ -677,12 +685,19 @@ class Anchor_Social_Feed_Module {
         if (!empty($atts['id']) || !empty($atts['slug'])) {
             $post_id = 0;
             if (!empty($atts['id'])) {
-                $post_id = intval($atts['id']);
+                $post = $this->get_renderable_feed_post((int) $atts['id']);
+                $post_id = $post ? (int) $post->ID : 0;
             } elseif (!empty($atts['slug'])) {
-                $found = get_posts(['post_type' => self::CPT, 'name' => sanitize_title($atts['slug']), 'posts_per_page' => 1, 'fields' => 'ids']);
+                $found = get_posts([
+                    'post_type'      => self::CPT,
+                    'name'           => sanitize_title($atts['slug']),
+                    'posts_per_page' => 1,
+                    'post_status'    => 'publish',
+                    'fields'         => 'ids',
+                ]);
                 $post_id = $found ? $found[0] : 0;
             }
-            if (!$post_id || get_post_type($post_id) !== self::CPT) {
+            if (!$post_id) {
                 return '<p class="ssfs-note">Social feed not found.</p>';
             }
             // Build overrides from shortcode atts (non-empty only)
@@ -698,7 +713,13 @@ class Anchor_Social_Feed_Module {
         }
 
         // ── Route 3: No attributes — render all published CPT posts ──
-        $posts = get_posts(['post_type' => self::CPT, 'posts_per_page' => 50, 'orderby' => 'menu_order title', 'order' => 'ASC']);
+        $posts = get_posts([
+            'post_type'      => self::CPT,
+            'post_status'    => 'publish',
+            'posts_per_page' => 50,
+            'orderby'        => 'menu_order title',
+            'order'          => 'ASC',
+        ]);
         if (empty($posts)) {
             return '<div class="ssfs-wrap"><p>No social feeds configured yet.</p></div>';
         }
@@ -714,6 +735,10 @@ class Anchor_Social_Feed_Module {
      * Render a single CPT feed post.
      */
     private function render_feed_post($post_id, $overrides = []) {
+        if (!$this->get_renderable_feed_post($post_id)) {
+            return '';
+        }
+
         $opts = $this->build_opts_from_post($post_id);
         $atts = $this->build_atts_from_post($post_id, $overrides);
         $settings = $opts['_settings'];

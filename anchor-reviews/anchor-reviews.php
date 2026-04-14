@@ -333,6 +333,14 @@ class Anchor_Reviews_Display_Module {
         wp_register_script( 'ard-frontend', $this->get_assets_url() . 'frontend.js', [], self::VERSION, true );
     }
 
+    private function get_renderable_display( $post_id ) {
+        $post = get_post( (int) $post_id );
+        if ( ! $post || $post->post_type !== self::CPT || $post->post_status !== 'publish' ) {
+            return null;
+        }
+        return $post;
+    }
+
     /* ══════════════════════════════════════════════════════════
        Shortcode
        ══════════════════════════════════════════════════════════ */
@@ -346,10 +354,12 @@ class Anchor_Reviews_Display_Module {
         $post_id = 0;
 
         if ( ! empty( $atts['id'] ) ) {
-            $post_id = intval( $atts['id'] );
+            $post = $this->get_renderable_display( (int) $atts['id'] );
+            $post_id = $post ? (int) $post->ID : 0;
         } elseif ( ! empty( $atts['slug'] ) ) {
             $found = get_posts( [
                 'post_type'   => self::CPT,
+                'post_status' => 'publish',
                 'name'        => sanitize_title( $atts['slug'] ),
                 'numberposts' => 1,
                 'fields'      => 'ids',
@@ -357,7 +367,7 @@ class Anchor_Reviews_Display_Module {
             $post_id = $found ? $found[0] : 0;
         }
 
-        if ( ! $post_id || get_post_type( $post_id ) !== self::CPT ) {
+        if ( ! $post_id ) {
             return '<p class="ard-note">Review display not found.</p>';
         }
 

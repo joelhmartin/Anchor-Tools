@@ -523,10 +523,7 @@ class Anchor_Video_Slider_Module {
             // Resolve CPT post: by ID, slug, or legacy option fallback
             $post = null;
             if (is_numeric($gallery_id)) {
-                $post = get_post((int) $gallery_id);
-                if ($post && $post->post_type !== self::CPT) {
-                    $post = null;
-                }
+                $post = $this->get_renderable_gallery_post((int) $gallery_id);
             }
             if (!$post) {
                 $found = get_posts([
@@ -573,6 +570,14 @@ class Anchor_Video_Slider_Module {
         }
 
         return $this->apply_shortcode_overrides_and_render($atts, $videos, $settings);
+    }
+
+    private function get_renderable_gallery_post($post_id) {
+        $post = get_post((int) $post_id);
+        if (!$post || !in_array($post->post_type, [self::CPT, self::OLD_CPT], true) || $post->post_status !== 'publish') {
+            return null;
+        }
+        return $post;
     }
 
     private function apply_shortcode_overrides_and_render($atts, $videos, $settings) {

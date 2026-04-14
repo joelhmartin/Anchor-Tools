@@ -2512,6 +2512,11 @@ PROMPT;
             return '';
         }
 
+        $post = get_post( $post_id );
+        if ( ! $post || $post->post_type !== 'ctm_form_variant' || $post->post_status !== 'publish' ) {
+            return '';
+        }
+
         $reactor_id = get_post_meta( $post_id, '_ctm_reactor_id', true );
         $html = get_post_meta( $post_id, '_ctm_form_html', true );
         if ( ! $reactor_id || ! $html ) {

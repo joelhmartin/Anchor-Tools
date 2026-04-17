@@ -196,37 +196,54 @@ class Module {
     }
 
     public function register_meta() {
+        // Protected (underscore-prefixed) meta keys require an explicit auth_callback
+        // for REST writes, otherwise Gutenberg's meta save path fails with
+        // "not allowed to edit the _anchor_event_* custom field" on publish.
+        $event_auth_callback = function ( $allowed, $meta_key, $post_id ) {
+            return \current_user_can( 'edit_post', $post_id );
+        };
+
         foreach ( $this->get_meta_schema() as $key => $schema ) {
             \register_post_meta( self::CPT, $this->meta_key( $key ), array_merge( [
                 'single' => true,
                 'show_in_rest' => true,
+                'auth_callback' => $event_auth_callback,
             ], $schema ) );
         }
+
+        $reg_auth_callback = function ( $allowed, $meta_key, $post_id ) {
+            return \current_user_can( 'edit_post', $post_id );
+        };
 
         \register_post_meta( self::REG_CPT, '_anchor_event_id', [
             'type' => 'integer',
             'single' => true,
             'show_in_rest' => true,
+            'auth_callback' => $reg_auth_callback,
         ] );
         \register_post_meta( self::REG_CPT, '_anchor_event_name', [
             'type' => 'string',
             'single' => true,
             'show_in_rest' => true,
+            'auth_callback' => $reg_auth_callback,
         ] );
         \register_post_meta( self::REG_CPT, '_anchor_event_email', [
             'type' => 'string',
             'single' => true,
             'show_in_rest' => true,
+            'auth_callback' => $reg_auth_callback,
         ] );
         \register_post_meta( self::REG_CPT, '_anchor_event_reg_status', [
             'type' => 'string',
             'single' => true,
             'show_in_rest' => true,
+            'auth_callback' => $reg_auth_callback,
         ] );
         \register_post_meta( self::REG_CPT, '_anchor_event_reg_fields', [
             'type' => 'array',
             'single' => true,
             'show_in_rest' => true,
+            'auth_callback' => $reg_auth_callback,
         ] );
     }
 
@@ -641,8 +658,8 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.0' );
-        \wp_enqueue_script( 'anchor-events-frontend', \plugins_url( 'assets/frontend.js', __FILE__ ), [], '1.0.2', true );
+        \wp_enqueue_style( 'anchor-events-frontend', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.1' );
+        \wp_enqueue_script( 'anchor-events-frontend', \plugins_url( 'assets/frontend.js', __FILE__ ), [], '1.0.3', true );
         \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
             'nonce'   => \wp_create_nonce( 'anchor_events_calendar' ),
@@ -1287,6 +1304,14 @@ class Module {
             <?php
         }, 'anchor_events_settings', 'anchor_events_registration' );
 
+        \add_settings_field( 'confirmation_message', __( 'Confirmation message', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[confirmation_message]" rows="3" class="large-text"><?php echo esc_textarea( $opts['confirmation_message'] ); ?></textarea>
+            <p class="description"><?php echo esc_html__( 'Shown below the event title in the confirmation email. Plain text; line breaks become paragraphs.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_registration' );
+
         \add_settings_section( 'anchor_events_slugs', __( 'Permalinks', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Customize event URL slugs.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
@@ -1309,6 +1334,7 @@ class Module {
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),
             'notify_user' => ! empty( $input['notify_user'] ),
+            'confirmation_message' => isset( $input['confirmation_message'] ) ? sanitize_textarea_field( $input['confirmation_message'] ) : $defaults['confirmation_message'],
             'event_slug' => sanitize_title( $input['event_slug'] ?? $defaults['event_slug'] ),
         ];
         if ( ! $output['event_slug'] ) {
@@ -1561,13 +1587,6 @@ class Module {
         $diff_to_now = $this->diff_months( $month, date( 'Y-m' ) );
         $prev_month = ( $diff_to_now > -12 ) ? date( 'Y-m', strtotime( '-1 month', strtotime( $month_start ) ) ) : '';
         $next_month = ( $diff_to_now < 12 ) ? date( 'Y-m', strtotime( '+1 month', strtotime( $month_start ) ) ) : '';
-        $nav_param = 'anchor_events_month';
-        $current_url = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '';
-        if ( ! $current_url && function_exists( 'get_permalink' ) ) {
-            $current_url = \get_permalink();
-        }
-        $prev_link = $prev_month ? esc_url( add_query_arg( $nav_param, $prev_month, $current_url ) ) : '';
-        $next_link = $next_month ? esc_url( add_query_arg( $nav_param, $next_month, $current_url ) ) : '';
 
         $meta_query = [
             [
@@ -1612,8 +1631,6 @@ class Module {
         $calendar_days = (int) date( 't', $calendar_first );
         $calendar_start_weekday = (int) date( 'N', $calendar_first );
         $calendar_events = $by_day;
-        $calendar_prev_link = $prev_link;
-        $calendar_next_link = $next_link;
         $calendar_prev_month = $prev_month;
         $calendar_next_month = $next_month;
         $calendar_show_past = $show_past;
@@ -1816,9 +1833,97 @@ class Module {
 
         if ( ! empty( $settings['notify_user'] ) ) {
             $subject = sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title );
-            $message = sprintf( __( "Thanks for registering for %s.\nEvent details: %s", 'anchor-schema' ), $event_title, $event_link );
-            \wp_mail( $email, $subject, $message );
+            $html = $this->build_registration_email_html( $event_id, $name, $status, $settings );
+            $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
+            \wp_mail( $email, $subject, $html, $headers );
         }
+    }
+
+    private function build_registration_email_html( $event_id, $name, $status, $settings ) {
+        $event_title = \get_the_title( $event_id );
+        $event_link = \get_permalink( $event_id );
+        $image_url = \get_the_post_thumbnail_url( $event_id, 'large' );
+        $site_name = \get_bloginfo( 'name' );
+        $message = isset( $settings['confirmation_message'] ) && $settings['confirmation_message'] !== ''
+            ? $settings['confirmation_message']
+            : __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' );
+
+        $paragraphs = '';
+        foreach ( preg_split( "/(\r\n|\n|\r){2,}/", trim( $message ) ) as $block ) {
+            $block = trim( $block );
+            if ( $block === '' ) {
+                continue;
+            }
+            $paragraphs .= '<p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">'
+                . nl2br( esc_html( $block ) )
+                . '</p>';
+        }
+
+        ob_start();
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width,initial-scale=1" />
+            <title><?php echo esc_html( $event_title ); ?></title>
+        </head>
+        <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
+                <tr>
+                    <td align="center">
+                        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
+                            <?php if ( $image_url ) : ?>
+                            <tr>
+                                <td style="padding:0;">
+                                    <img src="<?php echo esc_url( $image_url ); ?>" alt="<?php echo esc_attr( $event_title ); ?>" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" />
+                                </td>
+                            </tr>
+                            <?php endif; ?>
+                            <tr>
+                                <td style="padding:28px 32px 8px;">
+                                    <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;"><?php echo esc_html( $event_title ); ?></h1>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding:16px 32px 8px;">
+                                    <?php if ( $name ) : ?>
+                                        <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">
+                                            <?php echo esc_html( sprintf( __( 'Hi %s,', 'anchor-schema' ), $name ) ); ?>
+                                        </p>
+                                    <?php endif; ?>
+                                    <?php echo $paragraphs; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — content is escaped above ?>
+                                    <?php if ( $status === 'waitlist' ) : ?>
+                                        <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:#666;">
+                                            <?php echo esc_html__( 'You are currently on the waitlist and will be notified if a spot opens up.', 'anchor-schema' ); ?>
+                                        </p>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <?php if ( $event_link ) : ?>
+                            <tr>
+                                <td style="padding:8px 32px 32px;">
+                                    <a href="<?php echo esc_url( $event_link ); ?>" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                        <?php echo esc_html__( 'View event details', 'anchor-schema' ); ?>
+                                    </a>
+                                </td>
+                            </tr>
+                            <?php endif; ?>
+                            <tr>
+                                <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
+                                    <?php echo esc_html( $site_name ); ?>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        <?php
+        $html = ob_get_clean();
+
+        return \apply_filters( 'anchor_events_registration_email_html', $html, $event_id, $name, $status, $settings );
     }
 
     private function with_message( $url, $message ) {
@@ -1835,6 +1940,7 @@ class Module {
             'admin_email' => '',
             'notify_admin' => true,
             'notify_user' => true,
+            'confirmation_message' => __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' ),
             'event_slug' => 'event',
         ];
         $settings = \get_option( self::OPTION_KEY, [] );

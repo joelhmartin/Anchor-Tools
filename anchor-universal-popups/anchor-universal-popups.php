@@ -1091,12 +1091,23 @@ class Anchor_Universal_Popups_Module {
         <div class="<?php echo esc_attr(implode(' ', $classes)); ?>" data-up-popup-id="<?php echo esc_attr($post_id); ?>" style="<?php echo $style; ?>" tabindex="0" role="button" aria-label="<?php echo esc_attr($title ?: 'Play video'); ?>">
             <div class="up-video-card__thumb" style="background-image: url('<?php echo esc_url($thumb); ?>')">
                 <?php if ($play_svg): ?>
-                <span class="up-video-card__play"><?php echo $play_svg; ?></span>
+                <span class="up-video-card__play"><?php echo $play_svg; ?>
+                <?php if ($has_meta && $title_pos === 'center'): ?>
+                    <div class="up-video-card__meta up-meta-center">
+                        <?php if ($show_title && $title): ?>
+                        <span class="up-video-card__title"><?php echo esc_html($title); ?></span>
+                        <?php endif; ?>
+                        <?php if ($show_channel): ?>
+                        <span class="up-video-card__channel"><?php echo esc_html($channel); ?></span>
+                        <?php endif; ?>
+                    </div>
+                <?php endif; ?>
+                </span>
                 <?php endif; ?>
                 <?php if ($show_duration): ?>
                 <span class="up-video-card__duration"><?php echo esc_html($duration); ?></span>
                 <?php endif; ?>
-                <?php if ($has_meta): ?>
+                <?php if ($has_meta && $title_pos !== 'center'): ?>
                 <div class="up-video-card__meta up-meta-<?php echo esc_attr($title_pos); ?>">
                     <?php if ($show_title && $title): ?>
                     <span class="up-video-card__title"><?php echo esc_html($title); ?></span>

@@ -7,14 +7,14 @@ $weekdays = [ 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun' ];
 <div class="anchor-event-calendar" data-month="<?php echo esc_attr( date( 'Y-m', strtotime( $calendar_month ) ) ); ?>" data-show-past="<?php echo esc_attr( $calendar_show_past ?? 'yes' ); ?>">
     <div class="anchor-event-calendar-header">
         <div class="anchor-event-calendar-nav">
-            <?php if ( ! empty( $calendar_prev_link ) ) : ?>
-                <a class="anchor-event-calendar-btn" href="<?php echo esc_url( $calendar_prev_link ); ?>" data-month="<?php echo esc_attr( $calendar_prev_month ); ?>">&larr;</a>
+            <?php if ( ! empty( $calendar_prev_month ) ) : ?>
+                <button type="button" class="anchor-event-calendar-btn" data-month="<?php echo esc_attr( $calendar_prev_month ); ?>" aria-label="<?php echo esc_attr__( 'Previous month', 'anchor-schema' ); ?>">&larr;</button>
             <?php endif; ?>
         </div>
         <div class="anchor-event-calendar-title"><?php echo esc_html( $month_label ); ?></div>
         <div class="anchor-event-calendar-nav">
-            <?php if ( ! empty( $calendar_next_link ) ) : ?>
-                <a class="anchor-event-calendar-btn" href="<?php echo esc_url( $calendar_next_link ); ?>" data-month="<?php echo esc_attr( $calendar_next_month ); ?>">&rarr;</a>
+            <?php if ( ! empty( $calendar_next_month ) ) : ?>
+                <button type="button" class="anchor-event-calendar-btn" data-month="<?php echo esc_attr( $calendar_next_month ); ?>" aria-label="<?php echo esc_attr__( 'Next month', 'anchor-schema' ); ?>">&rarr;</button>
             <?php endif; ?>
         </div>
     </div>

@@ -162,11 +162,15 @@
   justify-content:center;
   width:32px;
   height:32px;
+  padding:0;
+  font:inherit;
+  line-height:1;
   border:1px solid var(--anchor-event-border);
   border-radius:6px;
   text-decoration:none;
   color:var(--anchor-event-text);
   background:#fff;
+  cursor:pointer;
 }
 
 .anchor-event-calendar-grid{

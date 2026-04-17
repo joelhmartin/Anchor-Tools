@@ -26,6 +26,7 @@ if ( $module ) {
             if ( $module ) {
                 echo $module->render_registration_notice();
                 echo $module->render_single_content( get_the_ID() );
+                echo $module->render_event_gallery( get_the_ID() );
             }
             the_content();
             ?>

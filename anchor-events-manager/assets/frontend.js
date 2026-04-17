@@ -43,7 +43,41 @@
       .catch(function(){ cal.classList.remove('is-loading'); });
   }
 
-  document.addEventListener('DOMContentLoaded', initCalendars);
+  function initGalleries(){
+    document.querySelectorAll('.anchor-event-gallery').forEach(function(gallery){
+      if(gallery.dataset.anchorGalleryBound){ return; }
+      gallery.dataset.anchorGalleryBound = '1';
+      var track = gallery.querySelector('.anchor-event-gallery-track');
+      var prev = gallery.querySelector('.anchor-event-gallery-prev');
+      var next = gallery.querySelector('.anchor-event-gallery-next');
+      if(!track){ return; }
+
+      function updateNav(){
+        var atStart = track.scrollLeft <= 4;
+        var atEnd = track.scrollLeft + track.clientWidth >= track.scrollWidth - 4;
+        var overflowing = track.scrollWidth > track.clientWidth + 4;
+        if(prev){ prev.hidden = !overflowing || atStart; }
+        if(next){ next.hidden = !overflowing || atEnd; }
+      }
+
+      function step(dir){
+        var slide = track.querySelector('.anchor-event-gallery-slide');
+        var amount = slide ? slide.getBoundingClientRect().width + 12 : track.clientWidth * 0.8;
+        track.scrollBy({ left: dir * amount, behavior: 'smooth' });
+      }
+
+      if(prev){ prev.addEventListener('click', function(){ step(-1); }); }
+      if(next){ next.addEventListener('click', function(){ step(1); }); }
+      track.addEventListener('scroll', updateNav, { passive: true });
+      window.addEventListener('resize', updateNav);
+      updateNav();
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function(){
+    initCalendars();
+    initGalleries();
+  });
 
   // Tooltip logic
   var tooltip, activeLink = null;

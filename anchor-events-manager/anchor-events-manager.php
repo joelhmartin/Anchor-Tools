@@ -42,6 +42,8 @@ class Module {
         \add_shortcode( 'event_calendar', [ $this, 'shortcode_event_calendar' ] );
         \add_shortcode( 'featured_events', [ $this, 'shortcode_featured_events' ] );
         \add_shortcode( 'event_registration', [ $this, 'shortcode_event_registration' ] );
+        \add_shortcode( 'event_gallery', [ $this, 'shortcode_event_gallery' ] );
+        \add_shortcode( 'event_registrants_list', [ $this, 'shortcode_event_registrants_list' ] );
 
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 40 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
@@ -246,6 +248,12 @@ class Module {
             'show_in_rest' => true,
             'auth_callback' => $reg_auth_callback,
         ] );
+        \register_post_meta( self::REG_CPT, '_anchor_event_guests', [
+            'type' => 'integer',
+            'single' => true,
+            'show_in_rest' => true,
+            'auth_callback' => $reg_auth_callback,
+        ] );
     }
 
     private function get_meta_schema() {
@@ -279,6 +287,7 @@ class Module {
             'priority' => [ 'type' => 'integer' ],
             'start_ts' => [ 'type' => 'integer' ],
             'end_ts' => [ 'type' => 'integer' ],
+            'gallery' => [ 'type' => 'array', 'show_in_rest' => [ 'schema' => [ 'type' => 'array', 'items' => [ 'type' => 'integer' ] ] ] ],
         ];
     }
 
@@ -319,6 +328,7 @@ class Module {
             'priority' => 0,
             'start_ts' => 0,
             'end_ts' => 0,
+            'gallery' => [],
         ];
     }
 
@@ -510,6 +520,33 @@ class Module {
                     </div>
                 </div>
             </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Photo Gallery', 'anchor-schema' ); ?></h3>
+                <p class="description"><?php echo esc_html__( 'Pick or upload images for the event photo gallery. Drag to reorder. The gallery renders via the [event_gallery] shortcode or automatically on the plugin\'s single-event template.', 'anchor-schema' ); ?></p>
+                <?php
+                $gallery_ids = array_map( 'intval', (array) $meta['gallery'] );
+                $gallery_ids = array_values( array_filter( $gallery_ids ) );
+                ?>
+                <div class="anchor-event-gallery-field" data-max="0">
+                    <input type="hidden" id="anchor_event_gallery" name="anchor_event_gallery" value="<?php echo esc_attr( implode( ',', $gallery_ids ) ); ?>" />
+                    <ul class="anchor-event-gallery-previews">
+                        <?php foreach ( $gallery_ids as $attachment_id ) :
+                            $thumb = \wp_get_attachment_image_url( $attachment_id, 'thumbnail' );
+                            if ( ! $thumb ) { continue; }
+                            ?>
+                            <li data-id="<?php echo esc_attr( $attachment_id ); ?>">
+                                <img src="<?php echo esc_url( $thumb ); ?>" alt="" />
+                                <button type="button" class="anchor-event-gallery-remove" aria-label="<?php echo esc_attr__( 'Remove image', 'anchor-schema' ); ?>">&times;</button>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                    <p>
+                        <button type="button" class="button anchor-event-gallery-add"><?php echo esc_html__( 'Add / manage images', 'anchor-schema' ); ?></button>
+                        <button type="button" class="button-link-delete anchor-event-gallery-clear"><?php echo esc_html__( 'Clear all', 'anchor-schema' ); ?></button>
+                    </p>
+                </div>
+            </div>
         </div>
         <?php
     }
@@ -517,13 +554,20 @@ class Module {
     public function render_registrants_metabox( $post ) {
         $registrations = $this->get_registrations( $post->ID );
         $count = $this->get_registration_count( $post->ID );
+        $attendees = $this->get_attendee_count( $post->ID );
         $waitlist = $this->get_registration_count( $post->ID, 'waitlist' );
         $export_url = \wp_nonce_url(
             \admin_url( 'admin-post.php?action=anchor_event_export&event_id=' . $post->ID ),
             'anchor_event_export'
         );
         ?>
-        <p><strong><?php echo esc_html__( 'Registrations', 'anchor-schema' ); ?>:</strong> <?php echo esc_html( $count ); ?></p>
+        <p>
+            <strong><?php echo esc_html__( 'Registrations', 'anchor-schema' ); ?>:</strong>
+            <?php echo esc_html( $count ); ?>
+            <?php if ( $attendees !== (int) $count ) : ?>
+                &middot; <strong><?php echo esc_html__( 'Total attendees', 'anchor-schema' ); ?>:</strong> <?php echo esc_html( $attendees ); ?>
+            <?php endif; ?>
+        </p>
         <?php if ( $waitlist ) : ?>
             <p><strong><?php echo esc_html__( 'Waitlist', 'anchor-schema' ); ?>:</strong> <?php echo esc_html( $waitlist ); ?></p>
         <?php endif; ?>
@@ -539,6 +583,7 @@ class Module {
                         <tr>
                             <th><?php echo esc_html__( 'Name', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'Email', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Guests', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'Status', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'Date', 'anchor-schema' ); ?></th>
                         </tr>
@@ -548,6 +593,7 @@ class Module {
                             <tr>
                                 <td><?php echo esc_html( $reg['name'] ); ?></td>
                                 <td><?php echo esc_html( $reg['email'] ); ?></td>
+                                <td><?php echo esc_html( (int) ( $reg['guests'] ?? 0 ) ); ?></td>
                                 <td><?php echo esc_html( ucfirst( $reg['status'] ) ); ?></td>
                                 <td><?php echo esc_html( $reg['date'] ); ?></td>
                             </tr>
@@ -596,6 +642,7 @@ class Module {
             'hide_from_archive' => ! empty( $_POST['anchor_event_hide_from_archive'] ),
             'featured' => ! empty( $_POST['anchor_event_featured'] ),
             'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
+            'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
         ];
 
         if ( ! $input['start_date'] ) {
@@ -621,7 +668,44 @@ class Module {
             \update_post_meta( $post_id, $this->meta_key( $key ), $value );
         }
 
+        $this->maybe_append_registration_shortcode( $post_id, $input );
+
         $this->clear_caches();
+    }
+
+    private function sanitize_gallery_ids( $raw ) {
+        if ( is_array( $raw ) ) {
+            $ids = $raw;
+        } else {
+            $ids = preg_split( '/[\s,]+/', (string) $raw );
+        }
+        $ids = array_map( 'intval', (array) $ids );
+        $ids = array_values( array_filter( $ids, function( $id ) {
+            return $id > 0 && \get_post_type( $id ) === 'attachment';
+        } ) );
+        return $ids;
+    }
+
+    private function maybe_append_registration_shortcode( $post_id, $input ) {
+        if ( empty( $input['registration_enabled'] ) ) {
+            return;
+        }
+        $post = \get_post( $post_id );
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            return;
+        }
+        if ( strpos( (string) $post->post_content, '[event_registration' ) !== false ) {
+            return;
+        }
+        $new_content = rtrim( (string) $post->post_content );
+        $new_content .= ( $new_content === '' ? '' : "\n\n" ) . '[event_registration]';
+
+        \remove_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
+        \wp_update_post( [
+            'ID' => $post_id,
+            'post_content' => $new_content,
+        ] );
+        \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
     }
 
     public function admin_notices() {
@@ -642,8 +726,9 @@ class Module {
         if ( ! $screen || $screen->post_type !== self::CPT ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-admin', \plugins_url( 'assets/admin.css', __FILE__ ), [], '1.0.0' );
-        \wp_enqueue_script( 'anchor-events-admin', \plugins_url( 'assets/admin.js', __FILE__ ), [ 'jquery' ], '1.0.0', true );
+        \wp_enqueue_media();
+        \wp_enqueue_style( 'anchor-events-admin', \plugins_url( 'assets/admin.css', __FILE__ ), [], '1.0.1' );
+        \wp_enqueue_script( 'anchor-events-admin', \plugins_url( 'assets/admin.js', __FILE__ ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.1', true );
     }
 
     public function frontend_assets() {
@@ -659,8 +744,8 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.1' );
-        \wp_enqueue_script( 'anchor-events-frontend', \plugins_url( 'assets/frontend.js', __FILE__ ), [], '1.0.3', true );
+        \wp_enqueue_style( 'anchor-events-frontend', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.2' );
+        \wp_enqueue_script( 'anchor-events-frontend', \plugins_url( 'assets/frontend.js', __FILE__ ), [], '1.0.4', true );
         \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
             'nonce'   => \wp_create_nonce( 'anchor_events_calendar' ),
@@ -868,6 +953,175 @@ class Module {
             $output .= $this->render_registration_notice();
         }
         $output .= $this->render_registration_form( $event_id );
+
+        return $output;
+    }
+
+    public function shortcode_event_gallery( $atts ) {
+        $atts = \shortcode_atts( [
+            'id' => 0,
+            'slug' => '',
+            'size' => 'large',
+            'columns' => 3,
+        ], $atts );
+
+        $event_id = (int) $atts['id'];
+        if ( ! $event_id && ! empty( $atts['slug'] ) ) {
+            $post = \get_page_by_path( sanitize_title( $atts['slug'] ), OBJECT, self::CPT );
+            if ( $post ) {
+                $event_id = (int) $post->ID;
+            }
+        }
+        if ( ! $event_id ) {
+            $queried = \get_queried_object();
+            if ( $queried instanceof \WP_Post && $queried->post_type === self::CPT ) {
+                $event_id = (int) $queried->ID;
+            }
+        }
+        if ( ! $event_id ) {
+            return '';
+        }
+
+        return $this->render_event_gallery( $event_id, $atts );
+    }
+
+    public function render_event_gallery( $event_id, $atts = [] ) {
+        $atts = \wp_parse_args( $atts, [
+            'size' => 'large',
+            'columns' => 3,
+        ] );
+
+        $meta = $this->get_meta( $event_id );
+        $ids = array_map( 'intval', (array) $meta['gallery'] );
+        $ids = array_values( array_filter( $ids ) );
+        if ( empty( $ids ) ) {
+            return '';
+        }
+
+        $this->enqueue_frontend_assets();
+
+        $columns = max( 1, min( 6, (int) $atts['columns'] ) );
+        $size = sanitize_text_field( $atts['size'] );
+
+        $output = '<div class="anchor-event-gallery" data-columns="' . esc_attr( $columns ) . '">';
+        $output .= '<div class="anchor-event-gallery-track">';
+        foreach ( $ids as $attachment_id ) {
+            $full = \wp_get_attachment_image_url( $attachment_id, 'full' );
+            $img = \wp_get_attachment_image( $attachment_id, $size, false, [
+                'class' => 'anchor-event-gallery-image',
+                'loading' => 'lazy',
+            ] );
+            if ( ! $img ) {
+                continue;
+            }
+            $output .= '<a class="anchor-event-gallery-slide" href="' . esc_url( $full ) . '" target="_blank" rel="noopener">' . $img . '</a>';
+        }
+        $output .= '</div>';
+        $output .= '<button type="button" class="anchor-event-gallery-nav anchor-event-gallery-prev" aria-label="' . esc_attr__( 'Previous image', 'anchor-schema' ) . '">&larr;</button>';
+        $output .= '<button type="button" class="anchor-event-gallery-nav anchor-event-gallery-next" aria-label="' . esc_attr__( 'Next image', 'anchor-schema' ) . '">&rarr;</button>';
+        $output .= '</div>';
+
+        return $output;
+    }
+
+    public function shortcode_event_registrants_list( $atts ) {
+        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+            return '';
+        }
+
+        $atts = \shortcode_atts( [
+            'show_past' => 'yes',
+            'limit' => 50,
+            'orderby' => 'date',
+            'order' => 'ASC',
+        ], $atts );
+
+        $this->enqueue_frontend_assets();
+
+        $meta_query = [ $this->build_hide_clause() ];
+        if ( $atts['show_past'] === 'no' ) {
+            $meta_query[] = $this->build_visibility_clause();
+        }
+
+        $args = [
+            'post_type' => self::CPT,
+            'post_status' => [ 'publish', 'draft', 'future', 'private' ],
+            'posts_per_page' => max( 1, min( 200, (int) $atts['limit'] ) ),
+            'meta_query' => $meta_query,
+            'orderby' => 'meta_value_num',
+            'meta_key' => $this->meta_key( 'start_ts' ),
+            'order' => strtoupper( $atts['order'] ) === 'DESC' ? 'DESC' : 'ASC',
+        ];
+        $events = \get_posts( $args );
+
+        if ( empty( $events ) ) {
+            return '<div class="anchor-event-admin-list"><p>' . esc_html__( 'No events found.', 'anchor-schema' ) . '</p></div>';
+        }
+
+        $output = '<div class="anchor-event-admin-list">';
+        foreach ( $events as $event ) {
+            $meta = $this->get_meta( $event->ID );
+            $registrations = $this->get_registrations( $event->ID, 0 );
+            $count = count( $registrations );
+            $attendees = $this->get_attendee_count( $event->ID );
+            $waitlist = $this->get_registration_count( $event->ID, 'waitlist' );
+            $edit_link = \get_edit_post_link( $event->ID );
+            $export_url = \wp_nonce_url(
+                \admin_url( 'admin-post.php?action=anchor_event_export&event_id=' . $event->ID ),
+                'anchor_event_export'
+            );
+            $date_label = $this->format_date_time( $meta );
+
+            $output .= '<details class="anchor-event-admin-item">';
+            $output .= '<summary class="anchor-event-admin-summary">';
+            $output .= '<span class="anchor-event-admin-name">' . esc_html( \get_the_title( $event->ID ) ) . '</span>';
+            if ( $date_label ) {
+                $output .= ' <span class="anchor-event-admin-date">' . esc_html( $date_label ) . '</span>';
+            }
+            $output .= ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
+                \_n( '%d registrant', '%d registrants', $count, 'anchor-schema' ),
+                $count
+            ) );
+            if ( $attendees !== $count ) {
+                $output .= ' <span class="anchor-event-admin-attendees">(' . esc_html( sprintf( __( '%d total attendees', 'anchor-schema' ), $attendees ) ) . ')</span>';
+            }
+            $output .= '</span>';
+            $output .= '</summary>';
+            $output .= '<div class="anchor-event-admin-body">';
+            $output .= '<p class="anchor-event-admin-meta">';
+            if ( $waitlist ) {
+                $output .= '<strong>' . esc_html__( 'Waitlist', 'anchor-schema' ) . ':</strong> ' . esc_html( $waitlist ) . ' &middot; ';
+            }
+            if ( $edit_link ) {
+                $output .= '<a href="' . esc_url( $edit_link ) . '">' . esc_html__( 'Edit event', 'anchor-schema' ) . '</a> &middot; ';
+            }
+            $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a>';
+            $output .= '</p>';
+
+            if ( empty( $registrations ) ) {
+                $output .= '<p class="anchor-event-admin-empty">' . esc_html__( 'No registrants yet.', 'anchor-schema' ) . '</p>';
+            } else {
+                $output .= '<table class="anchor-event-admin-table"><thead><tr>';
+                $output .= '<th>' . esc_html__( 'Name', 'anchor-schema' ) . '</th>';
+                $output .= '<th>' . esc_html__( 'Email', 'anchor-schema' ) . '</th>';
+                $output .= '<th>' . esc_html__( 'Guests', 'anchor-schema' ) . '</th>';
+                $output .= '<th>' . esc_html__( 'Status', 'anchor-schema' ) . '</th>';
+                $output .= '<th>' . esc_html__( 'Date', 'anchor-schema' ) . '</th>';
+                $output .= '</tr></thead><tbody>';
+                foreach ( $registrations as $reg ) {
+                    $output .= '<tr>';
+                    $output .= '<td>' . esc_html( $reg['name'] ) . '</td>';
+                    $output .= '<td><a href="mailto:' . esc_attr( $reg['email'] ) . '">' . esc_html( $reg['email'] ) . '</a></td>';
+                    $output .= '<td>' . esc_html( (int) ( $reg['guests'] ?? 0 ) ) . '</td>';
+                    $output .= '<td>' . esc_html( ucfirst( $reg['status'] ) ) . '</td>';
+                    $output .= '<td>' . esc_html( $reg['date'] ) . '</td>';
+                    $output .= '</tr>';
+                }
+                $output .= '</tbody></table>';
+            }
+            $output .= '</div></details>';
+        }
+        $output .= '</div>';
 
         return $output;
     }
@@ -1103,6 +1357,21 @@ class Module {
         $output .= '<input type="email" id="anchor_event_email" name="anchor_event_email" required />';
         $output .= '</div>';
 
+        $max_guests = (int) ( $settings['max_guests'] ?? 0 );
+        if ( $max_guests > 0 ) {
+            $output .= '<div class="anchor-event-field">';
+            $output .= '<label for="anchor_event_guests">' . esc_html__( 'Bringing guests?', 'anchor-schema' ) . '</label>';
+            $output .= '<select id="anchor_event_guests" name="anchor_event_guests">';
+            for ( $i = 0; $i <= $max_guests; $i++ ) {
+                $label = $i === 0
+                    ? esc_html__( 'Just me', 'anchor-schema' )
+                    : sprintf( \_n( '+%d guest', '+%d guests', $i, 'anchor-schema' ), $i );
+                $output .= '<option value="' . esc_attr( $i ) . '">' . esc_html( $label ) . '</option>';
+            }
+            $output .= '</select>';
+            $output .= '</div>';
+        }
+
         foreach ( $fields as $field ) {
             $field_id = sanitize_key( $field['id'] );
             $label = $field['label'] ?? $field_id;
@@ -1114,7 +1383,10 @@ class Module {
             $output .= '</div>';
         }
 
-        $output .= '<button type="submit" class="anchor-event-button">' . esc_html__( 'Register', 'anchor-schema' ) . '</button>';
+        $button_label = isset( $settings['register_button_label'] ) && $settings['register_button_label'] !== ''
+            ? $settings['register_button_label']
+            : __( 'Register', 'anchor-schema' );
+        $output .= '<button type="submit" class="anchor-event-button">' . esc_html( $button_label ) . '</button>';
         $output .= '</form>';
 
         return $output;
@@ -1144,12 +1416,6 @@ class Module {
             exit;
         }
 
-        $status = $this->get_registration_status( $event_id, $meta );
-        if ( $status === 'closed' || $status === 'full' ) {
-            \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
-            exit;
-        }
-
         $name = sanitize_text_field( $_POST['anchor_event_name'] ?? '' );
         $email = sanitize_email( $_POST['anchor_event_email'] ?? '' );
         if ( ! $name || ! $email ) {
@@ -1162,6 +1428,17 @@ class Module {
             foreach ( $_POST['anchor_event_field'] as $key => $value ) {
                 $extra_fields[ sanitize_key( $key ) ] = sanitize_text_field( $value );
             }
+        }
+
+        $max_guests = (int) ( $settings['max_guests'] ?? 0 );
+        $guests = isset( $_POST['anchor_event_guests'] ) ? (int) $_POST['anchor_event_guests'] : 0;
+        $guests = max( 0, min( $max_guests, $guests ) );
+        $party_size = 1 + $guests;
+
+        $status = $this->get_registration_status( $event_id, $meta, $party_size );
+        if ( $status === 'closed' || $status === 'full' ) {
+            \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
+            exit;
         }
 
         $reg_status = 'confirmed';
@@ -1185,8 +1462,9 @@ class Module {
         \update_post_meta( $reg_id, '_anchor_event_email', $email );
         \update_post_meta( $reg_id, '_anchor_event_reg_status', $reg_status );
         \update_post_meta( $reg_id, '_anchor_event_reg_fields', $extra_fields );
+        \update_post_meta( $reg_id, '_anchor_event_guests', $guests );
 
-        $this->send_registration_emails( $event_id, $name, $email, $reg_status );
+        $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
 
         $this->clear_caches();
 
@@ -1230,10 +1508,13 @@ class Module {
             foreach ( array_keys( $fields ) as $key ) {
                 $field_keys[ $key ] = true;
             }
+            $guests = (int) \get_post_meta( $post->ID, '_anchor_event_guests', true );
             $rows[] = [
                 'name' => \get_post_meta( $post->ID, '_anchor_event_name', true ),
                 'email' => \get_post_meta( $post->ID, '_anchor_event_email', true ),
                 'status' => \get_post_meta( $post->ID, '_anchor_event_reg_status', true ) ?: 'confirmed',
+                'guests' => $guests,
+                'party_size' => 1 + $guests,
                 'date' => \get_the_date( 'Y-m-d', $post ),
                 'fields' => $fields,
             ];
@@ -1245,10 +1526,10 @@ class Module {
         header( 'Content-Disposition: attachment; filename="event-registrations-' . $event_id . '.csv"' );
 
         $out = fopen( 'php://output', 'w' );
-        $header = array_merge( [ 'Name', 'Email', 'Status', 'Date' ], $field_keys );
+        $header = array_merge( [ 'Name', 'Email', 'Status', 'Guests', 'Party Size', 'Date' ], $field_keys );
         fputcsv( $out, $header );
         foreach ( $rows as $row ) {
-            $data = [ $row['name'], $row['email'], $row['status'], $row['date'] ];
+            $data = [ $row['name'], $row['email'], $row['status'], $row['guests'], $row['party_size'], $row['date'] ];
             foreach ( $field_keys as $key ) {
                 $data[] = $row['fields'][ $key ] ?? '';
             }
@@ -1354,6 +1635,22 @@ class Module {
             <?php
         }, 'anchor_events_settings', 'anchor_events_registration' );
 
+        \add_settings_field( 'max_guests', __( 'Max additional guests', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="number" min="0" max="50" step="1" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[max_guests]" value="<?php echo esc_attr( $opts['max_guests'] ); ?>" class="small-text" />
+            <p class="description"><?php echo esc_html__( 'Let registrants bring guests (plus-ones). Set to 0 to disable. Total attendees (registrant + guests) count toward event capacity.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_registration' );
+
+        \add_settings_field( 'register_button_label', __( 'Register button label', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[register_button_label]" value="<?php echo esc_attr( $opts['register_button_label'] ); ?>" class="regular-text" placeholder="<?php echo esc_attr__( 'Register', 'anchor-schema' ); ?>" />
+            <p class="description"><?php echo esc_html__( 'Text shown on the registration submit button. Leave blank for the default "Register".', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_registration' );
+
         \add_settings_section( 'anchor_events_slugs', __( 'Permalinks', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Customize event URL slugs.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
@@ -1377,6 +1674,8 @@ class Module {
             'notify_admin' => ! empty( $input['notify_admin'] ),
             'notify_user' => ! empty( $input['notify_user'] ),
             'confirmation_message' => isset( $input['confirmation_message'] ) ? sanitize_textarea_field( $input['confirmation_message'] ) : $defaults['confirmation_message'],
+            'max_guests' => max( 0, min( 50, (int) ( $input['max_guests'] ?? 0 ) ) ),
+            'register_button_label' => sanitize_text_field( $input['register_button_label'] ?? '' ),
             'event_slug' => sanitize_title( $input['event_slug'] ?? $defaults['event_slug'] ),
         ];
         if ( ! $output['event_slug'] ) {
@@ -1392,7 +1691,9 @@ class Module {
         echo '<li><code>[events_list]</code> ' . \esc_html__( 'List events. Attributes: category, tag, type, status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[featured_events]</code> ' . \esc_html__( 'Show featured events. Attributes: limit, orderby (priority|date), order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_calendar]</code> ' . \esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
-        echo '<li><code>[event_registration]</code> ' . \esc_html__( 'Registration form for an event. Attributes: id=POST_ID, slug=event-slug, show_title (yes|no), show_notice (yes|no). When used on a single-event page, id/slug default to the current event.', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_registration]</code> ' . \esc_html__( 'Registration form for an event. Attributes: id=POST_ID, slug=event-slug, show_title (yes|no), show_notice (yes|no). Auto-appended to an event\'s content when you enable registration, so it survives page builders like Divi.', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_gallery]</code> ' . \esc_html__( 'Photo gallery for an event. Attributes: id=POST_ID, slug=event-slug, size=thumbnail|medium|large|full, columns=1-6. Defaults to the current event when used on an event page.', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_registrants_list]</code> ' . \esc_html__( 'Admin-only: list every event with a collapsible panel of registrants. Only visible to users with edit_others_posts (admins + editors). Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '</ul>';
         echo '<p>' . \esc_html__( 'You can also link to the events archive at /event/ (or your custom slug).', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="options.php">';
@@ -1502,6 +1803,9 @@ class Module {
             }
             if ( is_int( $value ) ) {
                 $stored = (int) $stored;
+            }
+            if ( is_array( $value ) && ! is_array( $stored ) ) {
+                $stored = $value;
             }
             $defaults[ $key ] = $stored;
         }
@@ -1779,7 +2083,7 @@ class Module {
         ];
     }
 
-    private function get_registration_status( $event_id, $meta ) {
+    private function get_registration_status( $event_id, $meta, $party_size = 1 ) {
         $now = date( 'Y-m-d' );
         if ( $meta['registration_open'] && $now < $meta['registration_open'] ) {
             return 'closed';
@@ -1788,8 +2092,9 @@ class Module {
             return 'closed';
         }
         if ( $meta['capacity'] ) {
-            $count = $this->get_registration_count( $event_id );
-            if ( $count >= $meta['capacity'] ) {
+            $attendees = $this->get_attendee_count( $event_id );
+            $party_size = max( 1, (int) $party_size );
+            if ( ( $attendees + $party_size ) > (int) $meta['capacity'] ) {
                 return $meta['waitlist'] ? 'waitlist' : 'full';
             }
         }
@@ -1832,6 +2137,7 @@ class Module {
                 'name' => \get_post_meta( $post->ID, '_anchor_event_name', true ),
                 'email' => \get_post_meta( $post->ID, '_anchor_event_email', true ),
                 'status' => \get_post_meta( $post->ID, '_anchor_event_reg_status', true ) ?: 'confirmed',
+                'guests' => (int) \get_post_meta( $post->ID, '_anchor_event_guests', true ),
                 'date' => \get_the_date( 'Y-m-d', $post ),
             ];
         }
@@ -1862,27 +2168,67 @@ class Module {
         return $query->found_posts;
     }
 
-    private function send_registration_emails( $event_id, $name, $email, $status ) {
+    private function get_attendee_count( $event_id, $status = 'confirmed' ) {
+        $args = [
+            'post_type' => self::REG_CPT,
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'meta_query' => [
+                [
+                    'key' => '_anchor_event_id',
+                    'value' => $event_id,
+                    'compare' => '=',
+                ],
+            ],
+        ];
+        if ( $status ) {
+            $args['meta_query'][] = [
+                'key' => '_anchor_event_reg_status',
+                'value' => $status,
+                'compare' => '=',
+            ];
+        }
+        $query = new \WP_Query( $args );
+        $total = 0;
+        foreach ( $query->posts as $reg_id ) {
+            $guests = (int) \get_post_meta( $reg_id, '_anchor_event_guests', true );
+            $total += 1 + max( 0, $guests );
+        }
+        return $total;
+    }
+
+    private function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
         $settings = $this->get_settings();
         $event_title = \get_the_title( $event_id );
         $event_link = \get_permalink( $event_id );
+        $guests = max( 0, (int) $guests );
 
         if ( ! empty( $settings['notify_admin'] ) ) {
             $admin_email = $settings['admin_email'] ?: \get_option( 'admin_email' );
             $subject = sprintf( __( 'New registration for %s', 'anchor-schema' ), $event_title );
-            $message = sprintf( __( "Name: %s\nEmail: %s\nStatus: %s\nEvent: %s", 'anchor-schema' ), $name, $email, $status, $event_link );
+            $message = sprintf(
+                __( "Name: %s\nEmail: %s\nStatus: %s\nGuests: %d\nParty size: %d\nEvent: %s", 'anchor-schema' ),
+                $name,
+                $email,
+                $status,
+                $guests,
+                1 + $guests,
+                $event_link
+            );
             \wp_mail( $admin_email, $subject, $message );
         }
 
         if ( ! empty( $settings['notify_user'] ) ) {
             $subject = sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title );
-            $html = $this->build_registration_email_html( $event_id, $name, $status, $settings );
+            $html = $this->build_registration_email_html( $event_id, $name, $status, $settings, $guests );
             $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
             \wp_mail( $email, $subject, $html, $headers );
         }
     }
 
-    private function build_registration_email_html( $event_id, $name, $status, $settings ) {
+    private function build_registration_email_html( $event_id, $name, $status, $settings, $guests = 0 ) {
         $event_title = \get_the_title( $event_id );
         $event_link = \get_permalink( $event_id );
         $image_url = \get_the_post_thumbnail_url( $event_id, 'large' );
@@ -1936,6 +2282,18 @@ class Module {
                                         </p>
                                     <?php endif; ?>
                                     <?php echo $paragraphs; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — content is escaped above ?>
+                                    <?php if ( $guests > 0 ) : ?>
+                                        <p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:#333;">
+                                            <?php
+                                            $party_size = 1 + (int) $guests;
+                                            echo esc_html( sprintf(
+                                                \_n( 'Your party of %d is confirmed (you + %d guest).', 'Your party of %d is confirmed (you + %d guests).', $guests, 'anchor-schema' ),
+                                                $party_size,
+                                                $guests
+                                            ) );
+                                            ?>
+                                        </p>
+                                    <?php endif; ?>
                                     <?php if ( $status === 'waitlist' ) : ?>
                                         <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:#666;">
                                             <?php echo esc_html__( 'You are currently on the waitlist and will be notified if a spot opens up.', 'anchor-schema' ); ?>
@@ -1966,7 +2324,7 @@ class Module {
         <?php
         $html = ob_get_clean();
 
-        return \apply_filters( 'anchor_events_registration_email_html', $html, $event_id, $name, $status, $settings );
+        return \apply_filters( 'anchor_events_registration_email_html', $html, $event_id, $name, $status, $settings, $guests );
     }
 
     private function with_message( $url, $message ) {
@@ -1984,6 +2342,8 @@ class Module {
             'notify_admin' => true,
             'notify_user' => true,
             'confirmation_message' => __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' ),
+            'max_guests' => 0,
+            'register_button_label' => '',
             'event_slug' => 'event',
         ];
         $settings = \get_option( self::OPTION_KEY, [] );

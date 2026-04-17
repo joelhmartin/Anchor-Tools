@@ -44,6 +44,7 @@ class Module {
         \add_shortcode( 'event_registration', [ $this, 'shortcode_event_registration' ] );
         \add_shortcode( 'event_gallery', [ $this, 'shortcode_event_gallery' ] );
         \add_shortcode( 'event_registrants_list', [ $this, 'shortcode_event_registrants_list' ] );
+        \add_shortcode( 'event_manager', [ $this, 'shortcode_event_manager' ] );
 
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 40 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
@@ -52,6 +53,8 @@ class Module {
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
         \add_action( 'admin_post_nopriv_anchor_event_register', [ $this, 'handle_registration' ] );
         \add_action( 'admin_post_anchor_event_export', [ $this, 'handle_export' ] );
+        \add_action( 'admin_post_anchor_event_manager_save', [ $this, 'handle_event_manager_save' ] );
+        \add_action( 'admin_post_anchor_event_manager_delete', [ $this, 'handle_event_manager_delete' ] );
         \add_action( 'wp_ajax_anchor_events_calendar', [ $this, 'ajax_calendar' ] );
         \add_action( 'wp_ajax_nopriv_anchor_events_calendar', [ $this, 'ajax_calendar' ] );
 
@@ -744,7 +747,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.2' );
+        \wp_enqueue_style( 'anchor-events-frontend', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.3' );
         \wp_enqueue_script( 'anchor-events-frontend', \plugins_url( 'assets/frontend.js', __FILE__ ), [], '1.0.4', true );
         \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
@@ -1124,6 +1127,472 @@ class Module {
         $output .= '</div>';
 
         return $output;
+    }
+
+    public function shortcode_event_manager( $atts ) {
+        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+            return '';
+        }
+
+        $atts = \shortcode_atts( [
+            'show_past' => 'yes',
+            'limit' => 50,
+            'order' => 'ASC',
+        ], $atts );
+
+        $action = isset( $_GET['event_action'] ) ? sanitize_key( $_GET['event_action'] ) : '';
+        $event_id = isset( $_GET['event_id'] ) ? (int) $_GET['event_id'] : 0;
+
+        $this->enqueue_frontend_assets();
+        \wp_enqueue_media();
+        \wp_enqueue_script( 'jquery-ui-sortable' );
+        \wp_enqueue_script(
+            'anchor-events-manager-frontend',
+            \plugins_url( 'assets/manager.js', __FILE__ ),
+            [ 'jquery', 'jquery-ui-sortable' ],
+            '1.0.0',
+            true
+        );
+
+        $output = '<div class="anchor-event-manager">';
+        $output .= $this->render_event_manager_notice();
+
+        if ( $action === 'new' ) {
+            $output .= $this->render_event_manager_form( 0 );
+        } elseif ( $action === 'edit' && $event_id ) {
+            if ( \current_user_can( 'edit_post', $event_id ) && \get_post_type( $event_id ) === self::CPT ) {
+                $output .= $this->render_event_manager_form( $event_id );
+            } else {
+                $output .= '<p>' . esc_html__( 'You do not have permission to edit that event.', 'anchor-schema' ) . '</p>';
+            }
+        } else {
+            $output .= $this->render_event_manager_list( $atts );
+        }
+
+        $output .= '</div>';
+        return $output;
+    }
+
+    private function render_event_manager_notice() {
+        if ( empty( $_GET['event_manager_notice'] ) ) {
+            return '';
+        }
+        $notice = sanitize_text_field( wp_unslash( $_GET['event_manager_notice'] ) );
+        $map = [
+            'saved'   => [ 'ok',  __( 'Event saved.', 'anchor-schema' ) ],
+            'created' => [ 'ok',  __( 'Event created.', 'anchor-schema' ) ],
+            'deleted' => [ 'ok',  __( 'Event moved to trash.', 'anchor-schema' ) ],
+            'denied'  => [ 'err', __( 'You do not have permission to do that.', 'anchor-schema' ) ],
+            'missing' => [ 'err', __( 'Event title and start date are required.', 'anchor-schema' ) ],
+            'error'   => [ 'err', __( 'Something went wrong. Please try again.', 'anchor-schema' ) ],
+        ];
+        if ( ! isset( $map[ $notice ] ) ) {
+            return '';
+        }
+        $class = $map[ $notice ][0] === 'ok' ? 'is-ok' : 'is-error';
+        return '<div class="anchor-event-manager-notice ' . esc_attr( $class ) . '">' . esc_html( $map[ $notice ][1] ) . '</div>';
+    }
+
+    private function render_event_manager_list( $atts ) {
+        $meta_query = [ $this->build_hide_clause() ];
+        if ( $atts['show_past'] === 'no' ) {
+            $meta_query[] = $this->build_visibility_clause();
+        }
+
+        $args = [
+            'post_type' => self::CPT,
+            'post_status' => [ 'publish', 'draft', 'future', 'private', 'pending' ],
+            'posts_per_page' => max( 1, min( 200, (int) $atts['limit'] ) ),
+            'meta_query' => $meta_query,
+            'orderby' => 'meta_value_num',
+            'meta_key' => $this->meta_key( 'start_ts' ),
+            'order' => strtoupper( $atts['order'] ) === 'DESC' ? 'DESC' : 'ASC',
+        ];
+        $events = \get_posts( $args );
+
+        $new_url = \add_query_arg( [ 'event_action' => 'new' ], \remove_query_arg( [ 'event_id', 'event_manager_notice' ] ) );
+
+        $output = '<div class="anchor-event-manager-toolbar">';
+        $output .= '<h2>' . esc_html__( 'Events', 'anchor-schema' ) . '</h2>';
+        $output .= '<a class="anchor-event-button" href="' . esc_url( $new_url ) . '">+ ' . esc_html__( 'New event', 'anchor-schema' ) . '</a>';
+        $output .= '</div>';
+
+        if ( empty( $events ) ) {
+            $output .= '<p>' . esc_html__( 'No events yet.', 'anchor-schema' ) . '</p>';
+            return $output;
+        }
+
+        $output .= '<div class="anchor-event-admin-list">';
+        foreach ( $events as $event ) {
+            $output .= $this->render_event_manager_item( $event );
+        }
+        $output .= '</div>';
+
+        return $output;
+    }
+
+    private function render_event_manager_item( $event ) {
+        $meta = $this->get_meta( $event->ID );
+        $registrations = $this->get_registrations( $event->ID, 0 );
+        $count = count( $registrations );
+        $attendees = $this->get_attendee_count( $event->ID );
+        $waitlist = $this->get_registration_count( $event->ID, 'waitlist' );
+
+        $base_url = \remove_query_arg( [ 'event_action', 'event_id', 'event_manager_notice' ] );
+        $edit_url = \add_query_arg( [ 'event_action' => 'edit', 'event_id' => $event->ID ], $base_url );
+        $delete_url = \wp_nonce_url(
+            \add_query_arg( [
+                'action' => 'anchor_event_manager_delete',
+                'event_id' => $event->ID,
+                'redirect_to' => \urlencode( $base_url ),
+            ], \admin_url( 'admin-post.php' ) ),
+            'anchor_event_manager_delete_' . $event->ID
+        );
+        $export_url = \wp_nonce_url(
+            \admin_url( 'admin-post.php?action=anchor_event_export&event_id=' . $event->ID ),
+            'anchor_event_export'
+        );
+        $date_label = $this->format_date_time( $meta );
+        $status = ucfirst( (string) $meta['status'] );
+
+        $output = '<details class="anchor-event-admin-item">';
+        $output .= '<summary class="anchor-event-admin-summary">';
+        $output .= '<span class="anchor-event-admin-name">' . esc_html( \get_the_title( $event->ID ) ?: __( '(untitled)', 'anchor-schema' ) ) . '</span>';
+        if ( $date_label ) {
+            $output .= ' <span class="anchor-event-admin-date">' . esc_html( $date_label ) . '</span>';
+        }
+        if ( $event->post_status !== 'publish' ) {
+            $output .= ' <span class="anchor-event-admin-date">[' . esc_html( $event->post_status ) . ']</span>';
+        }
+        $output .= ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
+            \_n( '%d registrant', '%d registrants', $count, 'anchor-schema' ),
+            $count
+        ) );
+        if ( $attendees !== $count ) {
+            $output .= ' <span class="anchor-event-admin-attendees">(' . esc_html( sprintf( __( '%d total attendees', 'anchor-schema' ), $attendees ) ) . ')</span>';
+        }
+        $output .= '</span>';
+        $output .= '</summary>';
+
+        $output .= '<div class="anchor-event-admin-body">';
+        $output .= '<p class="anchor-event-admin-meta">';
+        if ( $status ) {
+            $output .= '<strong>' . esc_html__( 'Status', 'anchor-schema' ) . ':</strong> ' . esc_html( $status ) . ' &middot; ';
+        }
+        if ( $waitlist ) {
+            $output .= '<strong>' . esc_html__( 'Waitlist', 'anchor-schema' ) . ':</strong> ' . esc_html( $waitlist ) . ' &middot; ';
+        }
+        $output .= '<a href="' . esc_url( $edit_url ) . '">' . esc_html__( 'Edit', 'anchor-schema' ) . '</a> &middot; ';
+        $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a> &middot; ';
+        $output .= '<a class="anchor-event-admin-delete" href="' . esc_url( $delete_url ) . '" data-confirm="' . esc_attr__( 'Move this event to trash?', 'anchor-schema' ) . '">' . esc_html__( 'Delete', 'anchor-schema' ) . '</a>';
+        $output .= '</p>';
+
+        if ( empty( $registrations ) ) {
+            $output .= '<p class="anchor-event-admin-empty">' . esc_html__( 'No registrants yet.', 'anchor-schema' ) . '</p>';
+        } else {
+            $output .= '<table class="anchor-event-admin-table"><thead><tr>';
+            $output .= '<th>' . esc_html__( 'Name', 'anchor-schema' ) . '</th>';
+            $output .= '<th>' . esc_html__( 'Email', 'anchor-schema' ) . '</th>';
+            $output .= '<th>' . esc_html__( 'Guests', 'anchor-schema' ) . '</th>';
+            $output .= '<th>' . esc_html__( 'Status', 'anchor-schema' ) . '</th>';
+            $output .= '<th>' . esc_html__( 'Date', 'anchor-schema' ) . '</th>';
+            $output .= '</tr></thead><tbody>';
+            foreach ( $registrations as $reg ) {
+                $output .= '<tr>';
+                $output .= '<td>' . esc_html( $reg['name'] ) . '</td>';
+                $output .= '<td><a href="mailto:' . esc_attr( $reg['email'] ) . '">' . esc_html( $reg['email'] ) . '</a></td>';
+                $output .= '<td>' . esc_html( (int) ( $reg['guests'] ?? 0 ) ) . '</td>';
+                $output .= '<td>' . esc_html( ucfirst( $reg['status'] ) ) . '</td>';
+                $output .= '<td>' . esc_html( $reg['date'] ) . '</td>';
+                $output .= '</tr>';
+            }
+            $output .= '</tbody></table>';
+        }
+        $output .= '</div></details>';
+
+        return $output;
+    }
+
+    private function render_event_manager_form( $event_id ) {
+        $is_edit = $event_id > 0;
+        $post = $is_edit ? \get_post( $event_id ) : null;
+        if ( $is_edit && ( ! $post || $post->post_type !== self::CPT ) ) {
+            return '<p>' . esc_html__( 'Event not found.', 'anchor-schema' ) . '</p>';
+        }
+
+        $meta = $is_edit ? $this->get_meta( $event_id ) : $this->get_meta_defaults();
+        $title = $is_edit ? $post->post_title : '';
+        $content = $is_edit ? $post->post_content : '';
+        $status = $is_edit ? $post->post_status : 'publish';
+        $thumbnail_id = $is_edit ? (int) \get_post_thumbnail_id( $event_id ) : 0;
+        $gallery_ids = array_map( 'intval', (array) $meta['gallery'] );
+        $gallery_ids = array_values( array_filter( $gallery_ids ) );
+
+        $base_url = \remove_query_arg( [ 'event_action', 'event_id', 'event_manager_notice' ] );
+        $timezone_options = \wp_timezone_choice( $meta['timezone'] );
+
+        ob_start();
+        ?>
+        <form class="anchor-event-manager-form" method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>">
+            <input type="hidden" name="action" value="anchor_event_manager_save" />
+            <input type="hidden" name="event_id" value="<?php echo esc_attr( $event_id ); ?>" />
+            <input type="hidden" name="redirect_to" value="<?php echo esc_url( $base_url ); ?>" />
+            <?php \wp_nonce_field( 'anchor_event_manager_save', 'anchor_event_manager_nonce' ); ?>
+
+            <div class="anchor-event-manager-toolbar">
+                <h2><?php echo $is_edit ? esc_html__( 'Edit event', 'anchor-schema' ) : esc_html__( 'New event', 'anchor-schema' ); ?></h2>
+                <a class="anchor-event-button-secondary" href="<?php echo esc_url( $base_url ); ?>"><?php echo esc_html__( 'Back to list', 'anchor-schema' ); ?></a>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Basics', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field" style="grid-column:1/-1;">
+                        <label for="anchor_event_title"><?php echo esc_html__( 'Title', 'anchor-schema' ); ?> *</label>
+                        <input type="text" id="anchor_event_title" name="anchor_event_title" value="<?php echo esc_attr( $title ); ?>" required />
+                    </div>
+                    <div class="anchor-event-field" style="grid-column:1/-1;">
+                        <label for="anchor_event_content"><?php echo esc_html__( 'Description', 'anchor-schema' ); ?></label>
+                        <textarea id="anchor_event_content" name="anchor_event_content" rows="6"><?php echo esc_textarea( $content ); ?></textarea>
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_post_status"><?php echo esc_html__( 'Publish status', 'anchor-schema' ); ?></label>
+                        <select id="anchor_event_post_status" name="anchor_event_post_status">
+                            <option value="publish" <?php selected( $status, 'publish' ); ?>><?php echo esc_html__( 'Published', 'anchor-schema' ); ?></option>
+                            <option value="draft" <?php selected( $status, 'draft' ); ?>><?php echo esc_html__( 'Draft', 'anchor-schema' ); ?></option>
+                            <option value="private" <?php selected( $status, 'private' ); ?>><?php echo esc_html__( 'Private', 'anchor-schema' ); ?></option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Date & Time', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_start_date"><?php echo esc_html__( 'Start date', 'anchor-schema' ); ?> *</label>
+                        <input type="date" id="anchor_event_start_date" name="anchor_event_start_date" value="<?php echo esc_attr( $meta['start_date'] ); ?>" required />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_end_date"><?php echo esc_html__( 'End date', 'anchor-schema' ); ?></label>
+                        <input type="date" id="anchor_event_end_date" name="anchor_event_end_date" value="<?php echo esc_attr( $meta['end_date'] ); ?>" />
+                    </div>
+                    <div class="anchor-event-field anchor-event-time-fields">
+                        <label for="anchor_event_start_time"><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></label>
+                        <input type="time" id="anchor_event_start_time" name="anchor_event_start_time" value="<?php echo esc_attr( $meta['start_time'] ); ?>" />
+                    </div>
+                    <div class="anchor-event-field anchor-event-time-fields">
+                        <label for="anchor_event_end_time"><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></label>
+                        <input type="time" id="anchor_event_end_time" name="anchor_event_end_time" value="<?php echo esc_attr( $meta['end_time'] ); ?>" />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_timezone"><?php echo esc_html__( 'Timezone', 'anchor-schema' ); ?></label>
+                        <select id="anchor_event_timezone" name="anchor_event_timezone"><?php echo $timezone_options; ?></select>
+                    </div>
+                    <div class="anchor-event-field">
+                        <label><input type="checkbox" id="anchor_event_all_day" name="anchor_event_all_day" value="1" <?php checked( $meta['all_day'] ); ?> /> <?php echo esc_html__( 'All-day event', 'anchor-schema' ); ?></label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Location', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field"><label for="anchor_event_venue"><?php echo esc_html__( 'Venue', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_venue" name="anchor_event_venue" value="<?php echo esc_attr( $meta['venue'] ); ?>" /></div>
+                    <div class="anchor-event-field"><label for="anchor_event_address_street"><?php echo esc_html__( 'Street', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_street" name="anchor_event_address_street" value="<?php echo esc_attr( $meta['address_street'] ); ?>" /></div>
+                    <div class="anchor-event-field"><label for="anchor_event_address_city"><?php echo esc_html__( 'City', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_city" name="anchor_event_address_city" value="<?php echo esc_attr( $meta['address_city'] ); ?>" /></div>
+                    <div class="anchor-event-field"><label for="anchor_event_address_state"><?php echo esc_html__( 'State', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_state" name="anchor_event_address_state" value="<?php echo esc_attr( $meta['address_state'] ); ?>" /></div>
+                    <div class="anchor-event-field"><label for="anchor_event_address_zip"><?php echo esc_html__( 'Postal code', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_zip" name="anchor_event_address_zip" value="<?php echo esc_attr( $meta['address_zip'] ); ?>" /></div>
+                    <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_virtual" name="anchor_event_virtual" value="1" <?php checked( $meta['virtual'] ); ?> /> <?php echo esc_html__( 'Virtual event', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field" id="anchor-event-virtual-url"><label for="anchor_event_virtual_url"><?php echo esc_html__( 'Virtual URL', 'anchor-schema' ); ?></label><input type="url" id="anchor_event_virtual_url" name="anchor_event_virtual_url" value="<?php echo esc_attr( $meta['virtual_url'] ); ?>" /></div>
+                </div>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_open"><?php echo esc_html__( 'Registration opens', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_open" name="anchor_event_registration_open" value="<?php echo esc_attr( $meta['registration_open'] ); ?>" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields">
+                        <label for="anchor_event_registration_type"><?php echo esc_html__( 'Registration type', 'anchor-schema' ); ?></label>
+                        <select id="anchor_event_registration_type" name="anchor_event_registration_type">
+                            <option value="internal" <?php selected( $meta['registration_type'], 'internal' ); ?>>Internal</option>
+                            <option value="external" <?php selected( $meta['registration_type'], 'external' ); ?>>External URL</option>
+                        </select>
+                    </div>
+                    <div class="anchor-event-field anchor-event-registration-fields" id="anchor-event-registration-url"><label for="anchor_event_registration_url"><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></label><input type="url" id="anchor_event_registration_url" name="anchor_event_registration_url" value="<?php echo esc_attr( $meta['registration_url'] ); ?>" /></div>
+                </div>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Featured image', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-thumbnail-field">
+                    <input type="hidden" id="anchor_event_thumbnail_id" name="anchor_event_thumbnail_id" value="<?php echo esc_attr( $thumbnail_id ); ?>" />
+                    <div class="anchor-event-thumbnail-preview">
+                        <?php if ( $thumbnail_id ) : ?>
+                            <img src="<?php echo esc_url( \wp_get_attachment_image_url( $thumbnail_id, 'medium' ) ); ?>" alt="" />
+                        <?php endif; ?>
+                    </div>
+                    <p>
+                        <button type="button" class="anchor-event-button-secondary anchor-event-thumbnail-select"><?php echo esc_html__( 'Select image', 'anchor-schema' ); ?></button>
+                        <button type="button" class="anchor-event-button-secondary anchor-event-thumbnail-remove"<?php echo $thumbnail_id ? '' : ' hidden'; ?>><?php echo esc_html__( 'Remove', 'anchor-schema' ); ?></button>
+                    </p>
+                </div>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Photo gallery', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-gallery-field" data-max="0">
+                    <input type="hidden" id="anchor_event_gallery" name="anchor_event_gallery" value="<?php echo esc_attr( implode( ',', $gallery_ids ) ); ?>" />
+                    <ul class="anchor-event-gallery-previews">
+                        <?php foreach ( $gallery_ids as $attachment_id ) :
+                            $thumb = \wp_get_attachment_image_url( $attachment_id, 'thumbnail' );
+                            if ( ! $thumb ) { continue; } ?>
+                            <li data-id="<?php echo esc_attr( $attachment_id ); ?>">
+                                <img src="<?php echo esc_url( $thumb ); ?>" alt="" />
+                                <button type="button" class="anchor-event-gallery-remove" aria-label="Remove image">&times;</button>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                    <p>
+                        <button type="button" class="anchor-event-button-secondary anchor-event-gallery-add"><?php echo esc_html__( 'Add / manage images', 'anchor-schema' ); ?></button>
+                        <button type="button" class="anchor-event-button-secondary anchor-event-gallery-clear"><?php echo esc_html__( 'Clear all', 'anchor-schema' ); ?></button>
+                    </p>
+                </div>
+            </div>
+
+            <div class="anchor-event-manager-submit">
+                <button type="submit" class="anchor-event-button"><?php echo $is_edit ? esc_html__( 'Save changes', 'anchor-schema' ) : esc_html__( 'Create event', 'anchor-schema' ); ?></button>
+                <a class="anchor-event-button-secondary" href="<?php echo esc_url( $base_url ); ?>"><?php echo esc_html__( 'Cancel', 'anchor-schema' ); ?></a>
+            </div>
+        </form>
+        <?php
+        return ob_get_clean();
+    }
+
+    public function handle_event_manager_save() {
+        $nonce = $_POST['anchor_event_manager_nonce'] ?? '';
+        if ( ! \wp_verify_nonce( $nonce, 'anchor_event_manager_save' ) ) {
+            \wp_die( esc_html__( 'Invalid request.', 'anchor-schema' ) );
+        }
+
+        $redirect = isset( $_POST['redirect_to'] ) ? esc_url_raw( wp_unslash( $_POST['redirect_to'] ) ) : \home_url();
+        $event_id = (int) ( $_POST['event_id'] ?? 0 );
+        $is_edit = $event_id > 0;
+
+        $capability_ok = $is_edit
+            ? \current_user_can( 'edit_post', $event_id )
+            : \current_user_can( 'edit_others_posts' );
+        if ( ! $capability_ok ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'denied', $redirect ) );
+            exit;
+        }
+
+        $title = sanitize_text_field( wp_unslash( $_POST['anchor_event_title'] ?? '' ) );
+        $content = wp_kses_post( wp_unslash( $_POST['anchor_event_content'] ?? '' ) );
+        $start_date = $this->sanitize_date( $_POST['anchor_event_start_date'] ?? '' );
+        if ( ! $title || ! $start_date ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'missing', $redirect ) );
+            exit;
+        }
+
+        $post_status = sanitize_key( $_POST['anchor_event_post_status'] ?? 'publish' );
+        if ( ! in_array( $post_status, [ 'publish', 'draft', 'private' ], true ) ) {
+            $post_status = 'publish';
+        }
+
+        $postarr = [
+            'post_type' => self::CPT,
+            'post_title' => $title,
+            'post_content' => $content,
+            'post_status' => $post_status,
+        ];
+        if ( $is_edit ) {
+            $postarr['ID'] = $event_id;
+            $saved_id = \wp_update_post( $postarr, true );
+        } else {
+            $saved_id = \wp_insert_post( $postarr, true );
+        }
+
+        if ( \is_wp_error( $saved_id ) || ! $saved_id ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'error', $redirect ) );
+            exit;
+        }
+
+        $input = [
+            'start_date' => $start_date,
+            'end_date' => $this->sanitize_date( $_POST['anchor_event_end_date'] ?? '' ),
+            'start_time' => $this->sanitize_time( $_POST['anchor_event_start_time'] ?? '' ),
+            'end_time' => $this->sanitize_time( $_POST['anchor_event_end_time'] ?? '' ),
+            'timezone' => sanitize_text_field( $_POST['anchor_event_timezone'] ?? '' ),
+            'all_day' => ! empty( $_POST['anchor_event_all_day'] ),
+            'venue' => sanitize_text_field( $_POST['anchor_event_venue'] ?? '' ),
+            'address_street' => sanitize_text_field( $_POST['anchor_event_address_street'] ?? '' ),
+            'address_city' => sanitize_text_field( $_POST['anchor_event_address_city'] ?? '' ),
+            'address_state' => sanitize_text_field( $_POST['anchor_event_address_state'] ?? '' ),
+            'address_zip' => sanitize_text_field( $_POST['anchor_event_address_zip'] ?? '' ),
+            'address_country' => sanitize_text_field( $_POST['anchor_event_address_country'] ?? '' ),
+            'virtual' => ! empty( $_POST['anchor_event_virtual'] ),
+            'virtual_url' => esc_url_raw( $_POST['anchor_event_virtual_url'] ?? '' ),
+            'registration_enabled' => ! empty( $_POST['anchor_event_registration_enabled'] ),
+            'capacity' => (int) ( $_POST['anchor_event_capacity'] ?? 0 ),
+            'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
+            'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
+            'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
+            'registration_type' => sanitize_text_field( $_POST['anchor_event_registration_type'] ?? 'internal' ),
+            'registration_url' => esc_url_raw( $_POST['anchor_event_registration_url'] ?? '' ),
+            'hide_from_archive' => false,
+            'featured' => false,
+            'priority' => 0,
+            'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
+        ];
+        $input['status_mode'] = 'auto';
+        $input['status'] = $this->calculate_status( $input );
+        $timestamps = $this->calculate_timestamps( $input );
+        $input['start_ts'] = $timestamps['start'];
+        $input['end_ts'] = $timestamps['end'];
+
+        foreach ( $input as $key => $value ) {
+            \update_post_meta( $saved_id, $this->meta_key( $key ), $value );
+        }
+
+        $thumbnail_id = (int) ( $_POST['anchor_event_thumbnail_id'] ?? 0 );
+        if ( $thumbnail_id && \get_post_type( $thumbnail_id ) === 'attachment' ) {
+            \set_post_thumbnail( $saved_id, $thumbnail_id );
+        } else {
+            \delete_post_thumbnail( $saved_id );
+        }
+
+        $this->maybe_append_registration_shortcode( $saved_id, $input );
+        $this->clear_caches();
+
+        \wp_safe_redirect( \add_query_arg( 'event_manager_notice', $is_edit ? 'saved' : 'created', $redirect ) );
+        exit;
+    }
+
+    public function handle_event_manager_delete() {
+        $event_id = isset( $_GET['event_id'] ) ? (int) $_GET['event_id'] : 0;
+        $redirect = isset( $_GET['redirect_to'] ) ? esc_url_raw( urldecode( wp_unslash( $_GET['redirect_to'] ) ) ) : \home_url();
+
+        \check_admin_referer( 'anchor_event_manager_delete_' . $event_id );
+
+        if ( ! $event_id || \get_post_type( $event_id ) !== self::CPT ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'error', $redirect ) );
+            exit;
+        }
+        if ( ! \current_user_can( 'delete_post', $event_id ) ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'denied', $redirect ) );
+            exit;
+        }
+
+        \wp_trash_post( $event_id );
+        $this->clear_caches();
+
+        \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'deleted', $redirect ) );
+        exit;
     }
 
     public function render_events_list( $atts, $context ) {
@@ -1694,6 +2163,7 @@ class Module {
         echo '<li><code>[event_registration]</code> ' . \esc_html__( 'Registration form for an event. Attributes: id=POST_ID, slug=event-slug, show_title (yes|no), show_notice (yes|no). Auto-appended to an event\'s content when you enable registration, so it survives page builders like Divi.', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_gallery]</code> ' . \esc_html__( 'Photo gallery for an event. Attributes: id=POST_ID, slug=event-slug, size=thumbnail|medium|large|full, columns=1-6. Defaults to the current event when used on an event page.', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_registrants_list]</code> ' . \esc_html__( 'Admin-only: list every event with a collapsible panel of registrants. Only visible to users with edit_others_posts (admins + editors). Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_manager]</code> ' . \esc_html__( 'Admin-only frontend dashboard: list, accordion registrants, create, edit, and trash events with a native WP media picker for featured image + gallery. Only visible to admins/editors. Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '</ul>';
         echo '<p>' . \esc_html__( 'You can also link to the events archive at /event/ (or your custom slug).', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="options.php">';

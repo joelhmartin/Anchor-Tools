@@ -41,6 +41,7 @@ class Module {
         \add_shortcode( 'events_list', [ $this, 'shortcode_events_list' ] );
         \add_shortcode( 'event_calendar', [ $this, 'shortcode_event_calendar' ] );
         \add_shortcode( 'featured_events', [ $this, 'shortcode_featured_events' ] );
+        \add_shortcode( 'event_registration', [ $this, 'shortcode_event_registration' ] );
 
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 40 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
@@ -830,6 +831,47 @@ class Module {
         return $this->render_calendar_month( $atts );
     }
 
+    public function shortcode_event_registration( $atts ) {
+        $atts = \shortcode_atts( [
+            'id' => 0,
+            'slug' => '',
+            'show_title' => 'no',
+            'show_notice' => 'yes',
+        ], $atts );
+
+        $event_id = (int) $atts['id'];
+        if ( ! $event_id && ! empty( $atts['slug'] ) ) {
+            $post = \get_page_by_path( sanitize_title( $atts['slug'] ), OBJECT, self::CPT );
+            if ( $post ) {
+                $event_id = (int) $post->ID;
+            }
+        }
+        if ( ! $event_id ) {
+            $queried = \get_queried_object();
+            if ( $queried instanceof \WP_Post && $queried->post_type === self::CPT ) {
+                $event_id = (int) $queried->ID;
+            }
+        }
+        if ( ! $event_id ) {
+            return '<div class="anchor-event-registration anchor-event-registration-closed">'
+                . esc_html__( 'No event specified for registration.', 'anchor-schema' )
+                . '</div>';
+        }
+
+        $this->enqueue_frontend_assets();
+
+        $output = '';
+        if ( $atts['show_title'] === 'yes' ) {
+            $output .= '<h2 class="anchor-event-title">' . esc_html( \get_the_title( $event_id ) ) . '</h2>';
+        }
+        if ( $atts['show_notice'] === 'yes' ) {
+            $output .= $this->render_registration_notice();
+        }
+        $output .= $this->render_registration_form( $event_id );
+
+        return $output;
+    }
+
     public function render_events_list( $atts, $context ) {
         $atts = \wp_parse_args( $atts, [
             'limit' => 10,
@@ -1350,6 +1392,7 @@ class Module {
         echo '<li><code>[events_list]</code> ' . \esc_html__( 'List events. Attributes: category, tag, type, status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[featured_events]</code> ' . \esc_html__( 'Show featured events. Attributes: limit, orderby (priority|date), order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_calendar]</code> ' . \esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_registration]</code> ' . \esc_html__( 'Registration form for an event. Attributes: id=POST_ID, slug=event-slug, show_title (yes|no), show_notice (yes|no). When used on a single-event page, id/slug default to the current event.', 'anchor-schema' ) . '</li>';
         echo '</ul>';
         echo '<p>' . \esc_html__( 'You can also link to the events archive at /event/ (or your custom slug).', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="options.php">';

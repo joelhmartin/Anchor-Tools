@@ -23,6 +23,7 @@ class Anchor_Optimize_Module {
         require_once __DIR__ . '/includes/class-optimizer.php';
         require_once __DIR__ . '/includes/class-webp-converter.php';
         require_once __DIR__ . '/includes/class-settings.php';
+        require_once __DIR__ . '/includes/class-image-operations.php';
         require_once __DIR__ . '/includes/class-frontend-rewriter.php';
         require_once __DIR__ . '/includes/class-media-library-ui.php';
         require_once __DIR__ . '/includes/class-bulk-processor.php';
@@ -84,7 +85,7 @@ class Anchor_Optimize_Module {
      * @param array|null $metadata  Optional. If null, fetched via wp_get_attachment_metadata().
      * @return array|false  Stats array on success, false on failure.
      */
-    public static function optimize_attachment( $attachment_id, $metadata = null ) {
+    public static function optimize_attachment( $attachment_id, $metadata = null, $context = [] ) {
         $file = get_attached_file( $attachment_id );
         if ( ! $file || ! file_exists( $file ) ) {
             self::log( "Skipped ID {$attachment_id}: file not found (" . ( $file ?: 'no path' ) . ")" );
@@ -102,13 +103,18 @@ class Anchor_Optimize_Module {
 
         $settings  = Anchor_Optimize_Settings::get_settings();
         $optimizer = new Anchor_Optimize_Optimizer();
+        $baseline_size = max( 0, (int) ( $context['baseline_size'] ?? filesize( $file ) ) );
 
         $upload_dir = dirname( $file );
         $stats      = [
             'original_file'    => $file,
+            'optimized'        => false,
             'compressed'       => false,
             'original_size'    => filesize( $file ),
             'compressed_size'  => 0,
+            'full_size_savings' => 0,
+            'full_size_savings_pct' => 0,
+            'thumbnail_savings' => 0,
             'total_savings'    => 0,
             'webp_files'       => [],
             'avif_files'       => [],
@@ -116,6 +122,12 @@ class Anchor_Optimize_Module {
             'sizes_processed'  => 0,
             'engine'           => $optimizer->get_engine(),
             'timestamp'        => current_time( 'mysql' ),
+            'baseline_size'    => $baseline_size,
+            'source_attachment_id' => (int) ( $context['source_attachment'] ?? $attachment_id ),
+            'operation'        => sanitize_key( $context['operation'] ?? 'optimize' ),
+            'operation_applied' => ! empty( $context['operation_applied'] ),
+            'created_duplicate' => ! empty( $context['created_duplicate'] ),
+            'operation_message' => sanitize_text_field( $context['message'] ?? '' ),
             'errors'           => [],
         ];
 
@@ -131,9 +143,16 @@ class Anchor_Optimize_Module {
         $result        = $optimizer->compress( $file, $compress_args );
 
         if ( $result['success'] ) {
-            $stats['compressed']      = true;
+            $stats['compressed']      = $result['new_size'] < $result['original_size'];
             $stats['compressed_size'] = $result['new_size'];
-            $stats['total_savings']  += $result['original_size'] - $result['new_size'];
+            $stats['full_size_savings'] = max( 0, $baseline_size - $result['new_size'] );
+            $stats['full_size_savings_pct'] = $baseline_size > 0
+                ? round( $stats['full_size_savings'] / $baseline_size * 100, 1 )
+                : 0;
+            $stats['total_savings']  += $stats['full_size_savings'];
+            if ( $stats['full_size_savings'] > 0 ) {
+                $stats['optimized'] = true;
+            }
             self::log( "Compressed full-size: {$result['original_size']} → {$result['new_size']} bytes" );
         } else {
             $stats['errors'][] = 'Compression failed for full-size image.';
@@ -154,7 +173,12 @@ class Anchor_Optimize_Module {
                 // Compress thumbnail.
                 $thumb_result = $optimizer->compress( $thumb_path, $compress_args );
                 if ( $thumb_result['success'] ) {
-                    $stats['total_savings'] += $thumb_result['original_size'] - $thumb_result['new_size'];
+                    $thumb_savings = max( 0, $thumb_result['original_size'] - $thumb_result['new_size'] );
+                    $stats['thumbnail_savings'] += $thumb_savings;
+                    $stats['total_savings'] += $thumb_savings;
+                    if ( $thumb_savings > 0 ) {
+                        $stats['optimized'] = true;
+                    }
                 }
 
                 // Generate WebP/AVIF for thumbnail.
@@ -182,36 +206,7 @@ class Anchor_Optimize_Module {
      * @param int $attachment_id
      */
     public function cleanup_on_delete( $attachment_id ) {
-        $meta = get_post_meta( $attachment_id, self::META_KEY, true );
-
-        // Clean up WebP files.
-        if ( ! empty( $meta['webp_files'] ) && is_array( $meta['webp_files'] ) ) {
-            foreach ( $meta['webp_files'] as $webp_path ) {
-                if ( file_exists( $webp_path ) ) {
-                    @unlink( $webp_path );
-                }
-            }
-        }
-
-        // Clean up AVIF files.
-        if ( ! empty( $meta['avif_files'] ) && is_array( $meta['avif_files'] ) ) {
-            foreach ( $meta['avif_files'] as $avif_path ) {
-                if ( file_exists( $avif_path ) ) {
-                    @unlink( $avif_path );
-                }
-            }
-        }
-
-        // Clean up backup.
-        if ( ! empty( $meta['backup_path'] ) && file_exists( $meta['backup_path'] ) ) {
-            @unlink( $meta['backup_path'] );
-        }
-
-        // Also scan for any WebP/AVIF files for thumbnails we might have missed.
-        $file = get_attached_file( $attachment_id );
-        if ( $file ) {
-            $this->cleanup_sibling_files( $file, $attachment_id );
-        }
+        self::cleanup_generated_assets( $attachment_id, true );
     }
 
     /* ════════════════════════════════════════════════════════
@@ -249,6 +244,7 @@ class Anchor_Optimize_Module {
             );
             if ( $webp['success'] ) {
                 $stats['webp_files'][] = $webp['path'];
+                $stats['optimized'] = true;
             } else {
                 $stats['errors'][] = 'WebP conversion failed: ' . basename( $file_path );
                 self::log( "WebP conversion FAILED for {$file_path}" );
@@ -262,6 +258,7 @@ class Anchor_Optimize_Module {
             );
             if ( $avif['success'] ) {
                 $stats['avif_files'][] = $avif['path'];
+                $stats['optimized'] = true;
             } else {
                 $stats['errors'][] = 'AVIF conversion failed: ' . basename( $file_path );
                 self::log( "AVIF conversion FAILED for {$file_path}" );
@@ -275,7 +272,7 @@ class Anchor_Optimize_Module {
      * @param string $file_path
      * @return string Backup path, or empty string on failure.
      */
-    private static function backup_original_file( $file_path ) {
+    public static function backup_original_file( $file_path ) {
         $uploads   = wp_upload_dir();
         $base_dir  = $uploads['basedir'];
         $relative  = str_replace( $base_dir . '/', '', $file_path );
@@ -304,20 +301,45 @@ class Anchor_Optimize_Module {
      * @param string $file          Full-size file path.
      * @param int    $attachment_id
      */
-    private function cleanup_sibling_files( $file, $attachment_id ) {
+    public static function cleanup_generated_assets( $attachment_id, $remove_backup = false ) {
+        $meta = get_post_meta( $attachment_id, self::META_KEY, true );
+
+        if ( ! empty( $meta['webp_files'] ) && is_array( $meta['webp_files'] ) ) {
+            foreach ( $meta['webp_files'] as $webp_path ) {
+                self::delete_if_exists( $webp_path );
+            }
+        }
+
+        if ( ! empty( $meta['avif_files'] ) && is_array( $meta['avif_files'] ) ) {
+            foreach ( $meta['avif_files'] as $avif_path ) {
+                self::delete_if_exists( $avif_path );
+            }
+        }
+
+        if ( $remove_backup && ! empty( $meta['backup_path'] ) ) {
+            self::delete_if_exists( $meta['backup_path'] );
+        }
+
+        $file = get_attached_file( $attachment_id );
+        if ( $file ) {
+            self::cleanup_sibling_files( $file, $attachment_id );
+        }
+    }
+
+    private static function cleanup_sibling_files( $file, $attachment_id ) {
         $metadata   = wp_get_attachment_metadata( $attachment_id );
         $upload_dir = dirname( $file );
 
         // Full-size siblings.
-        $this->delete_if_exists( $file . '.webp' );
-        $this->delete_if_exists( $file . '.avif' );
+        self::delete_if_exists( $file . '.webp' );
+        self::delete_if_exists( $file . '.avif' );
 
         // Thumbnail siblings.
         if ( ! empty( $metadata['sizes'] ) ) {
             foreach ( $metadata['sizes'] as $size_data ) {
                 $thumb_path = $upload_dir . '/' . $size_data['file'];
-                $this->delete_if_exists( $thumb_path . '.webp' );
-                $this->delete_if_exists( $thumb_path . '.avif' );
+                self::delete_if_exists( $thumb_path . '.webp' );
+                self::delete_if_exists( $thumb_path . '.avif' );
             }
         }
     }
@@ -327,7 +349,7 @@ class Anchor_Optimize_Module {
      *
      * @param string $path
      */
-    private function delete_if_exists( $path ) {
+    private static function delete_if_exists( $path ) {
         if ( file_exists( $path ) ) {
             @unlink( $path );
         }

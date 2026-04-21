@@ -52,3 +52,24 @@
     font-size: 12px;
     margin-top: 4px;
 }
+
+.ao-media-panel {
+    display: grid;
+    gap: 10px;
+}
+
+.ao-action-grid {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    align-items: end;
+}
+
+.ao-action-grid p {
+    margin: 0;
+}
+
+.ao-current-status small {
+    display: inline-block;
+    margin-top: 3px;
+}

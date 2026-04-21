@@ -7,8 +7,9 @@
 if (!defined('ABSPATH')) exit;
 
 class Anchor_Quick_Edit_Module {
-    const META_TITLE = '_yoast_wpseo_title';
-    const META_DESC  = '_yoast_wpseo_metadesc';
+    const META_TITLE    = '_yoast_wpseo_title';
+    const META_DESC     = '_yoast_wpseo_metadesc';
+    const META_NOINDEX  = '_yoast_wpseo_meta-robots-noindex';
 
     const NONCE_ACTION = 'ac_yqep_nonce_action';
     const NONCE_NAME   = 'ac_yqep_nonce';
@@ -43,9 +44,10 @@ class Anchor_Quick_Edit_Module {
     }
 
     public function add_columns($columns) {
-        $columns['ac_yqep_yoast_title'] = 'Yoast SEO Title';
-        $columns['ac_yqep_yoast_desc']  = 'Yoast Meta Description';
-        $columns['ac_yqep_feat']        = 'Featured Image';
+        $columns['ac_yqep_yoast_title']   = 'Yoast SEO Title';
+        $columns['ac_yqep_yoast_desc']    = 'Yoast Meta Description';
+        $columns['ac_yqep_yoast_noindex'] = 'Search Engines';
+        $columns['ac_yqep_feat']          = 'Featured Image';
         return $columns;
     }
 
@@ -58,6 +60,17 @@ class Anchor_Quick_Edit_Module {
         if ($column === 'ac_yqep_yoast_desc') {
             $val = get_post_meta($post_id, self::META_DESC, true);
             echo '<span class="ac-yqep-yoast-desc-val">' . esc_html($val) . '</span>';
+        }
+
+        if ($column === 'ac_yqep_yoast_noindex') {
+            $raw = get_post_meta($post_id, self::META_NOINDEX, true);
+            $label = 'Default';
+            if ((string) $raw === '1') {
+                $label = 'No';
+            } elseif ((string) $raw === '2') {
+                $label = 'Yes';
+            }
+            echo '<span class="ac-yqep-yoast-noindex-val" data-raw="' . esc_attr((string) $raw) . '">' . esc_html($label) . '</span>';
         }
 
         if ($column === 'ac_yqep_feat') {
@@ -94,8 +107,8 @@ class Anchor_Quick_Edit_Module {
         wp_enqueue_style('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css', [], '1.6.2');
         wp_enqueue_script('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js', [], '1.6.2', true);
 
-        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.2');
-        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.2', true);
+        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.3');
+        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.3', true);
 
         wp_localize_script('ac-yqep-admin', 'AC_YQEP', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
@@ -128,6 +141,15 @@ class Anchor_Quick_Edit_Module {
                 <label class="inline-edit-group" style="margin-top:8px;">
                     <span class="title">Meta Description</span>
                     <textarea name="<?php echo esc_attr(self::META_DESC); ?>" rows="3" style="width:100%;"></textarea>
+                </label>
+
+                <label class="inline-edit-group" style="margin-top:8px;">
+                    <span class="title">Allow Search Engines</span>
+                    <select name="<?php echo esc_attr(self::META_NOINDEX); ?>" class="ac-yqep-noindex">
+                        <option value="">Default (site setting)</option>
+                        <option value="2">Yes (index)</option>
+                        <option value="1">No (noindex)</option>
+                    </select>
                 </label>
 
                 <div class="ac-yqep-ai-row" style="margin-top:8px;">
@@ -226,6 +248,14 @@ class Anchor_Quick_Edit_Module {
         }
         if (isset($_POST[self::META_DESC])) {
             update_post_meta($post_id, self::META_DESC, sanitize_textarea_field(wp_unslash($_POST[self::META_DESC])));
+        }
+        if (isset($_POST[self::META_NOINDEX])) {
+            $val = sanitize_text_field(wp_unslash($_POST[self::META_NOINDEX]));
+            if ($val === '1' || $val === '2') {
+                update_post_meta($post_id, self::META_NOINDEX, $val);
+            } else {
+                delete_post_meta($post_id, self::META_NOINDEX);
+            }
         }
     }
 

@@ -218,7 +218,7 @@
 
 .anchor-event-tooltip{
   position:fixed;
-  z-index:99999;
+  z-index:10;
   display:flex;
   opacity:0;
   background:#fff;

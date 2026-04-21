@@ -1,5 +1,20 @@
 /* Anchor Optimize — Bulk Processor Styles */
 
+.ao-bulk-options {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-radius: 4px;
+    padding: 16px 20px;
+    margin: 16px 0;
+    max-width: 900px;
+}
+
+.ao-bulk-option-grid {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
 .ao-progress-bar {
     background: #e5e5e5;
     border-radius: 4px;

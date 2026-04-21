@@ -55,7 +55,7 @@ class Anchor_Optimize_Media_Library_UI {
 
         $meta = get_post_meta( $post_id, Anchor_Optimize_Module::META_KEY, true );
 
-        if ( empty( $meta ) || empty( $meta['compressed'] ) ) {
+        if ( empty( $meta ) || ( empty( $meta['optimized'] ) && empty( $meta['compressed'] ) ) ) {
             printf(
                 '<span style="color:#999;">%s</span>',
                 esc_html__( 'Not optimized', 'anchor-schema' )
@@ -63,15 +63,17 @@ class Anchor_Optimize_Media_Library_UI {
             return;
         }
 
-        // Savings percentage.
-        $original = $meta['original_size'] ?? 0;
-        $savings  = $meta['total_savings'] ?? 0;
-        $pct      = $original > 0 ? round( $savings / $original * 100, 1 ) : 0;
+        $full_size_savings = (int) ( $meta['full_size_savings'] ?? 0 );
+        $pct = (float) ( $meta['full_size_savings_pct'] ?? 0 );
 
-        printf(
-            '<span style="color:#46b450; font-weight:600;">-%s%%</span>',
-            esc_html( $pct )
-        );
+        if ( $full_size_savings > 0 ) {
+            printf(
+                '<span style="color:#46b450; font-weight:600;">-%s%%</span>',
+                esc_html( $pct )
+            );
+        } else {
+            echo '<span style="color:#646970;">' . esc_html__( 'No full-size change', 'anchor-schema' ) . '</span>';
+        }
 
         // Format tags.
         $tags = [];
@@ -97,62 +99,58 @@ class Anchor_Optimize_Media_Library_UI {
         }
 
         $meta = get_post_meta( $post->ID, Anchor_Optimize_Module::META_KEY, true );
+        $ajax_url = admin_url( 'admin-ajax.php' );
+        $nonce    = wp_create_nonce( 'anchor_optimize_nonce' );
 
-        if ( ! empty( $meta ) && ! empty( $meta['compressed'] ) ) {
-            $original = $meta['original_size'] ?? 0;
-            $savings  = $meta['total_savings'] ?? 0;
-            $pct      = $original > 0 ? round( $savings / $original * 100, 1 ) : 0;
+        $html  = '<div class="ao-media-panel">';
+        $html .= '<div class="ao-current-status">' . $this->render_status_html( $meta ) . '</div>';
+        $html .= '<div class="ao-action-grid">';
+        $html .= '<p><label><strong>' . esc_html__( 'Action', 'anchor-schema' ) . '</strong><br>';
+        $html .= '<select class="ao-operation">';
+        $html .= '<option value="optimize">' . esc_html__( 'Optimize only', 'anchor-schema' ) . '</option>';
+        $html .= '<option value="resize">' . esc_html__( 'Resize then optimize', 'anchor-schema' ) . '</option>';
+        $html .= '<option value="crop">' . esc_html__( 'Crop then optimize', 'anchor-schema' ) . '</option>';
+        $html .= '</select></label></p>';
 
-            $tags = [];
-            if ( ! empty( $meta['webp_files'] ) ) {
-                $tags[] = 'WebP';
-            }
-            if ( ! empty( $meta['avif_files'] ) ) {
-                $tags[] = 'AVIF';
-            }
+        $html .= '<p><label><strong>' . esc_html__( 'Save Mode', 'anchor-schema' ) . '</strong><br>';
+        $html .= '<select class="ao-save-mode">';
+        $html .= '<option value="inplace">' . esc_html__( 'Modify in place', 'anchor-schema' ) . '</option>';
+        $html .= '<option value="duplicate">' . esc_html__( 'Create duplicate', 'anchor-schema' ) . '</option>';
+        $html .= '</select></label></p>';
 
-            $html  = '<span style="color:#46b450; font-weight:600;">';
-            $html .= sprintf( __( 'Saved %s%%', 'anchor-schema' ), $pct );
-            $html .= '</span>';
-            $html .= ' <span style="color:#666;">(' . size_format( $savings ) . ')</span>';
+        $html .= '<div class="ao-resize-controls" style="display:none;">';
+        $html .= '<p><label><strong>' . esc_html__( 'Resize By', 'anchor-schema' ) . '</strong><br>';
+        $html .= '<select class="ao-resize-mode">';
+        $html .= '<option value="width">' . esc_html__( 'Specific width', 'anchor-schema' ) . '</option>';
+        $html .= '<option value="height">' . esc_html__( 'Specific height', 'anchor-schema' ) . '</option>';
+        $html .= '<option value="percentage">' . esc_html__( 'Percentage', 'anchor-schema' ) . '</option>';
+        $html .= '</select></label></p>';
+        $html .= '<p><label><strong>' . esc_html__( 'Resize Value', 'anchor-schema' ) . '</strong><br>';
+        $html .= '<input type="number" class="small-text ao-resize-value" min="1" value="1600" /></label></p>';
+        $html .= '</div>';
 
-            if ( $tags ) {
-                $html .= '<br><small>' . esc_html( implode( ' + ', $tags ) ) . ' generated</small>';
-            }
-
-            $html .= '<br><small>' . esc_html(
-                sprintf( __( 'Engine: %s', 'anchor-schema' ), strtoupper( $meta['engine'] ?? 'unknown' ) )
-            ) . '</small>';
-        } else {
-            $ajax_url = admin_url( 'admin-ajax.php' );
-            $nonce    = wp_create_nonce( 'anchor_optimize_nonce' );
-
-            $html  = '<span style="color:#999;">' . esc_html__( 'Not optimized', 'anchor-schema' ) . '</span>';
-            $html .= sprintf(
-                ' <button type="button" class="button button-small ao-optimize-btn"'
-                . ' data-id="%d" data-ajax="%s" data-nonce="%s"'
-                . ' onclick="var b=this;b.disabled=true;b.textContent=\'Optimizing…\';'
-                . 'jQuery.post(b.dataset.ajax,{action:\'anchor_optimize_single\','
-                . 'nonce:b.dataset.nonce,attachment_id:b.dataset.id},function(r){'
-                . 'if(r.success){var d=r.data,t=[];if(d.has_webp)t.push(\'WebP\');'
-                . 'if(d.has_avif)t.push(\'AVIF\');var h=\'<span style=color:#46b450;font-weight:600>Saved \''
-                . '+d.savings_pct+\'%%</span> <span style=color:#666>(\'+d.savings_size+\')</span>\';'
-                . 'if(t.length)h+=\'<br><small>\'+t.join(\' + \')+\' generated</small>\';'
-                . 'if(d.errors&&d.errors.length)h+=\'<br><small style=color:#dc3232>\'+d.errors.join(\'; \')+\'</small>\';'
-                . 'b.parentNode.innerHTML=h;}'
-                . 'else{b.disabled=false;b.textContent=\'Optimize Now\';'
-                . 'b.nextElementSibling.style.color=\'#dc3232\';'
-                . 'b.nextElementSibling.textContent=r.data.message||\'Error\';}}'
-                . ').fail(function(){b.disabled=false;b.textContent=\'Optimize Now\';'
-                . 'b.nextElementSibling.textContent=\'Request failed\';});"'
-                . '>%s</button>',
-                $post->ID,
-                esc_attr( $ajax_url ),
-                esc_attr( $nonce ),
-                esc_html__( 'Optimize Now', 'anchor-schema' )
-            );
-            $html .= '<span class="ao-optimize-status" style="margin-left:8px;"></span>';
+        $html .= '<div class="ao-crop-controls" style="display:none;">';
+        $html .= '<p><label><strong>' . esc_html__( 'Crop Width', 'anchor-schema' ) . '</strong><br>';
+        $html .= '<input type="number" class="small-text ao-crop-width" min="1" value="1200" /></label></p>';
+        $html .= '<p><label><strong>' . esc_html__( 'Crop Height', 'anchor-schema' ) . '</strong><br>';
+        $html .= '<input type="number" class="small-text ao-crop-height" min="1" value="1200" /></label></p>';
+        $html .= '<p><label><strong>' . esc_html__( 'Crop Position', 'anchor-schema' ) . '</strong><br>';
+        $html .= '<select class="ao-crop-position">';
+        foreach ( $this->get_crop_positions() as $value => $label ) {
+            $html .= '<option value="' . esc_attr( $value ) . '">' . esc_html( $label ) . '</option>';
         }
+        $html .= '</select></label></p>';
+        $html .= '</div>';
+        $html .= '</div>';
+
+        $html .= sprintf(
+            '<p><button type="button" class="button button-small ao-optimize-btn" data-id="%1$d" data-ajax="%2$s" data-nonce="%3$s">%4$s</button> <span class="ao-optimize-status" style="margin-left:8px;"></span></p>',
+            $post->ID,
+            esc_attr( $ajax_url ),
+            esc_attr( $nonce ),
+            esc_html__( 'Run Image Action', 'anchor-schema' )
+        );
+        $html .= '</div>';
 
         $form_fields['anchor_optimize'] = [
             'label' => __( 'Optimization', 'anchor-schema' ),
@@ -184,29 +182,46 @@ class Anchor_Optimize_Media_Library_UI {
             wp_send_json_error( [ 'message' => __( 'Not an image.', 'anchor-schema' ) ] );
         }
 
+        $operation = Anchor_Optimize_Image_Operations::process_attachment(
+            $attachment_id,
+            [
+                'operation'     => $_POST['operation'] ?? 'optimize',
+                'save_mode'     => $_POST['save_mode'] ?? 'inplace',
+                'resize_mode'   => $_POST['resize_mode'] ?? 'width',
+                'resize_value'  => $_POST['resize_value'] ?? 0,
+                'crop_width'    => $_POST['crop_width'] ?? 0,
+                'crop_height'   => $_POST['crop_height'] ?? 0,
+                'crop_position' => $_POST['crop_position'] ?? 'center',
+            ]
+        );
+
+        if ( is_wp_error( $operation ) ) {
+            wp_send_json_error( [ 'message' => $operation->get_error_message() ] );
+        }
+
         // Run the optimization pipeline (static method — no module re-instantiation).
-        $stats = Anchor_Optimize_Module::optimize_attachment( $attachment_id );
+        $stats = Anchor_Optimize_Module::optimize_attachment( $operation['attachment_id'], null, $operation );
 
         if ( false === $stats ) {
             wp_send_json_error( [ 'message' => __( 'Optimization failed — file not found or not an image.', 'anchor-schema' ) ] );
         }
 
-        $original = $stats['original_size'] ?? 0;
-        $savings  = $stats['total_savings'] ?? 0;
-        $pct      = $original > 0 ? round( $savings / $original * 100, 1 ) : 0;
-
         $settings = Anchor_Optimize_Settings::get_settings();
 
         wp_send_json_success( [
-            'savings_pct'    => $pct,
-            'savings_size'   => size_format( $savings ),
+            'attachment_id'  => (int) $operation['attachment_id'],
+            'savings_pct'    => (float) ( $stats['full_size_savings_pct'] ?? 0 ),
+            'savings_size'   => size_format( (int) ( $stats['full_size_savings'] ?? 0 ) ),
             'has_webp'       => ! empty( $stats['webp_files'] ),
             'has_avif'       => ! empty( $stats['avif_files'] ),
-            'compressed'     => ! empty( $stats['compressed'] ),
+            'compressed'     => ! empty( $stats['optimized'] ),
+            'created_duplicate' => ! empty( $operation['created_duplicate'] ),
+            'operation_message' => $operation['message'] ?? '',
             'webp_enabled'   => ! empty( $settings['webp_enabled'] ),
             'avif_enabled'   => ! empty( $settings['avif_enabled'] ),
             'errors'         => $stats['errors'] ?? [],
             'engine'         => $stats['engine'] ?? 'unknown',
+            'status_html'    => $this->render_status_html( $stats ),
         ] );
     }
 
@@ -250,5 +265,78 @@ class Anchor_Optimize_Media_Library_UI {
             return;
         }
         wp_add_inline_style( 'wp-admin', '.column-anchor_optimize { width: 120px; }' );
+    }
+
+    /**
+     * Render the current optimization summary.
+     *
+     * @param array $meta
+     * @return string
+     */
+    private function render_status_html( $meta ) {
+        if ( empty( $meta ) ) {
+            return '<span style="color:#999;">' . esc_html__( 'Not optimized yet.', 'anchor-schema' ) . '</span>';
+        }
+
+        $html = '';
+        $full_size_savings = (int) ( $meta['full_size_savings'] ?? 0 );
+        $pct = (float) ( $meta['full_size_savings_pct'] ?? 0 );
+        $tags = [];
+
+        if ( ! empty( $meta['webp_files'] ) ) {
+            $tags[] = 'WebP';
+        }
+        if ( ! empty( $meta['avif_files'] ) ) {
+            $tags[] = 'AVIF';
+        }
+
+        if ( $full_size_savings > 0 ) {
+            $html .= '<span style="color:#46b450; font-weight:600;">';
+            $html .= sprintf( esc_html__( 'Saved %s%%', 'anchor-schema' ), esc_html( $pct ) );
+            $html .= '</span> <span style="color:#666;">(' . esc_html( size_format( $full_size_savings ) ) . ')</span>';
+        } else {
+            $html .= '<span style="color:#646970;">' . esc_html__( 'No full-size reduction on the last run.', 'anchor-schema' ) . '</span>';
+        }
+
+        if ( $tags ) {
+            $html .= '<br><small>' . esc_html( implode( ' + ', $tags ) ) . ' ' . esc_html__( 'generated', 'anchor-schema' ) . '</small>';
+        }
+
+        if ( ! empty( $meta['operation_message'] ) ) {
+            $html .= '<br><small>' . esc_html( $meta['operation_message'] ) . '</small>';
+        }
+
+        if ( ! empty( $meta['created_duplicate'] ) ) {
+            $html .= '<br><small>' . esc_html__( 'Last run created a duplicate attachment.', 'anchor-schema' ) . '</small>';
+        }
+
+        if ( ! empty( $meta['errors'] ) ) {
+            $html .= '<br><small style="color:#dc3232;">' . esc_html( implode( '; ', (array) $meta['errors'] ) ) . '</small>';
+        }
+
+        $html .= '<br><small>' . esc_html(
+            sprintf( __( 'Engine: %s', 'anchor-schema' ), strtoupper( $meta['engine'] ?? 'unknown' ) )
+        ) . '</small>';
+
+        return $html;
+    }
+
+    /**
+     * Get crop position labels.
+     *
+     * @return array
+     */
+    private function get_crop_positions() {
+        return [
+            'center'       => __( 'Center', 'anchor-schema' ),
+            'top'          => __( 'Top', 'anchor-schema' ),
+            'bottom'       => __( 'Bottom', 'anchor-schema' ),
+            'left'         => __( 'Left', 'anchor-schema' ),
+            'right'        => __( 'Right', 'anchor-schema' ),
+            'top-left'     => __( 'Top Left', 'anchor-schema' ),
+            'top-right'    => __( 'Top Right', 'anchor-schema' ),
+            'bottom-left'  => __( 'Bottom Left', 'anchor-schema' ),
+            'bottom-right' => __( 'Bottom Right', 'anchor-schema' ),
+        ];
     }
 }

@@ -80,9 +80,17 @@ class Anchor_Optimize_Optimizer {
 
         $original_size = filesize( $file_path );
         $result['original_size'] = $original_size;
+        $temp_backup = wp_tempnam( wp_basename( $file_path ) );
+
+        if ( ! $temp_backup || ! @copy( $file_path, $temp_backup ) ) {
+            $temp_backup = '';
+        }
 
         $mime = $this->get_mime_type( $file_path );
         if ( ! $mime ) {
+            if ( $temp_backup ) {
+                @unlink( $temp_backup );
+            }
             return $result;
         }
 
@@ -90,6 +98,9 @@ class Anchor_Optimize_Optimizer {
         if ( 'image/gif' === $mime ) {
             $result['success']  = true;
             $result['new_size'] = $original_size;
+            if ( $temp_backup ) {
+                @unlink( $temp_backup );
+            }
             return $result;
         }
 
@@ -106,6 +117,9 @@ class Anchor_Optimize_Optimizer {
         }
 
         if ( ! $compressed ) {
+            if ( $temp_backup ) {
+                @unlink( $temp_backup );
+            }
             return $result;
         }
 
@@ -115,18 +129,27 @@ class Anchor_Optimize_Optimizer {
 
         // Never make files larger.
         if ( $new_size >= $original_size ) {
-            // The file was already overwritten — but we don't have the original bytes
-            // anymore at this point. The backup system (called before compress) handles
-            // restoring if needed. We still report success with 0 savings.
+            if ( $temp_backup && file_exists( $temp_backup ) ) {
+                @copy( $temp_backup, $file_path );
+                clearstatcache( true, $file_path );
+                $new_size = filesize( $file_path );
+            }
             $result['success']  = true;
             $result['new_size'] = $new_size;
             $result['savings']  = 0.0;
+            if ( $temp_backup ) {
+                @unlink( $temp_backup );
+            }
             return $result;
         }
 
         $result['success']  = true;
         $result['new_size'] = $new_size;
         $result['savings']  = round( ( 1 - $new_size / $original_size ) * 100, 1 );
+
+        if ( $temp_backup ) {
+            @unlink( $temp_backup );
+        }
 
         return $result;
     }

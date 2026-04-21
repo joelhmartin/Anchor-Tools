@@ -6,6 +6,14 @@
     var processed      = 0;
     var totalSaved     = 0;
     var stopped        = false;
+    var selectedIds    = (AO_Bulk.selectedIds || []).map(function(id) { return parseInt(id, 10); }).filter(Boolean);
+
+    function toggleResizeControls() {
+        $('.ao-bulk-resize-controls').toggle($('#ao-bulk-operation').val() === 'resize');
+    }
+
+    $('#ao-bulk-operation').on('change', toggleResizeControls);
+    toggleResizeControls();
 
     // Scan button.
     $('#ao-bulk-scan').on('click', function() {
@@ -18,9 +26,10 @@
 
         $.post(AO_Bulk.ajaxUrl, {
             action: 'anchor_optimize_bulk_scan',
-            nonce:  AO_Bulk.nonce
+            nonce:  AO_Bulk.nonce,
+            ids:    selectedIds
         }, function(response) {
-            $btn.prop('disabled', false).text('Scan for Unoptimized Images');
+            $btn.prop('disabled', false).text(selectedIds.length ? 'Load Selected Images' : 'Scan for Unoptimized Images');
 
             if (!response.success) {
                 $('#ao-bulk-summary').html('<p style="color:#dc3232;">' + (response.data.message || AO_Bulk.i18n.error) + '</p>');
@@ -35,13 +44,28 @@
             );
 
             if (d.unoptimized === 0) {
+                if (d.selected_mode && d.ready > 0) {
+                    unoptimizedIds = d.processable_ids || [];
+                    totalToProcess = d.ready;
+                    processed      = 0;
+                    totalSaved     = 0;
+                    stopped        = false;
+
+                    $('#ao-bulk-progress-wrap').show();
+                    $('#ao-bulk-start').show();
+                    $('#ao-bulk-stop').hide();
+                    $('.ao-progress-fill').css('width', '0%');
+                    $('#ao-bulk-progress-text').text(d.ready + ' ' + AO_Bulk.i18n.selectedReady);
+                    return;
+                }
+
                 $('#ao-bulk-progress-wrap').show();
                 $('#ao-bulk-progress-text').text(AO_Bulk.i18n.noImages);
                 return;
             }
 
-            unoptimizedIds = d.unoptimized_ids;
-            totalToProcess = d.unoptimized;
+            unoptimizedIds = d.processable_ids || d.unoptimized_ids;
+            totalToProcess = d.ready || d.unoptimized;
             processed      = 0;
             totalSaved     = 0;
             stopped        = false;
@@ -50,9 +74,13 @@
             $('#ao-bulk-start').show();
             $('#ao-bulk-stop').hide();
             $('.ao-progress-fill').css('width', '0%');
-            $('#ao-bulk-progress-text').text(d.unoptimized + ' images ready to optimize.');
+            if (selectedIds.length) {
+                $('#ao-bulk-progress-text').text((d.ready || d.unoptimized) + ' ' + AO_Bulk.i18n.selectedReady);
+            } else {
+                $('#ao-bulk-progress-text').text(d.unoptimized + ' images ready to optimize.');
+            }
         }).fail(function() {
-            $btn.prop('disabled', false).text('Scan for Unoptimized Images');
+            $btn.prop('disabled', false).text(selectedIds.length ? 'Load Selected Images' : 'Scan for Unoptimized Images');
             $('#ao-bulk-summary').html('<p style="color:#dc3232;">' + AO_Bulk.i18n.error + '</p>');
         });
     });
@@ -87,7 +115,10 @@
         $.post(AO_Bulk.ajaxUrl, {
             action: 'anchor_optimize_bulk_process',
             nonce:  AO_Bulk.nonce,
-            ids:    batch
+            ids:    batch,
+            operation: $('#ao-bulk-operation').val(),
+            resize_mode: $('#ao-bulk-resize-mode').val(),
+            resize_value: $('#ao-bulk-resize-value').val()
         }, function(response) {
             if (!response.success) {
                 $('#ao-bulk-progress-text').text(response.data.message || AO_Bulk.i18n.error);
@@ -103,6 +134,7 @@
                 var logText;
                 if (r.success) {
                     logText = r.title + ' — saved ' + r.savings_pct + '% (' + r.savings_size + ')';
+                    if (r.operation_message) logText += ' · ' + r.operation_message;
                     var tags = [];
                     if (r.has_webp) tags.push('WebP');
                     if (r.has_avif) tags.push('AVIF');

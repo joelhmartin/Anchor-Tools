@@ -58,6 +58,7 @@
     const seoTitle = ($row.find('.ac-yqep-yoast-title-val').text() || '').trim();
     const metaDesc = ($row.find('.ac-yqep-yoast-desc-val').text() || '').trim();
     const noindex = ($row.find('.ac-yqep-yoast-noindex-val').attr('data-raw') || '').trim();
+    const nofollow = ($row.find('.ac-yqep-yoast-nofollow-val').attr('data-raw') || '').trim();
     const thumbId = ($row.find('.ac-yqep-thumb-id').text() || '').trim();
     const $thumbPreview = $row.find('.ac-yqep-thumb-preview img');
     const thumbUrl = $thumbPreview.length ? $thumbPreview.attr('src') : '';
@@ -66,6 +67,7 @@
     $editRow.find('input[name="_yoast_wpseo_title"]').val(seoTitle);
     $editRow.find('textarea[name="_yoast_wpseo_metadesc"]').val(metaDesc);
     $editRow.find('select[name="_yoast_wpseo_meta-robots-noindex"]').val(noindex === '1' || noindex === '2' ? noindex : '');
+    $editRow.find('select[name="_yoast_wpseo_meta-robots-nofollow"]').val(nofollow === '0' || nofollow === '1' ? nofollow : '');
     $editRow.find('.ac-yqep-post-id').val(postId);
 
     // Update featured image UI

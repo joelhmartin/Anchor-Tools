@@ -17,7 +17,7 @@ class Anchor_Optimize_Image_Operations {
      */
     public static function sanitize_options( $input ) {
         $operation = sanitize_key( $input['operation'] ?? 'optimize' );
-        if ( ! in_array( $operation, [ 'optimize', 'resize', 'crop' ], true ) ) {
+        if ( ! in_array( $operation, [ 'optimize', 'resize', 'crop', 'replace' ], true ) ) {
             $operation = 'optimize';
         }
 
@@ -66,6 +66,7 @@ class Anchor_Optimize_Image_Operations {
      * @return array|\WP_Error
      */
     public static function process_attachment( $attachment_id, $options ) {
+        $replacement_upload = $options['replacement_upload'] ?? null;
         $options = self::sanitize_options( $options );
 
         $result = [
@@ -98,6 +99,18 @@ class Anchor_Optimize_Image_Operations {
         }
 
         $result['baseline_size'] = (int) filesize( $file );
+
+        if ( 'replace' === $options['operation'] ) {
+            $replaced = self::replace_attachment_file( $attachment_id, $file, $replacement_upload );
+            if ( is_wp_error( $replaced ) ) {
+                return $replaced;
+            }
+
+            $result['operation_applied'] = true;
+            $result['file'] = $file;
+            $result['message'] = __( 'Replaced image in place and preserved the existing URL.', 'anchor-schema' );
+            return $result;
+        }
 
         require_once ABSPATH . 'wp-admin/includes/image.php';
 
@@ -194,6 +207,88 @@ class Anchor_Optimize_Image_Operations {
 
         $result['operation_applied'] = true;
         return $result;
+    }
+
+    /**
+     * Replace the current attachment file with a newly uploaded source image.
+     * The attachment keeps the same file path and URL.
+     *
+     * @param int         $attachment_id
+     * @param string      $target_file
+     * @param array|null  $upload
+     * @return true|\WP_Error
+     */
+    private static function replace_attachment_file( $attachment_id, $target_file, $upload ) {
+        if ( empty( $upload ) || ! is_array( $upload ) ) {
+            return new WP_Error( 'missing_upload', __( 'Choose a replacement image to upload.', 'anchor-schema' ) );
+        }
+
+        $error_code = (int) ( $upload['error'] ?? UPLOAD_ERR_NO_FILE );
+        if ( UPLOAD_ERR_OK !== $error_code ) {
+            return new WP_Error( 'upload_error', self::upload_error_message( $error_code ) );
+        }
+
+        $tmp_name = $upload['tmp_name'] ?? '';
+        if ( ! $tmp_name || ! file_exists( $tmp_name ) ) {
+            return new WP_Error( 'missing_tmp', __( 'The uploaded replacement file was not found.', 'anchor-schema' ) );
+        }
+
+        $current_mime = get_post_mime_type( $attachment_id );
+        if ( ! $current_mime || 0 !== strpos( $current_mime, 'image/' ) ) {
+            return new WP_Error( 'invalid_target', __( 'The current attachment is not a supported image.', 'anchor-schema' ) );
+        }
+
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+
+        $editor = wp_get_image_editor( $tmp_name );
+        if ( is_wp_error( $editor ) ) {
+            return new WP_Error(
+                'invalid_upload_image',
+                sprintf(
+                    __( 'The replacement image could not be processed: %s', 'anchor-schema' ),
+                    $editor->get_error_message()
+                )
+            );
+        }
+
+        $supported = wp_get_image_editor_output_format( $tmp_name, $current_mime );
+        if ( empty( $supported ) || empty( $supported['mime-type'] ) ) {
+            return new WP_Error(
+                'unsupported_conversion',
+                __( 'The uploaded image could not be converted into the current attachment format while preserving the URL.', 'anchor-schema' )
+            );
+        }
+
+        $settings = Anchor_Optimize_Settings::get_settings();
+        if ( ! empty( $settings['backup_originals'] ) ) {
+            Anchor_Optimize_Module::backup_original_file( $target_file );
+        }
+
+        Anchor_Optimize_Module::cleanup_generated_assets( $attachment_id, false );
+
+        $saved = $editor->save( $target_file, $supported['mime-type'] );
+        if ( is_wp_error( $saved ) ) {
+            return new WP_Error(
+                'replace_failed',
+                sprintf(
+                    __( 'The replacement image could not be saved over the existing file: %s', 'anchor-schema' ),
+                    $saved->get_error_message()
+                )
+            );
+        }
+
+        update_attached_file( $attachment_id, $target_file );
+        wp_update_post( [
+            'ID' => $attachment_id,
+            'post_mime_type' => $saved['mime-type'] ?? $current_mime,
+        ] );
+
+        $meta = wp_generate_attachment_metadata( $attachment_id, $target_file );
+        if ( ! is_wp_error( $meta ) && is_array( $meta ) ) {
+            wp_update_attachment_metadata( $attachment_id, $meta );
+        }
+
+        return true;
     }
 
     /**
@@ -377,5 +472,31 @@ class Anchor_Optimize_Image_Operations {
             'attachment_id' => (int) $new_attachment_id,
             'file'          => $path,
         ];
+    }
+
+    /**
+     * Convert upload error codes into readable messages.
+     *
+     * @param int $code
+     * @return string
+     */
+    private static function upload_error_message( $code ) {
+        switch ( $code ) {
+            case UPLOAD_ERR_INI_SIZE:
+            case UPLOAD_ERR_FORM_SIZE:
+                return __( 'The uploaded replacement image is too large.', 'anchor-schema' );
+            case UPLOAD_ERR_PARTIAL:
+                return __( 'The replacement image upload was incomplete.', 'anchor-schema' );
+            case UPLOAD_ERR_NO_FILE:
+                return __( 'Choose a replacement image to upload.', 'anchor-schema' );
+            case UPLOAD_ERR_NO_TMP_DIR:
+                return __( 'The server is missing a temporary upload directory.', 'anchor-schema' );
+            case UPLOAD_ERR_CANT_WRITE:
+                return __( 'The server could not write the uploaded replacement image.', 'anchor-schema' );
+            case UPLOAD_ERR_EXTENSION:
+                return __( 'A server extension stopped the replacement image upload.', 'anchor-schema' );
+            default:
+                return __( 'The replacement image upload failed.', 'anchor-schema' );
+        }
     }
 }

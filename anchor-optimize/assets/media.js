@@ -4,8 +4,9 @@
     function toggleOperationControls($panel) {
         var operation = $panel.find('.ao-operation').val();
         $panel.find('.ao-resize-controls').toggle(operation === 'resize');
+        $panel.find('.ao-replace-controls').toggle(operation === 'replace');
         $panel.find('.ao-crop-controls').toggle(operation === 'crop');
-        $panel.find('.ao-save-mode').closest('p').toggle(operation !== 'optimize');
+        $panel.find('.ao-save-mode').closest('p').toggle(operation === 'resize' || operation === 'crop');
     }
 
     $(document).on('change', '.ao-operation', function() {
@@ -35,23 +36,37 @@
         var id        = $btn.data('id');
         var operation = $panel.find('.ao-operation').val();
 
+        if (operation === 'replace' && !$panel.find('.ao-replacement-file')[0].files.length) {
+            $status.css('color', '#dc3232').text('Choose a replacement image first.');
+            return;
+        }
+
         $btn.prop('disabled', true).text('Working…');
         $status.text('');
 
-        var payload = {
-            action:        'anchor_optimize_single',
-            nonce:         AO_Media.nonce,
-            attachment_id: id,
-            operation:     operation,
-            save_mode:     $panel.find('.ao-save-mode').val(),
-            resize_mode:   $panel.find('.ao-resize-mode').val(),
-            resize_value:  $panel.find('.ao-resize-value').val(),
-            crop_width:    $panel.find('.ao-crop-width').val(),
-            crop_height:   $panel.find('.ao-crop-height').val(),
-            crop_position: $panel.find('.ao-crop-position').val()
-        };
+        var payload = new FormData();
+        payload.append('action', 'anchor_optimize_single');
+        payload.append('nonce', AO_Media.nonce);
+        payload.append('attachment_id', id);
+        payload.append('operation', operation);
+        payload.append('save_mode', $panel.find('.ao-save-mode').val());
+        payload.append('resize_mode', $panel.find('.ao-resize-mode').val());
+        payload.append('resize_value', $panel.find('.ao-resize-value').val());
+        payload.append('crop_width', $panel.find('.ao-crop-width').val());
+        payload.append('crop_height', $panel.find('.ao-crop-height').val());
+        payload.append('crop_position', $panel.find('.ao-crop-position').val());
 
-        $.post(AO_Media.ajaxUrl, payload, function(response) {
+        if (operation === 'replace') {
+            payload.append('replacement_file', $panel.find('.ao-replacement-file')[0].files[0]);
+        }
+
+        $.ajax({
+            url: AO_Media.ajaxUrl,
+            type: 'POST',
+            data: payload,
+            processData: false,
+            contentType: false
+        }).done(function(response) {
             if (response.success) {
                 var d = response.data || {};
                 if (d.status_html) {

@@ -10,6 +10,7 @@ class Anchor_Quick_Edit_Module {
     const META_TITLE    = '_yoast_wpseo_title';
     const META_DESC     = '_yoast_wpseo_metadesc';
     const META_NOINDEX  = '_yoast_wpseo_meta-robots-noindex';
+    const META_NOFOLLOW = '_yoast_wpseo_meta-robots-nofollow';
 
     const NONCE_ACTION = 'ac_yqep_nonce_action';
     const NONCE_NAME   = 'ac_yqep_nonce';
@@ -44,10 +45,11 @@ class Anchor_Quick_Edit_Module {
     }
 
     public function add_columns($columns) {
-        $columns['ac_yqep_yoast_title']   = 'Yoast SEO Title';
-        $columns['ac_yqep_yoast_desc']    = 'Yoast Meta Description';
-        $columns['ac_yqep_yoast_noindex'] = 'Search Engines';
-        $columns['ac_yqep_feat']          = 'Featured Image';
+        $columns['ac_yqep_yoast_title']    = 'Yoast SEO Title';
+        $columns['ac_yqep_yoast_desc']     = 'Yoast Meta Description';
+        $columns['ac_yqep_yoast_noindex']  = 'Index';
+        $columns['ac_yqep_yoast_nofollow'] = 'Follow Links';
+        $columns['ac_yqep_feat']           = 'Featured Image';
         return $columns;
     }
 
@@ -71,6 +73,17 @@ class Anchor_Quick_Edit_Module {
                 $label = 'Yes';
             }
             echo '<span class="ac-yqep-yoast-noindex-val" data-raw="' . esc_attr((string) $raw) . '">' . esc_html($label) . '</span>';
+        }
+
+        if ($column === 'ac_yqep_yoast_nofollow') {
+            $raw = get_post_meta($post_id, self::META_NOFOLLOW, true);
+            $label = 'Default';
+            if ((string) $raw === '1') {
+                $label = 'No';
+            } elseif ((string) $raw === '0') {
+                $label = 'Yes';
+            }
+            echo '<span class="ac-yqep-yoast-nofollow-val" data-raw="' . esc_attr((string) $raw) . '">' . esc_html($label) . '</span>';
         }
 
         if ($column === 'ac_yqep_feat') {
@@ -107,8 +120,8 @@ class Anchor_Quick_Edit_Module {
         wp_enqueue_style('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css', [], '1.6.2');
         wp_enqueue_script('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js', [], '1.6.2', true);
 
-        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.3');
-        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.3', true);
+        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.4');
+        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.4', true);
 
         wp_localize_script('ac-yqep-admin', 'AC_YQEP', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
@@ -144,11 +157,20 @@ class Anchor_Quick_Edit_Module {
                 </label>
 
                 <label class="inline-edit-group" style="margin-top:8px;">
-                    <span class="title">Allow Search Engines</span>
+                    <span class="title">Allow search engines to show this content in search results?</span>
                     <select name="<?php echo esc_attr(self::META_NOINDEX); ?>" class="ac-yqep-noindex">
                         <option value="">Default (site setting)</option>
-                        <option value="2">Yes (index)</option>
-                        <option value="1">No (noindex)</option>
+                        <option value="2">Yes</option>
+                        <option value="1">No</option>
+                    </select>
+                </label>
+
+                <label class="inline-edit-group" style="margin-top:8px;">
+                    <span class="title">Should search engines follow links on this content?</span>
+                    <select name="<?php echo esc_attr(self::META_NOFOLLOW); ?>" class="ac-yqep-nofollow">
+                        <option value="">Default (follow)</option>
+                        <option value="0">Yes</option>
+                        <option value="1">No</option>
                     </select>
                 </label>
 
@@ -255,6 +277,14 @@ class Anchor_Quick_Edit_Module {
                 update_post_meta($post_id, self::META_NOINDEX, $val);
             } else {
                 delete_post_meta($post_id, self::META_NOINDEX);
+            }
+        }
+        if (isset($_POST[self::META_NOFOLLOW])) {
+            $val = sanitize_text_field(wp_unslash($_POST[self::META_NOFOLLOW]));
+            if ($val === '0' || $val === '1') {
+                update_post_meta($post_id, self::META_NOFOLLOW, $val);
+            } else {
+                delete_post_meta($post_id, self::META_NOFOLLOW);
             }
         }
     }

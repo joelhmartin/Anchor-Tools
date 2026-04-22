@@ -73,3 +73,13 @@
     display: inline-block;
     margin-top: 3px;
 }
+
+.ao-replace-controls input[type="file"] {
+    max-width: 260px;
+}
+
+.ao-help-text {
+    color: #646970;
+    font-size: 12px;
+    max-width: 320px;
+}

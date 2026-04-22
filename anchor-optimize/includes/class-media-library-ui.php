@@ -108,7 +108,7 @@ class Anchor_Optimize_Media_Library_UI {
         $html .= '<p><label><strong>' . esc_html__( 'Action', 'anchor-schema' ) . '</strong><br>';
         $html .= '<select class="ao-operation">';
         $html .= '<option value="optimize">' . esc_html__( 'Optimize only', 'anchor-schema' ) . '</option>';
-        $html .= '<option value="replace">' . esc_html__( 'Replace image at same URL', 'anchor-schema' ) . '</option>';
+        $html .= '<option value="replace">' . esc_html__( 'Replace image site-wide', 'anchor-schema' ) . '</option>';
         $html .= '<option value="resize">' . esc_html__( 'Resize then optimize', 'anchor-schema' ) . '</option>';
         $html .= '<option value="crop">' . esc_html__( 'Crop then optimize', 'anchor-schema' ) . '</option>';
         $html .= '</select></label></p>';
@@ -133,7 +133,7 @@ class Anchor_Optimize_Media_Library_UI {
         $html .= '<div class="ao-replace-controls" style="display:none;">';
         $html .= '<p><label><strong>' . esc_html__( 'Replacement Upload', 'anchor-schema' ) . '</strong><br>';
         $html .= '<input type="file" class="ao-replacement-file" accept="image/*" /></label></p>';
-        $html .= '<p class="ao-help-text">' . esc_html__( 'Uploads a new image and writes it over the existing attachment path so the current URL keeps working.', 'anchor-schema' ) . '</p>';
+        $html .= '<p class="ao-help-text">' . esc_html__( 'Uploads a new image, updates the attachment to use it, and rewrites stored database URLs from the old image to the new one. Plugin/runtime-generated usages may still need manual review.', 'anchor-schema' ) . '</p>';
         $html .= '</div>';
 
         $html .= '<div class="ao-crop-controls" style="display:none;">';

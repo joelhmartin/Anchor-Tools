@@ -79,6 +79,7 @@ class Anchor_Optimize_Image_Operations {
             'created_duplicate'  => false,
             'message'            => '',
             'file'               => '',
+            'replace_summary'    => [],
         ];
 
         if ( 'optimize' === $options['operation'] ) {
@@ -107,8 +108,12 @@ class Anchor_Optimize_Image_Operations {
             }
 
             $result['operation_applied'] = true;
-            $result['file'] = $file;
-            $result['message'] = __( 'Replaced image in place and preserved the existing URL.', 'anchor-schema' );
+            $result['file'] = $replaced['file'];
+            $result['replace_summary'] = $replaced['summary'];
+            $result['message'] = sprintf(
+                __( 'Replaced image and updated %d stored URL references.', 'anchor-schema' ),
+                (int) ( $replaced['summary']['total_replacements'] ?? 0 )
+            );
             return $result;
         }
 
@@ -211,14 +216,14 @@ class Anchor_Optimize_Image_Operations {
 
     /**
      * Replace the current attachment file with a newly uploaded source image.
-     * The attachment keeps the same file path and URL.
+     * Allows file type changes and rewrites stored URL references across the site.
      *
      * @param int         $attachment_id
-     * @param string      $target_file
+     * @param string      $current_file
      * @param array|null  $upload
-     * @return true|\WP_Error
+     * @return array|\WP_Error
      */
-    private static function replace_attachment_file( $attachment_id, $target_file, $upload ) {
+    private static function replace_attachment_file( $attachment_id, $current_file, $upload ) {
         if ( empty( $upload ) || ! is_array( $upload ) ) {
             return new WP_Error( 'missing_upload', __( 'Choose a replacement image to upload.', 'anchor-schema' ) );
         }
@@ -240,6 +245,9 @@ class Anchor_Optimize_Image_Operations {
 
         require_once ABSPATH . 'wp-admin/includes/image.php';
 
+        $old_metadata = wp_get_attachment_metadata( $attachment_id );
+        $old_url_map  = self::build_attachment_url_map( $attachment_id, $current_file, $old_metadata );
+
         $editor = wp_get_image_editor( $tmp_name );
         if ( is_wp_error( $editor ) ) {
             return new WP_Error(
@@ -251,44 +259,77 @@ class Anchor_Optimize_Image_Operations {
             );
         }
 
-        $supported = wp_get_image_editor_output_format( $tmp_name, $current_mime );
+        $filetype = wp_check_filetype_and_ext( $tmp_name, $upload['name'] ?? '' );
+        $requested_mime = $filetype['type'] ?? '';
+        if ( ! $requested_mime || 0 !== strpos( $requested_mime, 'image/' ) ) {
+            $requested_mime = $upload['type'] ?? '';
+        }
+        if ( ! $requested_mime || 0 !== strpos( $requested_mime, 'image/' ) ) {
+            return new WP_Error( 'invalid_upload_type', __( 'The uploaded replacement file is not a valid image.', 'anchor-schema' ) );
+        }
+
+        $supported = wp_get_image_editor_output_format( $tmp_name, $requested_mime );
         if ( empty( $supported ) || empty( $supported['mime-type'] ) ) {
             return new WP_Error(
                 'unsupported_conversion',
-                __( 'The uploaded image could not be converted into the current attachment format while preserving the URL.', 'anchor-schema' )
+                __( 'The uploaded image could not be saved in a supported format.', 'anchor-schema' )
             );
         }
 
+        $new_mime = $supported['mime-type'];
+        $new_ext = self::mime_to_extension( $new_mime );
+        if ( ! $new_ext ) {
+            return new WP_Error( 'unsupported_extension', __( 'The uploaded image format is not supported for replacement.', 'anchor-schema' ) );
+        }
+
+        $dir = dirname( $current_file );
+        $base = pathinfo( $current_file, PATHINFO_FILENAME );
+        $new_file = trailingslashit( $dir ) . $base . '.' . $new_ext;
+
         $settings = Anchor_Optimize_Settings::get_settings();
         if ( ! empty( $settings['backup_originals'] ) ) {
-            Anchor_Optimize_Module::backup_original_file( $target_file );
+            Anchor_Optimize_Module::backup_original_file( $current_file );
         }
 
         Anchor_Optimize_Module::cleanup_generated_assets( $attachment_id, false );
 
-        $saved = $editor->save( $target_file, $supported['mime-type'] );
+        $saved = $editor->save( $new_file, $new_mime );
         if ( is_wp_error( $saved ) ) {
             return new WP_Error(
                 'replace_failed',
                 sprintf(
-                    __( 'The replacement image could not be saved over the existing file: %s', 'anchor-schema' ),
+                    __( 'The replacement image could not be saved: %s', 'anchor-schema' ),
                     $saved->get_error_message()
                 )
             );
         }
 
-        update_attached_file( $attachment_id, $target_file );
-        wp_update_post( [
+        update_attached_file( $attachment_id, $new_file );
+        $post_update = [
             'ID' => $attachment_id,
-            'post_mime_type' => $saved['mime-type'] ?? $current_mime,
-        ] );
+            'post_mime_type' => $saved['mime-type'] ?? $new_mime,
+        ];
+        $new_guid = wp_get_attachment_url( $attachment_id );
+        if ( $new_guid ) {
+            $post_update['guid'] = $new_guid;
+        }
+        wp_update_post( $post_update );
 
-        $meta = wp_generate_attachment_metadata( $attachment_id, $target_file );
+        $meta = wp_generate_attachment_metadata( $attachment_id, $new_file );
         if ( ! is_wp_error( $meta ) && is_array( $meta ) ) {
             wp_update_attachment_metadata( $attachment_id, $meta );
         }
 
-        return true;
+        $new_metadata = wp_get_attachment_metadata( $attachment_id );
+        $new_url_map  = self::build_attachment_url_map( $attachment_id, $new_file, $new_metadata );
+        $summary      = self::search_replace_attachment_urls( $attachment_id, $old_url_map, $new_url_map );
+
+        self::delete_replaced_files( $current_file, $old_metadata, $new_file, $new_metadata );
+
+        return [
+            'file'    => $new_file,
+            'summary' => $summary,
+        ];
     }
 
     /**
@@ -498,5 +539,335 @@ class Anchor_Optimize_Image_Operations {
             default:
                 return __( 'The replacement image upload failed.', 'anchor-schema' );
         }
+    }
+
+    /**
+     * Build a URL map for the original image and generated sizes.
+     *
+     * @param int          $attachment_id
+     * @param string       $file
+     * @param array|false  $metadata
+     * @return array
+     */
+    private static function build_attachment_url_map( $attachment_id, $file, $metadata ) {
+        $uploads = wp_upload_dir();
+        $base_dir = $uploads['basedir'];
+        $base_url = $uploads['baseurl'];
+        $relative = ltrim( str_replace( $base_dir, '', $file ), '/\\' );
+        $dir_rel  = dirname( $relative );
+        if ( '.' === $dir_rel ) {
+            $dir_rel = '';
+        }
+
+        $map = [
+            'full' => trailingslashit( $base_url ) . str_replace( '\\', '/', $relative ),
+        ];
+
+        if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
+            foreach ( $metadata['sizes'] as $size_name => $size_data ) {
+                if ( empty( $size_data['file'] ) ) {
+                    continue;
+                }
+                $relative_file = $dir_rel ? trailingslashit( $dir_rel ) . $size_data['file'] : $size_data['file'];
+                $map[ $size_name ] = trailingslashit( $base_url ) . str_replace( '\\', '/', $relative_file );
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * Replace stored URL references from the old attachment files to the new ones.
+     *
+     * @param int   $attachment_id
+     * @param array $old_map
+     * @param array $new_map
+     * @return array
+     */
+    private static function search_replace_attachment_urls( $attachment_id, $old_map, $new_map ) {
+        $replacements = [];
+        foreach ( $old_map as $key => $old_url ) {
+            if ( empty( $old_url ) ) {
+                continue;
+            }
+            $replacements[ $old_url ] = $new_map[ $key ] ?? $new_map['full'] ?? '';
+        }
+
+        $replacements = array_filter( $replacements, function( $new_url, $old_url ) {
+            return ! empty( $new_url ) && $new_url !== $old_url;
+        }, ARRAY_FILTER_USE_BOTH );
+
+        if ( empty( $replacements ) ) {
+            return [
+                'total_replacements' => 0,
+                'posts' => 0,
+                'postmeta' => 0,
+                'options' => 0,
+                'termmeta' => 0,
+                'usermeta' => 0,
+                'commentmeta' => 0,
+                'note' => __( 'No stored URL references needed updating.', 'anchor-schema' ),
+            ];
+        }
+
+        $summary = [
+            'total_replacements' => 0,
+            'posts' => 0,
+            'postmeta' => 0,
+            'options' => 0,
+            'termmeta' => 0,
+            'usermeta' => 0,
+            'commentmeta' => 0,
+            'note' => __( 'Only database-stored URL usages were updated. Runtime/plugin-generated URLs may still need manual review.', 'anchor-schema' ),
+        ];
+
+        self::replace_in_posts_table( $replacements, $summary );
+        self::replace_in_meta_table( 'post', $replacements, $summary );
+        self::replace_in_options_table( $replacements, $summary );
+        self::replace_in_meta_table( 'term', $replacements, $summary );
+        self::replace_in_meta_table( 'user', $replacements, $summary );
+        self::replace_in_meta_table( 'comment', $replacements, $summary );
+
+        foreach ( $summary as $key => $count ) {
+            if ( in_array( $key, [ 'note', 'total_replacements' ], true ) ) {
+                continue;
+            }
+            $summary['total_replacements'] += (int) $count;
+        }
+
+        return $summary;
+    }
+
+    /**
+     * Replace URLs inside posts.
+     *
+     * @param array $replacements
+     * @param array $summary
+     * @return void
+     */
+    private static function replace_in_posts_table( $replacements, &$summary ) {
+        global $wpdb;
+
+        $likes = [];
+        $params = [];
+        foreach ( array_keys( $replacements ) as $old_url ) {
+            $likes[] = '(post_content LIKE %s OR post_excerpt LIKE %s)';
+            $like = '%' . $wpdb->esc_like( $old_url ) . '%';
+            $params[] = $like;
+            $params[] = $like;
+        }
+
+        if ( empty( $likes ) ) {
+            return;
+        }
+
+        $sql = "SELECT ID, post_content, post_excerpt FROM {$wpdb->posts} WHERE " . implode( ' OR ', $likes );
+        $rows = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A );
+        if ( empty( $rows ) ) {
+            return;
+        }
+
+        foreach ( $rows as $row ) {
+            $new_content = self::replace_in_value( $row['post_content'], $replacements );
+            $new_excerpt = self::replace_in_value( $row['post_excerpt'], $replacements );
+
+            if ( $new_content === $row['post_content'] && $new_excerpt === $row['post_excerpt'] ) {
+                continue;
+            }
+
+            wp_update_post( [
+                'ID'           => (int) $row['ID'],
+                'post_content' => $new_content,
+                'post_excerpt' => $new_excerpt,
+            ] );
+            $summary['posts']++;
+        }
+    }
+
+    /**
+     * Replace URLs in a WordPress meta table using metadata APIs.
+     *
+     * @param string $meta_type
+     * @param array  $replacements
+     * @param array  $summary
+     * @return void
+     */
+    private static function replace_in_meta_table( $meta_type, $replacements, &$summary ) {
+        global $wpdb;
+
+        $map = [
+            'post'    => [ 'table' => $wpdb->postmeta, 'id' => 'post_id', 'meta_id' => 'meta_id', 'value' => 'meta_value', 'summary' => 'postmeta' ],
+            'term'    => [ 'table' => $wpdb->termmeta, 'id' => 'term_id', 'meta_id' => 'meta_id', 'value' => 'meta_value', 'summary' => 'termmeta' ],
+            'user'    => [ 'table' => $wpdb->usermeta, 'id' => 'user_id', 'meta_id' => 'umeta_id', 'value' => 'meta_value', 'summary' => 'usermeta' ],
+            'comment' => [ 'table' => $wpdb->commentmeta, 'id' => 'comment_id', 'meta_id' => 'meta_id', 'value' => 'meta_value', 'summary' => 'commentmeta' ],
+        ];
+
+        if ( empty( $map[ $meta_type ] ) ) {
+            return;
+        }
+
+        $config = $map[ $meta_type ];
+        $likes = [];
+        $params = [];
+        foreach ( array_keys( $replacements ) as $old_url ) {
+            $likes[] = "{$config['value']} LIKE %s";
+            $params[] = '%' . $wpdb->esc_like( $old_url ) . '%';
+        }
+
+        $sql = "SELECT {$config['meta_id']} AS meta_id, {$config['id']} AS object_id, meta_key, {$config['value']} AS meta_value FROM {$config['table']} WHERE " . implode( ' OR ', $likes );
+        $rows = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A );
+        if ( empty( $rows ) ) {
+            return;
+        }
+
+        foreach ( $rows as $row ) {
+            $old_value = maybe_unserialize( $row['meta_value'] );
+            $new_value = self::replace_in_value( $old_value, $replacements );
+            if ( $new_value === $old_value ) {
+                continue;
+            }
+
+            $wpdb->update(
+                $config['table'],
+                [ 'meta_value' => maybe_serialize( $new_value ) ],
+                [ $config['meta_id'] => (int) $row['meta_id'] ],
+                [ '%s' ],
+                [ '%d' ]
+            );
+            $summary[ $config['summary'] ]++;
+        }
+    }
+
+    /**
+     * Replace URLs in options using update_option for serialization safety.
+     *
+     * @param array $replacements
+     * @param array $summary
+     * @return void
+     */
+    private static function replace_in_options_table( $replacements, &$summary ) {
+        global $wpdb;
+
+        $likes = [];
+        $params = [];
+        foreach ( array_keys( $replacements ) as $old_url ) {
+            $likes[] = 'option_value LIKE %s';
+            $params[] = '%' . $wpdb->esc_like( $old_url ) . '%';
+        }
+
+        $sql = "SELECT option_name, option_value, autoload FROM {$wpdb->options} WHERE " . implode( ' OR ', $likes );
+        $rows = $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A );
+        if ( empty( $rows ) ) {
+            return;
+        }
+
+        foreach ( $rows as $row ) {
+            $old_value = maybe_unserialize( $row['option_value'] );
+            $new_value = self::replace_in_value( $old_value, $replacements );
+            if ( $new_value === $old_value ) {
+                continue;
+            }
+
+            $autoload = strtolower( (string) $row['autoload'] );
+            $autoload_enabled = ! in_array( $autoload, [ 'no', 'off', 'auto-off' ], true );
+            update_option( $row['option_name'], $new_value, $autoload_enabled );
+            $summary['options']++;
+        }
+    }
+
+    /**
+     * Recursively replace URLs inside strings, arrays, and objects.
+     *
+     * @param mixed $value
+     * @param array $replacements
+     * @return mixed
+     */
+    private static function replace_in_value( $value, $replacements ) {
+        if ( is_string( $value ) ) {
+            return str_replace( array_keys( $replacements ), array_values( $replacements ), $value );
+        }
+
+        if ( is_array( $value ) ) {
+            foreach ( $value as $key => $item ) {
+                $value[ $key ] = self::replace_in_value( $item, $replacements );
+            }
+            return $value;
+        }
+
+        if ( is_object( $value ) ) {
+            foreach ( $value as $key => $item ) {
+                $value->$key = self::replace_in_value( $item, $replacements );
+            }
+            return $value;
+        }
+
+        return $value;
+    }
+
+    /**
+     * Delete the old original file and thumbnails after a replacement.
+     *
+     * @param string      $old_file
+     * @param array|false $old_metadata
+     * @param string      $new_file
+     * @param array|false $new_metadata
+     * @return void
+     */
+    private static function delete_replaced_files( $old_file, $old_metadata, $new_file, $new_metadata ) {
+        $preserve = [];
+        if ( $new_file ) {
+            $preserve[] = wp_normalize_path( $new_file );
+        }
+
+        if ( ! empty( $new_metadata['sizes'] ) && is_array( $new_metadata['sizes'] ) ) {
+            $new_dir = dirname( $new_file );
+            foreach ( $new_metadata['sizes'] as $size_data ) {
+                if ( empty( $size_data['file'] ) ) {
+                    continue;
+                }
+                $preserve[] = wp_normalize_path( trailingslashit( $new_dir ) . $size_data['file'] );
+            }
+        }
+
+        $old_file_normalized = wp_normalize_path( $old_file );
+        if ( $old_file && $old_file_normalized !== wp_normalize_path( $new_file ) && file_exists( $old_file ) ) {
+            @unlink( $old_file );
+        }
+
+        if ( empty( $old_metadata['sizes'] ) || ! is_array( $old_metadata['sizes'] ) ) {
+            return;
+        }
+
+        $dir = dirname( $old_file );
+        foreach ( $old_metadata['sizes'] as $size_data ) {
+            if ( empty( $size_data['file'] ) ) {
+                continue;
+            }
+            $path = trailingslashit( $dir ) . $size_data['file'];
+            if ( in_array( wp_normalize_path( $path ), $preserve, true ) ) {
+                continue;
+            }
+            if ( file_exists( $path ) ) {
+                @unlink( $path );
+            }
+        }
+    }
+
+    /**
+     * Convert a MIME type into a file extension.
+     *
+     * @param string $mime
+     * @return string
+     */
+    private static function mime_to_extension( $mime ) {
+        $map = [
+            'image/jpeg' => 'jpg',
+            'image/png'  => 'png',
+            'image/gif'  => 'gif',
+            'image/webp' => 'webp',
+            'image/avif' => 'avif',
+        ];
+
+        return $map[ $mime ] ?? '';
     }
 }

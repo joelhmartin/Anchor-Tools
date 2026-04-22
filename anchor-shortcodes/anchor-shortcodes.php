@@ -230,7 +230,7 @@ $fields = [
         add_shortcode( 'site_image_white', fn() => esc_url( $opts['site_image_white'] ) );
 
         add_shortcode( 'business_name', fn() => esc_html( $opts['business_name'] ?: get_bloginfo( 'name' ) ) );
-        add_shortcode( 'address', fn() => wpautop( wp_kses_post( $opts['address'] ) ) );
+        add_shortcode( 'address', fn() => wp_kses_post( $opts['address'] ) );
         add_shortcode( 'phone', fn() => esc_html( $opts['phone'] ) );
         add_shortcode( 'email', fn() => esc_html( $opts['email'] ?: get_option( 'admin_email' ) ) );
         add_shortcode( 'business_hours', fn() => nl2br( esc_html( $opts['business_hours'] ) ) );

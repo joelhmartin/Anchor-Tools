@@ -20,6 +20,7 @@
     var currentModal = null;
     var trackedTooltipTarget = null;
     var smartContrastNodes = [];
+    var scaledFontNodes = [];
     var pointerY = Math.round(window.innerHeight / 2);
     var structureIndex = {};
     var state = loadState();
@@ -213,7 +214,6 @@
     }
 
     function applyVisualState() {
-        body.style.zoom = state.fontScale ? String(1 + (state.fontScale * 0.1)) : '';
         body.style.filter = buildFilterValue();
 
         setRootClass('aa-contrast-dark', state.contrastMode === 'dark');
@@ -241,6 +241,46 @@
         if (state.textAlign !== 'off') {
             body.classList.add('aa-align-' + state.textAlign);
         }
+    }
+
+    function clearFontScale() {
+        scaledFontNodes.forEach(function (node) {
+            if (node.dataset.aaBaseFontSize !== undefined) {
+                node.style.fontSize = node.dataset.aaBaseFontSize;
+                delete node.dataset.aaBaseFontSize;
+            } else {
+                node.style.removeProperty('font-size');
+            }
+        });
+        scaledFontNodes = [];
+    }
+
+    function applyFontScale() {
+        clearFontScale();
+        if (!state.fontScale) {
+            return;
+        }
+
+        var scale = 1 + (state.fontScale * 0.1);
+        var selector = 'p, li, a, button, input, textarea, select, label, legend, td, th, figcaption, blockquote, h1, h2, h3, h4, h5, h6, small, strong, em, span';
+        var nodes = body.querySelectorAll(selector);
+
+        Array.prototype.forEach.call(nodes, function (node) {
+            if (isInsideWidget(node)) {
+                return;
+            }
+            if (node.children.length && node.tagName === 'SPAN') {
+                return;
+            }
+            var computed = window.getComputedStyle(node).fontSize;
+            var size = parseFloat(computed);
+            if (!size || computed.indexOf('px') === -1) {
+                return;
+            }
+            node.dataset.aaBaseFontSize = node.style.fontSize || '';
+            node.style.fontSize = (size * scale).toFixed(2) + 'px';
+            scaledFontNodes.push(node);
+        });
     }
 
     function parseColor(raw) {
@@ -347,7 +387,8 @@
             maskBottomEl.hidden = !state.readingMask;
             if (state.readingMask) {
                 maskTopEl.style.height = Math.max(0, pointerY - (maskGap / 2)) + 'px';
-                maskBottomEl.style.top = Math.min(window.innerHeight, pointerY + (maskGap / 2)) + 'px';
+                maskBottomEl.style.top = '';
+                maskBottomEl.style.height = Math.max(0, window.innerHeight - (pointerY + (maskGap / 2))) + 'px';
             }
         }
     }
@@ -427,7 +468,7 @@
                     justify: 'Justify'
                 }[state.textAlign];
             case 'dictionary':
-                return state.dictionary ? 'Ready' : 'Select text';
+                return 'Lookup';
             case 'saturation':
                 return {
                     off: 'Off',
@@ -475,7 +516,7 @@
             case 'text-align':
                 return state.textAlign !== 'off';
             case 'dictionary':
-                return state.dictionary;
+                return false;
             case 'saturation':
                 return state.saturation !== 'off';
             case 'big-cursor':
@@ -508,6 +549,7 @@
     function applyAll(options) {
         options = options || {};
         applyVisualState();
+        applyFontScale();
         applySmartContrast();
         updateReadingOverlays();
         updateWidgetPosition();
@@ -658,10 +700,7 @@
                 hideTooltip();
                 break;
             case 'dictionary':
-                state.dictionary = !state.dictionary;
-                if (state.dictionary) {
-                    openModal('dictionary');
-                }
+                openModal('dictionary');
                 break;
             case 'big-cursor':
                 state.bigCursor = !state.bigCursor;
@@ -971,10 +1010,10 @@
     }
 
     function maybeLookupSelection() {
-        if (!state.dictionary) {
+        var selection = window.getSelection ? window.getSelection().toString().trim() : '';
+        if (!currentModal || currentModal.id !== 'anchor-a11y-modal-dictionary') {
             return;
         }
-        var selection = window.getSelection ? window.getSelection().toString().trim() : '';
         if (!selection || selection.split(/\s+/).length !== 1 || selection.length > 40) {
             return;
         }
@@ -1067,10 +1106,6 @@
 
         if (target.hasAttribute('data-open-modal')) {
             openModal(target.getAttribute('data-open-modal'));
-            if (target.getAttribute('data-open-modal') === 'dictionary') {
-                state.dictionary = true;
-                applyAll();
-            }
             return;
         }
 

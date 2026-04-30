@@ -506,10 +506,10 @@ class Anchor_Accessibility_Module {
             <button class="anchor-a11y-toggle" aria-expanded="false" aria-controls="anchor-a11y-panel"
                     aria-label="<?php esc_attr_e( 'Open accessibility menu', 'anchor-schema' ); ?>"
                     title="<?php esc_attr_e( 'Open accessibility menu', 'anchor-schema' ); ?>">
-                <span class="anchor-a11y-toggle-mark" aria-hidden="true">A</span>
+                <svg class="anchor-a11y-toggle-icon" aria-hidden="true" viewBox="0 0 512 512" fill="currentColor"><path d="M256 48c114.953 0 208 93.029 208 208 0 114.953-93.029 208-208 208-114.953 0-208-93.029-208-208 0-114.953 93.029-208 208-208m0-40C119.033 8 8 119.033 8 256s111.033 248 248 248 248-111.033 248-248S392.967 8 256 8zm0 56C149.961 64 64 149.961 64 256s85.961 192 192 192 192-85.961 192-192S362.039 64 256 64zm0 44c19.882 0 36 16.118 36 36s-16.118 36-36 36-36-16.118-36-36 16.118-36 36-36zm117.741 98.023c-28.712 6.779-55.511 12.748-82.14 15.807.851 101.023 12.306 123.052 25.037 155.621 3.617 9.26-.957 19.698-10.217 23.315-9.261 3.617-19.699-.957-23.316-10.217-8.705-22.308-17.086-40.636-22.261-78.549h-9.686c-5.167 37.851-13.534 56.208-22.262 78.549-3.615 9.255-14.05 13.836-23.315 10.217-9.26-3.617-13.834-14.056-10.217-23.315 12.713-32.541 24.185-54.541 25.037-155.621-26.629-3.058-53.428-9.027-82.141-15.807-8.6-2.031-13.926-10.648-11.895-19.249s10.647-13.926 19.249-11.895c96.686 22.829 124.283 22.783 220.775 0 8.599-2.03 17.218 3.294 19.249 11.895 2.029 8.601-3.297 17.219-11.897 19.249z"/></svg>
             </button>
-            <button class="anchor-a11y-restore" type="button" hidden data-action="restore-widget">
-                <?php esc_html_e( 'Accessibility', 'anchor-schema' ); ?>
+            <button class="anchor-a11y-restore" type="button" hidden data-action="restore-widget" aria-label="<?php esc_attr_e( 'Show accessibility widget', 'anchor-schema' ); ?>" title="<?php esc_attr_e( 'Show accessibility widget', 'anchor-schema' ); ?>">
+                <svg class="anchor-a11y-toggle-icon" aria-hidden="true" viewBox="0 0 512 512" fill="currentColor"><path d="M256 48c114.953 0 208 93.029 208 208 0 114.953-93.029 208-208 208-114.953 0-208-93.029-208-208 0-114.953 93.029-208 208-208m0-40C119.033 8 8 119.033 8 256s111.033 248 248 248 248-111.033 248-248S392.967 8 256 8zm0 56C149.961 64 64 149.961 64 256s85.961 192 192 192 192-85.961 192-192S362.039 64 256 64zm0 44c19.882 0 36 16.118 36 36s-16.118 36-36 36-36-16.118-36-36 16.118-36 36-36zm117.741 98.023c-28.712 6.779-55.511 12.748-82.14 15.807.851 101.023 12.306 123.052 25.037 155.621 3.617 9.26-.957 19.698-10.217 23.315-9.261 3.617-19.699-.957-23.316-10.217-8.705-22.308-17.086-40.636-22.261-78.549h-9.686c-5.167 37.851-13.534 56.208-22.262 78.549-3.615 9.255-14.05 13.836-23.315 10.217-9.26-3.617-13.834-14.056-10.217-23.315 12.713-32.541 24.185-54.541 25.037-155.621-26.629-3.058-53.428-9.027-82.141-15.807-8.6-2.031-13.926-10.648-11.895-19.249s10.647-13.926 19.249-11.895c96.686 22.829 124.283 22.783 220.775 0 8.599-2.03 17.218 3.294 19.249 11.895 2.029 8.601-3.297 17.219-11.897 19.249z"/></svg>
             </button>
 
             <div id="anchor-a11y-panel" class="anchor-a11y-panel" role="dialog" aria-modal="false" aria-label="<?php esc_attr_e( 'Accessibility Menu', 'anchor-schema' ); ?>" hidden>
@@ -523,11 +523,11 @@ class Anchor_Accessibility_Module {
                 <div class="anchor-a11y-body">
                     <?php if ( $feature_flags['profiles'] ) : ?>
                     <section class="anchor-a11y-section">
-                        <button class="anchor-a11y-section-toggle" type="button" data-section-toggle="profiles" aria-expanded="true" aria-controls="anchor-a11y-profiles">
+                        <button class="anchor-a11y-section-toggle" type="button" data-section-toggle="profiles" aria-expanded="false" aria-controls="anchor-a11y-profiles">
                             <span><?php esc_html_e( 'Accessibility Profiles', 'anchor-schema' ); ?></span>
                             <span aria-hidden="true">▾</span>
                         </button>
-                        <div id="anchor-a11y-profiles" class="anchor-a11y-profiles-grid">
+                        <div id="anchor-a11y-profiles" class="anchor-a11y-profiles-grid" hidden>
                             <?php foreach ( $profiles as $profile ) : ?>
                             <button class="anchor-a11y-profile-card" type="button" data-profile="<?php echo esc_attr( $profile['key'] ); ?>">
                                 <span class="anchor-a11y-profile-name"><?php echo esc_html( $profile['label'] ); ?></span>
@@ -539,6 +539,7 @@ class Anchor_Accessibility_Module {
                     <?php endif; ?>
 
                     <section class="anchor-a11y-section">
+                        <div class="anchor-a11y-section-heading"><?php esc_html_e( 'Accessibility Settings', 'anchor-schema' ); ?></div>
                         <div class="anchor-a11y-card-grid">
                             <?php foreach ( $cards as $card ) : ?>
                                 <?php if ( empty( $feature_flags[ $card['flag'] ] ) ) continue; ?>
@@ -558,7 +559,9 @@ class Anchor_Accessibility_Module {
                                 >
                                     <span class="anchor-a11y-card-title"><?php echo esc_html( $card['label'] ); ?></span>
                                     <span class="anchor-a11y-card-meta" data-card-meta="<?php echo esc_attr( $card['key'] ); ?>"></span>
-                                    <span class="anchor-a11y-check" aria-hidden="true">✓</span>
+                                    <?php if ( $card['key'] !== 'dictionary' && $card['mode'] !== 'modal' ) : ?>
+                                        <span class="anchor-a11y-check" aria-hidden="true">✓</span>
+                                    <?php endif; ?>
                                 </button>
                             <?php endforeach; ?>
                         </div>

@@ -11,6 +11,7 @@ class Anchor_Reviews_Manager {
     public function __construct() {
         add_shortcode( 'anchor_reviews', [ $this, 'shortcode' ] );
         add_shortcode( 'anchor_reviews_google', [ $this, 'shortcode_google' ] );
+        add_shortcode( 'anchor_reviews_widget', [ $this, 'shortcode_widget' ] );
         add_filter( 'cron_schedules', [ $this, 'add_cron_schedule' ] );
         add_action( 'init', [ $this, 'register_cron' ] );
         add_action( self::CRON_HOOK, [ $this, 'cron_refresh' ] );
@@ -207,5 +208,87 @@ class Anchor_Reviews_Manager {
 
     public function shortcode_google( $atts ) {
         return $this->shortcode( array_merge( (array) $atts, [ 'source' => 'google' ] ) );
+    }
+
+    public function shortcode_widget( $atts ) {
+        $atts = shortcode_atts(
+            [
+                'place_id' => '',
+            ],
+            $atts
+        );
+
+        $place_id = $this->get_place_id();
+        if ( ! $place_id ) {
+            $place_id = trim( $atts['place_id'] );
+        }
+        if ( ! $place_id ) {
+            return '';
+        }
+
+        $data = self::get_cache( 'google', $place_id );
+        if ( empty( $data ) || ! is_array( $data ) ) {
+            return '';
+        }
+
+        $name   = trim( (string) ( $data['business_name'] ?? '' ) );
+        $rating = isset( $data['rating'] ) ? (float) $data['rating'] : 0;
+        $count  = isset( $data['rating_count'] ) ? (int) $data['rating_count'] : 0;
+
+        if ( ! $name && ! $rating && ! $count ) {
+            return '';
+        }
+
+        $rating_display = number_format_i18n( $rating, 1 );
+        $count_display  = number_format_i18n( $count );
+        $stars_html     = self::render_stars_svg( $rating );
+
+        $html  = '<div class="anchor-reviews-widget" style="display:inline-flex;align-items:center;gap:16px;background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:1rem 1.25rem">';
+        $html .= '<svg width="36" height="36" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.1 0 5.8 1.1 8 2.8l6-6C34.3 3.3 29.5 1 24 1 14.8 1 6.9 6.6 3.3 14.6l7 5.4C12.2 13.7 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h12.7c-.6 3-2.3 5.5-4.9 7.2l7.5 5.8C43.7 37.1 46.5 31.3 46.5 24.5z"/><path fill="#FBBC04" d="M10.3 28.6c-.5-1.5-.8-3.1-.8-4.6s.3-3.1.8-4.6l-7-5.4C1.8 17.1 1 20.5 1 24s.8 6.9 2.3 9.9l7-5.3z"/><path fill="#34A853" d="M24 47c5.5 0 10.1-1.8 13.4-4.9l-7.5-5.8c-1.9 1.3-4.3 2-5.9 2-6.4 0-11.8-4.3-13.7-10.1l-7 5.4C6.9 41.4 14.8 47 24 47z"/></svg>';
+        $html .= '<div style="width:1px;height:48px;background:#e0e0e0;flex-shrink:0"></div>';
+        $html .= '<div style="display:flex;flex-direction:column;gap:4px">';
+        if ( $name ) {
+            $html .= '<div style="font-size:13px;font-weight:600;color:#1a1a1a;line-height:1;">' . esc_html( $name ) . '</div>';
+        }
+        $html .= '<div style="display:flex;align-items:center;gap:6px">';
+        $html .= '<span style="font-size:18px;font-weight:600;color:#1a1a1a;line-height:1;">' . esc_html( $rating_display ) . '</span>';
+        $html .= '<div style="display:flex;gap:2px">' . $stars_html . '</div>';
+        $html .= '</div>';
+        $html .= '<div style="font-size:12px;color:#666;line-height:1;">' . esc_html( $count_display ) . ' Google reviews</div>';
+        $html .= '</div>';
+        $html .= '</div>';
+
+        return $html;
+    }
+
+    private static function render_stars_svg( $rating ) {
+        $rating = max( 0, min( 5, (float) $rating ) );
+        $uid    = wp_unique_id( 'anchor-rw-' );
+        $html   = '';
+
+        for ( $i = 0; $i < 5; $i++ ) {
+            $remaining = $rating - $i;
+            if ( $remaining >= 1 ) {
+                $fill = '#FBBC04';
+            } elseif ( $remaining <= 0 ) {
+                $fill = '#E0E0E0';
+            } else {
+                $fill = false;
+            }
+
+            if ( false !== $fill ) {
+                $html .= '<svg style="width:16px;height:16px" viewBox="0 0 20 20" aria-hidden="true"><polygon points="10,1.5 12.6,7.2 19,7.9 14.3,12.3 15.7,18.5 10,15.3 4.3,18.5 5.7,12.3 1,7.9 7.4,7.2" fill="' . esc_attr( $fill ) . '"/></svg>';
+                continue;
+            }
+
+            $offset = (int) round( $remaining * 100 );
+            $grad_id = $uid . '-' . $i;
+            $html .= '<svg style="width:16px;height:16px" viewBox="0 0 20 20" aria-hidden="true">';
+            $html .= '<defs><linearGradient id="' . esc_attr( $grad_id ) . '"><stop offset="' . esc_attr( $offset ) . '%" stop-color="#FBBC04"/><stop offset="' . esc_attr( $offset ) . '%" stop-color="#E0E0E0"/></linearGradient></defs>';
+            $html .= '<polygon points="10,1.5 12.6,7.2 19,7.9 14.3,12.3 15.7,18.5 10,15.3 4.3,18.5 5.7,12.3 1,7.9 7.4,7.2" fill="url(#' . esc_attr( $grad_id ) . ')"/>';
+            $html .= '</svg>';
+        }
+
+        return $html;
     }
 }

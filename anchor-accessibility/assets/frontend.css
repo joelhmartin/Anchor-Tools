@@ -35,6 +35,11 @@
     box-shadow: 0 18px 40px rgba(19, 31, 47, 0.18);
 }
 
+.anchor-a11y-toggle[hidden],
+.anchor-a11y-restore[hidden] {
+    display: none !important;
+}
+
 .anchor-a11y-toggle {
     width: var(--aa-size);
     height: var(--aa-size);

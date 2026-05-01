@@ -64,6 +64,14 @@ class Anchor_Video_Slider_Module {
         'marquee_pause_on_hover' => true,
         'marquee_direction' => 'left',
         'marquee_reverse_row' => false,
+        'marquee_item_height' => 80,
+        'marquee_item_width_mobile' => 0,
+        'marquee_item_height_mobile' => 0,
+        'marquee_gap_mobile' => 0,
+        'marquee_speed_mobile' => 0,
+        'marquee_align' => 'center',
+        'marquee_grayscale' => false,
+        'marquee_eager_count' => 6,
         'eager_load_count' => 4,
         'gap_mobile' => 0,
         'tile_shadow' => 'soft',
@@ -120,7 +128,15 @@ class Anchor_Video_Slider_Module {
             'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'show_for' => 'logo_carousel'],
             'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'options' => ['left' => 'Left', 'right' => 'Right'], 'show_for' => 'logo_carousel'],
             'marquee_reverse_row' => ['type' => 'checkbox', 'label' => 'Add Reverse Row', 'show_for' => 'logo_carousel'],
-            'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'min' => 0, 'max' => 24, 'step' => 1],
+            'marquee_item_height' => ['type' => 'number', 'label' => 'Item Max Height (px)', 'min' => 20, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_item_width_mobile' => ['type' => 'number', 'label' => 'Mobile Item Width (px, 0 = use Item Width)', 'min' => 0, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_item_height_mobile' => ['type' => 'number', 'label' => 'Mobile Item Height (px, 0 = use Item Max Height)', 'min' => 0, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_gap_mobile' => ['type' => 'number', 'label' => 'Mobile Item Gap (px, 0 = use Item Gap)', 'min' => 0, 'max' => 120, 'step' => 4, 'show_for' => 'logo_carousel'],
+            'marquee_speed_mobile' => ['type' => 'number', 'label' => 'Mobile Scroll Speed (s, 0 = use Scroll Speed)', 'min' => 0, 'max' => 120, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_align' => ['type' => 'select', 'label' => 'Item Alignment', 'options' => ['start' => 'Top', 'center' => 'Center', 'end' => 'Bottom'], 'show_for' => 'logo_carousel'],
+            'marquee_grayscale' => ['type' => 'checkbox', 'label' => 'Grayscale (color on hover)', 'show_for' => 'logo_carousel'],
+            'marquee_eager_count' => ['type' => 'number', 'label' => 'Eager-Load First N Logos', 'min' => 0, 'max' => 30, 'step' => 1, 'show_for' => 'logo_carousel'],
+            'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'min' => 0, 'max' => 24, 'step' => 1, 'show_for' => 'slider,grid,carousel,masonry,gallery'],
             'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'min' => 0, 'max' => 60, 'step' => 2],
             'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
         ];
@@ -1021,17 +1037,34 @@ class Anchor_Video_Slider_Module {
         $pause_class = !empty($settings['marquee_pause_on_hover']) ? ' avg-marquee-pause' : '';
         $direction = ($settings['marquee_direction'] === 'right') ? 'reverse' : 'normal';
 
+        $width_mobile  = intval($settings['marquee_item_width_mobile'] ?? 0)  ?: intval($settings['marquee_item_width']);
+        $height        = intval($settings['marquee_item_height'] ?? 80);
+        $height_mobile = intval($settings['marquee_item_height_mobile'] ?? 0) ?: $height;
+        $gap_mobile    = intval($settings['marquee_gap_mobile'] ?? 0)         ?: intval($settings['marquee_gap']);
+        $speed_mobile  = intval($settings['marquee_speed_mobile'] ?? 0)       ?: intval($settings['marquee_speed']);
+        $align         = !empty($settings['marquee_align']) ? $settings['marquee_align'] : 'center';
+        $grayscale     = !empty($settings['marquee_grayscale']);
+        $eager_count   = max(0, intval($settings['marquee_eager_count'] ?? 6));
+
         $style_vars = [
             '--avg-marquee-speed: ' . intval($settings['marquee_speed']) . 's',
+            '--avg-marquee-speed-mobile: ' . $speed_mobile . 's',
             '--avg-marquee-gap: ' . intval($settings['marquee_gap']) . 'px',
+            '--avg-marquee-gap-mobile: ' . $gap_mobile . 'px',
             '--avg-marquee-item-width: ' . intval($settings['marquee_item_width']) . 'px',
+            '--avg-marquee-item-width-mobile: ' . $width_mobile . 'px',
+            '--avg-marquee-item-height: ' . $height . 'px',
+            '--avg-marquee-item-height-mobile: ' . $height_mobile . 'px',
+            '--avg-marquee-align: ' . esc_attr($align),
             '--avg-radius: ' . intval($settings['border_radius']) . 'px',
             '--avg-object-fit: ' . esc_attr($settings['object_fit']),
         ];
 
+        $extra_class = $grayscale ? ' avg-marquee-grayscale' : '';
+
         ob_start();
         ?>
-        <div class="anchor-video-gallery avg-layout-logo-carousel"
+        <div class="anchor-video-gallery avg-layout-logo-carousel<?php echo esc_attr($extra_class); ?>"
              id="<?php echo esc_attr($uid); ?>"
              data-layout="logo_carousel"
              style="<?php echo esc_attr(implode('; ', $style_vars)); ?>">
@@ -1039,10 +1072,10 @@ class Anchor_Video_Slider_Module {
             <div class="avg-marquee-row<?php echo esc_attr($pause_class); ?>">
                 <div class="avg-marquee" style="animation-direction: <?php echo esc_attr($direction); ?>">
                     <div class="avg-marquee-group">
-                        <?php foreach ($items as $item): ?>
+                        <?php foreach ($items as $idx => $item): ?>
                         <div class="avg-marquee-item">
-                            <?php if (!empty($item['thumb'])): ?>
-                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="<?php echo esc_attr($item['label'] ?? ''); ?>" loading="lazy" />
+                            <?php if (!empty($item['thumb'])): $is_eager = $idx < $eager_count; ?>
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="<?php echo esc_attr($item['label'] ?? ''); ?>" loading="<?php echo $is_eager ? 'eager' : 'lazy'; ?>" decoding="async" />
                             <?php endif; ?>
                         </div>
                         <?php endforeach; ?>
@@ -1051,7 +1084,7 @@ class Anchor_Video_Slider_Module {
                         <?php foreach ($items as $item): ?>
                         <div class="avg-marquee-item">
                             <?php if (!empty($item['thumb'])): ?>
-                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="lazy" />
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="lazy" decoding="async" />
                             <?php endif; ?>
                         </div>
                         <?php endforeach; ?>
@@ -1063,10 +1096,10 @@ class Anchor_Video_Slider_Module {
             <div class="avg-marquee-row avg-marquee-reverse<?php echo esc_attr($pause_class); ?>">
                 <div class="avg-marquee" style="animation-direction: <?php echo esc_attr($direction === 'normal' ? 'reverse' : 'normal'); ?>">
                     <div class="avg-marquee-group">
-                        <?php foreach ($items as $item): ?>
+                        <?php foreach ($items as $idx => $item): ?>
                         <div class="avg-marquee-item">
-                            <?php if (!empty($item['thumb'])): ?>
-                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="<?php echo esc_attr($item['label'] ?? ''); ?>" loading="lazy" />
+                            <?php if (!empty($item['thumb'])): $is_eager = $idx < $eager_count; ?>
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="<?php echo esc_attr($item['label'] ?? ''); ?>" loading="<?php echo $is_eager ? 'eager' : 'lazy'; ?>" decoding="async" />
                             <?php endif; ?>
                         </div>
                         <?php endforeach; ?>
@@ -1075,7 +1108,7 @@ class Anchor_Video_Slider_Module {
                         <?php foreach ($items as $item): ?>
                         <div class="avg-marquee-item">
                             <?php if (!empty($item['thumb'])): ?>
-                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="lazy" />
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="lazy" decoding="async" />
                             <?php endif; ?>
                         </div>
                         <?php endforeach; ?>

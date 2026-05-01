@@ -573,6 +573,16 @@
         panel.hidden = false;
         toggleButton.setAttribute('aria-expanded', 'true');
         toggleButton.classList.add('is-active');
+        // Collapse all accordion sections each time the panel opens.
+        var sectionToggles = panel.querySelectorAll('[data-section-toggle]');
+        for (var i = 0; i < sectionToggles.length; i++) {
+            var btn = sectionToggles[i];
+            btn.setAttribute('aria-expanded', 'false');
+            var region = document.getElementById('anchor-a11y-' + btn.getAttribute('data-section-toggle'));
+            if (region) {
+                region.hidden = true;
+            }
+        }
         closePopover();
         closeModal();
     }

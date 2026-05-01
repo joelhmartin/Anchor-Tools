@@ -202,6 +202,19 @@
     gap: 12px;
 }
 
+.anchor-a11y-profiles-grid[hidden],
+.anchor-a11y-card-grid[hidden] {
+    display: none;
+}
+
+.anchor-a11y-section-toggle svg {
+    transition: transform 0.2s ease;
+}
+
+.anchor-a11y-section-toggle[aria-expanded="true"] svg {
+    transform: rotate(180deg);
+}
+
 .anchor-a11y-profiles-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }

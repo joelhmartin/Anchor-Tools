@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.6.00
+ * Version: 3.6.01
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */

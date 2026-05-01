@@ -17,8 +17,9 @@ class Anchor_Code_Snippets_Module {
         add_action( 'wp_body_open',   [ $this, 'output_body' ] );
         add_action( 'wp_footer',      [ $this, 'output_footer' ] );
 
-        add_action( 'wp_ajax_acs_search_pages', [ $this, 'ajax_search_pages' ] );
-        add_action( 'wp_ajax_acs_ai_generate',  [ $this, 'ajax_ai_generate' ] );
+        add_action( 'wp_ajax_acs_search_pages',    [ $this, 'ajax_search_pages' ] );
+        add_action( 'wp_ajax_acs_ai_generate',     [ $this, 'ajax_ai_generate' ] );
+        add_action( 'wp_ajax_acs_toggle_enabled',  [ $this, 'ajax_toggle_enabled' ] );
 
         add_filter( 'manage_' . self::CPT . '_posts_columns',        [ $this, 'admin_columns' ] );
         add_action( 'manage_' . self::CPT . '_posts_custom_column',  [ $this, 'admin_column_content' ], 10, 2 );
@@ -111,11 +112,12 @@ class Anchor_Code_Snippets_Module {
         <div class="acs-field">
             <label><strong>Scope</strong></label>
             <label><input type="radio" name="acs_scope" value="global" <?php checked( $scope, 'global' ); ?>> Global (all pages)</label><br>
-            <label><input type="radio" name="acs_scope" value="specific" <?php checked( $scope, 'specific' ); ?>> Specific Pages</label>
+            <label><input type="radio" name="acs_scope" value="specific" <?php checked( $scope, 'specific' ); ?>> Only on specific pages</label><br>
+            <label><input type="radio" name="acs_scope" value="exclude" <?php checked( $scope, 'exclude' ); ?>> Everywhere except specific pages</label>
         </div>
 
-        <div class="acs-field acs-page-search-wrap" style="<?php echo $scope !== 'specific' ? 'display:none;' : ''; ?>">
-            <label><strong>Target Pages</strong></label>
+        <div class="acs-field acs-page-search-wrap" style="<?php echo ! in_array( $scope, [ 'specific', 'exclude' ], true ) ? 'display:none;' : ''; ?>">
+            <label><strong class="acs-pages-label"><?php echo $scope === 'exclude' ? 'Excluded Pages' : 'Target Pages'; ?></strong></label>
             <input type="text" id="acs_page_search" placeholder="Search pages&hellip;" autocomplete="off">
             <div id="acs_search_results" class="acs-search-results"></div>
             <div id="acs_page_tags" class="acs-page-tags">
@@ -177,9 +179,12 @@ class Anchor_Code_Snippets_Module {
     /* ─── Admin Assets ─────────────────────────────────────── */
 
     public function admin_assets( $hook ) {
-        global $post;
-        if ( ! in_array( $hook, [ 'post.php', 'post-new.php' ], true ) ) return;
-        if ( ! isset( $post ) || $post->post_type !== self::CPT ) return;
+        global $post, $typenow;
+
+        $is_editor = in_array( $hook, [ 'post.php', 'post-new.php' ], true ) && isset( $post ) && $post->post_type === self::CPT;
+        $is_list   = $hook === 'edit.php' && $typenow === self::CPT;
+
+        if ( ! $is_editor && ! $is_list ) return;
 
         $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-code-snippets/assets/';
         $base_url = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-code-snippets/assets/';
@@ -188,14 +193,16 @@ class Anchor_Code_Snippets_Module {
         wp_enqueue_style( 'acs-admin', $base_url . 'admin.css', [], $ver );
         wp_enqueue_script( 'acs-admin', $base_url . 'admin.js', [ 'jquery' ], $ver, true );
 
-        // WordPress code editor
-        $editor_settings = wp_enqueue_code_editor( [ 'type' => $this->language_to_mime( get_post_meta( $post->ID, 'acs_language', true ) ?: 'javascript' ) ] );
+        $localize = [
+            'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+            'nonce'   => wp_create_nonce( 'acs_ajax' ),
+        ];
 
-        wp_localize_script( 'acs-admin', 'ACS', [
-            'ajaxUrl'        => admin_url( 'admin-ajax.php' ),
-            'nonce'          => wp_create_nonce( 'acs_ajax' ),
-            'editorSettings' => $editor_settings,
-        ] );
+        if ( $is_editor ) {
+            $localize['editorSettings'] = wp_enqueue_code_editor( [ 'type' => $this->language_to_mime( get_post_meta( $post->ID, 'acs_language', true ) ?: 'javascript' ) ] );
+        }
+
+        wp_localize_script( 'acs-admin', 'ACS', $localize );
     }
 
     private function language_to_mime( $lang ) {
@@ -235,6 +242,26 @@ class Anchor_Code_Snippets_Module {
             ];
         }
         wp_send_json_success( $results );
+    }
+
+    /* ─── AJAX: Toggle Enabled ─────────────────────────────── */
+
+    public function ajax_toggle_enabled() {
+        check_ajax_referer( 'acs_ajax', 'nonce' );
+
+        $post_id = isset( $_POST['post_id'] ) ? (int) $_POST['post_id'] : 0;
+        if ( ! $post_id || get_post_type( $post_id ) !== self::CPT ) {
+            wp_send_json_error( [ 'message' => 'Invalid snippet.' ] );
+        }
+        if ( ! current_user_can( 'edit_post', $post_id ) ) {
+            wp_send_json_error( [ 'message' => 'Unauthorized.' ] );
+        }
+
+        $current = get_post_meta( $post_id, 'acs_enabled', true ) === '1';
+        $new     = $current ? '' : '1';
+        update_post_meta( $post_id, 'acs_enabled', $new );
+
+        wp_send_json_success( [ 'enabled' => $new === '1' ] );
     }
 
     /* ─── AJAX: AI Generate ────────────────────────────────── */
@@ -345,6 +372,12 @@ class Anchor_Code_Snippets_Module {
                 if ( ! $pages ) continue;
                 $ids = array_map( 'intval', explode( ',', $pages ) );
                 if ( ! in_array( $current_id, $ids, true ) ) continue;
+            } elseif ( $scope === 'exclude' ) {
+                $pages = get_post_meta( $snippet->ID, 'acs_target_pages', true );
+                if ( $pages ) {
+                    $ids = array_map( 'intval', explode( ',', $pages ) );
+                    if ( in_array( $current_id, $ids, true ) ) continue;
+                }
             }
 
             $language = get_post_meta( $snippet->ID, 'acs_language', true );
@@ -432,12 +465,21 @@ class Anchor_Code_Snippets_Module {
 
             case 'acs_scope':
                 $scope = get_post_meta( $post_id, 'acs_scope', true ) ?: 'global';
-                echo esc_html( $scope === 'specific' ? 'Specific' : 'Global' );
+                $map = [ 'global' => 'Global', 'specific' => 'Specific', 'exclude' => 'Exclude' ];
+                echo esc_html( $map[ $scope ] ?? 'Global' );
                 break;
 
             case 'acs_enabled':
-                $on = get_post_meta( $post_id, 'acs_enabled', true );
-                echo $on === '1' ? '<span style="color:green;">Yes</span>' : '<span style="color:#999;">No</span>';
+                $on = get_post_meta( $post_id, 'acs_enabled', true ) === '1';
+                printf(
+                    '<button type="button" class="button button-small acs-toggle-enabled" data-id="%d" data-enabled="%d" aria-pressed="%s" style="min-width:54px;color:%s;border-color:%s;">%s</button>',
+                    (int) $post_id,
+                    $on ? 1 : 0,
+                    $on ? 'true' : 'false',
+                    $on ? '#1a7f37' : '#999',
+                    $on ? '#1a7f37' : '#ccc',
+                    $on ? 'On' : 'Off'
+                );
                 break;
         }
     }

@@ -37,7 +37,9 @@
     /* ─── Scope Toggle ─────────────────────────────────── */
 
     $( 'input[name="acs_scope"]' ).on( 'change', function() {
-        $( '.acs-page-search-wrap' ).toggle( this.value === 'specific' );
+        var v = this.value;
+        $( '.acs-page-search-wrap' ).toggle( v === 'specific' || v === 'exclude' );
+        $( '.acs-pages-label' ).text( v === 'exclude' ? 'Excluded Pages' : 'Target Pages' );
     });
 
     /* ─── Page Search ──────────────────────────────────── */
@@ -159,6 +161,36 @@
             complete: function() {
                 $btn.prop( 'disabled', false );
                 $spinner.removeClass( 'is-active' );
+            }
+        });
+    });
+
+    /* ─── List View: Toggle Enabled ────────────────────── */
+
+    $( document ).on( 'click', '.acs-toggle-enabled', function() {
+        var $btn = $( this );
+        if ( $btn.prop( 'disabled' ) ) return;
+
+        var id = $btn.data( 'id' );
+        $btn.prop( 'disabled', true );
+
+        $.ajax({
+            url:    ACS.ajaxUrl,
+            method: 'POST',
+            data:   { action: 'acs_toggle_enabled', nonce: ACS.nonce, post_id: id },
+            success: function( res ) {
+                if ( ! res.success ) return;
+                var on = !! res.data.enabled;
+                $btn.data( 'enabled', on ? 1 : 0 )
+                    .attr( 'aria-pressed', on ? 'true' : 'false' )
+                    .text( on ? 'On' : 'Off' )
+                    .css({
+                        color:        on ? '#1a7f37' : '#999',
+                        borderColor:  on ? '#1a7f37' : '#ccc'
+                    });
+            },
+            complete: function() {
+                $btn.prop( 'disabled', false );
             }
         });
     });

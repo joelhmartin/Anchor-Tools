@@ -64,6 +64,9 @@ class Anchor_Video_Slider_Module {
         'marquee_pause_on_hover' => true,
         'marquee_direction' => 'left',
         'marquee_reverse_row' => false,
+        'eager_load_count' => 4,
+        'gap_mobile' => 0,
+        'tile_shadow' => 'soft',
     ];
 
     /* ── Setting definitions for metabox rendering & save ── */
@@ -117,6 +120,9 @@ class Anchor_Video_Slider_Module {
             'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'show_for' => 'logo_carousel'],
             'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'options' => ['left' => 'Left', 'right' => 'Right'], 'show_for' => 'logo_carousel'],
             'marquee_reverse_row' => ['type' => 'checkbox', 'label' => 'Add Reverse Row', 'show_for' => 'logo_carousel'],
+            'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'min' => 0, 'max' => 24, 'step' => 1],
+            'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'min' => 0, 'max' => 60, 'step' => 2],
+            'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
         ];
     }
 
@@ -723,8 +729,14 @@ class Anchor_Video_Slider_Module {
             ? '2.35 / 1'
             : ($ratio_map[$settings['thumb_aspect_ratio']] ?? '16 / 9');
 
+        $gap_mobile = intval($settings['gap_mobile'] ?? 0);
+        if ($gap_mobile <= 0) {
+            $gap_mobile = intval($settings['gap']);
+        }
+
         $style_vars = [
             '--avg-gap: ' . intval($settings['gap']) . 'px',
+            '--avg-gap-mobile: ' . $gap_mobile . 'px',
             '--avg-radius: ' . intval($settings['border_radius']) . 'px',
             '--avg-cols-desktop: ' . intval($settings['columns_desktop']),
             '--avg-cols-tablet: ' . intval($settings['columns_tablet']),
@@ -736,7 +748,13 @@ class Anchor_Video_Slider_Module {
         $max_height = intval($settings['max_height']);
         if ($max_height > 0) {
             $style_vars[] = '--avg-max-height: ' . $max_height . 'px';
+            $classes[] = 'avg-has-max-height';
         }
+
+        $shadow = !empty($settings['tile_shadow']) ? $settings['tile_shadow'] : 'soft';
+        $classes[] = 'avg-shadow-' . sanitize_html_class($shadow);
+
+        $eager_count = max(0, intval($settings['eager_load_count'] ?? 4));
 
         ob_start();
         ?>
@@ -776,7 +794,18 @@ class Anchor_Video_Slider_Module {
                      data-full-url="<?php echo esc_url($video['full_url'] ?? $video['thumb']); ?>"
                      <?php endif; ?>>
                     <div class="avg-tile-inner">
-                        <div class="avg-thumb"<?php echo !empty($video['thumb']) ? ' style="background-image:url(\'' . esc_url($video['thumb']) . '\')"' : ''; ?>>
+                        <div class="avg-thumb">
+                            <?php if (!empty($video['thumb'])):
+                                $is_eager = $i < $eager_count;
+                                $alt_text = !empty($video['label']) ? $video['label'] : '';
+                            ?>
+                            <img class="avg-thumb-img"
+                                 src="<?php echo esc_url($video['thumb']); ?>"
+                                 alt="<?php echo esc_attr($alt_text); ?>"
+                                 loading="<?php echo $is_eager ? 'eager' : 'lazy'; ?>"
+                                 decoding="async"
+                                 <?php if ($is_eager && $i === 0): ?>fetchpriority="high"<?php endif; ?> />
+                            <?php endif; ?>
                             <?php if (!$is_image && $settings['play_button_style'] !== 'none'): ?>
                             <span class="avg-play" aria-hidden="true">
                                 <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>
@@ -906,7 +935,15 @@ class Anchor_Video_Slider_Module {
                  <?php else: ?>
                  data-full-url="<?php echo esc_url($first['full_url'] ?? $first['thumb']); ?>"
                  <?php endif; ?>>
-                <div class="avg-thumb"<?php echo !empty($first['thumb']) ? ' style="background-image:url(\'' . esc_url($first['thumb']) . '\')"' : ''; ?>>
+                <div class="avg-thumb">
+                    <?php if (!empty($first['thumb'])): ?>
+                    <img class="avg-thumb-img"
+                         src="<?php echo esc_url($first['thumb']); ?>"
+                         alt="<?php echo esc_attr($first['label'] ?? ''); ?>"
+                         loading="eager"
+                         decoding="async"
+                         fetchpriority="high" />
+                    <?php endif; ?>
                     <?php if (!$first_img && $settings['play_button_style'] !== 'none'): ?>
                     <span class="avg-play" aria-hidden="true">
                         <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>
@@ -945,7 +982,14 @@ class Anchor_Video_Slider_Module {
                          data-label="<?php echo esc_attr($video['label'] ?? ''); ?>"
                          data-duration="<?php echo esc_attr($video['duration'] ?? ''); ?>"
                          title="<?php echo esc_attr($video['label'] ?? ''); ?>">
-                        <div class="avg-gallery-thumb-img"<?php echo !empty($video['thumb']) ? ' style="background-image:url(\'' . esc_url($video['thumb']) . '\')"' : ''; ?>>
+                        <div class="avg-gallery-thumb-img">
+                            <?php if (!empty($video['thumb'])): ?>
+                            <img class="avg-thumb-img"
+                                 src="<?php echo esc_url($video['thumb']); ?>"
+                                 alt="<?php echo esc_attr($video['label'] ?? ''); ?>"
+                                 loading="<?php echo $i < 6 ? 'eager' : 'lazy'; ?>"
+                                 decoding="async" />
+                            <?php endif; ?>
                             <?php if (!$is_image && $settings['play_button_style'] !== 'none'): ?>
                             <span class="avg-play" aria-hidden="true">
                                 <?php echo $this->get_play_button_svg($settings['play_button_style']); ?>

@@ -84,10 +84,17 @@
   width: 100%;
   aspect-ratio: var(--avg-thumb-ratio, 16 / 9);
   background: linear-gradient(135deg, var(--avg-bg), var(--avg-border));
-  background-size: var(--avg-object-fit, cover);
-  background-position: center;
-  background-repeat: no-repeat;
   overflow: hidden;
+}
+
+.avg-thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: var(--avg-object-fit, cover);
+  object-position: center;
 }
 
 .avg-meta {
@@ -306,16 +313,31 @@
   aspect-ratio: auto;
 }
 
-.anchor-video-gallery[style*="--avg-max-height"] .avg-thumb {
+/* Max-Height: when set, drop aspect-ratio constraint so the thumb takes
+   the configured height and the inner img object-fits inside it. */
+.avg-has-max-height .avg-thumb {
+  aspect-ratio: auto;
+  height: var(--avg-max-height);
   max-height: var(--avg-max-height);
 }
 
 /* ==========================================================================
-   Object Fit
+   Tile Shadow (configurable)
    ========================================================================== */
 
-.avg-thumb {
-  background-size: var(--avg-object-fit, cover);
+.avg-shadow-none .avg-tile-inner { box-shadow: none; }
+.avg-shadow-soft .avg-tile-inner { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08); }
+.avg-shadow-medium .avg-tile-inner { box-shadow: 0 6px 16px rgba(0, 0, 0, 0.14); }
+.avg-shadow-strong .avg-tile-inner { box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22); }
+
+/* ==========================================================================
+   Mobile gap override
+   ========================================================================== */
+
+@media (max-width: 640px) {
+  .anchor-video-gallery {
+    --avg-gap: var(--avg-gap-mobile);
+  }
 }
 
 /* ==========================================================================
@@ -537,10 +559,8 @@
 .avg-gallery-featured .avg-thumb {
   aspect-ratio: 16 / 9;
   width: 100%;
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
   position: relative;
+  overflow: hidden;
 }
 
 .avg-gallery-featured .avg-play svg {
@@ -603,10 +623,8 @@
 
 .avg-gallery-thumb-img {
   aspect-ratio: 16 / 9;
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
   position: relative;
+  overflow: hidden;
 }
 
 .avg-gallery-thumb .avg-play {

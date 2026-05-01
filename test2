@@ -1,0 +1,1420 @@
+<?php
+/**
+ * Anchor Corps – Custom Header Navigation
+ * Injected via wp_body_open hook in functions.php
+ *
+ * Replaces the Divi Theme Builder header layout.
+ * Shortcodes:
+ * [phone], [phone_href], [email], [address], [google_maps_link],
+ * [facebook_url], [instagram_url], [google_review_url],
+ * [business_name], [site_icon_url], [site_image_horizontal], [site_image_horizontal_white]
+ */
+
+$phone              = do_shortcode('[phone]');
+$phone_href         = do_shortcode('[phone_href]');
+$email              = do_shortcode('[email]');
+$address            = do_shortcode('[address]');
+$google_maps_link   = do_shortcode('[google_maps_link]');
+$facebook_url       = do_shortcode('[facebook_url]');
+$instagram_url      = do_shortcode('[instagram_url]');
+$google_review_url  = do_shortcode('[google_review_url]');
+$business_name      = do_shortcode('[business_name]');
+$site_icon_url      = do_shortcode('[site_icon_url]');
+$site_image_h       = do_shortcode('[site_image_horizontal]');
+$site_image_h_white = do_shortcode('[site_image_horizontal_white]');
+?>
+
+<div class="anchor-header-section" style="position:sticky; top:0; z-index:999999; padding:0;">
+
+<?php if ( is_admin_bar_showing() ) : ?>
+<style>
+  .anchor-header-section { top: 32px !important; }
+  @media (max-width: 782px) {
+    .anchor-header-section { top: 46px !important; }
+  }
+</style>
+<?php endif; ?>
+
+<style>
+  .et-vb-root-ancestor .anchor-header-section { display: none !important; }
+</style>
+
+<!-- ====================== -->
+<!-- SUPER HEADER BAR       -->
+<!-- ====================== -->
+<div class="nav-super-header">
+  <div class="nav-super-header-inner">
+    <nav>
+      <ul class="header-links left-links">
+        <li class="hide-mobile"><a href="/contact/">Contact Us</a></li>
+        <li class="show-mobile-only">
+          <a href="<?php echo esc_url($phone_href); ?>">
+            <i class="fas fa-phone"></i> <?php echo esc_html($phone); ?>
+          </a>
+        </li>
+        <li class="hide-mobile"><a href="/blog/">Blog</a></li>
+        <li class="hide-mobile social-links">
+          <?php if ( ! empty($facebook_url) ) : ?>
+            <a href="<?php echo esc_url($facebook_url); ?>" target="_blank" rel="noopener" aria-label="Facebook"><i class="fab fa-facebook-f"></i></a>
+          <?php endif; ?>
+
+          <?php if ( ! empty($instagram_url) ) : ?>
+            <a href="<?php echo esc_url($instagram_url); ?>" target="_blank" rel="noopener" aria-label="Instagram"><i class="fab fa-instagram"></i></a>
+          <?php endif; ?>
+
+          <?php if ( ! empty($google_review_url) ) : ?>
+            <a href="<?php echo esc_url($google_review_url); ?>" target="_blank" rel="noopener" aria-label="Google Reviews"><i class="fab fa-google"></i></a>
+          <?php endif; ?>
+        </li>
+      </ul>
+    </nav>
+
+    <nav>
+      <ul class="header-links right-links">
+        <li class="hide-mobile">
+          <a href="<?php echo esc_url($google_maps_link); ?>" target="_blank" rel="noopener">
+            <?php echo esc_html( wp_strip_all_tags( $address ) ); ?>
+          </a>
+        </li>
+        <li class="show-mobile-only"><a href="/contact/"><i class="fas fa-envelope"></i> Message Us</a></li>
+        <li class="hide-mobile office-hours-trigger">
+          <a href="/contact/">Our Hours</a>
+          <div class="office-hours-content">
+            <?php echo do_shortcode('[business_hours]'); ?>
+          </div>
+        </li>
+      </ul>
+    </nav>
+  </div>
+</div>
+
+<!-- ======================= -->
+<!-- ANCHOR CORPS: HEADER    -->
+<!-- ======================= -->
+<div class="anchor-header-row">
+
+  <!-- GLASS WRAP -->
+  <div class="glassify">
+    <div class="glass-filter" aria-hidden="true"></div>
+    <div class="glass-overlay" aria-hidden="true"></div>
+    <div class="glass-specular" aria-hidden="true"></div>
+    <svg class="glass-defs" width="0" height="0" aria-hidden="true" focusable="false">
+      <filter id="lg-dist" x="0%" y="0%" width="100%" height="100%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.008 0.008" numOctaves="2" seed="92" result="noise" />
+        <feGaussianBlur in="noise" stdDeviation="2" result="blurred" />
+        <feDisplacementMap in="SourceGraphic" in2="blurred" scale="70" xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+    </svg>
+
+    <!-- ====================== -->
+    <!-- DESKTOP MENU           -->
+    <!-- ====================== -->
+    <div class="desktop-menu-wrapper">
+
+      <a href="/" class="desktop-logo-link" aria-label="<?php echo esc_attr($business_name); ?>">
+        <span class="desktop-logo-wrap">
+          <?php if ( ! empty($site_image_h) ) : ?>
+            <img class="desktop-logo desktop-logo-default" width="250" src="<?php echo esc_url($site_image_h); ?>" alt="<?php echo esc_attr($business_name); ?>" />
+          <?php endif; ?>
+
+          <?php if ( ! empty($site_image_h_white) ) : ?>
+            <img class="desktop-logo desktop-logo-white" width="250" src="<?php echo esc_url($site_image_h_white); ?>" alt="<?php echo esc_attr($business_name); ?>" />
+          <?php endif; ?>
+        </span>
+      </a>
+
+      <nav class="desktop-menu-nav">
+
+        <!-- ABOUT US - mega panel -->
+        <div class="nav-mega-wrap">
+          <a href="/about-us/" class="desktop-menu-nav-item">About Us</a>
+          <div class="mega-panel mega-panel-hero">
+            <section class="ac-hero" aria-label="About <?php echo esc_attr($business_name); ?>">
+              <div class="ac-hero__promo">
+                <div class="ac-hero__title">
+                  Share <span class="accent-font">In The Smiles</span>
+                </div>
+                <a href="/contact/" class="btn basic-contact" role="button" aria-label="Get in touch">
+                  <span class="text">Get In Touch</span>
+                  <svg class="arrow-btn" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M4.66669 11.3334L11.3334 4.66669" stroke="white" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round"></path>
+                    <path d="M4.66669 4.66669H11.3334V11.3334" stroke="white" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round"></path>
+                  </svg>
+                </a>
+              </div>
+              <div class="ac-hero__grid" role="list">
+                <a class="ac-feature" href="/meet-the-dentists/" role="listitem">
+                  <div class="ac-feature__icon"><i class="fa-solid fa-user-doctor"></i></div>
+                  <div class="ac-feature__copy">
+                    <div class="ac-feature-title">Meet The Dentists</div>
+                    <p>Get to know the doctors behind your smile.</p>
+                  </div>
+                </a>
+                <a class="ac-feature" href="/reviews-testimonials/" role="listitem">
+                  <div class="ac-feature__icon"><i class="fa-solid fa-face-smile-beam"></i></div>
+                  <div class="ac-feature__copy">
+                    <div class="ac-feature-title">Reviews &amp; Testimonials</div>
+                    <p>Real smiles, real results.</p>
+                  </div>
+                </a>
+                <a class="ac-feature" href="/patient-info/" role="listitem">
+                  <div class="ac-feature__icon"><i class="fa-solid fa-clipboard-list"></i></div>
+                  <div class="ac-feature__copy">
+                    <div class="ac-feature-title">Patient Information</div>
+                    <p>Insurance, payments, and new patient resources.</p>
+                  </div>
+                </a>
+                <a class="ac-feature" href="/blog/" role="listitem">
+                  <div class="ac-feature__icon"><i class="fa-solid fa-newspaper"></i></div>
+                  <div class="ac-feature__copy">
+                    <div class="ac-feature-title">Blog</div>
+                    <p>Tips, news, and dental health insights.</p>
+                  </div>
+                </a>
+                <div class="ac-feature__bottom-bar accent-font">
+                  Caring for healthy mouths and confident smiles, one visit at a time.
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <!-- OUR SERVICES - mega panel -->
+        <div class="nav-mega-wrap">
+          <a href="/services/" class="desktop-menu-nav-item">Our Services</a>
+          <div class="mega-panel mega-panel-wide">
+            <nav class="ac-services-menu" aria-label="Our Services">
+              <div class="ac-services-menu__grid">
+                <div class="ac-services-menu__col">
+                  <a class="ac-services-menu__top" href="/services/cosmetic-dentistry/">Cosmetic Dentistry</a>
+                  <div class="ac-services-menu__sub">
+                    <a href="/services/teeth-whitening/">Teeth Whitening</a>
+                    <a href="/services/veneers/">Veneers</a>
+                    <a href="/services/invisalign/">Invisalign</a>
+                  </div>
+                </div>
+
+                <div class="ac-services-menu__col">
+                  <a class="ac-services-menu__top" href="/services/restorative-dentistry/">Restorative Dentistry</a>
+                  <div class="ac-services-menu__sub">
+                    <a href="/services/dental-crowns/">Dental Crowns</a>
+                    <a href="/services/dental-bridges/">Dental Bridges</a>
+                    <a href="/services/dental-implants/">Dental Implants</a>
+                    <a href="/services/fillings/">Fillings</a>
+                    <a href="/services/root-canal/">Root Canal</a>
+                    <a href="/services/missing-teeth-repair/">Missing Teeth Repair</a>
+                  </div>
+                </div>
+
+                <div class="ac-services-menu__col">
+                  <a class="ac-services-menu__top" href="/services/preventative-dentistry/">Preventative Dentistry</a>
+                  <div class="ac-services-menu__sub">
+                    <a href="/services/dental-cleaning/">Dental Cleaning</a>
+                    <a href="/services/sedation-dentistry/">Sedation Dentistry</a>
+                    <a href="/services/wisdom-teeth-removal/">Wisdom Teeth Removal</a>
+                  </div>
+                </div>
+              </div>
+              <a href="/services/emergency-dentistry/" class="ac-services-menu__emergency">
+                <i class="fa-solid fa-truck-medical" aria-hidden="true"></i>
+                In need of Emergency Services? <span>Find out more here &rarr;</span>
+              </a>
+            </nav>
+          </div>
+        </div>
+
+        <!-- FOR PATIENTS - mega panel -->
+        <div class="nav-mega-wrap">
+          <a href="/patient-info/" class="desktop-menu-nav-item">For Patients</a>
+          <div class="mega-panel">
+            <nav class="ac-services-menu" aria-label="For Patients">
+              <a class="ac-services-menu__top" href="/offers/">
+                <i class="fa-solid fa-tag" aria-hidden="true"></i><span>Offers</span>
+              </a>
+              <div class="ac-services-menu__sub">
+                <a href="/offers/10-off-military-discount/">10% Off For Military &amp; Their Families</a>
+                <a href="/offers/free-iv-sedation-wisdom-teeth/">Free IV Sedation Wisdom Teeth</a>
+                <a href="/offers/free-limited-emergency-exam/">Free Limited Emergency Exam</a>
+                <a href="/offers/free-second-opinions/">Free Second Opinions</a>
+              </div>
+              <a class="ac-services-menu__top" href="/dental-savings-plan/">
+                <i class="fa-solid fa-id-card" aria-hidden="true"></i><span>Dental Savings Plan</span>
+              </a>
+              <a class="ac-services-menu__top" href="/pay-with-cherry/">
+                <i class="fa-solid fa-credit-card" aria-hidden="true"></i><span>Pay with Cherry</span>
+              </a>
+              <a class="ac-services-menu__top" href="/contact/">
+                <i class="fa-solid fa-calendar-check" aria-hidden="true"></i><span>Request an Appointment</span>
+              </a>
+            </nav>
+          </div>
+        </div>
+
+        <!-- CTA BUTTONS -->
+        <a href="/contact/" class="btn">
+          <span class="text">Appointment Request</span>
+          <svg class="arrow-btn" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4.66669 11.3334L11.3334 4.66669" stroke="white" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round"></path><path d="M4.66669 4.66669H11.3334V11.3334" stroke="white" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        </a>
+
+        <a href="<?php echo esc_url($phone_href); ?>" class="btn light">
+          <span class="text"><?php echo esc_html($phone); ?></span>
+          <svg class="arrow-btn" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4.66669 11.3334L11.3334 4.66669" stroke="white" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round"></path><path d="M4.66669 4.66669H11.3334V11.3334" stroke="white" stroke-width="1.33333" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        </a>
+
+      </nav>
+    </div>
+
+    <!-- ====================== -->
+    <!-- MOBILE MENU            -->
+    <!-- ====================== -->
+    <div class="mobile-menu-wrapper">
+      <div class="mobile-menu-header">
+        <a href="/" class="mobile-logo-link" aria-label="<?php echo esc_attr($business_name); ?>">
+          <?php if ( ! empty($site_image_h_white) ) : ?>
+            <img src="<?php echo esc_url($site_image_h_white); ?>" width="70" alt="<?php echo esc_attr($business_name); ?>" />
+          <?php endif; ?>
+        </a>
+
+        <div class="burger-container" onclick="toggleMobileMenu(this)">
+          <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 200 200">
+            <g stroke-width="6.5" stroke-linecap="round">
+              <path d="M72 82.286h28.75" fill="none" stroke="#fff" />
+              <path d="M100.75 103.714l72.482-.143c.043 39.398-32.284 71.434-72.16 71.434-39.878 0-72.204-32.036-72.204-71.554" fill="none" stroke="#fff" />
+              <path d="M72 125.143h28.75" fill="none" stroke="#fff" />
+              <path d="M100.75 103.714l-71.908-.143c.026-39.638 32.352-71.674 72.23-71.674 39.876 0 72.203 32.036 72.203 71.554" fill="none" stroke="#fff" />
+              <path d="M100.75 82.286h28.75" fill="none" stroke="#fff" />
+              <path d="M100.75 125.143h28.75" fill="none" stroke="#fff" />
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <div class="mobile-menu-overlay">
+        <div class="mobile-menu-content">
+          <nav class="menu-links">
+
+            <!-- ABOUT US -->
+            <div class="menu-toggle-container">
+              <div class="menu-toggle-header">
+                <a href="/about-us/" class="menu-toggle-title">ABOUT US</a>
+                <span class="menu-toggle-icon" onclick="toggleContent(this)">
+                  <i class="fa fa-chevron-right" aria-hidden="true"></i>
+                </span>
+              </div>
+              <div class="menu-toggle-content">
+                <div class="menu-toggle-content-text">
+                  <a href="/meet-the-dentists/">Meet The Dentists</a>
+                  <a href="/meet-the-dentists/meet-dr-chad-curtis-dds/">Meet Dr. Chad Curtis</a>
+                  <a href="/meet-the-dentists/meet-dr-broc-brimhall/">Meet Dr. Broc Brimhall</a>
+                  <a href="/meet-the-dentists/meet-dr-alex-anderson-dds/">Meet Dr. Alex Anderson</a>
+                  <a href="/reviews-testimonials/">Reviews &amp; Testimonials</a>
+                  <a href="/patient-info/">Patient Information</a>
+                  <a href="/blog/">Blog</a>
+                </div>
+              </div>
+            </div>
+
+            <!-- OUR SERVICES -->
+            <div class="menu-toggle-container">
+              <div class="menu-toggle-header">
+                <a href="/services/" class="menu-toggle-title">OUR SERVICES</a>
+                <span class="menu-toggle-icon" onclick="toggleContent(this)">
+                  <i class="fa fa-chevron-right" aria-hidden="true"></i>
+                </span>
+              </div>
+              <div class="menu-toggle-content">
+                <div class="menu-toggle-content-text">
+                  <div class="mobile-sub-group">
+                    <div class="mobile-sub-group__header">
+                      <a href="/services/cosmetic-dentistry/" class="mobile-cat">Cosmetic Dentistry</a>
+                      <span class="mobile-sub-toggle" onclick="toggleMobileSubGroup(this)"><i class="fa fa-chevron-right"></i></span>
+                    </div>
+                    <div class="mobile-sub-group__content">
+                      <a href="/services/teeth-whitening/">Teeth Whitening</a>
+                      <a href="/services/veneers/">Veneers</a>
+                      <a href="/services/invisalign/">Invisalign</a>
+                    </div>
+                  </div>
+                  <div class="mobile-sub-group">
+                    <div class="mobile-sub-group__header">
+                      <a href="/services/restorative-dentistry/" class="mobile-cat">Restorative Dentistry</a>
+                      <span class="mobile-sub-toggle" onclick="toggleMobileSubGroup(this)"><i class="fa fa-chevron-right"></i></span>
+                    </div>
+                    <div class="mobile-sub-group__content">
+                      <a href="/services/dental-crowns/">Dental Crowns</a>
+                      <a href="/services/dental-bridges/">Dental Bridges</a>
+                      <a href="/services/dental-implants/">Dental Implants</a>
+                      <a href="/services/fillings/">Fillings</a>
+                      <a href="/services/root-canal/">Root Canal</a>
+                      <a href="/services/missing-teeth-repair/">Missing Teeth Repair</a>
+                    </div>
+                  </div>
+                  <div class="mobile-sub-group">
+                    <div class="mobile-sub-group__header">
+                      <a href="/services/preventative-dentistry/" class="mobile-cat">Preventative Dentistry</a>
+                      <span class="mobile-sub-toggle" onclick="toggleMobileSubGroup(this)"><i class="fa fa-chevron-right"></i></span>
+                    </div>
+                    <div class="mobile-sub-group__content">
+                      <a href="/services/dental-cleaning/">Dental Cleaning</a>
+                      <a href="/services/sedation-dentistry/">Sedation Dentistry</a>
+                      <a href="/services/wisdom-teeth-removal/">Wisdom Teeth Removal</a>
+                    </div>
+                  </div>
+                  <div class="mobile-sub-group">
+                    <div class="mobile-sub-group__header">
+                      <a href="/services/emergency-dentistry/" class="mobile-cat">Emergency Dentistry</a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- FOR PATIENTS -->
+            <div class="menu-toggle-container">
+              <div class="menu-toggle-header">
+                <a href="/patient-info/" class="menu-toggle-title">FOR PATIENTS</a>
+                <span class="menu-toggle-icon" onclick="toggleContent(this)">
+                  <i class="fa fa-chevron-right" aria-hidden="true"></i>
+                </span>
+              </div>
+              <div class="menu-toggle-content">
+                <div class="menu-toggle-content-text">
+                  <div class="mobile-sub-group">
+                    <div class="mobile-sub-group__header">
+                      <a href="/offers/" class="mobile-cat">Offers</a>
+                      <span class="mobile-sub-toggle" onclick="toggleMobileSubGroup(this)"><i class="fa fa-chevron-right"></i></span>
+                    </div>
+                    <div class="mobile-sub-group__content">
+                      <a href="/offers/10-off-military-discount/">10% Off For Military &amp; Their Families</a>
+                      <a href="/offers/free-iv-sedation-wisdom-teeth/">Free IV Sedation Wisdom Teeth</a>
+                      <a href="/offers/free-limited-emergency-exam/">Free Limited Emergency Exam</a>
+                      <a href="/offers/free-second-opinions/">Free Second Opinions</a>
+                    </div>
+                  </div>
+                  <div class="mobile-sub-group">
+                    <div class="mobile-sub-group__header">
+                      <a href="/dental-savings-plan/" class="mobile-cat">Dental Savings Plan</a>
+                    </div>
+                  </div>
+                  <div class="mobile-sub-group">
+                    <div class="mobile-sub-group__header">
+                      <a href="/pay-with-cherry/" class="mobile-cat">Pay with Cherry</a>
+                    </div>
+                  </div>
+                  <div class="mobile-sub-group">
+                    <div class="mobile-sub-group__header">
+                      <a href="/contact/" class="mobile-cat">Request an Appointment</a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </nav>
+        </div>
+        <!-- OVERLAY FOOTER -->
+        <div class="overlay-footer-info">
+          <div class="overlay-footer-cta">
+            <a class="overlay-cta-btn" href="<?php echo esc_url($phone_href); ?>">
+              <i class="fas fa-phone"></i> Call Now
+            </a>
+            <a class="overlay-cta-btn overlay-cta-btn--outline" href="/contact/">
+              <i class="fas fa-envelope"></i> Message Us
+            </a>
+          </div>
+
+          <div class="overlay-footer-row">
+            <div class="overlay-footer-address">
+              <i class="fa-solid fa-location-dot"></i>
+              <a href="<?php echo esc_url($google_maps_link); ?>"><?php echo esc_html( wp_strip_all_tags( $address ) ); ?></a>
+            </div>
+          </div>
+
+          <div class="overlay-footer-socials">
+            <?php if ( ! empty($facebook_url) ) : ?>
+              <a href="<?php echo esc_url($facebook_url); ?>" target="_blank" rel="noopener" aria-label="Facebook"><i class="fab fa-facebook-f"></i></a>
+            <?php endif; ?>
+
+            <?php if ( ! empty($instagram_url) ) : ?>
+              <a href="<?php echo esc_url($instagram_url); ?>" target="_blank" rel="noopener" aria-label="Instagram"><i class="fab fa-instagram"></i></a>
+            <?php endif; ?>
+
+            <?php if ( ! empty($google_review_url) ) : ?>
+              <a href="<?php echo esc_url($google_review_url); ?>" target="_blank" rel="noopener" aria-label="Google Reviews"><i class="fab fa-google"></i></a>
+            <?php endif; ?>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+</div>
+
+<!-- ====================== -->
+<!-- STYLES                 -->
+<!-- ====================== -->
+<style>
+:root{
+  --lg-bg-color: rgba(150,150,150,0.25);
+  --lg-highlight: rgba(255,255,255,0.75);
+  --text: #101316;
+  --muted: #5c676e;
+  --surface: #ffffff;
+  --surface-soft: #f3f6f7;
+}
+
+.anchor-header-row{position:relative; z-index:100;}
+
+/* Glass */
+.glassify{position:relative !important; z-index:0 !important;}
+.glassify .glass-filter,
+.glassify .glass-overlay,
+.glassify .glass-specular{
+  position:absolute !important; inset:0 !important;
+  border-radius:100px !important;
+  pointer-events:none !important;
+  transition:all .4s ease-in-out !important;
+  opacity:0 !important;
+}
+.anchor-header-row.active .glassify .glass-filter,
+.anchor-header-row.active .glassify .glass-overlay,
+.anchor-header-row.active .glassify .glass-specular{opacity:1 !important;}
+.glassify .glass-filter{
+  z-index:0 !important;
+  backdrop-filter:none !important; -webkit-backdrop-filter:none !important;
+  filter:none !important; isolation:isolate !important;
+}
+.glass-defs{position:absolute; width:0; height:0; left:0; top:0; display:block;}
+.anchor-header-row.active .glassify .glass-filter{
+  backdrop-filter:blur(8px) saturate(160%) !important;
+  -webkit-backdrop-filter:blur(8px) saturate(160%) !important;
+  filter:url(#lg-dist) !important;
+}
+.anchor-header-row { overflow: visible !important; }
+.anchor-header-row .glassify{padding:0; transition:padding .4s ease;}
+.anchor-header-row.active .glassify{padding:15px 30px;}
+.glassify .glass-overlay{z-index:1 !important; background:transparent !important;}
+.anchor-header-row.active .glassify .glass-overlay{background:var(--lg-bg-color) !important;}
+.glassify .glass-specular{z-index:2 !important; box-shadow:none !important;}
+.anchor-header-row.active .glassify .glass-specular{
+  box-shadow:inset 1px 1px 0 var(--lg-highlight), inset 0 0 5px var(--lg-highlight) !important;
+}
+.glassify > *:not(.glass-filter):not(.glass-overlay):not(.glass-specular):not(.glass-defs){
+  position:relative !important; z-index:3 !important;
+}
+
+/* Desktop nav */
+.desktop-menu-wrapper{display:flex; align-items:center; justify-content:space-between; width:100%;}
+.desktop-menu-wrapper img, .mobile-menu-header img{display:block; padding:0; margin:0;}
+.desktop-menu-nav{display:flex; align-items:center; gap:20px;}
+.desktop-menu-nav-item{color:#fff; font-size:clamp(12px, 1.1vw, 1.2rem) !important; cursor:pointer;}
+
+.desktop-logo-link{
+  display:inline-flex;
+  align-items:center;
+}
+.desktop-logo-wrap{
+  position:relative;
+  display:inline-block;
+  width:225px;
+}
+.desktop-logo{
+  display:block;
+  width:225px;
+  height:auto;
+  transition:opacity .35s ease;
+}
+.desktop-logo-white{
+  position:absolute;
+  top:0;
+  left:0;
+  opacity:0;
+}
+.anchor-header-row.active .desktop-logo-default{
+  opacity:0;
+}
+.anchor-header-row.active .desktop-logo-white{
+  opacity:1;
+}
+
+/* Nav item hover pill */
+.desktop-menu-nav-item {
+  position: relative;
+  color: #fff;
+  font-size:clamp(12px, 3vw, 1.6rem);
+  text-decoration: none;
+  border-radius: 0px !important;
+  transition: color 0.3s ease, padding .2s ease;
+  overflow: hidden;
+  z-index: 1;
+  line-height: 1.1em;
+}
+.desktop-menu-nav-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 50px;
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: -1;
+}
+.desktop-menu-nav-item:hover { padding: 8px 16px; }
+.desktop-menu-nav-item:hover::before {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+.nav-mega-wrap:hover > .desktop-menu-nav-item {
+  padding: 8px 16px;
+}
+.nav-mega-wrap:hover > .desktop-menu-nav-item::before {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+
+/* ========================= */
+/* MEGA PANELS               */
+/* ========================= */
+.nav-mega-wrap{position:relative;}
+
+.mega-panel{
+  position:absolute;
+  top:100%;
+  left:50%;
+  transform:translateX(-50%) translateY(10px);
+  background:#fff;
+  border-radius:14px;
+  box-shadow:0 12px 40px rgba(0,0,0,.15), 0 2px 10px rgba(0,0,0,.08);
+  padding:14px 16px;
+  min-width:18rem;
+  max-width:min(92vw, 64rem);
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .2s ease, transform .25s ease;
+  z-index:10000000000;
+}
+.mega-panel-wide{min-width:54rem;}
+.mega-panel-hero{width:min(900px, 92vw); min-width:auto;}
+
+.nav-mega-wrap::after{
+  content:'';
+  position:absolute;
+  top:100%;
+  left:-20px;
+  right:-20px;
+  height:16px;
+  display:none;
+}
+.nav-mega-wrap:hover::after{display:block;}
+
+.nav-mega-wrap:hover .mega-panel{
+  opacity:1;
+  pointer-events:auto;
+  transform:translateX(-50%) translateY(0);
+}
+
+.nav-mega-wrap:first-of-type .mega-panel{
+  left:0; transform:translateX(0) translateY(10px);
+}
+.nav-mega-wrap:first-of-type:hover .mega-panel{
+  transform:translateX(0) translateY(0);
+}
+
+.nav-mega-wrap:last-of-type .mega-panel{
+  left:auto; right:0; transform:translateX(0) translateY(10px);
+}
+.nav-mega-wrap:last-of-type:hover .mega-panel{
+  transform:translateX(0) translateY(0);
+}
+
+/* ========================= */
+/* MEGA MENU CONTENT         */
+/* ========================= */
+.ac-hero {
+  display: grid;
+  grid-template-columns: 33% 66%;
+  align-items: stretch;
+  max-width: 900px;
+}
+.ac-hero .ac-hero__promo{
+  background: var(--theme-main);
+  color: #fff;
+  border-radius: 22px;
+  padding: 1.5rem;
+  display: grid;
+  align-content: space-between;
+  min-height: 380px;
+}
+.ac-hero .ac-hero__title{
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 28px; color: white;
+  font-weight: 500; font-size: 2rem !important;
+}
+.ac-hero .ac-hero__grid{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+}
+.ac-hero .ac-feature{
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 16px; padding: 18px; border-radius: 14px;
+  text-decoration: none; color: var(--text);
+  transition: transform .15s ease;
+}
+.ac-hero .ac-feature:hover{ transform: translateY(-2px); }
+.ac-hero .ac-feature__icon{
+  height: 60px; width: 60px; border-radius: 14px;
+  display: grid; place-items: center;
+  background: var(--surface-soft);
+}
+.ac-hero .ac-feature__icon i{ font-size: 26px; color: var(--theme-main); }
+.ac-hero .ac-feature__copy .ac-feature-title{
+  margin: 2px 0 6px; font-size: 1rem; line-height: 1.2 !important;
+}
+.ac-hero .ac-feature__copy p{
+  margin: 0; color: var(--muted); font-size: 14px; line-height: 1.2 !important;
+}
+.ac-feature__bottom-bar {
+  grid-column: 1 / -1;
+  text-align: center; padding: 1rem;
+  border-radius: 14px; margin-left: 18px;
+}
+
+/* Services menu */
+.ac-services-menu {
+  padding: 1em; display: flex;
+  flex-direction: column; font-size: .9rem;
+}
+.ac-services-menu a {
+  display: flex; align-items: center;
+  color: black; margin-bottom: .5em;
+  transition: color .2s ease; font-size: 1em;
+  text-decoration: none;
+}
+.ac-services-menu a:hover { color: var(--theme-main); }
+.ac-services-menu i {
+  color: var(--theme-main); margin-right: 5px; font-size: 1em;
+}
+.ac-services-menu__top{
+  display: flex; align-items: center; gap: 10px;
+  text-decoration: none; color: var(--theme-main);
+  font-weight: 550; padding: 7px;
+  border-radius: 12px;
+  transition: background 140ms ease;
+}
+.ac-services-menu__top span { color: var(--theme-main); }
+.ac-services-menu__top i{
+  width: 25px; height: 25px;
+  display: grid; place-items: center;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.06);
+  color: var(--theme-main); flex: 0 0 32px;
+}
+.ac-services-menu__top:hover{ background: rgba(0,0,0,0.06); }
+.ac-services-menu__sub {
+  padding-left: 42px;
+  margin-bottom: 4px;
+}
+.ac-services-menu__sub a {
+  display: block;
+  font-size: 0.9em;
+  color: #555;
+  padding: 3px 0;
+  text-decoration: none;
+}
+.ac-services-menu__sub a:hover {
+  color: var(--theme-main);
+}
+
+/* ── Emergency banner in services dropdown ── */
+.ac-services-menu__emergency {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 1em;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--theme-dark, #001c33);
+  color: #fff !important;
+  text-decoration: none !important;
+  font-weight: 600;
+  font-size: .9em;
+  transition: background .2s ease;
+}
+.ac-services-menu__emergency:hover {
+  background: var(--theme-main, #294e78);
+}
+.ac-services-menu__emergency i {
+  font-size: 1.2em;
+  color: var(--theme-accent, #ffa500);
+}
+.ac-services-menu__emergency span {
+  color: var(--theme-accent, #ffa500);
+  margin-left: auto;
+}
+
+/* ── Services mega-panel: 3-column layout ── */
+.mega-panel-wide .ac-services-menu {
+  padding: 1.5em 2em; font-size: .95rem;
+}
+.mega-panel-wide .ac-services-menu__grid{
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2em;
+}
+.mega-panel-wide .ac-services-menu__col{
+  border: none; background: none; border-radius: 0; padding: 0;
+}
+.mega-panel-wide .ac-services-menu__top{
+  display: block; gap: 0; padding: 0 0 .6em;
+  font-weight: 700; font-size: 1.05em;
+  color: #111; border-radius: 0;
+  border-bottom: 2.5px solid var(--theme-accent, #c9a24f);
+  margin-bottom: .8em;
+}
+.mega-panel-wide .ac-services-menu__top:hover{
+  background: none; color: var(--theme-main);
+}
+.mega-panel-wide .ac-services-menu__sub {
+  padding-left: 0; margin-bottom: 0;
+}
+.mega-panel-wide .ac-services-menu__sub a {
+  padding: .45em 0; color: #333; font-size: .95em;
+  margin-bottom: 0;
+}
+.mega-panel-wide .ac-services-menu__sub a:hover {
+  color: var(--theme-main);
+}
+
+/* Business hours */
+.business-hours { font-size: 16px; }
+.business-hours .small { font-size: .8em; font-style: italic; }
+
+/* ========================= */
+/* MOBILE                    */
+/* ========================= */
+.mobile-menu-wrapper{position:relative; width:100%; z-index:1000;}
+.mobile-menu-header{display:flex; align-items:center; justify-content:space-between;}
+body.mm-locked, html.mm-locked{overflow:hidden;}
+body.mm-locked{position:fixed; left:0; right:0; width:100%;}
+.mobile-menu-overlay{
+  position:fixed; inset:0; background:#fff; padding:5%;
+  padding-top:calc(5% + 120px);
+  padding-bottom:0;
+  opacity:0; transform:scale(.95);
+  pointer-events:none;
+  transition:all .4s cubic-bezier(.4,0,.2,1);
+  z-index:99999;
+  min-height:100svh;
+  height:100svh;
+  display:flex; flex-direction:column;
+  overflow:hidden;
+}
+.mobile-menu-overlay nav {
+  display:flex; flex-direction:column;
+}
+.mobile-menu-overlay.active{opacity:1; transform:scale(1); pointer-events:auto;}
+.mobile-menu-content{display:flex; flex-direction:column; align-items:stretch; flex:1; min-height:0; overflow-y:auto;}
+
+.play-icon{
+  position:absolute; left:20px; top:50%; transform:translateY(-50%);
+  width:50px; height:50px; border-radius:50%;
+  background:rgba(6,175,181,.5);
+  mask:url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'><polygon points='35,25 75,50 35,75' fill='white'/></svg>") center/60% no-repeat;
+  opacity:0; animation:none;
+}
+.play-icon.active{animation:radiate 1.5s ease-out; opacity:1;}
+@keyframes radiate{
+  0%{box-shadow:0 0 0 0 rgba(6,175,181,.5); opacity:1;}
+  100%{box-shadow:0 0 0 30px rgba(6,175,181,0); opacity:0;}
+}
+
+.menu-links{padding:1rem; display:flex; flex-direction:column; gap:1.2rem; text-align:left;}
+.menu-links > a{font-size:1.6rem; color:var(--theme-dark,#111); text-decoration:none; font-weight:600;}
+.menu-links > a:hover{color:var(--theme-main);}
+
+.menu-toggle-container{transition:all .3s ease; position:relative;}
+.menu-toggle-container::after{content:""; position:absolute; top:calc(100% + .5em); left:0; height:1px; width:100%; background:rgba(100,100,100,.05);}
+.menu-toggle-header{cursor:pointer; display:flex; align-items:center; justify-content:space-between; font-size:1.6rem; font-weight:bold; color:var(--theme-dark);}
+.menu-toggle-title{color:var(--theme-dark,#111); text-decoration:none; font-weight:600; font-size:1.6rem;}
+a.menu-toggle-title:hover{color:var(--theme-main);}
+.menu-toggle-content{max-height:0; overflow:hidden; transition:all .4s ease;}
+.menu-toggle-content .menu-toggle-content-text{margin:1rem 0; display:flex; flex-direction:column; gap:.5rem;}
+.menu-toggle-content .menu-toggle-content-text a{font-size:1.1rem; color:var(--theme-dark,#333); text-decoration:none; font-weight:400; padding:4px 0 4px 1em;}
+.menu-toggle-content .menu-toggle-content-text a:hover{color:var(--theme-main);}
+.menu-toggle-container.active .menu-toggle-content{max-height:2000px; padding-top:0.5rem;}
+.menu-toggle-icon{transition:transform .3s ease; transform:rotate(0deg);}
+.menu-toggle-icon i{font-size:.8em !important;}
+.menu-toggle-container.active .menu-toggle-icon{transform:rotate(270deg);}
+
+/* Category links (mobile-cat) — unified dark color, consistent padding */
+.menu-toggle-content-text a.mobile-cat{
+  color: var(--theme-dark, #102a44) !important;
+  font-weight: 600 !important;
+  font-size: 1.05rem !important;
+  margin: 0 !important;
+  padding: .85em 0 !important;
+  padding-left: 0 !important;
+  border: none !important;
+  flex: 1;
+}
+
+/* Plain non-category links */
+.menu-toggle-content-text a:not(.mobile-cat){
+  font-size: .95rem !important;
+  padding-left: 1.25em !important;
+  font-weight: 400;
+  color: var(--theme-dark, #102a44) !important;
+  opacity: .7;
+}
+.menu-toggle-content-text a:not(.mobile-cat):hover{ opacity:1; color:var(--theme-main) !important; }
+
+/* Sub-group rows — all categories use this shell, with or without a toggle */
+.mobile-sub-group { border-bottom: 1px solid rgba(0,0,0,.06); }
+.mobile-sub-group:last-of-type { border-bottom: none; }
+.mobile-sub-group__header { display:flex; align-items:center; justify-content:space-between; }
+.mobile-sub-toggle {
+  cursor:pointer; padding:.85em 4px .85em 12px; flex-shrink:0;
+  color:var(--theme-main); transition:transform .25s ease;
+  display:flex; align-items:center;
+}
+.mobile-sub-toggle i { font-size:.7em !important; color:var(--theme-main) !important; }
+.mobile-sub-group.active .mobile-sub-toggle { transform:rotate(90deg); }
+.mobile-sub-group__content {
+  max-height:0; overflow:hidden; transition:max-height .3s ease;
+  padding-left:1em;
+}
+.mobile-sub-group.active .mobile-sub-group__content { max-height:500px; padding-bottom:.4em; }
+.mobile-sub-group__content a {
+  display:block !important; font-size:.92rem !important;
+  color: var(--theme-dark, #102a44) !important;
+  opacity: .7;
+  padding: .35em 0 !important;
+  font-weight: 400 !important;
+  padding-left: 0 !important;
+  text-decoration: none;
+}
+.mobile-sub-group__content a:hover { opacity:1; color:var(--theme-main) !important; }
+
+.burger-container{cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:1000000; background:none; border:0; margin-right:-20px; margin-top:-5%; margin-bottom:-5%;}
+.burger-container svg{transition:transform 500ms cubic-bezier(.4,0,.2,1);}
+.burger-container.active svg{transform:rotate(90deg);}
+.burger-container path{
+  stroke:#fff;
+  transition: transform 500ms cubic-bezier(.4,0,.2,1), stroke-dasharray 500ms cubic-bezier(.4,0,.2,1), stroke-dashoffset 500ms cubic-bezier(.4,0,.2,1), stroke 400ms ease;
+}
+.burger-container.active path{stroke:var(--theme-main);}
+.burger-container path:nth-child(1){transform-origin:36% 40%;}
+.burger-container path:nth-child(2){stroke-dasharray:29 299;}
+.burger-container path:nth-child(3){transform-origin:35% 63%;}
+.burger-container path:nth-child(4){stroke-dasharray:29 299;}
+.burger-container path:nth-child(5){transform-origin:61% 52%;}
+.burger-container path:nth-child(6){transform-origin:62% 52%;}
+.burger-container.active path:nth-child(1){transform:translateX(9px) translateY(1px) rotate(45deg);}
+.burger-container.active path:nth-child(2){stroke-dasharray:225 299; stroke-dashoffset:-72px;}
+.burger-container.active path:nth-child(3){transform:translateX(9px) translateY(1px) rotate(-45deg);}
+.burger-container.active path:nth-child(4){stroke-dasharray:225 299; stroke-dashoffset:-72px;}
+.burger-container.active path:nth-child(5){transform:translateX(9px) translateY(1px) rotate(-45deg);}
+.burger-container.active path:nth-child(6){transform:translateX(9px) translateY(1px) rotate(45deg);}
+
+@media (max-width:1200px){
+  .desktop-menu-wrapper{display:none;}
+  .mobile-menu-wrapper{display:block;}
+}
+@media (min-width:1200px){
+  .desktop-menu-wrapper{display:flex;}
+  .mobile-menu-wrapper{display:none;}
+}
+
+.anchor-header-section.hide{transform:translateY(-100%); transition:transform .3s ease;}
+.anchor-header-section.show{transform:translateY(0); transition:transform .3s ease;}
+
+@media (max-width: 768px) {
+  .ac-hero { grid-template-columns: 1fr; gap: 1rem; }
+  .ac-hero .ac-hero__grid { grid-template-columns: 1fr; gap: 0.75rem; }
+  .ac-hero .ac-hero__promo { display: none; }
+  .ac-hero .ac-feature { grid-template-columns: 44px 1fr; gap: 12px; padding: 5px; border-radius: 12px; }
+  .ac-hero .ac-feature__icon { width: 44px; height: 44px; border-radius: 10px; }
+  .ac-hero .ac-feature__icon i { font-size: 18px; }
+  .ac-hero .ac-feature__copy .ac-feature-title { font-size: 0.95rem; margin-bottom: 4px; }
+  .ac-hero .ac-feature__copy p { font-size: 0.8rem; line-height: 1.3 !important; }
+  .ac-feature__bottom-bar { margin-left: 0; padding: 0.75rem; font-size: 0.85rem; }
+  .ac-services-menu { padding: 0; }
+  .ac-services-menu__grid{ grid-template-columns: 1fr; gap: 0.75em; }
+  .ac-services-menu__col{ padding: 0.75em; background: none; border: none; }
+  .ac-services-menu__top{ font-size: 0.95rem; padding: 0; }
+  .ac-services-menu__top i{ width: 28px; height: 28px; flex: 0 0 28px; }
+}
+
+/* Super header */
+.nav-super-header {
+  background-color: var(--theme-main);
+  width: 100% !important;
+  max-width: none !important;
+}
+.nav-super-header-inner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 1600px;
+  width: 90%;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 8px 0;
+  font-size: 15px;
+}
+.header-links {
+  list-style: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  display: flex;
+}
+.header-links a {
+  display: inline-block;
+}
+.header-links li {
+  margin-right: 15px;
+  position: relative;
+}
+.header-links li::before {
+  content: "|";
+  position: absolute;
+  left: -8.5px;
+  color: rgba(255,255,255,0.4);
+}
+.header-links li:first-child::before {
+  content: "";
+  position: absolute;
+  right: -8.5px;
+}
+.header-links a {
+  text-decoration: none;
+  color: #fff;
+  font-weight: bold;
+}
+.header-links a:hover {
+  color: rgba(255,255,255,0.7);
+}
+.social-links { display:flex; gap:8px; align-items:center; }
+.social-links a { color:#fff; font-size:16px; transition:color .2s; }
+.social-links a:hover { color:rgba(255,255,255,0.7); }
+.social-links::before { content:none !important; }
+
+.office-hours-trigger {
+  position: relative;
+}
+.office-hours-content {
+  position: absolute;
+  top:100%;
+  width: 300px !important;
+  right: 0;
+  background: white;
+  padding: 10px;
+  opacity: 0;
+  transform: translateY(20px);
+  transition: all .2s ease;
+  pointer-events: none;
+}
+.office-hours-content:hover, .office-hours-trigger:hover .office-hours-content {
+  opacity: 1;
+  transform: translateY(0px);
+  pointer-events: auto;
+}
+
+.btn-row-small .btn {
+  font-size: 10px;
+  white-space: nowrap;
+}
+.btn-row-small .btn {
+  margin-top: 10px;
+}
+
+.anchor-header-row {
+  max-width: 1600px !important;
+  width: 90% !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+@media (max-width: 768px) {
+  .nav-super-header-inner,
+  .anchor-header-row {
+    width: 95% !important;
+  }
+}
+
+.show-mobile-only { display: none !important; }
+@media (max-width: 1200px) {
+  .show-mobile-only { display: list-item !important; }
+  .hide-mobile, .hide-mobile::before { display: none !important; }
+}
+
+@media (max-width: 1200px) {
+  .nav-super-header-inner { padding: 6px 0; }
+  .header-links { align-items: center; }
+  .header-links li { margin-right: 0; }
+  .header-links li::before { content: none; }
+  .header-links a { font-size: 14px; white-space: nowrap; }
+  .header-links a i { margin-right: 5px; }
+  .right-links { margin-left: auto; }
+}
+
+/* Overlay footer */
+.overlay-footer-info {
+  flex-shrink: 0;
+  padding: 16px 0;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(0,0,0,0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+  color: #666;
+}
+.overlay-footer-info a {
+  color: #555;
+  text-decoration: none;
+}
+.overlay-footer-info a:hover {
+  color: var(--theme-main, #2d96eb);
+}
+
+/* CTA buttons */
+.overlay-footer-cta {
+  display: flex;
+  gap: 10px;
+}
+.overlay-cta-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 10px;
+  border-radius: 10px;
+  font-size: clamp(12px, 3.5vw, 14px);
+  line-height: 1.2;
+  font-weight: 600;
+  text-decoration: none !important;
+  background: var(--theme-main, #2d96eb);
+  color: #fff !important;
+  transition: opacity .2s;
+  white-space: nowrap;
+}
+.overlay-cta-btn:hover { opacity: 0.85; }
+.overlay-cta-btn--outline {
+  background: transparent;
+  color: var(--theme-main, #2d96eb) !important;
+  border: 2px solid var(--theme-main, #2d96eb);
+}
+.overlay-cta-btn i { font-size: 13px; }
+
+.overlay-footer-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+}
+.overlay-footer-address,
+.overlay-footer-hours {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.4;
+}
+.overlay-footer-address i,
+.overlay-footer-hours i {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--theme-main, #2d96eb);
+}
+.overlay-footer-hours .business-hours {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  font-size: 12px;
+}
+
+.overlay-footer-socials {
+  display: flex;
+  justify-content: space-evenly;
+  align-items: center;
+  background: #f3f4f6;
+  margin: 8px -5% 0;
+  padding: 14px 5%;
+}
+.overlay-footer-socials a {
+  font-size: 20px;
+  color: #777;
+  transition: color .2s;
+}
+.overlay-footer-socials a:hover {
+  color: var(--theme-main, #2d96eb);
+}
+
+@media (min-width: 769px) and (max-width: 1200px) {
+  .mobile-menu-overlay nav {
+    max-width: 500px;
+    margin: 0 auto;
+  }
+  .overlay-footer-cta { max-width: 400px; }
+}
+
+@media (max-width: 1200px) {
+  .menu-toggle-header {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+}
+
+/* Emergency banner */
+:root {
+  --emergency-font-size: clamp(35px, 5vw, 52px);
+}
+.emergency-banner {
+  text-decoration: none;
+  cursor: pointer;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: -1;
+  display: flex;
+  height: var(--emergency-font-size);
+  font-size: calc(var(--emergency-font-size) - .02em);
+  gap: .1em;
+  align-items: center;
+  font-family: "Bebas Neue", sans-serif;
+  transition:
+    background-color .35s ease,
+    padding         .35s ease,
+    border-radius   .35s ease,
+    height          .35s ease,
+    font-size       .35s ease,
+    top             .35s ease,
+    box-shadow      .35s ease;
+}
+.emergency-banner .emergency-logo,
+.emergency-banner .emergency-title,
+.emergency-banner .emergency-number {
+  transition:
+    font-size   .35s ease,
+    color       .35s ease,
+    fill        .35s ease,
+    margin      .35s ease,
+    line-height .35s ease;
+}
+.emergency-logo-shape {
+  fill: var(--theme-emergency);
+  transition: fill .35s ease;
+}
+.anchor-header-row.active .emergency-banner {
+  background: #fff;
+  padding: 8px 18px 8px 14px;
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  height: auto;
+  font-size: calc(var(--emergency-font-size) * 0.55);
+  top: 50%;
+  transform: translateY(-50%);
+}
+.anchor-header-row.active .emergency-banner .emergency-logo-shape,
+.anchor-header-row.active .emergency-banner .emergency-title svg path {
+  fill: var(--theme-emergency);
+}
+.anchor-header-row.active .emergency-banner .emergency-number {
+  color: var(--theme-emergency);
+}
+.anchor-header-row.active .emergency-banner:hover {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+  transform: translateY(-50%) translateY(-1px);
+}
+.emergency-logo {
+  height: 87%;
+  width: auto;
+  font-size: .9em;
+}
+.emergency-content {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.emergency-title {
+  font-size: 0.5em;
+  line-height: .5em;
+  margin-bottom: .1em;
+  text-align: justify;
+}
+.emergency-number {
+  margin-top: 0;
+  font-size: 0.6em;
+  line-height: .9em;
+  margin-bottom: -.1em;
+  color: var(--theme-emergency);
+}
+@media (max-width: 1200px) {
+  /* Desktop emergency banner hidden on mobile — mobile version lives inside the nav overlay */
+  .emergency-banner {
+    display: none !important;
+  }
+  /* Strip active-class decorations on mobile */
+  .anchor-header-row.active .emergency-banner {
+    background: transparent !important;
+    border-radius: 0 !important;
+    margin-top: 0 !important;
+    padding: 0 !important;
+  }
+  .mobile-logo-link img {
+    width: 120px !important;
+  }
+}
+/* Mobile emergency banner — lives inside .mobile-menu-header (the blue pill), between logo and burger */
+@media (min-width: 1201px) {
+  .emergency-banner-mobile {
+    display: none !important;
+  }
+}
+@media (max-width: 1200px) {
+  .emergency-banner-mobile {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: .15em;
+    text-decoration: none;
+    font-family: "Bebas Neue", sans-serif;
+    font-size: 16px;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  .emergency-banner-mobile .emergency-logo {
+    display: none;
+  }
+  .emergency-banner-mobile .emergency-content {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .emergency-banner-mobile .emergency-title {
+    font-size: 0.5em;
+    line-height: .5em;
+    margin-bottom: .15em;
+  }
+  .emergency-banner-mobile .emergency-title svg {
+    display: block;
+    width: auto;
+    height: 1em;
+  }
+  .emergency-banner-mobile .emergency-number-mobile {
+    font-size: 0.75em;
+    line-height: .9em;
+    color: #fff;
+    margin-bottom: -.05em;
+  }
+  /* Mobile header layout: logo | emergency | burger — center emergency via space-between */
+  .mobile-menu-header {
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  /* Mobile logo size inside the pill */
+  .mobile-logo-link img {
+    width: 90px !important;
+  }
+}
+
+</style>
+
+<!-- ====================== -->
+<!-- SCRIPTS                -->
+<!-- ====================== -->
+<script>
+var __mm_scrollY = 0;
+function lockBodyScroll(){
+  __mm_scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+  document.body.classList.add("mm-locked");
+  document.documentElement.classList.add("mm-locked");
+  document.body.style.top = "-" + __mm_scrollY + "px";
+}
+function unlockBodyScroll(){
+  document.body.classList.remove("mm-locked");
+  document.documentElement.classList.remove("mm-locked");
+  var y = __mm_scrollY;
+  document.body.style.top = "";
+  window.scrollTo(0, y);
+}
+function toggleMobileSubGroup(el){
+  var group = el.closest('.mobile-sub-group');
+  var wasActive = group.classList.contains('active');
+  group.parentElement.querySelectorAll('.mobile-sub-group').forEach(function(s){ s.classList.remove('active'); });
+  if(!wasActive) group.classList.add('active');
+}
+function toggleContent(iconElement){
+  var container = iconElement.parentElement.parentElement;
+  var wasActive = container.classList.contains("active");
+  var siblings = container.parentElement.querySelectorAll(".menu-toggle-container");
+  siblings.forEach(function(s){ s.classList.remove("active"); });
+  if(!wasActive) container.classList.add("active");
+}
+function toggleMobileMenu(el){
+  var overlay = document.querySelector(".mobile-menu-overlay");
+  var headerSection = document.querySelector(".anchor-header-section");
+  var play = document.querySelector(".play-icon");
+  var willOpen = !overlay.classList.contains("active");
+  el.classList.toggle("active", willOpen);
+  overlay.classList.toggle("active", willOpen);
+  if (willOpen) {
+    if (headerSection){ headerSection.classList.remove("hide"); headerSection.classList.remove("show"); }
+    lockBodyScroll();
+    if (play){ play.classList.remove("active"); void play.offsetWidth; play.classList.add("active"); setTimeout(function(){ play.classList.remove("active"); },1500); }
+  } else {
+    unlockBodyScroll();
+    document.querySelectorAll(".menu-toggle-container.active").forEach(function(c){ c.classList.remove("active"); });
+  }
+}
+document.addEventListener("keydown", function(e){
+  if (e.key === "Escape") {
+    var overlay = document.querySelector(".mobile-menu-overlay");
+    var btn = document.querySelector(".burger-container");
+    if (overlay && overlay.classList.contains("active")) toggleMobileMenu(btn);
+  }
+});
+document.addEventListener("DOMContentLoaded", function () {
+  if (window.location.pathname.replace(/\/$/, "") === "/plans") {
+    var header = document.querySelector(".anchor-header-section");
+    if (header) {
+      header.style.setProperty("position", "absolute", "important");
+      header.style.setProperty("paddingTop", "0px", "important");
+      var observer = new MutationObserver(function(){
+        header.style.setProperty("position", "absolute", "important");
+        header.style.setProperty("paddingTop", "0px", "important");
+      });
+      observer.observe(header, { attributes: true, attributeFilter: ["style"] });
+    }
+    return;
+  }
+  var headerRow = document.querySelector(".anchor-header-row");
+  var headerSection = document.querySelector(".anchor-header-section");
+  var lastScrollTop = 0;
+  var lastHideScroll = 0;
+  window.addEventListener("scroll", function () {
+    var scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    if (scrollTop > 200) { headerRow.classList.add("active"); } else { headerRow.classList.remove("active"); }
+    if (scrollTop > lastScrollTop) {
+      headerSection.classList.add("hide"); headerSection.classList.remove("show"); lastHideScroll = scrollTop;
+    } else {
+      if (lastHideScroll - scrollTop > 50) { headerSection.classList.add("show"); headerSection.classList.remove("hide"); }
+    }
+    lastScrollTop = scrollTop <= 0 ? 0 : scrollTop;
+  });
+});
+</script>
+
+</div>

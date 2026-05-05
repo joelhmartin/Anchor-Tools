@@ -324,13 +324,13 @@ class Anchor_Reviews_Display_Module {
         $screen = get_current_screen();
         if ( ! $screen || $screen->post_type !== self::CPT ) return;
 
-        wp_enqueue_style( 'ard-admin', $this->get_assets_url() . 'admin.css', [], self::VERSION );
-        wp_enqueue_script( 'ard-admin', $this->get_assets_url() . 'admin.js', [ 'jquery' ], self::VERSION, true );
+        wp_enqueue_style( 'ard-admin', Anchor_Asset_Loader::url( 'anchor-reviews/assets/admin.css' ), [], self::VERSION );
+        wp_enqueue_script( 'ard-admin', Anchor_Asset_Loader::url( 'anchor-reviews/assets/admin.js' ), [ 'jquery' ], self::VERSION, true );
     }
 
     public function frontend_enqueue() {
-        wp_register_style( 'ard-frontend', $this->get_assets_url() . 'frontend.css', [], self::VERSION );
-        wp_register_script( 'ard-frontend', $this->get_assets_url() . 'frontend.js', [], self::VERSION, true );
+        wp_register_style( 'ard-frontend', Anchor_Asset_Loader::url( 'anchor-reviews/assets/frontend.css' ), [], self::VERSION );
+        wp_register_script( 'ard-frontend', Anchor_Asset_Loader::url( 'anchor-reviews/assets/frontend.js' ), [], self::VERSION, true );
     }
 
     private function get_renderable_display( $post_id ) {

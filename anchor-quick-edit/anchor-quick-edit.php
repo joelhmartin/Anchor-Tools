@@ -120,8 +120,8 @@ class Anchor_Quick_Edit_Module {
         wp_enqueue_style('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css', [], '1.6.2');
         wp_enqueue_script('ac-yqep-cropper', 'https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js', [], '1.6.2', true);
 
-        wp_enqueue_style('ac-yqep-admin', $base . 'admin.css', [], '1.0.4');
-        wp_enqueue_script('ac-yqep-admin', $base . 'admin.js', ['jquery', 'ac-yqep-cropper'], '1.0.4', true);
+        wp_enqueue_style('ac-yqep-admin', Anchor_Asset_Loader::url('anchor-quick-edit/assets/admin.css'), [], '1.0.4');
+        wp_enqueue_script('ac-yqep-admin', Anchor_Asset_Loader::url('anchor-quick-edit/assets/admin.js'), ['jquery', 'ac-yqep-cropper'], '1.0.4', true);
 
         wp_localize_script('ac-yqep-admin', 'AC_YQEP', [
             'ajaxUrl' => admin_url('admin-ajax.php'),

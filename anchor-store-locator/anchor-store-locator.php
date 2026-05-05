@@ -234,14 +234,14 @@ class Module {
 
         \wp_enqueue_style(
             'anchor-store-locator-admin',
-            \plugins_url( 'assets/admin.css', __FILE__ ),
+            \Anchor_Asset_Loader::url( 'anchor-store-locator/assets/admin.css' ),
             [],
             \filemtime( __DIR__ . '/assets/admin.css' )
         );
 
         \wp_enqueue_script(
             'anchor-store-locator-admin',
-            \plugins_url( 'assets/admin.js', __FILE__ ),
+            \Anchor_Asset_Loader::url( 'anchor-store-locator/assets/admin.js' ),
             [ 'jquery' ],
             \filemtime( __DIR__ . '/assets/admin.js' ),
             true
@@ -705,7 +705,7 @@ class Module {
         $css_ver = \filemtime( __DIR__ . '/assets/frontend.css' );
         $js_ver  = \filemtime( __DIR__ . '/assets/frontend.js' );
 
-        \wp_enqueue_style( 'anchor-store-locator', \plugins_url( 'assets/frontend.css', __FILE__ ), [], $css_ver );
+        \wp_enqueue_style( 'anchor-store-locator', \Anchor_Asset_Loader::url( 'anchor-store-locator/assets/frontend.css' ), [], $css_ver );
 
         $api_key = $this->get_google_api_key();
         if ( ! $api_key ) {
@@ -714,7 +714,7 @@ class Module {
 
         $locations = $this->get_locations();
         \wp_enqueue_script( 'anchor-store-maps', 'https://maps.googleapis.com/maps/api/js?key=' . \rawurlencode( $api_key ) . '&libraries=places', [], null, true );
-        \wp_enqueue_script( 'anchor-store-locator', \plugins_url( 'assets/frontend.js', __FILE__ ), [ 'anchor-store-maps' ], $js_ver, true );
+        \wp_enqueue_script( 'anchor-store-locator', \Anchor_Asset_Loader::url( 'anchor-store-locator/assets/frontend.js' ), [ 'anchor-store-maps' ], $js_ver, true );
 
         \wp_localize_script( 'anchor-store-locator', 'ANCHOR_STORE_LOCATOR', [
             'locations' => $locations,
@@ -782,8 +782,8 @@ class Module {
         }
 
         \wp_enqueue_media();
-        \wp_enqueue_style( 'anchor-store-manager', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-store-locator/assets/manager.css', [], '1.0.0' );
-        \wp_enqueue_script( 'anchor-store-manager', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-store-locator/assets/manager.js', [ 'jquery' ], '1.0.0', true );
+        \wp_enqueue_style( 'anchor-store-manager', \Anchor_Asset_Loader::url( 'anchor-store-locator/assets/manager.css' ), [], '1.0.0' );
+        \wp_enqueue_script( 'anchor-store-manager', \Anchor_Asset_Loader::url( 'anchor-store-locator/assets/manager.js' ), [ 'jquery' ], '1.0.0', true );
         \wp_localize_script( 'anchor-store-manager', 'ANCHOR_STORE_MGR', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
             'nonce'   => \wp_create_nonce( 'anchor_store_manager' ),

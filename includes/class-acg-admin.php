@@ -249,10 +249,10 @@ class ACG_Admin {
         ];
 
         if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || in_array($screen->id, $admin_pages, true)) ) {
-            wp_enqueue_style('acg-admin', ACG_URL . 'assets/admin.css', [], ACG_VERSION);
+            wp_enqueue_style('acg-admin', Anchor_Asset_Loader::url('assets/admin.css'), [], ACG_VERSION);
         }
         if ( $screen && in_array($screen->base, [ 'post', 'page' ], true) ) {
-            wp_enqueue_script('acg-admin', ACG_URL . 'assets/admin.js', [ 'jquery' ], ACG_VERSION, true);
+            wp_enqueue_script('acg-admin', Anchor_Asset_Loader::url('assets/admin.js'), [ 'jquery' ], ACG_VERSION, true);
             wp_localize_script('acg-admin', 'ACG', [
                 'ajax'   => admin_url('admin-ajax.php'),
                 'nonce'  => wp_create_nonce('acg_ajax'),
@@ -264,7 +264,7 @@ class ACG_Admin {
             ]);
         }
         if ( $screen && $screen->id === 'anchor-tools_page_acg-wizard' ) {
-            wp_enqueue_script('acg-wizard', ACG_URL . 'assets/wizard.js', [ 'jquery' ], ACG_VERSION, true);
+            wp_enqueue_script('acg-wizard', Anchor_Asset_Loader::url('assets/wizard.js'), [ 'jquery' ], ACG_VERSION, true);
             wp_localize_script('acg-wizard', 'ACG_WIZ', [
                 'ajax'   => admin_url('admin-ajax.php'),
                 'nonce'  => wp_create_nonce('acg_ajax'),

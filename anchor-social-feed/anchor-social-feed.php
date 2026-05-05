@@ -524,8 +524,8 @@ class Anchor_Social_Feed_Module {
         if (!in_array($hook, ['post.php', 'post-new.php'], true)) return;
         if (get_post_type() !== self::CPT) return;
 
-        wp_enqueue_style('asf-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-social-feed/assets/admin.css', [], '1.0.0');
-        wp_enqueue_script('asf-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-social-feed/assets/admin.js', ['jquery'], '1.0.0', true);
+        wp_enqueue_style('asf-admin', Anchor_Asset_Loader::url('anchor-social-feed/assets/admin.css'), [], '1.0.0');
+        wp_enqueue_script('asf-admin', Anchor_Asset_Loader::url('anchor-social-feed/assets/admin.js'), ['jquery'], '1.0.0', true);
         wp_localize_script('asf-admin', 'ASF', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce'   => wp_create_nonce('asf_ajax'),
@@ -538,8 +538,8 @@ class Anchor_Social_Feed_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function frontend_enqueue() {
-        wp_enqueue_style('asf-front', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-social-feed/assets/anchor-social-feed.css', [], '1.1.0');
-        wp_enqueue_script('asf-front', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-social-feed/assets/anchor-social-feed.js', [], '1.0.0', true);
+        wp_enqueue_style('asf-front', Anchor_Asset_Loader::url('anchor-social-feed/assets/anchor-social-feed.css'), [], '1.1.0');
+        wp_enqueue_script('asf-front', Anchor_Asset_Loader::url('anchor-social-feed/assets/anchor-social-feed.js'), [], '1.0.0', true);
     }
 
     /* ══════════════════════════════════════════════════════════

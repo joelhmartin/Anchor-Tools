@@ -187,11 +187,10 @@ class Anchor_Code_Snippets_Module {
         if ( ! $is_editor && ! $is_list ) return;
 
         $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-code-snippets/assets/';
-        $base_url = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-code-snippets/assets/';
         $ver      = filemtime( $base_dir . 'admin.js' );
 
-        wp_enqueue_style( 'acs-admin', $base_url . 'admin.css', [], $ver );
-        wp_enqueue_script( 'acs-admin', $base_url . 'admin.js', [ 'jquery' ], $ver, true );
+        wp_enqueue_style( 'acs-admin', Anchor_Asset_Loader::url( 'anchor-code-snippets/assets/admin.css' ), [], $ver );
+        wp_enqueue_script( 'acs-admin', Anchor_Asset_Loader::url( 'anchor-code-snippets/assets/admin.js' ), [ 'jquery' ], $ver, true );
 
         $localize = [
             'ajaxUrl' => admin_url( 'admin-ajax.php' ),

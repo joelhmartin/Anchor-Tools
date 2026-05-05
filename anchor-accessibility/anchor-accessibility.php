@@ -364,19 +364,18 @@ class Anchor_Accessibility_Module {
         if ( function_exists( 'et_core_is_fb_enabled' ) && et_core_is_fb_enabled() ) return;
         if ( isset( $_GET['et_fb'] ) || isset( $_GET['et_pb_preview'] ) ) return;
 
-        $base = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-accessibility/assets/';
-        $dir  = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-accessibility/assets/';
+        $dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-accessibility/assets/';
 
         wp_enqueue_style(
             'anchor-accessibility',
-            $base . 'frontend.css',
+            Anchor_Asset_Loader::url( 'anchor-accessibility/assets/frontend.css' ),
             [],
             filemtime( $dir . 'frontend.css' )
         );
 
         wp_enqueue_script(
             'anchor-accessibility',
-            $base . 'frontend.js',
+            Anchor_Asset_Loader::url( 'anchor-accessibility/assets/frontend.js' ),
             [],
             filemtime( $dir . 'frontend.js' ),
             true

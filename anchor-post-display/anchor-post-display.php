@@ -268,7 +268,7 @@ class Anchor_Post_Display_Module {
     public function admin_assets( $hook ) {
         if ( 'settings_page_anchor-schema' !== $hook
             || ! isset( $_GET['tab'] ) || $_GET['tab'] !== 'post_display' ) return;
-        wp_enqueue_style( 'apd-admin', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-post-display/assets/admin.css', [], self::VERSION );
+        wp_enqueue_style( 'apd-admin', Anchor_Asset_Loader::url( 'anchor-post-display/assets/admin.css' ), [], self::VERSION );
     }
 
     /* ================================================================
@@ -278,13 +278,13 @@ class Anchor_Post_Display_Module {
     public function register_assets() {
         wp_register_style(
             'anchor-post-display',
-            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-post-display/assets/frontend.css',
+            Anchor_Asset_Loader::url( 'anchor-post-display/assets/frontend.css' ),
             [],
             self::VERSION
         );
         wp_register_script(
             'anchor-post-display',
-            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-post-display/assets/frontend.js',
+            Anchor_Asset_Loader::url( 'anchor-post-display/assets/frontend.js' ),
             [],
             self::VERSION,
             true

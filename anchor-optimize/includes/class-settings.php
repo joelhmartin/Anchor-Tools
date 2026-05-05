@@ -78,13 +78,13 @@ class Anchor_Optimize_Settings {
         }
         wp_enqueue_style(
             'anchor-optimize-admin',
-            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-optimize/assets/admin.css',
+            Anchor_Asset_Loader::url( 'anchor-optimize/assets/admin.css' ),
             [],
             '1.0.0'
         );
         wp_enqueue_script(
             'anchor-optimize-admin',
-            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-optimize/assets/admin.js',
+            Anchor_Asset_Loader::url( 'anchor-optimize/assets/admin.js' ),
             [ 'jquery' ],
             '1.0.0',
             true

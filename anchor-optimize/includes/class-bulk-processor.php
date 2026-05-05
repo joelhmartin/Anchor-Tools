@@ -46,13 +46,13 @@ class Anchor_Optimize_Bulk_Processor {
 
         wp_enqueue_style(
             'anchor-optimize-bulk',
-            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-optimize/assets/bulk.css',
+            Anchor_Asset_Loader::url( 'anchor-optimize/assets/bulk.css' ),
             [],
             '1.0.0'
         );
         wp_enqueue_script(
             'anchor-optimize-bulk',
-            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-optimize/assets/bulk.js',
+            Anchor_Asset_Loader::url( 'anchor-optimize/assets/bulk.js' ),
             [ 'jquery' ],
             '1.1.0',
             true

@@ -954,8 +954,8 @@ class Anchor_Universal_Popups_Module {
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
             wp_enqueue_media();
             $adir = plugin_dir_path(__FILE__) . 'assets/';
-            wp_enqueue_style('up-admin', plugins_url('assets/admin.css', __FILE__), [], (string) filemtime($adir . 'admin.css'));
-            wp_enqueue_script('up-admin', plugins_url('assets/admin.js', __FILE__), ['jquery','code-editor'], (string) filemtime($adir . 'admin.js'), true);
+            wp_enqueue_style('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.css'), [], (string) filemtime($adir . 'admin.css'));
+            wp_enqueue_script('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.js'), ['jquery','code-editor'], (string) filemtime($adir . 'admin.js'), true);
         }
     }
 
@@ -970,8 +970,8 @@ class Anchor_Universal_Popups_Module {
         if (empty($snippets)) return;
 
         $adir = plugin_dir_path(__FILE__) . 'assets/';
-        wp_enqueue_style('up-frontend', plugins_url('assets/frontend.css', __FILE__), [], (string) filemtime($adir . 'frontend.css'));
-        wp_enqueue_script('up-frontend', plugins_url('assets/frontend.js', __FILE__), [], (string) filemtime($adir . 'frontend.js'), true);
+        wp_enqueue_style('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.css'), [], (string) filemtime($adir . 'frontend.css'));
+        wp_enqueue_script('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.js'), [], (string) filemtime($adir . 'frontend.js'), true);
         wp_localize_script('up-frontend', 'UP_SNIPPETS', $snippets);
     }
 

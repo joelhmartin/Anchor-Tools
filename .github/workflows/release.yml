@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer
+
+      - name: Install Composer (production)
+        run: composer install --no-dev --optimize-autoloader --no-interaction
+
+      - name: Install minifiers
+        run: npm install --no-save csso terser
+
+      - name: Build minified assets
+        run: node bin/build-assets.mjs
+
+      - name: Build release ZIP
+        run: |
+          STAGE="$(mktemp -d)/anchor-tools"
+          mkdir -p "$STAGE"
+          rsync -a --exclude='.git' \
+                   --exclude='.github' \
+                   --exclude='node_modules' \
+                   --exclude='bin' \
+                   --exclude='.minifyignore' \
+                   --exclude='.gitignore' \
+                   --exclude='*.md' \
+                   ./ "$STAGE/"
+          (cd "$(dirname "$STAGE")" && zip -rq "$GITHUB_WORKSPACE/anchor-tools.zip" anchor-tools)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: anchor-tools.zip

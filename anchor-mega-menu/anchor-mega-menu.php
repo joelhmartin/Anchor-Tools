@@ -308,16 +308,16 @@ class Anchor_Mega_Menu_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('mm-admin', plugins_url('admin.css', __FILE__), [], '1.1.4');
-            wp_enqueue_script('mm-admin', plugins_url('admin.js', __FILE__), ['jquery', 'code-editor'], '1.1.4', true);
+            wp_enqueue_style('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.css'), [], '1.1.4');
+            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'code-editor'], '1.1.4', true);
         }
     }
 
     public function frontend_assets(){
         $snippets = $this->get_published_snippets();
         if (empty($snippets)) return;
-        wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.4');
-        wp_enqueue_script('mm-frontend', plugins_url('frontend.js', __FILE__), [], '1.1.4', true);
+        wp_enqueue_style('mm-frontend', Anchor_Asset_Loader::url('anchor-mega-menu/frontend.css'), [], '1.1.4');
+        wp_enqueue_script('mm-frontend', Anchor_Asset_Loader::url('anchor-mega-menu/frontend.js'), [], '1.1.4', true);
         $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
         if ($global_css !== '') {
             wp_add_inline_style('mm-frontend', $global_css);
@@ -354,7 +354,7 @@ class Anchor_Mega_Menu_Module {
 
     private function ensure_embed_assets(){
         if (!wp_style_is('mm-frontend', 'enqueued')) {
-            wp_enqueue_style('mm-frontend', plugins_url('frontend.css', __FILE__), [], '1.1.4');
+            wp_enqueue_style('mm-frontend', Anchor_Asset_Loader::url('anchor-mega-menu/frontend.css'), [], '1.1.4');
             $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
             if ($global_css !== '') {
                 wp_add_inline_style('mm-frontend', $global_css);

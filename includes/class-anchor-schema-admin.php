@@ -367,10 +367,10 @@ class Anchor_Schema_Admin {
         $is_settings_page = $screen && $screen->id === 'settings_page_anchor-schema';
 
         if ( $screen && (in_array($screen->base, [ 'post', 'page' ], true) || $is_settings_page) ) {
-            wp_enqueue_style('anchor-schema-admin', ANCHOR_SCHEMA_URL . 'assets/admin.css', [], ANCHOR_SCHEMA_VERSION);
+            wp_enqueue_style('anchor-schema-admin', Anchor_Asset_Loader::url('assets/admin.css'), [], ANCHOR_SCHEMA_VERSION);
         }
         if ( $screen && in_array($screen->base, [ 'post', 'page' ], true) ) {
-            wp_enqueue_script('anchor-schema-admin', ANCHOR_SCHEMA_URL . 'assets/admin.js', [ 'jquery' ], ANCHOR_SCHEMA_VERSION, true);
+            wp_enqueue_script('anchor-schema-admin', Anchor_Asset_Loader::url('assets/admin.js'), [ 'jquery' ], ANCHOR_SCHEMA_VERSION, true);
             wp_localize_script('anchor-schema-admin', 'ANCHOR_SCHEMA', [
                 'ajax'   => admin_url('admin-ajax.php'),
                 'nonce'  => wp_create_nonce('anchor_schema_ajax'),
@@ -384,7 +384,7 @@ class Anchor_Schema_Admin {
         // Reviews tab assets — load via per-tab enqueue action.
         $current_tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'general';
         if ( $is_settings_page && $current_tab === 'reviews' ) {
-            wp_enqueue_script('anchor-reviews-admin', ANCHOR_SCHEMA_URL . 'assets/reviews-admin.js', [ 'jquery' ], ANCHOR_SCHEMA_VERSION, true);
+            wp_enqueue_script('anchor-reviews-admin', Anchor_Asset_Loader::url('assets/reviews-admin.js'), [ 'jquery' ], ANCHOR_SCHEMA_VERSION, true);
             wp_localize_script('anchor-reviews-admin', 'ANCHOR_REVIEWS', [
                 'ajax'   => admin_url('admin-ajax.php'),
                 'nonce'  => wp_create_nonce('anchor_reviews_search'),

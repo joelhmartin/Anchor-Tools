@@ -730,8 +730,8 @@ class Module {
             return;
         }
         \wp_enqueue_media();
-        \wp_enqueue_style( 'anchor-events-admin', \plugins_url( 'assets/admin.css', __FILE__ ), [], '1.0.1' );
-        \wp_enqueue_script( 'anchor-events-admin', \plugins_url( 'assets/admin.js', __FILE__ ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.1', true );
+        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.1' );
+        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.1', true );
     }
 
     public function frontend_assets() {
@@ -747,8 +747,8 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \plugins_url( 'assets/frontend.css', __FILE__ ), [], '1.0.3' );
-        \wp_enqueue_script( 'anchor-events-frontend', \plugins_url( 'assets/frontend.js', __FILE__ ), [], '1.0.4', true );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.3' );
+        \wp_enqueue_script( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.js' ), [], '1.0.4', true );
         \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
             'nonce'   => \wp_create_nonce( 'anchor_events_calendar' ),
@@ -1148,7 +1148,7 @@ class Module {
         \wp_enqueue_script( 'jquery-ui-sortable' );
         \wp_enqueue_script(
             'anchor-events-manager-frontend',
-            \plugins_url( 'assets/manager.js', __FILE__ ),
+            \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
             '1.0.0',
             true

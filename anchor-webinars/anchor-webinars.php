@@ -326,16 +326,16 @@ class Module {
             return;
         }
         if ( $hook === 'post-new.php' || $hook === 'post.php' ) {
-            \wp_enqueue_style( 'anchor-webinars-admin', \plugins_url( 'assets/admin.css', __FILE__ ), [], '1.0.0' );
+            \wp_enqueue_style( 'anchor-webinars-admin', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/admin.css' ), [], '1.0.0' );
         }
     }
 
     public function frontend_assets() {
         if ( \is_singular( self::CPT ) ) {
-            \wp_enqueue_style( 'anchor-webinars-frontend', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-webinars/assets/frontend.css', [], '1.0.0' );
+            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.0.0' );
         }
         if ( \is_post_type_archive( self::CPT ) ) {
-            \wp_enqueue_style( 'anchor-webinars-frontend', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-webinars/assets/frontend.css', [], '1.0.0' );
+            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.0.0' );
         }
 
         if ( ! \is_singular( self::CPT ) || ! \is_user_logged_in() ) {
@@ -349,7 +349,7 @@ class Module {
         }
 
         \wp_enqueue_script( 'vimeo-player', 'https://player.vimeo.com/api/player.js', [], null, true );
-        \wp_enqueue_script( 'anchor-webinar-player', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-webinars/assets/player.js', [ 'vimeo-player' ], '1.0.0', true );
+        \wp_enqueue_script( 'anchor-webinar-player', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/player.js' ), [ 'vimeo-player' ], '1.0.0', true );
 
         \wp_localize_script( 'anchor-webinar-player', 'ANCHOR_WEBINAR', [
             'ajaxUrl'   => \admin_url( 'admin-ajax.php' ),
@@ -395,7 +395,7 @@ class Module {
             return '';
         }
 
-        \wp_enqueue_style( 'anchor-webinars-frontend', ANCHOR_TOOLS_PLUGIN_URL . 'anchor-webinars/assets/frontend.css', [], '1.0.0' );
+        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.0.0' );
 
         $embed_url = 'https://player.vimeo.com/video/' . \rawurlencode( $vimeo_id ) . '?dnt=1';
 

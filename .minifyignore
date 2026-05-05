@@ -1,0 +1,6 @@
+# One glob per line. Paths relative to plugin root.
+# Files matching these globs are skipped by bin/build-assets.mjs.
+# Lines starting with # are comments. Blank lines ignored.
+
+# CTM Forms is being deprecated; skip until removal to avoid breakage.
+anchor-ctm-forms/**

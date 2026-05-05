@@ -254,7 +254,7 @@ class Anchor_Optimize_Media_Library_UI {
 
         wp_enqueue_script(
             'anchor-optimize-media',
-            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-optimize/assets/media.js',
+            Anchor_Asset_Loader::url( 'anchor-optimize/assets/media.js' ),
             [ 'jquery' ],
             '1.1.0',
             true

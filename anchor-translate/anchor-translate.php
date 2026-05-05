@@ -75,15 +75,12 @@ class Anchor_Translate_Module {
     }
 
     public function enqueue_frontend() {
-        $base = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-translate/assets/';
-        $dir  = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/assets/';
-
-        $css_file = $dir . 'anchor-translate.css';
+        $css_file = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/assets/anchor-translate.css';
         $css_ver  = file_exists( $css_file ) ? filemtime( $css_file ) : time();
 
         wp_enqueue_style(
             'anchor-translate',
-            $base . 'anchor-translate.css',
+            Anchor_Asset_Loader::url( 'anchor-translate/assets/anchor-translate.css' ),
             [],
             $css_ver
         );

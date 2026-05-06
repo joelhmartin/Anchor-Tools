@@ -24,7 +24,7 @@ class Anchor_Translate_Response_Translator {
 
     public function translate_html( $html, $target_lang, $source_url ) {
         if ( ! is_string( $html ) || stripos( $html, '<html' ) === false ) {
-            return $html;
+            return false;
         }
 
         $raw = $this->preserve_raw_blocks( $html );
@@ -52,11 +52,18 @@ class Anchor_Translate_Response_Translator {
         libxml_use_internal_errors( $previous );
 
         if ( ! $loaded ) {
-            return $html;
+            return false;
         }
 
         $xpath = new DOMXPath( $dom );
-        $this->translate_document( $xpath, $target_lang );
+        $translated_ok = $this->translate_document( $xpath, $target_lang );
+        if ( ! $translated_ok ) {
+            // API failed or returned nothing usable. Do NOT rewrite URLs / inject
+            // canonical+hreflang / cache, since that produces self-canonicalized
+            // duplicate-content pages at the translated URL with English text.
+            return false;
+        }
+
         $this->rewrite_internal_urls( $xpath, $target_lang );
         $this->update_document_metadata( $dom, $xpath, $target_lang, $source_url );
 
@@ -65,7 +72,7 @@ class Anchor_Translate_Response_Translator {
         $translated = $this->restore_preserved_blocks( $translated, $raw['blocks'] );
 
         if ( $this->has_unrestored_placeholders( $translated ) ) {
-            return $html;
+            return false;
         }
 
         if ( is_string( $translated ) && $translated !== '' ) {
@@ -73,7 +80,7 @@ class Anchor_Translate_Response_Translator {
             return $translated;
         }
 
-        return $html;
+        return false;
     }
 
     private function translate_document( DOMXPath $xpath, $target_lang ) {
@@ -137,7 +144,9 @@ class Anchor_Translate_Response_Translator {
         }
 
         if ( empty( $items ) ) {
-            return;
+            // Nothing to translate (e.g. only whitespace text). Treat as success
+            // — an empty translation is legit and we still want metadata injected.
+            return true;
         }
 
         $preserve = $this->parse_lines( $this->options['preserve_phrases'] ?? '' );
@@ -155,7 +164,7 @@ class Anchor_Translate_Response_Translator {
         foreach ( $chunks as $chunk ) {
             $result = $this->provider->translate_texts( $chunk, $target_lang, $this->language->get_default() );
             if ( is_wp_error( $result ) ) {
-                return;
+                return false;
             }
             $translated = array_merge( $translated, $result );
         }
@@ -172,6 +181,8 @@ class Anchor_Translate_Response_Translator {
                 $item['node']->setAttribute( $item['attr'], $value );
             }
         }
+
+        return true;
     }
 
     private function rewrite_internal_urls( DOMXPath $xpath, $target_lang ) {

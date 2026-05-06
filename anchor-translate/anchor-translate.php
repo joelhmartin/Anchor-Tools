@@ -12,8 +12,9 @@ class Anchor_Translate_Module {
 
     const OPTION_KEY       = 'anchor_translate_options';
     const PAGE_SLUG        = 'anchor-translate';
-    const REWRITE_VERSION  = '3';
+    const REWRITE_VERSION  = '4';
     const REWRITE_OPTION   = 'anchor_translate_rewrite_version';
+    const TRANSIENT_PREFIX = 'anchor_translate_render_';
 
     private $language;
     private $provider;
@@ -22,11 +23,17 @@ class Anchor_Translate_Module {
 
     private function defaults() {
         return [
+            'enabled'           => false,
             'default_language'  => 'en',
             'languages'         => "en:English\nes:Español",
             'exclude_selectors' => '',
             'preserve_phrases'  => '',
         ];
+    }
+
+    public function is_activated() {
+        $opts = $this->get_options();
+        return ! empty( $opts['enabled'] );
     }
 
     public function get_options() {
@@ -44,7 +51,8 @@ class Anchor_Translate_Module {
         add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 100 );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'admin_post_anchor_translate_test_api', [ $this, 'handle_api_test' ] );
-        add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'purge_page_caches' ] );
+        add_action( 'admin_post_anchor_translate_deactivate_cleanup', [ $this, 'handle_deactivate_cleanup' ] );
+        add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'on_options_updated' ], 10, 2 );
 
         add_action( 'init', [ $this, 'register_rewrite_rules' ] );
         add_action( 'init', [ $this, 'maybe_flush_rewrite_rules' ], 20 );
@@ -75,6 +83,9 @@ class Anchor_Translate_Module {
     }
 
     public function enqueue_frontend() {
+        if ( ! $this->is_activated() ) {
+            return;
+        }
         $css_file = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/assets/anchor-translate.css';
         $css_ver  = file_exists( $css_file ) ? filemtime( $css_file ) : time();
 
@@ -87,6 +98,9 @@ class Anchor_Translate_Module {
     }
 
     public function register_rewrite_rules() {
+        if ( ! $this->is_activated() ) {
+            return;
+        }
         $codes = $this->language->get_non_default_codes();
         if ( empty( $codes ) ) {
             return;
@@ -110,6 +124,21 @@ class Anchor_Translate_Module {
 
         flush_rewrite_rules( false );
         update_option( self::REWRITE_OPTION, self::REWRITE_VERSION, false );
+    }
+
+    public function on_options_updated( $old_value, $value ) {
+        $was_enabled = ! empty( $old_value['enabled'] );
+        $is_enabled  = ! empty( $value['enabled'] );
+
+        if ( $was_enabled !== $is_enabled ) {
+            // Force a rewrite-rule rebuild on next request — register_rewrite_rules
+            // is gated by is_activated(), so toggling activation must re-flush.
+            delete_option( self::REWRITE_OPTION );
+        }
+
+        // Existing translations cached under the old language/option set are now stale.
+        $this->delete_render_transients();
+        $this->purge_page_caches();
     }
 
     public function purge_page_caches() {
@@ -147,6 +176,9 @@ class Anchor_Translate_Module {
     }
 
     public function disable_canonical_redirect( $redirect, $requested ) {
+        if ( ! $this->is_activated() ) {
+            return $redirect;
+        }
         if ( ! $this->language->is_default() ) {
             return false;
         }
@@ -154,6 +186,9 @@ class Anchor_Translate_Module {
     }
 
     public function handle_translated_request() {
+        if ( ! $this->is_activated() ) {
+            return;
+        }
         if ( $this->language->is_default() ) {
             return;
         }
@@ -202,6 +237,25 @@ class Anchor_Translate_Module {
 
         $translated = $this->translator->translate_html( $body, $this->language->get_current(), $source_url );
 
+        if ( $translated === false ) {
+            // Translation failed (no API key, API error, parse failure). Serve a 404
+            // rather than emitting source HTML at the translated URL — that path leads
+            // to duplicate-content indexing with self-canonicalized /es/* pages.
+            status_header( 404 );
+            nocache_headers();
+            global $wp_query;
+            if ( isset( $wp_query ) ) {
+                $wp_query->set_404();
+            }
+            $template = get_404_template();
+            if ( $template ) {
+                include $template;
+            } else {
+                echo '<h1>' . esc_html__( 'Not Found', 'anchor-schema' ) . '</h1>';
+            }
+            exit;
+        }
+
         status_header( $status ?: 200 );
         header( 'Content-Type: text/html; charset=' . get_bloginfo( 'charset' ) );
         echo $translated;
@@ -226,6 +280,15 @@ class Anchor_Translate_Module {
             'sanitize_callback' => [ $this, 'sanitize_options' ],
             'default'           => [],
         ] );
+
+        add_settings_section(
+            'at_activation',
+            __( 'Activation', 'anchor-schema' ),
+            fn() => print '<p>' . esc_html__( 'Anchor Translate is inactive by default. While inactive, no translated URLs are routed and no remote requests are made. Activate only after configuring your Google Cloud API key and verifying the test below.', 'anchor-schema' ) . '</p>',
+            self::PAGE_SLUG
+        );
+
+        add_settings_field( 'enabled', __( 'Activate Translation', 'anchor-schema' ), [ $this, 'field_enabled' ], self::PAGE_SLUG, 'at_activation' );
 
         add_settings_section(
             'at_languages',
@@ -255,6 +318,18 @@ class Anchor_Translate_Module {
 
         add_settings_field( 'exclude_selectors', __( 'Exclude CSS Selectors', 'anchor-schema' ), [ $this, 'field_textarea' ], self::PAGE_SLUG, 'at_exclusions', [ 'key' => 'exclude_selectors', 'placeholder' => ".my-brand-widget\n#untranslated-section", 'rows' => 4, 'description' => 'CSS class (.classname) or ID (#id) selectors. Content inside matching elements will not be translated.' ] );
         add_settings_field( 'preserve_phrases', __( 'Preserve Phrases', 'anchor-schema' ), [ $this, 'field_textarea' ], self::PAGE_SLUG, 'at_exclusions', [ 'key' => 'preserve_phrases', 'placeholder' => "Acme Corp\nPowered by Widget™", 'rows' => 4, 'description' => 'Branded terms or phrases that should never be translated.' ] );
+    }
+
+    public function field_enabled() {
+        $opts    = $this->get_options();
+        $checked = ! empty( $opts['enabled'] );
+        printf(
+            '<label><input type="checkbox" name="%s[enabled]" value="1" %s /> %s</label>',
+            esc_attr( self::OPTION_KEY ),
+            checked( $checked, true, false ),
+            esc_html__( 'Enable translated URLs and serve translated responses', 'anchor-schema' )
+        );
+        echo '<p class="description">' . esc_html__( 'When unchecked, /es/ and other language-prefixed URLs return 404 and no translation requests are made. Required to be on for the [anchor_translate_switcher] shortcode to render.', 'anchor-schema' ) . '</p>';
     }
 
     public function field_text( $args ) {
@@ -312,6 +387,7 @@ class Anchor_Translate_Module {
 
     public function sanitize_options( $input ) {
         return [
+            'enabled'           => ! empty( $input['enabled'] ),
             'default_language'  => sanitize_text_field( $input['default_language'] ?? 'en' ),
             'languages'         => sanitize_textarea_field( $input['languages'] ?? "en:English\nes:Español" ),
             'exclude_selectors' => sanitize_textarea_field( $input['exclude_selectors'] ?? '' ),
@@ -341,6 +417,19 @@ class Anchor_Translate_Module {
         <p><?php esc_html_e( 'Place this shortcode anywhere to display the language switcher:', 'anchor-schema' ); ?></p>
         <code>[anchor_translate_switcher]</code>
         <p class="description"><?php esc_html_e( 'Styles: flags (default), text, both, code, flags_code. Example: [anchor_translate_switcher style="both"]', 'anchor-schema' ); ?></p>
+
+        <?php if ( $this->is_activated() ) : ?>
+        <hr />
+        <h2><?php esc_html_e( 'Deactivate &amp; Clean Up', 'anchor-schema' ); ?></h2>
+        <p><?php esc_html_e( 'One-click rollback: turns off translation, flushes rewrite rules so /es/ (and other language-prefixed) URLs return 404, deletes all cached translation output, and purges page caches. Use this if translated URLs were exposed to crawlers before you intended.', 'anchor-schema' ); ?></p>
+        <?php
+        $cleanup_url = wp_nonce_url(
+            add_query_arg( [ 'action' => 'anchor_translate_deactivate_cleanup' ], admin_url( 'admin-post.php' ) ),
+            'anchor_translate_deactivate_cleanup'
+        );
+        ?>
+        <p><a class="button button-secondary" href="<?php echo esc_url( $cleanup_url ); ?>" onclick="return confirm('<?php echo esc_js( __( 'Deactivate Anchor Translate and clear all translated URLs and caches?', 'anchor-schema' ) ); ?>');"><?php esc_html_e( 'Deactivate &amp; Clean Up', 'anchor-schema' ); ?></a></p>
+        <?php endif; ?>
         <?php
     }
 
@@ -385,6 +474,47 @@ class Anchor_Translate_Module {
             admin_url( 'options-general.php' )
         );
 
+        wp_safe_redirect( $url );
+        exit;
+    }
+
+    private function delete_render_transients() {
+        global $wpdb;
+        $like_value   = '_transient_' . self::TRANSIENT_PREFIX . '%';
+        $like_timeout = '_transient_timeout_' . self::TRANSIENT_PREFIX . '%';
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s",
+                $like_value,
+                $like_timeout
+            )
+        );
+    }
+
+    public function handle_deactivate_cleanup() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( esc_html__( 'You do not have permission to do that.', 'anchor-schema' ) );
+        }
+        check_admin_referer( 'anchor_translate_deactivate_cleanup' );
+
+        $opts = $this->get_options();
+        $opts['enabled'] = false;
+        update_option( self::OPTION_KEY, $opts, false );
+
+        delete_option( self::REWRITE_OPTION );
+        flush_rewrite_rules( false );
+        $this->delete_render_transients();
+        $this->purge_page_caches();
+
+        $url = add_query_arg(
+            [
+                'page'                      => 'anchor-schema',
+                'tab'                       => 'translate',
+                'anchor_translate_api_test' => 'success',
+                'anchor_translate_message'  => __( 'Anchor Translate deactivated. Translated URLs now return 404, cached translations cleared. Allow your CDN/page cache a moment to clear; submit URL removals in Search Console if needed.', 'anchor-schema' ),
+            ],
+            admin_url( 'options-general.php' )
+        );
         wp_safe_redirect( $url );
         exit;
     }

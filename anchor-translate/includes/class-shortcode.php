@@ -36,6 +36,11 @@ class Anchor_Translate_Shortcode {
     }
 
     public function render( $atts = [] ) {
+        $opts = (array) get_option( Anchor_Translate_Module::OPTION_KEY, [] );
+        if ( empty( $opts['enabled'] ) ) {
+            return '';
+        }
+
         $atts = shortcode_atts( [
             'style' => 'flags', // flags | text | both | code | flags_code
         ], $atts );

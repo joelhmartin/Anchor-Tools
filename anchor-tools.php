@@ -2998,10 +2998,10 @@ if ( ! function_exists( 'anchor_tools_is_module_enabled' ) ) {
     function anchor_tools_is_module_enabled( $module_key ) {
         $settings = get_option( Anchor_Schema_Admin::OPTION_KEY, [] );
         if ( empty( $settings['modules'] ) || ! is_array( $settings['modules'] ) ) {
-            return true;
+            return false;
         }
         if ( ! array_key_exists( $module_key, $settings['modules'] ) ) {
-            return true;
+            return false;
         }
         return (bool) $settings['modules'][ $module_key ];
     }

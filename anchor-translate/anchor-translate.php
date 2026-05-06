@@ -418,10 +418,9 @@ class Anchor_Translate_Module {
         <code>[anchor_translate_switcher]</code>
         <p class="description"><?php esc_html_e( 'Styles: flags (default), text, both, code, flags_code. Example: [anchor_translate_switcher style="both"]', 'anchor-schema' ); ?></p>
 
-        <?php if ( $this->is_activated() ) : ?>
         <hr />
         <h2><?php esc_html_e( 'Deactivate &amp; Clean Up', 'anchor-schema' ); ?></h2>
-        <p><?php esc_html_e( 'One-click rollback: turns off translation, flushes rewrite rules so /es/ (and other language-prefixed) URLs return 404, deletes all cached translation output, and purges page caches. Use this if translated URLs were exposed to crawlers before you intended.', 'anchor-schema' ); ?></p>
+        <p><?php esc_html_e( 'One-click rollback: turns translation off, flushes rewrite rules so /es/ (and other language-prefixed) URLs return 404, deletes all cached translation output, and purges page caches. Safe to run even on sites that never activated translation — useful for clearing residue from earlier plugin versions.', 'anchor-schema' ); ?></p>
         <?php
         $cleanup_url = wp_nonce_url(
             add_query_arg( [ 'action' => 'anchor_translate_deactivate_cleanup' ], admin_url( 'admin-post.php' ) ),
@@ -429,7 +428,6 @@ class Anchor_Translate_Module {
         );
         ?>
         <p><a class="button button-secondary" href="<?php echo esc_url( $cleanup_url ); ?>" onclick="return confirm('<?php echo esc_js( __( 'Deactivate Anchor Translate and clear all translated URLs and caches?', 'anchor-schema' ) ); ?>');"><?php esc_html_e( 'Deactivate &amp; Clean Up', 'anchor-schema' ); ?></a></p>
-        <?php endif; ?>
         <?php
     }
 

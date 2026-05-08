@@ -29,6 +29,8 @@ class Anchor_Slider_Module {
         'viewport_pct'     => 80,
         'pause_on_hover'   => true,
         'theme'            => 'auto',
+        'effect'           => 'standard', // standard | stacked
+        'mobile_snap'      => false,
     ];
 
     public function __construct() {
@@ -86,6 +88,8 @@ class Anchor_Slider_Module {
             'pause_on_hover' => [ 'type' => 'checkbox', 'label' => 'Pause on hover', 'section' => 'behavior' ],
             'arrows'         => [ 'type' => 'checkbox', 'label' => 'Show navigation arrows', 'section' => 'behavior' ],
             'dots'           => [ 'type' => 'checkbox', 'label' => 'Show dots / indicators', 'section' => 'behavior' ],
+            'effect'         => [ 'type' => 'select', 'label' => 'Visual effect', 'section' => 'style', 'options' => [ 'standard' => 'Standard', 'stacked' => 'Stacked cards (peek behind active)' ] ],
+            'mobile_snap'    => [ 'type' => 'checkbox', 'label' => 'Use scroll-snap on mobile (lighter than swipe JS)', 'section' => 'responsive' ],
         ];
     }
 
@@ -489,7 +493,11 @@ class Anchor_Slider_Module {
             'anchor-slider--theme-' . $settings['theme'],
             'anchor-slider--transition-' . $settings['transition'],
             'anchor-slider--height-' . $settings['height_mode'],
+            'anchor-slider--effect-' . ( $settings['effect'] ?? 'standard' ),
         ];
+        if ( ! empty( $settings['mobile_snap'] ) ) {
+            $classes[] = 'anchor-slider--mobile-snap';
+        }
 
         $style = '';
         if ( $settings['height_mode'] === 'fixed' ) {

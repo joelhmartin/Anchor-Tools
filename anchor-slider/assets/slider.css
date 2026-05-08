@@ -181,3 +181,47 @@
 @media (max-width: 767px) {
     .anchor-slider__slide--hide-mobile { display: none !important; }
 }
+
+/* ════════════════════════════════════════════════════════════
+   Phase 5 — Slider polish
+   ════════════════════════════════════════════════════════════ */
+
+/* ── Stacked-cards effect ──────────────────────── */
+.anchor-slider--effect-stacked {
+    perspective: 1200px;
+    overflow: visible;
+    padding: 30px 0;
+}
+.anchor-slider--effect-stacked .anchor-slider__track {
+    overflow: visible;
+}
+.anchor-slider--effect-stacked.anchor-slider--transition-fade .anchor-slider__slide {
+    transform-origin: center center;
+}
+.anchor-slider--effect-stacked.anchor-slider--transition-fade .anchor-slider__slide:not(.is-active) {
+    transform: scale(0.85) translateY(20px);
+    opacity: 0.4;
+    pointer-events: none;
+}
+.anchor-slider--effect-stacked.anchor-slider--transition-fade .anchor-slider__slide.is-active {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+    z-index: 2;
+}
+
+/* ── Mobile scroll-snap mode ───────────────────── */
+@media (max-width: 767px) {
+    .anchor-slider--mobile-snap .anchor-slider__track {
+        scroll-snap-type: x mandatory;
+        overflow-x: auto;
+        scroll-behavior: smooth;
+        transform: none !important;
+        -webkit-overflow-scrolling: touch;
+    }
+    .anchor-slider--mobile-snap .anchor-slider__slide {
+        scroll-snap-align: start;
+    }
+    .anchor-slider--mobile-snap .anchor-slider__arrow {
+        display: none; /* swiping handles navigation */
+    }
+}

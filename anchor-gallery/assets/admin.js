@@ -22,10 +22,28 @@
       var $wrap = $('.avg-preview-content');
       if (!$wrap.length) return;
 
+      var postId = parseInt($('#post_ID').val(), 10) || 0;
+
+      // Snapshot items currently in the form so the preview reflects
+      // unsaved additions/removals.
+      var items = [];
+      $('#avg-video-list .avg-video-row').each(function(){
+        var $row = $(this);
+        items.push({
+          type: $row.find('.avg-item-type').val() || 'video',
+          url: $row.find('.avg-video-url').val() || '',
+          title: $row.find('.avg-video-title').val() || '',
+          attachment_id: parseInt($row.find('.avg-attachment-id').val(), 10) || 0,
+          html: $row.find('.avg-item-html').val() || ''
+        });
+      });
+
       $.post(AVG.ajaxUrl, {
         action: 'avg_preview',
         nonce: AVG.nonce,
-        settings: settings
+        post_id: postId,
+        settings: settings,
+        items: items
       }, function(res){
         if (res.success && res.data && res.data.html) {
           $wrap.html(res.data.html);
@@ -63,29 +81,36 @@
     }
   }
 
-  // Add an item row (video or image)
-  function addItemRow(type, url, title, attachmentId, thumbUrl){
+  // Add an item row (video, image, or custom HTML)
+  function addItemRow(type, url, title, attachmentId, thumbUrl, htmlContent){
     var idx = $('#avg-video-list .avg-video-row').length;
     type = type || 'video';
-    var isImage = (type === 'image');
 
     var html = '<div class="avg-video-row" data-index="'+ idx +'">'
       + '<select name="avg_videos['+ idx +'][type]" class="avg-item-type">'
       + '<option value="video"'+ (type === 'video' ? ' selected' : '') +'>Video</option>'
       + '<option value="image"'+ (type === 'image' ? ' selected' : '') +'>Image</option>'
+      + '<option value="html"'+ (type === 'html' ? ' selected' : '') +'>Custom HTML</option>'
       + '</select>'
-      + '<div class="avg-video-fields"'+ (isImage ? ' style="display:none"' : '') +'>'
+      + '<div class="avg-video-fields"'+ (type !== 'video' ? ' style="display:none"' : '') +'>'
       + '<input type="url" name="avg_videos['+ idx +'][url]" value="'+ (url||'') +'" placeholder="https://youtube.com/watch?v=..." class="avg-video-url" />'
       + '</div>'
-      + '<div class="avg-image-fields"'+ (!isImage ? ' style="display:none"' : '') +'>'
+      + '<div class="avg-image-fields"'+ (type !== 'image' ? ' style="display:none"' : '') +'>'
       + '<input type="hidden" name="avg_videos['+ idx +'][attachment_id]" value="'+ (attachmentId||0) +'" class="avg-attachment-id" />'
       + '<button type="button" class="button avg-choose-image">Choose Image</button>'
       + (thumbUrl ? '<img src="'+ thumbUrl +'" class="avg-image-preview" />' : '')
       + '</div>'
+      + '<div class="avg-html-fields"'+ (type !== 'html' ? ' style="display:none"' : '') +'>'
+      + '<textarea name="avg_videos['+ idx +'][html]" class="avg-item-html" rows="3" placeholder="HTML or shortcodes (e.g. <h2>Title</h2>[anchor_reviews])">'+ escapeHtml(htmlContent||'') +'</textarea>'
+      + '</div>'
       + '<input type="text" name="avg_videos['+ idx +'][title]" value="'+ (title||'') +'" placeholder="Optional title" class="avg-video-title" />'
-      + '<button type="button" class="button avg-remove-video">&times;</button>'
+      + '<button type="button" class="button avg-remove-video" aria-label="Remove">&times;</button>'
       + '</div>';
     $('#avg-video-list').append(html);
+  }
+
+  function escapeHtml(s){
+    return $('<div>').text(s == null ? '' : String(s)).html();
   }
 
   // Open WP Media Library picker (single image — for per-row "Choose Image" button)
@@ -103,6 +128,7 @@
       $row.find('.avg-attachment-id').val(attachment.id);
       $row.find('.avg-image-preview').remove();
       $row.find('.avg-image-fields').append('<img src="'+ thumbUrl +'" class="avg-image-preview" />');
+      refreshPreview();
     });
 
     frame.open();
@@ -137,6 +163,7 @@
         var thumbUrl = data.sizes && data.sizes.thumbnail ? data.sizes.thumbnail.url : data.url;
         addItemRow('image', '', '', data.id, thumbUrl);
       });
+      refreshPreview();
     });
 
     frame.open();
@@ -154,22 +181,36 @@
     updateVisibility();
     updateAspectRatioState();
 
-    // Type toggle: show/hide video-fields vs image-fields
+    // Type toggle: show/hide video-fields vs image-fields vs html-fields
     $(document).on('change', '.avg-item-type', function(){
       var $row = $(this).closest('.avg-video-row');
       var type = $(this).val();
       $row.find('.avg-video-fields').toggle(type === 'video');
       $row.find('.avg-image-fields').toggle(type === 'image');
+      $row.find('.avg-html-fields').toggle(type === 'html');
+      refreshPreview();
+    });
+
+    // Refresh preview when item content (url/html/title) changes
+    $(document).on('input change', '.avg-video-url, .avg-item-html, .avg-video-title', function(){
+      refreshPreview();
     });
 
     // Add video
     $('#avg-add-video').on('click', function(){
       addItemRow('video', '', '');
+      refreshPreview();
     });
 
     // Add image(s) via media library (multi-select)
     $('#avg-add-image').on('click', function(){
       openBulkMediaPicker();
+    });
+
+    // Add custom HTML slide
+    $('#avg-add-html').on('click', function(){
+      addItemRow('html', '', '');
+      refreshPreview();
     });
 
     // Choose image via media library
@@ -184,6 +225,7 @@
       if ($('#avg-video-list .avg-video-row').length === 0) {
         addItemRow('video', '', '');
       }
+      refreshPreview();
     });
 
     // Bulk import

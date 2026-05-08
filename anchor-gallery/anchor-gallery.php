@@ -490,24 +490,29 @@ class Anchor_Gallery_Module {
                 $type = $v['type'] ?? 'video';
                 $att_id = intval($v['attachment_id'] ?? 0);
                 $img_preview = $att_id ? wp_get_attachment_image_url($att_id, 'thumbnail') : '';
+                $html_content = (string) ( $v['html'] ?? '' );
             ?>
             <div class="avg-video-row" data-index="<?php echo esc_attr($i); ?>">
                 <select name="avg_videos[<?php echo esc_attr($i); ?>][type]" class="avg-item-type">
                     <option value="video"<?php selected($type, 'video'); ?>>Video</option>
                     <option value="image"<?php selected($type, 'image'); ?>>Image</option>
+                    <option value="html"<?php selected($type, 'html'); ?>>Custom HTML</option>
                 </select>
-                <div class="avg-video-fields"<?php echo $type === 'image' ? ' style="display:none"' : ''; ?>>
+                <div class="avg-video-fields"<?php echo $type !== 'video' ? ' style="display:none"' : ''; ?>>
                     <input type="url" name="avg_videos[<?php echo esc_attr($i); ?>][url]" value="<?php echo esc_attr($v['url'] ?? ''); ?>" placeholder="https://youtube.com/watch?v=..." class="avg-video-url" />
                 </div>
-                <div class="avg-image-fields"<?php echo $type === 'video' ? ' style="display:none"' : ''; ?>>
+                <div class="avg-image-fields"<?php echo $type !== 'image' ? ' style="display:none"' : ''; ?>>
                     <input type="hidden" name="avg_videos[<?php echo esc_attr($i); ?>][attachment_id]" value="<?php echo esc_attr($att_id); ?>" class="avg-attachment-id" />
                     <button type="button" class="button avg-choose-image">Choose Image</button>
                     <?php if ($img_preview): ?>
                     <img src="<?php echo esc_url($img_preview); ?>" class="avg-image-preview" />
                     <?php endif; ?>
                 </div>
+                <div class="avg-html-fields"<?php echo $type !== 'html' ? ' style="display:none"' : ''; ?>>
+                    <textarea name="avg_videos[<?php echo esc_attr($i); ?>][html]" class="avg-item-html" rows="3" placeholder="HTML or shortcodes (e.g. &lt;h2&gt;Title&lt;/h2&gt;[anchor_reviews])"><?php echo esc_textarea( $html_content ); ?></textarea>
+                </div>
                 <input type="text" name="avg_videos[<?php echo esc_attr($i); ?>][title]" value="<?php echo esc_attr($v['title'] ?? ''); ?>" placeholder="Optional title" class="avg-video-title" />
-                <button type="button" class="button avg-remove-video">&times;</button>
+                <button type="button" class="button avg-remove-video" aria-label="Remove">&times;</button>
             </div>
             <?php endforeach; ?>
         </div>
@@ -515,7 +520,9 @@ class Anchor_Gallery_Module {
         <p>
             <button type="button" class="button" id="avg-add-video">+ Add Video</button>
             <button type="button" class="button" id="avg-add-image">+ Add Image</button>
+            <button type="button" class="button" id="avg-add-html">+ Add Custom HTML</button>
         </p>
+        <p class="description" style="margin-top:8px">Hold ⌘ (Mac) or Ctrl (Windows) when clicking thumbnails in the media library to multi-select.</p>
         <?php
     }
 
@@ -554,10 +561,21 @@ class Anchor_Gallery_Module {
     }
 
     public function render_box_preview($post) {
-        $preview_videos = $this->sample_videos;
-        foreach ($preview_videos as &$v) {
-            $v['raw_url'] = 'https://youtube.com/watch?v=' . $v['id'];
+        $raw_items = get_post_meta( $post->ID, 'avg_videos', true );
+        $items     = is_array( $raw_items ) ? $raw_items : [];
+
+        $using_samples = false;
+        if ( empty( $items ) ) {
+            $using_samples  = true;
+            $preview_videos = $this->sample_videos;
+            foreach ( $preview_videos as &$v ) {
+                $v['raw_url'] = 'https://youtube.com/watch?v=' . $v['id'];
+            }
+            unset( $v );
+        } else {
+            $preview_videos = $this->parse_videos_from_rows( $items );
         }
+
         $settings = [];
         foreach ($this->default_settings as $key => $default) {
             $saved = get_post_meta($post->ID, 'avg_' . $key, true);
@@ -568,12 +586,20 @@ class Anchor_Gallery_Module {
                 $settings[$key] = (int) $settings[$key];
             }
         }
+
+        $preview_videos = $this->hydrate_video_metadata( $preview_videos, $settings['thumb_size'] ?? 'maxres' );
         ?>
         <div class="avg-preview-wrap">
             <div class="avg-preview-content">
                 <?php echo $this->render_dispatch('avg-preview-init', $preview_videos, $settings); ?>
             </div>
-            <p class="avg-preview-note">Preview uses sample videos. Your actual content appears on the front end.</p>
+            <p class="avg-preview-note">
+                <?php if ( $using_samples ) : ?>
+                    No items yet — preview is showing sample videos. Add items in the Content tab.
+                <?php else : ?>
+                    Live preview of <?php echo count( $preview_videos ); ?> item<?php echo count( $preview_videos ) === 1 ? '' : 's'; ?>. Front-end output may differ for video providers fetching live metadata.
+                <?php endif; ?>
+            </p>
         </div>
         <?php
     }
@@ -587,13 +613,26 @@ class Anchor_Gallery_Module {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
         if (!current_user_can('edit_post', $post_id)) return;
 
-        // Save items (videos + images)
+        // Save items (videos + images + html)
         $raw_items = isset($_POST['avg_videos']) && is_array($_POST['avg_videos']) ? $_POST['avg_videos'] : [];
         $items = [];
         foreach ($raw_items as $v) {
             if (!is_array($v)) continue;
             $type = sanitize_text_field($v['type'] ?? 'video');
-            if (!in_array($type, ['video', 'image'])) $type = 'video';
+            if (!in_array($type, ['video', 'image', 'html'], true)) $type = 'video';
+
+            if ($type === 'html') {
+                $html = wp_kses_post( wp_unslash( $v['html'] ?? '' ) );
+                if ( trim( $html ) === '' ) continue;
+                $items[] = [
+                    'type'          => 'html',
+                    'url'           => '',
+                    'html'          => $html,
+                    'title'         => sanitize_text_field( $v['title'] ?? '' ),
+                    'attachment_id' => 0,
+                ];
+                continue;
+            }
 
             if ($type === 'video') {
                 $url = esc_url_raw(trim($v['url'] ?? ''));
@@ -744,10 +783,50 @@ class Anchor_Gallery_Module {
             }
         }
 
-        $videos = $this->sample_videos;
-        foreach ($videos as &$v) {
-            $v['raw_url'] = 'https://youtube.com/watch?v=' . $v['id'];
+        // Prefer items posted from the editor (unsaved state) so the live
+        // preview matches what the user is currently arranging. Fall back
+        // to saved meta if the form snapshot is missing.
+        $live_items = isset( $_POST['items'] ) && is_array( $_POST['items'] ) ? wp_unslash( $_POST['items'] ) : null;
+        if ( is_array( $live_items ) ) {
+            $items = [];
+            foreach ( $live_items as $row ) {
+                if ( ! is_array( $row ) ) continue;
+                $type = sanitize_text_field( $row['type'] ?? 'video' );
+                if ( ! in_array( $type, [ 'video', 'image', 'html' ], true ) ) $type = 'video';
+                $items[] = [
+                    'type'          => $type,
+                    'url'           => esc_url_raw( $row['url'] ?? '' ),
+                    'title'         => sanitize_text_field( $row['title'] ?? '' ),
+                    'attachment_id' => absint( $row['attachment_id'] ?? 0 ),
+                    'html'          => wp_kses_post( $row['html'] ?? '' ),
+                ];
+            }
+        } else {
+            $post_id = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
+            $saved   = $post_id ? get_post_meta( $post_id, 'avg_videos', true ) : [];
+            $items   = is_array( $saved ) ? $saved : [];
         }
+
+        if ( empty( $items ) ) {
+            $videos = $this->sample_videos;
+            foreach ( $videos as &$v ) {
+                $v['raw_url'] = 'https://youtube.com/watch?v=' . $v['id'];
+            }
+            unset( $v );
+        } else {
+            $videos = $this->parse_videos_from_rows( $items );
+            if ( empty( $videos ) ) {
+                // All items were placeholders/empty — fall back to samples
+                // so the user still sees something rather than a blank box.
+                $videos = $this->sample_videos;
+                foreach ( $videos as &$v ) {
+                    $v['raw_url'] = 'https://youtube.com/watch?v=' . $v['id'];
+                }
+                unset( $v );
+            }
+        }
+
+        $videos = $this->hydrate_video_metadata( $videos, $settings['thumb_size'] ?? 'maxres' );
 
         $html = $this->render_dispatch('avg-preview-' . uniqid(), $videos, $settings);
         wp_send_json_success(['html' => $html]);
@@ -1026,9 +1105,21 @@ class Anchor_Gallery_Module {
 
                 foreach ($videos as $i => $video):
                     $hidden = $paginate && $i >= $per_page;
-                    $item_type = $video['provider'] === 'image' ? 'image' : 'video';
-                    $is_image = ($item_type === 'image');
+                    $provider  = $video['provider'] ?? 'video';
+                    $is_html   = $provider === 'html';
+                    $is_image  = $provider === 'image';
+                    $item_type = $is_html ? 'html' : ( $is_image ? 'image' : 'video' );
                 ?>
+                <?php if ( $is_html ) : ?>
+                <div class="avg-tile avg-tile-html<?php echo $hidden ? ' avg-hidden' : ''; ?>"
+                     data-index="<?php echo esc_attr( $i ); ?>"
+                     data-type="html"
+                     <?php if ( ! empty( $video['category'] ) ) : ?>data-category="<?php echo esc_attr( sanitize_title( $video['category'] ) ); ?>"<?php endif; ?>>
+                    <div class="avg-tile-inner">
+                        <div class="avg-html-content"><?php echo do_shortcode( wp_kses_post( $video['html'] ?? '' ) ); ?></div>
+                    </div>
+                </div>
+                <?php continue; endif; ?>
                 <div class="avg-tile<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                      data-index="<?php echo esc_attr($i); ?>"
                      data-type="<?php echo esc_attr($item_type); ?>"
@@ -1476,6 +1567,23 @@ class Anchor_Gallery_Module {
             if (!is_array($row)) continue;
             $type = $row['type'] ?? 'video';
 
+            if ( $type === 'html' ) {
+                $html = (string) ( $row['html'] ?? '' );
+                if ( trim( $html ) === '' ) continue;
+                $out[] = [
+                    'provider' => 'html',
+                    'id'       => 'html-' . md5( $html ),
+                    'thumb'    => '',
+                    'full_url' => '',
+                    'label'    => trim( (string) ( $row['title'] ?? '' ) ),
+                    'raw_url'  => '',
+                    'duration' => '',
+                    'channel'  => '',
+                    'html'     => $html,
+                ];
+                continue;
+            }
+
             if ($type === 'image') {
                 $att_id = absint($row['attachment_id'] ?? 0);
                 if ($att_id === 0) continue;
@@ -1551,7 +1659,7 @@ class Anchor_Gallery_Module {
         $yt_ids = [];
         $vm_ids = [];
         foreach ($videos as $video) {
-            if ($video['provider'] === 'image') continue;
+            if ( in_array( $video['provider'] ?? '', [ 'image', 'html' ], true ) ) continue;
             if ($video['provider'] === 'youtube') $yt_ids[] = $video['id'];
             elseif ($video['provider'] === 'vimeo') $vm_ids[] = $video['id'];
         }
@@ -1560,7 +1668,7 @@ class Anchor_Gallery_Module {
         $vm_details = $this->fetch_vimeo_details($vm_ids, $thumb_size);
 
         foreach ($videos as &$video) {
-            if ($video['provider'] === 'image') continue;
+            if ( in_array( $video['provider'] ?? '', [ 'image', 'html' ], true ) ) continue;
 
             $custom_title = isset($video['custom_title']) ? (string) $video['custom_title'] : '';
             $custom_thumb = isset($video['custom_thumb']) ? (string) $video['custom_thumb'] : '';

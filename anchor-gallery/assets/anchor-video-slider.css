@@ -1308,3 +1308,88 @@
   z-index: 10;
   text-shadow: 0 2px 10px rgba(0,0,0,0.6);
 }
+
+/* ════════════════════════════════════════════════════════════
+   Phase 4 — New layouts (filterable, paginated, bento,
+   card_carousel, lightbox_grid). thumbnail_gallery routes to the
+   existing 'gallery' layout, so its styles already apply.
+   ════════════════════════════════════════════════════════════ */
+
+/* ── Filterable ────────────────────────────────── */
+.avg-filterable-shell {
+    width: 100%;
+}
+.avg-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+    justify-content: center;
+}
+.avg-filter {
+    background: transparent;
+    border: 1px solid currentColor;
+    padding: 6px 14px;
+    font-size: 13px;
+    border-radius: 999px;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.avg-filter:hover {
+    opacity: 1;
+}
+.avg-filter.is-active {
+    background: currentColor;
+    opacity: 1;
+}
+.avg-filter.is-active span,
+.avg-filter.is-active {
+    color: inherit;
+}
+.avg-layout-filterable .avg-tile.is-hidden {
+    display: none;
+}
+
+/* ── Paginated (load-more / numbered chrome) ──── */
+.avg-layout-paginated {
+    /* renderer already injects data-pagination/data-per-page,
+       existing grid pagination styles apply. */
+}
+
+/* ── Bento (mixed-size grid) ───────────────────── */
+.avg-layout-bento {
+    grid-auto-flow: dense;
+}
+.avg-layout-bento .avg-tile:nth-child(7n + 1) {
+    grid-column: span 2;
+    grid-row: span 2;
+}
+.avg-layout-bento .avg-tile:nth-child(11n + 4) {
+    grid-column: span 2;
+}
+@media (max-width: 768px) {
+    .avg-layout-bento .avg-tile:nth-child(7n + 1),
+    .avg-layout-bento .avg-tile:nth-child(11n + 4) {
+        grid-column: auto;
+        grid-row: auto;
+    }
+}
+
+/* ── Card carousel ─────────────────────────────── */
+.avg-layout-card-carousel .avg-tile {
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+}
+.avg-layout-card-carousel .avg-tile:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+/* ── Lightbox grid (visual identical to grid; just here in
+   case future custom styling differentiates it) ───────────── */
+.avg-layout-lightbox-grid .avg-tile {
+    cursor: zoom-in;
+}

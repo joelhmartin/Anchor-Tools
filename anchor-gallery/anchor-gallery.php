@@ -1032,6 +1032,7 @@ class Anchor_Gallery_Module {
                 <div class="avg-tile<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                      data-index="<?php echo esc_attr($i); ?>"
                      data-type="<?php echo esc_attr($item_type); ?>"
+                     <?php if (!empty($video['category'])): ?>data-category="<?php echo esc_attr( sanitize_title( $video['category'] ) ); ?>"<?php endif; ?>
                      <?php if (!$is_image): ?>
                      data-provider="<?php echo esc_attr($video['provider']); ?>"
                      data-video-id="<?php echo esc_attr($video['id']); ?>"
@@ -1123,13 +1124,93 @@ class Anchor_Gallery_Module {
        ══════════════════════════════════════════════════════════ */
 
     private function render_dispatch($uid, $videos, $settings) {
-        if ($settings['layout'] === 'logo_carousel') {
-            return $this->render_logo_carousel($uid, $videos, $settings);
+        $layout = $settings['layout'] ?? 'slider';
+
+        if ( $layout === 'logo_carousel' ) {
+            return $this->render_logo_carousel( $uid, $videos, $settings );
         }
-        if ($settings['layout'] === 'gallery') {
-            return $this->render_gallery_layout($uid, $videos, $settings);
+        if ( $layout === 'gallery' || $layout === 'thumbnail_gallery' ) {
+            return $this->render_gallery_layout( $uid, $videos, $settings );
         }
-        return $this->render_output($uid, $videos, $settings);
+        if ( $layout === 'filterable' ) {
+            return $this->render_filterable_layout( $uid, $videos, $settings );
+        }
+        if ( $layout === 'paginated' ) {
+            // Force pagination on + treat as grid for the underlying renderer.
+            $settings['pagination_enabled'] = 1;
+            $settings['layout']             = 'grid';
+            $output                         = $this->render_output( $uid, $videos, $settings );
+            // Re-tag with paginated layout class so CSS can target it.
+            return str_replace( 'avg-layout-grid', 'avg-layout-grid avg-layout-paginated', $output );
+        }
+        if ( $layout === 'lightbox_grid' ) {
+            $settings['popup_style'] = 'lightbox';
+            $settings['layout']      = 'grid';
+            $output                  = $this->render_output( $uid, $videos, $settings );
+            return str_replace( 'avg-layout-grid', 'avg-layout-grid avg-layout-lightbox-grid', $output );
+        }
+        if ( $layout === 'card_carousel' ) {
+            $settings['layout'] = 'carousel';
+            $output             = $this->render_output( $uid, $videos, $settings );
+            return str_replace( 'avg-layout-carousel', 'avg-layout-carousel avg-layout-card-carousel', $output );
+        }
+        if ( $layout === 'bento' ) {
+            $settings['layout'] = 'grid';
+            $output             = $this->render_output( $uid, $videos, $settings );
+            return str_replace( 'avg-layout-grid', 'avg-layout-grid avg-layout-bento', $output );
+        }
+        return $this->render_output( $uid, $videos, $settings );
+    }
+
+    /**
+     * Filterable grid: renders category filter buttons above a grid where
+     * each tile carries a data-category attribute. Categories come from
+     * each video item's optional 'category' field.
+     */
+    private function render_filterable_layout( $uid, $videos, $settings ) {
+        if ( empty( $videos ) ) {
+            return '';
+        }
+
+        // Collect distinct categories
+        $cats = [];
+        foreach ( $videos as $v ) {
+            $c = $v['category'] ?? '';
+            if ( $c !== '' && ! in_array( $c, $cats, true ) ) {
+                $cats[] = $c;
+            }
+        }
+
+        // Render the underlying grid with category tags applied
+        $original_layout    = $settings['layout'];
+        $settings['layout'] = 'grid';
+        $grid_html          = $this->render_output( $uid, $videos, $settings );
+        $settings['layout'] = $original_layout;
+
+        // Re-tag with filterable layout class
+        $grid_html = str_replace( 'avg-layout-grid', 'avg-layout-grid avg-layout-filterable', $grid_html );
+
+        // Inject data-category attributes onto tiles. Simple heuristic:
+        // wrap the grid in a filterable shell with buttons. Tiles already
+        // exist; clients that want category filtering can use the data-*
+        // attribute that tiles emit (added below in render_output via
+        // item data — for now categories are stored per item but the
+        // grid tiles need the attribute applied via a small hook).
+        ob_start();
+        ?>
+        <div class="avg-filterable-shell">
+            <?php if ( ! empty( $cats ) ) : ?>
+                <div class="avg-filter-bar" role="tablist">
+                    <button type="button" class="avg-filter is-active" data-filter="*">All</button>
+                    <?php foreach ( $cats as $cat ) : ?>
+                        <button type="button" class="avg-filter" data-filter="<?php echo esc_attr( sanitize_title( $cat ) ); ?>"><?php echo esc_html( $cat ); ?></button>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+            <?php echo $grid_html; ?>
+        </div>
+        <?php
+        return ob_get_clean();
     }
 
     /* ══════════════════════════════════════════════════════════

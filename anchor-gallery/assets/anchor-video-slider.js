@@ -1053,3 +1053,28 @@
   });
 
 })();
+
+/* ════════════════════════════════════════════════════════════
+   Phase 4 — Filterable grid: simple filter button handler.
+   Each filter button has data-filter, tiles have data-category.
+   ════════════════════════════════════════════════════════════ */
+(function () {
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.avg-filter');
+    if (!btn) return;
+    var shell = btn.closest('.avg-filterable-shell');
+    if (!shell) return;
+
+    var filter = btn.getAttribute('data-filter');
+    shell.querySelectorAll('.avg-filter').forEach(function (b) {
+      b.classList.toggle('is-active', b === btn);
+    });
+
+    var tiles = shell.querySelectorAll('.avg-tile');
+    tiles.forEach(function (tile) {
+      var cat = tile.getAttribute('data-category') || '';
+      var slug = cat.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      tile.classList.toggle('is-hidden', filter !== '*' && filter !== slug);
+    });
+  });
+})();

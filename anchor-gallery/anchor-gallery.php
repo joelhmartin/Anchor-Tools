@@ -77,69 +77,124 @@ class Anchor_Gallery_Module {
         'tile_shadow' => 'soft',
     ];
 
-    /* ── Setting definitions for metabox rendering & save ── */
-
+    /**
+     * Setting definitions for metabox rendering & save (Phase 3 schema).
+     *
+     * Supported per-field keys:
+     *  - label       (string)  Human-readable label.
+     *  - type        (string)  'select' | 'number' | 'checkbox' | 'text' | 'textarea' | 'color'.
+     *  - default     (mixed)   Default value (also drawn from $this->default_settings).
+     *  - section     (string)  Section/tab key (layout|style|content|behavior|responsive|advanced).
+     *  - applies_to  (array)   Layout keys this setting affects. Empty/absent = global.
+     *                          Hidden in editor when current layout isn't in the list.
+     *  - forced_by   (array)   Map of layout_key => forced_value. When current layout matches,
+     *                          field is shown but disabled, set to forced value, and annotated.
+     *                          Optional 'forced_by_note' is a parallel map of layout_key => note string.
+     *  - depends_on  (array)   Map of setting_key => required_value (or true for truthy). Hidden
+     *                          unless every dependency is met.
+     *  - responsive  (bool)    If true, declare desktop/tablet/mobile triplet support (Phase 5).
+     *                          Phase 3 only adds schema support — no triplets are migrated yet.
+     *  - help        (string)  One short sentence shown beneath the control.
+     *  - priority    (int)     Sort order within section (lower first). Default 50.
+     *  - show_for    (string)  DEPRECATED — comma-separated layout list. Falls back to applies_to.
+     */
     private function get_setting_defs() {
+        $core_layouts = ['slider','grid','carousel','masonry','gallery','filterable','paginated','bento','thumbnail_gallery','card_carousel','lightbox_grid'];
+        $tile_layouts = ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel','lightbox_grid'];
+        $col_layouts  = ['grid','masonry','carousel','filterable','paginated','bento','card_carousel','lightbox_grid'];
+        $pag_layouts  = ['grid','masonry','filterable','paginated'];
+        $slider_layouts = ['slider','carousel','card_carousel'];
+        $carousel_loop_layouts = ['carousel','card_carousel'];
+        $marquee_layouts = ['logo_carousel'];
+
         return [
-            'layout' => ['type' => 'select', 'label' => 'Layout', 'section' => 'layout', 'options' => ['grid' => 'Grid', 'masonry' => 'Masonry', 'carousel' => 'Carousel', 'slider' => 'Horizontal Scroll', 'gallery' => 'Gallery (Featured + Thumbs)', 'logo_carousel' => 'Logo Carousel', 'filterable' => 'Filterable Grid'], 'help' => 'Pick a base layout. Variants like Paginated/Lightbox/Card/Bento are available as Presets.'],
-            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'section' => 'behavior', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
-            'theme' => ['type' => 'select', 'label' => 'Theme', 'section' => 'style', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
-            'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'section' => 'style', 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic'], 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'layout' => ['type' => 'select', 'label' => 'Layout', 'section' => 'layout', 'priority' => 10, 'options' => ['grid' => 'Grid', 'masonry' => 'Masonry', 'carousel' => 'Carousel', 'slider' => 'Horizontal Scroll', 'gallery' => 'Gallery (Featured + Thumbs)', 'logo_carousel' => 'Logo Carousel', 'filterable' => 'Filterable Grid'], 'help' => 'Pick a base layout. Variants like Paginated/Lightbox/Card/Bento are available as Presets.'],
+            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'section' => 'behavior', 'priority' => 10, 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'applies_to' => $core_layouts,
+                'forced_by' => ['lightbox_grid' => 'lightbox'],
+                'forced_by_note' => ['lightbox_grid' => 'Locked by Lightbox Grid layout — change layout to edit.'],
+            ],
+            'theme' => ['type' => 'select', 'label' => 'Theme', 'section' => 'style', 'priority' => 10, 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto'], 'applies_to' => $core_layouts],
+            'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'section' => 'style', 'priority' => 20, 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic'], 'applies_to' => $tile_layouts],
             'thumb_aspect_ratio' => ['type' => 'select', 'label' => 'Thumbnail Aspect Ratio', 'section' => 'style', 'options' => [
                 '16:9' => '16:9 (Widescreen)',
                 '4:3'  => '4:3 (Classic)',
                 '1:1'  => '1:1 (Square)',
                 '9:16' => '9:16 (Portrait)',
                 '21:9' => '21:9 (Cinematic)',
-            ], 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel,lightbox_grid'],
-            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'section' => 'style', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel,lightbox_grid'],
-            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'section' => 'style', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            ], 'applies_to' => $tile_layouts],
+            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'section' => 'style', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'applies_to' => $tile_layouts],
+            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'section' => 'style', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'applies_to' => $core_layouts],
             'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 2],
-            'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'section' => 'layout', 'min' => 1, 'max' => 6, 'show_for' => 'grid,masonry,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
-            'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'section' => 'responsive', 'min' => 1, 'max' => 4, 'show_for' => 'grid,masonry,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
-            'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'section' => 'responsive', 'min' => 1, 'max' => 2, 'show_for' => 'grid,masonry,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'section' => 'layout', 'priority' => 20, 'min' => 1, 'max' => 6, 'applies_to' => $col_layouts],
+            'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'section' => 'responsive', 'min' => 1, 'max' => 4, 'applies_to' => $col_layouts],
+            'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'section' => 'responsive', 'min' => 1, 'max' => 2, 'applies_to' => $col_layouts],
             'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4],
-            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'section' => 'content', 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
-            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'content', 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,card_carousel,lightbox_grid'],
-            'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel'],
-            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'content', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'show_for' => 'grid,masonry,slider,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
-            'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'section' => 'layout', 'show_for' => 'grid,masonry,slider,carousel,filterable,paginated,card_carousel,lightbox_grid'],
-            'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'show_for' => 'grid,masonry,slider,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'section' => 'content', 'priority' => 10, 'applies_to' => $core_layouts],
+            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'content', 'applies_to' => array_values(array_diff($core_layouts, ['thumbnail_gallery']))],
+            'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
+            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'content', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts],
+            'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'section' => 'layout', 'applies_to' => array_values(array_diff($tile_layouts, ['bento']))],
+            'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'applies_to' => $tile_layouts],
             'thumb_size' => ['type' => 'select', 'label' => 'Thumbnail Resolution', 'section' => 'advanced', 'options' => [
                 'maxres'   => 'Max (1280×720)',
                 'standard' => 'Standard (640×480)',
                 'high'     => 'High (480×360)',
                 'medium'   => 'Medium (320×180)',
-            ], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            ], 'applies_to' => $core_layouts],
             'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'section' => 'style', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
-            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'section' => 'behavior', 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
-            'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'section' => 'behavior', 'show_for' => 'grid,masonry,filterable,paginated', 'help' => 'Used by Grid, Masonry, and Filterable Grid layouts.'],
-            'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'section' => 'behavior', 'min' => 1, 'max' => 100, 'show_for' => 'grid,masonry,filterable,paginated'],
-            'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'section' => 'behavior', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'show_for' => 'grid,masonry,filterable,paginated'],
-            'slider_arrows' => ['type' => 'checkbox', 'label' => 'Navigation Arrows', 'section' => 'behavior', 'show_for' => 'slider,carousel,card_carousel'],
-            'slider_dots' => ['type' => 'checkbox', 'label' => 'Dots Navigation', 'section' => 'behavior', 'show_for' => 'slider,carousel,card_carousel'],
-            'slider_autoplay' => ['type' => 'checkbox', 'label' => 'Auto-advance', 'section' => 'behavior', 'show_for' => 'slider,carousel,card_carousel'],
-            'slider_autoplay_speed' => ['type' => 'number', 'label' => 'Autoplay Speed (ms)', 'section' => 'behavior', 'min' => 1000, 'max' => 15000, 'step' => 500, 'show_for' => 'slider,carousel,card_carousel'],
-            'carousel_loop' => ['type' => 'checkbox', 'label' => 'Loop Continuously', 'section' => 'behavior', 'show_for' => 'carousel,card_carousel'],
-            'carousel_center' => ['type' => 'checkbox', 'label' => 'Center Active Slide', 'section' => 'behavior', 'show_for' => 'carousel,card_carousel'],
-            'marquee_speed' => ['type' => 'number', 'label' => 'Scroll Speed (seconds)', 'section' => 'behavior', 'min' => 5, 'max' => 120, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_gap' => ['type' => 'number', 'label' => 'Item Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 120, 'step' => 4, 'show_for' => 'logo_carousel'],
-            'marquee_item_width' => ['type' => 'number', 'label' => 'Item Width (px)', 'section' => 'layout', 'min' => 50, 'max' => 400, 'step' => 10, 'show_for' => 'logo_carousel'],
-            'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'section' => 'behavior', 'show_for' => 'logo_carousel'],
-            'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'section' => 'behavior', 'options' => ['left' => 'Left', 'right' => 'Right'], 'show_for' => 'logo_carousel'],
-            'marquee_reverse_row' => ['type' => 'checkbox', 'label' => 'Add Reverse Row', 'section' => 'layout', 'show_for' => 'logo_carousel'],
-            'marquee_item_height' => ['type' => 'number', 'label' => 'Item Max Height (px)', 'section' => 'layout', 'min' => 20, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_item_width_mobile' => ['type' => 'number', 'label' => 'Mobile Item Width (px, 0 = use Item Width)', 'section' => 'responsive', 'min' => 0, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_item_height_mobile' => ['type' => 'number', 'label' => 'Mobile Item Height (px, 0 = use Item Max Height)', 'section' => 'responsive', 'min' => 0, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_gap_mobile' => ['type' => 'number', 'label' => 'Mobile Item Gap (px, 0 = use Item Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 120, 'step' => 4, 'show_for' => 'logo_carousel'],
-            'marquee_speed_mobile' => ['type' => 'number', 'label' => 'Mobile Scroll Speed (s, 0 = use Scroll Speed)', 'section' => 'responsive', 'min' => 0, 'max' => 120, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_align' => ['type' => 'select', 'label' => 'Item Alignment', 'section' => 'layout', 'options' => ['start' => 'Top', 'center' => 'Center', 'end' => 'Bottom'], 'show_for' => 'logo_carousel'],
-            'marquee_grayscale' => ['type' => 'checkbox', 'label' => 'Grayscale (color on hover)', 'section' => 'style', 'show_for' => 'logo_carousel'],
-            'marquee_eager_count' => ['type' => 'number', 'label' => 'Eager-Load First N Logos', 'section' => 'advanced', 'min' => 0, 'max' => 30, 'step' => 1, 'show_for' => 'logo_carousel'],
-            'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'section' => 'advanced', 'min' => 0, 'max' => 24, 'step' => 1, 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'section' => 'behavior', 'applies_to' => $core_layouts],
+            'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'section' => 'behavior', 'applies_to' => $pag_layouts, 'help' => 'Used by Grid, Masonry, and Filterable Grid layouts.',
+                'forced_by' => ['paginated' => '1'],
+                'forced_by_note' => ['paginated' => 'Locked by Paginated Grid layout — change layout to edit.'],
+            ],
+            'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'section' => 'behavior', 'min' => 1, 'max' => 100, 'applies_to' => $pag_layouts, 'depends_on' => ['pagination_enabled' => true]],
+            'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'section' => 'behavior', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'applies_to' => $pag_layouts, 'depends_on' => ['pagination_enabled' => true]],
+            'slider_arrows' => ['type' => 'checkbox', 'label' => 'Navigation Arrows', 'section' => 'behavior', 'applies_to' => $slider_layouts],
+            'slider_dots' => ['type' => 'checkbox', 'label' => 'Dots Navigation', 'section' => 'behavior', 'applies_to' => $slider_layouts],
+            'slider_autoplay' => ['type' => 'checkbox', 'label' => 'Auto-advance', 'section' => 'behavior', 'applies_to' => $slider_layouts],
+            'slider_autoplay_speed' => ['type' => 'number', 'label' => 'Autoplay Speed (ms)', 'section' => 'behavior', 'min' => 1000, 'max' => 15000, 'step' => 500, 'applies_to' => $slider_layouts, 'depends_on' => ['slider_autoplay' => true]],
+            'carousel_loop' => ['type' => 'checkbox', 'label' => 'Loop Continuously', 'section' => 'behavior', 'applies_to' => $carousel_loop_layouts],
+            'carousel_center' => ['type' => 'checkbox', 'label' => 'Center Active Slide', 'section' => 'behavior', 'applies_to' => $carousel_loop_layouts],
+            'marquee_speed' => ['type' => 'number', 'label' => 'Scroll Speed (seconds)', 'section' => 'behavior', 'min' => 5, 'max' => 120, 'step' => 5, 'applies_to' => $marquee_layouts],
+            'marquee_gap' => ['type' => 'number', 'label' => 'Item Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 120, 'step' => 4, 'applies_to' => $marquee_layouts],
+            'marquee_item_width' => ['type' => 'number', 'label' => 'Item Width (px)', 'section' => 'layout', 'min' => 50, 'max' => 400, 'step' => 10, 'applies_to' => $marquee_layouts],
+            'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'section' => 'behavior', 'applies_to' => $marquee_layouts],
+            'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'section' => 'behavior', 'options' => ['left' => 'Left', 'right' => 'Right'], 'applies_to' => $marquee_layouts],
+            'marquee_reverse_row' => ['type' => 'checkbox', 'label' => 'Add Reverse Row', 'section' => 'layout', 'applies_to' => $marquee_layouts],
+            'marquee_item_height' => ['type' => 'number', 'label' => 'Item Max Height (px)', 'section' => 'layout', 'min' => 20, 'max' => 400, 'step' => 5, 'applies_to' => $marquee_layouts],
+            'marquee_item_width_mobile' => ['type' => 'number', 'label' => 'Mobile Item Width (px, 0 = use Item Width)', 'section' => 'responsive', 'min' => 0, 'max' => 400, 'step' => 5, 'applies_to' => $marquee_layouts],
+            'marquee_item_height_mobile' => ['type' => 'number', 'label' => 'Mobile Item Height (px, 0 = use Item Max Height)', 'section' => 'responsive', 'min' => 0, 'max' => 400, 'step' => 5, 'applies_to' => $marquee_layouts],
+            'marquee_gap_mobile' => ['type' => 'number', 'label' => 'Mobile Item Gap (px, 0 = use Item Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 120, 'step' => 4, 'applies_to' => $marquee_layouts],
+            'marquee_speed_mobile' => ['type' => 'number', 'label' => 'Mobile Scroll Speed (s, 0 = use Scroll Speed)', 'section' => 'responsive', 'min' => 0, 'max' => 120, 'step' => 5, 'applies_to' => $marquee_layouts],
+            'marquee_align' => ['type' => 'select', 'label' => 'Item Alignment', 'section' => 'layout', 'options' => ['start' => 'Top', 'center' => 'Center', 'end' => 'Bottom'], 'applies_to' => $marquee_layouts],
+            'marquee_grayscale' => ['type' => 'checkbox', 'label' => 'Grayscale (color on hover)', 'section' => 'style', 'applies_to' => $marquee_layouts],
+            'marquee_eager_count' => ['type' => 'number', 'label' => 'Eager-Load First N Logos', 'section' => 'advanced', 'min' => 0, 'max' => 30, 'step' => 1, 'applies_to' => $marquee_layouts],
+            'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'section' => 'advanced', 'min' => 0, 'max' => 24, 'step' => 1, 'applies_to' => $core_layouts],
             'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 60, 'step' => 2],
-            'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'section' => 'style', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'section' => 'style', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'applies_to' => $core_layouts],
         ];
+    }
+
+    /**
+     * Build a layout => { setting_key => { value, note } } map from the
+     * `forced_by` keys in the schema. Used by the editor JS to disable +
+     * annotate forced controls.
+     */
+    private function get_forced_by_layout_map() {
+        $defs = $this->get_setting_defs();
+        $default_note = 'Locked by current layout — change layout to edit.';
+        $map = [];
+        foreach ( $defs as $key => $def ) {
+            if ( empty( $def['forced_by'] ) || ! is_array( $def['forced_by'] ) ) continue;
+            $notes = isset( $def['forced_by_note'] ) && is_array( $def['forced_by_note'] ) ? $def['forced_by_note'] : [];
+            foreach ( $def['forced_by'] as $layout => $value ) {
+                $map[ $layout ][ $key ] = [
+                    'value' => (string) $value,
+                    'note'  => isset( $notes[ $layout ] ) ? $notes[ $layout ] : $default_note,
+                ];
+            }
+        }
+        return $map;
     }
 
     /**
@@ -252,15 +307,30 @@ class Anchor_Gallery_Module {
 
     /**
      * Group settings by section. Settings without an explicit section land in 'advanced'.
+     * Within each section, fields are sorted by `priority` ascending (default 50),
+     * preserving original definition order as the tiebreaker.
      */
     private function get_settings_by_section() {
         $defs = $this->get_setting_defs();
         $grouped = [];
+        $order = 0;
         foreach ( $defs as $key => $def ) {
             $section = isset( $def['section'] ) ? $def['section'] : 'advanced';
-            $grouped[ $section ][ $key ] = $def;
+            $priority = isset( $def['priority'] ) ? (int) $def['priority'] : 50;
+            $grouped[ $section ][ $key ] = [ 'def' => $def, 'priority' => $priority, 'order' => $order++ ];
         }
-        return $grouped;
+        $out = [];
+        foreach ( $grouped as $section => $items ) {
+            uasort( $items, function( $a, $b ) {
+                if ( $a['priority'] !== $b['priority'] ) return $a['priority'] - $b['priority'];
+                return $a['order'] - $b['order'];
+            } );
+            $out[ $section ] = [];
+            foreach ( $items as $k => $v ) {
+                $out[ $section ][ $k ] = $v['def'];
+            }
+        }
+        return $out;
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -544,13 +614,27 @@ class Anchor_Gallery_Module {
             $meta_key = 'avg_' . $key;
             $saved = get_post_meta($post->ID, $meta_key, true);
             $value = ($saved !== '' && $saved !== false) ? $saved : $this->default_settings[$key];
-            $show_for = isset($def['show_for']) ? $def['show_for'] : '';
+            // Phase 3: prefer applies_to over deprecated show_for.
+            $applies_to = [];
+            if ( ! empty( $def['applies_to'] ) && is_array( $def['applies_to'] ) ) {
+                $applies_to = $def['applies_to'];
+            } elseif ( ! empty( $def['show_for'] ) ) {
+                $applies_to = array_filter( array_map( 'trim', explode( ',', $def['show_for'] ) ) );
+            }
+            $show_for = $applies_to ? implode( ',', $applies_to ) : '';
+            $depends_on = ( ! empty( $def['depends_on'] ) && is_array( $def['depends_on'] ) ) ? $def['depends_on'] : [];
             $wrap_class = 'avg-setting-row';
             if ($show_for) {
                 $wrap_class .= ' avg-show-for';
             }
+            if ($depends_on) {
+                $wrap_class .= ' avg-depends';
+            }
             ?>
-            <p class="<?php echo esc_attr($wrap_class); ?>"<?php if ($show_for): ?> data-show-for="<?php echo esc_attr($show_for); ?>"<?php endif; ?>>
+            <p class="<?php echo esc_attr($wrap_class); ?>"
+                <?php if ($show_for): ?> data-show-for="<?php echo esc_attr($show_for); ?>" data-applies-to="<?php echo esc_attr($show_for); ?>"<?php endif; ?>
+                <?php if ($depends_on): ?> data-depends-on="<?php echo esc_attr( wp_json_encode( $depends_on ) ); ?>"<?php endif; ?>
+                data-setting-key="<?php echo esc_attr( $key ); ?>">
             <?php if ($def['type'] === 'select'): ?>
                 <label for="<?php echo esc_attr($meta_key); ?>"><strong><?php echo esc_html($def['label']); ?></strong></label><br>
                 <select name="<?php echo esc_attr($meta_key); ?>" id="<?php echo esc_attr($meta_key); ?>" class="widefat avg-setting">
@@ -744,8 +828,9 @@ class Anchor_Gallery_Module {
             wp_enqueue_style('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.css'), [], $ver);
             wp_enqueue_script('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.js'), ['jquery'], $ver, true);
             wp_localize_script('anchor-video-gallery-admin', 'AVG', [
-                'ajaxUrl' => admin_url('admin-ajax.php'),
-                'nonce'   => wp_create_nonce('avg_preview'),
+                'ajaxUrl'        => admin_url('admin-ajax.php'),
+                'nonce'          => wp_create_nonce('avg_preview'),
+                'forcedByLayout' => $this->get_forced_by_layout_map(),
             ]);
 
             // Shared builder chrome

@@ -107,14 +107,31 @@ class Anchor_Builder_Shell {
      * @param string $meta_key Meta key (e.g. 'avg_layout', 'as_autoplay').
      */
     public static function render_field( $key, $def, $value, $meta_key ) {
-        $show_for   = $def['show_for'] ?? '';
+        // Phase 3: prefer `applies_to` (array); fall back to deprecated `show_for` (CSV string).
+        $applies_to = [];
+        if ( ! empty( $def['applies_to'] ) && is_array( $def['applies_to'] ) ) {
+            $applies_to = $def['applies_to'];
+        } elseif ( ! empty( $def['show_for'] ) ) {
+            $applies_to = array_filter( array_map( 'trim', explode( ',', $def['show_for'] ) ) );
+        }
+        $show_for_csv = $applies_to ? implode( ',', $applies_to ) : '';
+
+        $depends_on = ( ! empty( $def['depends_on'] ) && is_array( $def['depends_on'] ) ) ? $def['depends_on'] : [];
+
         $wrap_class = 'anchor-builder__field';
-        if ( $show_for ) {
+        if ( $show_for_csv ) {
             $wrap_class .= ' anchor-builder__field--conditional';
+        }
+        if ( $depends_on ) {
+            $wrap_class .= ' anchor-builder__field--depends';
         }
         $type = $def['type'];
         ?>
-        <p class="<?php echo esc_attr( $wrap_class ); ?>"<?php if ( $show_for ) : ?> data-show-for="<?php echo esc_attr( $show_for ); ?>"<?php endif; ?>>
+        <p class="<?php echo esc_attr( $wrap_class ); ?>"
+            <?php if ( $show_for_csv ) : ?> data-show-for="<?php echo esc_attr( $show_for_csv ); ?>" data-applies-to="<?php echo esc_attr( $show_for_csv ); ?>"<?php endif; ?>
+            <?php if ( $depends_on ) : ?> data-depends-on="<?php echo esc_attr( wp_json_encode( $depends_on ) ); ?>"<?php endif; ?>
+            data-setting-key="<?php echo esc_attr( $key ); ?>">
+
             <?php if ( $type === 'select' ) : ?>
                 <label for="<?php echo esc_attr( $meta_key ); ?>"><strong><?php echo esc_html( $def['label'] ); ?></strong></label>
                 <select name="<?php echo esc_attr( $meta_key ); ?>" id="<?php echo esc_attr( $meta_key ); ?>" class="widefat avg-setting anchor-builder__setting">

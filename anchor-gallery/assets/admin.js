@@ -55,18 +55,10 @@
     }, 500);
   }
 
-  // Backward-compat: legacy demoted layouts force certain settings.
-  // Map: legacy layout key → { setting_key: { value: <forced>, note: <user-facing note> } }
-  // The renderer in PHP still honors these layouts; the editor disables the
-  // forced controls so the UI cannot lie about what's active.
-  var FORCED_BY_LAYOUT = {
-    lightbox_grid: {
-      popup_style: { value: 'lightbox', note: 'Locked by Lightbox Grid layout. Switch layout (or pick a different preset) to change.' }
-    },
-    paginated: {
-      pagination_enabled: { value: '1', note: 'Locked by Paginated Grid layout. Switch layout to change.' }
-    }
-  };
+  // Phase 3: Forced-by-layout map is now declared in PHP (via the schema's
+  // `forced_by` keys) and localized to JS as AVG.forcedByLayout. This
+  // fallback only applies if PHP didn't provide one (e.g. legacy assets).
+  var FORCED_BY_LAYOUT = (window.AVG && AVG.forcedByLayout) ? AVG.forcedByLayout : {};
 
   function applyForcedSettings(){
     var layout = $('#avg_layout').val() || 'slider';
@@ -101,12 +93,71 @@
     });
   }
 
-  // Conditional field visibility based on layout
+  // Read the current value of a setting by key (without the avg_ prefix).
+  function getSettingValue(key){
+    var $el = $('#avg_' + key);
+    if (!$el.length) {
+      // Some checkboxes don't have id; try by name.
+      $el = $('[name="avg_' + key + '"]').first();
+    }
+    if (!$el.length) return undefined;
+    if ($el.attr('type') === 'checkbox') {
+      return $el.is(':checked');
+    }
+    return $el.val();
+  }
+
+  // Evaluate a depends_on map: every entry must hold. Required value `true`
+  // means truthy (non-empty / not "0"); `false` means falsy; otherwise
+  // strict equality (string-compared).
+  function dependsMet(depends){
+    if (!depends || typeof depends !== 'object') return true;
+    for (var key in depends) {
+      if (!Object.prototype.hasOwnProperty.call(depends, key)) continue;
+      var expected = depends[key];
+      var actual = getSettingValue(key);
+      if (expected === true) {
+        if (!actual || actual === '0' || actual === 0) return false;
+      } else if (expected === false) {
+        if (actual && actual !== '0' && actual !== 0) return false;
+      } else {
+        if (String(actual) !== String(expected)) return false;
+      }
+    }
+    return true;
+  }
+
+  // Conditional field visibility: layout-based (applies_to / show_for) and
+  // dependency-based (depends_on). Forced state is applied separately.
   function updateVisibility(){
     var layout = $('#avg_layout').val() || 'slider';
-    $('.avg-show-for').each(function(){
-      var show = $(this).data('show-for') || '';
-      $(this).toggle(show.split(',').indexOf(layout) !== -1);
+    $('.avg-setting-row, .anchor-builder__field').each(function(){
+      var $row = $(this);
+      var visible = true;
+
+      // applies_to / show_for (layout gating)
+      var appliesAttr = $row.attr('data-applies-to');
+      if (appliesAttr === undefined || appliesAttr === '') {
+        appliesAttr = $row.attr('data-show-for') || '';
+      }
+      if (appliesAttr) {
+        if (appliesAttr.split(',').indexOf(layout) === -1) {
+          visible = false;
+        }
+      }
+
+      // depends_on
+      if (visible) {
+        var dependsRaw = $row.attr('data-depends-on');
+        if (dependsRaw) {
+          try {
+            var depends = JSON.parse(dependsRaw);
+            if (!dependsMet(depends)) visible = false;
+          } catch (e) { /* ignore malformed */ }
+        }
+      }
+
+      $row.toggle(visible);
     });
     applyForcedSettings();
   }

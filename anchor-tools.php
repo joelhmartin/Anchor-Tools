@@ -62,6 +62,11 @@ if ( ! class_exists( 'Anchor_Reviews_Google_Provider' ) ) {
 if ( ! class_exists( 'Anchor_Reviews_Manager' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-reviews.php';
 }
+if ( ! class_exists( 'Anchor_Builder_Shell' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/class-anchor-builder-device-toolbar.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/class-anchor-builder-preset-picker.php';
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/class-anchor-builder-shell.php';
+}
 
 if ( class_exists( PucFactory::class ) ) {
     $anchor_tools_update = PucFactory::buildUpdateChecker(

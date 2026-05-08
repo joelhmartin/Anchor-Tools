@@ -81,65 +81,174 @@ class Anchor_Gallery_Module {
 
     private function get_setting_defs() {
         return [
-            'layout' => ['type' => 'select', 'label' => 'Layout', 'options' => ['slider' => 'Slider', 'grid' => 'Grid', 'carousel' => 'Carousel', 'masonry' => 'Masonry', 'gallery' => 'Gallery', 'logo_carousel' => 'Logo Carousel']],
-            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
-            'theme' => ['type' => 'select', 'label' => 'Theme', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
-            'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic'], 'show_for' => 'slider,grid,carousel,masonry'],
-            'thumb_aspect_ratio' => ['type' => 'select', 'label' => 'Thumbnail Aspect Ratio', 'options' => [
+            'layout' => ['type' => 'select', 'label' => 'Layout', 'section' => 'layout', 'options' => ['slider' => 'Slider', 'grid' => 'Grid', 'carousel' => 'Carousel', 'masonry' => 'Masonry', 'gallery' => 'Gallery', 'logo_carousel' => 'Logo Carousel', 'filterable' => 'Filterable Grid', 'paginated' => 'Paginated Grid', 'bento' => 'Bento Grid', 'thumbnail_gallery' => 'Featured + Thumbnails', 'card_carousel' => 'Card Carousel', 'lightbox_grid' => 'Lightbox Grid']],
+            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'section' => 'behavior', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'theme' => ['type' => 'select', 'label' => 'Theme', 'section' => 'style', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'section' => 'style', 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic'], 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'thumb_aspect_ratio' => ['type' => 'select', 'label' => 'Thumbnail Aspect Ratio', 'section' => 'style', 'options' => [
                 '16:9' => '16:9 (Widescreen)',
                 '4:3'  => '4:3 (Classic)',
                 '1:1'  => '1:1 (Square)',
                 '9:16' => '9:16 (Portrait)',
                 '21:9' => '21:9 (Cinematic)',
-            ], 'show_for' => 'slider,grid,carousel,masonry'],
-            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'show_for' => 'slider,grid,carousel,masonry'],
-            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
-            'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'min' => 0, 'max' => 32, 'step' => 2],
-            'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'min' => 1, 'max' => 6, 'show_for' => 'grid,masonry,carousel'],
-            'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'min' => 1, 'max' => 4, 'show_for' => 'grid,masonry,carousel'],
-            'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'min' => 1, 'max' => 2, 'show_for' => 'grid,masonry,carousel'],
-            'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'min' => 0, 'max' => 60, 'step' => 4],
-            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
-            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
-            'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'show_for' => 'slider,grid,carousel,masonry'],
-            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'show_for' => 'grid,masonry,slider,carousel'],
-            'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'show_for' => 'grid,masonry,slider,carousel'],
-            'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'min' => 0, 'max' => 1200, 'step' => 10, 'show_for' => 'grid,masonry,slider,carousel'],
-            'thumb_size' => ['type' => 'select', 'label' => 'Thumbnail Resolution', 'options' => [
+            ], 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'section' => 'style', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'section' => 'style', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 2],
+            'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'section' => 'layout', 'min' => 1, 'max' => 6, 'show_for' => 'grid,masonry,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'section' => 'responsive', 'min' => 1, 'max' => 4, 'show_for' => 'grid,masonry,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'section' => 'responsive', 'min' => 1, 'max' => 2, 'show_for' => 'grid,masonry,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4],
+            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'section' => 'content', 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'content', 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel'],
+            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'content', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'show_for' => 'grid,masonry,slider,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'section' => 'layout', 'show_for' => 'grid,masonry,slider,carousel,filterable,paginated,card_carousel,lightbox_grid'],
+            'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'show_for' => 'grid,masonry,slider,carousel,filterable,paginated,bento,card_carousel,lightbox_grid'],
+            'thumb_size' => ['type' => 'select', 'label' => 'Thumbnail Resolution', 'section' => 'advanced', 'options' => [
                 'maxres'   => 'Max (1280×720)',
                 'standard' => 'Standard (640×480)',
                 'high'     => 'High (480×360)',
                 'medium'   => 'Medium (320×180)',
-            ], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
-            'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
-            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'show_for' => 'slider,grid,carousel,masonry,gallery'],
-            'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'show_for' => 'grid,masonry'],
-            'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'min' => 1, 'max' => 100, 'show_for' => 'grid,masonry'],
-            'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'show_for' => 'grid,masonry'],
-            'slider_arrows' => ['type' => 'checkbox', 'label' => 'Navigation Arrows', 'show_for' => 'slider,carousel'],
-            'slider_dots' => ['type' => 'checkbox', 'label' => 'Dots Navigation', 'show_for' => 'slider,carousel'],
-            'slider_autoplay' => ['type' => 'checkbox', 'label' => 'Auto-advance', 'show_for' => 'slider,carousel'],
-            'slider_autoplay_speed' => ['type' => 'number', 'label' => 'Autoplay Speed (ms)', 'min' => 1000, 'max' => 15000, 'step' => 500, 'show_for' => 'slider,carousel'],
-            'carousel_loop' => ['type' => 'checkbox', 'label' => 'Loop Continuously', 'show_for' => 'carousel'],
-            'carousel_center' => ['type' => 'checkbox', 'label' => 'Center Active Slide', 'show_for' => 'carousel'],
-            'marquee_speed' => ['type' => 'number', 'label' => 'Scroll Speed (seconds)', 'min' => 5, 'max' => 120, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_gap' => ['type' => 'number', 'label' => 'Item Gap (px)', 'min' => 0, 'max' => 120, 'step' => 4, 'show_for' => 'logo_carousel'],
-            'marquee_item_width' => ['type' => 'number', 'label' => 'Item Width (px)', 'min' => 50, 'max' => 400, 'step' => 10, 'show_for' => 'logo_carousel'],
-            'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'show_for' => 'logo_carousel'],
-            'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'options' => ['left' => 'Left', 'right' => 'Right'], 'show_for' => 'logo_carousel'],
-            'marquee_reverse_row' => ['type' => 'checkbox', 'label' => 'Add Reverse Row', 'show_for' => 'logo_carousel'],
-            'marquee_item_height' => ['type' => 'number', 'label' => 'Item Max Height (px)', 'min' => 20, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_item_width_mobile' => ['type' => 'number', 'label' => 'Mobile Item Width (px, 0 = use Item Width)', 'min' => 0, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_item_height_mobile' => ['type' => 'number', 'label' => 'Mobile Item Height (px, 0 = use Item Max Height)', 'min' => 0, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_gap_mobile' => ['type' => 'number', 'label' => 'Mobile Item Gap (px, 0 = use Item Gap)', 'min' => 0, 'max' => 120, 'step' => 4, 'show_for' => 'logo_carousel'],
-            'marquee_speed_mobile' => ['type' => 'number', 'label' => 'Mobile Scroll Speed (s, 0 = use Scroll Speed)', 'min' => 0, 'max' => 120, 'step' => 5, 'show_for' => 'logo_carousel'],
-            'marquee_align' => ['type' => 'select', 'label' => 'Item Alignment', 'options' => ['start' => 'Top', 'center' => 'Center', 'end' => 'Bottom'], 'show_for' => 'logo_carousel'],
-            'marquee_grayscale' => ['type' => 'checkbox', 'label' => 'Grayscale (color on hover)', 'show_for' => 'logo_carousel'],
-            'marquee_eager_count' => ['type' => 'number', 'label' => 'Eager-Load First N Logos', 'min' => 0, 'max' => 30, 'step' => 1, 'show_for' => 'logo_carousel'],
-            'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'min' => 0, 'max' => 24, 'step' => 1, 'show_for' => 'slider,grid,carousel,masonry,gallery'],
-            'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'min' => 0, 'max' => 60, 'step' => 2],
-            'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'show_for' => 'slider,grid,carousel,masonry,gallery'],
+            ], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'section' => 'style', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
+            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'section' => 'behavior', 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'section' => 'behavior', 'show_for' => 'grid,masonry,filterable,paginated'],
+            'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'section' => 'behavior', 'min' => 1, 'max' => 100, 'show_for' => 'grid,masonry,filterable,paginated'],
+            'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'section' => 'behavior', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'show_for' => 'grid,masonry,filterable,paginated'],
+            'slider_arrows' => ['type' => 'checkbox', 'label' => 'Navigation Arrows', 'section' => 'behavior', 'show_for' => 'slider,carousel,card_carousel'],
+            'slider_dots' => ['type' => 'checkbox', 'label' => 'Dots Navigation', 'section' => 'behavior', 'show_for' => 'slider,carousel,card_carousel'],
+            'slider_autoplay' => ['type' => 'checkbox', 'label' => 'Auto-advance', 'section' => 'behavior', 'show_for' => 'slider,carousel,card_carousel'],
+            'slider_autoplay_speed' => ['type' => 'number', 'label' => 'Autoplay Speed (ms)', 'section' => 'behavior', 'min' => 1000, 'max' => 15000, 'step' => 500, 'show_for' => 'slider,carousel,card_carousel'],
+            'carousel_loop' => ['type' => 'checkbox', 'label' => 'Loop Continuously', 'section' => 'behavior', 'show_for' => 'carousel,card_carousel'],
+            'carousel_center' => ['type' => 'checkbox', 'label' => 'Center Active Slide', 'section' => 'behavior', 'show_for' => 'carousel,card_carousel'],
+            'marquee_speed' => ['type' => 'number', 'label' => 'Scroll Speed (seconds)', 'section' => 'behavior', 'min' => 5, 'max' => 120, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_gap' => ['type' => 'number', 'label' => 'Item Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 120, 'step' => 4, 'show_for' => 'logo_carousel'],
+            'marquee_item_width' => ['type' => 'number', 'label' => 'Item Width (px)', 'section' => 'layout', 'min' => 50, 'max' => 400, 'step' => 10, 'show_for' => 'logo_carousel'],
+            'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'section' => 'behavior', 'show_for' => 'logo_carousel'],
+            'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'section' => 'behavior', 'options' => ['left' => 'Left', 'right' => 'Right'], 'show_for' => 'logo_carousel'],
+            'marquee_reverse_row' => ['type' => 'checkbox', 'label' => 'Add Reverse Row', 'section' => 'layout', 'show_for' => 'logo_carousel'],
+            'marquee_item_height' => ['type' => 'number', 'label' => 'Item Max Height (px)', 'section' => 'layout', 'min' => 20, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_item_width_mobile' => ['type' => 'number', 'label' => 'Mobile Item Width (px, 0 = use Item Width)', 'section' => 'responsive', 'min' => 0, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_item_height_mobile' => ['type' => 'number', 'label' => 'Mobile Item Height (px, 0 = use Item Max Height)', 'section' => 'responsive', 'min' => 0, 'max' => 400, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_gap_mobile' => ['type' => 'number', 'label' => 'Mobile Item Gap (px, 0 = use Item Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 120, 'step' => 4, 'show_for' => 'logo_carousel'],
+            'marquee_speed_mobile' => ['type' => 'number', 'label' => 'Mobile Scroll Speed (s, 0 = use Scroll Speed)', 'section' => 'responsive', 'min' => 0, 'max' => 120, 'step' => 5, 'show_for' => 'logo_carousel'],
+            'marquee_align' => ['type' => 'select', 'label' => 'Item Alignment', 'section' => 'layout', 'options' => ['start' => 'Top', 'center' => 'Center', 'end' => 'Bottom'], 'show_for' => 'logo_carousel'],
+            'marquee_grayscale' => ['type' => 'checkbox', 'label' => 'Grayscale (color on hover)', 'section' => 'style', 'show_for' => 'logo_carousel'],
+            'marquee_eager_count' => ['type' => 'number', 'label' => 'Eager-Load First N Logos', 'section' => 'advanced', 'min' => 0, 'max' => 30, 'step' => 1, 'show_for' => 'logo_carousel'],
+            'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'section' => 'advanced', 'min' => 0, 'max' => 24, 'step' => 1, 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
+            'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 60, 'step' => 2],
+            'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'section' => 'style', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
         ];
+    }
+
+    /**
+     * Visual presets — "starting points" that override a handful of settings
+     * to match a common use case. Applied via the Preset tab in the builder.
+     */
+    private function get_presets() {
+        return [
+            'simple_slider' => [
+                'label'       => 'Simple Slider',
+                'category'    => 'Sliders',
+                'description' => 'Classic image/video slider with arrows + dots',
+                'overrides'   => [
+                    'avg_layout'        => 'slider',
+                    'avg_tile_style'    => 'minimal',
+                    'avg_slider_arrows' => 1,
+                    'avg_slider_dots'   => 1,
+                    'avg_popup_style'   => 'lightbox',
+                ],
+            ],
+            'card_carousel' => [
+                'label'       => 'Card Carousel',
+                'category'    => 'Sliders',
+                'description' => 'Cards-per-view carousel for services or testimonials',
+                'overrides'   => [
+                    'avg_layout'         => 'card_carousel',
+                    'avg_tile_style'     => 'card',
+                    'avg_columns_desktop'=> 3,
+                    'avg_slider_arrows'  => 1,
+                    'avg_slider_dots'    => 1,
+                    'avg_carousel_loop'  => 1,
+                ],
+            ],
+            'logo_reel' => [
+                'label'       => 'Logo Reel',
+                'category'    => 'Logo Displays',
+                'description' => 'Auto-scrolling marquee for partner logos',
+                'overrides'   => [
+                    'avg_layout'             => 'logo_carousel',
+                    'avg_marquee_speed'      => 30,
+                    'avg_marquee_pause_on_hover' => 1,
+                    'avg_marquee_grayscale'  => 1,
+                ],
+            ],
+            'masonry_gallery' => [
+                'label'       => 'Masonry Gallery',
+                'category'    => 'Galleries',
+                'description' => 'Mixed-height image grid',
+                'overrides'   => [
+                    'avg_layout'         => 'masonry',
+                    'avg_tile_style'     => 'card',
+                    'avg_columns_desktop'=> 3,
+                    'avg_popup_style'    => 'lightbox',
+                ],
+            ],
+            'bento_gallery' => [
+                'label'       => 'Bento Gallery',
+                'category'    => 'Galleries',
+                'description' => 'Modern mixed-size grid',
+                'overrides'   => [
+                    'avg_layout'         => 'bento',
+                    'avg_tile_style'     => 'card',
+                    'avg_columns_desktop'=> 4,
+                    'avg_popup_style'    => 'lightbox',
+                ],
+            ],
+            'feature_gallery' => [
+                'label'       => 'Featured + Thumbs',
+                'category'    => 'Galleries',
+                'description' => 'Big featured image with thumbnail strip',
+                'overrides'   => [
+                    'avg_layout'      => 'thumbnail_gallery',
+                    'avg_popup_style' => 'lightbox',
+                ],
+            ],
+            'filterable_grid' => [
+                'label'       => 'Filterable Grid',
+                'category'    => 'Advanced',
+                'description' => 'Grid with category filter buttons',
+                'overrides'   => [
+                    'avg_layout'         => 'filterable',
+                    'avg_columns_desktop'=> 3,
+                    'avg_tile_style'     => 'card',
+                ],
+            ],
+            'lightbox_grid' => [
+                'label'       => 'Lightbox Grid',
+                'category'    => 'Galleries',
+                'description' => 'Plain grid that opens images in a lightbox',
+                'overrides'   => [
+                    'avg_layout'         => 'lightbox_grid',
+                    'avg_popup_style'    => 'lightbox',
+                    'avg_columns_desktop'=> 4,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Group settings by section. Settings without an explicit section land in 'advanced'.
+     */
+    private function get_settings_by_section() {
+        $defs = $this->get_setting_defs();
+        $grouped = [];
+        foreach ( $defs as $key => $def ) {
+            $section = isset( $def['section'] ) ? $def['section'] : 'advanced';
+            $grouped[ $section ][ $key ] = $def;
+        }
+        return $grouped;
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -149,6 +258,7 @@ class Anchor_Gallery_Module {
     public function __construct() {
         add_action('init', [$this, 'register_cpt']);
         add_action('add_meta_boxes', [$this, 'add_metaboxes']);
+        add_action('edit_form_after_title', [$this, 'render_builder_after_title']);
         add_action('save_post', [$this, 'save_meta']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
         add_action('wp_enqueue_scripts', [$this, 'enqueue_assets']);
@@ -245,9 +355,122 @@ class Anchor_Gallery_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function add_metaboxes() {
-        add_meta_box('avg_videos', 'Gallery Items', [$this, 'render_box_videos'], self::CPT, 'normal', 'high');
-        add_meta_box('avg_settings', 'Gallery Settings', [$this, 'render_box_settings'], self::CPT, 'side');
-        add_meta_box('avg_preview', 'Live Preview', [$this, 'render_box_preview'], self::CPT, 'normal', 'default');
+        // The new builder UI (rendered via edit_form_after_title) replaces
+        // the previous three metaboxes (avg_videos, avg_settings, avg_preview).
+        // No metaboxes are registered for this CPT.
+    }
+
+    /**
+     * Render the full-width builder UI. Hooked on edit_form_after_title for
+     * this CPT only.
+     */
+    public function render_builder_after_title( $post ) {
+        if ( ! ( $post instanceof WP_Post ) || $post->post_type !== self::CPT ) {
+            return;
+        }
+
+        wp_nonce_field( self::NONCE, self::NONCE );
+
+        $sections = [
+            'content'    => 'Content',
+            'preset'     => 'Preset',
+            'layout'     => 'Layout',
+            'style'      => 'Style',
+            'behavior'   => 'Behavior',
+            'responsive' => 'Responsive',
+            'advanced'   => 'Advanced',
+        ];
+
+        $panels = [];
+        foreach ( $sections as $key => $label ) {
+            if ( $key === 'content' ) {
+                $panels[ $key ] = [ $this, 'render_pane_content' ];
+            } elseif ( $key === 'preset' ) {
+                $panels[ $key ] = [ $this, 'render_pane_preset' ];
+            } else {
+                $panels[ $key ] = function ( $p ) use ( $key ) {
+                    $this->render_pane_section( $p, $key );
+                };
+            }
+        }
+
+        Anchor_Builder_Shell::render( [
+            'id'        => 'anchor-gallery-builder',
+            'post'      => $post,
+            'title'     => $post->post_title ?: 'Untitled gallery',
+            'shortcode' => '[anchor_gallery id="' . $post->ID . '"]',
+            'view_url'  => get_permalink( $post ),
+            'tabs'      => $sections,
+            'panels'    => $panels,
+            'preview'   => [ $this, 'render_pane_preview' ],
+            'utility'   => [ $this, 'render_pane_utility' ],
+        ] );
+    }
+
+    /**
+     * Content tab: item list (same data as the legacy items metabox).
+     */
+    public function render_pane_content( $post ) {
+        $this->render_box_videos( $post );
+    }
+
+    /**
+     * Preset tab: visual cards.
+     */
+    public function render_pane_preset( $post ) {
+        $current = get_post_meta( $post->ID, 'avg_preset', true );
+        Anchor_Builder_Preset_Picker::render( $this->get_presets(), 'avg_preset', $current );
+    }
+
+    /**
+     * Settings panes: render only fields for the given section.
+     */
+    public function render_pane_section( $post, $section ) {
+        $grouped = $this->get_settings_by_section();
+        if ( empty( $grouped[ $section ] ) ) {
+            echo '<p class="anchor-builder__empty">No settings in this section.</p>';
+            return;
+        }
+        foreach ( $grouped[ $section ] as $key => $def ) {
+            $meta_key = 'avg_' . $key;
+            $saved    = get_post_meta( $post->ID, $meta_key, true );
+            $value    = ( $saved !== '' && $saved !== false ) ? $saved : ( $this->default_settings[ $key ] ?? '' );
+            Anchor_Builder_Shell::render_field( $key, $def, $value, $meta_key );
+        }
+    }
+
+    /**
+     * Center preview pane.
+     */
+    public function render_pane_preview( $post ) {
+        $this->render_box_preview( $post );
+    }
+
+    /**
+     * Right utility panel.
+     */
+    public function render_pane_utility( $post ) {
+        $items = get_post_meta( $post->ID, 'avg_videos', true );
+        $count = is_array( $items ) ? count( $items ) : 0;
+        $layout = get_post_meta( $post->ID, 'avg_layout', true ) ?: 'slider';
+        ?>
+        <div class="anchor-builder__util-row">
+            <span class="anchor-builder__util-label">Status</span>
+            <span class="anchor-builder__util-value"><?php echo esc_html( ucfirst( $post->post_status ) ); ?></span>
+        </div>
+        <div class="anchor-builder__util-row">
+            <span class="anchor-builder__util-label">Items</span>
+            <span class="anchor-builder__util-value"><?php echo intval( $count ); ?></span>
+        </div>
+        <div class="anchor-builder__util-row">
+            <span class="anchor-builder__util-label">Layout</span>
+            <span class="anchor-builder__util-value"><?php echo esc_html( $layout ); ?></span>
+        </div>
+        <div class="anchor-builder__util-row">
+            <span class="anchor-builder__util-label">ID</span>
+            <span class="anchor-builder__util-value"><?php echo intval( $post->ID ); ?></span>
+        </div>
+        <?php
     }
 
     public function render_box_videos($post) {
@@ -415,6 +638,11 @@ class Anchor_Gallery_Module {
             update_post_meta($post_id, $meta_key, $val);
         }
 
+        // Save preset selection (informational — actual settings are stored in avg_* keys)
+        if ( isset( $_POST['avg_preset'] ) ) {
+            update_post_meta( $post_id, 'avg_preset', sanitize_text_field( $_POST['avg_preset'] ) );
+        }
+
         // Clear cached thumbnails so the next page load re-fetches at the
         // current resolution and picks up any changes on the provider side.
         $this->clear_video_transients($post_id);
@@ -465,6 +693,11 @@ class Anchor_Gallery_Module {
                 'ajaxUrl' => admin_url('admin-ajax.php'),
                 'nonce'   => wp_create_nonce('avg_preview'),
             ]);
+
+            // Shared builder chrome
+            $builder_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/assets/';
+            wp_enqueue_style('anchor-builder', Anchor_Asset_Loader::url('includes/builder/assets/builder.css'), [], filemtime($builder_dir . 'builder.css'));
+            wp_enqueue_script('anchor-builder', Anchor_Asset_Loader::url('includes/builder/assets/builder.js'), ['jquery'], filemtime($builder_dir . 'builder.js'), true);
         }
     }
 

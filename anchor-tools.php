@@ -2941,6 +2941,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-gallery/anchor-gallery.php',
                 'class'       => 'Anchor_Gallery_Module',
             ],
+            'slider' => [
+                'label'       => __( 'Anchor Slider', 'anchor-schema' ),
+                'description' => __( 'Slide decks with HTML, video, or image slides; full-width and backgrounds.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-slider/anchor-slider.php',
+                'class'       => 'Anchor_Slider_Module',
+            ],
             'quick_edit' => [
                 'label'       => __( 'Anchor Quick Edit', 'anchor-schema' ),
                 'description' => __( 'Quick Edit fields for Yoast SEO and featured image editing.', 'anchor-schema' ),

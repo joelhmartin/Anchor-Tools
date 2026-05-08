@@ -1,0 +1,24 @@
+/**
+ * Anchor Slider — admin tweaks (most styling comes from the shared
+ * builder.css; this is for slide-edit specifics only).
+ */
+.as-preview-wrap {
+    background: #fff;
+    border-radius: 6px;
+    overflow: hidden;
+}
+.anchor-builder__side-panel [data-type-fields],
+.anchor-builder__side-panel [data-bg-fields] {
+    display: none;
+}
+.anchor-builder__side-panel [data-type-fields].is-visible,
+.anchor-builder__side-panel [data-bg-fields].is-visible {
+    display: block;
+}
+#as-f-image-preview,
+#as-f-bg-image-preview {
+    border: 1px solid #d8dde3;
+    border-radius: 4px;
+    max-height: 120px;
+    object-fit: cover;
+}

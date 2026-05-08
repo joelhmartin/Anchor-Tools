@@ -501,10 +501,10 @@
       // Measure the gallery container, not the window — so the builder's
       // device-toolbar (which resizes the preview frame, not the window)
       // produces a faithful preview. Breakpoints match the frontend CSS:
-      // mobile <=767, tablet <=1199, desktop above.
+      // mobile <=767, tablet <=1023, desktop above.
       var width = gallery.offsetWidth || gallery.getBoundingClientRect().width || window.innerWidth;
       if (width <= 767) return colsMobile;
-      if (width <= 1199) return colsTablet;
+      if (width <= 1023) return colsTablet;
       return cols;
     }
 

@@ -135,7 +135,17 @@ class Anchor_Builder_Shell {
             <?php if ( $type === 'select' ) : ?>
                 <label for="<?php echo esc_attr( $meta_key ); ?>"><strong><?php echo esc_html( $def['label'] ); ?></strong></label>
                 <select name="<?php echo esc_attr( $meta_key ); ?>" id="<?php echo esc_attr( $meta_key ); ?>" class="widefat avg-setting anchor-builder__setting">
-                    <?php foreach ( $def['options'] as $opt_val => $opt_label ) : ?>
+                    <?php
+                    // Phase 6 — if the saved value isn't in the options (e.g. legacy
+                    // 'lightbox_grid' or 'paginated' after Phase 2 trimmed the dropdown),
+                    // prepend a synthetic legacy option so the field reflects the truth.
+                    if ( $value !== '' && $value !== null && ! array_key_exists( (string) $value, (array) $def['options'] ) ) :
+                        $legacy_label = ucwords( str_replace( '_', ' ', (string) $value ) ) . ' (legacy)';
+                        ?>
+                        <option value="<?php echo esc_attr( $value ); ?>" selected><?php echo esc_html( $legacy_label ); ?></option>
+                        <?php
+                    endif;
+                    foreach ( $def['options'] as $opt_val => $opt_label ) : ?>
                         <option value="<?php echo esc_attr( $opt_val ); ?>" <?php selected( $value, $opt_val ); ?>><?php echo esc_html( $opt_label ); ?></option>
                     <?php endforeach; ?>
                 </select>

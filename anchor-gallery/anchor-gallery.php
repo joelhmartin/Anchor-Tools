@@ -81,7 +81,7 @@ class Anchor_Gallery_Module {
 
     private function get_setting_defs() {
         return [
-            'layout' => ['type' => 'select', 'label' => 'Layout', 'section' => 'layout', 'options' => ['slider' => 'Slider', 'grid' => 'Grid', 'carousel' => 'Carousel', 'masonry' => 'Masonry', 'gallery' => 'Gallery', 'logo_carousel' => 'Logo Carousel', 'filterable' => 'Filterable Grid', 'paginated' => 'Paginated Grid', 'bento' => 'Bento Grid', 'thumbnail_gallery' => 'Featured + Thumbnails', 'card_carousel' => 'Card Carousel', 'lightbox_grid' => 'Lightbox Grid']],
+            'layout' => ['type' => 'select', 'label' => 'Layout', 'section' => 'layout', 'options' => ['grid' => 'Grid', 'masonry' => 'Masonry', 'carousel' => 'Carousel', 'slider' => 'Horizontal Scroll', 'gallery' => 'Gallery (Featured + Thumbs)', 'logo_carousel' => 'Logo Carousel', 'filterable' => 'Filterable Grid'], 'help' => 'Pick a base layout. Variants like Paginated/Lightbox/Card/Bento are available as Presets.'],
             'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'section' => 'behavior', 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
             'theme' => ['type' => 'select', 'label' => 'Theme', 'section' => 'style', 'options' => ['dark' => 'Dark', 'light' => 'Light', 'auto' => 'Auto'], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
             'tile_style' => ['type' => 'select', 'label' => 'Tile Style', 'section' => 'style', 'options' => ['card' => 'Card', 'minimal' => 'Minimal', 'overlay' => 'Overlay', 'cinematic' => 'Cinematic'], 'show_for' => 'slider,grid,carousel,masonry,filterable,paginated,bento,card_carousel,lightbox_grid'],
@@ -113,7 +113,7 @@ class Anchor_Gallery_Module {
             ], 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
             'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'section' => 'style', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
             'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'section' => 'behavior', 'show_for' => 'slider,grid,carousel,masonry,gallery,filterable,paginated,bento,thumbnail_gallery,card_carousel,lightbox_grid'],
-            'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'section' => 'behavior', 'show_for' => 'grid,masonry,filterable,paginated'],
+            'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'section' => 'behavior', 'show_for' => 'grid,masonry,filterable,paginated', 'help' => 'Used by Grid, Masonry, and Filterable Grid layouts.'],
             'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'section' => 'behavior', 'min' => 1, 'max' => 100, 'show_for' => 'grid,masonry,filterable,paginated'],
             'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'section' => 'behavior', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'show_for' => 'grid,masonry,filterable,paginated'],
             'slider_arrows' => ['type' => 'checkbox', 'label' => 'Navigation Arrows', 'section' => 'behavior', 'show_for' => 'slider,carousel,card_carousel'],
@@ -165,12 +165,24 @@ class Anchor_Gallery_Module {
                 'category'    => 'Sliders',
                 'description' => 'Cards-per-view carousel for services or testimonials',
                 'overrides'   => [
-                    'avg_layout'         => 'card_carousel',
+                    'avg_layout'         => 'carousel',
                     'avg_tile_style'     => 'card',
                     'avg_columns_desktop'=> 3,
                     'avg_slider_arrows'  => 1,
                     'avg_slider_dots'    => 1,
                     'avg_carousel_loop'  => 1,
+                ],
+            ],
+            'paginated_grid' => [
+                'label'       => 'Paginated Grid',
+                'category'    => 'Galleries',
+                'description' => 'Grid with numbered pagination for long item lists',
+                'overrides'   => [
+                    'avg_layout'             => 'grid',
+                    'avg_pagination_enabled' => 1,
+                    'avg_pagination_style'   => 'numbered',
+                    'avg_videos_per_page'    => 12,
+                    'avg_columns_desktop'    => 4,
                 ],
             ],
             'logo_reel' => [
@@ -200,7 +212,7 @@ class Anchor_Gallery_Module {
                 'category'    => 'Galleries',
                 'description' => 'Modern mixed-size grid',
                 'overrides'   => [
-                    'avg_layout'         => 'bento',
+                    'avg_layout'         => 'grid',
                     'avg_tile_style'     => 'card',
                     'avg_columns_desktop'=> 4,
                     'avg_popup_style'    => 'lightbox',
@@ -211,7 +223,7 @@ class Anchor_Gallery_Module {
                 'category'    => 'Galleries',
                 'description' => 'Big featured image with thumbnail strip',
                 'overrides'   => [
-                    'avg_layout'      => 'thumbnail_gallery',
+                    'avg_layout'      => 'gallery',
                     'avg_popup_style' => 'lightbox',
                 ],
             ],
@@ -230,7 +242,7 @@ class Anchor_Gallery_Module {
                 'category'    => 'Galleries',
                 'description' => 'Plain grid that opens images in a lightbox',
                 'overrides'   => [
-                    'avg_layout'         => 'lightbox_grid',
+                    'avg_layout'         => 'grid',
                     'avg_popup_style'    => 'lightbox',
                     'avg_columns_desktop'=> 4,
                 ],
@@ -554,6 +566,9 @@ class Anchor_Gallery_Module {
                     <input type="checkbox" name="<?php echo esc_attr($meta_key); ?>" value="1" <?php checked($value); ?> class="avg-setting" />
                     <strong><?php echo esc_html($def['label']); ?></strong>
                 </label>
+            <?php endif; ?>
+            <?php if ( ! empty( $def['help'] ) ): ?>
+                <span class="description" style="display:block; font-size:11px; color:#666; margin-top:4px;"><?php echo esc_html( $def['help'] ); ?></span>
             <?php endif; ?>
             </p>
             <?php

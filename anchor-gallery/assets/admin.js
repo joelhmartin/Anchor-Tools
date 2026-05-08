@@ -55,6 +55,52 @@
     }, 500);
   }
 
+  // Backward-compat: legacy demoted layouts force certain settings.
+  // Map: legacy layout key → { setting_key: { value: <forced>, note: <user-facing note> } }
+  // The renderer in PHP still honors these layouts; the editor disables the
+  // forced controls so the UI cannot lie about what's active.
+  var FORCED_BY_LAYOUT = {
+    lightbox_grid: {
+      popup_style: { value: 'lightbox', note: 'Locked by Lightbox Grid layout. Switch layout (or pick a different preset) to change.' }
+    },
+    paginated: {
+      pagination_enabled: { value: '1', note: 'Locked by Paginated Grid layout. Switch layout to change.' }
+    }
+  };
+
+  function applyForcedSettings(){
+    var layout = $('#avg_layout').val() || 'slider';
+    // Clear any prior forced state first
+    $('.avg-setting-row').each(function(){
+      var $row = $(this);
+      $row.find('.avg-setting').not('#avg_layout').each(function(){
+        var $el = $(this);
+        if ($el.data('avgForced')) {
+          $el.prop('disabled', false).removeData('avgForced');
+        }
+      });
+      $row.find('.avg-forced-note').remove();
+    });
+
+    var forced = FORCED_BY_LAYOUT[layout];
+    if (!forced) return;
+    Object.keys(forced).forEach(function(key){
+      var $el = $('#avg_' + key);
+      if (!$el.length) return;
+      var spec = forced[key];
+      if ($el.attr('type') === 'checkbox') {
+        $el.prop('checked', spec.value === '1' || spec.value === 1 || spec.value === true);
+      } else {
+        $el.val(spec.value);
+      }
+      $el.prop('disabled', true).data('avgForced', true);
+      var $row = $el.closest('.avg-setting-row');
+      if (!$row.find('.avg-forced-note').length) {
+        $row.append('<span class="avg-forced-note" style="display:block; font-size:11px; color:#a26b00; margin-top:4px;">' + spec.note + '</span>');
+      }
+    });
+  }
+
   // Conditional field visibility based on layout
   function updateVisibility(){
     var layout = $('#avg_layout').val() || 'slider';
@@ -62,6 +108,7 @@
       var show = $(this).data('show-for') || '';
       $(this).toggle(show.split(',').indexOf(layout) !== -1);
     });
+    applyForcedSettings();
   }
 
   // Disable aspect ratio dropdown when cinematic tile style is selected
@@ -180,6 +227,14 @@
     // Layout visibility on load
     updateVisibility();
     updateAspectRatioState();
+
+    // Re-enable any forced (disabled) inputs on submit so their values save.
+    // The PHP-side render_dispatch() still forces the rendering value, but
+    // we want the stored meta to match what the user sees.
+    $(document).on('submit', 'form#post', function(){
+      $('.avg-setting').filter(function(){ return $(this).data('avgForced'); })
+        .prop('disabled', false);
+    });
 
     // Type toggle: show/hide video-fields vs image-fields vs html-fields
     $(document).on('change', '.avg-item-type', function(){

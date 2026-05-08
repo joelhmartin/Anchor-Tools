@@ -465,13 +465,9 @@
     --avg-gap: var(--avg-gap-mobile, var(--avg-gap, 16px)) !important;
 }
 
-/* For the marquee (logo carousel) — swap to mobile dimensions
-   when those overrides are non-zero. */
-.anchor-builder__preview-frame[data-device="mobile"] .avg-marquee-track {
-    /* The marquee CSS uses inline style vars; the renderer already
-       falls back to mobile values when the corresponding setting
-       is non-zero. CSS-side, we force the gap variable. */
-}
+/* The marquee (logo carousel) renderer already falls back to mobile
+   item-width / height / gap / speed inline when those settings are
+   non-zero, so no CSS-side override is needed for the device frame. */
 
 /* ════════════════════════════════════════════════════════════
    Item editor: HTML textarea row

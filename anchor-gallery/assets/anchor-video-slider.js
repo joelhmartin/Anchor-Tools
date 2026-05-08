@@ -1087,8 +1087,11 @@
     var tiles = shell.querySelectorAll('.avg-tile');
     tiles.forEach(function (tile) {
       var cat = tile.getAttribute('data-category') || '';
-      var slug = cat.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-      tile.classList.toggle('is-hidden', filter !== '*' && filter !== slug);
+      // data-category may be a space-separated list of slugs
+      // (e.g. "tutorials customer-stories"). Match if any slug equals filter.
+      var slugs = cat.split(/\s+/).filter(Boolean);
+      var match = slugs.indexOf(filter) !== -1;
+      tile.classList.toggle('is-hidden', filter !== '*' && !match);
     });
   });
 })();

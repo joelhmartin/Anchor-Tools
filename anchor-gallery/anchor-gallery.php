@@ -558,53 +558,200 @@ class Anchor_Gallery_Module {
     public function render_box_videos($post) {
         wp_nonce_field(self::NONCE, self::NONCE);
         $items = get_post_meta($post->ID, 'avg_videos', true);
-        if (!is_array($items) || empty($items)) {
-            $items = [['type' => 'video', 'url' => '', 'title' => '', 'attachment_id' => 0]];
-        }
+        if (!is_array($items)) $items = [];
         ?>
         <div class="avg-bulk-wrap">
             <textarea id="avg-bulk-urls" rows="3" placeholder="Paste video URLs here, one per line (YouTube &amp; Vimeo)"></textarea>
             <button type="button" class="button button-primary" id="avg-bulk-import">Import URLs</button>
         </div>
 
-        <div id="avg-video-list">
-            <?php foreach ($items as $i => $v):
-                $type = $v['type'] ?? 'video';
-                $att_id = intval($v['attachment_id'] ?? 0);
-                $img_preview = $att_id ? wp_get_attachment_image_url($att_id, 'thumbnail') : '';
-                $html_content = (string) ( $v['html'] ?? '' );
-            ?>
-            <div class="avg-video-row" data-index="<?php echo esc_attr($i); ?>">
-                <select name="avg_videos[<?php echo esc_attr($i); ?>][type]" class="avg-item-type">
-                    <option value="video"<?php selected($type, 'video'); ?>>Video</option>
-                    <option value="image"<?php selected($type, 'image'); ?>>Image</option>
-                    <option value="html"<?php selected($type, 'html'); ?>>Custom HTML</option>
-                </select>
-                <div class="avg-video-fields"<?php echo $type !== 'video' ? ' style="display:none"' : ''; ?>>
-                    <input type="url" name="avg_videos[<?php echo esc_attr($i); ?>][url]" value="<?php echo esc_attr($v['url'] ?? ''); ?>" placeholder="https://youtube.com/watch?v=..." class="avg-video-url" />
-                </div>
-                <div class="avg-image-fields"<?php echo $type !== 'image' ? ' style="display:none"' : ''; ?>>
-                    <input type="hidden" name="avg_videos[<?php echo esc_attr($i); ?>][attachment_id]" value="<?php echo esc_attr($att_id); ?>" class="avg-attachment-id" />
-                    <button type="button" class="button avg-choose-image">Choose Image</button>
-                    <?php if ($img_preview): ?>
-                    <img src="<?php echo esc_url($img_preview); ?>" class="avg-image-preview" />
-                    <?php endif; ?>
-                </div>
-                <div class="avg-html-fields"<?php echo $type !== 'html' ? ' style="display:none"' : ''; ?>>
-                    <textarea name="avg_videos[<?php echo esc_attr($i); ?>][html]" class="avg-item-html" rows="3" placeholder="HTML or shortcodes (e.g. &lt;h2&gt;Title&lt;/h2&gt;[anchor_reviews])"><?php echo esc_textarea( $html_content ); ?></textarea>
-                </div>
-                <input type="text" name="avg_videos[<?php echo esc_attr($i); ?>][title]" value="<?php echo esc_attr($v['title'] ?? ''); ?>" placeholder="Optional title" class="avg-video-title" />
-                <button type="button" class="button avg-remove-video" aria-label="Remove">&times;</button>
-            </div>
-            <?php endforeach; ?>
+        <div id="avg-video-list" class="anchor-builder__item-list">
+            <?php foreach ($items as $i => $v) {
+                echo $this->render_item_card( $i, $v );
+            } ?>
         </div>
 
-        <p>
+        <p class="anchor-builder__add-item">
             <button type="button" class="button" id="avg-add-video">+ Add Video</button>
             <button type="button" class="button" id="avg-add-image">+ Add Image</button>
             <button type="button" class="button" id="avg-add-html">+ Add Custom HTML</button>
         </p>
-        <p class="description" style="margin-top:8px">Hold ⌘ (Mac) or Ctrl (Windows) when clicking thumbnails in the media library to multi-select.</p>
+        <p class="description" style="margin-top:8px">Drag cards to reorder. Click <strong>Edit</strong> to open the inspector. Hold &#8984; (Mac) or Ctrl (Windows) when clicking thumbnails in the media library to multi-select.</p>
+
+        <?php
+        // Side-panel inspector (hidden until opened by JS).
+        $this->render_item_inspector_template();
+    }
+
+    /**
+     * Render a single item card row (markup also used by JS to clone new items).
+     * Includes the visible card AND all hidden inputs the save handler reads.
+     */
+    public function render_item_card( $i, $v ) {
+        $type        = $v['type'] ?? 'video';
+        $att_id      = intval( $v['attachment_id'] ?? 0 );
+        $custom_thb  = intval( $v['custom_thumbnail_id'] ?? 0 );
+        $url         = (string) ( $v['url'] ?? '' );
+        $title       = (string) ( $v['title'] ?? '' );
+        $alt         = (string) ( $v['alt'] ?? '' );
+        $caption     = (string) ( $v['caption'] ?? '' );
+        $html        = (string) ( $v['html'] ?? '' );
+        $link_url    = (string) ( $v['link_url'] ?? '' );
+        $link_target = (string) ( $v['link_target'] ?? '_self' );
+        $cats        = $v['categories'] ?? [];
+        if ( is_string( $cats ) ) {
+            $cats = array_filter( array_map( 'trim', explode( ',', $cats ) ) );
+        } elseif ( ! is_array( $cats ) ) {
+            $cats = [];
+        }
+        $cats_str = implode( ', ', $cats );
+
+        // Resolve preview thumbnail
+        $thumb_url = '';
+        if ( $custom_thb ) {
+            $thumb_url = wp_get_attachment_image_url( $custom_thb, 'thumbnail' ) ?: '';
+        }
+        if ( $thumb_url === '' ) {
+            if ( $type === 'image' && $att_id ) {
+                $thumb_url = wp_get_attachment_image_url( $att_id, 'thumbnail' ) ?: '';
+            } elseif ( $type === 'video' && $url ) {
+                if ( preg_match( '~(?:youtu\.be/|youtube\.com/(?:watch\?v=|embed/|shorts/|live/))([A-Za-z0-9_-]{6,})~', $url, $m ) ) {
+                    $thumb_url = 'https://img.youtube.com/vi/' . $m[1] . '/mqdefault.jpg';
+                }
+            }
+        }
+
+        $type_label = $type === 'image' ? 'Image' : ( $type === 'html' ? 'HTML' : 'Video' );
+        $display_title = $title !== '' ? $title : ( $type === 'html' ? '(HTML block)' : '(untitled)' );
+
+        ob_start();
+        ?>
+        <div class="avg-video-row anchor-builder__item-card" data-index="<?php echo esc_attr( $i ); ?>" draggable="true">
+            <span class="anchor-builder__item-handle" aria-hidden="true">&#x2630;</span>
+            <div class="anchor-builder__item-thumb avg-card-thumb" data-type-icon="<?php echo esc_attr( $type ); ?>"
+                 <?php if ( $thumb_url ): ?>style="background-image:url('<?php echo esc_url( $thumb_url ); ?>')"<?php endif; ?>>
+                <?php if ( ! $thumb_url ): ?><span class="avg-card-thumb-icon"><?php echo $type === 'html' ? '&lt;/&gt;' : ( $type === 'image' ? '&#128247;' : '&#9658;' ); ?></span><?php endif; ?>
+            </div>
+            <div class="anchor-builder__item-body">
+                <div class="anchor-builder__item-title avg-card-title"><?php echo esc_html( $display_title ); ?></div>
+                <div class="anchor-builder__item-meta">
+                    <span class="avg-type-badge avg-type-<?php echo esc_attr( $type ); ?>"><?php echo esc_html( $type_label ); ?></span>
+                    <span class="avg-card-cats">
+                        <?php foreach ( $cats as $cat ): ?>
+                            <span class="avg-card-cat-chip"><?php echo esc_html( $cat ); ?></span>
+                        <?php endforeach; ?>
+                    </span>
+                </div>
+            </div>
+            <div class="anchor-builder__item-actions">
+                <button type="button" class="button avg-edit-item">Edit</button>
+                <button type="button" class="button avg-duplicate-item" aria-label="Duplicate">&#x2398;</button>
+                <button type="button" class="button button-link-delete avg-remove-video" aria-label="Remove">&times;</button>
+            </div>
+
+            <!-- Hidden inputs (legacy + new). Save handler reads these directly. -->
+            <select name="avg_videos[<?php echo esc_attr( $i ); ?>][type]" class="avg-item-type" style="display:none">
+                <option value="video"<?php selected( $type, 'video' ); ?>>Video</option>
+                <option value="image"<?php selected( $type, 'image' ); ?>>Image</option>
+                <option value="html"<?php selected( $type, 'html' ); ?>>Custom HTML</option>
+            </select>
+            <input type="url"    name="avg_videos[<?php echo esc_attr( $i ); ?>][url]"                  value="<?php echo esc_attr( $url ); ?>"         class="avg-video-url"     style="display:none" />
+            <input type="hidden" name="avg_videos[<?php echo esc_attr( $i ); ?>][attachment_id]"        value="<?php echo esc_attr( $att_id ); ?>"      class="avg-attachment-id" />
+            <input type="hidden" name="avg_videos[<?php echo esc_attr( $i ); ?>][custom_thumbnail_id]"  value="<?php echo esc_attr( $custom_thb ); ?>"  class="avg-custom-thumb-id" />
+            <textarea name="avg_videos[<?php echo esc_attr( $i ); ?>][html]"     class="avg-item-html"     style="display:none"><?php echo esc_textarea( $html ); ?></textarea>
+            <input type="text" name="avg_videos[<?php echo esc_attr( $i ); ?>][title]"        value="<?php echo esc_attr( $title ); ?>"   class="avg-video-title"   style="display:none" />
+            <input type="text" name="avg_videos[<?php echo esc_attr( $i ); ?>][alt]"          value="<?php echo esc_attr( $alt ); ?>"     class="avg-item-alt"      style="display:none" />
+            <input type="text" name="avg_videos[<?php echo esc_attr( $i ); ?>][caption]"      value="<?php echo esc_attr( $caption ); ?>" class="avg-item-caption"  style="display:none" />
+            <input type="text" name="avg_videos[<?php echo esc_attr( $i ); ?>][categories]"   value="<?php echo esc_attr( $cats_str ); ?>" class="avg-item-cats"    style="display:none" />
+            <input type="url"  name="avg_videos[<?php echo esc_attr( $i ); ?>][link_url]"     value="<?php echo esc_attr( $link_url ); ?>" class="avg-item-link-url"  style="display:none" />
+            <input type="text" name="avg_videos[<?php echo esc_attr( $i ); ?>][link_target]"  value="<?php echo esc_attr( $link_target ); ?>" class="avg-item-link-target" style="display:none" />
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Side-panel inspector markup. Fields are wired up by admin.js when a
+     * card's Edit button is clicked.
+     */
+    public function render_item_inspector_template() {
+        ?>
+        <div id="avg-inspector" class="anchor-builder__side-panel" aria-hidden="true">
+            <div class="anchor-builder__side-panel-header">
+                <h3 class="anchor-builder__side-panel-title">Edit Item</h3>
+                <button type="button" class="anchor-builder__side-panel-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="anchor-builder__side-panel-body">
+                <h4 class="avg-insp-section-title">Source</h4>
+                <p>
+                    <label><strong>Type</strong></label>
+                    <select class="avg-insp-type widefat">
+                        <option value="video">Video</option>
+                        <option value="image">Image</option>
+                        <option value="html">Custom HTML</option>
+                    </select>
+                </p>
+                <p class="avg-insp-row-video">
+                    <label><strong>Video URL</strong></label>
+                    <input type="url" class="avg-insp-url widefat" placeholder="https://youtube.com/watch?v=..." />
+                </p>
+                <p class="avg-insp-row-image">
+                    <label><strong>Image</strong></label><br>
+                    <button type="button" class="button avg-insp-choose-image">Choose Image</button>
+                    <span class="avg-insp-image-preview"></span>
+                </p>
+                <p class="avg-insp-row-html">
+                    <label><strong>HTML</strong></label>
+                    <textarea class="avg-insp-html widefat" rows="5" placeholder="HTML or shortcodes"></textarea>
+                </p>
+
+                <h4 class="avg-insp-section-title">Display</h4>
+                <p>
+                    <label><strong>Title</strong></label>
+                    <input type="text" class="avg-insp-title widefat" />
+                </p>
+                <p>
+                    <label><strong>Caption</strong></label>
+                    <input type="text" class="avg-insp-caption widefat" placeholder="Optional caption shown below the title" />
+                </p>
+                <p>
+                    <label><strong>Alt text</strong></label>
+                    <input type="text" class="avg-insp-alt widefat" placeholder="Image alt text (falls back to title)" />
+                </p>
+
+                <h4 class="avg-insp-section-title">Categories</h4>
+                <p>
+                    <input type="text" class="avg-insp-cats widefat" placeholder="Comma-separated tags (used by Filterable Grid)" />
+                    <span class="description">e.g. Tutorials, Customer Stories</span>
+                </p>
+
+                <h4 class="avg-insp-section-title">Custom Thumbnail</h4>
+                <p>
+                    <button type="button" class="button avg-insp-choose-thumb">Choose Custom Thumbnail</button>
+                    <button type="button" class="button-link avg-insp-reset-thumb">Reset to default</button>
+                    <br>
+                    <span class="avg-insp-thumb-preview"></span>
+                </p>
+
+                <h4 class="avg-insp-section-title">Link</h4>
+                <p>
+                    <label><strong>Link URL</strong></label>
+                    <input type="url" class="avg-insp-link-url widefat" placeholder="https://... (used when popups are disabled)" />
+                </p>
+                <p>
+                    <label><strong>Open in</strong></label>
+                    <select class="avg-insp-link-target widefat">
+                        <option value="_self">Same tab</option>
+                        <option value="_blank">New tab</option>
+                    </select>
+                </p>
+            </div>
+            <div class="anchor-builder__side-panel-footer">
+                <button type="button" class="button button-link-delete avg-insp-remove">Remove</button>
+                <button type="button" class="button avg-insp-duplicate">Duplicate</button>
+                <button type="button" class="button button-primary anchor-builder__side-panel-close">Done</button>
+            </div>
+        </div>
         <?php
     }
 
@@ -712,7 +859,8 @@ class Anchor_Gallery_Module {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
         if (!current_user_can('edit_post', $post_id)) return;
 
-        // Save items (videos + images + html)
+        // Save items (videos + images + html). Re-indexed in displayed order
+        // because cards may have been drag-reordered before submit.
         $raw_items = isset($_POST['avg_videos']) && is_array($_POST['avg_videos']) ? $_POST['avg_videos'] : [];
         $items = [];
         foreach ($raw_items as $v) {
@@ -720,39 +868,61 @@ class Anchor_Gallery_Module {
             $type = sanitize_text_field($v['type'] ?? 'video');
             if (!in_array($type, ['video', 'image', 'html'], true)) $type = 'video';
 
+            // Common new fields
+            $title       = sanitize_text_field( wp_unslash( $v['title']       ?? '' ) );
+            $alt         = sanitize_text_field( wp_unslash( $v['alt']         ?? '' ) );
+            $caption     = wp_kses_post( wp_unslash( $v['caption']     ?? '' ) );
+            $custom_thb  = absint( $v['custom_thumbnail_id'] ?? 0 );
+            $link_url    = esc_url_raw( wp_unslash( $v['link_url']    ?? '' ) );
+            $link_target = sanitize_text_field( $v['link_target'] ?? '_self' );
+            if ( ! in_array( $link_target, [ '_self', '_blank' ], true ) ) $link_target = '_self';
+
+            // Categories: array OR comma-separated string
+            $raw_cats = $v['categories'] ?? [];
+            if ( is_string( $raw_cats ) ) {
+                $raw_cats = explode( ',', wp_unslash( $raw_cats ) );
+            } elseif ( ! is_array( $raw_cats ) ) {
+                $raw_cats = [];
+            }
+            $categories = [];
+            foreach ( $raw_cats as $c ) {
+                $c = sanitize_text_field( trim( (string) $c ) );
+                if ( $c !== '' && ! in_array( $c, $categories, true ) ) {
+                    $categories[] = $c;
+                }
+            }
+
+            $base = [
+                'type'                => $type,
+                'url'                 => '',
+                'attachment_id'       => 0,
+                'title'               => $title,
+                'alt'                 => $alt,
+                'caption'             => $caption,
+                'categories'          => $categories,
+                'custom_thumbnail_id' => $custom_thb,
+                'link_url'            => $link_url,
+                'link_target'         => $link_target,
+            ];
+
             if ($type === 'html') {
                 $html = wp_kses_post( wp_unslash( $v['html'] ?? '' ) );
                 if ( trim( $html ) === '' ) continue;
-                $items[] = [
-                    'type'          => 'html',
-                    'url'           => '',
-                    'html'          => $html,
-                    'title'         => sanitize_text_field( $v['title'] ?? '' ),
-                    'attachment_id' => 0,
-                ];
+                $items[] = array_merge( $base, [ 'html' => $html ] );
                 continue;
             }
 
             if ($type === 'video') {
-                $url = esc_url_raw(trim($v['url'] ?? ''));
+                $url = esc_url_raw( wp_unslash( trim( $v['url'] ?? '' ) ) );
                 if ($url === '') continue;
-                $items[] = [
-                    'type'          => 'video',
-                    'url'           => $url,
-                    'title'         => sanitize_text_field($v['title'] ?? ''),
-                    'attachment_id' => 0,
-                ];
+                $items[] = array_merge( $base, [ 'url' => $url ] );
             } else {
                 $att_id = absint($v['attachment_id'] ?? 0);
                 if ($att_id === 0) continue;
-                $items[] = [
-                    'type'          => 'image',
-                    'url'           => '',
-                    'title'         => sanitize_text_field($v['title'] ?? ''),
-                    'attachment_id' => $att_id,
-                ];
+                $items[] = array_merge( $base, [ 'attachment_id' => $att_id ] );
             }
         }
+        $items = array_values( $items );
         update_post_meta($post_id, 'avg_videos', $items);
 
         // Save settings
@@ -893,12 +1063,32 @@ class Anchor_Gallery_Module {
                 if ( ! is_array( $row ) ) continue;
                 $type = sanitize_text_field( $row['type'] ?? 'video' );
                 if ( ! in_array( $type, [ 'video', 'image', 'html' ], true ) ) $type = 'video';
+                $raw_cats = $row['categories'] ?? [];
+                if ( is_string( $raw_cats ) ) {
+                    $raw_cats = explode( ',', $raw_cats );
+                } elseif ( ! is_array( $raw_cats ) ) {
+                    $raw_cats = [];
+                }
+                $cats = [];
+                foreach ( $raw_cats as $c ) {
+                    $c = sanitize_text_field( trim( (string) $c ) );
+                    if ( $c !== '' ) $cats[] = $c;
+                }
+                $link_target = sanitize_text_field( $row['link_target'] ?? '_self' );
+                if ( ! in_array( $link_target, [ '_self', '_blank' ], true ) ) $link_target = '_self';
+
                 $items[] = [
-                    'type'          => $type,
-                    'url'           => esc_url_raw( $row['url'] ?? '' ),
-                    'title'         => sanitize_text_field( $row['title'] ?? '' ),
-                    'attachment_id' => absint( $row['attachment_id'] ?? 0 ),
-                    'html'          => wp_kses_post( $row['html'] ?? '' ),
+                    'type'                => $type,
+                    'url'                 => esc_url_raw( $row['url'] ?? '' ),
+                    'title'               => sanitize_text_field( $row['title'] ?? '' ),
+                    'attachment_id'       => absint( $row['attachment_id'] ?? 0 ),
+                    'html'                => wp_kses_post( $row['html'] ?? '' ),
+                    'alt'                 => sanitize_text_field( $row['alt'] ?? '' ),
+                    'caption'             => wp_kses_post( $row['caption'] ?? '' ),
+                    'categories'          => $cats,
+                    'custom_thumbnail_id' => absint( $row['custom_thumbnail_id'] ?? 0 ),
+                    'link_url'            => esc_url_raw( $row['link_url'] ?? '' ),
+                    'link_target'         => $link_target,
                 ];
             }
         } else {
@@ -1209,21 +1399,47 @@ class Anchor_Gallery_Module {
                     $is_html   = $provider === 'html';
                     $is_image  = $provider === 'image';
                     $item_type = $is_html ? 'html' : ( $is_image ? 'image' : 'video' );
+
+                    // Build category slug list (space-separated) for filterable.
+                    $cat_slug_attr = '';
+                    $cats_arr = $video['categories'] ?? [];
+                    if ( ! is_array( $cats_arr ) ) $cats_arr = [];
+                    if ( empty( $cats_arr ) && ! empty( $video['category'] ) ) {
+                        $cats_arr = [ $video['category'] ];
+                    }
+                    if ( ! empty( $cats_arr ) ) {
+                        $slugs = array_filter( array_map( 'sanitize_title', $cats_arr ) );
+                        if ( $slugs ) $cat_slug_attr = implode( ' ', $slugs );
+                    }
+
+                    // Per-item link override (only honored when popup_style is 'none').
+                    $item_link    = trim( (string) ( $video['link_url'] ?? '' ) );
+                    $item_target  = (string) ( $video['link_target'] ?? '_self' );
+                    $use_link     = ( $item_link !== '' && ( $settings['popup_style'] ?? '' ) === 'none' );
                 ?>
                 <?php if ( $is_html ) : ?>
                 <div class="avg-tile avg-tile-html<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                      data-index="<?php echo esc_attr( $i ); ?>"
                      data-type="html"
-                     <?php if ( ! empty( $video['category'] ) ) : ?>data-category="<?php echo esc_attr( sanitize_title( $video['category'] ) ); ?>"<?php endif; ?>>
+                     <?php if ( $cat_slug_attr !== '' ) : ?>data-category="<?php echo esc_attr( $cat_slug_attr ); ?>"<?php endif; ?>>
                     <div class="avg-tile-inner">
                         <div class="avg-html-content"><?php echo do_shortcode( wp_kses_post( $video['html'] ?? '' ) ); ?></div>
                     </div>
                 </div>
                 <?php continue; endif; ?>
+                <?php if ( $use_link ) : ?>
+                <a class="avg-tile avg-tile-linked<?php echo $hidden ? ' avg-hidden' : ''; ?>"
+                   href="<?php echo esc_url( $item_link ); ?>"
+                   target="<?php echo esc_attr( $item_target ); ?>"
+                   <?php if ( $item_target === '_blank' ) : ?>rel="noopener"<?php endif; ?>
+                   data-index="<?php echo esc_attr( $i ); ?>"
+                   data-type="<?php echo esc_attr( $item_type ); ?>"
+                   <?php if ( $cat_slug_attr !== '' ) : ?>data-category="<?php echo esc_attr( $cat_slug_attr ); ?>"<?php endif; ?>>
+                <?php else : ?>
                 <div class="avg-tile<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                      data-index="<?php echo esc_attr($i); ?>"
                      data-type="<?php echo esc_attr($item_type); ?>"
-                     <?php if (!empty($video['category'])): ?>data-category="<?php echo esc_attr( sanitize_title( $video['category'] ) ); ?>"<?php endif; ?>
+                     <?php if ( $cat_slug_attr !== '' ): ?>data-category="<?php echo esc_attr( $cat_slug_attr ); ?>"<?php endif; ?>
                      <?php if (!$is_image): ?>
                      data-provider="<?php echo esc_attr($video['provider']); ?>"
                      data-video-id="<?php echo esc_attr($video['id']); ?>"
@@ -1232,11 +1448,12 @@ class Anchor_Gallery_Module {
                      <?php else: ?>
                      data-full-url="<?php echo esc_url($video['full_url'] ?? $video['thumb']); ?>"
                      <?php endif; ?>>
+                <?php endif; ?>
                     <div class="avg-tile-inner">
                         <div class="avg-thumb">
                             <?php if (!empty($video['thumb'])):
                                 $is_eager = $i < $eager_count;
-                                $alt_text = !empty($video['label']) ? $video['label'] : '';
+                                $alt_text = ! empty( $video['alt'] ) ? $video['alt'] : ( ! empty( $video['label'] ) ? $video['label'] : '' );
                             ?>
                             <img class="avg-thumb-img"
                                  src="<?php echo esc_url($video['thumb']); ?>"
@@ -1279,10 +1496,21 @@ class Anchor_Gallery_Module {
                                 <span class="avg-channel"><?php echo esc_html($video['channel']); ?></span>
                                 <?php endif; ?>
                             <?php endif; ?>
+                            <?php if ( ! empty( $video['caption'] ) ) : ?>
+                            <span class="avg-caption-wrap"><span class="avg-caption"><?php echo wp_kses_post( $video['caption'] ); ?></span></span>
+                            <?php endif; ?>
+                        </div>
+                        <?php elseif ( ! empty( $video['caption'] ) ) : ?>
+                        <div class="avg-meta avg-meta-caption-only">
+                            <span class="avg-caption-wrap"><span class="avg-caption"><?php echo wp_kses_post( $video['caption'] ); ?></span></span>
                         </div>
                         <?php endif; ?>
                     </div>
+                <?php if ( $use_link ) : ?>
+                </a>
+                <?php else : ?>
                 </div>
+                <?php endif; ?>
                 <?php endforeach; ?>
             </div>
 
@@ -1363,12 +1591,20 @@ class Anchor_Gallery_Module {
             return '';
         }
 
-        // Collect distinct categories
+        // Collect distinct categories from each item's `categories` array
+        // (with single-string `category` as fallback). First-seen order.
         $cats = [];
         foreach ( $videos as $v ) {
-            $c = $v['category'] ?? '';
-            if ( $c !== '' && ! in_array( $c, $cats, true ) ) {
-                $cats[] = $c;
+            $list = $v['categories'] ?? [];
+            if ( ! is_array( $list ) ) $list = [];
+            if ( empty( $list ) && ! empty( $v['category'] ) ) {
+                $list = [ $v['category'] ];
+            }
+            foreach ( $list as $c ) {
+                $c = trim( (string) $c );
+                if ( $c !== '' && ! in_array( $c, $cats, true ) ) {
+                    $cats[] = $c;
+                }
             }
         }
 
@@ -1667,10 +1903,42 @@ class Anchor_Gallery_Module {
             if (!is_array($row)) continue;
             $type = $row['type'] ?? 'video';
 
+            // Common new fields. `category` (singular) is kept for back-compat
+            // with the existing tile renderer; `categories` carries the full
+            // array used by the filterable layout.
+            $alt         = trim( (string) ( $row['alt']         ?? '' ) );
+            $caption     = (string) ( $row['caption']     ?? '' );
+            $custom_thb  = absint( $row['custom_thumbnail_id'] ?? 0 );
+            $link_url    = trim( (string) ( $row['link_url']    ?? '' ) );
+            $link_target = (string) ( $row['link_target'] ?? '_self' );
+            if ( ! in_array( $link_target, [ '_self', '_blank' ], true ) ) $link_target = '_self';
+
+            $raw_cats = $row['categories'] ?? ( $row['category'] ?? [] );
+            if ( is_string( $raw_cats ) ) {
+                $raw_cats = explode( ',', $raw_cats );
+            } elseif ( ! is_array( $raw_cats ) ) {
+                $raw_cats = [];
+            }
+            $categories = [];
+            foreach ( $raw_cats as $c ) {
+                $c = trim( (string) $c );
+                if ( $c !== '' && ! in_array( $c, $categories, true ) ) $categories[] = $c;
+            }
+
+            $extras = [
+                'alt'                 => $alt,
+                'caption'             => $caption,
+                'custom_thumbnail_id' => $custom_thb,
+                'link_url'            => $link_url,
+                'link_target'         => $link_target,
+                'categories'          => $categories,
+                'category'            => $categories ? $categories[0] : ( (string) ( $row['category'] ?? '' ) ),
+            ];
+
             if ( $type === 'html' ) {
                 $html = (string) ( $row['html'] ?? '' );
                 if ( trim( $html ) === '' ) continue;
-                $out[] = [
+                $out[] = array_merge( [
                     'provider' => 'html',
                     'id'       => 'html-' . md5( $html ),
                     'thumb'    => '',
@@ -1680,7 +1948,7 @@ class Anchor_Gallery_Module {
                     'duration' => '',
                     'channel'  => '',
                     'html'     => $html,
-                ];
+                ], $extras );
                 continue;
             }
 
@@ -1694,7 +1962,7 @@ class Anchor_Gallery_Module {
                 if ($title === '') {
                     $title = get_the_title($att_id) ?: basename(get_attached_file($att_id) ?: '');
                 }
-                $out[] = [
+                $out[] = array_merge( [
                     'provider'  => 'image',
                     'id'        => (string) $att_id,
                     'thumb'     => $img_url,
@@ -1703,7 +1971,7 @@ class Anchor_Gallery_Module {
                     'raw_url'   => '',
                     'duration'  => '',
                     'channel'   => '',
-                ];
+                ], $extras );
                 continue;
             }
 
@@ -1718,7 +1986,7 @@ class Anchor_Gallery_Module {
             if ($thumb !== '') $video['custom_thumb'] = $thumb;
             $desc = trim((string) ($row['description'] ?? ''));
             if ($desc !== '') $video['description'] = $desc;
-            $out[] = $video;
+            $out[] = array_merge( $video, $extras );
         }
         return $out;
     }
@@ -1768,12 +2036,25 @@ class Anchor_Gallery_Module {
         $vm_details = $this->fetch_vimeo_details($vm_ids, $thumb_size);
 
         foreach ($videos as &$video) {
+            // Custom thumbnail attachment applies to ALL types (including image/html).
+            $custom_thb_id = absint( $video['custom_thumbnail_id'] ?? 0 );
+            if ( $custom_thb_id ) {
+                $resolved = wp_get_attachment_image_url( $custom_thb_id, 'large' );
+                if ( $resolved ) {
+                    $video['thumb'] = $resolved;
+                    if ( ! empty( $video['provider'] ) && $video['provider'] === 'image' ) {
+                        $full = wp_get_attachment_image_url( $custom_thb_id, 'full' );
+                        if ( $full ) $video['full_url'] = $full;
+                    }
+                }
+            }
+
             if ( in_array( $video['provider'] ?? '', [ 'image', 'html' ], true ) ) continue;
 
             $custom_title = isset($video['custom_title']) ? (string) $video['custom_title'] : '';
             $custom_thumb = isset($video['custom_thumb']) ? (string) $video['custom_thumb'] : '';
 
-            if ($custom_thumb !== '') {
+            if ($custom_thumb !== '' && empty( $video['thumb'] ) ) {
                 $video['thumb'] = $this->resolve_custom_thumb($custom_thumb);
             }
 

@@ -14,48 +14,78 @@
   padding: 6px 8px;
 }
 
-/* Item rows */
-.avg-video-row {
+/* ── Item cards (new Phase 4 UI) ───────────────── */
+#avg-video-list.anchor-builder__item-list { margin-top: 4px; }
+
+.avg-video-row.anchor-builder__item-card { /* override default row layout */
+  /* Inherits sortable card styles from builder.css. */
+  position: relative;
+}
+
+.avg-card-thumb {
   display: flex;
-  gap: 8px;
   align-items: center;
-  margin-bottom: 8px;
+  justify-content: center;
+  font-size: 18px;
+  color: #8c8f94;
+  background-color: #f0f2f5;
 }
-.avg-video-row .avg-item-type {
-  flex: 0 0 80px;
+.avg-card-thumb-icon { font-size: 18px; line-height: 1; }
+
+.avg-type-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #e4e7eb;
+  color: #444;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
 }
-.avg-video-row .avg-video-fields {
-  flex: 2;
+.avg-type-badge.avg-type-video { background: #fde2e1; color: #8a1f1c; }
+.avg-type-badge.avg-type-image { background: #d8eed7; color: #1f5e1c; }
+.avg-type-badge.avg-type-html  { background: #ddeaf6; color: #1d4d80; }
+
+.avg-card-cats {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  vertical-align: middle;
 }
-.avg-video-row .avg-video-fields .avg-video-url {
-  width: 100%;
+.avg-card-cat-chip {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #f0f2f5;
+  color: #50575e;
 }
-.avg-video-row .avg-image-fields {
-  flex: 2;
-  display: flex;
-  gap: 8px;
-  align-items: center;
+
+/* ── Inspector side panel ──────────────────────── */
+.avg-insp-section-title {
+  margin: 18px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #50575e;
+  border-top: 1px solid #e4e7eb;
+  padding-top: 14px;
 }
-.avg-video-row .avg-video-title {
-  flex: 1;
+.avg-insp-section-title:first-child {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
 }
-.avg-video-row .avg-remove-video {
-  flex-shrink: 0;
-  color: #b32d2e;
-}
-.avg-image-preview {
-  max-height: 40px;
-  border-radius: 3px;
-  border: 1px solid #dcdcde;
+#avg-inspector .avg-insp-image-preview img,
+#avg-inspector .avg-insp-thumb-preview img {
+  display: inline-block;
 }
 
 /* Sidebar settings */
-#avg_settings .avg-setting-row {
-  margin: 0 0 4px;
-}
-#avg_settings .avg-setting-row label strong {
-  font-size: 12px;
-}
+#avg_settings .avg-setting-row { margin: 0 0 4px; }
+#avg_settings .avg-setting-row label strong { font-size: 12px; }
 
 /* Preview metabox */
 .avg-preview-wrap {
@@ -63,9 +93,7 @@
   padding: 16px;
   border-radius: 4px;
 }
-.avg-preview-content {
-  min-height: 120px;
-}
+.avg-preview-content { min-height: 120px; }
 .avg-preview-note {
   margin: 12px 0 0;
   font-size: 11px;
@@ -73,12 +101,8 @@
   text-align: center;
 }
 
-/* Preview tile sizing in admin
-   (Tile widths are intentionally NOT overridden here so the preview
-   uses the same column math as the frontend CSS.) */
-.avg-preview-content .avg-tile-inner {
-  font-size: 12px;
-}
+/* Preview tile sizing in admin */
+.avg-preview-content .avg-tile-inner { font-size: 12px; }
 .avg-preview-content .avg-title {
   font-size: 11px;
   -webkit-line-clamp: 1;
@@ -87,16 +111,14 @@
   font-size: 10px;
   padding: 1px 4px;
 }
-.avg-preview-content .avg-play svg {
-  width: 36px;
-  height: 36px;
-}
-.avg-preview-content .avg-nav {
-  width: 28px;
-  height: 28px;
-  opacity: 1;
-}
-.avg-preview-content .avg-nav svg {
-  width: 16px;
-  height: 16px;
+.avg-preview-content .avg-play svg { width: 36px; height: 36px; }
+.avg-preview-content .avg-nav { width: 28px; height: 28px; opacity: 1; }
+.avg-preview-content .avg-nav svg { width: 16px; height: 16px; }
+
+/* Caption (frontend tile addition) */
+.avg-meta .avg-caption-wrap {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #6b6f76;
 }

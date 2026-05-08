@@ -2933,8 +2933,8 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
             'video_slider' => [
                 'label'       => __( 'Anchor Gallery', 'anchor-schema' ),
                 'description' => __( 'Create galleries with slider, grid, carousel, masonry, and logo marquee layouts.', 'anchor-schema' ),
-                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/anchor-video-slider.php',
-                'class'       => 'Anchor_Video_Slider_Module',
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-gallery/anchor-gallery.php',
+                'class'       => 'Anchor_Gallery_Module',
             ],
             'quick_edit' => [
                 'label'       => __( 'Anchor Quick Edit', 'anchor-schema' ),

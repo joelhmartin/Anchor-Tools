@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-class Anchor_Video_Slider_Module {
+class Anchor_Gallery_Module {
     const CPT        = 'anchor_gallery';
     const OLD_CPT    = 'anchor_video_gallery';
     const NONCE      = 'avg_nonce';
@@ -451,16 +451,16 @@ class Anchor_Video_Slider_Module {
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT) {
             wp_enqueue_media();
 
-            $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/assets/';
+            $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-gallery/assets/';
             $ver = filemtime($base_dir . 'admin.js');
 
             // Frontend styles/script for preview
-            wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-video-slider/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
-            wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-video-slider/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
+            wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
+            wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
 
             // Admin
-            wp_enqueue_style('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-video-slider/assets/admin.css'), [], $ver);
-            wp_enqueue_script('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-video-slider/assets/admin.js'), ['jquery'], $ver, true);
+            wp_enqueue_style('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.css'), [], $ver);
+            wp_enqueue_script('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.js'), ['jquery'], $ver, true);
             wp_localize_script('anchor-video-gallery-admin', 'AVG', [
                 'ajaxUrl' => admin_url('admin-ajax.php'),
                 'nonce'   => wp_create_nonce('avg_preview'),
@@ -473,15 +473,15 @@ class Anchor_Video_Slider_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function enqueue_assets() {
-        $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-video-slider/assets/';
+        $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-gallery/assets/';
 
         $up_css_path = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-universal-popups/assets/frontend.css';
         if (file_exists($up_css_path)) {
             wp_enqueue_style('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.css'), [], filemtime($up_css_path));
         }
 
-        wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-video-slider/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
-        wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-video-slider/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
+        wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
+        wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
     }
 
     /* ══════════════════════════════════════════════════════════

@@ -198,7 +198,7 @@ __('My String', 'anchor-schema')
 Follow the pattern `Anchor_{Module_Name}_Module`:
 
 - `Anchor_Quick_Edit_Module`
-- `Anchor_Video_Slider_Module`
+- `Anchor_Gallery_Module`
 - `Anchor_Social_Feed_Module`
 
 ### 5. Settings Page Registration
@@ -378,7 +378,7 @@ Current modules in Anchor Tools:
 | `webinars` | `\Anchor\Webinars\Module` | Gated webinars with Vimeo tracking |
 | `universal_popups` | `Anchor_Universal_Popups_Module` | HTML/video popups with triggers |
 | `shortcodes` | `Anchor_Shortcodes_Module` | Business info + custom shortcodes |
-| `video_slider` | `Anchor_Video_Slider_Module` | Horizontal video slider |
+| `video_slider` | `Anchor_Gallery_Module` | Multi-layout media gallery (slider, grid, carousel, masonry, logo marquee) |
 | `quick_edit` | `Anchor_Quick_Edit_Module` | Quick Edit for Yoast SEO + images |
 | `ctm_forms` | `Anchor_CTM_Forms_Module` | CallTrackingMetrics form integration |
 | `code_snippets` | `Anchor_Code_Snippets_Module` | Insert code snippets into header, body, or footer |

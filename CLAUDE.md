@@ -49,7 +49,7 @@ See `ADDING-MODULES.md` for the full module development guide.
 | `webinars` | `\Anchor\Webinars\Module` | CPT (namespaced) |
 | `universal_popups` | `Anchor_Universal_Popups_Module` | CPT |
 | `shortcodes` | `Anchor_Shortcodes_Module` | Settings page |
-| `video_slider` | `Anchor_Video_Slider_Module` | CPT |
+| `video_slider` | `Anchor_Gallery_Module` | CPT |
 | `quick_edit` | `Anchor_Quick_Edit_Module` | No admin UI |
 | `ctm_forms` | `Anchor_CTM_Forms_Module` | CPT |
 | `code_snippets` | `Anchor_Code_Snippets_Module` | CPT |

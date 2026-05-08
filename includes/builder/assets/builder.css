@@ -423,3 +423,81 @@
     text-align: center;
     padding: 20px;
 }
+
+/* ════════════════════════════════════════════════════════════
+   Device-mode preview overrides
+   When the preview frame has data-device="tablet" or "mobile",
+   force the inner gallery to use tablet/mobile column counts
+   and gaps via CSS variable scoping. This makes "Mobile" actually
+   show the mobile column layout instead of just narrowing the box.
+   ════════════════════════════════════════════════════════════ */
+
+/* CSS variables on the gallery element are set inline by the renderer,
+   so we have to use higher specificity (the [data-device] selector
+   stacks two attribute selectors) and hint via the cascade. The
+   `style` attribute on the inner gallery wins for declared vars, so
+   instead we force the column count by overriding the rules that
+   *consume* the var. */
+
+.anchor-builder__preview-frame[data-device="tablet"] .avg-track,
+.anchor-builder__preview-frame[data-device="tablet"] .avg-grid {
+    grid-template-columns: repeat(var(--avg-cols-tablet, 2), 1fr) !important;
+    column-count: var(--avg-cols-tablet, 2) !important;
+}
+.anchor-builder__preview-frame[data-device="mobile"] .avg-track,
+.anchor-builder__preview-frame[data-device="mobile"] .avg-grid {
+    grid-template-columns: repeat(var(--avg-cols-mobile, 1), 1fr) !important;
+    column-count: var(--avg-cols-mobile, 1) !important;
+}
+
+/* Carousels compute slide width from --avg-cols-desktop. Override the
+   variable on the gallery element with !important so the calc() picks
+   up tablet/mobile counts. */
+.anchor-builder__preview-frame[data-device="tablet"] .anchor-video-gallery.avg-layout-carousel {
+    --avg-cols-desktop: var(--avg-cols-tablet, 2) !important;
+}
+.anchor-builder__preview-frame[data-device="mobile"] .anchor-video-gallery.avg-layout-carousel {
+    --avg-cols-desktop: var(--avg-cols-mobile, 1) !important;
+}
+
+/* Gap also applies the mobile override at mobile width. */
+.anchor-builder__preview-frame[data-device="mobile"] .anchor-video-gallery {
+    --avg-gap: var(--avg-gap-mobile, var(--avg-gap, 16px)) !important;
+}
+
+/* For the marquee (logo carousel) — swap to mobile dimensions
+   when those overrides are non-zero. */
+.anchor-builder__preview-frame[data-device="mobile"] .avg-marquee-track {
+    /* The marquee CSS uses inline style vars; the renderer already
+       falls back to mobile values when the corresponding setting
+       is non-zero. CSS-side, we force the gap variable. */
+}
+
+/* ════════════════════════════════════════════════════════════
+   Item editor: HTML textarea row
+   ════════════════════════════════════════════════════════════ */
+.avg-html-fields {
+    flex: 1;
+    min-width: 280px;
+}
+.avg-html-fields textarea {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+/* ════════════════════════════════════════════════════════════
+   Custom HTML tile rendering
+   ════════════════════════════════════════════════════════════ */
+.avg-tile-html {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 160px;
+}
+.avg-tile-html .avg-html-content {
+    width: 100%;
+    padding: 16px;
+    box-sizing: border-box;
+}

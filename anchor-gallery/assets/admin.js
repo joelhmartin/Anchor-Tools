@@ -258,6 +258,18 @@
 
     // Initial preview
     refreshPreview();
+
+    // Builder refresh button -> refresh preview.
+    // builder.js dispatches this as a jQuery .trigger() event which bubbles
+    // up to document, so we listen via jQuery (native addEventListener does
+    // not catch jQuery custom events). We also add a native listener so a
+    // future native CustomEvent dispatch would still work.
+    $(document).on('anchor-builder:refresh-preview', function(){
+      refreshPreview();
+    });
+    document.addEventListener('anchor-builder:refresh-preview', function(){
+      refreshPreview();
+    });
   });
 
 })(jQuery);

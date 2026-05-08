@@ -450,8 +450,13 @@
       var cols = parseInt(gallery.getAttribute('data-cols-desktop')) || 3;
       var colsTablet = parseInt(gallery.getAttribute('data-cols-tablet')) || Math.min(cols, 2);
       var colsMobile = parseInt(gallery.getAttribute('data-cols-mobile')) || 1;
-      if (window.innerWidth < 768) return colsMobile;
-      if (window.innerWidth < 1024) return colsTablet;
+      // Measure the gallery container, not the window — so the builder's
+      // device-toolbar (which resizes the preview frame, not the window)
+      // produces a faithful preview. Breakpoints match the frontend CSS:
+      // mobile <=767, tablet <=1199, desktop above.
+      var width = gallery.offsetWidth || gallery.getBoundingClientRect().width || window.innerWidth;
+      if (width <= 767) return colsMobile;
+      if (width <= 1199) return colsTablet;
       return cols;
     }
 
@@ -609,10 +614,19 @@
       updateCarousel();
 
       var resizeTimer;
-      window.addEventListener('resize', function() {
+      var scheduleUpdate = function() {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(updateCarousel, 100);
-      });
+      };
+      window.addEventListener('resize', scheduleUpdate);
+
+      // Observe the gallery container so the builder's device-toolbar
+      // (which only resizes the preview frame, not the window) triggers
+      // a re-measure.
+      if (typeof ResizeObserver !== 'undefined') {
+        var ro = new ResizeObserver(scheduleUpdate);
+        ro.observe(gallery);
+      }
     }
 
     /* -- Autoplay with pause/resume ---------------------------------- */

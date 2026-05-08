@@ -480,7 +480,7 @@
 
 @media (max-width: 767px) {
   .avg-layout-carousel .avg-tile {
-    width: calc(100% - var(--avg-gap) * (var(--avg-cols-mobile, 1) - 1));
+    width: calc((100% - var(--avg-gap) * (var(--avg-cols-mobile, 1) - 1)) / var(--avg-cols-mobile, 1));
   }
 }
 

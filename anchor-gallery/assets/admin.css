@@ -73,12 +73,9 @@
   text-align: center;
 }
 
-/* Preview tile sizing in admin */
-.avg-preview-content .avg-layout-slider .avg-tile,
-.avg-preview-content .avg-layout-carousel .avg-tile {
-  width: 160px;
-  min-width: 160px;
-}
+/* Preview tile sizing in admin
+   (Tile widths are intentionally NOT overridden here so the preview
+   uses the same column math as the frontend CSS.) */
 .avg-preview-content .avg-tile-inner {
   font-size: 12px;
 }

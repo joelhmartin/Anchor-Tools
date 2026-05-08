@@ -75,6 +75,23 @@ class Anchor_Gallery_Module {
         'eager_load_count' => 4,
         'gap_mobile' => 0,
         'tile_shadow' => 'soft',
+        // Phase 5 — carousel
+        'carousel_slides_to_scroll' => 1,
+        'carousel_transition_speed' => 500,
+        'carousel_pause_on_hover'   => true,
+        'carousel_peek'             => 'none',
+        'carousel_slide_width_mobile' => '',
+        // Phase 5 — popup
+        'popup_max_width'    => '',
+        'popup_aspect_ratio' => '16:9',
+        'popup_show_caption' => true,
+        // Phase 5 — featured gallery
+        'featured_thumb_size'    => 'medium',
+        'featured_aspect_ratio'  => '16:9',
+        // Phase 5 — filter
+        'filter_button_style' => 'pills',
+        'filter_default'      => '',
+        'filter_all_label'    => 'All',
     ];
 
     /**
@@ -172,6 +189,85 @@ class Anchor_Gallery_Module {
             'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'section' => 'advanced', 'min' => 0, 'max' => 24, 'step' => 1, 'applies_to' => $core_layouts],
             'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 60, 'step' => 2],
             'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'section' => 'style', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'applies_to' => $core_layouts],
+
+            /* ── Phase 5: Carousel controls ─────────────────────────── */
+            'carousel_slides_to_scroll' => [
+                'type' => 'number', 'label' => 'Slides to Scroll', 'section' => 'behavior', 'priority' => 60,
+                'min' => 1, 'max' => 10, 'step' => 1,
+                'applies_to' => ['carousel', 'card_carousel'],
+                'help' => 'How many slides advance per arrow / dot click.',
+            ],
+            'carousel_transition_speed' => [
+                'type' => 'number', 'label' => 'Transition Speed (ms)', 'section' => 'behavior', 'priority' => 61,
+                'min' => 0, 'max' => 3000, 'step' => 50,
+                'applies_to' => ['carousel', 'card_carousel', 'slider'],
+                'help' => 'Carousel/slider track animation duration in milliseconds.',
+            ],
+            'carousel_pause_on_hover' => [
+                'type' => 'checkbox', 'label' => 'Pause on Hover', 'section' => 'behavior', 'priority' => 62,
+                'applies_to' => ['carousel', 'card_carousel'],
+                'depends_on' => ['slider_autoplay' => true],
+                'help' => 'Pause auto-advance while the pointer is over the gallery.',
+            ],
+            'carousel_peek' => [
+                'type' => 'select', 'label' => 'Neighbor Peek', 'section' => 'behavior', 'priority' => 63,
+                'options' => ['none' => 'None', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'],
+                'applies_to' => ['carousel', 'card_carousel'],
+                'help' => 'Show a sliver of the previous/next slide on either side.',
+            ],
+            'carousel_slide_width_mobile' => [
+                'type' => 'text', 'label' => 'Mobile Slide Width', 'section' => 'responsive',
+                'applies_to' => ['carousel', 'card_carousel'],
+                'help' => 'Override mobile slide width (e.g. 85%). Empty = use Mobile Columns.',
+            ],
+
+            /* ── Phase 5: Popup controls ────────────────────────────── */
+            'popup_max_width' => [
+                'type' => 'text', 'label' => 'Popup Max Width', 'section' => 'behavior', 'priority' => 70,
+                'applies_to' => $core_layouts,
+                'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']],
+                'help' => 'Max width for popup container (e.g. 960px or 80vw). Empty = theme default.',
+            ],
+            'popup_aspect_ratio' => [
+                'type' => 'select', 'label' => 'Popup Aspect Ratio', 'section' => 'behavior', 'priority' => 71,
+                'options' => ['16:9' => '16:9', '4:3' => '4:3', '1:1' => '1:1', '21:9' => '21:9', 'auto' => 'Auto'],
+                'applies_to' => $core_layouts,
+                'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']],
+            ],
+            'popup_show_caption' => [
+                'type' => 'checkbox', 'label' => 'Show Caption in Popup', 'section' => 'behavior', 'priority' => 72,
+                'applies_to' => $core_layouts,
+                'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']],
+                'help' => 'Render the item caption beneath the media inside the popup.',
+            ],
+
+            /* ── Phase 5: Featured gallery controls ─────────────────── */
+            'featured_thumb_size' => [
+                'type' => 'select', 'label' => 'Thumbnail Strip Size', 'section' => 'layout', 'priority' => 80,
+                'options' => ['small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'],
+                'applies_to' => ['gallery', 'thumbnail_gallery'],
+            ],
+            'featured_aspect_ratio' => [
+                'type' => 'select', 'label' => 'Featured Aspect Ratio', 'section' => 'style', 'priority' => 80,
+                'options' => ['16:9' => '16:9', '4:3' => '4:3', '1:1' => '1:1', '3:2' => '3:2'],
+                'applies_to' => ['gallery', 'thumbnail_gallery'],
+            ],
+
+            /* ── Phase 5: Filter controls ───────────────────────────── */
+            'filter_button_style' => [
+                'type' => 'select', 'label' => 'Filter Button Style', 'section' => 'style', 'priority' => 90,
+                'options' => ['pills' => 'Pills', 'outline' => 'Outline', 'underline' => 'Underline'],
+                'applies_to' => ['filterable'],
+            ],
+            'filter_default' => [
+                'type' => 'text', 'label' => 'Default Filter Category', 'section' => 'behavior', 'priority' => 90,
+                'applies_to' => ['filterable'],
+                'help' => 'Category name to load active. Empty means "All".',
+            ],
+            'filter_all_label' => [
+                'type' => 'text', 'label' => '"All" Button Label', 'section' => 'content', 'priority' => 90,
+                'applies_to' => ['filterable'],
+            ],
         ];
     }
 
@@ -797,6 +893,9 @@ class Anchor_Gallery_Module {
                     <input type="checkbox" name="<?php echo esc_attr($meta_key); ?>" value="1" <?php checked($value); ?> class="avg-setting" />
                     <strong><?php echo esc_html($def['label']); ?></strong>
                 </label>
+            <?php elseif ($def['type'] === 'text'): ?>
+                <label for="<?php echo esc_attr($meta_key); ?>"><strong><?php echo esc_html($def['label']); ?></strong></label><br>
+                <input type="text" name="<?php echo esc_attr($meta_key); ?>" id="<?php echo esc_attr($meta_key); ?>" value="<?php echo esc_attr($value); ?>" class="widefat avg-setting" />
             <?php endif; ?>
             <?php if ( ! empty( $def['help'] ) ): ?>
                 <span class="description" style="display:block; font-size:11px; color:#666; margin-top:4px;"><?php echo esc_html( $def['help'] ); ?></span>
@@ -1329,6 +1428,9 @@ class Anchor_Gallery_Module {
             $data_attrs['data-dots']             = $settings['slider_dots'] ? '1' : '0';
             $data_attrs['data-slider-autoplay']  = $settings['slider_autoplay'] ? '1' : '0';
             $data_attrs['data-autoplay-speed']   = $settings['slider_autoplay_speed'];
+            $data_attrs['data-slides-to-scroll'] = max(1, intval($settings['carousel_slides_to_scroll'] ?? 1));
+            $data_attrs['data-transition-speed'] = max(0, intval($settings['carousel_transition_speed'] ?? 500));
+            $data_attrs['data-pause-on-hover']   = !empty($settings['carousel_pause_on_hover']) ? '1' : '0';
 
             if ($layout === 'carousel') {
                 $data_attrs['data-loop']         = $settings['carousel_loop'] ? '1' : '0';
@@ -1337,6 +1439,18 @@ class Anchor_Gallery_Module {
                 $data_attrs['data-cols-tablet']  = $settings['columns_tablet'];
                 $data_attrs['data-cols-mobile']  = $settings['columns_mobile'];
             }
+        }
+
+        // Phase 5 — popup wiring (data attrs read by popup JS).
+        if (($settings['popup_style'] ?? 'none') !== 'none') {
+            if (!empty($settings['popup_max_width'])) {
+                $data_attrs['data-popup-max-width'] = (string) $settings['popup_max_width'];
+            }
+            $popup_aspect = $settings['popup_aspect_ratio'] ?? '16:9';
+            if ($popup_aspect !== 'auto') {
+                $data_attrs['data-popup-aspect'] = $popup_aspect;
+            }
+            $data_attrs['data-popup-caption'] = !empty($settings['popup_show_caption']) ? '1' : '0';
         }
 
         // Aspect ratio: cinematic tile style forces 2.35:1, otherwise use setting
@@ -1369,6 +1483,29 @@ class Anchor_Gallery_Module {
 
         $shadow = !empty($settings['tile_shadow']) ? $settings['tile_shadow'] : 'soft';
         $classes[] = 'avg-shadow-' . sanitize_html_class($shadow);
+
+        // Phase 5 — carousel peek + transition + mobile slide width
+        if (in_array($layout, ['carousel'])) {
+            $peek = $settings['carousel_peek'] ?? 'none';
+            $peek_map = ['none' => '0px', 'small' => '24px', 'medium' => '48px', 'large' => '80px'];
+            $peek_value = $peek_map[$peek] ?? '0px';
+            $style_vars[] = '--avg-peek: ' . $peek_value;
+            if ($peek !== 'none') {
+                $classes[] = 'avg-has-peek avg-peek-' . sanitize_html_class($peek);
+            }
+        }
+        if (in_array($layout, ['slider', 'carousel'])) {
+            $tspeed = max(0, intval($settings['carousel_transition_speed'] ?? 500));
+            $style_vars[] = '--avg-track-transition: ' . $tspeed . 'ms';
+        }
+        if (in_array($layout, ['carousel'])) {
+            $mobile_w = trim((string) ($settings['carousel_slide_width_mobile'] ?? ''));
+            if ($mobile_w !== '') {
+                // Allow values like 85% or 280px. Sanitize with esc_attr at output.
+                $style_vars[] = '--avg-slide-w-mobile: ' . $mobile_w;
+                $classes[] = 'avg-has-mobile-slide-w';
+            }
+        }
 
         $eager_count = max(0, intval($settings['eager_load_count'] ?? 4));
 
@@ -1427,6 +1564,12 @@ class Anchor_Gallery_Module {
                     </div>
                 </div>
                 <?php continue; endif; ?>
+                <?php
+                $caption_attr_html = '';
+                if ( ! empty( $video['caption'] ) ) {
+                    $caption_attr_html = ' data-caption="' . esc_attr( wp_strip_all_tags( $video['caption'] ) ) . '"';
+                }
+                ?>
                 <?php if ( $use_link ) : ?>
                 <a class="avg-tile avg-tile-linked<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                    href="<?php echo esc_url( $item_link ); ?>"
@@ -1434,12 +1577,12 @@ class Anchor_Gallery_Module {
                    <?php if ( $item_target === '_blank' ) : ?>rel="noopener"<?php endif; ?>
                    data-index="<?php echo esc_attr( $i ); ?>"
                    data-type="<?php echo esc_attr( $item_type ); ?>"
-                   <?php if ( $cat_slug_attr !== '' ) : ?>data-category="<?php echo esc_attr( $cat_slug_attr ); ?>"<?php endif; ?>>
+                   <?php if ( $cat_slug_attr !== '' ) : ?>data-category="<?php echo esc_attr( $cat_slug_attr ); ?>"<?php endif; ?><?php echo $caption_attr_html; ?>>
                 <?php else : ?>
                 <div class="avg-tile<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                      data-index="<?php echo esc_attr($i); ?>"
                      data-type="<?php echo esc_attr($item_type); ?>"
-                     <?php if ( $cat_slug_attr !== '' ): ?>data-category="<?php echo esc_attr( $cat_slug_attr ); ?>"<?php endif; ?>
+                     <?php if ( $cat_slug_attr !== '' ): ?>data-category="<?php echo esc_attr( $cat_slug_attr ); ?>"<?php endif; ?><?php echo $caption_attr_html; ?>
                      <?php if (!$is_image): ?>
                      data-provider="<?php echo esc_attr($video['provider']); ?>"
                      data-video-id="<?php echo esc_attr($video['id']); ?>"
@@ -1623,14 +1766,30 @@ class Anchor_Gallery_Module {
         // attribute that tiles emit (added below in render_output via
         // item data — for now categories are stored per item but the
         // grid tiles need the attribute applied via a small hook).
+        // Phase 5 — filter style class, default category, custom "All" label.
+        $btn_style    = $settings['filter_button_style'] ?? 'pills';
+        $btn_style    = in_array($btn_style, ['pills','outline','underline'], true) ? $btn_style : 'pills';
+        $all_label    = (string) ($settings['filter_all_label'] ?? 'All');
+        if ($all_label === '') { $all_label = 'All'; }
+        $default_raw  = trim((string) ($settings['filter_default'] ?? ''));
+        $default_slug = $default_raw !== '' ? sanitize_title($default_raw) : '';
+
+        // If default doesn't match an existing category, fall back to All.
+        $cat_slugs = array_map('sanitize_title', $cats);
+        $has_default = $default_slug !== '' && in_array($default_slug, $cat_slugs, true);
+        $shell_classes = 'avg-filterable-shell avg-filters--' . $btn_style . ' avg-filter-bar--' . $btn_style;
+
         ob_start();
         ?>
-        <div class="avg-filterable-shell">
+        <div class="<?php echo esc_attr($shell_classes); ?>" data-filter-default="<?php echo esc_attr($has_default ? $default_slug : '*'); ?>">
             <?php if ( ! empty( $cats ) ) : ?>
-                <div class="avg-filter-bar" role="tablist">
-                    <button type="button" class="avg-filter is-active" data-filter="*">All</button>
-                    <?php foreach ( $cats as $cat ) : ?>
-                        <button type="button" class="avg-filter" data-filter="<?php echo esc_attr( sanitize_title( $cat ) ); ?>"><?php echo esc_html( $cat ); ?></button>
+                <div class="avg-filter-bar avg-filters avg-filters--<?php echo esc_attr($btn_style); ?> avg-filter-bar--<?php echo esc_attr($btn_style); ?>" role="tablist">
+                    <button type="button" class="avg-filter<?php echo $has_default ? '' : ' is-active'; ?>" data-filter="*"><?php echo esc_html($all_label); ?></button>
+                    <?php foreach ( $cats as $cat ) :
+                        $slug = sanitize_title( $cat );
+                        $is_active = ($has_default && $slug === $default_slug);
+                    ?>
+                        <button type="button" class="avg-filter<?php echo $is_active ? ' is-active' : ''; ?>" data-filter="<?php echo esc_attr( $slug ); ?>"><?php echo esc_html( $cat ); ?></button>
                     <?php endforeach; ?>
                 </div>
             <?php endif; ?>
@@ -1654,9 +1813,19 @@ class Anchor_Gallery_Module {
             'avg-play-' . $settings['play_button_style'],
         ];
 
+        // Phase 5 — featured layout aspect ratio + thumb-strip size.
+        $feat_ratio_map = ['16:9' => '16 / 9', '4:3' => '4 / 3', '1:1' => '1 / 1', '3:2' => '3 / 2'];
+        $feat_ratio_key = $settings['featured_aspect_ratio'] ?? '16:9';
+        $feat_ratio = $feat_ratio_map[$feat_ratio_key] ?? '16 / 9';
+        $thumb_size_map = ['small' => '110px', 'medium' => '160px', 'large' => '220px'];
+        $thumb_size_key = $settings['featured_thumb_size'] ?? 'medium';
+        $thumb_size = $thumb_size_map[$thumb_size_key] ?? '160px';
+
         $style_vars = [
             '--avg-gap: '    . intval($settings['gap']) . 'px',
             '--avg-radius: ' . intval($settings['border_radius']) . 'px',
+            '--avg-featured-ratio: ' . $feat_ratio,
+            '--avg-thumb-size: ' . $thumb_size,
         ];
 
         $data_attrs = [
@@ -1664,6 +1833,18 @@ class Anchor_Gallery_Module {
             'data-popup'    => $settings['popup_style'],
             'data-autoplay' => $settings['autoplay'] ? '1' : '0',
         ];
+
+        // Phase 5 — popup data attrs for featured/gallery layout too.
+        if (($settings['popup_style'] ?? 'none') !== 'none') {
+            if (!empty($settings['popup_max_width'])) {
+                $data_attrs['data-popup-max-width'] = (string) $settings['popup_max_width'];
+            }
+            $popup_aspect = $settings['popup_aspect_ratio'] ?? '16:9';
+            if ($popup_aspect !== 'auto') {
+                $data_attrs['data-popup-aspect'] = $popup_aspect;
+            }
+            $data_attrs['data-popup-caption'] = !empty($settings['popup_show_caption']) ? '1' : '0';
+        }
 
         $first      = $videos[0];
         $first_type = $first['provider'] === 'image' ? 'image' : 'video';

@@ -118,6 +118,13 @@
         if (!actual || actual === '0' || actual === 0) return false;
       } else if (expected === false) {
         if (actual && actual !== '0' && actual !== 0) return false;
+      } else if (Array.isArray(expected)) {
+        // any-of match
+        var hit = false;
+        for (var i = 0; i < expected.length; i++) {
+          if (String(actual) === String(expected[i])) { hit = true; break; }
+        }
+        if (!hit) return false;
       } else {
         if (String(actual) !== String(expected)) return false;
       }

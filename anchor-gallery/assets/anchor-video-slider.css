@@ -456,7 +456,14 @@
 }
 
 .avg-layout-carousel .avg-track {
-  transition: transform 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: transform var(--avg-track-transition, 400ms) cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Phase 5 — neighbor peek: padding on the carousel container leaves room
+   for the previous/next slide to peek through. */
+.avg-layout-carousel.avg-has-peek {
+  padding-left: var(--avg-peek, 0px);
+  padding-right: var(--avg-peek, 0px);
 }
 
 .avg-layout-carousel .avg-tile {
@@ -481,6 +488,10 @@
 @media (max-width: 767px) {
   .avg-layout-carousel .avg-tile {
     width: calc((100% - var(--avg-gap) * (var(--avg-cols-mobile, 1) - 1)) / var(--avg-cols-mobile, 1));
+  }
+  /* Phase 5 — explicit mobile slide width override (e.g. 85%, 280px). */
+  .avg-layout-carousel.avg-has-mobile-slide-w .avg-tile {
+    width: var(--avg-slide-w-mobile, 85%);
   }
 }
 
@@ -557,7 +568,7 @@
 }
 
 .avg-gallery-featured .avg-thumb {
-  aspect-ratio: 16 / 9;
+  aspect-ratio: var(--avg-featured-ratio, 16 / 9);
   width: 100%;
   position: relative;
   overflow: hidden;
@@ -601,7 +612,7 @@
 
 .avg-gallery-thumb {
   flex: 0 0 auto;
-  width: 160px;
+  width: var(--avg-thumb-size, 160px);
   cursor: pointer;
   border-radius: calc(var(--avg-radius) * 0.7);
   overflow: hidden;
@@ -1349,6 +1360,58 @@
 }
 .avg-layout-filterable .avg-tile.is-hidden {
     display: none;
+}
+
+/* Phase 5 — filter button styles: pills (default), outline, underline. */
+.avg-filters--pills .avg-filter,
+.avg-filter-bar--pills .avg-filter {
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    padding: 6px 14px;
+    background: transparent;
+}
+.avg-filters--pills .avg-filter.is-active,
+.avg-filter-bar--pills .avg-filter.is-active {
+    background: currentColor;
+}
+
+.avg-filters--outline .avg-filter,
+.avg-filter-bar--outline .avg-filter {
+    border: 2px solid currentColor;
+    border-radius: 4px;
+    background: transparent;
+    padding: 6px 14px;
+    opacity: 0.6;
+}
+.avg-filters--outline .avg-filter.is-active,
+.avg-filter-bar--outline .avg-filter.is-active {
+    opacity: 1;
+    background: transparent;
+}
+
+.avg-filters--underline .avg-filter,
+.avg-filter-bar--underline .avg-filter {
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    padding: 6px 4px;
+    opacity: 0.65;
+}
+.avg-filters--underline .avg-filter.is-active,
+.avg-filter-bar--underline .avg-filter.is-active {
+    border-bottom-color: currentColor;
+    background: transparent;
+    opacity: 1;
+}
+
+/* Phase 5 — popup caption (rendered into dialog/inline by JS). */
+.avg-popup-caption {
+    padding: 10px 14px 14px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: inherit;
+    opacity: 0.85;
 }
 
 /* ── Paginated (load-more / numbered chrome) ──── */

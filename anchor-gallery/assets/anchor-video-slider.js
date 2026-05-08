@@ -81,15 +81,38 @@
     return modal;
   }
 
-  function openLightbox(provider, id, autoplay) {
+  function applyPopupOptions(dialog, frame, opts) {
+    if (!dialog) return;
+    // Reset previous overrides.
+    dialog.style.maxWidth = '';
+    if (frame) frame.style.aspectRatio = '';
+    var caption = dialog.querySelector('.avg-popup-caption');
+    if (caption) caption.remove();
+    if (!opts) return;
+    if (opts.maxWidth) dialog.style.maxWidth = opts.maxWidth;
+    if (opts.aspect && frame) {
+      // 'auto' means leave default. Map "16:9" -> "16 / 9".
+      frame.style.aspectRatio = opts.aspect.replace(':', ' / ');
+    }
+    if (opts.caption) {
+      var cap = document.createElement('div');
+      cap.className = 'avg-popup-caption';
+      cap.textContent = opts.caption;
+      dialog.appendChild(cap);
+    }
+  }
+
+  function openLightbox(provider, id, autoplay, opts) {
     // Close any other open popups first (cross-module coordination)
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getLightboxModal() } }));
 
     var modal = getLightboxModal();
+    var dialog = modal.querySelector('.avg-modal-dialog');
     var frame = modal.querySelector('[data-frame]');
     var src = getVideoSrc(provider, id, autoplay);
 
     frame.innerHTML = '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+    applyPopupOptions(dialog, frame, opts);
     modal.hidden = false;
     document.body.style.overflow = 'hidden';
 
@@ -158,7 +181,7 @@
     return theater;
   }
 
-  function openTheater(provider, id, autoplay, title) {
+  function openTheater(provider, id, autoplay, title, opts) {
     // Close any other open popups first (cross-module coordination)
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getTheaterEl() } }));
 
@@ -169,6 +192,7 @@
 
     titleEl.textContent = title || '';
     frame.innerHTML = '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+    applyPopupOptions(theater, frame, opts);
     theater.hidden = false;
     document.body.style.overflow = 'hidden';
 
@@ -227,7 +251,7 @@
     return panel;
   }
 
-  function openSidePanel(provider, id, autoplay, title) {
+  function openSidePanel(provider, id, autoplay, title, opts) {
     // Close any other open popups first (cross-module coordination)
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getSidePanelEl() } }));
 
@@ -238,6 +262,7 @@
 
     titleEl.textContent = title || '';
     frame.innerHTML = '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+    applyPopupOptions(panel, frame, opts);
 
     panel.hidden = false;
     sidePanelBackdrop.classList.add('visible');
@@ -273,7 +298,7 @@
   var currentInlineGallery = null;
   var currentInlineTile = null;
 
-  function openInline(gallery, tile, provider, id, autoplay) {
+  function openInline(gallery, tile, provider, id, autoplay, opts) {
     // Close any other open popups first (cross-module coordination)
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: null } }));
 
@@ -290,6 +315,19 @@
       '<button type="button" class="avg-inline-close" aria-label="Close">&times;</button>',
       '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>'
     ].join('');
+    if (opts) {
+      if (opts.maxWidth) player.style.maxWidth = opts.maxWidth;
+      if (opts.aspect) {
+        var iframeEl = player.querySelector('iframe');
+        if (iframeEl) iframeEl.style.aspectRatio = opts.aspect.replace(':', ' / ');
+      }
+      if (opts.caption) {
+        var cap = document.createElement('div');
+        cap.className = 'avg-popup-caption';
+        cap.textContent = opts.caption;
+        player.appendChild(cap);
+      }
+    }
 
     // Insert before the tile
     track.insertBefore(player, tile);
@@ -403,22 +441,32 @@
 
     if (!provider || !videoId) return;
 
+    // Phase 5 — popup options driven by gallery data attrs + tile caption.
+    var captionAttr = tile.getAttribute('data-caption') || '';
+    var showCaption = gallery.getAttribute('data-popup-caption');
+    if (showCaption === null) showCaption = '1';
+    var popupOpts = {
+      maxWidth: gallery.getAttribute('data-popup-max-width') || '',
+      aspect: gallery.getAttribute('data-popup-aspect') || '',
+      caption: (showCaption === '1' && captionAttr) ? captionAttr : ''
+    };
+
     switch (popupStyle) {
       case 'none':
         window.open(url || getDirectUrl(provider, videoId), '_blank');
         break;
       case 'inline':
-        openInline(gallery, tile, provider, videoId, autoplay);
+        openInline(gallery, tile, provider, videoId, autoplay, popupOpts);
         break;
       case 'theater':
-        openTheater(provider, videoId, autoplay, titleText);
+        openTheater(provider, videoId, autoplay, titleText, popupOpts);
         break;
       case 'side_panel':
-        openSidePanel(provider, videoId, autoplay, titleText);
+        openSidePanel(provider, videoId, autoplay, titleText, popupOpts);
         break;
       case 'lightbox':
       default:
-        openLightbox(provider, videoId, autoplay);
+        openLightbox(provider, videoId, autoplay, popupOpts);
         break;
     }
   }
@@ -517,14 +565,17 @@
       updateCarousel();
     }
 
+    var slidesToScroll = parseInt(gallery.getAttribute('data-slides-to-scroll'), 10) || 1;
+    if (slidesToScroll < 1) slidesToScroll = 1;
+
     function scrollSlider(direction) {
       if (layout === 'slider') {
         var tileWidth = tiles[0].offsetWidth;
         var gap = parseInt(getComputedStyle(gallery).getPropertyValue('--avg-gap')) || 16;
-        var scrollAmount = (tileWidth + gap) * direction;
+        var scrollAmount = (tileWidth + gap) * direction * slidesToScroll;
         track.scrollBy({ left: scrollAmount, behavior: 'smooth' });
       } else {
-        goToSlide(currentIndex + direction);
+        goToSlide(currentIndex + direction * slidesToScroll);
       }
     }
 
@@ -636,11 +687,14 @@
 
     if (autoplayEnabled && layout === 'carousel') {
       var autoplayInterval = null;
+      // data-pause-on-hover defaults to '1' when missing for backwards compat.
+      var pauseHoverAttr = gallery.getAttribute('data-pause-on-hover');
+      var pauseOnHover = pauseHoverAttr === null ? true : pauseHoverAttr === '1';
 
       function startAutoplay() {
         stopAutoplay();
         autoplayInterval = setInterval(function() {
-          goToSlide(currentIndex + 1);
+          goToSlide(currentIndex + slidesToScroll);
         }, autoplaySpeed);
       }
 
@@ -650,8 +704,10 @@
 
       startAutoplay();
 
-      gallery.addEventListener('mouseenter', stopAutoplay);
-      gallery.addEventListener('mouseleave', startAutoplay);
+      if (pauseOnHover) {
+        gallery.addEventListener('mouseenter', stopAutoplay);
+        gallery.addEventListener('mouseleave', startAutoplay);
+      }
       gallery.addEventListener('touchstart', stopAutoplay, { passive: true });
       gallery.addEventListener('touchend', function() {
         setTimeout(startAutoplay, 3000);
@@ -1069,29 +1125,46 @@
 })();
 
 /* ════════════════════════════════════════════════════════════
-   Phase 4 — Filterable grid: simple filter button handler.
+   Phase 4/5 — Filterable grid: button handler + default filter.
    Each filter button has data-filter, tiles have data-category.
+   Shell may carry data-filter-default to force initial state.
    ════════════════════════════════════════════════════════════ */
 (function () {
+  function applyFilter(shell, filter) {
+    shell.querySelectorAll('.avg-filter').forEach(function (b) {
+      b.classList.toggle('is-active', b.getAttribute('data-filter') === filter);
+    });
+    var tiles = shell.querySelectorAll('.avg-tile');
+    tiles.forEach(function (tile) {
+      var cat = tile.getAttribute('data-category') || '';
+      var slugs = cat.split(/\s+/).filter(Boolean);
+      var match = slugs.indexOf(filter) !== -1;
+      tile.classList.toggle('is-hidden', filter !== '*' && !match);
+    });
+  }
+
   document.addEventListener('click', function (e) {
     var btn = e.target.closest('.avg-filter');
     if (!btn) return;
     var shell = btn.closest('.avg-filterable-shell');
     if (!shell) return;
-
-    var filter = btn.getAttribute('data-filter');
-    shell.querySelectorAll('.avg-filter').forEach(function (b) {
-      b.classList.toggle('is-active', b === btn);
-    });
-
-    var tiles = shell.querySelectorAll('.avg-tile');
-    tiles.forEach(function (tile) {
-      var cat = tile.getAttribute('data-category') || '';
-      // data-category may be a space-separated list of slugs
-      // (e.g. "tutorials customer-stories"). Match if any slug equals filter.
-      var slugs = cat.split(/\s+/).filter(Boolean);
-      var match = slugs.indexOf(filter) !== -1;
-      tile.classList.toggle('is-hidden', filter !== '*' && !match);
-    });
+    applyFilter(shell, btn.getAttribute('data-filter'));
   });
+
+  // Apply default filter from data-filter-default once the DOM is ready.
+  function initDefaults() {
+    document.querySelectorAll('.avg-filterable-shell').forEach(function (shell) {
+      var def = shell.getAttribute('data-filter-default') || '*';
+      if (def && def !== '*') {
+        // Make sure that filter button exists; otherwise leave All.
+        var hasBtn = shell.querySelector('.avg-filter[data-filter="' + def + '"]');
+        applyFilter(shell, hasBtn ? def : '*');
+      }
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDefaults);
+  } else {
+    initDefaults();
+  }
 })();

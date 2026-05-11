@@ -103,22 +103,69 @@
 
 .anchor-event-registration{
   display:grid;
-  gap:12px;
+  gap:14px;
   margin-top:20px;
+  padding:20px;
+  border:1px solid var(--anchor-event-border);
+  border-radius:var(--anchor-event-radius);
+  background:#fff;
+  max-width:520px;
 }
 
 .anchor-event-registration-closed{
+  display:block;
+  padding:14px 16px;
+  border:1px dashed var(--anchor-event-border);
+  border-radius:var(--anchor-event-radius);
   color:var(--anchor-event-muted);
+  background:#f9fafb;
+  max-width:520px;
+}
+
+.anchor-event-registration .anchor-event-field{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
 }
 
 .anchor-event-registration .anchor-event-field label{
   font-weight:600;
-  margin-bottom:6px;
+  font-size:14px;
+  color:var(--anchor-event-text);
   display:block;
 }
 
-.anchor-event-registration input{
+.anchor-event-registration input[type="text"],
+.anchor-event-registration input[type="email"],
+.anchor-event-registration input[type="url"],
+.anchor-event-registration input[type="tel"],
+.anchor-event-registration input[type="number"],
+.anchor-event-registration input[type="date"],
+.anchor-event-registration select,
+.anchor-event-registration textarea{
   width:100%;
+  padding:9px 12px;
+  border:1px solid var(--anchor-event-border);
+  border-radius:6px;
+  font:inherit;
+  background:#fff;
+  color:var(--anchor-event-text);
+  box-sizing:border-box;
+  transition:border-color .15s ease, box-shadow .15s ease;
+}
+
+.anchor-event-registration input:focus,
+.anchor-event-registration select:focus,
+.anchor-event-registration textarea:focus{
+  outline:none;
+  border-color:var(--anchor-event-accent);
+  box-shadow:0 0 0 3px rgba(15,118,110,0.15);
+}
+
+.anchor-event-registration .anchor-event-button{
+  justify-self:start;
+  padding:10px 20px;
+  font-size:15px;
 }
 
 .anchor-event-notice{

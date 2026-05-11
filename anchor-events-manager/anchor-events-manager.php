@@ -747,7 +747,13 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.3' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.4' );
+        $settings = $this->get_settings();
+        $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
+        \wp_add_inline_style( 'anchor-events-frontend', sprintf(
+            '.anchor-event-register{background:%1$s !important;border-color:%1$s !important;color:#fff !important;}.anchor-event-register:hover{filter:brightness(0.92);}',
+            $btn_color
+        ) );
         \wp_enqueue_script( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.js' ), [], '1.0.4', true );
         \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
@@ -1787,7 +1793,7 @@ class Module {
 
         if ( $meta['registration_type'] === 'external' ) {
             if ( $meta['registration_url'] ) {
-                return '<div class="anchor-event-registration"><a class="anchor-event-button" href="' . esc_url( $meta['registration_url'] ) . '" target="_blank" rel="noopener">' . esc_html__( 'Register', 'anchor-schema' ) . '</a></div>';
+                return '<div class="anchor-event-registration"><a class="anchor-event-button anchor-event-register" href="' . esc_url( $meta['registration_url'] ) . '" target="_blank" rel="noopener">' . esc_html__( 'Register', 'anchor-schema' ) . '</a></div>';
             }
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'Registration link unavailable.', 'anchor-schema' ) . '</div>';
         }
@@ -1855,7 +1861,7 @@ class Module {
         $button_label = isset( $settings['register_button_label'] ) && $settings['register_button_label'] !== ''
             ? $settings['register_button_label']
             : __( 'Register', 'anchor-schema' );
-        $output .= '<button type="submit" class="anchor-event-button">' . esc_html( $button_label ) . '</button>';
+        $output .= '<button type="submit" class="anchor-event-button anchor-event-register">' . esc_html( $button_label ) . '</button>';
         $output .= '</form>';
 
         return $output;
@@ -2120,6 +2126,15 @@ class Module {
             <?php
         }, 'anchor_events_settings', 'anchor_events_registration' );
 
+        \add_settings_field( 'register_button_color', __( 'Register button color', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            $value = $opts['register_button_color'] ?: '#0f766e';
+            ?>
+            <input type="color" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[register_button_color]" value="<?php echo esc_attr( $value ); ?>" />
+            <p class="description"><?php echo esc_html__( 'Background color used for every Register button on the site.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_registration' );
+
         \add_settings_section( 'anchor_events_slugs', __( 'Permalinks', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Customize event URL slugs.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
@@ -2145,6 +2160,7 @@ class Module {
             'confirmation_message' => isset( $input['confirmation_message'] ) ? sanitize_textarea_field( $input['confirmation_message'] ) : $defaults['confirmation_message'],
             'max_guests' => max( 0, min( 50, (int) ( $input['max_guests'] ?? 0 ) ) ),
             'register_button_label' => sanitize_text_field( $input['register_button_label'] ?? '' ),
+            'register_button_color' => \sanitize_hex_color( $input['register_button_color'] ?? '' ) ?: $defaults['register_button_color'],
             'event_slug' => sanitize_title( $input['event_slug'] ?? $defaults['event_slug'] ),
         ];
         if ( ! $output['event_slug'] ) {
@@ -2814,6 +2830,7 @@ class Module {
             'confirmation_message' => __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' ),
             'max_guests' => 0,
             'register_button_label' => '',
+            'register_button_color' => '#0f766e',
             'event_slug' => 'event',
         ];
         $settings = \get_option( self::OPTION_KEY, [] );

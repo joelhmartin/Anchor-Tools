@@ -55,6 +55,11 @@ class Module {
         \add_action( 'admin_post_anchor_event_export', [ $this, 'handle_export' ] );
         \add_action( 'admin_post_anchor_event_manager_save', [ $this, 'handle_event_manager_save' ] );
         \add_action( 'admin_post_anchor_event_manager_delete', [ $this, 'handle_event_manager_delete' ] );
+        \add_action( 'admin_post_nopriv_anchor_event_manager_login', [ $this, 'handle_event_manager_login' ] );
+        \add_action( 'admin_post_anchor_event_manager_login', [ $this, 'handle_event_manager_login' ] );
+        \add_action( 'admin_post_anchor_event_manager_logout', [ $this, 'handle_event_manager_logout' ] );
+        \add_action( 'admin_post_nopriv_anchor_event_manager_lostpass', [ $this, 'handle_event_manager_lostpass' ] );
+        \add_action( 'admin_post_anchor_event_manager_lostpass', [ $this, 'handle_event_manager_lostpass' ] );
         \add_action( 'wp_ajax_anchor_events_calendar', [ $this, 'ajax_calendar' ] );
         \add_action( 'wp_ajax_nopriv_anchor_events_calendar', [ $this, 'ajax_calendar' ] );
 
@@ -747,14 +752,14 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.4' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.6' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         \wp_add_inline_style( 'anchor-events-frontend', sprintf(
             '.anchor-event-register{background:%1$s !important;border-color:%1$s !important;color:#fff !important;}.anchor-event-register:hover{filter:brightness(0.92);}',
             $btn_color
         ) );
-        \wp_enqueue_script( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.js' ), [], '1.0.4', true );
+        \wp_enqueue_script( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.js' ), [], '1.0.5', true );
         \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
             'nonce'   => \wp_create_nonce( 'anchor_events_calendar' ),
@@ -1023,7 +1028,12 @@ class Module {
             if ( ! $img ) {
                 continue;
             }
-            $output .= '<a class="anchor-event-gallery-slide" href="' . esc_url( $full ) . '" target="_blank" rel="noopener">' . $img . '</a>';
+            $caption = trim( (string) \get_post_meta( $attachment_id, '_wp_attachment_image_alt', true ) );
+            if ( $caption === '' ) {
+                $attachment_post = \get_post( $attachment_id );
+                $caption = $attachment_post ? trim( (string) $attachment_post->post_excerpt ) : '';
+            }
+            $output .= '<a class="anchor-event-gallery-slide" href="' . esc_url( $full ) . '" data-anchor-lightbox="1" data-caption="' . esc_attr( $caption ) . '">' . $img . '</a>';
         }
         $output .= '</div>';
         $output .= '<button type="button" class="anchor-event-gallery-nav anchor-event-gallery-prev" aria-label="' . esc_attr__( 'Previous image', 'anchor-schema' ) . '">&larr;</button>';
@@ -1136,8 +1146,14 @@ class Module {
     }
 
     public function shortcode_event_manager( $atts ) {
+        $this->enqueue_frontend_assets();
+
+        if ( ! \is_user_logged_in() ) {
+            return '<div class="anchor-event-manager">' . $this->render_event_manager_notice() . $this->render_event_manager_login_form() . '</div>';
+        }
+
         if ( ! \current_user_can( 'edit_others_posts' ) ) {
-            return '';
+            return '<div class="anchor-event-manager">' . $this->render_event_manager_notice() . $this->render_event_manager_no_access() . '</div>';
         }
 
         $atts = \shortcode_atts( [
@@ -1191,12 +1207,193 @@ class Module {
             'denied'  => [ 'err', __( 'You do not have permission to do that.', 'anchor-schema' ) ],
             'missing' => [ 'err', __( 'Event title and start date are required.', 'anchor-schema' ) ],
             'error'   => [ 'err', __( 'Something went wrong. Please try again.', 'anchor-schema' ) ],
+            'login_failed'   => [ 'err', __( 'Invalid username or password. Please try again.', 'anchor-schema' ) ],
+            'login_empty'    => [ 'err', __( 'Please enter your username and password.', 'anchor-schema' ) ],
+            'logged_out'     => [ 'ok',  __( 'You have been signed out.', 'anchor-schema' ) ],
+            'lostpass_sent'  => [ 'ok',  __( 'Check your email for a link to reset your password.', 'anchor-schema' ) ],
+            'lostpass_error' => [ 'err', __( 'We could not find an account matching that username or email.', 'anchor-schema' ) ],
+            'lostpass_empty' => [ 'err', __( 'Please enter your username or email address.', 'anchor-schema' ) ],
         ];
         if ( ! isset( $map[ $notice ] ) ) {
             return '';
         }
         $class = $map[ $notice ][0] === 'ok' ? 'is-ok' : 'is-error';
         return '<div class="anchor-event-manager-notice ' . esc_attr( $class ) . '">' . esc_html( $map[ $notice ][1] ) . '</div>';
+    }
+
+    private function get_event_manager_page_url() {
+        $url = '';
+        if ( \is_singular() || \is_page() ) {
+            $url = \get_permalink();
+        }
+        if ( ! $url && isset( $_SERVER['REQUEST_URI'] ) ) {
+            $url = \home_url( \wp_unslash( $_SERVER['REQUEST_URI'] ) );
+        }
+        if ( ! $url ) {
+            $url = \home_url( '/' );
+        }
+        $url = \remove_query_arg( [ 'event_manager_notice', 'event_manager_view' ], $url );
+        return $url;
+    }
+
+    private function render_event_manager_login_form() {
+        $page_url = $this->get_event_manager_page_url();
+        $view = isset( $_GET['event_manager_view'] ) ? sanitize_key( $_GET['event_manager_view'] ) : '';
+        $action_url = \admin_url( 'admin-post.php' );
+
+        if ( $view === 'lostpassword' ) {
+            $login_url = \add_query_arg( 'event_manager_view', 'login', $page_url );
+            $out  = '<div class="anchor-event-manager-auth">';
+            $out .= '<h2>' . esc_html__( 'Reset your password', 'anchor-schema' ) . '</h2>';
+            $out .= '<p>' . esc_html__( 'Enter your username or email address. You will receive a link to create a new password via email.', 'anchor-schema' ) . '</p>';
+            $out .= '<form class="anchor-event-manager-login-form" method="post" action="' . esc_url( $action_url ) . '">';
+            $out .= '<input type="hidden" name="action" value="anchor_event_manager_lostpass" />';
+            $out .= '<input type="hidden" name="redirect_to" value="' . esc_url( $page_url ) . '" />';
+            $out .= \wp_nonce_field( 'anchor_event_manager_lostpass', '_anchor_lostpass_nonce', true, false );
+            $out .= '<div class="anchor-event-field"><label for="anchor_event_user_login">' . esc_html__( 'Username or email address', 'anchor-schema' ) . '</label>';
+            $out .= '<input type="text" id="anchor_event_user_login" name="user_login" required autocomplete="username" /></div>';
+            $out .= '<div class="anchor-event-manager-submit">';
+            $out .= '<button type="submit" class="anchor-event-button">' . esc_html__( 'Email me a reset link', 'anchor-schema' ) . '</button>';
+            $out .= '<a class="anchor-event-button-secondary" href="' . esc_url( $login_url ) . '">' . esc_html__( 'Back to sign in', 'anchor-schema' ) . '</a>';
+            $out .= '</div></form></div>';
+            return $out;
+        }
+
+        $lost_url = \add_query_arg( 'event_manager_view', 'lostpassword', $page_url );
+        $out  = '<div class="anchor-event-manager-auth">';
+        $out .= '<h2>' . esc_html__( 'Sign in to manage events', 'anchor-schema' ) . '</h2>';
+        $out .= '<form class="anchor-event-manager-login-form" method="post" action="' . esc_url( $action_url ) . '">';
+        $out .= '<input type="hidden" name="action" value="anchor_event_manager_login" />';
+        $out .= '<input type="hidden" name="redirect_to" value="' . esc_url( $page_url ) . '" />';
+        $out .= \wp_nonce_field( 'anchor_event_manager_login', '_anchor_login_nonce', true, false );
+        $out .= '<div class="anchor-event-field"><label for="anchor_event_log">' . esc_html__( 'Username or email', 'anchor-schema' ) . '</label>';
+        $out .= '<input type="text" id="anchor_event_log" name="log" required autocomplete="username" /></div>';
+        $out .= '<div class="anchor-event-field"><label for="anchor_event_pwd">' . esc_html__( 'Password', 'anchor-schema' ) . '</label>';
+        $out .= '<input type="password" id="anchor_event_pwd" name="pwd" required autocomplete="current-password" /></div>';
+        $out .= '<label class="anchor-event-manager-remember"><input type="checkbox" name="rememberme" value="forever" /> ' . esc_html__( 'Remember me', 'anchor-schema' ) . '</label>';
+        $out .= '<div class="anchor-event-manager-submit">';
+        $out .= '<button type="submit" class="anchor-event-button">' . esc_html__( 'Sign in', 'anchor-schema' ) . '</button>';
+        $out .= '<a class="anchor-event-manager-lostlink" href="' . esc_url( $lost_url ) . '">' . esc_html__( 'Lost your password?', 'anchor-schema' ) . '</a>';
+        $out .= '</div></form></div>';
+        return $out;
+    }
+
+    private function render_event_manager_no_access() {
+        $page_url = $this->get_event_manager_page_url();
+        $logout_url = \add_query_arg( [
+            'action' => 'anchor_event_manager_logout',
+            '_wpnonce' => \wp_create_nonce( 'anchor_event_manager_logout' ),
+            'redirect_to' => rawurlencode( $page_url ),
+        ], \admin_url( 'admin-post.php' ) );
+        $user = \wp_get_current_user();
+        $out  = '<div class="anchor-event-manager-auth">';
+        $out .= '<h2>' . esc_html__( 'No access', 'anchor-schema' ) . '</h2>';
+        $out .= '<p>' . sprintf(
+            esc_html__( 'You are signed in as %s, but that account does not have permission to manage events. Sign in with an editor or administrator account.', 'anchor-schema' ),
+            '<strong>' . esc_html( $user->user_login ) . '</strong>'
+        ) . '</p>';
+        $out .= '<p><a class="anchor-event-button-secondary" href="' . esc_url( $logout_url ) . '">' . esc_html__( 'Sign out', 'anchor-schema' ) . '</a></p>';
+        $out .= '</div>';
+        return $out;
+    }
+
+    public function handle_event_manager_login() {
+        $redirect = isset( $_POST['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_POST['redirect_to'] ) ) : \home_url( '/' );
+        $nonce = $_POST['_anchor_login_nonce'] ?? '';
+        if ( ! \wp_verify_nonce( $nonce, 'anchor_event_manager_login' ) ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'error', $redirect ) );
+            exit;
+        }
+
+        $log = isset( $_POST['log'] ) ? trim( \wp_unslash( $_POST['log'] ) ) : '';
+        $pwd = isset( $_POST['pwd'] ) ? (string) \wp_unslash( $_POST['pwd'] ) : '';
+        if ( $log === '' || $pwd === '' ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'login_empty', $redirect ) );
+            exit;
+        }
+
+        $creds = [
+            'user_login' => $log,
+            'user_password' => $pwd,
+            'remember' => ! empty( $_POST['rememberme'] ),
+        ];
+        $user = \wp_signon( $creds, \is_ssl() );
+        if ( \is_wp_error( $user ) ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'login_failed', $redirect ) );
+            exit;
+        }
+
+        \wp_set_current_user( $user->ID );
+        \wp_safe_redirect( $redirect );
+        exit;
+    }
+
+    public function handle_event_manager_logout() {
+        $redirect = isset( $_GET['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_GET['redirect_to'] ) ) : \home_url( '/' );
+        \check_admin_referer( 'anchor_event_manager_logout' );
+        \wp_logout();
+        \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'logged_out', $redirect ) );
+        exit;
+    }
+
+    public function handle_event_manager_lostpass() {
+        $redirect = isset( $_POST['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_POST['redirect_to'] ) ) : \home_url( '/' );
+        $lost_view_url = \add_query_arg( 'event_manager_view', 'lostpassword', $redirect );
+
+        $nonce = $_POST['_anchor_lostpass_nonce'] ?? '';
+        if ( ! \wp_verify_nonce( $nonce, 'anchor_event_manager_lostpass' ) ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'error', $lost_view_url ) );
+            exit;
+        }
+
+        $login = isset( $_POST['user_login'] ) ? trim( \wp_unslash( $_POST['user_login'] ) ) : '';
+        if ( $login === '' ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_empty', $lost_view_url ) );
+            exit;
+        }
+
+        if ( strpos( $login, '@' ) !== false ) {
+            $user = \get_user_by( 'email', $login );
+        } else {
+            $user = \get_user_by( 'login', $login );
+        }
+        // Always report success to avoid leaking which accounts exist.
+        if ( ! $user ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
+            exit;
+        }
+
+        $allow = \apply_filters( 'allow_password_reset', true, $user->ID );
+        if ( \is_wp_error( $allow ) || ! $allow ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            exit;
+        }
+
+        $key = \get_password_reset_key( $user );
+        if ( \is_wp_error( $key ) ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            exit;
+        }
+
+        $reset_url = \network_site_url( 'wp-login.php?action=rp&key=' . $key . '&login=' . rawurlencode( $user->user_login ), 'login' );
+        $blogname = \wp_specialchars_decode( \get_option( 'blogname' ), ENT_QUOTES );
+        $message  = sprintf( __( 'Someone has requested a password reset for the following account: %s', 'anchor-schema' ), $blogname ) . "\r\n\r\n";
+        $message .= sprintf( __( 'Username: %s', 'anchor-schema' ), $user->user_login ) . "\r\n\r\n";
+        $message .= __( 'If this was a mistake, ignore this email and nothing will happen.', 'anchor-schema' ) . "\r\n\r\n";
+        $message .= __( 'To reset your password, visit the following address:', 'anchor-schema' ) . "\r\n\r\n";
+        $message .= $reset_url . "\r\n";
+
+        $title = sprintf( __( '[%s] Password Reset', 'anchor-schema' ), $blogname );
+        $title = \apply_filters( 'retrieve_password_title', $title, $user->user_login, $user );
+        $message = \apply_filters( 'retrieve_password_message', $message, $key, $user->user_login, $user );
+
+        if ( $message && ! \wp_mail( $user->user_email, \wp_specialchars_decode( $title ), $message ) ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            exit;
+        }
+
+        \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
+        exit;
     }
 
     private function render_event_manager_list( $atts ) {

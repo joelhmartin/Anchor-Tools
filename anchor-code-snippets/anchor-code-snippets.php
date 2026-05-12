@@ -5,6 +5,7 @@ class Anchor_Code_Snippets_Module {
 
     const CPT   = 'anchor_snippet';
     const NONCE = 'anchor_snippet_nonce';
+    const MU_PREFIX = 'anchor-snippet-';
 
     public function __construct() {
         add_action( 'init',                  [ $this, 'register_cpt' ] );
@@ -23,6 +24,15 @@ class Anchor_Code_Snippets_Module {
 
         add_filter( 'manage_' . self::CPT . '_posts_columns',        [ $this, 'admin_columns' ] );
         add_action( 'manage_' . self::CPT . '_posts_custom_column',  [ $this, 'admin_column_content' ], 10, 2 );
+
+        // MU-plugin lifecycle
+        add_action( 'before_delete_post', [ $this, 'on_post_delete' ] );
+        add_action( 'wp_trash_post',      [ $this, 'on_post_trash' ] );
+        add_action( 'untrashed_post',     [ $this, 'on_post_untrash' ] );
+
+        // MU runtime fault recovery (detect renamed .disabled files from shutdown handler)
+        add_action( 'admin_init', [ $this, 'reconcile_mu_files' ] );
+        add_action( 'admin_notices', [ $this, 'render_admin_notices' ] );
     }
 
     /* ─── CPT ──────────────────────────────────────────────── */
@@ -91,6 +101,7 @@ class Anchor_Code_Snippets_Module {
     }
 
     public function render_box_settings( $post ) {
+        $language     = get_post_meta( $post->ID, 'acs_language', true ) ?: 'javascript';
         $location     = get_post_meta( $post->ID, 'acs_location', true ) ?: 'wp_head';
         $scope        = get_post_meta( $post->ID, 'acs_scope', true ) ?: 'global';
         $target_pages = get_post_meta( $post->ID, 'acs_target_pages', true );
@@ -102,21 +113,25 @@ class Anchor_Code_Snippets_Module {
         ?>
         <div class="acs-field">
             <label><strong>Location</strong></label>
-            <select name="acs_location">
+            <select name="acs_location" id="acs_location">
                 <option value="wp_head"     <?php selected( $location, 'wp_head' ); ?>>Header (wp_head)</option>
                 <option value="wp_body_open" <?php selected( $location, 'wp_body_open' ); ?>>Body (wp_body_open)</option>
                 <option value="wp_footer"   <?php selected( $location, 'wp_footer' ); ?>>Footer (wp_footer)</option>
+                <option value="mu_plugin"   data-php-only="1" <?php selected( $location, 'mu_plugin' ); ?>>MU-plugin (early load, PHP only)</option>
             </select>
+            <p class="description acs-mu-hint" style="<?php echo $location === 'mu_plugin' ? '' : 'display:none;'; ?>">
+                Loads from <code>wp-content/mu-plugins/</code> before themes and plugins. Validated on save; auto-disables on fatal.
+            </p>
         </div>
 
-        <div class="acs-field">
+        <div class="acs-field acs-non-mu-field" style="<?php echo $location === 'mu_plugin' ? 'display:none;' : ''; ?>">
             <label><strong>Scope</strong></label>
             <label><input type="radio" name="acs_scope" value="global" <?php checked( $scope, 'global' ); ?>> Global (all pages)</label><br>
             <label><input type="radio" name="acs_scope" value="specific" <?php checked( $scope, 'specific' ); ?>> Only on specific pages</label><br>
             <label><input type="radio" name="acs_scope" value="exclude" <?php checked( $scope, 'exclude' ); ?>> Everywhere except specific pages</label>
         </div>
 
-        <div class="acs-field acs-page-search-wrap" style="<?php echo ! in_array( $scope, [ 'specific', 'exclude' ], true ) ? 'display:none;' : ''; ?>">
+        <div class="acs-field acs-non-mu-field acs-page-search-wrap" style="<?php echo ( $location === 'mu_plugin' || ! in_array( $scope, [ 'specific', 'exclude' ], true ) ) ? 'display:none;' : ''; ?>">
             <label><strong class="acs-pages-label"><?php echo $scope === 'exclude' ? 'Excluded Pages' : 'Target Pages'; ?></strong></label>
             <input type="text" id="acs_page_search" placeholder="Search pages&hellip;" autocomplete="off">
             <div id="acs_search_results" class="acs-search-results"></div>
@@ -139,7 +154,7 @@ class Anchor_Code_Snippets_Module {
             <input type="hidden" name="acs_target_pages" id="acs_target_pages" value="<?php echo esc_attr( $target_pages ); ?>">
         </div>
 
-        <div class="acs-field">
+        <div class="acs-field acs-non-mu-field" style="<?php echo $location === 'mu_plugin' ? 'display:none;' : ''; ?>">
             <label><strong>Priority</strong></label>
             <input type="number" name="acs_priority" value="<?php echo esc_attr( $priority ); ?>" min="1" max="999" style="width:70px;">
             <p class="description">Lower = earlier. Default 10.</p>
@@ -161,19 +176,43 @@ class Anchor_Code_Snippets_Module {
         if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) return;
         if ( ! current_user_can( 'edit_post', $post_id ) ) return;
 
+        $previous_location = get_post_meta( $post_id, 'acs_location', true ) ?: 'wp_head';
+
         $text_fields = [ 'acs_language', 'acs_location', 'acs_scope', 'acs_target_pages', 'acs_priority' ];
+        $incoming = [];
         foreach ( $text_fields as $key ) {
-            $val = isset( $_POST[ $key ] ) ? sanitize_text_field( $_POST[ $key ] ) : '';
-            update_post_meta( $post_id, $key, $val );
+            $incoming[ $key ] = isset( $_POST[ $key ] ) ? sanitize_text_field( $_POST[ $key ] ) : '';
+        }
+        $code    = isset( $_POST['acs_code'] ) ? (string) $_POST['acs_code'] : '';
+        $enabled = isset( $_POST['acs_enabled'] ) ? '1' : '';
+
+        // Gate the MU location: must be PHP and must pass syntax validation.
+        if ( $incoming['acs_location'] === 'mu_plugin' ) {
+            $reject = '';
+
+            if ( $incoming['acs_language'] !== 'php' ) {
+                $reject = 'MU-plugin location requires PHP language. Reverted to ' . $previous_location . '.';
+            } else {
+                $check = $this->validate_php_syntax( $code );
+                if ( $check !== true ) {
+                    $reject = 'PHP syntax error — MU-plugin save blocked: ' . $check;
+                }
+            }
+
+            if ( $reject ) {
+                $incoming['acs_location'] = $previous_location === 'mu_plugin' ? 'wp_head' : $previous_location;
+                $enabled = '';
+                $this->push_admin_notice( $post_id, 'error', $reject );
+            }
         }
 
-        // Code saved unfiltered (same as Universal Popups html/css/js)
-        $code = isset( $_POST['acs_code'] ) ? $_POST['acs_code'] : '';
+        foreach ( $text_fields as $key ) {
+            update_post_meta( $post_id, $key, $incoming[ $key ] );
+        }
         update_post_meta( $post_id, 'acs_code', $code );
-
-        // Checkbox: absent = off
-        $enabled = isset( $_POST['acs_enabled'] ) ? '1' : '';
         update_post_meta( $post_id, 'acs_enabled', $enabled );
+
+        $this->sync_mu_file( $post_id, $previous_location );
     }
 
     /* ─── Admin Assets ─────────────────────────────────────── */
@@ -258,7 +297,18 @@ class Anchor_Code_Snippets_Module {
 
         $current = get_post_meta( $post_id, 'acs_enabled', true ) === '1';
         $new     = $current ? '' : '1';
+
+        // If we're enabling an MU snippet, syntax-validate first.
+        if ( $new === '1' && get_post_meta( $post_id, 'acs_location', true ) === 'mu_plugin' ) {
+            $code  = get_post_meta( $post_id, 'acs_code', true );
+            $check = $this->validate_php_syntax( $code );
+            if ( $check !== true ) {
+                wp_send_json_error( [ 'message' => 'Cannot enable: PHP syntax error — ' . $check ] );
+            }
+        }
+
         update_post_meta( $post_id, 'acs_enabled', $new );
+        $this->sync_mu_file( $post_id );
 
         wp_send_json_success( [ 'enabled' => $new === '1' ] );
     }
@@ -458,7 +508,7 @@ class Anchor_Code_Snippets_Module {
 
             case 'acs_location':
                 $loc  = get_post_meta( $post_id, 'acs_location', true ) ?: 'wp_head';
-                $map  = [ 'wp_head' => 'Header', 'wp_body_open' => 'Body', 'wp_footer' => 'Footer' ];
+                $map  = [ 'wp_head' => 'Header', 'wp_body_open' => 'Body', 'wp_footer' => 'Footer', 'mu_plugin' => 'MU-plugin' ];
                 echo esc_html( isset( $map[ $loc ] ) ? $map[ $loc ] : $loc );
                 break;
 
@@ -480,6 +530,241 @@ class Anchor_Code_Snippets_Module {
                     $on ? 'On' : 'Off'
                 );
                 break;
+        }
+    }
+
+    /* ─── MU-plugin: paths ─────────────────────────────────── */
+
+    private function mu_dir() {
+        return defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
+    }
+
+    private function mu_file_path( $post_id ) {
+        return $this->mu_dir() . '/' . self::MU_PREFIX . (int) $post_id . '.php';
+    }
+
+    private function strip_php_tags( $code ) {
+        $code = preg_replace( '/^\s*<\?(?:php)?\s*/i', '', $code );
+        $code = preg_replace( '/\s*\?>\s*$/', '', $code );
+        return $code;
+    }
+
+    /* ─── MU-plugin: syntax validation ─────────────────────── */
+
+    /**
+     * Returns true on clean parse, error message string otherwise.
+     * Layered: php -l subprocess if available, then token_get_all(TOKEN_PARSE) fallback.
+     */
+    private function validate_php_syntax( $code ) {
+        $code = trim( $this->strip_php_tags( (string) $code ) );
+        if ( $code === '' ) return true;
+
+        // Method 1: php -l subprocess. Validates the exact envelope we write to disk.
+        if ( function_exists( 'shell_exec' ) && defined( 'PHP_BINARY' ) && PHP_BINARY ) {
+            $disabled = array_map( 'trim', explode( ',', (string) ini_get( 'disable_functions' ) ) );
+            if ( ! in_array( 'shell_exec', $disabled, true ) ) {
+                $wrapped = "<?php\ntry {\n" . $code . "\n} catch ( \\Throwable \$_e ) {}\n";
+                $tmp = function_exists( 'wp_tempnam' ) ? wp_tempnam( 'acs-lint' ) : tempnam( sys_get_temp_dir(), 'acs-lint-' );
+                if ( $tmp && @file_put_contents( $tmp, $wrapped ) !== false ) {
+                    $cmd = escapeshellarg( PHP_BINARY ) . ' -l ' . escapeshellarg( $tmp ) . ' 2>&1';
+                    $out = @shell_exec( $cmd );
+                    @unlink( $tmp );
+                    if ( is_string( $out ) && $out !== '' ) {
+                        if ( stripos( $out, 'No syntax errors' ) !== false ) {
+                            return true;
+                        }
+                        $out = str_replace( $tmp, 'snippet', $out );
+                        $out = preg_replace( '/^Errors parsing.*$/m', '', $out );
+                        return trim( $out ) ?: 'PHP syntax error detected.';
+                    }
+                }
+            }
+        }
+
+        // Method 2: eval the code inside a never-called function. ParseError is catchable.
+        // This mirrors the runtime envelope (try/catch inside the body) without executing.
+        $lint_fn = '__acs_lint_' . substr( md5( uniqid( '', true ) ), 0, 12 );
+        try {
+            eval( "function {$lint_fn}() { try {\n" . $code . "\n} catch ( \\Throwable \$_e ) {} }" );
+            return true;
+        } catch ( \ParseError $e ) {
+            return $e->getMessage() . ' on line ' . max( 1, (int) $e->getLine() - 2 );
+        } catch ( \Error $e ) {
+            return $e->getMessage();
+        }
+    }
+
+    /* ─── MU-plugin: file writer ───────────────────────────── */
+
+    private function generate_mu_contents( $post_id, $title, $code ) {
+        $clean       = trim( $this->strip_php_tags( (string) $code ) );
+        $edit_url    = admin_url( 'post.php?post=' . (int) $post_id . '&action=edit' );
+        $safe_title  = str_replace( [ '*/', "\r", "\n" ], [ '* /', ' ', ' ' ], (string) $title );
+        $self_marker = self::MU_PREFIX . (int) $post_id . '.php';
+        $body        = "    " . str_replace( "\n", "\n    ", $clean );
+
+        return <<<PHP
+<?php
+/**
+ * Plugin Name: Anchor Snippet — {$safe_title}
+ * Description: Auto-generated by Anchor Tools. Edit at {$edit_url}
+ * Snippet ID: {$post_id}
+ *
+ * DO NOT EDIT THIS FILE DIRECTLY — changes are overwritten on save.
+ */
+if ( ! defined( 'ABSPATH' ) ) { return; }
+
+register_shutdown_function( function() {
+    \$e = error_get_last();
+    if ( ! \$e ) { return; }
+    \$fatal_types = array( E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR );
+    if ( ! in_array( \$e['type'], \$fatal_types, true ) ) { return; }
+    if ( strpos( (string) \$e['file'], '{$self_marker}' ) === false ) { return; }
+
+    \$self = __FILE__;
+    if ( file_exists( \$self ) ) { @rename( \$self, \$self . '.disabled' ); }
+    @file_put_contents(
+        dirname( \$self ) . '/{$self_marker}.error',
+        gmdate( 'c' ) . " | " . \$e['message'] . " in " . \$e['file'] . ':' . \$e['line']
+    );
+    error_log( 'Anchor Snippet {$post_id} FATAL: ' . \$e['message'] . ' in ' . \$e['file'] . ':' . \$e['line'] );
+} );
+
+try {
+{$body}
+} catch ( \\Throwable \$anchor_snippet_e ) {
+    error_log( 'Anchor Snippet {$post_id} runtime error: ' . \$anchor_snippet_e->getMessage() );
+    if ( function_exists( 'set_transient' ) ) {
+        set_transient( 'anchor_snippet_error_{$post_id}', \$anchor_snippet_e->getMessage(), DAY_IN_SECONDS );
+    }
+}
+PHP;
+    }
+
+    /* ─── MU-plugin: lifecycle ─────────────────────────────── */
+
+    /**
+     * Idempotent. Reads current post state and writes or deletes the MU file accordingly.
+     * Also cleans up any file left over from a previous location.
+     */
+    private function sync_mu_file( $post_id, $previous_location = null ) {
+        $post_id = (int) $post_id;
+        if ( ! $post_id || get_post_type( $post_id ) !== self::CPT ) return;
+
+        $path = $this->mu_file_path( $post_id );
+
+        // Always clean stale .disabled/.error sidecars when we re-sync.
+        @unlink( $path . '.disabled' );
+        @unlink( $path . '.error' );
+
+        $should = $this->should_have_mu_file( $post_id );
+
+        if ( ! $should ) {
+            if ( file_exists( $path ) ) { @unlink( $path ); }
+            return;
+        }
+
+        $dir = $this->mu_dir();
+        if ( ! wp_mkdir_p( $dir ) ) {
+            $this->push_admin_notice( $post_id, 'error', 'Could not create mu-plugins directory: ' . $dir );
+            update_post_meta( $post_id, 'acs_enabled', '' );
+            return;
+        }
+
+        $post     = get_post( $post_id );
+        $title    = $post ? $post->post_title : ( 'Snippet ' . $post_id );
+        $code     = get_post_meta( $post_id, 'acs_code', true );
+        $contents = $this->generate_mu_contents( $post_id, $title, $code );
+
+        $written = @file_put_contents( $path, $contents );
+        if ( $written === false ) {
+            $this->push_admin_notice( $post_id, 'error', 'Could not write MU file: ' . $path . ' (check filesystem permissions).' );
+            update_post_meta( $post_id, 'acs_enabled', '' );
+            return;
+        }
+        @chmod( $path, 0644 );
+    }
+
+    private function should_have_mu_file( $post_id ) {
+        if ( get_post_status( $post_id ) !== 'publish' ) return false;
+        if ( get_post_meta( $post_id, 'acs_location', true ) !== 'mu_plugin' ) return false;
+        if ( get_post_meta( $post_id, 'acs_language', true ) !== 'php' ) return false;
+        if ( get_post_meta( $post_id, 'acs_enabled', true ) !== '1' ) return false;
+        return true;
+    }
+
+    private function delete_mu_file( $post_id ) {
+        $path = $this->mu_file_path( $post_id );
+        @unlink( $path );
+        @unlink( $path . '.disabled' );
+        @unlink( $path . '.error' );
+    }
+
+    public function on_post_delete( $post_id ) {
+        if ( get_post_type( $post_id ) !== self::CPT ) return;
+        $this->delete_mu_file( $post_id );
+    }
+
+    public function on_post_trash( $post_id ) {
+        if ( get_post_type( $post_id ) !== self::CPT ) return;
+        $this->delete_mu_file( $post_id );
+    }
+
+    public function on_post_untrash( $post_id ) {
+        if ( get_post_type( $post_id ) !== self::CPT ) return;
+        $this->sync_mu_file( $post_id );
+    }
+
+    /**
+     * Runs on admin_init. If the runtime shutdown handler renamed a file to .disabled
+     * (because it fatal'd), flip the corresponding snippet's acs_enabled off so we
+     * don't immediately regenerate the broken file on next save.
+     */
+    public function reconcile_mu_files() {
+        if ( ! current_user_can( 'manage_options' ) ) return;
+        $dir = $this->mu_dir();
+        if ( ! is_dir( $dir ) ) return;
+
+        foreach ( (array) glob( $dir . '/' . self::MU_PREFIX . '*.php.disabled' ) as $disabled ) {
+            if ( ! preg_match( '#' . preg_quote( self::MU_PREFIX, '#' ) . '(\d+)\.php\.disabled$#', $disabled, $m ) ) continue;
+            $post_id = (int) $m[1];
+            if ( ! $post_id || get_post_type( $post_id ) !== self::CPT ) continue;
+
+            update_post_meta( $post_id, 'acs_enabled', '' );
+
+            $error_file = substr( $disabled, 0, -9 ) . '.error';
+            $msg = file_exists( $error_file ) ? trim( (string) @file_get_contents( $error_file ) ) : 'Fatal error in MU snippet.';
+            $this->push_admin_notice( $post_id, 'error', 'Snippet auto-disabled — fatal error: ' . $msg );
+        }
+    }
+
+    /* ─── Admin notices for save-time and runtime errors ──── */
+
+    private function push_admin_notice( $post_id, $type, $message ) {
+        $key = 'anchor_snippet_notice_' . get_current_user_id();
+        $queue = get_transient( $key );
+        if ( ! is_array( $queue ) ) $queue = [];
+        $queue[] = [ 'id' => (int) $post_id, 'type' => $type, 'message' => $message ];
+        set_transient( $key, $queue, 5 * MINUTE_IN_SECONDS );
+    }
+
+    public function render_admin_notices() {
+        $key = 'anchor_snippet_notice_' . get_current_user_id();
+        $queue = get_transient( $key );
+        if ( ! is_array( $queue ) || empty( $queue ) ) return;
+        delete_transient( $key );
+
+        foreach ( $queue as $n ) {
+            $cls = $n['type'] === 'error' ? 'notice-error' : 'notice-warning';
+            $link = $n['id']
+                ? sprintf( ' <a href="%s">Edit snippet #%d</a>', esc_url( get_edit_post_link( $n['id'] ) ), (int) $n['id'] )
+                : '';
+            printf(
+                '<div class="notice %s"><p><strong>Anchor Snippets:</strong> %s%s</p></div>',
+                esc_attr( $cls ),
+                esc_html( $n['message'] ),
+                $link
+            );
         }
     }
 }

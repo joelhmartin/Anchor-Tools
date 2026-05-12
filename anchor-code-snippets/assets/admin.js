@@ -29,10 +29,37 @@
 
     /* ─── Language Toggle ──────────────────────────────── */
 
+    function refreshMuOptionVisibility() {
+        var $lang = $( '#acs_language' );
+        var $loc  = $( '#acs_location' );
+        if ( ! $lang.length || ! $loc.length ) return;
+        var isPhp = $lang.val() === 'php';
+        var $opt  = $loc.find( 'option[value="mu_plugin"]' );
+        $opt.prop( 'disabled', ! isPhp ).toggle( isPhp );
+        if ( ! isPhp && $loc.val() === 'mu_plugin' ) {
+            $loc.val( 'wp_head' ).trigger( 'change' );
+        }
+    }
+
+    function refreshMuFieldVisibility() {
+        var $loc = $( '#acs_location' );
+        if ( ! $loc.length ) return;
+        var isMu = $loc.val() === 'mu_plugin';
+        $( '.acs-non-mu-field' ).toggle( ! isMu );
+        $( '.acs-mu-hint' ).toggle( isMu );
+        // When MU is active, the page-search visibility depends on scope; respect scope only when not MU.
+        if ( ! isMu ) {
+            var scope = $( 'input[name="acs_scope"]:checked' ).val();
+            $( '.acs-page-search-wrap' ).toggle( scope === 'specific' || scope === 'exclude' );
+        }
+    }
+
     $( '#acs_language' ).on( 'change', function() {
-        if ( ! editor ) return;
-        editor.setOption( 'mode', getEditorMime( this.value ) );
+        if ( editor ) editor.setOption( 'mode', getEditorMime( this.value ) );
+        refreshMuOptionVisibility();
     });
+
+    $( '#acs_location' ).on( 'change', refreshMuFieldVisibility );
 
     /* ─── Scope Toggle ─────────────────────────────────── */
 
@@ -199,6 +226,8 @@
 
     $( document ).ready( function() {
         initEditor();
+        refreshMuOptionVisibility();
+        refreshMuFieldVisibility();
     });
 
 })(jQuery);

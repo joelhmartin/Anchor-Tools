@@ -79,3 +79,14 @@
 
 /* ─── Admin Column Badges ──────────────────────────── */
 .acs-badge { white-space: nowrap; }
+
+/* ─── MU-plugin hint ───────────────────────────────── */
+.acs-mu-hint {
+    margin: 6px 0 0;
+    padding: 6px 8px;
+    background: #fff8e1;
+    border-left: 3px solid #f0b849;
+    font-size: 12px;
+    color: #4a3c0a;
+}
+.acs-mu-hint code { background: rgba(0,0,0,.06); padding: 0 4px; border-radius: 2px; }

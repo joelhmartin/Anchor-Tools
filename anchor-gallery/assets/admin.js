@@ -557,4 +557,21 @@
     document.addEventListener('anchor-builder:refresh-preview', function(){ refreshPreview(); });
   });
 
+  // Attach WP color picker to any .anchor-builder__color-picker inputs.
+  $(function() {
+      if (typeof $.fn.wpColorPicker !== 'function') return;
+      $('.anchor-builder__color-picker').each(function() {
+          var $input = $(this);
+          $input.wpColorPicker({
+              change: function() {
+                  // Debounce slightly so iris fires its real value before listeners read it.
+                  setTimeout(function() { $input.trigger('change'); }, 50);
+              },
+              clear: function() {
+                  $input.trigger('change');
+              }
+          });
+      });
+  });
+
 })(jQuery);

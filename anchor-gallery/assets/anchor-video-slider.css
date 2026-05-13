@@ -50,6 +50,12 @@
   }
 }
 
+/* Transparent tile background mode */
+.avg-tile-bg-transparent { --avg-tile-bg: transparent; --avg-tile-hover-bg: transparent; }
+
+/* Global transition duration */
+.anchor-video-gallery { --avg-transition: 200ms; }
+
 /* ==========================================================================
    Base Track & Tile Styles
    ========================================================================== */
@@ -70,14 +76,20 @@
 }
 
 .avg-tile-inner {
-  background: var(--avg-bg);
+  background: var(--avg-tile-bg, var(--avg-bg));
   border-radius: var(--avg-radius);
+  padding: var(--avg-tile-padding, 0);
+  border-width: var(--avg-tile-border-width, 0);
+  border-style: var(--avg-tile-border-style, solid);
+  border-color: var(--avg-tile-border-color, transparent);
   overflow: hidden;
   height: 100%;
   display: flex;
   flex-direction: column;
   transition: transform 0.25s ease, box-shadow 0.25s ease;
 }
+
+.avg-tile:hover .avg-tile-inner { background: var(--avg-tile-hover-bg, var(--avg-tile-bg, var(--avg-bg))); }
 
 .avg-thumb {
   position: relative;
@@ -105,14 +117,21 @@
 }
 
 .avg-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--avg-text);
+  font-size: var(--avg-title-size, 14px);
+  font-weight: var(--avg-title-weight, 500);
+  color: var(--avg-title-color, var(--avg-text));
+  text-transform: var(--avg-title-transform, none);
+  text-align: var(--avg-title-align, left);
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.avg-caption {
+  font-size: var(--avg-caption-size, 12px);
+  color: var(--avg-caption-color, var(--avg-text-muted));
 }
 
 .avg-channel {
@@ -141,10 +160,11 @@
   position: absolute;
   inset: 0;
   display: flex;
+  background: var(--avg-play-button-bg, transparent);
   align-items: center;
   justify-content: center;
   opacity: 0.9;
-  transition: opacity 0.2s, transform 0.2s;
+  transition: opacity var(--avg-transition, 200ms), transform var(--avg-transition, 200ms);
 }
 
 .avg-tile:hover .avg-play,
@@ -154,34 +174,35 @@
 }
 
 .avg-play svg {
-  width: 60px;
-  height: 60px;
+  width:  var(--avg-play-size, 60px);
+  height: var(--avg-play-size, 60px);
   filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
 }
 
 /* Play style: Circle */
 .avg-play-circle .avg-play svg {
-  color: var(--avg-play-bg);
+  color: var(--avg-play-icon-color, var(--avg-play-bg));
 }
 
 /* Play style: YouTube */
 .avg-play-youtube .avg-play svg {
-  width: 68px;
-  height: 48px;
+  width:  var(--avg-play-size, 68px);
+  height: var(--avg-play-size, 48px);
+  color: var(--avg-play-icon-color, inherit);
 }
 
 /* Play style: Minimal */
 .avg-play-minimal .avg-play svg {
-  width: 48px;
-  height: 48px;
-  color: rgba(255, 255, 255, 0.95);
+  width:  var(--avg-play-size, 48px);
+  height: var(--avg-play-size, 48px);
+  color: var(--avg-play-icon-color, rgba(255, 255, 255, 0.95));
 }
 
 /* Play style: Square */
 .avg-play-square .avg-play svg {
-  width: 50px;
-  height: 50px;
-  color: var(--avg-play-bg);
+  width:  var(--avg-play-size, 50px);
+  height: var(--avg-play-size, 50px);
+  color: var(--avg-play-icon-color, var(--avg-play-bg));
 }
 
 /* ==========================================================================
@@ -210,6 +231,36 @@
 .avg-hover-glow .avg-tile:focus .avg-tile-inner {
   box-shadow: 0 0 0 3px var(--avg-border), 0 8px 25px rgba(0, 0, 0, 0.3);
 }
+
+/* ── 3.7.0 — Additional hover effects ─────────────────────── */
+
+/* Tilt */
+.avg-hover-tilt .avg-tile { transition: transform var(--avg-transition, 200ms) ease; transform-style: preserve-3d; }
+.avg-hover-tilt .avg-tile:hover,
+.avg-hover-tilt .avg-tile:focus { transform: perspective(800px) rotateY(var(--avg-hover-tilt-y, 4deg)) rotateX(var(--avg-hover-tilt-x, -2deg)); }
+
+/* Fade Others (dim non-hovered tiles when one is hovered) */
+.avg-hover-fade .avg-tile { transition: opacity var(--avg-transition, 200ms) ease; }
+.avg-hover-fade:hover .avg-tile:not(:hover):not(:focus) { opacity: var(--avg-hover-fade-other, 0.5); }
+
+/* Slide-up (lift on hover, distance configurable) */
+.avg-hover-slide-up .avg-tile { transition: transform var(--avg-transition, 200ms) ease; }
+.avg-hover-slide-up .avg-tile:hover,
+.avg-hover-slide-up .avg-tile:focus { transform: translateY(var(--avg-hover-slide-distance, -6px)); }
+
+/* Brighten */
+.avg-hover-brighten .avg-thumb { transition: filter var(--avg-transition, 200ms) ease; }
+.avg-hover-brighten .avg-tile:hover .avg-thumb,
+.avg-hover-brighten .avg-tile:focus .avg-thumb { filter: brightness(var(--avg-hover-brightness, 1.15)); }
+
+/* Desaturate by default, color on hover */
+.avg-hover-desaturate .avg-thumb { filter: grayscale(var(--avg-hover-desat-base, 1)); transition: filter var(--avg-transition, 200ms) ease; }
+.avg-hover-desaturate .avg-tile:hover .avg-thumb,
+.avg-hover-desaturate .avg-tile:focus .avg-thumb { filter: grayscale(0); }
+
+/* Hover intensity modifiers — override the per-effect magnitude vars */
+.avg-hover-subtle { --avg-hover-tilt-y: 2deg;  --avg-hover-tilt-x: -1deg; --avg-hover-slide-distance: -3px;  --avg-hover-brightness: 1.07; --avg-hover-fade-other: 0.75; }
+.avg-hover-strong { --avg-hover-tilt-y: 7deg;  --avg-hover-tilt-x: -4deg; --avg-hover-slide-distance: -10px; --avg-hover-brightness: 1.25; --avg-hover-fade-other: 0.3;  }
 
 /* ==========================================================================
    Tile Styles
@@ -241,7 +292,7 @@
   left: 0;
   right: 0;
   padding: 40px 14px 14px;
-  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%);
+  background: linear-gradient(to top, rgba(0, 0, 0, var(--avg-overlay-strength, 0.85)) 0%, transparent 100%);
   z-index: 1;
 }
 
@@ -434,7 +485,7 @@
   border: none;
   cursor: pointer;
   padding: 0;
-  transition: background 0.2s, transform 0.2s;
+  transition: background var(--avg-transition, 200ms), transform var(--avg-transition, 200ms);
 }
 
 .avg-dot:hover {
@@ -618,7 +669,7 @@
   overflow: hidden;
   scroll-snap-align: start;
   opacity: 0.55;
-  transition: opacity 0.2s, outline-color 0.2s;
+  transition: opacity var(--avg-transition, 200ms), outline-color var(--avg-transition, 200ms);
   outline: 2px solid transparent;
   outline-offset: 2px;
 }
@@ -1448,7 +1499,7 @@
 .avg-layout-card-carousel .avg-tile:hover {
     transform: translateY(-2px);
     box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-    transition: transform 0.2s, box-shadow 0.2s;
+    transition: transform var(--avg-transition, 200ms), box-shadow var(--avg-transition, 200ms);
 }
 
 /* ── Lightbox grid (visual identical to grid; just here in

@@ -41,7 +41,6 @@ class Anchor_Gallery_Module {
         'theme' => 'dark',
         'tile_style' => 'card',
         'thumb_aspect_ratio' => '16:9',
-        'show_title' => true,
         'show_duration' => true,
         'show_channel' => false,
         'hover_effect' => 'lift',
@@ -57,7 +56,7 @@ class Anchor_Gallery_Module {
         'max_height' => 0,
         'thumb_size' => 'maxres',
         'object_fit' => 'cover',
-        'title_position' => 'hidden',
+        'title_position' => 'below',
         'marquee_speed' => 30,
         'marquee_gap' => 40,
         'marquee_item_width' => 150,
@@ -92,6 +91,39 @@ class Anchor_Gallery_Module {
         'filter_button_style' => 'pills',
         'filter_default'      => '',
         'filter_all_label'    => 'All',
+        // 3.7.0 — full customization
+        'show_caption'              => true,
+        'hover_intensity'           => 'normal',
+        'hover_duration_ms'         => 200,
+        'tile_bg_mode'              => 'theme',
+        'tile_bg_color'             => '',
+        'tile_hover_bg_color'       => '',
+        'tile_padding'              => 0,
+        'tile_border_width'         => 0,
+        'tile_border_color'         => '',
+        'tile_border_style'         => 'solid',
+        'title_color'               => '',
+        'title_size'                => 0,
+        'title_weight'              => '500',
+        'title_transform'           => 'none',
+        'title_align'               => 'left',
+        'caption_color'             => '',
+        'caption_size'              => 0,
+        'play_button_color'         => '',
+        'play_button_bg_color'      => '',
+        'play_button_size'          => 0,
+        'overlay_gradient_strength' => 85,
+        'transition_duration_ms'    => 200,
+        // Advanced raw CSS-var overrides (empty = use friendly control / theme default)
+        'css_var_bg'         => '',
+        'css_var_bg_hover'   => '',
+        'css_var_text'       => '',
+        'css_var_text_muted' => '',
+        'css_var_border'     => '',
+        'css_var_overlay'    => '',
+        'css_var_play_bg'    => '',
+        'css_var_play_color' => '',
+        'custom_css'         => '',
     ];
 
     /**
@@ -139,14 +171,23 @@ class Anchor_Gallery_Module {
                 '9:16' => '9:16 (Portrait)',
                 '21:9' => '21:9 (Cinematic)',
             ], 'applies_to' => $tile_layouts],
-            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'section' => 'style', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'applies_to' => $tile_layouts],
+            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'section' => 'style', 'options' => [
+                'none'       => 'None',
+                'lift'       => 'Lift',
+                'zoom'       => 'Zoom',
+                'glow'       => 'Glow',
+                'tilt'       => 'Tilt',
+                'fade'       => 'Fade Others',
+                'slide-up'   => 'Slide Up',
+                'brighten'   => 'Brighten',
+                'desaturate' => 'Desaturate (color on hover)',
+            ], 'applies_to' => $tile_layouts],
             'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'section' => 'style', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'applies_to' => $core_layouts],
             'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 2],
             'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'section' => 'layout', 'priority' => 20, 'min' => 1, 'max' => 6, 'applies_to' => $col_layouts],
             'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'section' => 'responsive', 'min' => 1, 'max' => 4, 'applies_to' => $col_layouts],
             'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'section' => 'responsive', 'min' => 1, 'max' => 2, 'applies_to' => $col_layouts],
             'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4],
-            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'section' => 'content', 'priority' => 10, 'applies_to' => $core_layouts],
             'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'content', 'applies_to' => array_values(array_diff($core_layouts, ['thumbnail_gallery']))],
             'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
             'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'content', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts],
@@ -268,6 +309,59 @@ class Anchor_Gallery_Module {
                 'type' => 'text', 'label' => '"All" Button Label', 'section' => 'content', 'priority' => 90,
                 'applies_to' => ['filterable'],
             ],
+
+            /* ── 3.7.0: Content additions ─────────────────────────────── */
+            'show_caption' => ['type' => 'checkbox', 'label' => 'Show Caption', 'section' => 'content', 'priority' => 30, 'applies_to' => $core_layouts],
+
+            /* ── 3.7.0: Style — hover ─────────────────────────────────── */
+            'hover_intensity' => ['type' => 'select', 'label' => 'Hover Intensity', 'section' => 'style', 'options' => ['subtle' => 'Subtle', 'normal' => 'Normal', 'strong' => 'Strong'], 'applies_to' => $tile_layouts, 'depends_on' => ['hover_effect' => ['lift','zoom','glow','tilt','fade','slide-up','brighten','desaturate']]],
+            'hover_duration_ms' => ['type' => 'number', 'label' => 'Hover Duration (ms)', 'section' => 'style', 'min' => 50, 'max' => 1000, 'step' => 10, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — tile background ───────────────────────── */
+            'tile_bg_mode'        => ['type' => 'select', 'label' => 'Tile Background', 'section' => 'style', 'options' => ['theme' => 'Use Theme', 'transparent' => 'Transparent', 'custom' => 'Custom Color'], 'applies_to' => $tile_layouts],
+            'tile_bg_color'       => ['type' => 'color',  'label' => 'Tile Background Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['tile_bg_mode' => 'custom']],
+            'tile_hover_bg_color' => ['type' => 'color',  'label' => 'Tile Hover Background', 'section' => 'style', 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — tile box ──────────────────────────────── */
+            'tile_padding'       => ['type' => 'number', 'label' => 'Tile Padding (px)', 'section' => 'style', 'min' => 0, 'max' => 48, 'step' => 1, 'applies_to' => $tile_layouts],
+            'tile_border_width'  => ['type' => 'number', 'label' => 'Tile Border Width (px)', 'section' => 'style', 'min' => 0, 'max' => 8, 'step' => 1, 'applies_to' => $tile_layouts],
+            'tile_border_color'  => ['type' => 'color',  'label' => 'Tile Border Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'tile_border_style'  => ['type' => 'select', 'label' => 'Tile Border Style', 'section' => 'style', 'options' => ['solid' => 'Solid', 'dashed' => 'Dashed', 'dotted' => 'Dotted', 'none' => 'None'], 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — title typography ──────────────────────── */
+            'title_color'     => ['type' => 'color',  'label' => 'Title Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'title_size'      => ['type' => 'number', 'label' => 'Title Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 28, 'step' => 1, 'applies_to' => $tile_layouts],
+            'title_weight'    => ['type' => 'select', 'label' => 'Title Weight', 'section' => 'style', 'options' => ['300' => 'Light', '400' => 'Normal', '500' => 'Medium', '600' => 'Semi-bold', '700' => 'Bold'], 'applies_to' => $tile_layouts],
+            'title_transform' => ['type' => 'select', 'label' => 'Title Transform', 'section' => 'style', 'options' => ['none' => 'None', 'uppercase' => 'UPPERCASE', 'lowercase' => 'lowercase', 'capitalize' => 'Capitalize'], 'applies_to' => $tile_layouts],
+            'title_align'     => ['type' => 'select', 'label' => 'Title Align', 'section' => 'style', 'options' => ['left' => 'Left', 'center' => 'Center', 'right' => 'Right'], 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — caption typography ────────────────────── */
+            'caption_color' => ['type' => 'color',  'label' => 'Caption Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'caption_size'  => ['type' => 'number', 'label' => 'Caption Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — play button ───────────────────────────── */
+            'play_button_color'    => ['type' => 'color',  'label' => 'Play Button Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'play_button_bg_color' => ['type' => 'color',  'label' => 'Play Button Background', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'play_button_size'     => ['type' => 'number', 'label' => 'Play Button Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — overlay tile gradient strength ────────── */
+            'overlay_gradient_strength' => ['type' => 'number', 'label' => 'Overlay Gradient Strength (0-100)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_style' => 'overlay'], 'help' => 'Alpha of the bottom gradient stop on the overlay tile style.'],
+
+            /* ── 3.7.0: Behavior ──────────────────────────────────────── */
+            'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'behavior', 'min' => 50, 'max' => 800, 'step' => 10, 'help' => 'Global tile / thumb / title transition speed.'],
+
+            /* ── 3.7.0: Advanced — raw CSS var overrides ──────────────── */
+            'css_var_bg'         => ['type' => 'color', 'label' => 'Override: Tile Background (--avg-bg)', 'section' => 'advanced', 'help' => 'Theme-level default. Style tab Tile Background Color overrides this.'],
+            'css_var_bg_hover'   => ['type' => 'color', 'label' => 'Override: Tile Hover Background (--avg-bg-hover)', 'section' => 'advanced', 'help' => 'Theme-level default. Style tab Tile Hover Background overrides this.'],
+            'css_var_text'       => ['type' => 'color', 'label' => 'Override: Text Color (--avg-text)', 'section' => 'advanced'],
+            'css_var_text_muted' => ['type' => 'color', 'label' => 'Override: Muted Text (--avg-text-muted)', 'section' => 'advanced'],
+            'css_var_border'     => ['type' => 'color', 'label' => 'Override: Border Color (--avg-border)', 'section' => 'advanced'],
+            'css_var_overlay'    => ['type' => 'color', 'label' => 'Override: Overlay (--avg-overlay)', 'section' => 'advanced'],
+            'css_var_play_bg'    => ['type' => 'color', 'label' => 'Override: Play Button BG (--avg-play-bg)', 'section' => 'advanced'],
+            'css_var_play_color' => ['type' => 'color', 'label' => 'Override: Play Icon Color (--avg-play-color)', 'section' => 'advanced'],
+
+            /* ── 3.7.0: Advanced — custom CSS ─────────────────────────── */
+            'custom_css' => ['type' => 'textarea', 'label' => 'Custom CSS', 'section' => 'advanced', 'help' => 'Use [data-avg-uid="..."] or #avs-XXXX to scope rules to this gallery (UID is shown on the wrapper in view-source). Note: redefining a CSS variable on the wrapper requires !important to beat inline styles; targeting child elements does not. Also: the "Fade Others" hover effect requires a hover-capable pointer and is a no-op on touch devices.'],
         ];
     }
 
@@ -456,6 +550,7 @@ class Anchor_Gallery_Module {
     public function register_cpt() {
         $this->migrate_cpt_slug();
         $this->migrate_legacy_data();
+        $this->migrate_title_position_v37();
 
         register_post_type(self::CPT, [
             'labels' => [
@@ -498,6 +593,37 @@ class Anchor_Gallery_Module {
         }
 
         update_option('avg_cpt_migrated', 1, false);
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       3.7.0 — One-shot show_title → title_position migration
+       ══════════════════════════════════════════════════════════ */
+
+    private function migrate_title_position_v37() {
+        if (get_option('anchor_gallery_title_position_migrated_v37')) return;
+
+        $posts = get_posts([
+            'post_type'        => [self::CPT, self::OLD_CPT],
+            'post_status'      => 'any',
+            'posts_per_page'   => -1,
+            'fields'           => 'ids',
+            'no_found_rows'    => true,
+            'suppress_filters' => true,
+        ]);
+
+        foreach ($posts as $pid) {
+            $existing_pos = get_post_meta($pid, 'avg_title_position', true);
+            if ($existing_pos !== '' && $existing_pos !== false) {
+                // Already set — never overwrite.
+                continue;
+            }
+            $show_title_raw = get_post_meta($pid, 'avg_show_title', true);
+            $is_truthy = ($show_title_raw === '1' || $show_title_raw === 1 || $show_title_raw === true);
+            $new_pos = $is_truthy ? 'below' : 'hidden';
+            update_post_meta($pid, 'avg_title_position', $new_pos);
+        }
+
+        update_option('anchor_gallery_title_position_migrated_v37', 1, false);
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -1031,14 +1157,33 @@ class Anchor_Gallery_Module {
             if ($def['type'] === 'checkbox') {
                 $val = isset($_POST[$meta_key]) ? '1' : '0';
             } elseif ($def['type'] === 'number') {
-                $val = isset($_POST[$meta_key]) ? intval($_POST[$meta_key]) : $this->default_settings[$key];
+                $val = isset($_POST[$meta_key]) ? intval($_POST[$meta_key]) : ($this->default_settings[$key] ?? 0);
                 if (isset($def['min'])) $val = max($def['min'], $val);
                 if (isset($def['max'])) $val = min($def['max'], $val);
             } elseif ($def['type'] === 'select') {
-                $val = isset($_POST[$meta_key]) ? sanitize_text_field($_POST[$meta_key]) : $this->default_settings[$key];
+                $val = isset($_POST[$meta_key]) ? sanitize_text_field($_POST[$meta_key]) : ($this->default_settings[$key] ?? '');
                 if (isset($def['options']) && !array_key_exists($val, $def['options'])) {
-                    $val = $this->default_settings[$key];
+                    $val = $this->default_settings[$key] ?? '';
                 }
+            } elseif ($def['type'] === 'color') {
+                $raw = isset($_POST[$meta_key]) ? trim((string) wp_unslash($_POST[$meta_key])) : '';
+                if ($raw === '') {
+                    $val = '';
+                } elseif (preg_match('/^#([0-9a-fA-F]{3}){1,2}$/', $raw)) {
+                    $val = $raw;
+                } elseif (preg_match('/^rgba?\(\s*[\d.\s,%]+\s*\)$/', $raw)) {
+                    $val = $raw;
+                } else {
+                    $val = '';
+                }
+            } elseif ($def['type'] === 'textarea') {
+                $raw = isset($_POST[$meta_key]) ? (string) wp_unslash($_POST[$meta_key]) : '';
+                // Strip <script>...</script> blocks and any closing </style> to prevent breakouts.
+                $raw = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $raw);
+                $raw = preg_replace('#</style\s*>#i', '', $raw);
+                // Cap at 10 KB.
+                if (strlen($raw) > 10240) $raw = substr($raw, 0, 10240);
+                $val = $raw;
             } else {
                 $val = isset($_POST[$meta_key]) ? sanitize_text_field($_POST[$meta_key]) : '';
             }
@@ -1085,6 +1230,8 @@ class Anchor_Gallery_Module {
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT) {
             wp_enqueue_media();
+            wp_enqueue_style('wp-color-picker');
+            wp_enqueue_script('wp-color-picker');
 
             $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-gallery/assets/';
             $ver = filemtime($base_dir . 'admin.js');
@@ -1095,7 +1242,7 @@ class Anchor_Gallery_Module {
 
             // Admin
             wp_enqueue_style('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.css'), [], $ver);
-            wp_enqueue_script('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.js'), ['jquery'], $ver, true);
+            wp_enqueue_script('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.js'), ['jquery', 'wp-color-picker'], $ver, true);
             wp_localize_script('anchor-video-gallery-admin', 'AVG', [
                 'ajaxUrl'        => admin_url('admin-ajax.php'),
                 'nonce'          => wp_create_nonce('avg_preview'),
@@ -1385,6 +1532,130 @@ class Anchor_Gallery_Module {
     }
 
     /* ══════════════════════════════════════════════════════════
+       Frontend Rendering: Shared Helpers (3.7.0)
+       ══════════════════════════════════════════════════════════ */
+
+    /**
+     * Build the 3.7.0 Style-tab + Advanced CSS-var overrides.
+     *
+     * Returns an array of "--avg-foo: value" strings. Returns an empty array
+     * when no relevant settings are present, so callers can safely
+     * array_merge() without affecting untouched galleries.
+     */
+    private function build_v37_style_vars(array $settings): array {
+        $vars = [];
+
+        // transition_duration_ms wins if set; otherwise hover_duration_ms; otherwise CSS default.
+        $transition_ms = intval($settings['transition_duration_ms'] ?? 0);
+        if ($transition_ms <= 0) {
+            $transition_ms = intval($settings['hover_duration_ms'] ?? 0);
+        }
+        if ($transition_ms > 0) {
+            $vars[] = '--avg-transition: ' . $transition_ms . 'ms';
+        }
+
+        // Tile background — custom mode emits the var; transparent mode is handled by class.
+        if (($settings['tile_bg_mode'] ?? 'theme') === 'custom' && !empty($settings['tile_bg_color'])) {
+            $vars[] = '--avg-tile-bg: ' . sanitize_text_field($settings['tile_bg_color']);
+        }
+        if (!empty($settings['tile_hover_bg_color'])) {
+            $vars[] = '--avg-tile-hover-bg: ' . sanitize_text_field($settings['tile_hover_bg_color']);
+        }
+
+        // Tile box
+        if (intval($settings['tile_padding'] ?? 0) > 0) {
+            $vars[] = '--avg-tile-padding: ' . intval($settings['tile_padding']) . 'px';
+        }
+        if (intval($settings['tile_border_width'] ?? 0) > 0) {
+            $vars[] = '--avg-tile-border-width: ' . intval($settings['tile_border_width']) . 'px';
+        }
+        if (!empty($settings['tile_border_color'])) {
+            $vars[] = '--avg-tile-border-color: ' . sanitize_text_field($settings['tile_border_color']);
+        }
+        if (!empty($settings['tile_border_style'])) {
+            $vars[] = '--avg-tile-border-style: ' . sanitize_text_field($settings['tile_border_style']);
+        }
+
+        // Title typography
+        if (!empty($settings['title_color'])) {
+            $vars[] = '--avg-title-color: ' . sanitize_text_field($settings['title_color']);
+        }
+        if (intval($settings['title_size'] ?? 0) > 0) {
+            $vars[] = '--avg-title-size: ' . intval($settings['title_size']) . 'px';
+        }
+        if (!empty($settings['title_weight'])) {
+            $vars[] = '--avg-title-weight: ' . sanitize_text_field($settings['title_weight']);
+        }
+        if (!empty($settings['title_transform']) && $settings['title_transform'] !== 'none') {
+            $vars[] = '--avg-title-transform: ' . sanitize_text_field($settings['title_transform']);
+        }
+        if (!empty($settings['title_align'])) {
+            $vars[] = '--avg-title-align: ' . sanitize_text_field($settings['title_align']);
+        }
+
+        // Caption typography
+        if (!empty($settings['caption_color'])) {
+            $vars[] = '--avg-caption-color: ' . sanitize_text_field($settings['caption_color']);
+        }
+        if (intval($settings['caption_size'] ?? 0) > 0) {
+            $vars[] = '--avg-caption-size: ' . intval($settings['caption_size']) . 'px';
+        }
+
+        // Play button — note: the CSS var for icon color is --avg-play-icon-color (renamed from --avg-play-button-color in Task 4)
+        if (!empty($settings['play_button_color'])) {
+            $vars[] = '--avg-play-icon-color: ' . sanitize_text_field($settings['play_button_color']);
+        }
+        if (!empty($settings['play_button_bg_color'])) {
+            $vars[] = '--avg-play-button-bg: ' . sanitize_text_field($settings['play_button_bg_color']);
+        }
+        if (intval($settings['play_button_size'] ?? 0) > 0) {
+            $vars[] = '--avg-play-size: ' . intval($settings['play_button_size']) . 'px';
+        }
+
+        // Overlay gradient strength (only meaningful with overlay tile style)
+        if (isset($settings['overlay_gradient_strength']) && ($settings['tile_style'] ?? '') === 'overlay') {
+            $alpha = max(0, min(100, intval($settings['overlay_gradient_strength']))) / 100;
+            $vars[] = '--avg-overlay-strength: ' . $alpha;
+        }
+
+        /* 3.7.0 — Advanced raw CSS var overrides (emitted last so they win over friendly controls on duplicate vars) */
+        $adv_map = [
+            'css_var_bg'         => '--avg-bg',
+            'css_var_bg_hover'   => '--avg-bg-hover',
+            'css_var_text'       => '--avg-text',
+            'css_var_text_muted' => '--avg-text-muted',
+            'css_var_border'     => '--avg-border',
+            'css_var_overlay'    => '--avg-overlay',
+            'css_var_play_bg'    => '--avg-play-bg',
+            'css_var_play_color' => '--avg-play-color',
+        ];
+        foreach ($adv_map as $setting_key => $var_name) {
+            if (!empty($settings[$setting_key])) {
+                $vars[] = $var_name . ': ' . sanitize_text_field($settings[$setting_key]);
+            }
+        }
+
+        return $vars;
+    }
+
+    /**
+     * Emit the per-gallery Custom CSS <style> block.
+     *
+     * Returns the HTML string for the <style> tag, or empty string when the
+     * gallery has no custom_css set. Defensive re-strip handles meta set
+     * programmatically (the editor sanitizer already strips these).
+     */
+    private function emit_custom_css_block(string $uid, array $settings): string {
+        $custom_css = isset($settings['custom_css']) ? (string) $settings['custom_css'] : '';
+        $custom_css = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $custom_css);
+        $custom_css = preg_replace('#</style\s*>#i', '', $custom_css);
+        if (trim($custom_css) === '') {
+            return '';
+        }
+        return '<style data-avg-uid="' . esc_attr($uid) . '">' . $custom_css . '</style>';
+    }
+
+    /* ══════════════════════════════════════════════════════════
        Frontend Rendering: Standard Layouts
        ══════════════════════════════════════════════════════════ */
 
@@ -1398,6 +1669,16 @@ class Anchor_Gallery_Module {
             'avg-hover-' . $settings['hover_effect'],
             'avg-play-' . $settings['play_button_style'],
         ];
+
+        // 3.7.0 — hover intensity modifier class
+        $hover_intensity = $settings['hover_intensity'] ?? 'normal';
+        if (in_array($hover_intensity, ['subtle', 'strong'], true)) {
+            $classes[] = 'avg-hover-' . $hover_intensity;
+        }
+        // 3.7.0 — transparent tile background mode
+        if (($settings['tile_bg_mode'] ?? 'theme') === 'transparent') {
+            $classes[] = 'avg-tile-bg-transparent';
+        }
 
         if (!empty($settings['equal_height'])) {
             $classes[] = 'avg-equal-height';
@@ -1481,6 +1762,9 @@ class Anchor_Gallery_Module {
             $classes[] = 'avg-has-max-height';
         }
 
+        /* 3.7.0 — Style-tab visual overrides + Advanced raw CSS var overrides */
+        $style_vars = array_merge($style_vars, $this->build_v37_style_vars($settings));
+
         $shadow = !empty($settings['tile_shadow']) ? $settings['tile_shadow'] : 'soft';
         $classes[] = 'avg-shadow-' . sanitize_html_class($shadow);
 
@@ -1510,9 +1794,11 @@ class Anchor_Gallery_Module {
         $eager_count = max(0, intval($settings['eager_load_count'] ?? 4));
 
         ob_start();
+        echo $this->emit_custom_css_block($uid, $settings);
         ?>
         <div class="<?php echo esc_attr(implode(' ', $classes)); ?>"
              id="<?php echo esc_attr($uid); ?>"
+             data-avg-uid="<?php echo esc_attr($uid); ?>"
              <?php foreach ($data_attrs as $key => $val): ?>
                 <?php echo esc_attr($key); ?>="<?php echo esc_attr($val); ?>"
              <?php endforeach; ?>
@@ -1620,10 +1906,12 @@ class Anchor_Gallery_Module {
                             <?php endif; ?>
                         </div>
                         <?php
+                        // 3.7.0: title_position is the single source of truth for title visibility.
+                        // show_title meta is deprecated; ignore it in render.
                         $show_meta_below = false;
                         if ($title_position === 'below' && !empty($video['label'])) {
                             $show_meta_below = true;
-                        } elseif ($title_position === 'hidden' && ($settings['show_title'] || $settings['show_channel'])) {
+                        } elseif ($title_position === 'hidden' && !empty($settings['show_channel'])) {
                             $show_meta_below = true;
                         }
                         ?>
@@ -1631,19 +1919,14 @@ class Anchor_Gallery_Module {
                         <div class="avg-meta">
                             <?php if ($title_position === 'below'): ?>
                             <span class="avg-title"><?php echo esc_html($video['label']); ?></span>
-                            <?php else: ?>
-                                <?php if ($settings['show_title']): ?>
-                                <span class="avg-title"><?php echo esc_html($video['label']); ?></span>
-                                <?php endif; ?>
-                                <?php if ($settings['show_channel'] && !empty($video['channel'])): ?>
-                                <span class="avg-channel"><?php echo esc_html($video['channel']); ?></span>
-                                <?php endif; ?>
+                            <?php elseif ($settings['show_channel'] && !empty($video['channel'])): ?>
+                            <span class="avg-channel"><?php echo esc_html($video['channel']); ?></span>
                             <?php endif; ?>
-                            <?php if ( ! empty( $video['caption'] ) ) : ?>
+                            <?php if ( ! empty( $video['caption'] ) && ! empty( $settings['show_caption'] ) ) : ?>
                             <span class="avg-caption-wrap"><span class="avg-caption"><?php echo wp_kses_post( $video['caption'] ); ?></span></span>
                             <?php endif; ?>
                         </div>
-                        <?php elseif ( ! empty( $video['caption'] ) ) : ?>
+                        <?php elseif ( ! empty( $video['caption'] ) && ! empty( $settings['show_caption'] ) ) : ?>
                         <div class="avg-meta avg-meta-caption-only">
                             <span class="avg-caption-wrap"><span class="avg-caption"><?php echo wp_kses_post( $video['caption'] ); ?></span></span>
                         </div>
@@ -1780,8 +2063,11 @@ class Anchor_Gallery_Module {
         $shell_classes = 'avg-filterable-shell avg-filters--' . $btn_style . ' avg-filter-bar--' . $btn_style;
 
         ob_start();
+        // Note: inner render_output() emits the Custom CSS <style> block and
+        // 3.7.0 style vars on its own wrapper, so we only add data-avg-uid here
+        // for consistency / JS lookups.
         ?>
-        <div class="<?php echo esc_attr($shell_classes); ?>" data-filter-default="<?php echo esc_attr($has_default ? $default_slug : '*'); ?>">
+        <div class="<?php echo esc_attr($shell_classes); ?>" data-avg-uid="<?php echo esc_attr($uid); ?>" data-filter-default="<?php echo esc_attr($has_default ? $default_slug : '*'); ?>">
             <?php if ( ! empty( $cats ) ) : ?>
                 <div class="avg-filter-bar avg-filters avg-filters--<?php echo esc_attr($btn_style); ?> avg-filter-bar--<?php echo esc_attr($btn_style); ?>" role="tablist">
                     <button type="button" class="avg-filter<?php echo $has_default ? '' : ' is-active'; ?>" data-filter="*"><?php echo esc_html($all_label); ?></button>
@@ -1828,6 +2114,9 @@ class Anchor_Gallery_Module {
             '--avg-thumb-size: ' . $thumb_size,
         ];
 
+        // 3.7.0 — merge Style-tab + Advanced CSS-var overrides.
+        $style_vars = array_merge($style_vars, $this->build_v37_style_vars($settings));
+
         $data_attrs = [
             'data-layout'   => 'gallery',
             'data-popup'    => $settings['popup_style'],
@@ -1851,9 +2140,11 @@ class Anchor_Gallery_Module {
         $first_img  = $first_type === 'image';
 
         ob_start();
+        echo $this->emit_custom_css_block($uid, $settings);
         ?>
         <div class="<?php echo esc_attr(implode(' ', $classes)); ?>"
              id="<?php echo esc_attr($uid); ?>"
+             data-avg-uid="<?php echo esc_attr($uid); ?>"
              <?php foreach ($data_attrs as $key => $val): ?>
                 <?php echo esc_attr($key); ?>="<?php echo esc_attr($val); ?>"
              <?php endforeach; ?>
@@ -1889,7 +2180,7 @@ class Anchor_Gallery_Module {
                     <span class="avg-duration"><?php echo esc_html($first['duration']); ?></span>
                     <?php endif; ?>
                 </div>
-                <?php if ($settings['show_title'] && !empty($first['label'])): ?>
+                <?php if ((($settings['title_position'] ?? 'below') !== 'hidden') && !empty($first['label'])): ?>
                 <div class="avg-gallery-featured-title"><?php echo esc_html($first['label']); ?></div>
                 <?php endif; ?>
             </div>
@@ -1980,12 +2271,17 @@ class Anchor_Gallery_Module {
             '--avg-object-fit: ' . esc_attr($settings['object_fit']),
         ];
 
+        // 3.7.0 — merge Style-tab + Advanced CSS-var overrides.
+        $style_vars = array_merge($style_vars, $this->build_v37_style_vars($settings));
+
         $extra_class = $grayscale ? ' avg-marquee-grayscale' : '';
 
         ob_start();
+        echo $this->emit_custom_css_block($uid, $settings);
         ?>
         <div class="anchor-video-gallery avg-layout-logo-carousel<?php echo esc_attr($extra_class); ?>"
              id="<?php echo esc_attr($uid); ?>"
+             data-avg-uid="<?php echo esc_attr($uid); ?>"
              data-layout="logo_carousel"
              style="<?php echo esc_attr(implode('; ', $style_vars)); ?>">
 

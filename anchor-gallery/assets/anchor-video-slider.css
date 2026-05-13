@@ -600,9 +600,13 @@
   grid-template-columns: repeat(auto-fill, var(--avg-grid-min, 160px));
 }
 
-/* 3.7.x — Flex mode: simpler/more reliable than grid for "wrap with min size +
-   centered remainder". Items are fixed-width and wrap; justify-content places
-   them inside the row; align-items aligns them vertically within their row. */
+/* 3.7.x — Flex mode: responsive wrap that respects Desktop/Tablet/Mobile
+   columns AS A TARGET, with --avg-grid-min as a floor.
+   width: max(MIN, 1/cols-of-container)
+     → wide screens: items take 1/N of width (respects columns_desktop)
+     → narrow screens: items hit MIN floor and wrap to fewer per row
+     → partial last row: items stay their natural width and justify-content
+       centers them (the whole point of flex over grid for centering). */
 .avg-layout-grid.avg-grid-flex .avg-track {
   display: flex;
   flex-wrap: wrap;
@@ -610,11 +614,31 @@
   justify-content: var(--avg-grid-justify, center);
   align-items: var(--avg-align-items, center);
   align-content: var(--avg-align-content, flex-start);
+  width: 100%;
 }
 .avg-layout-grid.avg-grid-flex .avg-tile {
   flex: 0 0 auto;
-  width: var(--avg-grid-min, 160px);
+  width: max(
+    var(--avg-grid-min, 160px),
+    calc((100% - var(--avg-gap) * (var(--avg-cols-desktop, 4) - 1)) / var(--avg-cols-desktop, 4))
+  );
   max-width: 100%;
+}
+@media (max-width: 1024px) {
+  .avg-layout-grid.avg-grid-flex .avg-tile {
+    width: max(
+      var(--avg-grid-min, 160px),
+      calc((100% - var(--avg-gap) * (var(--avg-cols-tablet, 3) - 1)) / var(--avg-cols-tablet, 3))
+    );
+  }
+}
+@media (max-width: 640px) {
+  .avg-layout-grid.avg-grid-flex .avg-tile {
+    width: max(
+      var(--avg-grid-min, 160px),
+      calc((100% - var(--avg-gap) * (var(--avg-cols-mobile, 1) - 1)) / var(--avg-cols-mobile, 1))
+    );
+  }
 }
 
 /* ==========================================================================

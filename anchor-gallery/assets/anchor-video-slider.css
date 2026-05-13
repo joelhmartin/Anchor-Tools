@@ -22,6 +22,9 @@
 
   position: relative;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* 3.7.x — wrapper bg + padding (transparent / 0 by default; no impact unless set) */
+  background: var(--avg-wrapper-bg, transparent);
+  padding: var(--avg-wrapper-padding, 0);
 }
 
 /* Theme: Light */
@@ -109,6 +112,15 @@
   display: block;
   object-fit: var(--avg-object-fit, cover);
   object-position: center;
+}
+
+/* 3.7.x — Natural aspect ratio mode: the img defines the height, not aspect-ratio.
+   The absolutely-positioned default would collapse to 0px when aspect-ratio: auto. */
+.avg-aspect-auto .avg-thumb { aspect-ratio: auto; min-height: 0; }
+.avg-aspect-auto .avg-thumb-img {
+  position: static;
+  width: 100%;
+  height: auto;
 }
 
 .avg-meta {

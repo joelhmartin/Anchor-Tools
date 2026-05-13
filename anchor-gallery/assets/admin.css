@@ -87,12 +87,27 @@
 #avg_settings .avg-setting-row { margin: 0 0 4px; }
 #avg_settings .avg-setting-row label strong { font-size: 12px; }
 
-/* Preview metabox */
+/* Preview metabox — bg follows data-preview-bg toggle. Default = dark. */
 .avg-preview-wrap {
   background: #1d2327;
   padding: 16px;
   border-radius: 4px;
+  transition: background 150ms ease;
 }
+.avg-preview-wrap[data-preview-bg="dark"]    { background: #1d2327; }
+.avg-preview-wrap[data-preview-bg="light"]   { background: #ffffff; }
+.avg-preview-wrap[data-preview-bg="checker"] {
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #ddd 25%, transparent 25%),
+    linear-gradient(-45deg, #ddd 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #ddd 75%),
+    linear-gradient(-45deg, transparent 75%, #ddd 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+/* button active state */
+.avg-preview-bg-btn.is-active { background: #2271b1; color: #fff; border-color: #2271b1; }
 .avg-preview-content { min-height: 120px; }
 .avg-preview-note {
   margin: 12px 0 0;

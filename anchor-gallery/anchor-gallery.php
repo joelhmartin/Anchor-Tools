@@ -154,6 +154,8 @@ class Anchor_Gallery_Module {
         'hover_zoom_scale'   => 0,
         'masonry_thumb_min'  => 120,
         'css_var_thumb_empty_bg' => '',
+        'wrapper_bg'         => '',
+        'wrapper_padding'    => '',
     ];
 
     /**
@@ -444,6 +446,10 @@ class Anchor_Gallery_Module {
 
             /* ── 3.7.x: Advanced — thumb empty-state background ──────────── */
             'css_var_thumb_empty_bg' => ['type' => 'text', 'label' => 'Override: Thumb Empty-State BG', 'section' => 'advanced', 'help' => 'CSS background shorthand for the placeholder behind images (e.g. "#000", "transparent", or a gradient).'],
+
+            /* ── 3.7.x: Layout — gallery wrapper background + padding ────── */
+            'wrapper_bg'      => ['type' => 'color',  'label' => 'Gallery Background', 'section' => 'layout', 'priority' => 5, 'help' => 'Background color BEHIND all tiles. Empty = transparent (page color shows through).'],
+            'wrapper_padding' => ['type' => 'text',   'label' => 'Gallery Padding', 'section' => 'layout', 'priority' => 6, 'help' => 'CSS padding around the whole gallery, inside the background. e.g. "24px" or "24px 16px". Empty = none.'],
         ];
     }
 
@@ -1186,7 +1192,15 @@ class Anchor_Gallery_Module {
 
         $preview_videos = $this->hydrate_video_metadata( $preview_videos, $settings['thumb_size'] ?? 'maxres' );
         ?>
-        <div class="avg-preview-wrap">
+        <div class="avg-preview-bg-toolbar" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:#646970;">
+            <span>Preview bg:</span>
+            <button type="button" class="button button-small avg-preview-bg-btn" data-bg="dark">Dark</button>
+            <button type="button" class="button button-small avg-preview-bg-btn" data-bg="light">Light</button>
+            <button type="button" class="button button-small avg-preview-bg-btn" data-bg="checker">Checker</button>
+            <button type="button" class="button button-small avg-preview-bg-btn" data-bg="custom">Custom</button>
+            <input type="color" class="avg-preview-bg-color" value="#ffffff" style="width:24px;height:24px;padding:0;border:none;background:none;display:none;" />
+        </div>
+        <div class="avg-preview-wrap" data-preview-bg="dark">
             <div class="avg-preview-content">
                 <?php echo $this->render_dispatch('avg-preview-init', $preview_videos, $settings); ?>
             </div>
@@ -1822,6 +1836,14 @@ class Anchor_Gallery_Module {
             $vars[] = '--avg-thumb-empty-bg: ' . sanitize_text_field($settings['css_var_thumb_empty_bg']);
         }
 
+        // 3.7.x — wrapper background + padding (frontend gallery bg, not admin preview).
+        if (!empty($settings['wrapper_bg'])) {
+            $vars[] = '--avg-wrapper-bg: ' . sanitize_text_field($settings['wrapper_bg']);
+        }
+        if (!empty($settings['wrapper_padding'])) {
+            $vars[] = '--avg-wrapper-padding: ' . sanitize_text_field($settings['wrapper_padding']);
+        }
+
         // Tile box
         if (intval($settings['tile_padding'] ?? 0) > 0) {
             $vars[] = '--avg-tile-padding: ' . intval($settings['tile_padding']) . 'px';
@@ -1946,6 +1968,10 @@ class Anchor_Gallery_Module {
         // 3.7.x — title line-clamp disabled (unlimited)
         if (isset($settings['title_line_clamp']) && intval($settings['title_line_clamp']) === 0) {
             $classes[] = 'avg-title-no-clamp';
+        }
+        // 3.7.x — natural aspect ratio marker class (lets the <img> define height)
+        if (!empty($settings['thumb_aspect_auto'])) {
+            $classes[] = 'avg-aspect-auto';
         }
 
         if (!empty($settings['equal_height'])) {

@@ -22,6 +22,9 @@
 
   position: relative;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* 3.7.x — wrapper bg + padding (transparent / 0 by default; no impact unless set) */
+  background: var(--avg-wrapper-bg, transparent);
+  padding: var(--avg-wrapper-padding, 0);
 }
 
 /* Theme: Light */
@@ -52,6 +55,8 @@
 
 /* Transparent tile background mode */
 .avg-tile-bg-transparent { --avg-tile-bg: transparent; --avg-tile-hover-bg: transparent; }
+.avg-tile-bg-transparent .avg-thumb { background: transparent; }
+.avg-tile-bg-transparent .avg-tile-inner { box-shadow: none; }
 
 /* Global transition duration */
 .anchor-video-gallery { --avg-transition: 200ms; }
@@ -86,7 +91,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  transition: transform var(--avg-transition, 250ms) ease, box-shadow var(--avg-transition, 250ms) ease;
 }
 
 .avg-tile:hover .avg-tile-inner { background: var(--avg-tile-hover-bg, var(--avg-tile-bg, var(--avg-bg))); }
@@ -95,7 +100,7 @@
   position: relative;
   width: 100%;
   aspect-ratio: var(--avg-thumb-ratio, 16 / 9);
-  background: linear-gradient(135deg, var(--avg-bg), var(--avg-border));
+  background: var(--avg-thumb-empty-bg, linear-gradient(135deg, var(--avg-bg), var(--avg-border)));
   overflow: hidden;
 }
 
@@ -109,11 +114,20 @@
   object-position: center;
 }
 
+/* 3.7.x — Natural aspect ratio mode: the img defines the height, not aspect-ratio.
+   The absolutely-positioned default would collapse to 0px when aspect-ratio: auto. */
+.avg-aspect-auto .avg-thumb { aspect-ratio: auto; min-height: 0; }
+.avg-aspect-auto .avg-thumb-img {
+  position: static;
+  width: 100%;
+  height: auto;
+}
+
 .avg-meta {
-  padding: 12px 14px;
+  padding: var(--avg-meta-padding, 12px 14px);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--avg-meta-gap, 4px);
 }
 
 .avg-title {
@@ -122,12 +136,14 @@
   color: var(--avg-title-color, var(--avg-text));
   text-transform: var(--avg-title-transform, none);
   text-align: var(--avg-title-align, left);
-  line-height: 1.4;
+  line-height: var(--avg-title-line-height, 1.4);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: var(--avg-title-line-clamp, 2);
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* Disable line-clamp when title_line_clamp = 0 (unlimited lines). */
+.avg-title-no-clamp .avg-title { display: block; -webkit-line-clamp: none; overflow: visible; }
 
 .avg-caption {
   font-size: var(--avg-caption-size, 12px);
@@ -135,20 +151,20 @@
 }
 
 .avg-channel {
-  font-size: 12px;
-  color: var(--avg-text-muted);
+  font-size: var(--avg-channel-size, 12px);
+  color: var(--avg-channel-color, var(--avg-text-muted));
 }
 
 .avg-duration {
   position: absolute;
-  bottom: 8px;
-  right: 8px;
-  background: rgba(0, 0, 0, 0.8);
-  color: #fff;
-  font-size: 12px;
+  bottom: var(--avg-duration-offset, 8px);
+  right: var(--avg-duration-offset, 8px);
+  background: var(--avg-duration-bg, rgba(0, 0, 0, 0.8));
+  color: var(--avg-duration-color, #fff);
+  font-size: var(--avg-duration-size, 12px);
   font-weight: 500;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: var(--avg-duration-padding, 2px 6px);
+  border-radius: var(--avg-duration-radius, 4px);
   letter-spacing: 0.02em;
 }
 
@@ -176,7 +192,7 @@
 .avg-play svg {
   width:  var(--avg-play-size, 60px);
   height: var(--avg-play-size, 60px);
-  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+  filter: var(--avg-play-shadow, drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4)));
 }
 
 /* Play style: Circle */
@@ -212,24 +228,24 @@
 /* Hover: Lift */
 .avg-hover-lift .avg-tile:hover .avg-tile-inner,
 .avg-hover-lift .avg-tile:focus .avg-tile-inner {
-  transform: translateY(-6px);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
+  transform: translateY(var(--avg-hover-lift-distance, -6px));
+  box-shadow: var(--avg-hover-lift-shadow, 0 12px 28px rgba(0, 0, 0, 0.25));
 }
 
 /* Hover: Zoom */
 .avg-hover-zoom .avg-tile:hover .avg-thumb,
 .avg-hover-zoom .avg-tile:focus .avg-thumb {
-  transform: scale(1.05);
+  transform: scale(var(--avg-hover-zoom-scale, 1.05));
 }
 
 .avg-hover-zoom .avg-thumb {
-  transition: transform 0.3s ease;
+  transition: transform var(--avg-transition, 300ms) ease;
 }
 
 /* Hover: Glow */
 .avg-hover-glow .avg-tile:hover .avg-tile-inner,
 .avg-hover-glow .avg-tile:focus .avg-tile-inner {
-  box-shadow: 0 0 0 3px var(--avg-border), 0 8px 25px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--avg-hover-glow-shadow, 0 0 0 3px var(--avg-border), 0 8px 25px rgba(0, 0, 0, 0.3));
 }
 
 /* ── 3.7.0 — Additional hover effects ─────────────────────── */
@@ -305,25 +321,28 @@
   color: rgba(255,255,255,0.75);
 }
 
-/* Style: Cinematic */
+/* Style: Cinematic
+   All defaults are wrapped in vars so user controls (tile_bg_color,
+   title_color, thumb_aspect_ratio, etc.) override them without resorting
+   to Custom CSS. */
 .avg-tiles-cinematic .avg-thumb {
-  aspect-ratio: 2.35 / 1;
+  aspect-ratio: var(--avg-thumb-ratio, 2.35 / 1);
 }
 
 .avg-tiles-cinematic .avg-tile-inner {
-  background: #000;
+  background: var(--avg-tile-bg, #000);
 }
 
 .avg-tiles-cinematic .avg-meta {
-  background: #000;
+  background: var(--avg-tile-bg, #000);
 }
 
 .avg-tiles-cinematic .avg-title {
-  color: #fff;
+  color: var(--avg-title-color, #fff);
 }
 
 .avg-tiles-cinematic .avg-channel {
-  color: rgba(255,255,255,0.6);
+  color: var(--avg-channel-color, rgba(255,255,255,0.6));
 }
 
 /* ==========================================================================
@@ -426,20 +445,20 @@
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
+  width: var(--avg-nav-size, 44px);
+  height: var(--avg-nav-size, 44px);
   border: none;
-  border-radius: 50%;
-  background: var(--avg-play-bg);
-  color: var(--avg-play-color);
+  border-radius: var(--avg-nav-radius, 50%);
+  background: var(--avg-nav-bg, var(--avg-play-bg));
+  color: var(--avg-nav-color, var(--avg-play-color));
   cursor: pointer;
   z-index: 10;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-  transition: transform 0.15s, opacity 0.15s;
-  opacity: 0;
+  box-shadow: var(--avg-nav-shadow, 0 4px 12px rgba(0,0,0,0.2));
+  transition: transform var(--avg-transition, 150ms), opacity var(--avg-transition, 150ms);
+  opacity: var(--avg-nav-opacity-rest, 0);
 }
 
 .avg-layout-slider:hover .avg-nav,
@@ -478,10 +497,10 @@
 }
 
 .avg-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--avg-border);
+  width: var(--avg-dot-size, 10px);
+  height: var(--avg-dot-size, 10px);
+  border-radius: var(--avg-dot-radius, 50%);
+  background: var(--avg-dot-bg, var(--avg-border));
   border: none;
   cursor: pointer;
   padding: 0;
@@ -489,12 +508,12 @@
 }
 
 .avg-dot:hover {
-  background: var(--avg-text-muted);
+  background: var(--avg-dot-bg-hover, var(--avg-text-muted));
 }
 
 .avg-dot.active {
-  background: var(--avg-text);
-  transform: scale(1.2);
+  background: var(--avg-dot-bg-active, var(--avg-text));
+  transform: scale(var(--avg-dot-active-scale, 1.2));
 }
 
 /* ==========================================================================
@@ -520,9 +539,9 @@
 .avg-layout-carousel .avg-tile {
   flex: 0 0 auto;
   width: calc((100% - var(--avg-gap) * (var(--avg-cols-desktop, 3) - 1)) / var(--avg-cols-desktop, 3));
-  opacity: 0.5;
-  transform: scale(0.92);
-  transition: opacity 0.35s ease, transform 0.35s ease;
+  opacity: var(--avg-carousel-inactive-opacity, 0.5);
+  transform: scale(var(--avg-carousel-inactive-scale, 0.92));
+  transition: opacity var(--avg-transition, 350ms) ease, transform var(--avg-transition, 350ms) ease;
 }
 
 .avg-layout-carousel .avg-tile.active {
@@ -567,6 +586,24 @@
   }
 }
 
+/* 3.7.x — Auto-fit grid mode: items have a min width and wrap to next row on their own.
+   Wins over the fixed-column rules above on all breakpoints. */
+.avg-layout-grid.avg-grid-auto-fit .avg-track {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--avg-grid-min, 160px), 1fr));
+  justify-content: var(--avg-grid-justify, stretch);
+}
+@media (max-width: 1024px) {
+  .avg-layout-grid.avg-grid-auto-fit .avg-track {
+    grid-template-columns: repeat(auto-fit, minmax(var(--avg-grid-min, 160px), 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .avg-layout-grid.avg-grid-auto-fit .avg-track {
+    grid-template-columns: repeat(auto-fit, minmax(var(--avg-grid-min, 160px), 1fr));
+  }
+}
+
 /* ==========================================================================
    Layout: Masonry
    ========================================================================== */
@@ -583,7 +620,7 @@
 }
 
 .avg-layout-masonry .avg-thumb {
-  min-height: 120px;
+  min-height: var(--avg-masonry-thumb-min, 120px);
 }
 
 @media (max-width: 1024px) {
@@ -631,12 +668,12 @@
 }
 
 .avg-gallery-featured-title {
-  padding: 14px 18px;
-  font-size: 17px;
-  font-weight: 600;
-  line-height: 1.4;
-  color: var(--avg-text);
-  background: var(--avg-bg);
+  padding: var(--avg-featured-title-padding, 14px 18px);
+  font-size: var(--avg-featured-title-size, 17px);
+  font-weight: var(--avg-title-weight, 600);
+  line-height: var(--avg-title-line-height, 1.4);
+  color: var(--avg-title-color, var(--avg-text));
+  background: var(--avg-tile-bg, var(--avg-bg));
 }
 
 .avg-gallery-featured:hover .avg-play,

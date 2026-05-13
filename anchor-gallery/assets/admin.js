@@ -574,4 +574,48 @@
       });
   });
 
+  // Preview bg toolbar — toggles the data-preview-bg attribute on .avg-preview-wrap.
+  $(function() {
+      var $wrap = $('.avg-preview-wrap');
+      var $btns = $('.avg-preview-bg-btn');
+      var $color = $('.avg-preview-bg-color');
+      // Restore last choice from localStorage.
+      try {
+          var saved = localStorage.getItem('avgPreviewBg');
+          var savedColor = localStorage.getItem('avgPreviewBgColor');
+          if (saved) {
+              $wrap.attr('data-preview-bg', saved);
+              $btns.filter('[data-bg="' + saved + '"]').addClass('is-active');
+              if (saved === 'custom' && savedColor) {
+                  $color.val(savedColor).show();
+                  $wrap.css('background', savedColor);
+              }
+          } else {
+              $btns.filter('[data-bg="dark"]').addClass('is-active');
+          }
+      } catch (e) { /* localStorage unavailable */ }
+
+      $btns.on('click', function() {
+          var mode = $(this).data('bg');
+          $btns.removeClass('is-active');
+          $(this).addClass('is-active');
+          if (mode === 'custom') {
+              $color.show();
+              var c = $color.val();
+              $wrap.attr('data-preview-bg', 'custom').css('background', c);
+              try { localStorage.setItem('avgPreviewBg', 'custom'); localStorage.setItem('avgPreviewBgColor', c); } catch (e) {}
+          } else {
+              $color.hide();
+              $wrap.attr('data-preview-bg', mode).css('background', '');
+              try { localStorage.setItem('avgPreviewBg', mode); } catch (e) {}
+          }
+      });
+
+      $color.on('input change', function() {
+          var c = $(this).val();
+          $wrap.css('background', c);
+          try { localStorage.setItem('avgPreviewBgColor', c); } catch (e) {}
+      });
+  });
+
 })(jQuery);

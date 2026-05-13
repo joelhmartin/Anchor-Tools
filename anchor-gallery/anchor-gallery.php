@@ -124,6 +124,38 @@ class Anchor_Gallery_Module {
         'css_var_play_bg'    => '',
         'css_var_play_color' => '',
         'custom_css'         => '',
+        // 3.7.x — auto-fit grid + transparency + natural aspect
+        'grid_mode'          => 'fixed',
+        'grid_min_item_px'   => 160,
+        'grid_justify'       => 'stretch',
+        'tile_bg_alpha'      => 100,
+        'thumb_aspect_auto'  => false,
+        // 3.7.x — comprehensive control surface
+        'meta_padding'       => '',
+        'meta_gap'           => 0,
+        'title_line_clamp'   => 2,
+        'title_line_height'  => 0,
+        'channel_color'      => '',
+        'channel_size'       => 0,
+        'duration_bg_color'  => '',
+        'duration_color'     => '',
+        'duration_size'      => 0,
+        'duration_radius'    => 0,
+        'play_button_shadow' => true,
+        'nav_size'           => 0,
+        'nav_bg'             => '',
+        'nav_color'          => '',
+        'nav_radius'         => 0,
+        'nav_always_visible' => false,
+        'dot_size'           => 0,
+        'dot_color'          => '',
+        'dot_color_active'   => '',
+        'hover_lift_distance' => 0,
+        'hover_zoom_scale'   => 0,
+        'masonry_thumb_min'  => 120,
+        'css_var_thumb_empty_bg' => '',
+        'wrapper_bg'         => '',
+        'wrapper_padding'    => '',
     ];
 
     /**
@@ -190,7 +222,7 @@ class Anchor_Gallery_Module {
             'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4],
             'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'content', 'applies_to' => array_values(array_diff($core_layouts, ['thumbnail_gallery']))],
             'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
-            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'content', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts],
+            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'style', 'priority' => 5, 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts, 'help' => 'Set to Hidden to remove the title entirely.'],
             'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'section' => 'layout', 'applies_to' => array_values(array_diff($tile_layouts, ['bento']))],
             'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'applies_to' => $tile_layouts],
             'thumb_size' => ['type' => 'select', 'label' => 'Thumbnail Resolution', 'section' => 'advanced', 'options' => [
@@ -362,6 +394,62 @@ class Anchor_Gallery_Module {
 
             /* ── 3.7.0: Advanced — custom CSS ─────────────────────────── */
             'custom_css' => ['type' => 'textarea', 'label' => 'Custom CSS', 'section' => 'advanced', 'help' => 'Use [data-avg-uid="..."] or #avs-XXXX to scope rules to this gallery (UID is shown on the wrapper in view-source). Note: redefining a CSS variable on the wrapper requires !important to beat inline styles; targeting child elements does not. Also: the "Fade Others" hover effect requires a hover-capable pointer and is a no-op on touch devices.'],
+
+            /* ── 3.7.x: Layout — auto-fit grid (item min-width, auto wrap) ─ */
+            'grid_mode' => ['type' => 'select', 'label' => 'Grid Mode', 'section' => 'layout', 'priority' => 25, 'options' => ['fixed' => 'Fixed Columns', 'auto_fit' => 'Auto-fit (min width, auto wrap)'], 'applies_to' => ['grid'], 'help' => 'Auto-fit ignores the column-count settings and uses an item minimum width instead, wrapping to next row when items don\'t fit.'],
+            'grid_min_item_px' => ['type' => 'number', 'label' => 'Min Item Width (px)', 'section' => 'layout', 'priority' => 26, 'min' => 60, 'max' => 600, 'step' => 10, 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => 'auto_fit']],
+            'grid_justify' => ['type' => 'select', 'label' => 'Row Justify', 'section' => 'layout', 'priority' => 27, 'options' => ['stretch' => 'Stretch (fill row)', 'start' => 'Start (left)', 'center' => 'Center', 'end' => 'End (right)'], 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => 'auto_fit']],
+
+            /* ── 3.7.x: Style — tile background alpha (lets you get a transparent custom color) */
+            'tile_bg_alpha' => ['type' => 'number', 'label' => 'Tile Background Opacity (%)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_bg_mode' => 'custom'], 'help' => 'Applies an alpha channel to the Tile Background Color. 100 = opaque, 0 = fully transparent.'],
+
+            /* ── 3.7.x: Style — natural thumbnail aspect ratio ────────────── */
+            'thumb_aspect_auto' => ['type' => 'checkbox', 'label' => 'Use Natural Aspect Ratio', 'section' => 'style', 'applies_to' => $tile_layouts, 'help' => 'Lets the image set its own aspect ratio (good for logo grids with mixed image shapes). Overrides Thumbnail Aspect Ratio when checked.'],
+
+            /* ── 3.7.x: Style — meta area (the box below the image with title/caption/channel) ── */
+            'meta_padding'   => ['type' => 'text',   'label' => 'Meta Padding', 'section' => 'style', 'applies_to' => $tile_layouts, 'help' => 'CSS padding for the title/caption block (e.g. "12px 14px" or "0"). Empty = default.'],
+            'meta_gap'       => ['type' => 'number', 'label' => 'Meta Gap (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 1, 'applies_to' => $tile_layouts, 'help' => 'Space between title / caption / channel lines.'],
+            'title_line_clamp' => ['type' => 'number', 'label' => 'Title Max Lines (0 = unlimited)', 'section' => 'style', 'min' => 0, 'max' => 6, 'step' => 1, 'applies_to' => $tile_layouts],
+            'title_line_height' => ['type' => 'number', 'label' => 'Title Line Height (×, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 3, 'step' => 0.1, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.x: Style — channel ──────────────────────────────────── */
+            'channel_color' => ['type' => 'color', 'label' => 'Channel Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'channel_size'  => ['type' => 'number', 'label' => 'Channel Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.x: Style — duration badge ────────────────────────────── */
+            'duration_bg_color' => ['type' => 'color',  'label' => 'Duration Badge Background', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'duration_color'    => ['type' => 'color',  'label' => 'Duration Badge Text', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'duration_size'     => ['type' => 'number', 'label' => 'Duration Badge Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts],
+            'duration_radius'   => ['type' => 'number', 'label' => 'Duration Badge Radius (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.x: Style — play button extras ───────────────────────── */
+            'play_button_shadow' => ['type' => 'checkbox', 'label' => 'Play Button Drop Shadow', 'section' => 'style', 'applies_to' => $tile_layouts, 'help' => 'Uncheck for a flat play button with no drop shadow.'],
+
+            /* ── 3.7.x: Style — slider arrows (Nav) ──────────────────────── */
+            'nav_size'   => ['type' => 'number', 'label' => 'Arrow Button Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => ['slider','carousel','card_carousel']],
+            'nav_bg'     => ['type' => 'color',  'label' => 'Arrow Background', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel']],
+            'nav_color'  => ['type' => 'color',  'label' => 'Arrow Color', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel']],
+            'nav_radius' => ['type' => 'number', 'label' => 'Arrow Radius (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 48, 'step' => 1, 'applies_to' => ['slider','carousel','card_carousel']],
+            'nav_always_visible' => ['type' => 'checkbox', 'label' => 'Always Show Arrows', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel'], 'help' => 'By default arrows fade in on hover. Check to keep them visible.'],
+
+            /* ── 3.7.x: Style — pagination dots ──────────────────────────── */
+            'dot_size'         => ['type' => 'number', 'label' => 'Dot Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 24, 'step' => 1, 'applies_to' => ['slider','carousel','card_carousel']],
+            'dot_color'        => ['type' => 'color',  'label' => 'Dot Color (inactive)', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel']],
+            'dot_color_active' => ['type' => 'color',  'label' => 'Dot Color (active)', 'section' => 'style', 'applies_to' => ['slider','carousel','card_carousel']],
+
+            /* ── 3.7.x: Style — hover effect tuning (legacy effects only) ── */
+            'hover_lift_distance'  => ['type' => 'number', 'label' => 'Lift Hover Distance (px, 0=auto)', 'section' => 'style', 'min' => -40, 'max' => 0, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['hover_effect' => 'lift']],
+            'hover_zoom_scale'     => ['type' => 'number', 'label' => 'Zoom Hover Scale (×, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 2, 'step' => 0.05, 'applies_to' => $tile_layouts, 'depends_on' => ['hover_effect' => 'zoom']],
+
+            /* ── 3.7.x: Style — masonry thumb minimum height ─────────────── */
+            'masonry_thumb_min' => ['type' => 'number', 'label' => 'Masonry Thumb Min Height (px)', 'section' => 'style', 'min' => 40, 'max' => 600, 'step' => 10, 'applies_to' => ['masonry']],
+
+            /* ── 3.7.x: Advanced — thumb empty-state background ──────────── */
+            'css_var_thumb_empty_bg' => ['type' => 'text', 'label' => 'Override: Thumb Empty-State BG', 'section' => 'advanced', 'help' => 'CSS background shorthand for the placeholder behind images (e.g. "#000", "transparent", or a gradient).'],
+
+            /* ── 3.7.x: Layout — gallery wrapper background + padding ────── */
+            'wrapper_bg'      => ['type' => 'color',  'label' => 'Gallery Background', 'section' => 'layout', 'priority' => 5, 'help' => 'Background color BEHIND all tiles. Empty = transparent (page color shows through).'],
+            'wrapper_padding' => ['type' => 'text',   'label' => 'Gallery Padding', 'section' => 'layout', 'priority' => 6, 'help' => 'CSS padding around the whole gallery, inside the background. e.g. "24px" or "24px 16px". Empty = none.'],
         ];
     }
 
@@ -490,6 +578,36 @@ class Anchor_Gallery_Module {
                     'avg_layout'         => 'grid',
                     'avg_popup_style'    => 'lightbox',
                     'avg_columns_desktop'=> 4,
+                ],
+            ],
+            'plain_grid' => [
+                'label'       => 'Plain Grid',
+                'category'    => 'Galleries',
+                'description' => 'Auto-fit responsive grid with no card styling. Items have a min width and wrap on their own. No titles, no shadow, no bg, no decoration — just the images.',
+                'overrides'   => [
+                    'avg_layout'             => 'grid',
+                    'avg_grid_mode'          => 'auto_fit',
+                    'avg_grid_min_item_px'   => 160,
+                    'avg_grid_justify'       => 'center',
+                    'avg_tile_bg_mode'       => 'transparent',
+                    'avg_tile_padding'       => 0,
+                    'avg_tile_border_width'  => 0,
+                    'avg_tile_shadow'        => 'none',
+                    'avg_border_radius'      => 0,
+                    'avg_hover_effect'       => 'none',
+                    'avg_title_position'     => 'hidden',
+                    'avg_show_caption'       => 0,
+                    'avg_show_duration'      => 0,
+                    'avg_show_channel'       => 0,
+                    'avg_play_button_style'  => 'none',
+                    'avg_popup_style'        => 'none',
+                    'avg_object_fit'         => 'contain',
+                    'avg_thumb_aspect_auto'  => 1,
+                    'avg_gap'                => 16,
+                    'avg_meta_padding'       => '0',
+                    'avg_meta_gap'           => 0,
+                    'avg_title_line_clamp'   => 0,
+                    'avg_play_button_shadow' => 0,
                 ],
             ],
         ];
@@ -712,10 +830,24 @@ class Anchor_Gallery_Module {
     }
 
     /**
-     * Content tab: item list (same data as the legacy items metabox).
+     * Content tab: item list + any settings tagged section='content'
+     * (show_caption, show_duration, show_channel, filter_all_label).
      */
     public function render_pane_content( $post ) {
         $this->render_box_videos( $post );
+
+        $grouped = $this->get_settings_by_section();
+        if ( ! empty( $grouped['content'] ) ) {
+            echo '<div class="anchor-builder__content-settings" style="margin-top:24px;padding-top:16px;border-top:1px solid #e1e5ea;">';
+            echo '<h3 style="margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#646970;">Display</h3>';
+            foreach ( $grouped['content'] as $key => $def ) {
+                $meta_key = 'avg_' . $key;
+                $saved    = get_post_meta( $post->ID, $meta_key, true );
+                $value    = ( $saved !== '' && $saved !== false ) ? $saved : ( $this->default_settings[ $key ] ?? '' );
+                Anchor_Builder_Shell::render_field( $key, $def, $value, $meta_key );
+            }
+            echo '</div>';
+        }
     }
 
     /**
@@ -1060,7 +1192,15 @@ class Anchor_Gallery_Module {
 
         $preview_videos = $this->hydrate_video_metadata( $preview_videos, $settings['thumb_size'] ?? 'maxres' );
         ?>
-        <div class="avg-preview-wrap">
+        <div class="avg-preview-bg-toolbar" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:#646970;">
+            <span>Preview bg:</span>
+            <button type="button" class="button button-small avg-preview-bg-btn" data-bg="dark">Dark</button>
+            <button type="button" class="button button-small avg-preview-bg-btn" data-bg="light">Light</button>
+            <button type="button" class="button button-small avg-preview-bg-btn" data-bg="checker">Checker</button>
+            <button type="button" class="button button-small avg-preview-bg-btn" data-bg="custom">Custom</button>
+            <input type="color" class="avg-preview-bg-color" value="#ffffff" style="width:24px;height:24px;padding:0;border:none;background:none;display:none;" />
+        </div>
+        <div class="avg-preview-wrap" data-preview-bg="dark">
             <div class="avg-preview-content">
                 <?php echo $this->render_dispatch('avg-preview-init', $preview_videos, $settings); ?>
             </div>
@@ -1542,6 +1682,30 @@ class Anchor_Gallery_Module {
      * when no relevant settings are present, so callers can safely
      * array_merge() without affecting untouched galleries.
      */
+    /**
+     * Convert a color value (hex #rgb / #rrggbb, or rgb(a)(...)) plus an
+     * alpha percentage (0-100) into a CSS color string. Returns input
+     * unchanged when alpha is 100 or the input isn't parseable.
+     */
+    private static function color_with_alpha(string $color, int $alpha): string {
+        $color = trim($color);
+        if ($alpha >= 100 || $color === '') return sanitize_text_field($color);
+        $a = max(0, $alpha) / 100;
+        // #rgb or #rrggbb
+        if (preg_match('/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $color, $m)) {
+            $hex = $m[1];
+            if (strlen($hex) === 3) {
+                $hex = $hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2];
+            }
+            $r = hexdec(substr($hex, 0, 2));
+            $g = hexdec(substr($hex, 2, 2));
+            $b = hexdec(substr($hex, 4, 2));
+            return sprintf('rgba(%d, %d, %d, %s)', $r, $g, $b, rtrim(rtrim(number_format($a, 3, '.', ''), '0'), '.'));
+        }
+        // Already rgb(a)(...) — leave as-is; user can manage alpha themselves.
+        return sanitize_text_field($color);
+    }
+
     private function build_v37_style_vars(array $settings): array {
         $vars = [];
 
@@ -1556,10 +1720,128 @@ class Anchor_Gallery_Module {
 
         // Tile background — custom mode emits the var; transparent mode is handled by class.
         if (($settings['tile_bg_mode'] ?? 'theme') === 'custom' && !empty($settings['tile_bg_color'])) {
-            $vars[] = '--avg-tile-bg: ' . sanitize_text_field($settings['tile_bg_color']);
+            $alpha = isset($settings['tile_bg_alpha']) ? max(0, min(100, intval($settings['tile_bg_alpha']))) : 100;
+            $vars[] = '--avg-tile-bg: ' . self::color_with_alpha((string) $settings['tile_bg_color'], $alpha);
         }
         if (!empty($settings['tile_hover_bg_color'])) {
             $vars[] = '--avg-tile-hover-bg: ' . sanitize_text_field($settings['tile_hover_bg_color']);
+        }
+
+        // 3.7.x — auto-fit grid mode emits min item width + justify.
+        if (($settings['grid_mode'] ?? 'fixed') === 'auto_fit') {
+            $min_px = max(60, min(600, intval($settings['grid_min_item_px'] ?? 160)));
+            $vars[] = '--avg-grid-min: ' . $min_px . 'px';
+            $justify = $settings['grid_justify'] ?? 'stretch';
+            if (in_array($justify, ['start', 'center', 'end', 'stretch'], true)) {
+                $vars[] = '--avg-grid-justify: ' . $justify;
+            }
+        }
+
+        // 3.7.x — natural aspect ratio (lets the image set its own height).
+        if (!empty($settings['thumb_aspect_auto'])) {
+            $vars[] = '--avg-thumb-ratio: auto';
+        }
+
+        // 3.7.x — meta area
+        if (!empty($settings['meta_padding'])) {
+            $vars[] = '--avg-meta-padding: ' . sanitize_text_field($settings['meta_padding']);
+        }
+        if (intval($settings['meta_gap'] ?? 0) > 0) {
+            $vars[] = '--avg-meta-gap: ' . intval($settings['meta_gap']) . 'px';
+        }
+        $clamp = intval($settings['title_line_clamp'] ?? 2);
+        if ($clamp === 0) {
+            // 0 = unlimited; emit a value that disables clamping in browsers.
+            $vars[] = '--avg-title-line-clamp: unset';
+        } elseif ($clamp > 0 && $clamp !== 2) {
+            $vars[] = '--avg-title-line-clamp: ' . $clamp;
+        }
+        $lh = floatval($settings['title_line_height'] ?? 0);
+        if ($lh > 0) {
+            $vars[] = '--avg-title-line-height: ' . $lh;
+        }
+
+        // 3.7.x — channel
+        if (!empty($settings['channel_color'])) {
+            $vars[] = '--avg-channel-color: ' . sanitize_text_field($settings['channel_color']);
+        }
+        if (intval($settings['channel_size'] ?? 0) > 0) {
+            $vars[] = '--avg-channel-size: ' . intval($settings['channel_size']) . 'px';
+        }
+
+        // 3.7.x — duration badge
+        if (!empty($settings['duration_bg_color'])) {
+            $vars[] = '--avg-duration-bg: ' . sanitize_text_field($settings['duration_bg_color']);
+        }
+        if (!empty($settings['duration_color'])) {
+            $vars[] = '--avg-duration-color: ' . sanitize_text_field($settings['duration_color']);
+        }
+        if (intval($settings['duration_size'] ?? 0) > 0) {
+            $vars[] = '--avg-duration-size: ' . intval($settings['duration_size']) . 'px';
+        }
+        if (intval($settings['duration_radius'] ?? 0) > 0) {
+            $vars[] = '--avg-duration-radius: ' . intval($settings['duration_radius']) . 'px';
+        }
+
+        // 3.7.x — play button shadow toggle
+        if (isset($settings['play_button_shadow']) && !$settings['play_button_shadow']) {
+            $vars[] = '--avg-play-shadow: none';
+        }
+
+        // 3.7.x — slider/carousel arrows
+        if (intval($settings['nav_size'] ?? 0) > 0) {
+            $vars[] = '--avg-nav-size: ' . intval($settings['nav_size']) . 'px';
+        }
+        if (!empty($settings['nav_bg'])) {
+            $vars[] = '--avg-nav-bg: ' . sanitize_text_field($settings['nav_bg']);
+        }
+        if (!empty($settings['nav_color'])) {
+            $vars[] = '--avg-nav-color: ' . sanitize_text_field($settings['nav_color']);
+        }
+        if (intval($settings['nav_radius'] ?? 0) > 0) {
+            $vars[] = '--avg-nav-radius: ' . intval($settings['nav_radius']) . 'px';
+        }
+        if (!empty($settings['nav_always_visible'])) {
+            $vars[] = '--avg-nav-opacity-rest: 1';
+        }
+
+        // 3.7.x — pagination dots
+        if (intval($settings['dot_size'] ?? 0) > 0) {
+            $vars[] = '--avg-dot-size: ' . intval($settings['dot_size']) . 'px';
+        }
+        if (!empty($settings['dot_color'])) {
+            $vars[] = '--avg-dot-bg: ' . sanitize_text_field($settings['dot_color']);
+        }
+        if (!empty($settings['dot_color_active'])) {
+            $vars[] = '--avg-dot-bg-active: ' . sanitize_text_field($settings['dot_color_active']);
+        }
+
+        // 3.7.x — legacy hover effect tuning
+        $lift_dist = intval($settings['hover_lift_distance'] ?? 0);
+        if ($lift_dist < 0) {
+            $vars[] = '--avg-hover-lift-distance: ' . $lift_dist . 'px';
+        }
+        $zoom_scale = floatval($settings['hover_zoom_scale'] ?? 0);
+        if ($zoom_scale > 0) {
+            $vars[] = '--avg-hover-zoom-scale: ' . $zoom_scale;
+        }
+
+        // 3.7.x — masonry thumb min-height
+        if (intval($settings['masonry_thumb_min'] ?? 0) > 0 && intval($settings['masonry_thumb_min']) !== 120) {
+            $vars[] = '--avg-masonry-thumb-min: ' . intval($settings['masonry_thumb_min']) . 'px';
+        }
+
+        // 3.7.x — thumb empty-state background (Advanced override).
+        if (!empty($settings['css_var_thumb_empty_bg'])) {
+            $vars[] = '--avg-thumb-empty-bg: ' . sanitize_text_field($settings['css_var_thumb_empty_bg']);
+        }
+
+        // 3.7.x — wrapper background + padding (frontend gallery bg, not admin preview).
+        if (!empty($settings['wrapper_bg'])) {
+            $vars[] = '--avg-wrapper-bg: ' . sanitize_text_field($settings['wrapper_bg']);
+        }
+        if (!empty($settings['wrapper_padding'])) {
+            $vars[] = '--avg-wrapper-padding: ' . sanitize_text_field($settings['wrapper_padding']);
         }
 
         // Tile box
@@ -1679,6 +1961,18 @@ class Anchor_Gallery_Module {
         if (($settings['tile_bg_mode'] ?? 'theme') === 'transparent') {
             $classes[] = 'avg-tile-bg-transparent';
         }
+        // 3.7.x — auto-fit grid mode marker class (CSS reads --avg-grid-min)
+        if (($settings['layout'] ?? '') === 'grid' && ($settings['grid_mode'] ?? 'fixed') === 'auto_fit') {
+            $classes[] = 'avg-grid-auto-fit';
+        }
+        // 3.7.x — title line-clamp disabled (unlimited)
+        if (isset($settings['title_line_clamp']) && intval($settings['title_line_clamp']) === 0) {
+            $classes[] = 'avg-title-no-clamp';
+        }
+        // 3.7.x — natural aspect ratio marker class (lets the <img> define height)
+        if (!empty($settings['thumb_aspect_auto'])) {
+            $classes[] = 'avg-aspect-auto';
+        }
 
         if (!empty($settings['equal_height'])) {
             $classes[] = 'avg-equal-height';
@@ -1734,11 +2028,11 @@ class Anchor_Gallery_Module {
             $data_attrs['data-popup-caption'] = !empty($settings['popup_show_caption']) ? '1' : '0';
         }
 
-        // Aspect ratio: cinematic tile style forces 2.35:1, otherwise use setting
+        // Aspect ratio: respect the user's thumb_aspect_ratio always.
+        // Cinematic tile-style's default of 2.35:1 lives in the stylesheet
+        // as the fallback, so it still applies when the user hasn't picked.
         $ratio_map = ['16:9' => '16 / 9', '4:3' => '4 / 3', '1:1' => '1 / 1', '9:16' => '9 / 16', '21:9' => '21 / 9'];
-        $thumb_ratio = ($settings['tile_style'] === 'cinematic')
-            ? '2.35 / 1'
-            : ($ratio_map[$settings['thumb_aspect_ratio']] ?? '16 / 9');
+        $thumb_ratio = $ratio_map[$settings['thumb_aspect_ratio']] ?? '16 / 9';
 
         $gap_mobile = intval($settings['gap_mobile'] ?? 0);
         if ($gap_mobile <= 0) {

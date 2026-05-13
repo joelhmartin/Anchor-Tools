@@ -1738,7 +1738,7 @@ class Anchor_Gallery_Module {
                         $show_meta_below = false;
                         if ($title_position === 'below' && !empty($video['label'])) {
                             $show_meta_below = true;
-                        } elseif ($title_position === 'hidden' && ($settings['show_title'] || $settings['show_channel'])) {
+                        } elseif ($title_position === 'hidden' && (($settings['show_title'] ?? false) || $settings['show_channel'])) {
                             $show_meta_below = true;
                         }
                         ?>
@@ -1747,7 +1747,7 @@ class Anchor_Gallery_Module {
                             <?php if ($title_position === 'below'): ?>
                             <span class="avg-title"><?php echo esc_html($video['label']); ?></span>
                             <?php else: ?>
-                                <?php if ($settings['show_title']): ?>
+                                <?php if ($settings['show_title'] ?? false): ?>
                                 <span class="avg-title"><?php echo esc_html($video['label']); ?></span>
                                 <?php endif; ?>
                                 <?php if ($settings['show_channel'] && !empty($video['channel'])): ?>
@@ -2004,7 +2004,7 @@ class Anchor_Gallery_Module {
                     <span class="avg-duration"><?php echo esc_html($first['duration']); ?></span>
                     <?php endif; ?>
                 </div>
-                <?php if ($settings['show_title'] && !empty($first['label'])): ?>
+                <?php if (($settings['show_title'] ?? false) && !empty($first['label'])): ?>
                 <div class="avg-gallery-featured-title"><?php echo esc_html($first['label']); ?></div>
                 <?php endif; ?>
             </div>

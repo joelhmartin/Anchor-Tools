@@ -56,7 +56,7 @@ class Anchor_Gallery_Module {
         'max_height' => 0,
         'thumb_size' => 'maxres',
         'object_fit' => 'cover',
-        'title_position' => 'hidden',
+        'title_position' => 'below',
         'marquee_speed' => 30,
         'marquee_gap' => 40,
         'marquee_item_width' => 150,

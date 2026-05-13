@@ -124,6 +124,12 @@ class Anchor_Gallery_Module {
         'css_var_play_bg'    => '',
         'css_var_play_color' => '',
         'custom_css'         => '',
+        // 3.7.x — auto-fit grid + transparency + natural aspect
+        'grid_mode'          => 'fixed',
+        'grid_min_item_px'   => 160,
+        'grid_justify'       => 'stretch',
+        'tile_bg_alpha'      => 100,
+        'thumb_aspect_auto'  => false,
     ];
 
     /**
@@ -362,6 +368,17 @@ class Anchor_Gallery_Module {
 
             /* ── 3.7.0: Advanced — custom CSS ─────────────────────────── */
             'custom_css' => ['type' => 'textarea', 'label' => 'Custom CSS', 'section' => 'advanced', 'help' => 'Use [data-avg-uid="..."] or #avs-XXXX to scope rules to this gallery (UID is shown on the wrapper in view-source). Note: redefining a CSS variable on the wrapper requires !important to beat inline styles; targeting child elements does not. Also: the "Fade Others" hover effect requires a hover-capable pointer and is a no-op on touch devices.'],
+
+            /* ── 3.7.x: Layout — auto-fit grid (item min-width, auto wrap) ─ */
+            'grid_mode' => ['type' => 'select', 'label' => 'Grid Mode', 'section' => 'layout', 'priority' => 25, 'options' => ['fixed' => 'Fixed Columns', 'auto_fit' => 'Auto-fit (min width, auto wrap)'], 'applies_to' => ['grid'], 'help' => 'Auto-fit ignores the column-count settings and uses an item minimum width instead, wrapping to next row when items don\'t fit.'],
+            'grid_min_item_px' => ['type' => 'number', 'label' => 'Min Item Width (px)', 'section' => 'layout', 'priority' => 26, 'min' => 60, 'max' => 600, 'step' => 10, 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => 'auto_fit']],
+            'grid_justify' => ['type' => 'select', 'label' => 'Row Justify', 'section' => 'layout', 'priority' => 27, 'options' => ['stretch' => 'Stretch (fill row)', 'start' => 'Start (left)', 'center' => 'Center', 'end' => 'End (right)'], 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => 'auto_fit']],
+
+            /* ── 3.7.x: Style — tile background alpha (lets you get a transparent custom color) */
+            'tile_bg_alpha' => ['type' => 'number', 'label' => 'Tile Background Opacity (%)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_bg_mode' => 'custom'], 'help' => 'Applies an alpha channel to the Tile Background Color. 100 = opaque, 0 = fully transparent.'],
+
+            /* ── 3.7.x: Style — natural thumbnail aspect ratio ────────────── */
+            'thumb_aspect_auto' => ['type' => 'checkbox', 'label' => 'Use Natural Aspect Ratio', 'section' => 'style', 'applies_to' => $tile_layouts, 'help' => 'Lets the image set its own aspect ratio (good for logo grids with mixed image shapes). Overrides Thumbnail Aspect Ratio when checked.'],
         ];
     }
 
@@ -490,6 +507,32 @@ class Anchor_Gallery_Module {
                     'avg_layout'         => 'grid',
                     'avg_popup_style'    => 'lightbox',
                     'avg_columns_desktop'=> 4,
+                ],
+            ],
+            'plain_grid' => [
+                'label'       => 'Plain Grid',
+                'category'    => 'Galleries',
+                'description' => 'Auto-fit responsive grid with no card styling. Items have a min width and wrap on their own. No titles, no shadow, no bg, no decoration — just the images.',
+                'overrides'   => [
+                    'avg_layout'             => 'grid',
+                    'avg_grid_mode'          => 'auto_fit',
+                    'avg_grid_min_item_px'   => 160,
+                    'avg_grid_justify'       => 'center',
+                    'avg_tile_bg_mode'       => 'transparent',
+                    'avg_tile_padding'       => 0,
+                    'avg_tile_border_width'  => 0,
+                    'avg_tile_shadow'        => 'none',
+                    'avg_border_radius'      => 0,
+                    'avg_hover_effect'       => 'none',
+                    'avg_title_position'     => 'hidden',
+                    'avg_show_caption'       => 0,
+                    'avg_show_duration'      => 0,
+                    'avg_show_channel'       => 0,
+                    'avg_play_button_style'  => 'none',
+                    'avg_popup_style'        => 'none',
+                    'avg_object_fit'         => 'contain',
+                    'avg_thumb_aspect_auto'  => 1,
+                    'avg_gap'                => 16,
                 ],
             ],
         ];
@@ -1542,6 +1585,30 @@ class Anchor_Gallery_Module {
      * when no relevant settings are present, so callers can safely
      * array_merge() without affecting untouched galleries.
      */
+    /**
+     * Convert a color value (hex #rgb / #rrggbb, or rgb(a)(...)) plus an
+     * alpha percentage (0-100) into a CSS color string. Returns input
+     * unchanged when alpha is 100 or the input isn't parseable.
+     */
+    private static function color_with_alpha(string $color, int $alpha): string {
+        $color = trim($color);
+        if ($alpha >= 100 || $color === '') return sanitize_text_field($color);
+        $a = max(0, $alpha) / 100;
+        // #rgb or #rrggbb
+        if (preg_match('/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $color, $m)) {
+            $hex = $m[1];
+            if (strlen($hex) === 3) {
+                $hex = $hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2];
+            }
+            $r = hexdec(substr($hex, 0, 2));
+            $g = hexdec(substr($hex, 2, 2));
+            $b = hexdec(substr($hex, 4, 2));
+            return sprintf('rgba(%d, %d, %d, %s)', $r, $g, $b, rtrim(rtrim(number_format($a, 3, '.', ''), '0'), '.'));
+        }
+        // Already rgb(a)(...) — leave as-is; user can manage alpha themselves.
+        return sanitize_text_field($color);
+    }
+
     private function build_v37_style_vars(array $settings): array {
         $vars = [];
 
@@ -1556,10 +1623,26 @@ class Anchor_Gallery_Module {
 
         // Tile background — custom mode emits the var; transparent mode is handled by class.
         if (($settings['tile_bg_mode'] ?? 'theme') === 'custom' && !empty($settings['tile_bg_color'])) {
-            $vars[] = '--avg-tile-bg: ' . sanitize_text_field($settings['tile_bg_color']);
+            $alpha = isset($settings['tile_bg_alpha']) ? max(0, min(100, intval($settings['tile_bg_alpha']))) : 100;
+            $vars[] = '--avg-tile-bg: ' . self::color_with_alpha((string) $settings['tile_bg_color'], $alpha);
         }
         if (!empty($settings['tile_hover_bg_color'])) {
             $vars[] = '--avg-tile-hover-bg: ' . sanitize_text_field($settings['tile_hover_bg_color']);
+        }
+
+        // 3.7.x — auto-fit grid mode emits min item width + justify.
+        if (($settings['grid_mode'] ?? 'fixed') === 'auto_fit') {
+            $min_px = max(60, min(600, intval($settings['grid_min_item_px'] ?? 160)));
+            $vars[] = '--avg-grid-min: ' . $min_px . 'px';
+            $justify = $settings['grid_justify'] ?? 'stretch';
+            if (in_array($justify, ['start', 'center', 'end', 'stretch'], true)) {
+                $vars[] = '--avg-grid-justify: ' . $justify;
+            }
+        }
+
+        // 3.7.x — natural aspect ratio (lets the image set its own height).
+        if (!empty($settings['thumb_aspect_auto'])) {
+            $vars[] = '--avg-thumb-ratio: auto';
         }
 
         // Tile box
@@ -1678,6 +1761,10 @@ class Anchor_Gallery_Module {
         // 3.7.0 — transparent tile background mode
         if (($settings['tile_bg_mode'] ?? 'theme') === 'transparent') {
             $classes[] = 'avg-tile-bg-transparent';
+        }
+        // 3.7.x — auto-fit grid mode marker class (CSS reads --avg-grid-min)
+        if (($settings['layout'] ?? '') === 'grid' && ($settings['grid_mode'] ?? 'fixed') === 'auto_fit') {
+            $classes[] = 'avg-grid-auto-fit';
         }
 
         if (!empty($settings['equal_height'])) {

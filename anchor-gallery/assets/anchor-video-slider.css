@@ -52,6 +52,8 @@
 
 /* Transparent tile background mode */
 .avg-tile-bg-transparent { --avg-tile-bg: transparent; --avg-tile-hover-bg: transparent; }
+.avg-tile-bg-transparent .avg-thumb { background: transparent; }
+.avg-tile-bg-transparent .avg-tile-inner { box-shadow: none; }
 
 /* Global transition duration */
 .anchor-video-gallery { --avg-transition: 200ms; }
@@ -564,6 +566,24 @@
 @media (max-width: 640px) {
   .avg-layout-grid .avg-track {
     grid-template-columns: repeat(var(--avg-cols-mobile), 1fr);
+  }
+}
+
+/* 3.7.x — Auto-fit grid mode: items have a min width and wrap to next row on their own.
+   Wins over the fixed-column rules above on all breakpoints. */
+.avg-layout-grid.avg-grid-auto-fit .avg-track {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--avg-grid-min, 160px), 1fr));
+  justify-content: var(--avg-grid-justify, stretch);
+}
+@media (max-width: 1024px) {
+  .avg-layout-grid.avg-grid-auto-fit .avg-track {
+    grid-template-columns: repeat(auto-fit, minmax(var(--avg-grid-min, 160px), 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .avg-layout-grid.avg-grid-auto-fit .avg-track {
+    grid-template-columns: repeat(auto-fit, minmax(var(--avg-grid-min, 160px), 1fr));
   }
 }
 

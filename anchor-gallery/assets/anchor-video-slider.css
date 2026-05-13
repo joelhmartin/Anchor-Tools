@@ -160,6 +160,7 @@
   position: absolute;
   inset: 0;
   display: flex;
+  background: var(--avg-play-button-bg, transparent);
   align-items: center;
   justify-content: center;
   opacity: 0.9;

@@ -1054,7 +1054,7 @@ class Anchor_Gallery_Module {
                 $raw = isset($_POST[$meta_key]) ? (string) wp_unslash($_POST[$meta_key]) : '';
                 // Strip <script>...</script> blocks and any closing </style> to prevent breakouts.
                 $raw = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $raw);
-                $raw = str_ireplace('</style>', '', $raw);
+                $raw = preg_replace('#</style\s*>#i', '', $raw);
                 // Cap at 10 KB.
                 if (strlen($raw) > 10240) $raw = substr($raw, 0, 10240);
                 $val = $raw;

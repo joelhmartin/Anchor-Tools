@@ -191,7 +191,7 @@ class Anchor_Gallery_Module {
 
         return [
             'layout' => ['type' => 'select', 'label' => 'Layout', 'section' => 'layout', 'priority' => 10, 'options' => ['grid' => 'Grid', 'masonry' => 'Masonry', 'carousel' => 'Carousel', 'slider' => 'Horizontal Scroll', 'gallery' => 'Gallery (Featured + Thumbs)', 'logo_carousel' => 'Logo Carousel', 'filterable' => 'Filterable Grid'], 'help' => 'Pick a base layout. Variants like Paginated/Lightbox/Card/Bento are available as Presets.'],
-            'popup_style' => ['type' => 'select', 'label' => 'Popup Style', 'section' => 'behavior', 'priority' => 10, 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'Direct Link'], 'applies_to' => $core_layouts,
+            'popup_style' => ['type' => 'select', 'label' => 'Popup / Click Behavior', 'section' => 'behavior', 'priority' => 10, 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'None (no popup — direct link)'], 'applies_to' => $core_layouts, 'help' => 'Pick "None" to disable popups entirely — items will either link to their URL (if Link URL is set per-item) or do nothing.',
                 'forced_by' => ['lightbox_grid' => 'lightbox'],
                 'forced_by_note' => ['lightbox_grid' => 'Locked by Lightbox Grid layout — change layout to edit.'],
             ],
@@ -233,7 +233,7 @@ class Anchor_Gallery_Module {
                 'medium'   => 'Medium (320×180)',
             ], 'applies_to' => $core_layouts],
             'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'section' => 'style', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
-            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'section' => 'behavior', 'applies_to' => $core_layouts],
+            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'section' => 'behavior', 'applies_to' => $core_layouts, 'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']], 'help' => 'Only meaningful when a popup style is set.'],
             'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'section' => 'behavior', 'applies_to' => $pag_layouts, 'help' => 'Used by Grid, Masonry, and Filterable Grid layouts.',
                 'forced_by' => ['paginated' => '1'],
                 'forced_by_note' => ['paginated' => 'Locked by Paginated Grid layout — change layout to edit.'],
@@ -348,7 +348,7 @@ class Anchor_Gallery_Module {
 
             /* ── 3.7.0: Style — hover ─────────────────────────────────── */
             'hover_intensity' => ['type' => 'select', 'label' => 'Hover Intensity', 'section' => 'style', 'options' => ['subtle' => 'Subtle', 'normal' => 'Normal', 'strong' => 'Strong'], 'applies_to' => $tile_layouts, 'depends_on' => ['hover_effect' => ['lift','zoom','glow','tilt','fade','slide-up','brighten','desaturate']]],
-            'hover_duration_ms' => ['type' => 'number', 'label' => 'Hover Duration (ms)', 'section' => 'style', 'min' => 50, 'max' => 1000, 'step' => 10, 'applies_to' => $tile_layouts],
+            'hover_duration_ms' => ['type' => 'number', 'label' => 'Hover Duration (ms)', 'section' => 'style', 'min' => 50, 'max' => 1000, 'step' => 10, 'applies_to' => $tile_layouts, 'depends_on' => ['hover_effect' => ['lift','zoom','glow','tilt','fade','slide-up','brighten','desaturate']]],
 
             /* ── 3.7.0: Style — tile background ───────────────────────── */
             'tile_bg_mode'        => ['type' => 'select', 'label' => 'Tile Background', 'section' => 'style', 'options' => ['theme' => 'Use Theme', 'transparent' => 'Transparent', 'custom' => 'Custom Color'], 'applies_to' => $tile_layouts],
@@ -362,20 +362,20 @@ class Anchor_Gallery_Module {
             'tile_border_style'  => ['type' => 'select', 'label' => 'Tile Border Style', 'section' => 'style', 'options' => ['solid' => 'Solid', 'dashed' => 'Dashed', 'dotted' => 'Dotted', 'none' => 'None'], 'applies_to' => $tile_layouts],
 
             /* ── 3.7.0: Style — title typography ──────────────────────── */
-            'title_color'     => ['type' => 'color',  'label' => 'Title Color', 'section' => 'style', 'applies_to' => $tile_layouts],
-            'title_size'      => ['type' => 'number', 'label' => 'Title Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 28, 'step' => 1, 'applies_to' => $tile_layouts],
-            'title_weight'    => ['type' => 'select', 'label' => 'Title Weight', 'section' => 'style', 'options' => ['300' => 'Light', '400' => 'Normal', '500' => 'Medium', '600' => 'Semi-bold', '700' => 'Bold'], 'applies_to' => $tile_layouts],
-            'title_transform' => ['type' => 'select', 'label' => 'Title Transform', 'section' => 'style', 'options' => ['none' => 'None', 'uppercase' => 'UPPERCASE', 'lowercase' => 'lowercase', 'capitalize' => 'Capitalize'], 'applies_to' => $tile_layouts],
-            'title_align'     => ['type' => 'select', 'label' => 'Title Align', 'section' => 'style', 'options' => ['left' => 'Left', 'center' => 'Center', 'right' => 'Right'], 'applies_to' => $tile_layouts],
+            'title_color'     => ['type' => 'color',  'label' => 'Title Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
+            'title_size'      => ['type' => 'number', 'label' => 'Title Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 28, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
+            'title_weight'    => ['type' => 'select', 'label' => 'Title Weight', 'section' => 'style', 'options' => ['300' => 'Light', '400' => 'Normal', '500' => 'Medium', '600' => 'Semi-bold', '700' => 'Bold'], 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
+            'title_transform' => ['type' => 'select', 'label' => 'Title Transform', 'section' => 'style', 'options' => ['none' => 'None', 'uppercase' => 'UPPERCASE', 'lowercase' => 'lowercase', 'capitalize' => 'Capitalize'], 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
+            'title_align'     => ['type' => 'select', 'label' => 'Title Align', 'section' => 'style', 'options' => ['left' => 'Left', 'center' => 'Center', 'right' => 'Right'], 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
 
-            /* ── 3.7.0: Style — caption typography ────────────────────── */
-            'caption_color' => ['type' => 'color',  'label' => 'Caption Color', 'section' => 'style', 'applies_to' => $tile_layouts],
-            'caption_size'  => ['type' => 'number', 'label' => 'Caption Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts],
+            /* ── 3.7.0: Style — caption typography (hidden unless captions shown) ─ */
+            'caption_color' => ['type' => 'color',  'label' => 'Caption Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_caption' => true]],
+            'caption_size'  => ['type' => 'number', 'label' => 'Caption Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_caption' => true]],
 
-            /* ── 3.7.0: Style — play button ───────────────────────────── */
-            'play_button_color'    => ['type' => 'color',  'label' => 'Play Button Color', 'section' => 'style', 'applies_to' => $tile_layouts],
-            'play_button_bg_color' => ['type' => 'color',  'label' => 'Play Button Background', 'section' => 'style', 'applies_to' => $tile_layouts],
-            'play_button_size'     => ['type' => 'number', 'label' => 'Play Button Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => $tile_layouts],
+            /* ── 3.7.0: Style — play button (hidden when play button is off) ───── */
+            'play_button_color'    => ['type' => 'color',  'label' => 'Play Button Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
+            'play_button_bg_color' => ['type' => 'color',  'label' => 'Play Button Background', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
+            'play_button_size'     => ['type' => 'number', 'label' => 'Play Button Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
 
             /* ── 3.7.0: Style — overlay tile gradient strength ────────── */
             'overlay_gradient_strength' => ['type' => 'number', 'label' => 'Overlay Gradient Strength (0-100)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_style' => 'overlay'], 'help' => 'Alpha of the bottom gradient stop on the overlay tile style.'],
@@ -411,18 +411,18 @@ class Anchor_Gallery_Module {
             /* ── 3.7.x: Style — meta area (the box below the image with title/caption/channel) ── */
             'meta_padding'   => ['type' => 'text',   'label' => 'Meta Padding', 'section' => 'style', 'applies_to' => $tile_layouts, 'help' => 'CSS padding for the title/caption block (e.g. "12px 14px" or "0"). Empty = default.'],
             'meta_gap'       => ['type' => 'number', 'label' => 'Meta Gap (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 1, 'applies_to' => $tile_layouts, 'help' => 'Space between title / caption / channel lines.'],
-            'title_line_clamp' => ['type' => 'number', 'label' => 'Title Max Lines (0 = unlimited)', 'section' => 'style', 'min' => 0, 'max' => 6, 'step' => 1, 'applies_to' => $tile_layouts],
-            'title_line_height' => ['type' => 'number', 'label' => 'Title Line Height (×, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 3, 'step' => 0.1, 'applies_to' => $tile_layouts],
+            'title_line_clamp' => ['type' => 'number', 'label' => 'Title Max Lines (0 = unlimited)', 'section' => 'style', 'min' => 0, 'max' => 6, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
+            'title_line_height' => ['type' => 'number', 'label' => 'Title Line Height (×, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 3, 'step' => 0.1, 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
 
             /* ── 3.7.x: Style — channel ──────────────────────────────────── */
-            'channel_color' => ['type' => 'color', 'label' => 'Channel Color', 'section' => 'style', 'applies_to' => $tile_layouts],
-            'channel_size'  => ['type' => 'number', 'label' => 'Channel Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts],
+            'channel_color' => ['type' => 'color', 'label' => 'Channel Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_channel' => true]],
+            'channel_size'  => ['type' => 'number', 'label' => 'Channel Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_channel' => true]],
 
             /* ── 3.7.x: Style — duration badge ────────────────────────────── */
-            'duration_bg_color' => ['type' => 'color',  'label' => 'Duration Badge Background', 'section' => 'style', 'applies_to' => $tile_layouts],
-            'duration_color'    => ['type' => 'color',  'label' => 'Duration Badge Text', 'section' => 'style', 'applies_to' => $tile_layouts],
-            'duration_size'     => ['type' => 'number', 'label' => 'Duration Badge Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts],
-            'duration_radius'   => ['type' => 'number', 'label' => 'Duration Badge Radius (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts],
+            'duration_bg_color' => ['type' => 'color',  'label' => 'Duration Badge Background', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
+            'duration_color'    => ['type' => 'color',  'label' => 'Duration Badge Text', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
+            'duration_size'     => ['type' => 'number', 'label' => 'Duration Badge Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
+            'duration_radius'   => ['type' => 'number', 'label' => 'Duration Badge Radius (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
 
             /* ── 3.7.x: Style — play button extras ───────────────────────── */
             'play_button_shadow' => ['type' => 'checkbox', 'label' => 'Play Button Drop Shadow', 'section' => 'style', 'applies_to' => $tile_layouts, 'help' => 'Uncheck for a flat play button with no drop shadow.'],

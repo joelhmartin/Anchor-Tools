@@ -196,7 +196,7 @@ class Anchor_Gallery_Module {
             'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4],
             'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'content', 'applies_to' => array_values(array_diff($core_layouts, ['thumbnail_gallery']))],
             'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
-            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'content', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts],
+            'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'style', 'priority' => 5, 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts, 'help' => 'Set to Hidden to remove the title entirely.'],
             'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'section' => 'layout', 'applies_to' => array_values(array_diff($tile_layouts, ['bento']))],
             'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'applies_to' => $tile_layouts],
             'thumb_size' => ['type' => 'select', 'label' => 'Thumbnail Resolution', 'section' => 'advanced', 'options' => [
@@ -755,10 +755,24 @@ class Anchor_Gallery_Module {
     }
 
     /**
-     * Content tab: item list (same data as the legacy items metabox).
+     * Content tab: item list + any settings tagged section='content'
+     * (show_caption, show_duration, show_channel, filter_all_label).
      */
     public function render_pane_content( $post ) {
         $this->render_box_videos( $post );
+
+        $grouped = $this->get_settings_by_section();
+        if ( ! empty( $grouped['content'] ) ) {
+            echo '<div class="anchor-builder__content-settings" style="margin-top:24px;padding-top:16px;border-top:1px solid #e1e5ea;">';
+            echo '<h3 style="margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#646970;">Display</h3>';
+            foreach ( $grouped['content'] as $key => $def ) {
+                $meta_key = 'avg_' . $key;
+                $saved    = get_post_meta( $post->ID, $meta_key, true );
+                $value    = ( $saved !== '' && $saved !== false ) ? $saved : ( $this->default_settings[ $key ] ?? '' );
+                Anchor_Builder_Shell::render_field( $key, $def, $value, $meta_key );
+            }
+            echo '</div>';
+        }
     }
 
     /**

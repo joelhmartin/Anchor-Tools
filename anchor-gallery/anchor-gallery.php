@@ -550,6 +550,7 @@ class Anchor_Gallery_Module {
     public function register_cpt() {
         $this->migrate_cpt_slug();
         $this->migrate_legacy_data();
+        $this->migrate_title_position_v37();
 
         register_post_type(self::CPT, [
             'labels' => [
@@ -592,6 +593,37 @@ class Anchor_Gallery_Module {
         }
 
         update_option('avg_cpt_migrated', 1, false);
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       3.7.0 — One-shot show_title → title_position migration
+       ══════════════════════════════════════════════════════════ */
+
+    private function migrate_title_position_v37() {
+        if (get_option('anchor_gallery_title_position_migrated_v37')) return;
+
+        $posts = get_posts([
+            'post_type'        => [self::CPT, self::OLD_CPT],
+            'post_status'      => 'any',
+            'posts_per_page'   => -1,
+            'fields'           => 'ids',
+            'no_found_rows'    => true,
+            'suppress_filters' => true,
+        ]);
+
+        foreach ($posts as $pid) {
+            $existing_pos = get_post_meta($pid, 'avg_title_position', true);
+            if ($existing_pos !== '' && $existing_pos !== false) {
+                // Already set — never overwrite.
+                continue;
+            }
+            $show_title_raw = get_post_meta($pid, 'avg_show_title', true);
+            $is_truthy = ($show_title_raw === '1' || $show_title_raw === 1 || $show_title_raw === true);
+            $new_pos = $is_truthy ? 'below' : 'hidden';
+            update_post_meta($pid, 'avg_title_position', $new_pos);
+        }
+
+        update_option('anchor_gallery_title_position_migrated_v37', 1, false);
     }
 
     /* ══════════════════════════════════════════════════════════

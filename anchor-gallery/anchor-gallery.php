@@ -1031,14 +1031,33 @@ class Anchor_Gallery_Module {
             if ($def['type'] === 'checkbox') {
                 $val = isset($_POST[$meta_key]) ? '1' : '0';
             } elseif ($def['type'] === 'number') {
-                $val = isset($_POST[$meta_key]) ? intval($_POST[$meta_key]) : $this->default_settings[$key];
+                $val = isset($_POST[$meta_key]) ? intval($_POST[$meta_key]) : ($this->default_settings[$key] ?? 0);
                 if (isset($def['min'])) $val = max($def['min'], $val);
                 if (isset($def['max'])) $val = min($def['max'], $val);
             } elseif ($def['type'] === 'select') {
-                $val = isset($_POST[$meta_key]) ? sanitize_text_field($_POST[$meta_key]) : $this->default_settings[$key];
+                $val = isset($_POST[$meta_key]) ? sanitize_text_field($_POST[$meta_key]) : ($this->default_settings[$key] ?? '');
                 if (isset($def['options']) && !array_key_exists($val, $def['options'])) {
-                    $val = $this->default_settings[$key];
+                    $val = $this->default_settings[$key] ?? '';
                 }
+            } elseif ($def['type'] === 'color') {
+                $raw = isset($_POST[$meta_key]) ? trim((string) wp_unslash($_POST[$meta_key])) : '';
+                if ($raw === '') {
+                    $val = '';
+                } elseif (preg_match('/^#([0-9a-fA-F]{3}){1,2}$/', $raw)) {
+                    $val = $raw;
+                } elseif (preg_match('/^rgba?\(\s*[\d.\s,%]+\s*\)$/', $raw)) {
+                    $val = $raw;
+                } else {
+                    $val = '';
+                }
+            } elseif ($def['type'] === 'textarea') {
+                $raw = isset($_POST[$meta_key]) ? (string) wp_unslash($_POST[$meta_key]) : '';
+                // Strip <script>...</script> blocks and any closing </style> to prevent breakouts.
+                $raw = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $raw);
+                $raw = str_ireplace('</style>', '', $raw);
+                // Cap at 10 KB.
+                if (strlen($raw) > 10240) $raw = substr($raw, 0, 10240);
+                $val = $raw;
             } else {
                 $val = isset($_POST[$meta_key]) ? sanitize_text_field($_POST[$meta_key]) : '';
             }

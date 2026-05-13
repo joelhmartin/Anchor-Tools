@@ -1116,7 +1116,7 @@ class Anchor_Gallery_Module {
 
             // Admin
             wp_enqueue_style('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.css'), [], $ver);
-            wp_enqueue_script('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.js'), ['jquery'], $ver, true);
+            wp_enqueue_script('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.js'), ['jquery', 'wp-color-picker'], $ver, true);
             wp_localize_script('anchor-video-gallery-admin', 'AVG', [
                 'ajaxUrl'        => admin_url('admin-ajax.php'),
                 'nonce'          => wp_create_nonce('avg_preview'),

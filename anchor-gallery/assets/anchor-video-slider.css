@@ -232,6 +232,36 @@
   box-shadow: 0 0 0 3px var(--avg-border), 0 8px 25px rgba(0, 0, 0, 0.3);
 }
 
+/* ── 3.7.0 — Additional hover effects ─────────────────────── */
+
+/* Tilt */
+.avg-hover-tilt .avg-tile { transition: transform var(--avg-transition, 200ms) ease; transform-style: preserve-3d; }
+.avg-hover-tilt .avg-tile:hover,
+.avg-hover-tilt .avg-tile:focus { transform: perspective(800px) rotateY(var(--avg-hover-tilt-y, 4deg)) rotateX(var(--avg-hover-tilt-x, -2deg)); }
+
+/* Fade Others (dim non-hovered tiles when one is hovered) */
+.avg-hover-fade .avg-tile { transition: opacity var(--avg-transition, 200ms) ease; }
+.avg-hover-fade:hover .avg-tile:not(:hover):not(:focus) { opacity: var(--avg-hover-fade-other, 0.5); }
+
+/* Slide-up (lift on hover, distance configurable) */
+.avg-hover-slide-up .avg-tile { transition: transform var(--avg-transition, 200ms) ease; }
+.avg-hover-slide-up .avg-tile:hover,
+.avg-hover-slide-up .avg-tile:focus { transform: translateY(var(--avg-hover-slide-distance, -6px)); }
+
+/* Brighten */
+.avg-hover-brighten .avg-thumb { transition: filter var(--avg-transition, 200ms) ease; }
+.avg-hover-brighten .avg-tile:hover .avg-thumb,
+.avg-hover-brighten .avg-tile:focus .avg-thumb { filter: brightness(var(--avg-hover-brightness, 1.15)); }
+
+/* Desaturate by default, color on hover */
+.avg-hover-desaturate .avg-thumb { filter: grayscale(var(--avg-hover-desat-base, 1)); transition: filter var(--avg-transition, 200ms) ease; }
+.avg-hover-desaturate .avg-tile:hover .avg-thumb,
+.avg-hover-desaturate .avg-tile:focus .avg-thumb { filter: grayscale(0); }
+
+/* Hover intensity modifiers — override the per-effect magnitude vars */
+.avg-hover-subtle { --avg-hover-tilt-y: 2deg;  --avg-hover-tilt-x: -1deg; --avg-hover-slide-distance: -3px;  --avg-hover-brightness: 1.07; --avg-hover-fade-other: 0.75; }
+.avg-hover-strong { --avg-hover-tilt-y: 7deg;  --avg-hover-tilt-x: -4deg; --avg-hover-slide-distance: -10px; --avg-hover-brightness: 1.25; --avg-hover-fade-other: 0.3;  }
+
 /* ==========================================================================
    Tile Styles
    ========================================================================== */

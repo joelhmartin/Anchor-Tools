@@ -411,6 +411,16 @@
     var gallery = tile.closest('.anchor-video-gallery');
     if (!gallery) return;
 
+    var popupStyle = gallery.getAttribute('data-popup') || 'lightbox';
+
+    // 3.7.x — popup_style = 'none' means NO popup. If the user wired up an
+    // anchor (Link URL per item, rendered as <a class="avg-tile-linked">), the
+    // browser handles navigation natively — we don't intercept. Otherwise we
+    // do nothing on click — no auto-opening of the raw image/video URL.
+    if (popupStyle === 'none') {
+      return;
+    }
+
     e.preventDefault();
 
     var itemType = tile.getAttribute('data-type') || 'video';
@@ -421,12 +431,7 @@
       if (!fullUrl) return;
       var titleEl = tile.querySelector('.avg-title');
       var titleText = titleEl ? titleEl.textContent : '';
-      var popupStyle = gallery.getAttribute('data-popup') || 'lightbox';
-      if (popupStyle === 'none') {
-        window.open(fullUrl, '_blank');
-      } else {
-        openImageLightbox(fullUrl, titleText);
-      }
+      openImageLightbox(fullUrl, titleText);
       return;
     }
 
@@ -434,7 +439,6 @@
     var provider = tile.getAttribute('data-provider');
     var videoId = tile.getAttribute('data-video-id');
     var url = tile.getAttribute('data-url');
-    var popupStyle = gallery.getAttribute('data-popup') || 'lightbox';
     var autoplay = gallery.getAttribute('data-autoplay') === '1';
     var title = tile.querySelector('.avg-title');
     var titleText = title ? title.textContent : '';
@@ -452,9 +456,6 @@
     };
 
     switch (popupStyle) {
-      case 'none':
-        window.open(url || getDirectUrl(provider, videoId), '_blank');
-        break;
       case 'inline':
         openInline(gallery, tile, provider, videoId, autoplay, popupOpts);
         break;

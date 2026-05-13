@@ -76,6 +76,12 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* 3.7.x — when popup is disabled AND the tile isn't wrapped in <a>, the click
+   does nothing — show the default cursor so users know it's not interactive. */
+.anchor-video-gallery[data-popup="none"] .avg-tile:not(.avg-tile-linked) {
+  cursor: default;
+}
+
 .avg-tile.avg-hidden {
   display: none;
 }

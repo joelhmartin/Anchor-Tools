@@ -41,7 +41,6 @@ class Anchor_Gallery_Module {
         'theme' => 'dark',
         'tile_style' => 'card',
         'thumb_aspect_ratio' => '16:9',
-        'show_title' => true,
         'show_duration' => true,
         'show_channel' => false,
         'hover_effect' => 'lift',
@@ -92,6 +91,39 @@ class Anchor_Gallery_Module {
         'filter_button_style' => 'pills',
         'filter_default'      => '',
         'filter_all_label'    => 'All',
+        // 3.7.0 — full customization
+        'show_caption'              => true,
+        'hover_intensity'           => 'normal',
+        'hover_duration_ms'         => 200,
+        'tile_bg_mode'              => 'theme',
+        'tile_bg_color'             => '',
+        'tile_hover_bg_color'       => '',
+        'tile_padding'              => 0,
+        'tile_border_width'         => 0,
+        'tile_border_color'         => '',
+        'tile_border_style'         => 'solid',
+        'title_color'               => '',
+        'title_size'                => 0,
+        'title_weight'              => '500',
+        'title_transform'           => 'none',
+        'title_align'               => 'left',
+        'caption_color'             => '',
+        'caption_size'              => 0,
+        'play_button_color'         => '',
+        'play_button_bg_color'      => '',
+        'play_button_size'          => 0,
+        'overlay_gradient_strength' => 85,
+        'transition_duration_ms'    => 200,
+        // Advanced raw CSS-var overrides (empty = use friendly control / theme default)
+        'css_var_bg'         => '',
+        'css_var_bg_hover'   => '',
+        'css_var_text'       => '',
+        'css_var_text_muted' => '',
+        'css_var_border'     => '',
+        'css_var_overlay'    => '',
+        'css_var_play_bg'    => '',
+        'css_var_play_color' => '',
+        'custom_css'         => '',
     ];
 
     /**
@@ -139,14 +171,23 @@ class Anchor_Gallery_Module {
                 '9:16' => '9:16 (Portrait)',
                 '21:9' => '21:9 (Cinematic)',
             ], 'applies_to' => $tile_layouts],
-            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'section' => 'style', 'options' => ['lift' => 'Lift', 'zoom' => 'Zoom', 'glow' => 'Glow', 'none' => 'None'], 'applies_to' => $tile_layouts],
+            'hover_effect' => ['type' => 'select', 'label' => 'Hover Effect', 'section' => 'style', 'options' => [
+                'none'       => 'None',
+                'lift'       => 'Lift',
+                'zoom'       => 'Zoom',
+                'glow'       => 'Glow',
+                'tilt'       => 'Tilt',
+                'fade'       => 'Fade Others',
+                'slide-up'   => 'Slide Up',
+                'brighten'   => 'Brighten',
+                'desaturate' => 'Desaturate (color on hover)',
+            ], 'applies_to' => $tile_layouts],
             'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'section' => 'style', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'applies_to' => $core_layouts],
             'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 2],
             'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'section' => 'layout', 'priority' => 20, 'min' => 1, 'max' => 6, 'applies_to' => $col_layouts],
             'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'section' => 'responsive', 'min' => 1, 'max' => 4, 'applies_to' => $col_layouts],
             'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'section' => 'responsive', 'min' => 1, 'max' => 2, 'applies_to' => $col_layouts],
             'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4],
-            'show_title' => ['type' => 'checkbox', 'label' => 'Show Title', 'section' => 'content', 'priority' => 10, 'applies_to' => $core_layouts],
             'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'content', 'applies_to' => array_values(array_diff($core_layouts, ['thumbnail_gallery']))],
             'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
             'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'content', 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts],
@@ -268,6 +309,59 @@ class Anchor_Gallery_Module {
                 'type' => 'text', 'label' => '"All" Button Label', 'section' => 'content', 'priority' => 90,
                 'applies_to' => ['filterable'],
             ],
+
+            /* ── 3.7.0: Content additions ─────────────────────────────── */
+            'show_caption' => ['type' => 'checkbox', 'label' => 'Show Caption', 'section' => 'content', 'priority' => 30, 'applies_to' => $core_layouts],
+
+            /* ── 3.7.0: Style — hover ─────────────────────────────────── */
+            'hover_intensity' => ['type' => 'select', 'label' => 'Hover Intensity', 'section' => 'style', 'options' => ['subtle' => 'Subtle', 'normal' => 'Normal', 'strong' => 'Strong'], 'applies_to' => $tile_layouts, 'depends_on' => ['hover_effect' => ['lift','zoom','glow','tilt','fade','slide-up','brighten','desaturate']]],
+            'hover_duration_ms' => ['type' => 'number', 'label' => 'Hover Duration (ms)', 'section' => 'style', 'min' => 50, 'max' => 1000, 'step' => 10, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — tile background ───────────────────────── */
+            'tile_bg_mode'        => ['type' => 'select', 'label' => 'Tile Background', 'section' => 'style', 'options' => ['theme' => 'Use Theme', 'transparent' => 'Transparent', 'custom' => 'Custom Color'], 'applies_to' => $tile_layouts],
+            'tile_bg_color'       => ['type' => 'color',  'label' => 'Tile Background Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['tile_bg_mode' => 'custom']],
+            'tile_hover_bg_color' => ['type' => 'color',  'label' => 'Tile Hover Background', 'section' => 'style', 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — tile box ──────────────────────────────── */
+            'tile_padding'       => ['type' => 'number', 'label' => 'Tile Padding (px)', 'section' => 'style', 'min' => 0, 'max' => 48, 'step' => 1, 'applies_to' => $tile_layouts],
+            'tile_border_width'  => ['type' => 'number', 'label' => 'Tile Border Width (px)', 'section' => 'style', 'min' => 0, 'max' => 8, 'step' => 1, 'applies_to' => $tile_layouts],
+            'tile_border_color'  => ['type' => 'color',  'label' => 'Tile Border Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'tile_border_style'  => ['type' => 'select', 'label' => 'Tile Border Style', 'section' => 'style', 'options' => ['solid' => 'Solid', 'dashed' => 'Dashed', 'dotted' => 'Dotted', 'none' => 'None'], 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — title typography ──────────────────────── */
+            'title_color'     => ['type' => 'color',  'label' => 'Title Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'title_size'      => ['type' => 'number', 'label' => 'Title Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 28, 'step' => 1, 'applies_to' => $tile_layouts],
+            'title_weight'    => ['type' => 'select', 'label' => 'Title Weight', 'section' => 'style', 'options' => ['300' => 'Light', '400' => 'Normal', '500' => 'Medium', '600' => 'Semi-bold', '700' => 'Bold'], 'applies_to' => $tile_layouts],
+            'title_transform' => ['type' => 'select', 'label' => 'Title Transform', 'section' => 'style', 'options' => ['none' => 'None', 'uppercase' => 'UPPERCASE', 'lowercase' => 'lowercase', 'capitalize' => 'Capitalize'], 'applies_to' => $tile_layouts],
+            'title_align'     => ['type' => 'select', 'label' => 'Title Align', 'section' => 'style', 'options' => ['left' => 'Left', 'center' => 'Center', 'right' => 'Right'], 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — caption typography ────────────────────── */
+            'caption_color' => ['type' => 'color',  'label' => 'Caption Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'caption_size'  => ['type' => 'number', 'label' => 'Caption Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — play button ───────────────────────────── */
+            'play_button_color'    => ['type' => 'color',  'label' => 'Play Button Color', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'play_button_bg_color' => ['type' => 'color',  'label' => 'Play Button Background', 'section' => 'style', 'applies_to' => $tile_layouts],
+            'play_button_size'     => ['type' => 'number', 'label' => 'Play Button Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => $tile_layouts],
+
+            /* ── 3.7.0: Style — overlay tile gradient strength ────────── */
+            'overlay_gradient_strength' => ['type' => 'number', 'label' => 'Overlay Gradient Strength (0-100)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_style' => 'overlay'], 'help' => 'Alpha of the bottom gradient stop on the overlay tile style.'],
+
+            /* ── 3.7.0: Behavior ──────────────────────────────────────── */
+            'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'behavior', 'min' => 50, 'max' => 800, 'step' => 10, 'help' => 'Global tile / thumb / title transition speed.'],
+
+            /* ── 3.7.0: Advanced — raw CSS var overrides ──────────────── */
+            'css_var_bg'         => ['type' => 'color', 'label' => 'Override: Tile Background (--avg-bg)', 'section' => 'advanced', 'help' => 'Theme-level default. Style tab Tile Background Color overrides this.'],
+            'css_var_bg_hover'   => ['type' => 'color', 'label' => 'Override: Tile Hover Background (--avg-bg-hover)', 'section' => 'advanced', 'help' => 'Theme-level default. Style tab Tile Hover Background overrides this.'],
+            'css_var_text'       => ['type' => 'color', 'label' => 'Override: Text Color (--avg-text)', 'section' => 'advanced'],
+            'css_var_text_muted' => ['type' => 'color', 'label' => 'Override: Muted Text (--avg-text-muted)', 'section' => 'advanced'],
+            'css_var_border'     => ['type' => 'color', 'label' => 'Override: Border Color (--avg-border)', 'section' => 'advanced'],
+            'css_var_overlay'    => ['type' => 'color', 'label' => 'Override: Overlay (--avg-overlay)', 'section' => 'advanced'],
+            'css_var_play_bg'    => ['type' => 'color', 'label' => 'Override: Play Button BG (--avg-play-bg)', 'section' => 'advanced'],
+            'css_var_play_color' => ['type' => 'color', 'label' => 'Override: Play Icon Color (--avg-play-color)', 'section' => 'advanced'],
+
+            /* ── 3.7.0: Advanced — custom CSS ─────────────────────────── */
+            'custom_css' => ['type' => 'textarea', 'label' => 'Custom CSS', 'section' => 'advanced', 'help' => 'Use [data-avg-uid="..."] or #avs-XXXX to scope rules to this gallery (UID is shown on the wrapper in view-source). Note: redefining a CSS variable on the wrapper requires !important to beat inline styles; targeting child elements does not. Also: the "Fade Others" hover effect requires a hover-capable pointer and is a no-op on touch devices.'],
         ];
     }
 

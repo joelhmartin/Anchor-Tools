@@ -122,3 +122,22 @@
   font-size: 12px;
   color: #6b6f76;
 }
+
+/* 3.7.0 — Custom CSS field help text emphasis */
+.anchor-builder__field[data-setting-key="custom_css"] .anchor-builder__help {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    background: #f6f7f7;
+    padding: 6px 8px;
+    border-left: 3px solid #2271b1;
+    margin-top: 6px;
+    white-space: normal;
+    line-height: 1.5;
+}
+
+/* 3.7.0 — Custom CSS textarea — wider + monospace for readability */
+.anchor-builder__field[data-setting-key="custom_css"] textarea {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    min-height: 140px;
+}

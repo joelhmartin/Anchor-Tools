@@ -128,6 +128,7 @@ class Anchor_Gallery_Module {
         'grid_mode'          => 'fixed',
         'grid_min_item_px'   => 160,
         'grid_justify'       => 'stretch',
+        'align_items'        => 'stretch',
         'tile_bg_alpha'      => 100,
         'thumb_aspect_auto'  => false,
         // 3.7.x — comprehensive control surface
@@ -395,10 +396,11 @@ class Anchor_Gallery_Module {
             /* ── 3.7.0: Advanced — custom CSS ─────────────────────────── */
             'custom_css' => ['type' => 'textarea', 'label' => 'Custom CSS', 'section' => 'advanced', 'help' => 'Use [data-avg-uid="..."] or #avs-XXXX to scope rules to this gallery (UID is shown on the wrapper in view-source). Note: redefining a CSS variable on the wrapper requires !important to beat inline styles; targeting child elements does not. Also: the "Fade Others" hover effect requires a hover-capable pointer and is a no-op on touch devices.'],
 
-            /* ── 3.7.x: Layout — auto-fit grid (item min-width, auto wrap) ─ */
-            'grid_mode' => ['type' => 'select', 'label' => 'Grid Mode', 'section' => 'layout', 'priority' => 25, 'options' => ['fixed' => 'Fixed Columns', 'auto_fit' => 'Auto-fit (min width, auto wrap)'], 'applies_to' => ['grid'], 'help' => 'Auto-fit ignores the column-count settings and uses an item minimum width instead, wrapping to next row when items don\'t fit.'],
-            'grid_min_item_px' => ['type' => 'number', 'label' => 'Min Item Width (px)', 'section' => 'layout', 'priority' => 26, 'min' => 60, 'max' => 600, 'step' => 10, 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => 'auto_fit']],
-            'grid_justify' => ['type' => 'select', 'label' => 'Row Justify', 'section' => 'layout', 'priority' => 27, 'options' => ['stretch' => 'Stretch (fill row)', 'start' => 'Start (left)', 'center' => 'Center', 'end' => 'End (right)'], 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => 'auto_fit']],
+            /* ── 3.7.x: Layout — grid wrap modes (fixed / auto-fit / flex) ─ */
+            'grid_mode' => ['type' => 'select', 'label' => 'Grid Mode', 'section' => 'layout', 'priority' => 25, 'options' => ['fixed' => 'Fixed Columns', 'auto_fit' => 'Auto-fit Grid (min width, auto wrap)', 'flex' => 'Flex Wrap (most reliable for centering)'], 'applies_to' => ['grid'], 'help' => 'Fixed = X columns at all widths. Auto-fit = CSS Grid auto-wrap. Flex = Flexbox wrap (best for "fixed-size items, centered remainder").'],
+            'grid_min_item_px' => ['type' => 'number', 'label' => 'Item Width (px)', 'section' => 'layout', 'priority' => 26, 'min' => 60, 'max' => 600, 'step' => 10, 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => ['auto_fit', 'flex']], 'help' => 'In Auto-fit: minimum width before wrap. In Flex: fixed width of each item.'],
+            'grid_justify' => ['type' => 'select', 'label' => 'Row Justify (horizontal)', 'section' => 'layout', 'priority' => 27, 'options' => ['stretch' => 'Stretch (fill row)', 'start' => 'Start (left)', 'center' => 'Center', 'end' => 'End (right)', 'space-between' => 'Space Between', 'space-around' => 'Space Around', 'space-evenly' => 'Space Evenly'], 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => ['auto_fit', 'flex']]],
+            'align_items' => ['type' => 'select', 'label' => 'Row Items Align (vertical)', 'section' => 'layout', 'priority' => 28, 'options' => ['stretch' => 'Stretch (default)', 'flex-start' => 'Top', 'center' => 'Center', 'flex-end' => 'Bottom', 'baseline' => 'Baseline'], 'applies_to' => ['grid'], 'depends_on' => ['grid_mode' => ['auto_fit', 'flex']], 'help' => 'Vertical alignment of items WITHIN each row. Useful when items have different heights (e.g. logo grid with mixed aspect ratios).'],
 
             /* ── 3.7.x: Style — tile background alpha (lets you get a transparent custom color) */
             'tile_bg_alpha' => ['type' => 'number', 'label' => 'Tile Background Opacity (%)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_bg_mode' => 'custom'], 'help' => 'Applies an alpha channel to the Tile Background Color. 100 = opaque, 0 = fully transparent.'],
@@ -586,9 +588,10 @@ class Anchor_Gallery_Module {
                 'description' => 'Auto-fit responsive grid with no card styling. Items have a min width and wrap on their own. No titles, no shadow, no bg, no decoration — just the images.',
                 'overrides'   => [
                     'avg_layout'             => 'grid',
-                    'avg_grid_mode'          => 'auto_fit',
+                    'avg_grid_mode'          => 'flex',
                     'avg_grid_min_item_px'   => 160,
                     'avg_grid_justify'       => 'center',
+                    'avg_align_items'        => 'center',
                     'avg_tile_bg_mode'       => 'transparent',
                     'avg_tile_padding'       => 0,
                     'avg_tile_border_width'  => 0,
@@ -1727,13 +1730,29 @@ class Anchor_Gallery_Module {
             $vars[] = '--avg-tile-hover-bg: ' . sanitize_text_field($settings['tile_hover_bg_color']);
         }
 
-        // 3.7.x — auto-fit grid mode emits min item width + justify.
-        if (($settings['grid_mode'] ?? 'fixed') === 'auto_fit') {
+        // 3.7.x — auto-fit grid and flex modes share min-width + justify + align.
+        $grid_mode = $settings['grid_mode'] ?? 'fixed';
+        if ($grid_mode === 'auto_fit' || $grid_mode === 'flex') {
             $min_px = max(60, min(600, intval($settings['grid_min_item_px'] ?? 160)));
             $vars[] = '--avg-grid-min: ' . $min_px . 'px';
+
             $justify = $settings['grid_justify'] ?? 'stretch';
-            if (in_array($justify, ['start', 'center', 'end', 'stretch'], true)) {
-                $vars[] = '--avg-grid-justify: ' . $justify;
+            $valid_justify = ['stretch','start','center','end','flex-start','flex-end','space-between','space-around','space-evenly'];
+            if (in_array($justify, $valid_justify, true)) {
+                // CSS Grid uses 'start/end'; Flexbox prefers 'flex-start/flex-end'. Normalize for flex mode.
+                $jc = $justify;
+                if ($grid_mode === 'flex') {
+                    if ($jc === 'start') $jc = 'flex-start';
+                    elseif ($jc === 'end') $jc = 'flex-end';
+                    elseif ($jc === 'stretch') $jc = 'flex-start'; // stretch isn't meaningful for flex justify
+                }
+                $vars[] = '--avg-grid-justify: ' . $jc;
+            }
+
+            $align = $settings['align_items'] ?? 'stretch';
+            $valid_align = ['stretch','flex-start','flex-end','center','baseline'];
+            if (in_array($align, $valid_align, true)) {
+                $vars[] = '--avg-align-items: ' . $align;
             }
         }
 
@@ -1961,9 +1980,18 @@ class Anchor_Gallery_Module {
         if (($settings['tile_bg_mode'] ?? 'theme') === 'transparent') {
             $classes[] = 'avg-tile-bg-transparent';
         }
-        // 3.7.x — auto-fit grid mode marker class (CSS reads --avg-grid-min)
-        if (($settings['layout'] ?? '') === 'grid' && ($settings['grid_mode'] ?? 'fixed') === 'auto_fit') {
-            $classes[] = 'avg-grid-auto-fit';
+        // 3.7.x — auto-fit / flex grid mode marker classes
+        if (($settings['layout'] ?? '') === 'grid') {
+            $gm = $settings['grid_mode'] ?? 'fixed';
+            if ($gm === 'auto_fit') {
+                $classes[] = 'avg-grid-auto-fit';
+                // Centering+spacing only work when columns aren't 1fr-stretched.
+                if (($settings['grid_justify'] ?? 'stretch') !== 'stretch') {
+                    $classes[] = 'avg-grid-justify-non-stretch';
+                }
+            } elseif ($gm === 'flex') {
+                $classes[] = 'avg-grid-flex';
+            }
         }
         // 3.7.x — title line-clamp disabled (unlimited)
         if (isset($settings['title_line_clamp']) && intval($settings['title_line_clamp']) === 0) {

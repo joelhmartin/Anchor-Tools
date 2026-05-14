@@ -92,6 +92,51 @@ class Anchor_Site_Config_Admin {
         <?php
     }
 
+    private function render_hours_section( $opts ) {
+        $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
+        $days    = [
+            'monday'    => __( 'Monday',    'anchor-schema' ),
+            'tuesday'   => __( 'Tuesday',   'anchor-schema' ),
+            'wednesday' => __( 'Wednesday', 'anchor-schema' ),
+            'thursday'  => __( 'Thursday',  'anchor-schema' ),
+            'friday'    => __( 'Friday',    'anchor-schema' ),
+            'saturday'  => __( 'Saturday',  'anchor-schema' ),
+            'sunday'    => __( 'Sunday',    'anchor-schema' ),
+        ];
+        ?>
+        <table class="form-table anchor-hours-table"><tbody>
+        <?php foreach ( $days as $day => $label ) :
+            $row    = $opts['hours'][ $day ] ?? [ 'open' => '', 'close' => '', 'closed' => false ];
+            $closed = ! empty( $row['closed'] );
+        ?>
+            <tr class="anchor-hours-row" data-day="<?php echo esc_attr( $day ); ?>">
+                <th scope="row"><label><?php echo esc_html( $label ); ?></label></th>
+                <td>
+                    <input type="time"
+                           name="<?php echo esc_attr( $opt_key . '[hours][' . $day . '][open]' ); ?>"
+                           value="<?php echo esc_attr( $row['open'] ); ?>"
+                           <?php disabled( $closed ); ?> />
+                    <?php esc_html_e( 'to', 'anchor-schema' ); ?>
+                    <input type="time"
+                           name="<?php echo esc_attr( $opt_key . '[hours][' . $day . '][close]' ); ?>"
+                           value="<?php echo esc_attr( $row['close'] ); ?>"
+                           <?php disabled( $closed ); ?> />
+                    &nbsp;
+                    <label>
+                        <input type="checkbox"
+                               class="anchor-hours-closed"
+                               name="<?php echo esc_attr( $opt_key . '[hours][' . $day . '][closed]' ); ?>"
+                               value="1"
+                               <?php checked( $closed ); ?> />
+                        <?php esc_html_e( 'Closed', 'anchor-schema' ); ?>
+                    </label>
+                </td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+        <?php
+    }
+
     private function render_business_section( $opts ) {
         $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
         $fields  = [

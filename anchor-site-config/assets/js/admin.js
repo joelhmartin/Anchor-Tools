@@ -39,5 +39,12 @@
             $row.find( '.anchor-media-preview' ).empty();
             $( this ).prop( 'disabled', true );
         } );
+
+        // Hours table — disable time inputs on the row when "Closed" is checked.
+        $( '.anchor-hours-closed' ).on( 'change', function() {
+            var $row    = $( this ).closest( '.anchor-hours-row' );
+            var closed  = $( this ).is( ':checked' );
+            $row.find( 'input[type="time"]' ).prop( 'disabled', closed );
+        } );
     });
 } )( jQuery );

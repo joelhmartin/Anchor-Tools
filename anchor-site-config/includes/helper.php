@@ -7,8 +7,8 @@ if ( ! function_exists( 'anchor_site_config' ) ) {
      *
      * @param string|null $path  e.g. 'colors.primary', 'fonts.heading.family', 'social.instagram'.
      *                           null returns the full nested array.
-     * @return mixed             string/int value at leaf, array at branch, '' for unknown leaf,
-     *                           [] for unknown branch, full array for null path.
+     * @return mixed             The value at the path (string, int, or array for branches),
+     *                           '' for any unknown path, full nested array for null path.
      */
     function anchor_site_config( $path = null ) {
         static $cache = null;
@@ -19,7 +19,7 @@ if ( ! function_exists( 'anchor_site_config' ) ) {
                     ? array_replace_recursive( Anchor_Site_Config_Module::get_defaults(), $stored )
                     : Anchor_Site_Config_Module::get_defaults();
             } else {
-                // Module disabled or not loaded — return defaults so theme code
+                // Module disabled or not loaded — return empty so theme code
                 // doesn't fatal.
                 $cache = [];
             }
@@ -34,11 +34,9 @@ if ( ! function_exists( 'anchor_site_config' ) ) {
         foreach ( $segments as $seg ) {
             if ( is_array( $cursor ) && array_key_exists( $seg, $cursor ) ) {
                 $cursor = $cursor[ $seg ];
-            } else {
-                // Differentiate leaf vs branch unknowns: if cursor is array and
-                // segment is missing, it's an unknown branch.
-                return is_array( $cursor ) ? [] : '';
+                continue;
             }
+            return '';
         }
         return $cursor;
     }

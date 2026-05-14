@@ -92,6 +92,38 @@ class Anchor_Site_Config_Admin {
         <?php
     }
 
+    private function render_fonts_section( $opts ) {
+        $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
+        $roles   = [
+            'heading' => __( 'Heading', 'anchor-schema' ),
+            'body'    => __( 'Body',    'anchor-schema' ),
+            'accent'  => __( 'Accent',  'anchor-schema' ),
+        ];
+        ?>
+        <table class="form-table"><tbody>
+        <?php foreach ( $roles as $role => $label ) :
+            $family = $opts['fonts'][ $role ]['family'] ?? '';
+            $source = $opts['fonts'][ $role ]['source'] ?? 'system';
+        ?>
+            <tr>
+                <th scope="row"><label><?php echo esc_html( $label ); ?></label></th>
+                <td>
+                    <input type="text" class="regular-text"
+                           name="<?php echo esc_attr( $opt_key . '[fonts][' . $role . '][family]' ); ?>"
+                           value="<?php echo esc_attr( $family ); ?>"
+                           placeholder="e.g. Inter, Georgia, …" />
+                    <select name="<?php echo esc_attr( $opt_key . '[fonts][' . $role . '][source]' ); ?>">
+                        <option value="system"         <?php selected( $source, 'system' ); ?>><?php esc_html_e( 'System / web-safe',    'anchor-schema' ); ?></option>
+                        <option value="google"         <?php selected( $source, 'google' ); ?>><?php esc_html_e( 'Google Fonts',         'anchor-schema' ); ?></option>
+                        <option value="adobe-deferred" disabled><?php esc_html_e( 'Adobe Fonts (Phase 3.5)', 'anchor-schema' ); ?></option>
+                    </select>
+                </td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+        <?php
+    }
+
     private function render_colors_section( $opts ) {
         $defaults = Anchor_Site_Config_Module::get_defaults();
         $opt_key  = Anchor_Site_Config_Module::OPTION_KEY;

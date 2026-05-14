@@ -42,8 +42,78 @@ class Anchor_Site_Config_Admin {
     }
 
     public function render_tab_content() {
-        // Body lands in Task C2.
-        echo '<p>Site Config tab — UI under construction.</p>';
+        $opts = $this->module->get_options();
+        ?>
+        <form method="post" action="options.php" class="anchor-site-config-form">
+            <?php settings_fields( Anchor_Site_Config_Module::OPTION_GROUP ); ?>
+
+            <details class="anchor-site-config-section" open>
+                <summary><?php esc_html_e( 'Brand Colors', 'anchor-schema' ); ?></summary>
+                <?php $this->render_colors_section( $opts ); ?>
+            </details>
+
+            <details class="anchor-site-config-section">
+                <summary><?php esc_html_e( 'Fonts', 'anchor-schema' ); ?></summary>
+                <?php $this->render_fonts_section( $opts ); ?>
+            </details>
+
+            <details class="anchor-site-config-section">
+                <summary><?php esc_html_e( 'Brand Assets', 'anchor-schema' ); ?></summary>
+                <?php $this->render_brand_section( $opts ); ?>
+            </details>
+
+            <details class="anchor-site-config-section">
+                <summary><?php esc_html_e( 'Business Identity', 'anchor-schema' ); ?></summary>
+                <?php $this->render_business_section( $opts ); ?>
+            </details>
+
+            <details class="anchor-site-config-section">
+                <summary><?php esc_html_e( 'Location', 'anchor-schema' ); ?></summary>
+                <?php $this->render_location_section( $opts ); ?>
+            </details>
+
+            <details class="anchor-site-config-section">
+                <summary><?php esc_html_e( 'Business Hours', 'anchor-schema' ); ?></summary>
+                <?php $this->render_hours_section( $opts ); ?>
+            </details>
+
+            <details class="anchor-site-config-section">
+                <summary><?php esc_html_e( 'Social', 'anchor-schema' ); ?></summary>
+                <?php $this->render_social_section( $opts ); ?>
+            </details>
+
+            <details class="anchor-site-config-section">
+                <summary><?php esc_html_e( 'Custom Shortcodes', 'anchor-schema' ); ?></summary>
+                <?php $this->render_custom_shortcodes_section( $opts ); ?>
+            </details>
+
+            <?php submit_button(); ?>
+        </form>
+        <?php
+    }
+
+    private function render_colors_section( $opts ) {
+        $defaults = Anchor_Site_Config_Module::get_defaults();
+        $opt_key  = Anchor_Site_Config_Module::OPTION_KEY;
+        ?>
+        <table class="form-table"><tbody>
+        <?php foreach ( $defaults['colors'] as $color_key => $default ) :
+            $value = $opts['colors'][ $color_key ] ?? $default;
+            $label = ucfirst( $color_key );
+        ?>
+            <tr>
+                <th scope="row"><label><?php echo esc_html( $label ); ?></label></th>
+                <td>
+                    <input type="text"
+                           class="anchor-color-field"
+                           name="<?php echo esc_attr( $opt_key . '[colors][' . $color_key . ']' ); ?>"
+                           value="<?php echo esc_attr( $value ); ?>"
+                           data-default-color="<?php echo esc_attr( $default ); ?>" />
+                </td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+        <?php
     }
 
     public function register_settings() {

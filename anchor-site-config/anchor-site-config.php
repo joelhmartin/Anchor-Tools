@@ -95,31 +95,102 @@ class Anchor_Site_Config_Module {
     }
 
     /**
-     * Read the stored option, merged over defaults. Always returns a
-     * fully-populated array (no missing top-level keys).
+     * Read the stored option, merged over defaults, with legacy
+     * anchor-shortcodes data layered in as a fallback.
+     *
+     * Layer order (later wins): defaults → legacy → stored.
+     * Always returns a fully-populated array.
      */
     public function get_options() {
-        $stored   = get_option( self::OPTION_KEY, [] );
         $defaults = self::get_defaults();
+        $legacy   = self::map_legacy_to_site_config();
+        $stored   = get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $stored ) ) {
-            return $defaults;
+            $stored = [];
         }
-        // Two-level deep merge so per-group partial saves don't wipe
-        // sibling keys (e.g. saving only the Colors section).
+
+        // Start from defaults, layer in legacy mappings, then stored values.
         $out = $defaults;
-        foreach ( $stored as $group => $values ) {
-            if ( ! isset( $defaults[ $group ] ) ) {
-                continue; // ignore unknown groups
-            }
-            if ( $group === 'custom_shortcodes' ) {
-                // Repeater is a list, not a keyed array — replace whole.
-                $out[ $group ] = is_array( $values ) ? $values : [];
-                continue;
-            }
-            if ( is_array( $values ) ) {
-                $out[ $group ] = array_merge( $defaults[ $group ], $values );
+        foreach ( [ $legacy, $stored ] as $layer ) {
+            foreach ( $layer as $group => $values ) {
+                if ( ! isset( $defaults[ $group ] ) ) continue;
+                if ( $group === 'custom_shortcodes' ) {
+                    $out[ $group ] = is_array( $values ) ? $values : [];
+                    continue;
+                }
+                if ( is_array( $values ) ) {
+                    $out[ $group ] = array_merge( $out[ $group ], $values );
+                }
             }
         }
+        return $out;
+    }
+
+    /**
+     * Map legacy anchor-shortcodes (and cgsl_options legacy-of-legacy) data
+     * onto this module's nested-array schema. Best-effort, only for fields
+     * that map cleanly. Schema mismatches (free-text address/hours, URL→ID
+     * for brand assets) are handled in shortcode callbacks rather than via
+     * this map.
+     *
+     * @return array Partial site-config-shaped array (only filled groups present).
+     */
+    public static function map_legacy_to_site_config() {
+        $legacy = get_option( 'anchor_shortcodes_options', null );
+        if ( empty( $legacy ) ) {
+            $legacy = get_option( 'cgsl_options', [] );
+        }
+        if ( ! is_array( $legacy ) || empty( $legacy ) ) {
+            return [];
+        }
+
+        $out = [];
+
+        // Business identity: legacy uses either business_phone or phone, etc.
+        $business = [];
+        if ( ! empty( $legacy['business_name'] ) ) {
+            $business['name'] = (string) $legacy['business_name'];
+        }
+        foreach ( [ 'business_phone' => 'phone', 'business_email' => 'email' ] as $canonical => $alias ) {
+            $sc_key = str_replace( 'business_', '', $canonical );
+            if ( ! empty( $legacy[ $canonical ] ) ) {
+                $business[ $sc_key ] = (string) $legacy[ $canonical ];
+            } elseif ( ! empty( $legacy[ $alias ] ) ) {
+                $business[ $sc_key ] = (string) $legacy[ $alias ];
+            }
+        }
+        if ( $business ) {
+            $out['business'] = $business;
+        }
+
+        // Brand assets: legacy stores URLs, site-config expects attachment IDs.
+        // Convert via attachment_url_to_postid; ID 0 if not in the media library.
+        $brand_map = [
+            'site_image_url'              => 'primary_logo',
+            'site_image_horizontal'       => 'primary_logo',
+            'site_image_horizontal_white' => 'primary_logo_white',
+            'site_image_white'            => 'primary_logo_white',
+            'site_icon_url'               => 'favicon',
+        ];
+        $brand = [];
+        foreach ( $brand_map as $legacy_key => $sc_key ) {
+            if ( empty( $legacy[ $legacy_key ] ) || isset( $brand[ $sc_key ] ) ) continue;
+            $id = function_exists( 'attachment_url_to_postid' )
+                ? attachment_url_to_postid( $legacy[ $legacy_key ] )
+                : 0;
+            if ( $id ) {
+                $brand[ $sc_key ] = $id;
+            }
+        }
+        if ( $brand ) {
+            $out['brand'] = $brand;
+        }
+
+        // Custom shortcodes — direct copy (same shape in both schemas).
+        if ( ! empty( $legacy['custom_shortcodes'] ) && is_array( $legacy['custom_shortcodes'] ) ) {
+            $out['custom_shortcodes'] = $legacy['custom_shortcodes'];
+        }
+
         return $out;
     }
 }

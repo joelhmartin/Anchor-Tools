@@ -46,5 +46,17 @@
             var closed  = $( this ).is( ':checked' );
             $row.find( 'input[type="time"]' ).prop( 'disabled', closed );
         } );
+
+        // Custom-shortcodes repeater.
+        var rowCounter = $( '.anchor-site-config-rows .anchor-site-config-row' ).length;
+
+        $( '#anchor-site-config-add-row' ).on( 'click', function() {
+            var tmpl = $( '#tmpl-anchor-site-config-row' ).html().replace( /\{\{INDEX\}\}/g, rowCounter++ );
+            $( '.anchor-site-config-rows' ).append( tmpl );
+        } );
+
+        $( '.anchor-site-config-rows' ).on( 'click', '.anchor-site-config-remove-row', function() {
+            $( this ).closest( '.anchor-site-config-row' ).remove();
+        } );
     });
 } )( jQuery );

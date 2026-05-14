@@ -92,6 +92,57 @@ class Anchor_Site_Config_Admin {
         <?php
     }
 
+    private function render_custom_shortcodes_section( $opts ) {
+        $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
+        $rows    = $opts['custom_shortcodes'] ?? [];
+        ?>
+        <p class="description">
+            <?php esc_html_e( 'Define shortcodes of the form [your_tag] that output the content below.', 'anchor-schema' ); ?>
+        </p>
+        <div class="anchor-site-config-rows">
+            <?php foreach ( $rows as $i => $row ) : ?>
+                <?php $this->render_custom_shortcode_row( $i, $row, $opt_key ); ?>
+            <?php endforeach; ?>
+        </div>
+        <button type="button" class="button" id="anchor-site-config-add-row">
+            <?php esc_html_e( '+ Add Shortcode', 'anchor-schema' ); ?>
+        </button>
+
+        <script type="text/html" id="tmpl-anchor-site-config-row">
+            <?php $this->render_custom_shortcode_row( '{{INDEX}}', [ 'shortcode' => '', 'title' => '', 'content' => '' ], $opt_key ); ?>
+        </script>
+        <?php
+    }
+
+    private function render_custom_shortcode_row( $index, $row, $opt_key ) {
+        $name_prefix = $opt_key . '[custom_shortcodes][' . $index . ']';
+        ?>
+        <div class="anchor-site-config-row" style="margin:8px 0;padding:8px;border:1px solid #ddd;border-radius:4px;">
+            <p>
+                <label><?php esc_html_e( 'Shortcode tag', 'anchor-schema' ); ?>:</label>
+                <input type="text" class="regular-text"
+                       name="<?php echo esc_attr( $name_prefix . '[shortcode]' ); ?>"
+                       value="<?php echo esc_attr( $row['shortcode'] ?? '' ); ?>"
+                       placeholder="my_tag" />
+            </p>
+            <p>
+                <label><?php esc_html_e( 'Title (admin reference)', 'anchor-schema' ); ?>:</label>
+                <input type="text" class="regular-text"
+                       name="<?php echo esc_attr( $name_prefix . '[title]' ); ?>"
+                       value="<?php echo esc_attr( $row['title'] ?? '' ); ?>" />
+            </p>
+            <p>
+                <label><?php esc_html_e( 'Output content', 'anchor-schema' ); ?>:</label>
+                <textarea rows="3" class="large-text"
+                          name="<?php echo esc_attr( $name_prefix . '[content]' ); ?>"><?php echo esc_textarea( $row['content'] ?? '' ); ?></textarea>
+            </p>
+            <button type="button" class="button button-link-delete anchor-site-config-remove-row">
+                <?php esc_html_e( 'Remove row', 'anchor-schema' ); ?>
+            </button>
+        </div>
+        <?php
+    }
+
     private function render_social_section( $opts ) {
         $opt_key   = Anchor_Site_Config_Module::OPTION_KEY;
         $platforms = [

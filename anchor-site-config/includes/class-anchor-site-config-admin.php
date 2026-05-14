@@ -92,6 +92,55 @@ class Anchor_Site_Config_Admin {
         <?php
     }
 
+    private function render_business_section( $opts ) {
+        $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
+        $fields  = [
+            'name'    => [ __( 'Business name', 'anchor-schema' ), 'text' ],
+            'tagline' => [ __( 'Tagline',       'anchor-schema' ), 'text' ],
+            'phone'   => [ __( 'Phone',         'anchor-schema' ), 'tel'  ],
+            'email'   => [ __( 'Email',         'anchor-schema' ), 'email' ],
+        ];
+        $this->render_text_grid( $opts['business'], $fields, $opt_key . '[business]' );
+    }
+
+    private function render_location_section( $opts ) {
+        $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
+        $fields  = [
+            'line1'   => [ __( 'Address line 1', 'anchor-schema' ), 'text' ],
+            'line2'   => [ __( 'Address line 2', 'anchor-schema' ), 'text' ],
+            'city'    => [ __( 'City',           'anchor-schema' ), 'text' ],
+            'state'   => [ __( 'State / Region', 'anchor-schema' ), 'text' ],
+            'postal'  => [ __( 'Postal code',    'anchor-schema' ), 'text' ],
+            'country' => [ __( 'Country',        'anchor-schema' ), 'text' ],
+        ];
+        $this->render_text_grid( $opts['location'], $fields, $opt_key . '[location]' );
+    }
+
+    /**
+     * Reusable text-grid renderer.
+     * $values: array of stored values keyed by field key
+     * $fields: array of [ key => [label, input_type] ]
+     * $name_prefix: e.g. 'anchor_site_config_options[business]'
+     */
+    private function render_text_grid( $values, $fields, $name_prefix ) {
+        ?>
+        <table class="form-table"><tbody>
+        <?php foreach ( $fields as $key => list( $label, $type ) ) :
+            $value = $values[ $key ] ?? '';
+        ?>
+            <tr>
+                <th scope="row"><label><?php echo esc_html( $label ); ?></label></th>
+                <td>
+                    <input type="<?php echo esc_attr( $type ); ?>" class="regular-text"
+                           name="<?php echo esc_attr( $name_prefix . '[' . $key . ']' ); ?>"
+                           value="<?php echo esc_attr( $value ); ?>" />
+                </td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+        <?php
+    }
+
     private function render_brand_section( $opts ) {
         $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
         $fields  = [

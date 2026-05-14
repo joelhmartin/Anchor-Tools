@@ -1,0 +1,25 @@
+/* Anchor Site Config — admin styling */
+
+.anchor-site-config-section {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 12px 18px;
+    margin: 12px 0;
+}
+.anchor-site-config-section summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    padding: 4px 0;
+    user-select: none;
+}
+.anchor-site-config-section[open] summary {
+    margin-bottom: 10px;
+}
+.anchor-site-config-section .form-table {
+    margin-top: 0;
+}
+.anchor-site-config-section .form-table th {
+    width: 200px;
+}

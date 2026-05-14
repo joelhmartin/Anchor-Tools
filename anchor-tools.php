@@ -2935,6 +2935,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-shortcodes/anchor-shortcodes.php',
                 'class'       => 'Anchor_Shortcodes_Module',
             ],
+            'site_config' => [
+                'label'       => __( 'Anchor Site Config', 'anchor-schema' ),
+                'description' => __( 'Brand colors, fonts, logos, business info, hours, social links + custom shortcodes. Replaces Anchor Shortcodes.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-site-config/anchor-site-config.php',
+                'class'       => 'Anchor_Site_Config_Module',
+            ],
             'video_slider' => [
                 'label'       => __( 'Anchor Gallery', 'anchor-schema' ),
                 'description' => __( 'Create galleries with slider, grid, carousel, masonry, and logo marquee layouts.', 'anchor-schema' ),

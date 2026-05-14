@@ -92,6 +92,35 @@ class Anchor_Site_Config_Admin {
         <?php
     }
 
+    private function render_social_section( $opts ) {
+        $opt_key   = Anchor_Site_Config_Module::OPTION_KEY;
+        $platforms = [
+            'facebook'  => 'Facebook',
+            'instagram' => 'Instagram',
+            'twitter'   => 'Twitter / X',
+            'linkedin'  => 'LinkedIn',
+            'youtube'   => 'YouTube',
+            'tiktok'    => 'TikTok',
+        ];
+        ?>
+        <table class="form-table"><tbody>
+        <?php foreach ( $platforms as $key => $label ) :
+            $value = $opts['social'][ $key ] ?? '';
+        ?>
+            <tr>
+                <th scope="row"><label><?php echo esc_html( $label ); ?></label></th>
+                <td>
+                    <input type="url" class="regular-text"
+                           name="<?php echo esc_attr( $opt_key . '[social][' . $key . ']' ); ?>"
+                           value="<?php echo esc_attr( $value ); ?>"
+                           placeholder="https://..." />
+                </td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+        <?php
+    }
+
     private function render_hours_section( $opts ) {
         $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
         $days    = [

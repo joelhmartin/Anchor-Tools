@@ -9,6 +9,41 @@ class Anchor_Site_Config_Admin {
     public function __construct( Anchor_Site_Config_Module $module ) {
         $this->module = $module;
         add_action( 'admin_init', [ $this, 'register_settings' ] );
+        add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 20 );
+        add_action( 'anchor_settings_enqueue_site_config', [ $this, 'enqueue_assets' ] );
+    }
+
+    public function register_tab( $tabs ) {
+        $tabs['site_config'] = [
+            'label'    => __( 'Site Config', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
+    }
+
+    public function enqueue_assets( $hook ) {
+        wp_enqueue_media();
+        wp_enqueue_style( 'wp-color-picker' );
+
+        wp_enqueue_style(
+            'anchor-site-config-admin',
+            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-site-config/assets/css/admin.css',
+            [],
+            '1.0.0'
+        );
+
+        wp_enqueue_script(
+            'anchor-site-config-admin',
+            ANCHOR_TOOLS_PLUGIN_URL . 'anchor-site-config/assets/js/admin.js',
+            [ 'jquery', 'wp-color-picker' ],
+            '1.0.0',
+            true
+        );
+    }
+
+    public function render_tab_content() {
+        // Body lands in Task C2.
+        echo '<p>Site Config tab — UI under construction.</p>';
     }
 
     public function register_settings() {

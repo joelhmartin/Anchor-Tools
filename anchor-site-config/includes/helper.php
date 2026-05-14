@@ -14,10 +14,10 @@ if ( ! function_exists( 'anchor_site_config' ) ) {
         static $cache = null;
         if ( null === $cache ) {
             if ( class_exists( 'Anchor_Site_Config_Module' ) ) {
-                $stored = get_option( Anchor_Site_Config_Module::OPTION_KEY, [] );
-                $cache  = is_array( $stored )
-                    ? array_replace_recursive( Anchor_Site_Config_Module::get_defaults(), $stored )
-                    : Anchor_Site_Config_Module::get_defaults();
+                // Reuse the module's layered resolution so the helper sees the same
+                // defaults → legacy → stored chain as everything else.
+                $module = new Anchor_Site_Config_Module();
+                $cache  = $module->get_options();
             } else {
                 // Module disabled or not loaded — return empty so theme code
                 // doesn't fatal.

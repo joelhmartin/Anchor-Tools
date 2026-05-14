@@ -92,6 +92,48 @@ class Anchor_Site_Config_Admin {
         <?php
     }
 
+    private function render_brand_section( $opts ) {
+        $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
+        $fields  = [
+            'primary_logo'         => __( 'Primary Logo',                'anchor-schema' ),
+            'secondary_logo'       => __( 'Secondary Logo',              'anchor-schema' ),
+            'primary_logo_white'   => __( 'Primary Logo (white)',        'anchor-schema' ),
+            'secondary_logo_white' => __( 'Secondary Logo (white)',      'anchor-schema' ),
+            'favicon'              => __( 'Favicon',                     'anchor-schema' ),
+            'og_image'             => __( 'Default Open Graph Image',    'anchor-schema' ),
+        ];
+        ?>
+        <table class="form-table"><tbody>
+        <?php foreach ( $fields as $key => $label ) :
+            $att_id  = absint( $opts['brand'][ $key ] ?? 0 );
+            $thumb   = $att_id ? wp_get_attachment_image_url( $att_id, 'thumbnail' ) : '';
+            $input   = $opt_key . '[brand][' . $key . ']';
+        ?>
+            <tr class="anchor-media-row">
+                <th scope="row"><label><?php echo esc_html( $label ); ?></label></th>
+                <td>
+                    <div class="anchor-media-preview">
+                        <?php if ( $thumb ) : ?>
+                            <img src="<?php echo esc_url( $thumb ); ?>" alt="" style="max-width:120px;max-height:80px;" />
+                        <?php endif; ?>
+                    </div>
+                    <input type="hidden"
+                           class="anchor-media-id"
+                           name="<?php echo esc_attr( $input ); ?>"
+                           value="<?php echo esc_attr( $att_id ); ?>" />
+                    <button type="button" class="button anchor-media-choose">
+                        <?php esc_html_e( 'Choose Image', 'anchor-schema' ); ?>
+                    </button>
+                    <button type="button" class="button anchor-media-remove" <?php disabled( ! $att_id ); ?>>
+                        <?php esc_html_e( 'Remove', 'anchor-schema' ); ?>
+                    </button>
+                </td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table>
+        <?php
+    }
+
     private function render_fonts_section( $opts ) {
         $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
         $roles   = [

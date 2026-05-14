@@ -134,11 +134,13 @@ class Anchor_Site_Config_Shortcodes {
         } );
 
         // ─── Custom shortcodes from the repeater ───
+        // Skip any tag that already exists — don't override WP core, other plugins,
+        // or our own canonical/legacy aliases registered above.
         $custom = $this->module->get_options()['custom_shortcodes'];
         foreach ( $custom as $row ) {
             $tag     = $row['shortcode'];
             $content = $row['content'];
-            if ( $tag === '' ) continue;
+            if ( $tag === '' || shortcode_exists( $tag ) ) continue;
             add_shortcode( $tag, function() use ( $content ) {
                 return esc_html( $content );
             } );

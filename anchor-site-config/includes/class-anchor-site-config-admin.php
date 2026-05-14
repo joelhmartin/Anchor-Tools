@@ -481,12 +481,10 @@ class Anchor_Site_Config_Admin {
             foreach ( $defaults['hours'] as $day => $default ) {
                 if ( ! isset( $input['hours'][ $day ] ) ) continue;
                 $row    = $input['hours'][ $day ];
-                $open   = preg_match( '/^[0-9]{1,2}:[0-9]{2}$/', $row['open'] ?? '' )
-                    ? $row['open']
-                    : '';
-                $close  = preg_match( '/^[0-9]{1,2}:[0-9]{2}$/', $row['close'] ?? '' )
-                    ? $row['close']
-                    : '';
+                // Strict 24-hour validation: 00:00-23:59 only.
+                $time_re = '/^(?:[01]\d|2[0-3]):[0-5]\d$/';
+                $open    = preg_match( $time_re, $row['open']  ?? '' ) ? $row['open']  : '';
+                $close   = preg_match( $time_re, $row['close'] ?? '' ) ? $row['close'] : '';
                 $closed = ! empty( $row['closed'] );
                 $out['hours'][ $day ] = [
                     'open'   => $open,

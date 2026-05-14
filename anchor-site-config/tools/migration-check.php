@@ -119,10 +119,11 @@ $counts   = array_fill_keys( array_keys( $legacy_shortcodes ), 0 );
 $usage    = array_fill_keys( array_keys( $legacy_shortcodes ), [] );
 
 global $wpdb;
-$rows = $wpdb->get_results( "SELECT ID, post_title, post_type FROM {$wpdb->posts} WHERE post_status = 'publish' AND post_content != ''" );
+// Select post_content up-front so the loop is one DB query instead of N+1.
+$rows = $wpdb->get_results( "SELECT ID, post_title, post_type, post_content FROM {$wpdb->posts} WHERE post_status = 'publish' AND post_content != ''" );
 
 foreach ( $rows as $row ) {
-    $content = get_post_field( 'post_content', $row->ID );
+    $content = (string) $row->post_content;
     if ( $content === '' ) continue;
     foreach ( $legacy_shortcodes as $tag => $coverage ) {
         // Match [tag] or [tag with attrs] or [tag/]
@@ -157,8 +158,8 @@ if ( ! empty( $opts['custom_shortcodes'] ) && is_array( $opts['custom_shortcodes
         if ( $tag === '' ) continue;
         $custom_count = 0;
         foreach ( $rows as $r ) {
-            $content = get_post_field( 'post_content', $r->ID );
-            if ( preg_match_all( '/\[\s*' . preg_quote( $tag, '/' ) . '(\s[^\]]*)?\s*\/?\s*\]/', $content, $m ) ) {
+            // post_content was selected in the initial query — reuse it (no per-row DB hit).
+            if ( preg_match_all( '/\[\s*' . preg_quote( $tag, '/' ) . '(\s[^\]]*)?\s*\/?\s*\]/', (string) $r->post_content, $m ) ) {
                 $custom_count += count( $m[0] );
             }
         }
@@ -187,7 +188,12 @@ foreach ( $theme_dirs as $dir ) {
         $contents = @file_get_contents( $file->getPathname() );
         if ( $contents === false ) continue;
         foreach ( array_keys( $legacy_shortcodes ) as $tag ) {
-            if ( strpos( $contents, '[' . $tag ) !== false || strpos( $contents, "'{$tag}'" ) !== false || strpos( $contents, "\"{$tag}\"" ) !== false ) {
+            // Token-precise match: '[' + tag must NOT be followed by another identifier
+            // character (so [business_name] doesn't false-positive on [business_name_extended]).
+            $shortcode_re = '/\[' . preg_quote( $tag, '/' ) . '(?![A-Za-z0-9_])/';
+            // Quoted-string matches require word boundaries on both sides.
+            $quoted_re    = '/[\'"]' . preg_quote( $tag, '/' ) . '[\'"]/';
+            if ( preg_match( $shortcode_re, $contents ) || preg_match( $quoted_re, $contents ) ) {
                 $rel = str_replace( ABSPATH, '', $file->getPathname() );
                 $theme_hits[ $tag ][] = $rel;
             }

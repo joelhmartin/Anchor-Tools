@@ -9,7 +9,7 @@ class Module {
     const ADMIN_NONCE = 'anchor_store_locator_admin';
     const DEFAULT_LAT = 39.8283;
     const DEFAULT_LNG = -98.5795;
-    const DEFAULT_RADIUS_MILES = 100;
+    const DEFAULT_RADIUS_MILES = 250;
 
     private $assets_enqueued = false;
 

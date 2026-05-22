@@ -148,12 +148,14 @@
       statusEl.textContent = message || '';
     }
 
-    function highlightResult(id){
+    function highlightResult(id, scroll){
       var cards = listEl.querySelectorAll('.anchor-store-card');
       cards.forEach(function(card){
         if(card.dataset.storeId === String(id)){
           card.classList.add('is-active');
-          card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          if(scroll){
+            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
         } else {
           card.classList.remove('is-active');
         }
@@ -199,7 +201,7 @@
             infoWindow.setContent('<strong>' + (item.data.title || '') + '</strong>');
             infoWindow.open(map, marker);
           }
-          highlightResult(item.data.id);
+          highlightResult(item.data.id, true);
         });
         card.addEventListener('keydown', function(evt){
           if(evt.key === 'Enter' || evt.key === ' '){
@@ -221,18 +223,37 @@
       } else {
         setStatus('No locations found within ' + radius + ' miles.');
       }
+
+      return results;
+    }
+
+    function focusNearestStore(results){
+      if(!results || !results.length){ return false; }
+      var nearest = results[0].data;
+      var marker = markers[nearest.id];
+      if(!marker){ return false; }
+      map.panTo(marker.getPosition());
+      map.setZoom(Math.max(map.getZoom(), 12));
+      infoWindow.setContent('<strong>' + (nearest.title || '') + '</strong>');
+      infoWindow.open(map, marker);
+      highlightResult(nearest.id);
+      return true;
     }
 
     function setActiveLocation(latLng, label){
       activeLocation = { lat: Number(latLng.lat), lng: Number(latLng.lng) };
-      map.setCenter(activeLocation);
-      if(map.getZoom() < defaultZoom){
-        map.setZoom(defaultZoom);
-      }
       if(label && searchInput){
         searchInput.value = label;
       }
-      renderResults();
+      // Center on the nearest store rather than the raw geocoded point (e.g. a
+      // state's centroid). Fall back to the searched point when nothing's in range.
+      var results = renderResults();
+      if(!focusNearestStore(results)){
+        map.setCenter(activeLocation);
+        if(map.getZoom() < defaultZoom){
+          map.setZoom(defaultZoom);
+        }
+      }
     }
 
     function geocodeAddress(address){
@@ -376,7 +397,7 @@
         map.panTo(marker.getPosition());
         infoWindow.setContent('<strong>' + (loc.title || '') + '</strong>');
         infoWindow.open(map, marker);
-        highlightResult(loc.id);
+        highlightResult(loc.id, true);
       });
     });
 

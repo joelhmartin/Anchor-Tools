@@ -240,6 +240,11 @@ $fields = [
             return $raw ? 'tel:' . esc_attr( $raw ) : '';
         });
 
+        add_shortcode( 'sms_href', function() use ( $opts ) {
+            $raw = preg_replace( '/[^\d\+]/', '', $opts['phone'] );
+            return $raw ? 'sms:' . esc_attr( $raw ) : '';
+        });
+
         add_shortcode( 'page_title', function() {
             if ( is_singular() ) {
                 return esc_html( get_the_title() );
@@ -293,6 +298,7 @@ $fields = [
             <li><code>[address]</code></li>
             <li><code>[phone]</code></li>
             <li><code>[phone_href]</code></li>
+            <li><code>[sms_href]</code></li>
             <li><code>[email]</code></li>
             <li><code>[business_hours]</code></li>
         </ul>

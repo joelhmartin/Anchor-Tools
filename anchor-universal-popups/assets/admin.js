@@ -21,6 +21,17 @@
     });
   }
 
+  function toggleScrollFields(){
+    var scrollMode = $('select[name="up_scroll_mode"]').val() || 'depth';
+    $('[data-up-show-when-scroll-mode]').each(function(){
+      var allowed = String($(this).attr('data-up-show-when-scroll-mode') || '')
+        .split(',')
+        .map(function(s){ return $.trim(s); })
+        .filter(Boolean);
+      $(this).toggle(allowed.indexOf(scrollMode) !== -1);
+    });
+  }
+
   function toggleModeFields(){
     var mode = $('select[name="up_mode"]').val() || 'html';
 
@@ -94,10 +105,12 @@
 
   $(document).ready(function(){
     toggleTriggerFields();
+    toggleScrollFields();
     toggleModeFields();
     togglePopupStyleFields();
     toggleCinematic();
     $(document).on('change', 'select[name="up_trigger_type"]', toggleTriggerFields);
+    $(document).on('change', 'select[name="up_scroll_mode"]', toggleScrollFields);
     $(document).on('change', 'select[name="up_popup_style"]', togglePopupStyleFields);
     $(document).on('change', 'select[name="up_mode"]', function(){
       toggleModeFields();

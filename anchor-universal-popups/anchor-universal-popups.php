@@ -143,7 +143,7 @@ class Anchor_Universal_Popups_Module {
             'hover_effect' => 'lift',       // lift, zoom, glow, none
             'play_button_style' => 'circle', // circle, square, youtube, minimal, none
             'border_radius' => '12',        // 0-32
-            'popup_style' => 'modal',       // modal, theater, drawer-right, drawer-left, drawer-bottom, flyin-bottom, flyin-bottom-left, flyin-bottom-right
+            'popup_style' => 'modal',       // modal, theater, fullscreen, drawer-right, drawer-left, drawer-bottom, flyin-bottom, flyin-bottom-left, flyin-bottom-right
             'modal_max_width' => '',        // e.g. 1200px or 80%, blank = default 960px
             'theater_max_width' => '',      // e.g. 90% or 1600px, blank = default 90%
             'theater_max_height' => '',     // e.g. 90% or 900px, blank = default 90%
@@ -156,9 +156,12 @@ class Anchor_Universal_Popups_Module {
             'js'   => '',
 
             // trigger
-            'trigger_type' => 'page_load',  // page_load, class, id
+            'trigger_type' => 'page_load',  // page_load, class, id, scroll
             'trigger_value' => '',          // class without dot, or id without hash
             'delay_ms' => 0,                // used for page_load
+            'scroll_mode' => 'depth',       // depth (% of page scrolled) or element (target % in view)
+            'scroll_percent' => 50,         // 0-100; page-scroll % (depth) or visible threshold (element)
+            'scroll_target' => '',          // CSS selector for element mode, e.g. #section-3 or .cta
 
             // frequency
             'frequency_mode' => 'session',  // session or cooldown
@@ -188,6 +191,7 @@ class Anchor_Universal_Popups_Module {
         $allowed = [
             'modal',
             'theater',
+            'fullscreen',
             'drawer-right',
             'drawer-left',
             'drawer-bottom',
@@ -635,6 +639,7 @@ class Anchor_Universal_Popups_Module {
           <select name="up_popup_style" id="up_popup_style">
             <option value="modal" <?php selected($m['popup_style'], 'modal'); ?>>Modal (centered)</option>
             <option value="theater" <?php selected($m['popup_style'], 'theater'); ?>>Theater (fullscreen)</option>
+            <option value="fullscreen" <?php selected($m['popup_style'], 'fullscreen'); ?>>Fullscreen takeover (fades over page)</option>
             <option value="drawer-right" <?php selected($m['popup_style'], 'drawer-right'); ?>>Drawer (right)</option>
             <option value="drawer-left" <?php selected($m['popup_style'], 'drawer-left'); ?>>Drawer (left)</option>
             <option value="drawer-bottom" <?php selected($m['popup_style'], 'drawer-bottom'); ?>>Drawer (bottom)</option>
@@ -683,6 +688,7 @@ class Anchor_Universal_Popups_Module {
             <option value="page_load" <?php selected($m['trigger_type'],'page_load'); ?>>Page load</option>
             <option value="class" <?php selected($m['trigger_type'],'class'); ?>>Click on class</option>
             <option value="id" <?php selected($m['trigger_type'],'id'); ?>>Click on ID</option>
+            <option value="scroll" <?php selected($m['trigger_type'],'scroll'); ?>>On scroll</option>
           </select>
           <p class="description">For class or ID, enter the selector value below.</p>
 
@@ -694,6 +700,24 @@ class Anchor_Universal_Popups_Module {
           <div data-up-show-when-trigger="page_load">
             <label>Delay on page load (ms)</label>
             <input type="number" min="0" step="100" name="up_delay_ms" value="<?php echo esc_attr($m['delay_ms']); ?>" />
+          </div>
+
+          <div data-up-show-when-trigger="scroll">
+            <label>Scroll activation</label>
+            <select name="up_scroll_mode" id="up_scroll_mode">
+              <option value="depth" <?php selected($m['scroll_mode'],'depth'); ?>>After scrolling % of the page</option>
+              <option value="element" <?php selected($m['scroll_mode'],'element'); ?>>When an element comes into view</option>
+            </select>
+
+            <label><?php echo esc_html($m['scroll_mode'] === 'element' ? 'Visible threshold (%)' : 'Scroll depth (%)'); ?></label>
+            <input type="number" min="0" max="100" step="5" name="up_scroll_percent" value="<?php echo esc_attr($m['scroll_percent']); ?>" />
+            <p class="description">Depth mode: fire after this % of the page has been scrolled. Element mode: fire when the target is this % visible.</p>
+
+            <div data-up-show-when-scroll-mode="element">
+              <label>Target element selector</label>
+              <input type="text" name="up_scroll_target" value="<?php echo esc_attr($m['scroll_target']); ?>" placeholder="#section-3 or .cta-block"/>
+              <p class="description">Any CSS selector. The first match on the page is watched.</p>
+            </div>
           </div>
 
           <div data-up-hide-when-trigger="class">
@@ -751,6 +775,7 @@ class Anchor_Universal_Popups_Module {
             'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','autoplay','close_color',
             'html','shortcode','css','js',
             'trigger_type','trigger_value','delay_ms',
+            'scroll_mode','scroll_percent','scroll_target',
             'frequency_mode','cooldown_minutes',
             'exclude_urls','exclude_cats'
         ];
@@ -932,6 +957,9 @@ class Anchor_Universal_Popups_Module {
                     'type' => $m['trigger_type'],
                     'value' => $m['trigger_value'],
                     'delay' => (int)$m['delay_ms'],
+                    'scrollMode' => $m['scroll_mode'],
+                    'scrollPercent' => max(0, min(100, (int)$m['scroll_percent'])),
+                    'scrollTarget' => $m['scroll_target'],
                 ],
                 'frequency' => [
                     'mode' => $m['frequency_mode'], // session or cooldown

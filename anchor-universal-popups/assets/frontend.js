@@ -218,6 +218,43 @@
     }catch(e){}
   }
 
+  function isFullscreen(modal){
+    return modal.classList.contains('up-style-fullscreen');
+  }
+
+  // Fullscreen takeovers lock background scroll. Ref-counted so overlapping
+  // opens/closes (a takeover replacing another) never unlock too early.
+  var scrollLockCount = 0;
+  function lockScroll(){
+    if(scrollLockCount === 0){
+      document.documentElement.style.overflow = 'hidden';
+      document.body.style.overflow = 'hidden';
+    }
+    scrollLockCount++;
+  }
+  function unlockScroll(){
+    scrollLockCount = Math.max(0, scrollLockCount - 1);
+    if(scrollLockCount === 0){
+      document.documentElement.style.overflow = '';
+      document.body.style.overflow = '';
+    }
+  }
+
+  // Reveal a modal: unhide, then on the next frame add .up-visible so the CSS
+  // opacity transition runs (the fullscreen takeover fades over the page).
+  function revealModal(modal){
+    modal._openedAt = (window.performance && performance.now) ? performance.now() : Date.now();
+    modal._closing = false;
+    if(modal._closeTimer){ clearTimeout(modal._closeTimer); modal._closeTimer = null; }
+    if(isFullscreen(modal)){ lockScroll(); }
+    modal.hidden = false;
+    requestAnimationFrame(function(){
+      requestAnimationFrame(function(){ modal.classList.add('up-visible'); });
+    });
+    var closeBtn = modal.querySelector('.up-modal__close');
+    if(closeBtn){ closeBtn.focus(); }
+  }
+
   function openVideo(modal, provider, id, autoplay, extra){
     var frameWrap = modal.querySelector('[data-frame]');
     if(!frameWrap) return;
@@ -241,10 +278,7 @@
       try{ new Function(extra && extra.js ? extra.js : '')(); }catch(e){}
     }
 
-    modal._openedAt = (window.performance && performance.now) ? performance.now() : Date.now();
-    modal.hidden = false;
-    var closeBtn = modal.querySelector('.up-modal__close');
-    if(closeBtn){ closeBtn.focus(); }
+    revealModal(modal);
   }
 
   function openContent(modal, html, css, js){
@@ -254,29 +288,46 @@
     content.innerHTML = style + (html || '');
     activateScripts(content);
     try{ new Function(js || '')(); }catch(e){}
-    modal._openedAt = (window.performance && performance.now) ? performance.now() : Date.now();
-    modal.hidden = false;
-    var closeBtn = modal.querySelector('.up-modal__close');
-    if(closeBtn){ closeBtn.focus(); }
+    revealModal(modal);
   }
 
   function closeModal(modal){
-    // clear frames to stop playback and clear under-content
-    var f = modal.querySelector('[data-frame]');
-    if(f){
-      if(modal._preloaded && modal._preloadSrc){
-        // Reset to the no-autoplay URL: stops playback AND re-arms the preload
-        // so reopening is instant again, without re-fetching on every open.
-        var iframe = f.querySelector('iframe');
-        if(iframe){ iframe.src = modal._preloadSrc; }
-        else { f.innerHTML = videoIframe(modal._preloadSrc); }
-      } else {
-        f.innerHTML = '';
+    if(modal.hidden || modal._closing) return;
+
+    // Stop playback / clear under-content, re-arming the preload if present.
+    function teardown(){
+      var f = modal.querySelector('[data-frame]');
+      if(f){
+        if(modal._preloaded && modal._preloadSrc){
+          // Reset to the no-autoplay URL: stops playback AND re-arms the preload
+          // so reopening is instant again, without re-fetching on every open.
+          var iframe = f.querySelector('iframe');
+          if(iframe){ iframe.src = modal._preloadSrc; }
+          else { f.innerHTML = videoIframe(modal._preloadSrc); }
+        } else {
+          f.innerHTML = '';
+        }
       }
+      var a = modal.querySelector('[data-after]');
+      if(a) a.innerHTML = '';
     }
-    var a = modal.querySelector('[data-after]');
-    if(a) a.innerHTML = '';
-    modal.hidden = true;
+
+    modal.classList.remove('up-visible');
+
+    if(isFullscreen(modal)){
+      // Let the fade-out play before hiding/tearing down and unlocking scroll.
+      modal._closing = true;
+      modal._closeTimer = setTimeout(function(){
+        modal.hidden = true;
+        teardown();
+        unlockScroll();
+        modal._closing = false;
+        modal._closeTimer = null;
+      }, 450);
+    } else {
+      modal.hidden = true;
+      teardown();
+    }
   }
 
   function wireClose(modal){
@@ -334,17 +385,20 @@
       if(closeBtn) closeBtn.style.color = sn.close_color;
     }
 
-    // Queue for silent background preload: only click-triggered video popups
-    // (class/id). page_load popups open on their own, so preloading is moot.
-    // Skip ones already gated out this session so we never load the unseen.
+    // Queue for silent background preload: video popups that open *later*
+    // (class/id click, or scroll). page_load popups open immediately, so
+    // preloading is moot. Skip ones gated out this session so we never load
+    // the unseen. Fullscreen takeovers jump the queue so they're warm first.
     if(isVideo && sn.video_id && (provider === 'youtube' || provider === 'vimeo')){
       var ptrig = sn.trigger || {};
-      var isClickTriggered = (ptrig.type === 'class' || ptrig.type === 'id');
+      var deferredTrigger = (ptrig.type === 'class' || ptrig.type === 'id' || ptrig.type === 'scroll');
       // 'class' bypasses frequency gating on open, so always preload it.
       var willShow = (ptrig.type === 'class') ||
         shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes);
-      if(isClickTriggered && willShow){
-        preloadQueue.push({ modal: modal, provider: provider, id: sn.video_id });
+      if(deferredTrigger && willShow){
+        var item = { modal: modal, provider: provider, id: sn.video_id };
+        if(popupStyle === 'fullscreen'){ preloadQueue.unshift(item); }
+        else { preloadQueue.push(item); }
       }
     }
 
@@ -357,8 +411,13 @@
       var bypassFrequency = (trig && trig.type === 'class');
       if(!bypassFrequency && !shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes)) return;
       if(isVideo){
-        var muteForAutoplay = (trig && trig.type === 'page_load');
-        openVideo(modal, provider, sn.video_id, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
+        // Fullscreen takeover always autoplays. Autoplay must be muted unless
+        // this is a genuine user click (class/id) — browsers block unmuted
+        // autoplay for page_load/scroll-triggered playback.
+        var userClick = (trig && (trig.type === 'class' || trig.type === 'id'));
+        var wantAutoplay = !!sn.autoplay || (popupStyle === 'fullscreen');
+        var muteForAutoplay = wantAutoplay && !userClick;
+        openVideo(modal, provider, sn.video_id, wantAutoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
       } else {
         // Use pre-rendered shortcode content if in shortcode mode, otherwise use HTML
         var content = (sn.mode === 'shortcode' && sn.shortcode_content) ? sn.shortcode_content : sn.html;
@@ -402,6 +461,68 @@
           triggerOpen();
         }
       });
+    } else if(trig.type === 'scroll'){
+      var fired = false;
+      function fireOnce(){
+        if(fired) return;
+        fired = true;
+        triggerOpen();
+      }
+      var pct = Math.max(0, Math.min(100, parseInt(trig.scrollPercent != null ? trig.scrollPercent : 50, 10)));
+
+      if(trig.scrollMode === 'element'){
+        // Fire when a target element reaches the configured visible threshold.
+        var target = trig.scrollTarget ? document.querySelector(trig.scrollTarget) : null;
+        if(!target) return;
+        if('IntersectionObserver' in window){
+          // Cap at 0.99: an element taller than the viewport can never report a
+          // ratio of exactly 1, so a literal 100% threshold would never fire.
+          var thr = Math.min(0.99, Math.max(0, pct/100));
+          var io = new IntersectionObserver(function(entries){
+            for(var k = 0; k < entries.length; k++){
+              if(entries[k].isIntersecting && entries[k].intersectionRatio >= thr){
+                io.disconnect();
+                fireOnce();
+                break;
+              }
+            }
+          }, { threshold: thr });
+          io.observe(target);
+        } else {
+          // No IO support: fire once the target's top scrolls into the viewport.
+          var checkEl = function(){
+            var r = target.getBoundingClientRect();
+            var vh = window.innerHeight || document.documentElement.clientHeight;
+            if(r.top < vh && r.bottom > 0){
+              window.removeEventListener('scroll', onScrollEl);
+              fireOnce();
+            }
+          };
+          var onScrollEl = function(){ requestAnimationFrame(checkEl); };
+          window.addEventListener('scroll', onScrollEl, { passive: true });
+          checkEl();
+        }
+      } else {
+        // Depth mode: fire after the page has been scrolled pct% of the way down.
+        var ticking = false;
+        var onScroll = function(){
+          if(ticking) return;
+          ticking = true;
+          requestAnimationFrame(function(){
+            ticking = false;
+            var doc = document.documentElement;
+            var scrollable = doc.scrollHeight - window.innerHeight;
+            var y = window.scrollY || window.pageYOffset || 0;
+            var scrolledPct = scrollable > 0 ? (y / scrollable) * 100 : 100;
+            if(scrolledPct >= pct){
+              window.removeEventListener('scroll', onScroll);
+              fireOnce();
+            }
+          });
+        };
+        window.addEventListener('scroll', onScroll, { passive: true });
+        onScroll(); // evaluate current position (e.g. refresh mid-page / short pages)
+      }
     }
   }
 

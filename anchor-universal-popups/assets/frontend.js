@@ -4,6 +4,9 @@
   // Modal registry for global close coordination
   var allModals = [];
 
+  // Video popups queued to preload silently in the background (click-triggered only)
+  var preloadQueue = [];
+
   // Global close event - closes all popups except the specified one
   function closeAllPopups(exceptModal) {
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: exceptModal } }));
@@ -175,13 +178,58 @@
     }
   }
 
+  function videoIframe(src){
+    return '<iframe src="'+src+'" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+  }
+
+  /**
+   * Silently load the player into a hidden modal so it's ready before the user
+   * clicks. Built WITHOUT autoplay so it buffers the player chrome/poster only.
+   * Runs at idle time, so it never competes with page render or load.
+   */
+  function preloadVideo(modal, provider, id){
+    var frameWrap = modal.querySelector('[data-frame]');
+    if(!frameWrap || modal._preloaded) return;
+    var src = provider === 'youtube'
+      ? buildYouTubeSrc(id, { autoplay: false })
+      : buildVimeoSrc(id, { autoplay: false });
+    modal._preloadSrc = src;
+    frameWrap.innerHTML = videoIframe(src);
+    modal._preloaded = true;
+  }
+
+  /**
+   * Start playback on an already-preloaded iframe via the provider postMessage
+   * API — no reload, so the warm player plays instantly. If the player isn't
+   * ready yet (user clicked within the first moment), the command is a no-op
+   * and the visitor simply presses play on the visible poster.
+   */
+  function playPreloaded(modal, provider, muted){
+    var iframe = modal.querySelector('[data-frame] iframe');
+    if(!iframe || !iframe.contentWindow) return;
+    try{
+      if(provider === 'youtube'){
+        if(muted){ iframe.contentWindow.postMessage(JSON.stringify({event:'command',func:'mute',args:[]}), '*'); }
+        iframe.contentWindow.postMessage(JSON.stringify({event:'command',func:'playVideo',args:[]}), '*');
+      } else {
+        if(muted){ iframe.contentWindow.postMessage(JSON.stringify({method:'setVolume',value:0}), '*'); }
+        iframe.contentWindow.postMessage(JSON.stringify({method:'play'}), '*');
+      }
+    }catch(e){}
+  }
+
   function openVideo(modal, provider, id, autoplay, extra){
     var frameWrap = modal.querySelector('[data-frame]');
     if(!frameWrap) return;
 
     var opts = { autoplay: !!autoplay, muted: !!(extra && extra.muted) };
-    var src = provider === 'youtube' ? buildYouTubeSrc(id, opts) : buildVimeoSrc(id, opts);
-    frameWrap.innerHTML = '<iframe src="'+src+'" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+    if(modal._preloaded){
+      // Reuse the player that's already warmed up in the background.
+      if(autoplay){ playPreloaded(modal, provider, opts.muted); }
+    } else {
+      var src = provider === 'youtube' ? buildYouTubeSrc(id, opts) : buildVimeoSrc(id, opts);
+      frameWrap.innerHTML = videoIframe(src);
+    }
 
     // Optional content under the video
     var after = modal.querySelector('[data-after]');
@@ -215,7 +263,17 @@
   function closeModal(modal){
     // clear frames to stop playback and clear under-content
     var f = modal.querySelector('[data-frame]');
-    if(f) f.innerHTML = '';
+    if(f){
+      if(modal._preloaded && modal._preloadSrc){
+        // Reset to the no-autoplay URL: stops playback AND re-arms the preload
+        // so reopening is instant again, without re-fetching on every open.
+        var iframe = f.querySelector('iframe');
+        if(iframe){ iframe.src = modal._preloadSrc; }
+        else { f.innerHTML = videoIframe(modal._preloadSrc); }
+      } else {
+        f.innerHTML = '';
+      }
+    }
     var a = modal.querySelector('[data-after]');
     if(a) a.innerHTML = '';
     modal.hidden = true;
@@ -274,6 +332,20 @@
     if(sn.close_color){
       var closeBtn = modal.querySelector('[data-close-btn]');
       if(closeBtn) closeBtn.style.color = sn.close_color;
+    }
+
+    // Queue for silent background preload: only click-triggered video popups
+    // (class/id). page_load popups open on their own, so preloading is moot.
+    // Skip ones already gated out this session so we never load the unseen.
+    if(isVideo && sn.video_id && (provider === 'youtube' || provider === 'vimeo')){
+      var ptrig = sn.trigger || {};
+      var isClickTriggered = (ptrig.type === 'class' || ptrig.type === 'id');
+      // 'class' bypasses frequency gating on open, so always preload it.
+      var willShow = (ptrig.type === 'class') ||
+        shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes);
+      if(isClickTriggered && willShow){
+        preloadQueue.push({ modal: modal, provider: provider, id: sn.video_id });
+      }
     }
 
     function triggerOpen(){
@@ -363,9 +435,29 @@
     card.click();
   });
 
+  // Drain the preload queue during browser idle time, one video at a time with
+  // a gap between each, so a burst of iframe loads never competes with the
+  // page's own content or hurts load metrics.
+  function processPreloadQueue(){
+    if(!preloadQueue.length) return;
+    var i = 0;
+    function next(){
+      if(i >= preloadQueue.length) return;
+      var item = preloadQueue[i++];
+      try{ preloadVideo(item.modal, item.provider, item.id); }catch(e){}
+      setTimeout(next, 300);
+    }
+    if('requestIdleCallback' in window){
+      requestIdleCallback(next, { timeout: 3000 });
+    } else {
+      setTimeout(next, 1200);
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function(){
     try{
       UP_SNIPPETS.forEach(attach);
+      processPreloadQueue();
     }catch(e){}
   });
 })();

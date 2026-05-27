@@ -11,6 +11,9 @@ class Anchor_Universal_Popups_Module {
     const MIGRATION_FLAG = 'anchor_universal_popups_migrated';
     const NONCE = 'anchor_popup_nonce';
 
+    /** @var string[] Video providers present on this request, for preconnect hints. */
+    private $preconnect_providers = [];
+
     public function __construct(){
         add_action('init', [$this, 'register_cpt']);
         add_action('add_meta_boxes', [$this, 'add_metaboxes']);
@@ -973,6 +976,38 @@ class Anchor_Universal_Popups_Module {
         wp_enqueue_style('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.css'), [], (string) filemtime($adir . 'frontend.css'));
         wp_enqueue_script('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.js'), [], (string) filemtime($adir . 'frontend.js'), true);
         wp_localize_script('up-frontend', 'UP_SNIPPETS', $snippets);
+
+        // Warm the connection to video hosts early so the background preload
+        // (and click-to-play) is as fast as possible. Only for providers that
+        // actually appear on this page.
+        foreach ($snippets as $sn) {
+            if (($sn['mode'] ?? '') === 'video' && !empty($sn['provider'])) {
+                $this->preconnect_providers[$sn['provider']] = true;
+            }
+        }
+        if (!empty($this->preconnect_providers)) {
+            add_filter('wp_resource_hints', [$this, 'add_video_preconnect'], 10, 2);
+        }
+    }
+
+    /**
+     * Add preconnect hints for the video providers present on this page.
+     * Hooked onto WordPress's wp_resource_hints filter (fires in <head>).
+     */
+    public function add_video_preconnect($hints, $relation_type){
+        if ($relation_type !== 'preconnect') return $hints;
+        $map = [
+            'youtube' => ['https://www.youtube.com', 'https://i.ytimg.com'],
+            'vimeo'   => ['https://player.vimeo.com', 'https://i.vimeocdn.com'],
+        ];
+        foreach (array_keys($this->preconnect_providers) as $provider) {
+            if (!empty($map[$provider])) {
+                foreach ($map[$provider] as $url) {
+                    $hints[] = $url;
+                }
+            }
+        }
+        return $hints;
     }
 
     public function shortcode_render($atts){

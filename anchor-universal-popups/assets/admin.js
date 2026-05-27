@@ -51,6 +51,10 @@
       var allowed = String($(this).attr('data-up-show-when-style')).split(',').map($.trim).filter(Boolean);
       $(this).toggle(allowed.indexOf(style) !== -1);
     });
+    $('[data-up-hide-when-style]').each(function(){
+      var blocked = String($(this).attr('data-up-hide-when-style')).split(',').map($.trim).filter(Boolean);
+      $(this).toggle(blocked.indexOf(style) === -1);
+    });
   }
 
   function toggleCinematic(){

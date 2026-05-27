@@ -639,7 +639,7 @@ class Anchor_Universal_Popups_Module {
           <select name="up_popup_style" id="up_popup_style">
             <option value="modal" <?php selected($m['popup_style'], 'modal'); ?>>Modal (centered)</option>
             <option value="theater" <?php selected($m['popup_style'], 'theater'); ?>>Theater (fullscreen)</option>
-            <option value="fullscreen" <?php selected($m['popup_style'], 'fullscreen'); ?>>Fullscreen takeover (fades over page)</option>
+            <option value="fullscreen" <?php selected($m['popup_style'], 'fullscreen'); ?>>Fullscreen takeover (expands on scroll)</option>
             <option value="drawer-right" <?php selected($m['popup_style'], 'drawer-right'); ?>>Drawer (right)</option>
             <option value="drawer-left" <?php selected($m['popup_style'], 'drawer-left'); ?>>Drawer (left)</option>
             <option value="drawer-bottom" <?php selected($m['popup_style'], 'drawer-bottom'); ?>>Drawer (bottom)</option>
@@ -677,6 +677,19 @@ class Anchor_Universal_Popups_Module {
             <input type="text" name="up_close_color" id="up_close_color" value="<?php echo esc_attr($m['close_color']); ?>" placeholder="#ffffff" />
           </div>
 
+          <div data-up-show-when-style="fullscreen">
+            <hr/>
+            <p class="description" style="margin:6px 0;">
+              <strong>Rendered via shortcode only.</strong> Place
+              <code>[anchor_popup id=<?php echo (int) $post->ID; ?>]</code>
+              where you want it. It shows the video thumbnail at that spot, then
+              expands to take over the screen and autoplays (muted) when it scrolls
+              into view, and collapses + stops when you scroll past. The trigger and
+              frequency settings below don&rsquo;t apply to this style.
+            </p>
+          </div>
+
+          <div data-up-hide-when-style="fullscreen">
           <label>Autoplay (videos only)</label>
           <select name="up_autoplay">
             <option value="0" <?php selected($m['autoplay'],'0'); ?>>No</option>
@@ -748,6 +761,7 @@ class Anchor_Universal_Popups_Module {
             ?></textarea>
             <p class="description">If the singular post has any of these categories, the popup will not load.</p>
           </div>
+          </div><!-- /[data-up-hide-when-style="fullscreen"] -->
         </div>
         <?php
     }

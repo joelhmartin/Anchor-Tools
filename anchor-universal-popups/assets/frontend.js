@@ -137,8 +137,9 @@
       modestbranding: '1',
       enablejsapi: '1'
     });
-    // Autoplay on page load is commonly blocked unless muted.
-    if(opts.autoplay && opts.muted){
+    // Mute when asked. Needed for autoplay (browsers block unmuted autoplay) and
+    // for a muted preload so a later programmatic play() is allowed without a gesture.
+    if(opts.muted){
       p.set('mute', '1');
     }
     return 'https://www.youtube.com/embed/' + encodeURIComponent(id) + '?' + p.toString();
@@ -152,7 +153,7 @@
       portrait: '0',
       dnt: '1'
     });
-    if(opts.autoplay && opts.muted){
+    if(opts.muted){
       p.set('muted', '1');
     }
     return 'https://player.vimeo.com/video/' + encodeURIComponent(id) + '?' + p.toString();
@@ -187,12 +188,13 @@
    * clicks. Built WITHOUT autoplay so it buffers the player chrome/poster only.
    * Runs at idle time, so it never competes with page render or load.
    */
-  function preloadVideo(modal, provider, id){
+  function preloadVideo(modal, provider, id, muted){
     var frameWrap = modal.querySelector('[data-frame]');
     if(!frameWrap || modal._preloaded) return;
-    var src = provider === 'youtube'
-      ? buildYouTubeSrc(id, { autoplay: false })
-      : buildVimeoSrc(id, { autoplay: false });
+    // Takeovers preload muted so their scroll-driven (gesture-less) play is
+    // allowed — Vimeo in particular only autoplays programmatically when muted.
+    var opts = { autoplay: false, muted: !!muted };
+    var src = provider === 'youtube' ? buildYouTubeSrc(id, opts) : buildVimeoSrc(id, opts);
     modal._preloadSrc = src;
     frameWrap.innerHTML = videoIframe(src);
     modal._preloaded = true;
@@ -222,37 +224,106 @@
     return modal.classList.contains('up-style-fullscreen');
   }
 
-  // Fullscreen takeovers lock background scroll. Ref-counted so overlapping
-  // opens/closes (a takeover replacing another) never unlock too early.
-  var scrollLockCount = 0;
-  function lockScroll(){
-    if(scrollLockCount === 0){
-      document.documentElement.style.overflow = 'hidden';
-      document.body.style.overflow = 'hidden';
-    }
-    scrollLockCount++;
-  }
-  function unlockScroll(){
-    scrollLockCount = Math.max(0, scrollLockCount - 1);
-    if(scrollLockCount === 0){
-      document.documentElement.style.overflow = '';
-      document.body.style.overflow = '';
-    }
-  }
+  function nowTs(){ return (window.performance && performance.now) ? performance.now() : Date.now(); }
 
-  // Reveal a modal: unhide, then on the next frame add .up-visible so the CSS
-  // opacity transition runs (the fullscreen takeover fades over the page).
+  // Reveal a standard (non-fullscreen) modal: just unhide and focus the close.
   function revealModal(modal){
-    modal._openedAt = (window.performance && performance.now) ? performance.now() : Date.now();
+    modal._openedAt = nowTs();
     modal._closing = false;
     if(modal._closeTimer){ clearTimeout(modal._closeTimer); modal._closeTimer = null; }
-    if(isFullscreen(modal)){ lockScroll(); }
     modal.hidden = false;
-    requestAnimationFrame(function(){
-      requestAnimationFrame(function(){ modal.classList.add('up-visible'); });
-    });
     var closeBtn = modal.querySelector('.up-modal__close');
     if(closeBtn){ closeBtn.focus(); }
+  }
+
+  // ── Fullscreen takeover (self-anchoring; driven by an inline shortcode card) ──
+  // The transform that makes the full-viewport dialog visually occupy the
+  // anchor's CURRENT on-screen rect (origin 0,0) — the collapsed start/end state.
+  function collapsedTransform(anchor){
+    var vw = window.innerWidth || document.documentElement.clientWidth;
+    var vh = window.innerHeight || document.documentElement.clientHeight;
+    var r = anchor ? anchor.getBoundingClientRect() : { left: 0, top: 0, width: vw, height: vh };
+    var sx = Math.max(0.02, r.width / vw);
+    var sy = Math.max(0.02, r.height / vh);
+    return 'translate(' + r.left + 'px,' + r.top + 'px) scale(' + sx + ',' + sy + ')';
+  }
+
+  // Expand: grow the overlay from the anchor's rect to the full viewport (FLIP)
+  // while the backdrop fades in, and play the (preloaded) video muted.
+  function expandTakeover(modal, provider, id, anchor){
+    if(modal._expanded || !anchor) return;
+    modal._expanded = true;
+    modal._anchor = anchor;
+    modal._openedAt = nowTs();
+    modal._closing = false;
+    if(modal._closeTimer){ clearTimeout(modal._closeTimer); modal._closeTimer = null; }
+
+    closeAllPopups(modal); // replace any other open popup
+
+    // Scroll-driven open has no user gesture, so playback must be muted.
+    var frameWrap = modal.querySelector('[data-frame]');
+    if(modal._preloaded){
+      playPreloaded(modal, provider, true);
+    } else if(frameWrap){
+      var src = provider === 'youtube'
+        ? buildYouTubeSrc(id, { autoplay: true, muted: true })
+        : buildVimeoSrc(id, { autoplay: true, muted: true });
+      frameWrap.innerHTML = videoIframe(src);
+    }
+
+    var dialog = modal.querySelector('.up-modal__dialog');
+    var backdrop = modal.querySelector('.up-modal__backdrop');
+
+    modal.hidden = false;
+    if(dialog){
+      dialog.style.transition = 'none';
+      dialog.style.transformOrigin = '0 0';
+      dialog.style.transform = collapsedTransform(anchor);
+    }
+    if(backdrop){ backdrop.style.transition = 'none'; backdrop.style.opacity = '0'; }
+    if(dialog){ void dialog.offsetWidth; } // commit the collapsed start state
+    requestAnimationFrame(function(){
+      if(dialog){
+        dialog.style.transition = 'transform 0.45s cubic-bezier(0.22,0.61,0.36,1)';
+        dialog.style.transform = 'translate(0px,0px) scale(1,1)';
+      }
+      if(backdrop){ backdrop.style.transition = 'opacity 0.45s ease'; backdrop.style.opacity = '1'; }
+    });
+  }
+
+  // Collapse: shrink back to the anchor's current rect, then hide, stop
+  // playback, and re-arm the preload so the next expand is instant again.
+  function collapseTakeover(modal){
+    if(!modal._expanded || modal._closing) return;
+    modal._closing = true;
+    modal._expanded = false;
+
+    var dialog = modal.querySelector('.up-modal__dialog');
+    var backdrop = modal.querySelector('.up-modal__backdrop');
+
+    if(dialog){
+      dialog.style.transition = 'transform 0.4s ease';
+      dialog.style.transform = collapsedTransform(modal._anchor);
+    }
+    if(backdrop){ backdrop.style.transition = 'opacity 0.4s ease'; backdrop.style.opacity = '0'; }
+
+    modal._closeTimer = setTimeout(function(){
+      modal.hidden = true;
+      var f = modal.querySelector('[data-frame]');
+      if(f){
+        if(modal._preloaded && modal._preloadSrc){
+          var iframe = f.querySelector('iframe');
+          if(iframe){ iframe.src = modal._preloadSrc; }
+          else { f.innerHTML = videoIframe(modal._preloadSrc); }
+        } else {
+          f.innerHTML = '';
+        }
+      }
+      if(dialog){ dialog.style.transition = 'none'; dialog.style.transform = ''; }
+      if(backdrop){ backdrop.style.transition = 'none'; backdrop.style.opacity = ''; }
+      modal._closing = false;
+      modal._closeTimer = null;
+    }, 420);
   }
 
   function openVideo(modal, provider, id, autoplay, extra){
@@ -292,42 +363,30 @@
   }
 
   function closeModal(modal){
-    if(modal.hidden || modal._closing) return;
+    if(modal.hidden) return;
+    // Fullscreen takeover animates back to its anchor instead of just hiding.
+    if(isFullscreen(modal)){
+      collapseTakeover(modal);
+      return;
+    }
+    if(modal._closing) return;
 
     // Stop playback / clear under-content, re-arming the preload if present.
-    function teardown(){
-      var f = modal.querySelector('[data-frame]');
-      if(f){
-        if(modal._preloaded && modal._preloadSrc){
-          // Reset to the no-autoplay URL: stops playback AND re-arms the preload
-          // so reopening is instant again, without re-fetching on every open.
-          var iframe = f.querySelector('iframe');
-          if(iframe){ iframe.src = modal._preloadSrc; }
-          else { f.innerHTML = videoIframe(modal._preloadSrc); }
-        } else {
-          f.innerHTML = '';
-        }
+    var f = modal.querySelector('[data-frame]');
+    if(f){
+      if(modal._preloaded && modal._preloadSrc){
+        // Reset to the no-autoplay URL: stops playback AND re-arms the preload
+        // so reopening is instant again, without re-fetching on every open.
+        var iframe = f.querySelector('iframe');
+        if(iframe){ iframe.src = modal._preloadSrc; }
+        else { f.innerHTML = videoIframe(modal._preloadSrc); }
+      } else {
+        f.innerHTML = '';
       }
-      var a = modal.querySelector('[data-after]');
-      if(a) a.innerHTML = '';
     }
-
-    modal.classList.remove('up-visible');
-
-    if(isFullscreen(modal)){
-      // Let the fade-out play before hiding/tearing down and unlocking scroll.
-      modal._closing = true;
-      modal._closeTimer = setTimeout(function(){
-        modal.hidden = true;
-        teardown();
-        unlockScroll();
-        modal._closing = false;
-        modal._closeTimer = null;
-      }, 450);
-    } else {
-      modal.hidden = true;
-      teardown();
-    }
+    var a = modal.querySelector('[data-after]');
+    if(a) a.innerHTML = '';
+    modal.hidden = true;
   }
 
   function wireClose(modal){
@@ -354,9 +413,23 @@
     });
   }
 
+  function resolveProvider(sn){
+    var provider = sn.provider || sn.mode;
+    if(provider === 'video'){ provider = sn.provider || 'youtube'; } // unified video mode fallback
+    return provider;
+  }
+
   function attach(sn){
     var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo' || sn.mode === 'video');
     var popupStyle = normalizePopupStyle(sn.popup_style);
+
+    // Fullscreen takeover is its own self-anchoring mode (driven by the inline
+    // shortcode card, not the trigger system) — handled entirely separately.
+    if(popupStyle === 'fullscreen'){
+      setupFullscreenTakeover(sn, isVideo);
+      return;
+    }
+
     var modal = buildModalShell(isVideo, popupStyle);
     if (popupStyle === 'modal' && sn.modal_max_width) {
       modal.style.setProperty('--up-modal-max-width', sn.modal_max_width);
@@ -374,10 +447,7 @@
     sn._modal = modal;
 
     // Resolve provider from snippet (for unified video mode)
-    var provider = sn.provider || sn.mode;
-    if (provider === 'video') {
-      provider = sn.provider || 'youtube'; // fallback
-    }
+    var provider = resolveProvider(sn);
 
     // Apply close icon color if set
     if(sn.close_color){
@@ -388,7 +458,7 @@
     // Queue for silent background preload: video popups that open *later*
     // (class/id click, or scroll). page_load popups open immediately, so
     // preloading is moot. Skip ones gated out this session so we never load
-    // the unseen. Fullscreen takeovers jump the queue so they're warm first.
+    // the unseen. (Fullscreen takeover handles its own preload separately.)
     if(isVideo && sn.video_id && (provider === 'youtube' || provider === 'vimeo')){
       var ptrig = sn.trigger || {};
       var deferredTrigger = (ptrig.type === 'class' || ptrig.type === 'id' || ptrig.type === 'scroll');
@@ -396,9 +466,7 @@
       var willShow = (ptrig.type === 'class') ||
         shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes);
       if(deferredTrigger && willShow){
-        var item = { modal: modal, provider: provider, id: sn.video_id };
-        if(popupStyle === 'fullscreen'){ preloadQueue.unshift(item); }
-        else { preloadQueue.push(item); }
+        preloadQueue.push({ modal: modal, provider: provider, id: sn.video_id });
       }
     }
 
@@ -411,13 +479,11 @@
       var bypassFrequency = (trig && trig.type === 'class');
       if(!bypassFrequency && !shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes)) return;
       if(isVideo){
-        // Fullscreen takeover always autoplays. Autoplay must be muted unless
-        // this is a genuine user click (class/id) — browsers block unmuted
-        // autoplay for page_load/scroll-triggered playback.
+        // Autoplay must be muted unless this is a genuine user click (class/id) —
+        // browsers block unmuted autoplay for page_load/scroll-triggered playback.
         var userClick = (trig && (trig.type === 'class' || trig.type === 'id'));
-        var wantAutoplay = !!sn.autoplay || (popupStyle === 'fullscreen');
-        var muteForAutoplay = wantAutoplay && !userClick;
-        openVideo(modal, provider, sn.video_id, wantAutoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
+        var muteForAutoplay = !!sn.autoplay && !userClick;
+        openVideo(modal, provider, sn.video_id, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
       } else {
         // Use pre-rendered shortcode content if in shortcode mode, otherwise use HTML
         var content = (sn.mode === 'shortcode' && sn.shortcode_content) ? sn.shortcode_content : sn.html;
@@ -526,6 +592,49 @@
     }
   }
 
+  // Fullscreen takeover: the inline shortcode card IS the trigger. Render the
+  // card where you want it; when it scrolls into view the overlay grows from it
+  // and plays, and collapses + stops when it scrolls out. Video-only.
+  function setupFullscreenTakeover(sn, isVideo){
+    var anchors = document.querySelectorAll('[data-up-popup-id="' + sn.id + '"]');
+    if(!anchors.length) return; // shortcode not placed on this page → do nothing
+
+    var provider = resolveProvider(sn);
+    if(!isVideo || !sn.video_id || (provider !== 'youtube' && provider !== 'vimeo')) return;
+
+    var modal = buildModalShell(true, 'fullscreen');
+    sn._modal = modal;
+    wireClose(modal); // × / Esc collapse it
+    if(sn.close_color){
+      var cb = modal.querySelector('[data-close-btn]');
+      if(cb) cb.style.color = sn.close_color;
+    }
+
+    // Warm it first (muted, so scroll-driven play is allowed) — instant on expand.
+    preloadQueue.unshift({ modal: modal, provider: provider, id: sn.video_id, muted: true });
+
+    // Clicking the thumbnail expands from that card too (handled in click listener).
+    sn._fsExpand = function(anchor){ expandTakeover(modal, provider, sn.video_id, anchor || anchors[0]); };
+
+    var EXPAND_AT = 0.5; // ≥50% of the card visible → expand; gone → collapse
+    if(!('IntersectionObserver' in window)) return; // no IO → click-to-expand only
+
+    Array.prototype.forEach.call(anchors, function(anchor){
+      var io = new IntersectionObserver(function(entries){
+        for(var k = 0; k < entries.length; k++){
+          var en = entries[k];
+          if(en.isIntersecting && en.intersectionRatio >= EXPAND_AT){
+            if(!modal._expanded){ expandTakeover(modal, provider, sn.video_id, anchor); }
+          } else if(!en.isIntersecting || en.intersectionRatio <= 0.01){
+            // Collapse only when the card that opened it has scrolled away.
+            if(modal._expanded && modal._anchor === anchor){ collapseTakeover(modal); }
+          }
+        }
+      }, { threshold: [0, EXPAND_AT] });
+      io.observe(anchor);
+    });
+  }
+
   // Build a lookup map for snippets by ID
   var snippetMap = {};
   UP_SNIPPETS.forEach(function(sn) {
@@ -539,8 +648,15 @@
 
     var popupId = parseInt(card.getAttribute('data-up-popup-id'), 10);
     var sn = snippetMap[popupId];
-    if (!sn || !sn._triggerOpen) return;
+    if (!sn) return;
 
+    // Fullscreen takeover expands from the clicked card; others open normally.
+    if (sn._fsExpand) {
+      e.preventDefault();
+      sn._fsExpand(card);
+      return;
+    }
+    if (!sn._triggerOpen) return;
     e.preventDefault();
     sn._triggerOpen();
   });
@@ -565,7 +681,7 @@
     function next(){
       if(i >= preloadQueue.length) return;
       var item = preloadQueue[i++];
-      try{ preloadVideo(item.modal, item.provider, item.id); }catch(e){}
+      try{ preloadVideo(item.modal, item.provider, item.id, item.muted); }catch(e){}
       setTimeout(next, 300);
     }
     if('requestIdleCallback' in window){

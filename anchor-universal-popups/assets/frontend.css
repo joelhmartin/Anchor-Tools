@@ -115,16 +115,12 @@
 }
 
 /* ── Fullscreen takeover ── */
-/* Fades in over the whole page; opaque cover; locks scroll (handled in JS). */
-.up-modal.up-style-fullscreen {
-  opacity: 0;
-  transition: opacity 0.45s ease;
-}
-.up-modal.up-style-fullscreen.up-visible {
-  opacity: 1;
-}
+/* Self-anchoring: the inline shortcode thumbnail grows (FLIP transform) to fill
+   the viewport when it scrolls into view, and shrinks back when scrolled past.
+   The grow/shrink + backdrop fade are driven by JS (transform / opacity). */
 .up-style-fullscreen .up-modal__backdrop {
   background: #000; /* fully opaque — nothing behind it shows through */
+  will-change: opacity;
 }
 .up-style-fullscreen .up-modal__dialog,
 .up-style-fullscreen .up-content-wrap {
@@ -139,6 +135,7 @@
   transform: none;
   border-radius: 0;
   background: #000;
+  will-change: transform;
 }
 .up-style-fullscreen .up-modal__dialog {
   justify-content: center; /* center the letterboxed video on the cover */

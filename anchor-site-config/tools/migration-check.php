@@ -10,8 +10,8 @@
  *   1. Current anchor-shortcodes option contents (values you'll re-enter in site-config).
  *   2. Which legacy shortcodes from anchor-shortcodes actually appear in your site's
  *      post/page content, and how many times.
- *   3. Coverage check: for every used shortcode, whether the new site-config module
- *      has a handler (canonical or legacy alias).
+ *   3. Replacement check: for every used shortcode, which config_* Site Config
+ *      shortcode should replace it.
  *   4. Custom shortcodes from the repeater that you'll need to re-add in site-config.
  *
  * Read-only — does not modify anything in the database or on disk.
@@ -24,6 +24,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 function anchor_site_config_migration_check_print( $line = '' ) {
     echo $line . "\n";
+}
+
+function anchor_site_config_migration_check_config_tag( $tag ) {
+    $tag = sanitize_key( (string) $tag );
+    if ( $tag === '' ) {
+        return '';
+    }
+    return str_starts_with( $tag, 'config_' ) ? $tag : 'config_' . $tag;
 }
 
 anchor_site_config_migration_check_print( '════════════════════════════════════════════════════════════════' );
@@ -95,23 +103,23 @@ anchor_site_config_migration_check_print( '── 2. Shortcode usage in post/pag
 anchor_site_config_migration_check_print( '' );
 
 $legacy_shortcodes = [
-    'business_name'               => 'site_config:[business_name] (canonical)',
-    'business_phone'              => 'site_config:[business_phone] (canonical)',
-    'business_email'              => 'site_config:[business_email] (canonical)',
-    'business_address'            => 'site_config:[business_address] (canonical)',
-    'business_hours'              => 'site_config:[business_hours] (canonical)',
-    'phone'                       => 'site_config:[phone] (legacy alias)',
-    'phone_href'                  => 'site_config:[phone_href] (legacy alias)',
-    'email'                       => 'site_config:[email] (legacy alias)',
-    'address'                     => 'site_config:[address] (legacy alias)',
-    'site_image_url'              => 'site_config:[site_image_url] (legacy alias → primary_logo)',
-    'site_image_horizontal'       => 'site_config:[site_image_horizontal] (legacy alias → primary_logo)',
-    'site_image_horizontal_white' => 'site_config:[site_image_horizontal_white] (legacy alias → primary_logo_white)',
-    'site_image_white'            => 'site_config:[site_image_white] (legacy alias → primary_logo_white)',
-    'site_icon_url'               => 'site_config:[site_icon_url] (legacy alias)',
-    'current_year'                => 'site_config:[current_year] (utility)',
-    'site_title'                  => 'site_config:[site_title] (utility)',
-    'page_title'                  => 'site_config:[page_title] (utility)',
+    'business_name'               => '[config_business_name]',
+    'business_phone'              => '[config_business_phone]',
+    'business_email'              => '[config_business_email]',
+    'business_address'            => '[config_business_address]',
+    'business_hours'              => '[config_business_hours]',
+    'phone'                       => '[config_phone]',
+    'phone_href'                  => '[config_phone_href]',
+    'email'                       => '[config_email]',
+    'address'                     => '[config_address]',
+    'site_image_url'              => '[config_site_image_url]',
+    'site_image_horizontal'       => '[config_site_image_horizontal]',
+    'site_image_horizontal_white' => '[config_site_image_horizontal_white]',
+    'site_image_white'            => '[config_site_image_white]',
+    'site_icon_url'               => '[config_site_icon_url]',
+    'current_year'                => '[config_current_year]',
+    'site_title'                  => '[config_site_title]',
+    'page_title'                  => '[config_page_title]',
 ];
 
 // Scan all post types (published only) for shortcode mentions in content.
@@ -140,8 +148,8 @@ $any_used = false;
 foreach ( $counts as $tag => $n ) {
     if ( $n === 0 ) continue;
     $any_used = true;
-    $cov = $legacy_shortcodes[ $tag ];
-    anchor_site_config_migration_check_print( '   ✓ [' . $tag . '] used ' . $n . 'x → covered by ' . $cov );
+    $replacement = $legacy_shortcodes[ $tag ];
+    anchor_site_config_migration_check_print( '   ⚠ [' . $tag . '] used ' . $n . 'x → replace with ' . $replacement );
 }
 if ( ! $any_used ) {
     anchor_site_config_migration_check_print( '   No anchor-shortcodes shortcodes found in any published post/page content.' );
@@ -156,6 +164,7 @@ if ( ! empty( $opts['custom_shortcodes'] ) && is_array( $opts['custom_shortcodes
     foreach ( $opts['custom_shortcodes'] as $row ) {
         $tag = $row['shortcode'] ?? '';
         if ( $tag === '' ) continue;
+        $config_tag = anchor_site_config_migration_check_config_tag( $tag );
         $custom_count = 0;
         foreach ( $rows as $r ) {
             // post_content was selected in the initial query — reuse it (no per-row DB hit).
@@ -164,7 +173,7 @@ if ( ! empty( $opts['custom_shortcodes'] ) && is_array( $opts['custom_shortcodes
             }
         }
         $marker = $custom_count > 0 ? '⚠' : ' ';
-        anchor_site_config_migration_check_print( '   ' . $marker . ' [' . $tag . '] — used ' . $custom_count . 'x in content (re-add as a Site Config custom shortcode)' );
+        anchor_site_config_migration_check_print( '   ' . $marker . ' [' . $tag . '] — used ' . $custom_count . 'x in content (Site Config registers [' . $config_tag . '])' );
     }
 }
 
@@ -210,7 +219,7 @@ if ( empty( $theme_hits ) ) {
         }
     }
     anchor_site_config_migration_check_print( '' );
-    anchor_site_config_migration_check_print( '   (After migration, these references will resolve to site_config shortcodes.)' );
+    anchor_site_config_migration_check_print( '   (Update these references to the matching config_* Site Config shortcode.)' );
 }
 
 // ─── Done ──────────────────────────────────────────────────────────────────
@@ -221,10 +230,9 @@ anchor_site_config_migration_check_print( '   1. Pull the latest Anchor Tools (m
 anchor_site_config_migration_check_print( '   2. Settings → Anchor Tools → Modules → enable "Site Config".' );
 anchor_site_config_migration_check_print( '   3. Settings → Anchor Tools → Site Config tab → re-enter every value' );
 anchor_site_config_migration_check_print( '      from section 1 above + every custom shortcode from section 3.' );
-anchor_site_config_migration_check_print( '   4. Spot-check pages that use shortcodes from section 2 — they should' );
-anchor_site_config_migration_check_print( '      keep rendering identical output (legacy aliases handle this).' );
+anchor_site_config_migration_check_print( '   4. Replace shortcode tags from section 2 with their config_* equivalents.' );
 anchor_site_config_migration_check_print( '   5. Settings → Anchor Tools → Modules → disable "Shortcodes".' );
 anchor_site_config_migration_check_print( '   6. Re-spot-check the same pages — output should be identical.' );
-anchor_site_config_migration_check_print( '   7. If anything renders wrong, re-enable Shortcodes — both modules can' );
-anchor_site_config_migration_check_print( '      coexist; last-loaded wins per shortcode tag. No data is destroyed.' );
+anchor_site_config_migration_check_print( '   7. If anything renders wrong, re-enable Shortcodes; config_* tags avoid' );
+anchor_site_config_migration_check_print( '      shortcode ownership collisions while you migrate. No data is destroyed.' );
 anchor_site_config_migration_check_print( '════════════════════════════════════════════════════════════════' );

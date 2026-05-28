@@ -5,6 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 class Anchor_Reviews_Manager {
     const CRON_HOOK = 'anchor_reviews_refresh_cron';
     const LAST_FETCH_OPTION = 'anchor_reviews_last_fetch';
+    const CACHE_OPTION = 'anchor_reviews_cache';
 
     private $providers = [];
 
@@ -105,7 +106,9 @@ class Anchor_Reviews_Manager {
 
     public static function store_cache( $source, $place_id, $data, $hours ) {
         $key = self::cache_key( $source, $place_id );
-        set_transient( $key, $data, max( 1, (int) $hours ) * HOUR_IN_SECONDS );
+        $ttl = max( 1, (int) $hours ) * HOUR_IN_SECONDS;
+        set_transient( $key, $data, $ttl );
+        self::store_persistent_cache( $key, $data, $ttl );
 
         $last = get_option( self::LAST_FETCH_OPTION, [] );
         if ( ! is_array( $last ) ) {
@@ -117,7 +120,68 @@ class Anchor_Reviews_Manager {
 
     public static function get_cache( $source, $place_id ) {
         $key = self::cache_key( $source, $place_id );
-        return get_transient( $key );
+        $data = get_transient( $key );
+        if ( is_array( $data ) && ! empty( $data ) ) {
+            if ( ! self::get_persistent_cache( $key ) ) {
+                self::store_persistent_cache( $key, $data, self::get_configured_cache_hours() * HOUR_IN_SECONDS );
+            }
+            return $data;
+        }
+
+        $data = self::get_persistent_cache( $key );
+        if ( is_array( $data ) && ! empty( $data ) ) {
+            $ttl = self::get_configured_cache_hours() * HOUR_IN_SECONDS;
+            set_transient( $key, $data, $ttl );
+            return $data;
+        }
+
+        return false;
+    }
+
+    private static function store_persistent_cache( $key, $data, $ttl ) {
+        if ( ! is_array( $data ) || empty( $data ) ) {
+            return;
+        }
+
+        $cache = get_option( self::CACHE_OPTION, [] );
+        if ( ! is_array( $cache ) ) {
+            $cache = [];
+        }
+
+        $cache[ $key ] = [
+            'data'       => $data,
+            'stored_at'  => time(),
+            'expires_at' => time() + max( HOUR_IN_SECONDS, (int) $ttl ),
+        ];
+
+        update_option( self::CACHE_OPTION, $cache, false );
+    }
+
+    private static function get_persistent_cache( $key ) {
+        $cache = get_option( self::CACHE_OPTION, [] );
+        if ( ! is_array( $cache ) || empty( $cache[ $key ] ) ) {
+            return false;
+        }
+
+        if ( isset( $cache[ $key ]['data'] ) && is_array( $cache[ $key ]['data'] ) ) {
+            return $cache[ $key ]['data'];
+        }
+
+        if ( is_array( $cache[ $key ] ) ) {
+            return $cache[ $key ];
+        }
+
+        return false;
+    }
+
+    private static function get_configured_cache_hours() {
+        if ( ! class_exists( 'Anchor_Schema_Admin' ) ) {
+            return 24;
+        }
+
+        $opts = get_option( Anchor_Schema_Admin::OPTION_KEY, [] );
+        $hours = isset( $opts['reviews_cache_hours'] ) ? (int) $opts['reviews_cache_hours'] : 24;
+        return max( 1, min( $hours, 168 ) );
     }
 
     public static function get_last_fetch( $source, $place_id ) {
@@ -243,7 +307,7 @@ class Anchor_Reviews_Manager {
         $count_display  = number_format_i18n( $count );
         $stars_html     = self::render_stars_svg( $rating );
 
-        $html  = '<div class="anchor-reviews-widget" style="display:inline-flex;align-items:center;gap:16px;background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:1rem 1.25rem">';
+        $html  = '<div class="anchor-reviews-widget" style="display:inline-flex;align-items:center;gap:16px;background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:1rem 1.25rem;pointer-events:auto">';
         $html .= '<svg width="36" height="36" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.1 0 5.8 1.1 8 2.8l6-6C34.3 3.3 29.5 1 24 1 14.8 1 6.9 6.6 3.3 14.6l7 5.4C12.2 13.7 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h12.7c-.6 3-2.3 5.5-4.9 7.2l7.5 5.8C43.7 37.1 46.5 31.3 46.5 24.5z"/><path fill="#FBBC04" d="M10.3 28.6c-.5-1.5-.8-3.1-.8-4.6s.3-3.1.8-4.6l-7-5.4C1.8 17.1 1 20.5 1 24s.8 6.9 2.3 9.9l7-5.3z"/><path fill="#34A853" d="M24 47c5.5 0 10.1-1.8 13.4-4.9l-7.5-5.8c-1.9 1.3-4.3 2-5.9 2-6.4 0-11.8-4.3-13.7-10.1l-7 5.4C6.9 41.4 14.8 47 24 47z"/></svg>';
         $html .= '<div style="width:1px;height:48px;background:#e0e0e0;flex-shrink:0"></div>';
         $html .= '<div style="display:flex;flex-direction:column;gap:4px">';

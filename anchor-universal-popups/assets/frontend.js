@@ -226,6 +226,56 @@
 
   function nowTs(){ return (window.performance && performance.now) ? performance.now() : Date.now(); }
 
+  function escapeCssIdentifier(value){
+    value = String(value || '').trim();
+    if(window.CSS && typeof window.CSS.escape === 'function'){
+      return window.CSS.escape(value);
+    }
+    return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  }
+
+  function classTriggerSelector(value){
+    return String(value || '').trim().split(/\s+/).map(function(part){
+      return part.replace(/^[.#]+/, '');
+    }).filter(Boolean).map(function(part){
+      return '.' + escapeCssIdentifier(part);
+    }).join('');
+  }
+
+  function idTriggerSelector(value){
+    value = String(value || '').trim().replace(/^#/, '');
+    return value ? '#' + escapeCssIdentifier(value) : '';
+  }
+
+  function closestTrigger(el, selector){
+    if(!selector || !el.closest) return null;
+    try{
+      return el.closest(selector);
+    }catch(e){
+      return null;
+    }
+  }
+
+  function queryFirst(selector){
+    if(!selector) return null;
+    try{
+      return document.querySelector(selector);
+    }catch(e){
+      return null;
+    }
+  }
+
+  function runAfterFirstScroll(callback){
+    var done = false;
+    var onFirstScroll = function(){
+      if(done) return;
+      done = true;
+      window.removeEventListener('scroll', onFirstScroll);
+      callback();
+    };
+    window.addEventListener('scroll', onFirstScroll, { passive: true });
+  }
+
   // Reveal a standard (non-fullscreen) modal: just unhide and focus the close.
   function revealModal(modal){
     modal._openedAt = nowTs();
@@ -507,22 +557,20 @@
       }
     } else if(trig.type === 'class'){
       if(!trig.value) return;
-      var selector = '.' + trig.value.trim().split(/\s+/).join('.');
+      var selector = classTriggerSelector(trig.value);
       document.addEventListener('click', function(e){
         var el = e.target;
-        if(!el.closest) return;
-        if(el.closest(selector)){
+        if(closestTrigger(el, selector)){
           e.preventDefault();
           triggerOpen();
         }
       });
     } else if(trig.type === 'id'){
       if(!trig.value) return;
-      var idSel = '#' + trig.value.trim();
+      var idSel = idTriggerSelector(trig.value);
       document.addEventListener('click', function(e){
         var el = e.target;
-        if(!el.closest) return;
-        if(el.closest(idSel)){
+        if(closestTrigger(el, idSel)){
           e.preventDefault();
           triggerOpen();
         }
@@ -538,36 +586,39 @@
 
       if(trig.scrollMode === 'element'){
         // Fire when a target element reaches the configured visible threshold.
-        var target = trig.scrollTarget ? document.querySelector(trig.scrollTarget) : null;
+        var target = trig.scrollTarget ? queryFirst(trig.scrollTarget) : null;
         if(!target) return;
-        if('IntersectionObserver' in window){
-          // Cap at 0.99: an element taller than the viewport can never report a
-          // ratio of exactly 1, so a literal 100% threshold would never fire.
-          var thr = Math.min(0.99, Math.max(0, pct/100));
-          var io = new IntersectionObserver(function(entries){
-            for(var k = 0; k < entries.length; k++){
-              if(entries[k].isIntersecting && entries[k].intersectionRatio >= thr){
-                io.disconnect();
-                fireOnce();
-                break;
+
+        runAfterFirstScroll(function(){
+          if('IntersectionObserver' in window){
+            // Cap at 0.99: an element taller than the viewport can never report a
+            // ratio of exactly 1, so a literal 100% threshold would never fire.
+            var thr = Math.min(0.99, Math.max(0, pct/100));
+            var io = new IntersectionObserver(function(entries){
+              for(var k = 0; k < entries.length; k++){
+                if(entries[k].isIntersecting && entries[k].intersectionRatio >= thr){
+                  io.disconnect();
+                  fireOnce();
+                  break;
+                }
               }
-            }
-          }, { threshold: thr });
-          io.observe(target);
-        } else {
-          // No IO support: fire once the target's top scrolls into the viewport.
-          var checkEl = function(){
-            var r = target.getBoundingClientRect();
-            var vh = window.innerHeight || document.documentElement.clientHeight;
-            if(r.top < vh && r.bottom > 0){
-              window.removeEventListener('scroll', onScrollEl);
-              fireOnce();
-            }
-          };
-          var onScrollEl = function(){ requestAnimationFrame(checkEl); };
-          window.addEventListener('scroll', onScrollEl, { passive: true });
-          checkEl();
-        }
+            }, { threshold: thr });
+            io.observe(target);
+          } else {
+            // No IO support: fire once the target's top scrolls into the viewport.
+            var checkEl = function(){
+              var r = target.getBoundingClientRect();
+              var vh = window.innerHeight || document.documentElement.clientHeight;
+              if(r.top < vh && r.bottom > 0){
+                window.removeEventListener('scroll', onScrollEl);
+                fireOnce();
+              }
+            };
+            var onScrollEl = function(){ requestAnimationFrame(checkEl); };
+            window.addEventListener('scroll', onScrollEl, { passive: true });
+            checkEl();
+          }
+        });
       } else {
         // Depth mode: fire after the page has been scrolled pct% of the way down.
         var ticking = false;
@@ -587,7 +638,6 @@
           });
         };
         window.addEventListener('scroll', onScroll, { passive: true });
-        onScroll(); // evaluate current position (e.g. refresh mid-page / short pages)
       }
     }
   }
@@ -692,9 +742,9 @@
   }
 
   document.addEventListener('DOMContentLoaded', function(){
-    try{
-      UP_SNIPPETS.forEach(attach);
-      processPreloadQueue();
-    }catch(e){}
+    UP_SNIPPETS.forEach(function(sn){
+      try{ attach(sn); }catch(e){}
+    });
+    processPreloadQueue();
   });
 })();

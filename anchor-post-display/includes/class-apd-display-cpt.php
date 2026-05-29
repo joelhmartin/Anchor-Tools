@@ -311,6 +311,68 @@ class Anchor_APD_Display_CPT {
     }
 
     /* ================================================================
+       Shortcode resolution — build a renderer $params array from a display
+       ================================================================ */
+
+    public static function build_params_for_post( $post_id ) {
+        $post = get_post( (int) $post_id );
+        if ( ! $post || $post->post_type !== self::CPT || $post->post_status !== 'publish' ) return null;
+
+        $get = function ( $k, $d = '' ) use ( $post_id ) {
+            $v = get_post_meta( $post_id, $k, true );
+            return ( $v === '' || $v === false ) ? $d : $v;
+        };
+        $post_types = (array) get_post_meta( $post_id, 'apd_src_post_types', true );
+        $post_types = implode( ',', array_filter( array_map( 'strval', $post_types ) ) );
+
+        return [
+            'post_type'         => $post_types,
+            'taxonomy'          => $get( 'apd_src_taxonomy', 'category' ),
+            'terms'             => $get( 'apd_src_terms' ),
+            'exclude_taxonomy'  => $get( 'apd_src_exclude_taxonomy', 'category' ),
+            'exclude_terms'     => $get( 'apd_src_exclude_terms' ),
+            'image_size'        => $get( 'apd_image_size', 'medium' ),
+            'posts'             => (int) $get( 'apd_src_posts', 12 ),
+            'search'            => $get( 'apd_src_search' ),
+            'columns'           => (int) $get( 'apd_columns_desktop', 3 ),
+            'layout'            => $get( 'apd_layout', 'grid' ),
+            'pagination'        => $get( 'apd_pagination', 'none' ),
+            'pagination_window' => (int) $get( 'apd_pagination_window', 7 ),
+            'orderby'           => $get( 'apd_src_orderby', 'date' ),
+            'order'             => $get( 'apd_src_order', 'DESC' ),
+            'max_posts'         => (int) $get( 'apd_src_max_posts', 0 ),
+            'show_date'         => $get( 'apd_show_date', '0' ) === '1' ? 'yes' : 'no',
+            'show_type'         => $get( 'apd_show_type', '0' ) === '1' ? 'yes' : 'no',
+            'no_results'        => $get( 'apd_no_results', 'No results found.' ),
+            'id'                => $get( 'apd_html_anchor' ),
+            'teaser_words'      => (int) $get( 'apd_teaser_words', 26 ),
+            'fields'            => $get( 'apd_fields' ),
+            // Display / style / responsive — consumed by the renderer's CSS + JS.
+            'columns_tablet'    => (int) $get( 'apd_columns_tablet', 2 ),
+            'columns_mobile'    => (int) $get( 'apd_columns_mobile', 1 ),
+            'gap'               => (int) $get( 'apd_gap', 16 ),
+            'gap_mobile'        => (int) $get( 'apd_gap_mobile', 0 ),
+            'card_style'        => $get( 'apd_card_style', 'card' ),
+            'border_radius'     => (int) $get( 'apd_border_radius', 0 ),
+            'tile_shadow'       => $get( 'apd_tile_shadow', 'none' ),
+            'wrapper_bg'        => $get( 'apd_wrapper_bg' ),
+            'title_color'       => $get( 'apd_title_color' ),
+            'title_size'        => (int) $get( 'apd_title_size', 0 ),
+            'title_weight'      => $get( 'apd_title_weight', '400' ),
+            'slider_per_view'         => (int) $get( 'apd_slider_per_view', 3 ),
+            'slider_per_view_tablet'  => (int) $get( 'apd_slider_per_view_tablet', 2 ),
+            'slider_per_view_mobile'  => (int) $get( 'apd_slider_per_view_mobile', 1 ),
+            'slider_autoplay'         => $get( 'apd_slider_autoplay', '0' ) === '1' ? 'yes' : 'no',
+            'slider_speed'            => (int) $get( 'apd_slider_speed', 5000 ),
+            'carousel_loop'           => $get( 'apd_carousel_loop', '0' ),
+            'carousel_arrows'         => $get( 'apd_carousel_arrows', '0' ),
+            'carousel_dots'           => $get( 'apd_carousel_dots', '0' ),
+            'carousel_pause_on_hover' => $get( 'apd_carousel_pause_on_hover', '0' ),
+            'custom_css'              => $get( 'apd_custom_css' ),
+        ];
+    }
+
+    /* ================================================================
        Save
        ================================================================ */
 

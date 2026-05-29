@@ -406,6 +406,7 @@ class Anchor_Post_Display_Module {
 
     public function shortcode_grid( $atts = [] ) {
         $opts = $this->get_option();
+        $user_atts = is_array( $atts ) ? $atts : [];
         $atts = shortcode_atts( [
             'post_type'        => '',
             'taxonomy'         => 'category',
@@ -432,6 +433,37 @@ class Anchor_Post_Display_Module {
             'slider_speed'     => $opts['slider_speed'],
             'slider_per_view'  => $opts['slider_per_view'],
         ], $atts, 'anchor_post_grid' );
+
+        // CPT mode: [anchor_post_grid id="123"] or id="my-slug". Only hijacks `id`
+        // when it resolves to a published Post Display; otherwise the legacy
+        // inline behavior (id = HTML id for search targeting) still applies.
+        $raw_id = isset( $atts['id'] ) ? trim( (string) $atts['id'] ) : '';
+        if ( $raw_id !== '' ) {
+            $resolved = null;
+            if ( ctype_digit( $raw_id ) ) {
+                $resolved = Anchor_APD_Display_CPT::build_params_for_post( (int) $raw_id );
+            }
+            if ( ! $resolved ) {
+                $by_slug = get_posts( [
+                    'post_type'      => Anchor_APD_Display_CPT::CPT,
+                    'name'           => $raw_id,
+                    'posts_per_page' => 1,
+                    'post_status'    => 'publish',
+                ] );
+                if ( $by_slug ) {
+                    $resolved = Anchor_APD_Display_CPT::build_params_for_post( $by_slug[0]->ID );
+                }
+            }
+            if ( $resolved ) {
+                // Inline atts the user actually typed still override the saved display.
+                foreach ( [ 'layout', 'columns', 'posts', 'orderby', 'order', 'fields', 'pagination', 'search' ] as $ov ) {
+                    if ( isset( $user_atts[ $ov ] ) && $user_atts[ $ov ] !== '' ) {
+                        $resolved[ $ov ] = $user_atts[ $ov ];
+                    }
+                }
+                return $this->render_resolved_display( $resolved );
+            }
+        }
 
         $this->enqueue_assets();
 
@@ -471,6 +503,35 @@ class Anchor_Post_Display_Module {
             <?php echo Anchor_APD_Renderer::render_pagination( $query, $params, 1 ); ?>
         </div>
         <?php
+        wp_reset_postdata();
+        return ob_get_clean();
+    }
+
+    /**
+     * Render a display resolved from the CPT (params already built by
+     * Anchor_APD_Display_CPT::build_params_for_post). Shares the renderer's
+     * markup helpers + scoped responsive CSS with the inline path.
+     */
+    private function render_resolved_display( $params ) {
+        $this->enqueue_assets();
+        $grid_id = ! empty( $params['id'] ) ? sanitize_html_class( $params['id'] ) : 'apd-' . wp_unique_id();
+
+        if ( empty( $params['search'] ) && isset( $_GET['s'] ) ) {
+            $params['search'] = sanitize_text_field( wp_unslash( $_GET['s'] ) );
+        }
+
+        $query      = new WP_Query( Anchor_APD_Renderer::build_query_args( $params, 1 ) );
+        $data_attrs = $this->build_data_attrs( $params );
+        $scoped_css = Anchor_APD_Renderer::build_scoped_css( $grid_id, $params );
+
+        ob_start();
+        echo $scoped_css;
+        echo '<div class="anchor-post-grid-wrap anchor-post-grid-wrap--' . esc_attr( $params['layout'] ) . '" data-layout="' . esc_attr( $params['layout'] ) . '">';
+        echo Anchor_APD_Renderer::render_layout_open( $grid_id, $params, $data_attrs );
+        echo Anchor_APD_Renderer::render_grid_items( $query, $params );
+        echo Anchor_APD_Renderer::render_layout_close( $params );
+        echo Anchor_APD_Renderer::render_pagination( $query, $params, 1 );
+        echo '</div>';
         wp_reset_postdata();
         return ob_get_clean();
     }

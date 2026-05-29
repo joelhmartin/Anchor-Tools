@@ -160,7 +160,9 @@ class Anchor_Site_Config_Shortcodes {
             $atts = shortcode_atts(
                 [
                     'day'        => '',
-                    'show_label' => '1',
+                    // A single requested day shows just the times by default;
+                    // the full-week output below always keeps day labels.
+                    'show_label' => '0',
                 ],
                 $atts,
                 'config_business_hours'

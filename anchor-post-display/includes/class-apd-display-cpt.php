@@ -22,6 +22,7 @@ class Anchor_APD_Display_CPT {
 
         add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         add_action( 'edit_form_after_title', [ $this, 'render_builder_after_title' ] );
+        add_action( 'save_post', [ $this, 'save_meta' ] );
     }
 
     /* ================================================================
@@ -307,5 +308,61 @@ class Anchor_APD_Display_CPT {
         <div class="anchor-builder__util-row"><span class="anchor-builder__util-label">Layout</span><span class="anchor-builder__util-value"><?php echo esc_html( $layout ); ?></span></div>
         <div class="anchor-builder__util-row"><span class="anchor-builder__util-label">ID</span><span class="anchor-builder__util-value"><?php echo intval( $post->ID ); ?></span></div>
         <?php
+    }
+
+    /* ================================================================
+       Save
+       ================================================================ */
+
+    public function save_meta( $post_id ) {
+        if ( ! isset( $_POST[ self::NONCE ] ) || ! wp_verify_nonce( $_POST[ self::NONCE ], self::NONCE ) ) return;
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) return;
+        if ( ! current_user_can( 'edit_post', $post_id ) ) return;
+
+        $defaults = $this->default_settings();
+        foreach ( $this->get_setting_defs() as $key => $def ) {
+            $meta_key = 'apd_' . $key;
+            switch ( $def['type'] ) {
+                case 'checkbox':
+                    $val = isset( $_POST[ $meta_key ] ) ? '1' : '0';
+                    break;
+                case 'number':
+                    $val = isset( $_POST[ $meta_key ] ) ? intval( $_POST[ $meta_key ] ) : ( $defaults[ $key ] ?? 0 );
+                    if ( isset( $def['min'] ) ) $val = max( $def['min'], $val );
+                    if ( isset( $def['max'] ) ) $val = min( $def['max'], $val );
+                    break;
+                case 'select':
+                    $val = isset( $_POST[ $meta_key ] ) ? sanitize_text_field( $_POST[ $meta_key ] ) : ( $defaults[ $key ] ?? '' );
+                    if ( isset( $def['options'] ) && ! array_key_exists( $val, $def['options'] ) ) $val = $defaults[ $key ] ?? '';
+                    break;
+                case 'color':
+                    $raw = isset( $_POST[ $meta_key ] ) ? trim( (string) wp_unslash( $_POST[ $meta_key ] ) ) : '';
+                    $val = ( preg_match( '/^#([0-9a-fA-F]{3}){1,2}$/', $raw ) || preg_match( '/^rgba?\(\s*[\d.\s,%]+\s*\)$/', $raw ) ) ? $raw : '';
+                    break;
+                case 'textarea':
+                    $raw = isset( $_POST[ $meta_key ] ) ? (string) wp_unslash( $_POST[ $meta_key ] ) : '';
+                    $raw = preg_replace( '#<script\b[^>]*>.*?</script>#is', '', $raw );
+                    $raw = preg_replace( '#</style\s*>#i', '', $raw );
+                    if ( strlen( $raw ) > 10240 ) $raw = substr( $raw, 0, 10240 );
+                    $val = $raw;
+                    break;
+                default:
+                    $val = isset( $_POST[ $meta_key ] ) ? sanitize_text_field( wp_unslash( $_POST[ $meta_key ] ) ) : '';
+            }
+            update_post_meta( $post_id, $meta_key, $val );
+        }
+
+        // Source fields.
+        $post_types = ( isset( $_POST['apd_src_post_types'] ) && is_array( $_POST['apd_src_post_types'] ) )
+            ? array_values( array_filter( array_map( 'sanitize_key', $_POST['apd_src_post_types'] ) ) )
+            : [];
+        update_post_meta( $post_id, 'apd_src_post_types', $post_types );
+
+        $text_src = [ 'taxonomy', 'terms', 'exclude_taxonomy', 'exclude_terms', 'orderby', 'order', 'search' ];
+        foreach ( $text_src as $k ) {
+            update_post_meta( $post_id, 'apd_src_' . $k, sanitize_text_field( wp_unslash( $_POST[ 'apd_src_' . $k ] ?? '' ) ) );
+        }
+        update_post_meta( $post_id, 'apd_src_posts', max( 1, min( 100, intval( $_POST['apd_src_posts'] ?? 12 ) ) ) );
+        update_post_meta( $post_id, 'apd_src_max_posts', max( 0, intval( $_POST['apd_src_max_posts'] ?? 0 ) ) );
     }
 }

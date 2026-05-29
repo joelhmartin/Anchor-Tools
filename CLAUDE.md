@@ -54,6 +54,7 @@ See `ADDING-MODULES.md` for the full module development guide.
 | `quick_edit` | `Anchor_Quick_Edit_Module` | No admin UI |
 | `ctm_forms` | `Anchor_CTM_Forms_Module` | CPT |
 | `code_snippets` | `Anchor_Code_Snippets_Module` | CPT |
+| `blocks` | `Anchor_Blocks_Module` | CPT |
 
 ### Core Classes (`includes/`)
 

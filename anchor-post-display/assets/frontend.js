@@ -27,6 +27,42 @@
             .catch(function () { cb(null); });
     }
 
+    function getGridShell(grid) {
+        return grid.closest('.anchor-post-grid-wrap') || grid.parentNode;
+    }
+
+    function getSliderContainer(grid) {
+        return grid.closest('.anchor-post-slider');
+    }
+
+    function collectGridParams(grid) {
+        return {
+            search:     grid.dataset.currentSearch || grid.dataset.search || '',
+            post_type:  grid.dataset.postType  || '',
+            posts:      grid.dataset.posts      || '12',
+            max_posts:  grid.dataset.maxPosts   || '0',
+            columns:    grid.dataset.columns    || '3',
+            layout:     grid.dataset.layout     || 'grid',
+            orderby:    grid.dataset.orderby    || 'date',
+            order:      grid.dataset.order      || 'DESC',
+            show_date:  grid.dataset.showDate   || 'no',
+            show_type:  grid.dataset.showType   || 'no',
+            no_results: grid.dataset.noResults  || 'No results found.',
+            image_size: grid.dataset.imageSize  || 'medium',
+            teaser_words: grid.dataset.teaserWords || '26',
+            taxonomy:   grid.dataset.taxonomy   || '',
+            terms:      grid.dataset.terms      || '',
+            exclude_taxonomy: grid.dataset.excludeTaxonomy || '',
+            exclude_terms:    grid.dataset.excludeTerms    || '',
+            pagination: grid.dataset.pagination || 'none',
+            pagination_window: grid.dataset.paginationWindow || '7',
+            fields:     grid.dataset.fields    || '',
+            slider_autoplay: grid.dataset.sliderAutoplay || 'no',
+            slider_speed:    grid.dataset.sliderSpeed    || '5000',
+            slider_per_view: grid.dataset.sliderPerView  || '3'
+        };
+    }
+
     /* ================================================================
        Live Search
        ================================================================ */
@@ -70,31 +106,16 @@
             var grid = document.querySelector(target);
             if (!grid) return;
             grid.classList.add('is-loading');
-            var params = {
-                search:    term,
-                post_type: grid.dataset.postType  || '',
-                posts:     grid.dataset.posts      || '12',
-                columns:   grid.dataset.columns    || '3',
-                layout:    grid.dataset.layout     || 'grid',
-                orderby:   grid.dataset.orderby    || 'date',
-                order:     grid.dataset.order      || 'DESC',
-                show_date: grid.dataset.showDate   || 'no',
-                show_type: grid.dataset.showType   || 'no',
-                no_results: grid.dataset.noResults || 'No results found.',
-                image_size: grid.dataset.imageSize || 'medium',
-                teaser_words: grid.dataset.teaserWords || '26',
-                taxonomy:  grid.dataset.taxonomy   || '',
-                terms:     grid.dataset.terms      || '',
-                exclude_taxonomy: grid.dataset.excludeTaxonomy || '',
-                exclude_terms:    grid.dataset.excludeTerms    || '',
-                pagination: grid.dataset.pagination || 'none',
-                fields:     grid.dataset.fields     || '',
-                page:      '1'
-            };
+            var params = collectGridParams(grid);
+            params.search = term;
+            params.page = '1';
             ajax('anchor_post_display_load', params, function (data) {
                 grid.classList.remove('is-loading');
                 if (!data) return;
                 grid.innerHTML = data.html;
+                grid.dataset.currentSearch = term;
+                grid.dataset.currentPage = '1';
+                initPostSlider(grid);
                 updatePagination(grid, data);
             });
         }
@@ -185,41 +206,23 @@
 
     function updatePagination(grid, data) {
         /* Remove existing pagination elements for this grid */
-        var wrapper = grid.parentNode;
+        var wrapper = getGridShell(grid);
         var oldPag = wrapper.querySelector('.anchor-post-grid-pagination');
         var oldBtn = wrapper.querySelector('.anchor-post-grid-load-more');
         if (oldPag) oldPag.remove();
         if (oldBtn) oldBtn.remove();
 
         if (data.pagination_html) {
-            grid.insertAdjacentHTML('afterend', data.pagination_html);
+            var anchor = getSliderContainer(grid) || grid;
+            anchor.insertAdjacentHTML('afterend', data.pagination_html);
             bindPagination(grid);
         }
     }
 
     function loadPage(grid, page, append) {
         grid.classList.add('is-loading');
-        var params = {
-            search:     grid.dataset.currentSearch || '',
-            post_type:  grid.dataset.postType  || '',
-            posts:      grid.dataset.posts      || '12',
-            columns:    grid.dataset.columns    || '3',
-            layout:     grid.dataset.layout     || 'grid',
-            orderby:    grid.dataset.orderby    || 'date',
-            order:      grid.dataset.order      || 'DESC',
-            show_date:  grid.dataset.showDate   || 'no',
-            show_type:  grid.dataset.showType   || 'no',
-            no_results: grid.dataset.noResults  || 'No results found.',
-            image_size: grid.dataset.imageSize  || 'medium',
-            teaser_words: grid.dataset.teaserWords || '26',
-            taxonomy:   grid.dataset.taxonomy   || '',
-            terms:      grid.dataset.terms      || '',
-            exclude_taxonomy: grid.dataset.excludeTaxonomy || '',
-            exclude_terms:    grid.dataset.excludeTerms    || '',
-            pagination: grid.dataset.pagination || 'none',
-            fields:     grid.dataset.fields    || '',
-            page:       String(page)
-        };
+        var params = collectGridParams(grid);
+        params.page = String(page);
         ajax('anchor_post_display_load', params, function (data) {
             grid.classList.remove('is-loading');
             if (!data) return;
@@ -229,12 +232,13 @@
                 grid.innerHTML = data.html;
             }
             grid.dataset.currentPage = String(page);
+            initPostSlider(grid);
             updatePagination(grid, data);
         });
     }
 
     function bindPagination(grid) {
-        var wrapper = grid.parentNode;
+        var wrapper = getGridShell(grid);
 
         /* Numbered */
         var pag = wrapper.querySelector('.anchor-post-grid-pagination');
@@ -260,6 +264,126 @@
     }
 
     /* ================================================================
+       Slider Layout
+       ================================================================ */
+
+    function getSliderPerView(grid) {
+        var requested = parseInt(grid.dataset.sliderPerView || grid.dataset.columns || '1', 10) || 1;
+        if (window.matchMedia('(max-width: 480px)').matches) return 1;
+        if (window.matchMedia('(max-width: 768px)').matches) return Math.min(2, requested);
+        return requested;
+    }
+
+    function stopSlider(grid) {
+        if (grid._apdSliderTimer) {
+            clearInterval(grid._apdSliderTimer);
+            grid._apdSliderTimer = null;
+        }
+    }
+
+    function initPostSlider(grid) {
+        if (!grid || grid.dataset.layout !== 'slider') return;
+
+        var slider   = getSliderContainer(grid);
+        var viewport = slider ? slider.querySelector('.anchor-post-slider-viewport') : null;
+        var prev     = slider ? slider.querySelector('.anchor-post-slider-prev') : null;
+        var next     = slider ? slider.querySelector('.anchor-post-slider-next') : null;
+        if (!slider || !viewport) return;
+
+        var cards = grid.querySelectorAll('.anchor-post-grid-card');
+        var total = cards.length;
+        var current = parseInt(grid.dataset.sliderIndex || '0', 10) || 0;
+        var autoplay = grid.dataset.sliderAutoplay === 'yes';
+        var speed = parseInt(grid.dataset.sliderSpeed || '5000', 10) || 5000;
+        var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        function getGap() {
+            var gap = parseFloat(getComputedStyle(grid).gap);
+            return isNaN(gap) ? 20 : gap;
+        }
+
+        function setCardWidths() {
+            var perView = Math.min(getSliderPerView(grid), Math.max(1, total));
+            var gap = getGap();
+            var cardWidth = Math.max(1, (viewport.offsetWidth - gap * (perView - 1)) / perView);
+            cards.forEach(function (card) {
+                card.style.flex = '0 0 ' + cardWidth + 'px';
+            });
+        }
+
+        function goTo(index) {
+            var perView = Math.min(getSliderPerView(grid), Math.max(1, total));
+            var maxSlide = Math.max(0, total - perView);
+            if (index < 0) index = maxSlide;
+            if (index > maxSlide) index = 0;
+            current = index;
+            grid.dataset.sliderIndex = String(current);
+
+            var gap = getGap();
+            var cardWidth = cards[0] ? cards[0].getBoundingClientRect().width : viewport.offsetWidth;
+            var offset = current * (cardWidth + gap);
+            grid.style.transform = 'translateX(-' + offset + 'px)';
+
+            if (prev) prev.disabled = total <= perView;
+            if (next) next.disabled = total <= perView;
+        }
+
+        function startAutoplay() {
+            stopSlider(grid);
+            if (!autoplay || reduceMotion || total <= getSliderPerView(grid)) return;
+            grid._apdSliderTimer = setInterval(function () {
+                goTo(current + 1);
+            }, Math.max(1000, speed));
+        }
+
+        grid._apdSliderGo = function (index, restart) {
+            stopSlider(grid);
+            goTo(index);
+            if (restart) startAutoplay();
+        };
+
+        if (prev) {
+            prev.onclick = function () { grid._apdSliderGo(current - 1, true); };
+        }
+        if (next) {
+            next.onclick = function () { grid._apdSliderGo(current + 1, true); };
+        }
+
+        if (!viewport.dataset.apdSwipeBound) {
+            var startX = 0;
+            var startY = 0;
+            viewport.addEventListener('touchstart', function (e) {
+                var activeGrid = viewport.querySelector('.anchor-post-grid');
+                if (activeGrid) stopSlider(activeGrid);
+                startX = e.touches[0].clientX;
+                startY = e.touches[0].clientY;
+            }, { passive: true });
+            viewport.addEventListener('touchend', function (e) {
+                var activeGrid = viewport.querySelector('.anchor-post-grid');
+                if (!activeGrid || !activeGrid._apdSliderGo) return;
+                var dx = e.changedTouches[0].clientX - startX;
+                var dy = e.changedTouches[0].clientY - startY;
+                if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) {
+                    var activeIndex = parseInt(activeGrid.dataset.sliderIndex || '0', 10) || 0;
+                    activeGrid._apdSliderGo(dx < 0 ? activeIndex + 1 : activeIndex - 1, true);
+                } else {
+                    initPostSlider(activeGrid);
+                }
+            }, { passive: true });
+            viewport.dataset.apdSwipeBound = '1';
+        }
+
+        stopSlider(grid);
+        setCardWidths();
+        goTo(current);
+        startAutoplay();
+    }
+
+    function initPostSliders(root) {
+        (root || document).querySelectorAll('.anchor-post-grid[data-layout="slider"]').forEach(initPostSlider);
+    }
+
+    /* ================================================================
        Init on DOM ready
        ================================================================ */
 
@@ -268,10 +392,19 @@
 
         document.querySelectorAll('.anchor-post-grid').forEach(function (grid) {
             grid.dataset.currentPage = '1';
-            grid.dataset.currentSearch = '';
+            grid.dataset.currentSearch = grid.dataset.search || '';
             bindPagination(grid);
         });
+        initPostSliders(document);
     }
+
+    var resizeTimer;
+    window.addEventListener('resize', function () {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function () {
+            initPostSliders(document);
+        }, 150);
+    });
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);

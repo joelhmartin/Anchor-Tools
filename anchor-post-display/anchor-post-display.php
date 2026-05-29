@@ -11,7 +11,7 @@ class Anchor_Post_Display_Module {
 
     const OPTION_KEY = 'anchor_post_display_options';
     const PAGE_SLUG  = 'anchor-post-display';
-    const VERSION    = '1.1.0';
+    const VERSION    = '1.2.0';
 
     private $defaults = [
         'placeholder'  => 'Search...',
@@ -22,14 +22,19 @@ class Anchor_Post_Display_Module {
         'columns'      => 3,
         'layout'       => 'grid',
         'pagination'   => 'none',
+        'pagination_window' => 7,
         'orderby'      => 'date',
         'order'        => 'DESC',
         'posts_per_page' => 12,
+        'max_posts'    => 0,
         'image_size'   => 'medium',
         'show_date'    => 'no',
         'show_type'    => 'no',
         'no_results'   => 'No results found.',
         'teaser_words' => 26,
+        'slider_autoplay' => 'no',
+        'slider_speed' => 5000,
+        'slider_per_view' => 3,
     ];
 
     private $did_enqueue = false;
@@ -95,19 +100,24 @@ class Anchor_Post_Display_Module {
         $this->add_field( 'min_chars',    'Min characters',   'number', 'apd_search' );
         $this->add_field( 'show_icon',    'Show search icon', 'yesno',  'apd_search' );
 
-        /* Grid defaults */
-        add_settings_section( 'apd_grid', __( 'Grid Defaults', 'anchor-schema' ), '__return_false', self::PAGE_SLUG );
+        /* Display defaults */
+        add_settings_section( 'apd_grid', __( 'Post Display Defaults', 'anchor-schema' ), '__return_false', self::PAGE_SLUG );
         $this->add_field( 'columns',        'Columns',         'number',   'apd_grid' );
-        $this->add_field( 'layout',         'Layout',          'select',   'apd_grid', [ 'grid' => 'Grid', 'list' => 'List' ] );
+        $this->add_field( 'layout',         'Layout',          'select',   'apd_grid', [ 'grid' => 'Grid', 'list' => 'List', 'slider' => 'Slider' ] );
         $this->add_field( 'pagination',     'Pagination',      'select',   'apd_grid', [ 'none' => 'None', 'numbered' => 'Numbered', 'load_more' => 'Load More' ] );
+        $this->add_field( 'pagination_window', 'Page button limit', 'number', 'apd_grid' );
         $this->add_field( 'orderby',        'Order by',        'select',   'apd_grid', [ 'date' => 'Date', 'title' => 'Title', 'menu_order' => 'Menu order', 'rand' => 'Random' ] );
         $this->add_field( 'order',          'Order',           'select',   'apd_grid', [ 'DESC' => 'Descending', 'ASC' => 'Ascending' ] );
         $this->add_field( 'posts_per_page', 'Posts per page',  'number',   'apd_grid' );
+        $this->add_field( 'max_posts',      'Max posts',       'number',   'apd_grid' );
         $this->add_field( 'image_size',     'Image size',      'text',     'apd_grid' );
         $this->add_field( 'show_date',      'Show date',       'yesno',    'apd_grid' );
         $this->add_field( 'show_type',      'Show post type',  'yesno',    'apd_grid' );
         $this->add_field( 'no_results',     'No results text', 'text',     'apd_grid' );
         $this->add_field( 'teaser_words',   'Teaser word limit', 'number', 'apd_grid' );
+        $this->add_field( 'slider_autoplay', 'Slider autoplay', 'yesno',    'apd_grid' );
+        $this->add_field( 'slider_speed',   'Slider speed (ms)', 'number',  'apd_grid' );
+        $this->add_field( 'slider_per_view', 'Slides per view', 'number',   'apd_grid' );
     }
 
     private function add_field( $key, $label, $type, $section, $choices = [] ) {
@@ -193,8 +203,10 @@ class Anchor_Post_Display_Module {
             [ 'posts',             '12',                'Posts per page' ],
             [ 'search',            '(none)',            'Force a search term' ],
             [ 'columns',           '3',                 'Grid columns (1-4)' ],
-            [ 'layout',            'grid',              'grid or list' ],
+            [ 'layout',            'grid',              'grid, list, or slider' ],
             [ 'pagination',        'none',              'none, numbered, or load_more' ],
+            [ 'pagination_window',  '7',                 'Max numbered page buttons before dots' ],
+            [ 'max_posts',          '0',                 'Total result cap; 0 means no cap' ],
             [ 'orderby',           'date',              'date, title, menu_order, rand' ],
             [ 'order',             'DESC',              'ASC or DESC' ],
             [ 'show_date',         'no',                'Show date on cards' ],
@@ -203,6 +215,9 @@ class Anchor_Post_Display_Module {
             [ 'id',                '(auto)',            'HTML id for search targeting' ],
             [ 'teaser_words',      '26',                'Excerpt word limit' ],
             [ 'fields',            '(default)',         'Comma-separated field names &amp; display order (see below)' ],
+            [ 'slider_autoplay',    'no',                'Autoplay when layout is slider' ],
+            [ 'slider_speed',       '5000',              'Autoplay speed in milliseconds' ],
+            [ 'slider_per_view',    '3',                 'Visible cards in slider layout' ],
         ];
         ?>
         <h3><code>[anchor_search]</code></h3>
@@ -385,14 +400,19 @@ class Anchor_Post_Display_Module {
             'columns'          => $opts['columns'],
             'layout'           => $opts['layout'],
             'pagination'       => $opts['pagination'],
+            'pagination_window'=> $opts['pagination_window'],
             'orderby'          => $opts['orderby'],
             'order'            => $opts['order'],
+            'max_posts'        => $opts['max_posts'],
             'show_date'        => $opts['show_date'],
             'show_type'        => $opts['show_type'],
             'no_results'       => $opts['no_results'],
             'id'               => '',
             'teaser_words'     => $opts['teaser_words'],
             'fields'           => '',
+            'slider_autoplay'  => $opts['slider_autoplay'],
+            'slider_speed'     => $opts['slider_speed'],
+            'slider_per_view'  => $opts['slider_per_view'],
         ], $atts, 'anchor_post_grid' );
 
         $this->enqueue_assets();
@@ -412,10 +432,24 @@ class Anchor_Post_Display_Module {
 
         ob_start();
         ?>
-        <div class="anchor-post-grid-wrap">
-            <div id="<?php echo esc_attr( $grid_id ); ?>" class="anchor-post-grid" data-columns="<?php echo intval( $params['columns'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>"<?php echo $data_attrs; ?>>
-                <?php echo $this->render_grid_items( $query, $params ); ?>
-            </div>
+        <div class="anchor-post-grid-wrap anchor-post-grid-wrap--<?php echo esc_attr( $params['layout'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>">
+            <?php if ( 'slider' === $params['layout'] ) : ?>
+                <div class="anchor-post-slider">
+                    <div class="anchor-post-slider-viewport">
+                        <div id="<?php echo esc_attr( $grid_id ); ?>" class="anchor-post-grid anchor-post-slider-track" data-columns="<?php echo intval( $params['columns'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>"<?php echo $data_attrs; ?>>
+                            <?php echo $this->render_grid_items( $query, $params ); ?>
+                        </div>
+                    </div>
+                    <div class="anchor-post-slider-nav">
+                        <button type="button" class="anchor-post-slider-btn anchor-post-slider-prev" aria-label="<?php esc_attr_e( 'Previous posts', 'anchor-schema' ); ?>">&lsaquo;</button>
+                        <button type="button" class="anchor-post-slider-btn anchor-post-slider-next" aria-label="<?php esc_attr_e( 'Next posts', 'anchor-schema' ); ?>">&rsaquo;</button>
+                    </div>
+                </div>
+            <?php else : ?>
+                <div id="<?php echo esc_attr( $grid_id ); ?>" class="anchor-post-grid" data-columns="<?php echo intval( $params['columns'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>"<?php echo $data_attrs; ?>>
+                    <?php echo $this->render_grid_items( $query, $params ); ?>
+                </div>
+            <?php endif; ?>
             <?php echo $this->render_pagination( $query, $params, 1 ); ?>
         </div>
         <?php
@@ -480,7 +514,7 @@ class Anchor_Post_Display_Module {
         wp_send_json_success( [
             'html'            => $this->render_grid_items( $query, $params ),
             'pagination_html' => $this->render_pagination( $query, $params, $page ),
-            'total_pages'     => $query->max_num_pages,
+            'total_pages'     => $this->get_total_pages( $query, $params ),
             'current_page'    => $page,
         ] );
     }
@@ -492,23 +526,35 @@ class Anchor_Post_Display_Module {
     private function build_query_args( $params, $page = 1 ) {
         $post_types = $this->resolve_post_types( $params['post_type'] );
         $count      = intval( $params['posts'] );
+        $max_posts  = max( 0, intval( $params['max_posts'] ?? 0 ) );
 
         $args = [
             'post_type'        => ! empty( $post_types ) ? $post_types : 'any',
             'posts_per_page'   => $count,
-            'paged'            => $page,
             'post_status'      => 'publish',
             'suppress_filters' => true,
             'orderby'          => sanitize_key( $params['orderby'] ),
             'order'            => in_array( strtoupper( $params['order'] ), [ 'ASC', 'DESC' ], true ) ? strtoupper( $params['order'] ) : 'DESC',
         ];
 
-        if ( ! empty( $params['search'] ) ) {
-            $args['s'] = sanitize_text_field( $params['search'] );
+        if ( -1 === $count ) {
+            $args['posts_per_page'] = $max_posts > 0 ? $max_posts : -1;
+            $args['no_found_rows']  = true;
+        } elseif ( $max_posts > 0 ) {
+            $offset = max( 0, ( max( 1, (int) $page ) - 1 ) * $count );
+            if ( $offset >= $max_posts ) {
+                $args['post__in']       = [ 0 ];
+                $args['posts_per_page'] = 1;
+            } else {
+                $args['offset']         = $offset;
+                $args['posts_per_page'] = min( $count, $max_posts - $offset );
+            }
+        } else {
+            $args['paged'] = $page;
         }
 
-        if ( -1 === $count ) {
-            $args['no_found_rows'] = true;
+        if ( ! empty( $params['search'] ) ) {
+            $args['s'] = sanitize_text_field( $params['search'] );
         }
 
         // Taxonomy filters.
@@ -705,7 +751,7 @@ class Anchor_Post_Display_Module {
 
     private function render_pagination( $query, $params, $current_page ) {
         $pagination = sanitize_key( $params['pagination'] );
-        $total      = (int) $query->max_num_pages;
+        $total      = $this->get_total_pages( $query, $params );
 
         if ( 'none' === $pagination || $total <= 1 ) {
             return '';
@@ -716,10 +762,32 @@ class Anchor_Post_Display_Module {
         }
 
         if ( 'numbered' === $pagination ) {
-            $html = '<nav class="anchor-post-grid-pagination">';
-            for ( $i = 1; $i <= $total; $i++ ) {
+            $window = max( 1, intval( $params['pagination_window'] ?? 7 ) );
+            $half   = (int) floor( $window / 2 );
+            $start  = max( 1, (int) $current_page - $half );
+            $end    = min( $total, $start + $window - 1 );
+
+            if ( ( $end - $start + 1 ) < $window ) {
+                $start = max( 1, $end - $window + 1 );
+            }
+
+            $html = '<nav class="anchor-post-grid-pagination" aria-label="' . esc_attr__( 'Post pagination', 'anchor-schema' ) . '">';
+            if ( $start > 1 ) {
+                $html .= '<span class="page-num" data-page="1">1</span>';
+                if ( $start > 2 ) {
+                    $html .= '<span class="page-dots" aria-hidden="true">&hellip;</span>';
+                }
+            }
+            for ( $i = $start; $i <= $end; $i++ ) {
                 $active = ( $i === (int) $current_page ) ? ' is-current' : '';
-                $html .= '<span class="page-num' . $active . '" data-page="' . $i . '">' . $i . '</span>';
+                $aria   = $active ? ' aria-current="page"' : '';
+                $html .= '<span class="page-num' . $active . '" data-page="' . $i . '"' . $aria . '>' . $i . '</span>';
+            }
+            if ( $end < $total ) {
+                if ( $end < $total - 1 ) {
+                    $html .= '<span class="page-dots" aria-hidden="true">&hellip;</span>';
+                }
+                $html .= '<span class="page-num" data-page="' . $total . '">' . $total . '</span>';
             }
             $html .= '</nav>';
             return $html;
@@ -741,19 +809,24 @@ class Anchor_Post_Display_Module {
             'exclude_taxonomy' => sanitize_text_field( $input['exclude_taxonomy'] ?? 'category' ),
             'exclude_terms'    => sanitize_text_field( $input['exclude_terms'] ?? '' ),
             'image_size'       => sanitize_text_field( $input['image_size'] ?? $opts['image_size'] ),
-            'posts'            => intval( $input['posts'] ?? $opts['posts_per_page'] ),
+            'posts'            => $this->normalize_post_count( $input['posts'] ?? $opts['posts_per_page'] ),
             'search'           => sanitize_text_field( $input['search'] ?? '' ),
             'columns'          => max( 1, min( 4, intval( $input['columns'] ?? $opts['columns'] ) ) ),
-            'layout'           => in_array( ( $input['layout'] ?? '' ), [ 'grid', 'list' ], true ) ? $input['layout'] : $opts['layout'],
+            'layout'           => in_array( ( $input['layout'] ?? '' ), [ 'grid', 'list', 'slider' ], true ) ? $input['layout'] : $opts['layout'],
             'pagination'       => in_array( ( $input['pagination'] ?? '' ), [ 'none', 'numbered', 'load_more' ], true ) ? $input['pagination'] : $opts['pagination'],
+            'pagination_window'=> max( 1, min( 20, intval( $input['pagination_window'] ?? $opts['pagination_window'] ) ) ),
             'orderby'          => sanitize_key( $input['orderby'] ?? $opts['orderby'] ),
             'order'            => in_array( strtoupper( $input['order'] ?? '' ), [ 'ASC', 'DESC' ], true ) ? strtoupper( $input['order'] ) : $opts['order'],
+            'max_posts'        => max( 0, intval( $input['max_posts'] ?? $opts['max_posts'] ) ),
             'show_date'        => ( 'yes' === ( $input['show_date'] ?? '' ) ) ? 'yes' : 'no',
             'show_type'        => ( 'yes' === ( $input['show_type'] ?? '' ) ) ? 'yes' : 'no',
             'no_results'       => sanitize_text_field( $input['no_results'] ?? $opts['no_results'] ),
             'id'               => sanitize_html_class( $input['id'] ?? '' ),
             'teaser_words'     => max( 1, intval( $input['teaser_words'] ?? $opts['teaser_words'] ) ),
             'fields'           => sanitize_text_field( $input['fields'] ?? '' ),
+            'slider_autoplay'  => ( 'yes' === strtolower( $input['slider_autoplay'] ?? $opts['slider_autoplay'] ) ) ? 'yes' : 'no',
+            'slider_speed'     => max( 1000, intval( $input['slider_speed'] ?? $opts['slider_speed'] ) ),
+            'slider_per_view'  => max( 1, min( 6, intval( $input['slider_per_view'] ?? $opts['slider_per_view'] ) ) ),
         ];
     }
 
@@ -762,8 +835,10 @@ class Anchor_Post_Display_Module {
         $keys  = [
             'post_type'  => 'post-type',
             'posts'      => 'posts',
+            'max_posts'  => 'max-posts',
             'orderby'    => 'orderby',
             'order'      => 'order',
+            'search'     => 'search',
             'show_date'  => 'show-date',
             'show_type'  => 'show-type',
             'no_results' => 'no-results',
@@ -774,7 +849,11 @@ class Anchor_Post_Display_Module {
             'exclude_taxonomy' => 'exclude-taxonomy',
             'exclude_terms'    => 'exclude-terms',
             'pagination' => 'pagination',
+            'pagination_window' => 'pagination-window',
             'fields'     => 'fields',
+            'slider_autoplay' => 'slider-autoplay',
+            'slider_speed' => 'slider-speed',
+            'slider_per_view' => 'slider-per-view',
         ];
         foreach ( $keys as $param_key => $data_key ) {
             $val = $params[ $param_key ] ?? '';
@@ -782,6 +861,29 @@ class Anchor_Post_Display_Module {
             $attrs .= ' data-' . $data_key . '="' . esc_attr( $val ) . '"';
         }
         return $attrs;
+    }
+
+    private function normalize_post_count( $value ) {
+        $count = intval( $value );
+        if ( -1 === $count ) {
+            return -1;
+        }
+        return max( 1, min( 100, $count ) );
+    }
+
+    private function get_total_pages( $query, $params ) {
+        $per_page = intval( $params['posts'] ?? 0 );
+        if ( -1 === $per_page ) {
+            return 1;
+        }
+
+        $total_posts = (int) $query->found_posts;
+        $max_posts   = max( 0, intval( $params['max_posts'] ?? 0 ) );
+        if ( $max_posts > 0 ) {
+            $total_posts = min( $total_posts, $max_posts );
+        }
+
+        return max( 1, (int) ceil( $total_posts / max( 1, $per_page ) ) );
     }
 
     private function resolve_post_types( $csv ) {

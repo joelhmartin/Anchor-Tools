@@ -175,3 +175,165 @@
     color: #555;
     line-height: 1.5;
 }
+
+/* ---- Access gate (login form / denied notice) ---- */
+.anchor-webinar-gate {
+    margin: 0 0 1.5em;
+}
+
+.anchor-webinar-login {
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 2.25rem 2rem;
+    background: #fff;
+    border: 1px solid #e6e8eb;
+    border-radius: 14px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, .08);
+}
+
+.anchor-webinar-login__title {
+    margin: 0 0 .35rem;
+    font-size: 1.5rem;
+    line-height: 1.2;
+    text-align: center;
+}
+
+.anchor-webinar-login__subtitle {
+    margin: 0 0 1.5rem;
+    color: #5b6471;
+    font-size: .95rem;
+    text-align: center;
+    line-height: 1.5;
+}
+
+.anchor-webinar-login__field {
+    margin-bottom: 1rem;
+}
+
+.anchor-webinar-login__field label {
+    display: block;
+    margin-bottom: .35rem;
+    font-size: .85rem;
+    font-weight: 600;
+    color: #2b333d;
+}
+
+.anchor-webinar-login__field input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: .7rem .85rem;
+    font-size: 1rem;
+    line-height: 1.3;
+    border: 1px solid #cfd4da;
+    border-radius: 8px;
+    background: #fff;
+    transition: border-color .15s, box-shadow .15s;
+}
+
+.anchor-webinar-login__field input:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .15);
+}
+
+.anchor-webinar-login__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin: .25rem 0 1.25rem;
+    font-size: .85rem;
+}
+
+.anchor-webinar-login__remember {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    color: #2b333d;
+    cursor: pointer;
+}
+
+.anchor-webinar-login__lost {
+    color: #2563eb;
+    text-decoration: none;
+}
+
+.anchor-webinar-login__lost:hover {
+    text-decoration: underline;
+}
+
+.anchor-webinar-login__error {
+    margin: 0 0 1rem;
+    padding: .65rem .85rem;
+    font-size: .88rem;
+    color: #9b1c1c;
+    background: #fdecec;
+    border: 1px solid #f5c2c2;
+    border-radius: 8px;
+}
+
+.anchor-webinar-login__submit {
+    width: 100%;
+    padding: .8rem 1rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #fff;
+    background: #2563eb;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background .15s, transform .05s;
+}
+
+.anchor-webinar-login__submit:hover {
+    background: #1d4ed8;
+}
+
+.anchor-webinar-login__submit:active {
+    transform: translateY(1px);
+}
+
+.anchor-webinar-login__submit[disabled] {
+    opacity: .65;
+    cursor: default;
+}
+
+.anchor-webinar-login__register {
+    margin: 1.1rem 0 0;
+    font-size: .85rem;
+    text-align: center;
+    color: #5b6471;
+}
+
+.anchor-webinar-login__register a {
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.anchor-webinar-login__register a:hover {
+    text-decoration: underline;
+}
+
+/* Access-denied notice (logged in, wrong role) */
+.anchor-webinar-notice {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 2rem;
+    text-align: center;
+    background: #f8fafc;
+    border: 1px solid #e6e8eb;
+    border-radius: 14px;
+}
+
+.anchor-webinar-notice__title {
+    margin: 0 0 .5rem;
+    font-size: 1.3rem;
+    line-height: 1.25;
+}
+
+.anchor-webinar-notice__text {
+    margin: 0;
+    color: #5b6471;
+    line-height: 1.6;
+}

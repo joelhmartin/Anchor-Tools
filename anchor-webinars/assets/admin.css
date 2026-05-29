@@ -1,3 +1,35 @@
 .anchor-webinar-meta label{
   font-weight:600;
 }
+
+.anchor-webinar-access{
+  margin-top:1em;
+  padding-top:1em;
+  border-top:1px solid #e0e0e0;
+}
+.anchor-webinar-access p{
+  margin:.4em 0;
+}
+.anchor-webinar-access__roles{
+  margin-top:.5em;
+  padding:.5em .75em;
+  background:#f6f7f7;
+  border-radius:4px;
+}
+
+/* Quick/Bulk Edit role checklist */
+.anchor-webinar-inline .anchor-webinar-roles-wrap{
+  margin-top:.5em;
+}
+.anchor-webinar-inline .anchor-webinar-roles-list{
+  max-height:120px;
+  overflow:auto;
+  margin:.25em 0 0;
+  padding:.4em .6em;
+  border:1px solid #dcdcde;
+  border-radius:4px;
+  background:#fff;
+}
+.anchor-webinar-inline .anchor-webinar-roles-list li{
+  margin:0 0 .2em;
+}

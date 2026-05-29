@@ -246,6 +246,47 @@
     flex: 0 0 100%;
 }
 
+/* Carousel layout — same track mechanics as slider */
+.anchor-post-grid[data-layout="carousel"] {
+    display: flex;
+    grid-template-columns: none !important;
+    will-change: transform;
+    transition: transform 0.28s ease, opacity var(--apd-transition);
+}
+
+.anchor-post-grid[data-layout="carousel"] .anchor-post-grid-card {
+    flex: 0 0 100%;
+    min-width: 0;
+}
+
+.anchor-post-grid[data-layout="carousel"] .anchor-post-grid-empty {
+    flex: 0 0 100%;
+}
+
+/* Dots navigation (slider + carousel) */
+.anchor-post-slider-dots {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 12px;
+}
+
+.anchor-post-slider-dot {
+    width: 10px;
+    height: 10px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--apd-border, #c9ced6);
+    cursor: pointer;
+    transition: background var(--apd-transition), transform var(--apd-transition);
+}
+
+.anchor-post-slider-dot.is-active {
+    background: var(--apd-accent, #2a3744);
+    transform: scale(1.2);
+}
+
 .anchor-post-slider-nav {
     display: flex;
     justify-content: flex-end;

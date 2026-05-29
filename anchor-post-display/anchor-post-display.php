@@ -642,9 +642,16 @@ class Anchor_Post_Display_Module {
             'slider_autoplay' => 'slider-autoplay',
             'slider_speed' => 'slider-speed',
             'slider_per_view' => 'slider-per-view',
+            'slider_per_view_tablet' => 'slider-per-view-tablet',
+            'slider_per_view_mobile' => 'slider-per-view-mobile',
+            'carousel_loop' => 'carousel-loop',
+            'carousel_arrows' => 'carousel-arrows',
+            'carousel_dots' => 'carousel-dots',
+            'carousel_pause_on_hover' => 'carousel-pause-on-hover',
         ];
         foreach ( $keys as $param_key => $data_key ) {
-            $val = $params[ $param_key ] ?? '';
+            if ( ! array_key_exists( $param_key, $params ) ) continue;
+            $val = $params[ $param_key ];
             if ( is_int( $val ) ) $val = (string) $val;
             $attrs .= ' data-' . $data_key . '="' . esc_attr( $val ) . '"';
         }

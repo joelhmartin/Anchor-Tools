@@ -268,10 +268,13 @@
        ================================================================ */
 
     function getSliderPerView(grid) {
-        var requested = parseInt(grid.dataset.sliderPerView || grid.dataset.columns || '1', 10) || 1;
-        if (window.matchMedia('(max-width: 480px)').matches) return 1;
-        if (window.matchMedia('(max-width: 768px)').matches) return Math.min(2, requested);
-        return requested;
+        var desktop = parseInt(grid.dataset.sliderPerView || grid.dataset.columns || '1', 10) || 1;
+        var tablet  = parseInt(grid.dataset.sliderPerViewTablet || '', 10);
+        var mobile  = parseInt(grid.dataset.sliderPerViewMobile || '', 10);
+        // Breakpoints mirror the scoped CSS: mobile <= 767px, tablet <= 1024px.
+        if (window.matchMedia('(max-width: 767px)').matches) return (mobile || 1);
+        if (window.matchMedia('(max-width: 1024px)').matches) return (tablet || Math.min(2, desktop));
+        return desktop;
     }
 
     function stopSlider(grid) {
@@ -282,12 +285,13 @@
     }
 
     function initPostSlider(grid) {
-        if (!grid || grid.dataset.layout !== 'slider') return;
+        if (!grid || (grid.dataset.layout !== 'slider' && grid.dataset.layout !== 'carousel')) return;
 
         var slider   = getSliderContainer(grid);
         var viewport = slider ? slider.querySelector('.anchor-post-slider-viewport') : null;
         var prev     = slider ? slider.querySelector('.anchor-post-slider-prev') : null;
         var next     = slider ? slider.querySelector('.anchor-post-slider-next') : null;
+        var dotsWrap = slider ? slider.querySelector('.anchor-post-slider-dots') : null;
         if (!slider || !viewport) return;
 
         var cards = grid.querySelectorAll('.anchor-post-grid-card');
@@ -296,6 +300,7 @@
         var autoplay = grid.dataset.sliderAutoplay === 'yes';
         var speed = parseInt(grid.dataset.sliderSpeed || '5000', 10) || 5000;
         var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var pauseHover = grid.dataset.carouselPauseOnHover === '1' || grid.dataset.carouselPauseOnHover === 'yes';
 
         function getGap() {
             var gap = parseFloat(getComputedStyle(grid).gap);
@@ -326,6 +331,33 @@
 
             if (prev) prev.disabled = total <= perView;
             if (next) next.disabled = total <= perView;
+            updateDots(perView);
+        }
+
+        function buildDots() {
+            if (!dotsWrap) return;
+            var perView = Math.min(getSliderPerView(grid), Math.max(1, total));
+            var pages = Math.max(1, Math.ceil(total / perView));
+            dotsWrap.innerHTML = '';
+            for (var d = 0; d < pages; d++) {
+                var dot = document.createElement('button');
+                dot.type = 'button';
+                dot.className = 'anchor-post-slider-dot';
+                dot.setAttribute('aria-label', 'Go to slide ' + (d + 1));
+                (function (idx) {
+                    dot.onclick = function () { grid._apdSliderGo(idx * Math.min(getSliderPerView(grid), Math.max(1, total)), true); };
+                })(d);
+                dotsWrap.appendChild(dot);
+            }
+        }
+
+        function updateDots(perView) {
+            if (!dotsWrap) return;
+            var dots = dotsWrap.querySelectorAll('.anchor-post-slider-dot');
+            var activePage = perView > 0 ? Math.floor(current / perView) : 0;
+            dots.forEach(function (el, i) {
+                el.classList.toggle('is-active', i === activePage);
+            });
         }
 
         function startAutoplay() {
@@ -373,15 +405,36 @@
             viewport.dataset.apdSwipeBound = '1';
         }
 
+        if (pauseHover && autoplay && !slider.dataset.apdPauseBound) {
+            slider.addEventListener('mouseenter', function () { stopSlider(grid); });
+            slider.addEventListener('mouseleave', function () { if (grid._apdSliderGo) startAutoplay(); });
+            slider.dataset.apdPauseBound = '1';
+        }
+
         stopSlider(grid);
         setCardWidths();
+        buildDots();
         goTo(current);
         startAutoplay();
     }
 
     function initPostSliders(root) {
-        (root || document).querySelectorAll('.anchor-post-grid[data-layout="slider"]').forEach(initPostSlider);
+        (root || document).querySelectorAll('.anchor-post-grid[data-layout="slider"], .anchor-post-grid[data-layout="carousel"]').forEach(initPostSlider);
     }
+
+    /**
+     * Re-initialize displays inside a container (used by the admin live preview
+     * after injecting fresh markup). Binds pagination + sliders/carousels.
+     */
+    window.AnchorPostDisplayInit = function (root) {
+        var scope = root || document;
+        scope.querySelectorAll('.anchor-post-grid').forEach(function (grid) {
+            grid.dataset.currentPage = '1';
+            grid.dataset.currentSearch = grid.dataset.search || '';
+            bindPagination(grid);
+        });
+        initPostSliders(scope);
+    };
 
     /* ================================================================
        Init on DOM ready

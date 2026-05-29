@@ -108,6 +108,11 @@
         window.jQuery(document).on('anchor-builder:refresh-preview', refreshPreview);
     }
 
+    // Initialize WordPress color pickers for color-type fields.
+    if (window.jQuery && window.jQuery.fn.wpColorPicker) {
+        window.jQuery(root).find('.anchor-builder__color-picker').wpColorPicker();
+    }
+
     syncConditional();
     refreshPreview();
 })();

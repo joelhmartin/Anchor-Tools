@@ -435,11 +435,15 @@ class Anchor_APD_Display_CPT {
        ================================================================ */
 
     public function enqueue_admin_assets( $hook ) {
+        global $post;
         if ( ! in_array( $hook, [ 'post.php', 'post-new.php' ], true ) ) return;
-        if ( get_post_type() !== self::CPT ) return;
+        if ( ! isset( $post ) || $post->post_type !== self::CPT ) return;
 
         $builder_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/assets/';
         $apd_base    = 'anchor-post-display/assets/';
+
+        // Color picker for color-type fields.
+        wp_enqueue_style( 'wp-color-picker' );
 
         // Shared builder chrome (tabs, device toggle, copy button).
         wp_enqueue_style( 'anchor-builder', Anchor_Asset_Loader::url( 'includes/builder/assets/builder.css' ), [], file_exists( $builder_dir . 'builder.css' ) ? filemtime( $builder_dir . 'builder.css' ) : self::VERSION );
@@ -449,13 +453,13 @@ class Anchor_APD_Display_CPT {
         wp_enqueue_style( 'anchor-post-display', Anchor_Asset_Loader::url( $apd_base . 'frontend.css' ), [], self::VERSION );
         wp_enqueue_script( 'anchor-post-display', Anchor_Asset_Loader::url( $apd_base . 'frontend.js' ), [], self::VERSION, true );
 
-        // Post Display builder behaviour (live preview + conditional fields).
+        // Post Display builder behaviour (live preview + conditional fields + color picker init).
         wp_enqueue_style( 'apd-builder', Anchor_Asset_Loader::url( $apd_base . 'builder.css' ), [ 'anchor-builder' ], self::VERSION );
-        wp_enqueue_script( 'apd-builder', Anchor_Asset_Loader::url( $apd_base . 'builder.js' ), [ 'anchor-builder' ], self::VERSION, true );
+        wp_enqueue_script( 'apd-builder', Anchor_Asset_Loader::url( $apd_base . 'builder.js' ), [ 'anchor-builder', 'wp-color-picker' ], self::VERSION, true );
         wp_localize_script( 'apd-builder', 'APD_BUILDER', [
             'ajaxUrl' => admin_url( 'admin-ajax.php' ),
             'nonce'   => wp_create_nonce( self::NONCE ),
-            'postId'  => (int) get_the_ID(),
+            'postId'  => (int) ( $post->ID ?? 0 ),
         ] );
     }
 

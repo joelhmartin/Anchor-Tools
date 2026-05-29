@@ -315,6 +315,17 @@
     text-decoration: underline;
 }
 
+/* Locked placeholder shown in archives/search/feeds for gated webinars */
+.anchor-webinar-locked {
+    margin: .5em 0;
+    padding: .65rem .85rem;
+    font-size: .95em;
+    color: #5b6471;
+    background: #f1f5f9;
+    border-left: 3px solid #94a3b8;
+    border-radius: 4px;
+}
+
 /* Access-denied notice (logged in, wrong role) */
 .anchor-webinar-notice {
     max-width: 520px;

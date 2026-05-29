@@ -25,6 +25,8 @@
             var postId = 0;
             if (typeof id === 'object') {
                 postId = parseInt(this.getId(id), 10);
+            } else if (id) {
+                postId = parseInt(id, 10);
             }
             if (!postId) { return; }
 

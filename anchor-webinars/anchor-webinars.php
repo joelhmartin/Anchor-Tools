@@ -43,6 +43,15 @@ class Module {
 
         \add_filter( 'template_include', [ $this, 'template_include' ] );
 
+        // Enforce access everywhere the body could leak: archives, search,
+        // REST (content.rendered / excerpt.rendered), and feeds — not just the
+        // single template.
+        \add_filter( 'the_content', [ $this, 'gate_the_content' ], 9 );
+        \add_filter( 'the_content_feed', [ $this, 'gate_the_content' ], 9 );
+        \add_filter( 'the_excerpt_rss', [ $this, 'gate_the_content' ], 9 );
+        \add_filter( 'get_the_excerpt', [ $this, 'gate_the_excerpt' ], 9, 2 );
+        \add_action( 'template_redirect', [ $this, 'maybe_nocache_gated' ] );
+
         \add_action( 'wp_ajax_anchor_webinar_log', [ $this, 'handle_watch_log' ] );
 
         \add_action( 'init', [ $this, 'maybe_create_table' ] );
@@ -265,6 +274,61 @@ class Module {
     }
 
     /**
+     * Replace a gated webinar's body with a locked notice anywhere the_content
+     * runs for an unauthorized user (archives, search, REST, feeds). On the
+     * single page the template already renders the gate and never calls
+     * the_content for blocked users, so this is a no-op there.
+     */
+    public function gate_the_content( $content ) {
+        $post = \get_post();
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            return $content;
+        }
+        if ( $this->can_user_access( $post->ID ) ) {
+            return $content;
+        }
+        return $this->locked_notice();
+    }
+
+    /**
+     * Excerpt counterpart to gate_the_content (covers REST excerpt.rendered and
+     * theme/archive excerpts). $post is provided by the get_the_excerpt filter.
+     */
+    public function gate_the_excerpt( $excerpt, $post = null ) {
+        $post = $post ? \get_post( $post ) : \get_post();
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            return $excerpt;
+        }
+        if ( $this->can_user_access( $post->ID ) ) {
+            return $excerpt;
+        }
+        return $this->locked_notice();
+    }
+
+    private function locked_notice() {
+        return '<p class="anchor-webinar-locked">' . \esc_html__( 'This webinar is available to members only. Please sign in to watch.', 'anchor-schema' ) . '</p>';
+    }
+
+    /**
+     * Prevent full-page caches from storing/cross-serving a gated single
+     * webinar (the gate page for guests, or the player for an authorized user).
+     */
+    public function maybe_nocache_gated() {
+        if ( ! \is_singular( self::CPT ) ) {
+            return;
+        }
+        $mode = \get_post_meta( \get_queried_object_id(), '_anchor_webinar_access', true );
+        if ( ! $mode || $mode === 'public' ) {
+            return; // public webinars render the same for everyone — safe to cache.
+        }
+        // Non-public: output (gate vs. player) varies per user, never cache it.
+        \nocache_headers();
+        if ( ! \defined( 'DONOTCACHEPAGE' ) ) {
+            \define( 'DONOTCACHEPAGE', true );
+        }
+    }
+
+    /**
      * Sanitize and write the access meta. Shared by metabox + inline-edit saves.
      */
     private function persist_access_meta( $post_id, $mode, $roles ) {
@@ -274,7 +338,12 @@ class Module {
         \update_post_meta( $post_id, '_anchor_webinar_access', $mode );
 
         if ( $mode === 'roles' ) {
-            $valid = \array_keys( \wp_roles()->roles );
+            // Validate against roles the saving user can actually manage, not the
+            // full role set — a crafted request can't store a hidden/privileged slug.
+            if ( ! \function_exists( 'get_editable_roles' ) ) {
+                require_once ABSPATH . 'wp-admin/includes/user.php';
+            }
+            $valid = \array_keys( \get_editable_roles() );
             $clean = \array_values( \array_intersect( \array_map( 'sanitize_text_field', (array) $roles ), $valid ) );
             \update_post_meta( $post_id, '_anchor_webinar_roles', $clean );
         } else {
@@ -309,8 +378,10 @@ class Module {
 
         $mode = isset( $_REQUEST['anchor_webinar_access'] ) ? \sanitize_text_field( \wp_unslash( $_REQUEST['anchor_webinar_access'] ) ) : '';
 
-        // Bulk Edit default is "— No Change —"; leave existing values untouched.
-        if ( $is_bulk && ( $mode === '' || $mode === '-1' ) ) {
+        // "— No Change —" (bulk default) or a missing value must never clobber an
+        // existing gate — applies to Quick Edit too, so an unrelated inline edit
+        // (e.g. just the title) can't silently reset access to public.
+        if ( $mode === '' || $mode === '-1' ) {
             return;
         }
 
@@ -384,7 +455,8 @@ class Module {
                 <h2 class="anchor-webinar-login__title"><?php echo \esc_html__( 'Sign in to watch', 'anchor-schema' ); ?></h2>
                 <p class="anchor-webinar-login__subtitle"><?php echo \esc_html__( 'This webinar is available to members. Please sign in to continue watching.', 'anchor-schema' ); ?></p>
 
-                <form class="anchor-webinar-login__form" method="post" novalidate>
+                <form class="anchor-webinar-login__form" method="post" novalidate action="<?php echo \esc_url( \site_url( 'wp-login.php', 'login_post' ) ); ?>">
+                    <input type="hidden" name="redirect_to" value="<?php echo \esc_url( \get_permalink( $post_id ) ); ?>" />
                     <div class="anchor-webinar-login__field">
                         <label for="awl-user"><?php echo \esc_html__( 'Username or Email', 'anchor-schema' ); ?></label>
                         <input type="text" id="awl-user" name="log" autocomplete="username" required />
@@ -727,6 +799,11 @@ class Module {
         $post = $post_id ? \get_post( $post_id ) : null;
         if ( ! $post || $post->post_status !== 'publish' ) {
             return '';
+        }
+
+        // Honour the webinar's access gate even when embedded via shortcode.
+        if ( ! $this->can_user_access( $post->ID ) ) {
+            return $this->locked_notice();
         }
 
         $vimeo_id     = \get_post_meta( $post->ID, '_anchor_webinar_vimeo_id', true );

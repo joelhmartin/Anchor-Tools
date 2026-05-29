@@ -227,6 +227,58 @@ class Anchor_APD_Display_CPT {
         ] );
     }
 
+    public function render_pane_source( $post ) {
+        $get = function ( $k, $d = '' ) use ( $post ) {
+            $v = get_post_meta( $post->ID, 'apd_src_' . $k, true );
+            return ( $v === '' || $v === false ) ? $d : $v;
+        };
+        $selected_types = get_post_meta( $post->ID, 'apd_src_post_types', true );
+        if ( ! is_array( $selected_types ) ) {
+            $selected_types = array_filter( array_map( 'trim', explode( ',', (string) $selected_types ) ) );
+        }
+
+        $types = get_post_types( [ 'public' => true ], 'objects' );
+        unset( $types['attachment'] );
+        ?>
+        <div class="apd-source">
+            <fieldset class="apd-source__group">
+                <legend><strong>Post types</strong></legend>
+                <?php foreach ( $types as $t ) : ?>
+                    <label class="apd-source__check">
+                        <input type="checkbox" name="apd_src_post_types[]" value="<?php echo esc_attr( $t->name ); ?>" <?php checked( in_array( $t->name, $selected_types, true ) ); ?>>
+                        <?php echo esc_html( $t->labels->singular_name ); ?>
+                    </label>
+                <?php endforeach; ?>
+                <p class="description">None checked = all searchable types.</p>
+            </fieldset>
+
+            <p><label>Include taxonomy<br><input type="text" name="apd_src_taxonomy" value="<?php echo esc_attr( $get( 'taxonomy', 'category' ) ); ?>" class="regular-text"></label></p>
+            <p><label>Include terms (slugs, comma-separated)<br><input type="text" name="apd_src_terms" value="<?php echo esc_attr( $get( 'terms' ) ); ?>" class="regular-text"></label></p>
+            <p><label>Exclude taxonomy<br><input type="text" name="apd_src_exclude_taxonomy" value="<?php echo esc_attr( $get( 'exclude_taxonomy', 'category' ) ); ?>" class="regular-text"></label></p>
+            <p><label>Exclude terms (slugs, comma-separated)<br><input type="text" name="apd_src_exclude_terms" value="<?php echo esc_attr( $get( 'exclude_terms' ) ); ?>" class="regular-text"></label></p>
+
+            <p><label>Order by
+                <select name="apd_src_orderby">
+                    <?php foreach ( [ 'date' => 'Date', 'title' => 'Title', 'menu_order' => 'Menu order', 'rand' => 'Random' ] as $v => $l ) : ?>
+                        <option value="<?php echo esc_attr( $v ); ?>" <?php selected( $get( 'orderby', 'date' ), $v ); ?>><?php echo esc_html( $l ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <label> Order
+                <select name="apd_src_order">
+                    <option value="DESC" <?php selected( $get( 'order', 'DESC' ), 'DESC' ); ?>>Descending</option>
+                    <option value="ASC" <?php selected( $get( 'order', 'DESC' ), 'ASC' ); ?>>Ascending</option>
+                </select>
+            </label></p>
+
+            <p><label>Posts per page <input type="number" name="apd_src_posts" value="<?php echo esc_attr( $get( 'posts', 12 ) ); ?>" class="small-text" min="1" max="100"></label>
+            <label> Max posts (0 = no cap) <input type="number" name="apd_src_max_posts" value="<?php echo esc_attr( $get( 'max_posts', 0 ) ); ?>" class="small-text" min="0"></label></p>
+
+            <p><label>Forced search term (optional)<br><input type="text" name="apd_src_search" value="<?php echo esc_attr( $get( 'search' ) ); ?>" class="regular-text"></label></p>
+        </div>
+        <?php
+    }
+
     public function render_pane_section( $post, $section ) {
         $grouped  = $this->get_settings_by_section();
         $defaults = $this->default_settings();

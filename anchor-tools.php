@@ -5,6 +5,8 @@
  * Version: 3.7.84
  * Author: Anchor Corps
  * Text Domain: anchor-tools
+ * Requires PHP: 8.1
+ * Requires at least: 6.0
  */
 
 use Dotenv\Dotenv;
@@ -25,6 +27,48 @@ if ( ! defined( 'ANCHOR_SCHEMA_DIR' ) ) {
 }
 if ( ! defined( 'ANCHOR_SCHEMA_URL' ) ) {
     define( 'ANCHOR_SCHEMA_URL', ANCHOR_TOOLS_PLUGIN_URL );
+}
+
+/**
+ * Hard requirement: Composer deps (and platform_check.php) need PHP >= 8.1.
+ * platform_check.php fatals via trigger_error(E_USER_ERROR), which is NOT
+ * catchable — so we must gate BEFORE loading the autoloader.
+ */
+if ( ! defined( 'ANCHOR_TOOLS_MIN_PHP' ) ) {
+    define( 'ANCHOR_TOOLS_MIN_PHP', '8.1' );
+}
+
+if ( version_compare( PHP_VERSION, ANCHOR_TOOLS_MIN_PHP, '<' ) ) {
+
+    // Admin notice so the reason is visible instead of a white screen.
+    add_action(
+        'admin_notices',
+        function () {
+            printf(
+                '<div class="notice notice-error"><p>%s</p></div>',
+                esc_html( sprintf(
+                    /* translators: 1: required PHP version, 2: current PHP version */
+                    __( 'Anchor Tools requires PHP %1$s or higher. This server is running PHP %2$s. The plugin has been deactivated.', 'anchor-schema' ),
+                    ANCHOR_TOOLS_MIN_PHP,
+                    PHP_VERSION
+                ) )
+            );
+        }
+    );
+
+    // Self-deactivate cleanly on the next admin load so it can't crash the site.
+    add_action(
+        'admin_init',
+        function () {
+            if ( current_user_can( 'activate_plugins' ) ) {
+                deactivate_plugins( plugin_basename( __FILE__ ) );
+                unset( $_GET['activate'] ); // suppress the "Plugin activated" notice
+            }
+        }
+    );
+
+    // Stop loading the rest of the plugin (incl. vendor/autoload.php).
+    return;
 }
 
 $acg_autoload = ANCHOR_TOOLS_PLUGIN_DIR . 'vendor/autoload.php';

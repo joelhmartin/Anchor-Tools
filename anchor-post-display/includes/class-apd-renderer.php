@@ -84,6 +84,111 @@ class Anchor_APD_Renderer {
     }
 
     /* ================================================================
+       Layout markup helpers (shared by inline + CPT paths)
+       ================================================================ */
+
+    public static function render_layout_open( $grid_id, $params, $data_attrs ) {
+        $layout = $params['layout'];
+        if ( in_array( $layout, [ 'slider', 'carousel' ], true ) ) {
+            $h  = '<div class="anchor-post-slider anchor-post-slider--' . esc_attr( $layout ) . '">';
+            $h .= '<div class="anchor-post-slider-viewport">';
+            $h .= '<div id="' . esc_attr( $grid_id ) . '" class="anchor-post-grid anchor-post-slider-track" data-columns="' . intval( $params['columns'] ) . '" data-layout="' . esc_attr( $layout ) . '"' . $data_attrs . '>';
+            return $h;
+        }
+        return '<div id="' . esc_attr( $grid_id ) . '" class="anchor-post-grid" data-columns="' . intval( $params['columns'] ) . '" data-layout="' . esc_attr( $layout ) . '"' . $data_attrs . '>';
+    }
+
+    public static function render_layout_close( $params ) {
+        $layout = $params['layout'];
+        if ( in_array( $layout, [ 'slider', 'carousel' ], true ) ) {
+            $arrows = ! empty( $params['carousel_arrows'] ) && $params['carousel_arrows'] !== '0';
+            $dots   = ! empty( $params['carousel_dots'] ) && $params['carousel_dots'] !== '0';
+            $h  = '</div></div>'; // .track + .viewport
+            if ( $arrows ) {
+                $h .= '<div class="anchor-post-slider-nav">';
+                $h .= '<button type="button" class="anchor-post-slider-btn anchor-post-slider-prev" aria-label="' . esc_attr__( 'Previous posts', 'anchor-schema' ) . '">&lsaquo;</button>';
+                $h .= '<button type="button" class="anchor-post-slider-btn anchor-post-slider-next" aria-label="' . esc_attr__( 'Next posts', 'anchor-schema' ) . '">&rsaquo;</button>';
+                $h .= '</div>';
+            }
+            if ( $dots ) {
+                $h .= '<div class="anchor-post-slider-dots" aria-hidden="false"></div>';
+            }
+            $h .= '</div>'; // .anchor-post-slider
+            return $h;
+        }
+        return '</div>';
+    }
+
+    /**
+     * Build a <style> block scoped to #$grid_id with the per-display responsive
+     * columns / slides-per-view, gap, and lean style keys. Pure string function.
+     * Breakpoints: tablet <= 1024px, mobile <= 767px.
+     */
+    public static function build_scoped_css( $grid_id, $params ) {
+        $sel    = '#' . $grid_id;
+        $card   = $sel . ' .anchor-post-grid-card';
+        $title  = $sel . ' .anchor-post-grid-title';
+        $layout = $params['layout'] ?? 'grid';
+        $css    = '';
+
+        if ( 'grid' === $layout ) {
+            $cd = max( 1, (int) ( $params['columns'] ?? 3 ) );
+            $ct = max( 1, (int) ( $params['columns_tablet'] ?? 2 ) );
+            $cm = max( 1, (int) ( $params['columns_mobile'] ?? 1 ) );
+            $css .= $sel . '{display:grid;grid-template-columns:repeat(' . $cd . ',1fr);}';
+            $css .= '@media(max-width:1024px){' . $sel . '{grid-template-columns:repeat(' . $ct . ',1fr);}}';
+            $css .= '@media(max-width:767px){' . $sel . '{grid-template-columns:repeat(' . $cm . ',1fr);}}';
+        } elseif ( in_array( $layout, [ 'slider', 'carousel' ], true ) ) {
+            $pd = max( 1, (int) ( $params['slider_per_view'] ?? 3 ) );
+            $pt = max( 1, (int) ( $params['slider_per_view_tablet'] ?? 2 ) );
+            $pm = max( 1, (int) ( $params['slider_per_view_mobile'] ?? 1 ) );
+            $css .= $sel . '{--apd-per-view:' . $pd . ';}';
+            $css .= $card . '{flex:0 0 calc((100% - (var(--apd-gap,16px) * (' . $pd . ' - 1))) / ' . $pd . ');}';
+            $css .= '@media(max-width:1024px){' . $card . '{flex-basis:calc((100% - (var(--apd-gap,16px) * (' . $pt . ' - 1))) / ' . $pt . ');}}';
+            $css .= '@media(max-width:767px){' . $card . '{flex-basis:calc((100% - (var(--apd-gap,16px) * (' . $pm . ' - 1))) / ' . $pm . ');}}';
+        }
+
+        $gap = (int) ( $params['gap'] ?? 16 );
+        $css .= $sel . '{--apd-gap:' . $gap . 'px;gap:' . $gap . 'px;}';
+        $gm = (int) ( $params['gap_mobile'] ?? 0 );
+        if ( $gm > 0 ) {
+            $css .= '@media(max-width:767px){' . $sel . '{--apd-gap:' . $gm . 'px;gap:' . $gm . 'px;}}';
+        }
+
+        $br = (int) ( $params['border_radius'] ?? 0 );
+        if ( $br > 0 ) {
+            $css .= $card . '{border-radius:' . $br . 'px;overflow:hidden;}';
+        }
+
+        $shadow_map = [
+            'soft'   => '0 1px 4px rgba(0,0,0,.08)',
+            'medium' => '0 4px 12px rgba(0,0,0,.12)',
+            'strong' => '0 8px 24px rgba(0,0,0,.18)',
+        ];
+        if ( ! empty( $params['tile_shadow'] ) && isset( $shadow_map[ $params['tile_shadow'] ] ) ) {
+            $css .= $card . '{box-shadow:' . $shadow_map[ $params['tile_shadow'] ] . ';}';
+        }
+        if ( ! empty( $params['wrapper_bg'] ) ) {
+            $css .= $sel . '{background:' . $params['wrapper_bg'] . ';}';
+        }
+        if ( ! empty( $params['title_color'] ) ) {
+            $css .= $title . '{color:' . $params['title_color'] . ';}';
+        }
+        if ( ! empty( $params['title_size'] ) && (int) $params['title_size'] > 0 ) {
+            $css .= $title . '{font-size:' . (int) $params['title_size'] . 'px;}';
+        }
+        if ( ! empty( $params['title_weight'] ) ) {
+            $css .= $title . '{font-weight:' . preg_replace( '/[^0-9]/', '', $params['title_weight'] ) . ';}';
+        }
+
+        if ( ! empty( $params['custom_css'] ) ) {
+            $css .= preg_replace( '#</?style[^>]*>#i', '', (string) $params['custom_css'] );
+        }
+
+        return '<style id="' . $grid_id . '-css">' . $css . '</style>';
+    }
+
+    /* ================================================================
        Card renderer
        ================================================================ */
 

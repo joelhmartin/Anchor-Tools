@@ -479,30 +479,16 @@ class Anchor_Post_Display_Module {
 
         // Data attributes for JS pagination / search filtering.
         $data_attrs = $this->build_data_attrs( $params );
+        $scoped_css = Anchor_APD_Renderer::build_scoped_css( $grid_id, $params );
 
         ob_start();
-        ?>
-        <div class="anchor-post-grid-wrap anchor-post-grid-wrap--<?php echo esc_attr( $params['layout'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>">
-            <?php if ( 'slider' === $params['layout'] ) : ?>
-                <div class="anchor-post-slider">
-                    <div class="anchor-post-slider-viewport">
-                        <div id="<?php echo esc_attr( $grid_id ); ?>" class="anchor-post-grid anchor-post-slider-track" data-columns="<?php echo intval( $params['columns'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>"<?php echo $data_attrs; ?>>
-                            <?php echo Anchor_APD_Renderer::render_grid_items( $query, $params ); ?>
-                        </div>
-                    </div>
-                    <div class="anchor-post-slider-nav">
-                        <button type="button" class="anchor-post-slider-btn anchor-post-slider-prev" aria-label="<?php esc_attr_e( 'Previous posts', 'anchor-schema' ); ?>">&lsaquo;</button>
-                        <button type="button" class="anchor-post-slider-btn anchor-post-slider-next" aria-label="<?php esc_attr_e( 'Next posts', 'anchor-schema' ); ?>">&rsaquo;</button>
-                    </div>
-                </div>
-            <?php else : ?>
-                <div id="<?php echo esc_attr( $grid_id ); ?>" class="anchor-post-grid" data-columns="<?php echo intval( $params['columns'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>"<?php echo $data_attrs; ?>>
-                    <?php echo Anchor_APD_Renderer::render_grid_items( $query, $params ); ?>
-                </div>
-            <?php endif; ?>
-            <?php echo Anchor_APD_Renderer::render_pagination( $query, $params, 1 ); ?>
-        </div>
-        <?php
+        echo $scoped_css;
+        echo '<div class="anchor-post-grid-wrap anchor-post-grid-wrap--' . esc_attr( $params['layout'] ) . '" data-layout="' . esc_attr( $params['layout'] ) . '">';
+        echo Anchor_APD_Renderer::render_layout_open( $grid_id, $params, $data_attrs );
+        echo Anchor_APD_Renderer::render_grid_items( $query, $params );
+        echo Anchor_APD_Renderer::render_layout_close( $params );
+        echo Anchor_APD_Renderer::render_pagination( $query, $params, 1 );
+        echo '</div>';
         wp_reset_postdata();
         return ob_get_clean();
     }

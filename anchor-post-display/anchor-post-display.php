@@ -195,6 +195,15 @@ class Anchor_Post_Display_Module {
         </form>
         <hr>
         <h2><?php esc_html_e( 'Shortcode Reference', 'anchor-schema' ); ?></h2>
+        <p><strong><?php esc_html_e( 'Post Displays (new):', 'anchor-schema' ); ?></strong>
+        <?php
+        printf(
+            /* translators: %s: example shortcode */
+            esc_html__( 'Build reusable, fully-configurable displays under %1$s in the admin menu, then embed one with %2$s. Each display has its own layout (grid, list, slider, carousel), style, and desktop/tablet/mobile responsive settings.', 'anchor-schema' ),
+            '<em>Post Displays</em>',
+            '<code>[anchor_post_grid id="123"]</code>'
+        );
+        ?></p>
         <?php $this->render_shortcode_reference(); ?>
         <?php
     }
@@ -230,7 +239,7 @@ class Anchor_Post_Display_Module {
             [ 'show_date',         'no',                'Show date on cards' ],
             [ 'show_type',         'no',                'Show post type badge' ],
             [ 'no_results',        'No results found.', 'No results message' ],
-            [ 'id',                '(auto)',            'HTML id for search targeting' ],
+            [ 'id',                '(auto)',            'Render a saved Post Display by numeric ID or slug; inline atts override it. (When not a Post Display, used as the HTML id for search targeting.)' ],
             [ 'teaser_words',      '26',                'Excerpt word limit' ],
             [ 'fields',            '(default)',         'Comma-separated field names &amp; display order (see below)' ],
             [ 'slider_autoplay',    'no',                'Autoplay when layout is slider' ],

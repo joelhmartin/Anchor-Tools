@@ -609,7 +609,7 @@ class Anchor_Post_Display_Module {
             'posts'            => Anchor_APD_Renderer::normalize_post_count( $input['posts'] ?? $opts['posts_per_page'] ),
             'search'           => sanitize_text_field( $input['search'] ?? '' ),
             'columns'          => max( 1, min( 4, intval( $input['columns'] ?? $opts['columns'] ) ) ),
-            'layout'           => in_array( ( $input['layout'] ?? '' ), [ 'grid', 'list', 'slider' ], true ) ? $input['layout'] : $opts['layout'],
+            'layout'           => in_array( ( $input['layout'] ?? '' ), [ 'grid', 'list', 'slider', 'carousel' ], true ) ? $input['layout'] : $opts['layout'],
             'pagination'       => in_array( ( $input['pagination'] ?? '' ), [ 'none', 'numbered', 'load_more' ], true ) ? $input['pagination'] : $opts['pagination'],
             'pagination_window'=> max( 1, min( 20, intval( $input['pagination_window'] ?? $opts['pagination_window'] ) ) ),
             'orderby'          => sanitize_key( $input['orderby'] ?? $opts['orderby'] ),

@@ -133,36 +133,66 @@ class Anchor_APD_Display_CPT {
      * Per-display defaults: schema defaults merged with the global Post Display
      * option, so a new display inherits the site-wide look.
      */
+    /**
+     * Explicit, sensible starting value for every setting. Used when the global
+     * Post Display option doesn't supply one. Keyed by setting (no apd_ prefix).
+     */
+    private function seed_defaults() {
+        return [
+            'fields'                  => '',
+            'show_date'               => 0,
+            'show_type'               => 0,
+            'teaser_words'            => 26,
+            'image_size'              => 'medium',
+            'layout'                  => 'grid',
+            'columns_desktop'         => 3,
+            'gap'                     => 16,
+            'card_style'              => 'card',
+            'border_radius'           => 0,
+            'tile_shadow'             => 'none',
+            'wrapper_bg'              => '',
+            'title_color'             => '',
+            'title_size'              => 0,
+            'title_weight'            => '400',
+            'pagination'              => 'none',
+            'pagination_window'       => 7,
+            'slider_per_view'         => 3,
+            'slider_autoplay'         => 0,
+            'slider_speed'            => 5000,
+            'carousel_loop'           => 0,
+            'carousel_arrows'         => 1,
+            'carousel_dots'           => 1,
+            'carousel_pause_on_hover' => 0,
+            'columns_tablet'          => 2,
+            'columns_mobile'          => 1,
+            'slider_per_view_tablet'  => 2,
+            'slider_per_view_mobile'  => 1,
+            'gap_mobile'              => 0,
+            'no_results'              => 'No results found.',
+            'custom_css'              => '',
+            'html_anchor'             => '',
+        ];
+    }
+
     private function default_settings() {
         $globals = get_option( Anchor_Post_Display_Module::OPTION_KEY, [] );
         if ( ! is_array( $globals ) ) $globals = [];
-        $defs = $this->get_setting_defs();
+        $seed = $this->seed_defaults();
         $out  = [];
-        foreach ( $defs as $key => $def ) {
+        foreach ( $this->get_setting_defs() as $key => $def ) {
             if ( isset( $globals[ $key ] ) && $globals[ $key ] !== '' ) {
                 $out[ $key ] = $globals[ $key ];
-                continue;
-            }
-            switch ( $def['type'] ) {
-                case 'checkbox': $out[ $key ] = 0; break;
-                case 'number':   $out[ $key ] = isset( $def['min'] ) ? (int) $def['min'] : 0; break;
-                case 'select':   $out[ $key ] = ! empty( $def['options'] ) ? array_key_first( $def['options'] ) : ''; break;
-                default:         $out[ $key ] = ''; break;
+            } elseif ( array_key_exists( $key, $seed ) ) {
+                $out[ $key ] = $seed[ $key ];
+            } else {
+                switch ( $def['type'] ) {
+                    case 'checkbox': $out[ $key ] = 0; break;
+                    case 'number':   $out[ $key ] = isset( $def['min'] ) ? (int) $def['min'] : 0; break;
+                    case 'select':   $out[ $key ] = ! empty( $def['options'] ) ? array_key_first( $def['options'] ) : ''; break;
+                    default:         $out[ $key ] = ''; break;
+                }
             }
         }
-        // Sensible non-zero seeds when globals are absent.
-        $out['layout']                 = $out['layout'] ?: 'grid';
-        $out['columns_desktop']        = $out['columns_desktop'] ?: 3;
-        $out['columns_tablet']         = $out['columns_tablet'] ?: 2;
-        $out['columns_mobile']         = $out['columns_mobile'] ?: 1;
-        $out['slider_per_view']        = $out['slider_per_view'] ?: 3;
-        $out['slider_per_view_tablet'] = $out['slider_per_view_tablet'] ?: 2;
-        $out['slider_per_view_mobile'] = $out['slider_per_view_mobile'] ?: 1;
-        $out['slider_speed']           = $out['slider_speed'] ?: 5000;
-        $out['gap']                    = $out['gap'] !== '' ? $out['gap'] : 16;
-        $out['teaser_words']           = $out['teaser_words'] ?: 26;
-        $out['image_size']             = $out['image_size'] ?: 'medium';
-        $out['no_results']             = $out['no_results'] ?: 'No results found.';
         return $out;
     }
 

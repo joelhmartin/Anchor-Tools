@@ -304,8 +304,15 @@ class Anchor_APD_Display_CPT {
                 </select>
             </label></p>
 
-            <p><label>Posts per page <input type="number" name="apd_src_posts" value="<?php echo esc_attr( $get( 'posts', 12 ) ); ?>" class="small-text" min="1" max="100"></label>
-            <label> Max posts (0 = no cap) <input type="number" name="apd_src_max_posts" value="<?php echo esc_attr( $get( 'max_posts', 0 ) ); ?>" class="small-text" min="0"></label></p>
+            <?php
+            $posts_val = (int) $get( 'posts', 12 );
+            $show_all  = ( $posts_val === -1 );
+            ?>
+            <p><label><input type="checkbox" name="apd_src_all" value="1" <?php checked( $show_all ); ?>> <strong>Show all matching posts</strong></label></p>
+            <p><label>Number of posts <input type="number" name="apd_src_posts" value="<?php echo esc_attr( $show_all ? 12 : $posts_val ); ?>" class="small-text" min="1" max="200"></label>
+            <span class="description">How many posts to load (the pool the carousel scrolls through, or the grid shows). Ignored when &ldquo;Show all&rdquo; is checked.</span></p>
+            <p><label>Max posts (0 = no cap) <input type="number" name="apd_src_max_posts" value="<?php echo esc_attr( $get( 'max_posts', 0 ) ); ?>" class="small-text" min="0"></label>
+            <span class="description">A hard upper limit, even when &ldquo;Show all&rdquo; is on.</span></p>
 
             <p><label>Forced search term (optional)<br><input type="text" name="apd_src_search" value="<?php echo esc_attr( $get( 'search' ) ); ?>" class="regular-text"></label></p>
         </div>
@@ -456,7 +463,12 @@ class Anchor_APD_Display_CPT {
         foreach ( $text_src as $k ) {
             update_post_meta( $post_id, 'apd_src_' . $k, sanitize_text_field( wp_unslash( $_POST[ 'apd_src_' . $k ] ?? '' ) ) );
         }
-        update_post_meta( $post_id, 'apd_src_posts', max( 1, min( 100, intval( $_POST['apd_src_posts'] ?? 12 ) ) ) );
+        // "Show all" stores -1 (unlimited); otherwise a 1–200 count.
+        if ( isset( $_POST['apd_src_all'] ) ) {
+            update_post_meta( $post_id, 'apd_src_posts', -1 );
+        } else {
+            update_post_meta( $post_id, 'apd_src_posts', max( 1, min( 200, intval( $_POST['apd_src_posts'] ?? 12 ) ) ) );
+        }
         update_post_meta( $post_id, 'apd_src_max_posts', max( 0, intval( $_POST['apd_src_max_posts'] ?? 0 ) ) );
     }
 

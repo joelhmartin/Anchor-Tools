@@ -115,9 +115,18 @@ class Anchor_Post_Display_Module {
         $this->add_field( 'show_type',      'Show post type',  'yesno',    'apd_grid' );
         $this->add_field( 'no_results',     'No results text', 'text',     'apd_grid' );
         $this->add_field( 'teaser_words',   'Teaser word limit', 'number', 'apd_grid' );
-        $this->add_field( 'slider_autoplay', 'Slider autoplay', 'yesno',    'apd_grid' );
-        $this->add_field( 'slider_speed',   'Slider speed (ms)', 'number',  'apd_grid' );
-        $this->add_field( 'slider_per_view', 'Slides per view', 'number',   'apd_grid' );
+
+        /* Slider defaults — only apply when Layout is set to "Slider" (or layout="slider" on the shortcode) */
+        add_settings_section( 'apd_slider', __( 'Slider Settings', 'anchor-schema' ), [ $this, 'render_slider_section_intro' ], self::PAGE_SLUG );
+        $this->add_field( 'slider_per_view', 'Slides per view',   'number', 'apd_slider' );
+        $this->add_field( 'slider_autoplay', 'Autoplay',          'yesno',  'apd_slider' );
+        $this->add_field( 'slider_speed',   'Autoplay speed (ms)', 'number', 'apd_slider' );
+    }
+
+    public function render_slider_section_intro() {
+        echo '<p class="description">';
+        echo wp_kses_post( __( 'These defaults apply only when a post grid uses the <strong>Slider</strong> layout (set Layout to &ldquo;Slider&rdquo; above, or add <code>layout="slider"</code> to the shortcode). Each value can be overridden per shortcode with <code>slider_per_view</code>, <code>slider_autoplay</code>, and <code>slider_speed</code>.', 'anchor-schema' ) );
+        echo '</p>';
     }
 
     private function add_field( $key, $label, $type, $section, $choices = [] ) {

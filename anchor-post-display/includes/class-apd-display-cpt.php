@@ -19,6 +19,9 @@ class Anchor_APD_Display_CPT {
         add_action( 'init', [ $this, 'register_cpt' ] );
         add_filter( 'manage_' . self::CPT . '_posts_columns', [ $this, 'admin_columns' ] );
         add_action( 'manage_' . self::CPT . '_posts_custom_column', [ $this, 'admin_column_content' ], 10, 2 );
+
+        add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
+        add_action( 'edit_form_after_title', [ $this, 'render_builder_after_title' ] );
     }
 
     /* ================================================================
@@ -177,5 +180,80 @@ class Anchor_APD_Display_CPT {
             foreach ( $items as $k => $v ) { $out[ $section ][ $k ] = $v['def']; }
         }
         return $out;
+    }
+
+    /* ================================================================
+       Builder UI
+       ================================================================ */
+
+    public function add_metaboxes() {
+        // The builder UI (edit_form_after_title) replaces metaboxes for this CPT.
+    }
+
+    public function render_builder_after_title( $post ) {
+        if ( ! ( $post instanceof WP_Post ) || $post->post_type !== self::CPT ) return;
+
+        wp_nonce_field( self::NONCE, self::NONCE );
+
+        $sections = [
+            'source'     => 'Source',
+            'content'    => 'Content',
+            'layout'     => 'Layout',
+            'style'      => 'Style',
+            'behavior'   => 'Behavior',
+            'responsive' => 'Responsive',
+            'advanced'   => 'Advanced',
+        ];
+
+        $panels = [];
+        foreach ( $sections as $key => $label ) {
+            if ( 'source' === $key ) {
+                $panels[ $key ] = [ $this, 'render_pane_source' ];
+            } else {
+                $panels[ $key ] = function ( $p ) use ( $key ) { $this->render_pane_section( $p, $key ); };
+            }
+        }
+
+        Anchor_Builder_Shell::render( [
+            'id'        => 'anchor-post-display-builder',
+            'post'      => $post,
+            'title'     => $post->post_title ?: 'Untitled post display',
+            'shortcode' => '[anchor_post_grid id="' . $post->ID . '"]',
+            'view_url'  => '',
+            'tabs'      => $sections,
+            'panels'    => $panels,
+            'preview'   => [ $this, 'render_pane_preview' ],
+            'utility'   => [ $this, 'render_pane_utility' ],
+        ] );
+    }
+
+    public function render_pane_section( $post, $section ) {
+        $grouped  = $this->get_settings_by_section();
+        $defaults = $this->default_settings();
+        if ( empty( $grouped[ $section ] ) ) {
+            echo '<p class="anchor-builder__empty">No settings in this section.</p>';
+            return;
+        }
+        foreach ( $grouped[ $section ] as $key => $def ) {
+            $meta_key = 'apd_' . $key;
+            $saved    = get_post_meta( $post->ID, $meta_key, true );
+            $value    = ( $saved !== '' && $saved !== false ) ? $saved : ( $defaults[ $key ] ?? '' );
+            Anchor_Builder_Shell::render_field( $key, $def, $value, $meta_key );
+        }
+    }
+
+    public function render_pane_preview( $post ) {
+        echo '<div id="apd-preview" class="apd-preview" data-post-id="' . intval( $post->ID ) . '">';
+        echo '<p class="apd-preview__hint">Save the display to refresh this preview.</p>';
+        echo '</div>';
+    }
+
+    public function render_pane_utility( $post ) {
+        $layout = get_post_meta( $post->ID, 'apd_layout', true ) ?: 'grid';
+        ?>
+        <div class="anchor-builder__util-row"><span class="anchor-builder__util-label">Status</span><span class="anchor-builder__util-value"><?php echo esc_html( ucfirst( $post->post_status ) ); ?></span></div>
+        <div class="anchor-builder__util-row"><span class="anchor-builder__util-label">Layout</span><span class="anchor-builder__util-value"><?php echo esc_html( $layout ); ?></span></div>
+        <div class="anchor-builder__util-row"><span class="anchor-builder__util-label">ID</span><span class="anchor-builder__util-value"><?php echo intval( $post->ID ); ?></span></div>
+        <?php
     }
 }

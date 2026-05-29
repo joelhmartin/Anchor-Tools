@@ -182,10 +182,94 @@ class Anchor_Blocks_Module {
             ] );
         }
     }
-    public function print_footer_assets() {}
-    public function shortcode_render( $atts ) { return ''; }
-    public function add_admin_columns( $columns ) { return $columns; }
-    public function render_admin_column( $column, $post_id ) {}
+    public function print_footer_assets() {
+        if ( empty( $this->queued ) ) { return; }
+
+        // Base full-bleed style, printed once if any block rendered.
+        if ( ! $this->printed_base ) {
+            echo "<style id=\"anchor-blocks-base\">.anchor-block-fullwidth{width:100vw;max-width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);}</style>\n";
+            $this->printed_base = true;
+        }
+
+        foreach ( $this->queued as $id => $assets ) {
+            if ( $assets['css'] !== '' ) {
+                echo "<style id=\"anchor-block-css-{$id}\">\n/* Anchor Block {$id} */\n" . $assets['css'] . "\n</style>\n";
+            }
+        }
+        foreach ( $this->queued as $id => $assets ) {
+            if ( $assets['js'] !== '' ) {
+                echo "<script id=\"anchor-block-js-{$id}\">(function(){try{" . $assets['js'] . "}catch(e){console.error(e);}})();</script>\n";
+            }
+        }
+    }
+
+    private function resolve_block( $id_or_slug ) {
+        $id_or_slug = trim( (string) $id_or_slug );
+        if ( $id_or_slug === '' ) { return null; }
+
+        $post = null;
+        if ( is_numeric( $id_or_slug ) ) {
+            $candidate = get_post( (int) $id_or_slug );
+            if ( $candidate && $candidate->post_type === self::CPT && $candidate->post_status === 'publish' ) {
+                $post = $candidate;
+            }
+        }
+        if ( ! $post ) {
+            $found = get_posts( [
+                'post_type'      => self::CPT,
+                'name'           => $id_or_slug,
+                'posts_per_page' => 1,
+                'post_status'    => 'publish',
+            ] );
+            $post = $found[0] ?? null;
+        }
+        return $post;
+    }
+
+    public function shortcode_render( $atts ) {
+        $atts = shortcode_atts( [ 'id' => '', 'slug' => '' ], $atts );
+        $ref  = $atts['id'] !== '' ? $atts['id'] : $atts['slug'];
+        $post = $this->resolve_block( $ref );
+        if ( ! $post ) { return ''; }
+
+        $id = (int) $post->ID;
+        $m  = $this->get_meta( $id );
+
+        // Queue CSS/JS once per page (printed in wp_footer).
+        if ( ! isset( $this->queued[ $id ] ) ) {
+            $this->queued[ $id ] = [ 'css' => trim( $m['css'] ), 'js' => trim( $m['js'] ) ];
+        }
+
+        // Per-placement instance index.
+        $this->instances[ $id ] = ( $this->instances[ $id ] ?? 0 ) + 1;
+        $instance = $this->instances[ $id ];
+
+        $inner = '<div class="anchor-block anchor-block--' . $id . '" data-anchor-block="' . $id . '" data-instance="' . $instance . '">'
+               . $m['html']
+               . '</div>';
+
+        if ( $m['full_width'] === '1' ) {
+            $inner = '<div class="anchor-block-fullwidth">' . $inner . '</div>';
+        }
+        return $inner;
+    }
+
+    public function add_admin_columns( $columns ) {
+        $new = [];
+        foreach ( $columns as $key => $label ) {
+            $new[ $key ] = $label;
+            if ( $key === 'title' ) {
+                $new['ab_shortcode'] = __( 'Shortcode', 'anchor-schema' );
+            }
+        }
+        return $new;
+    }
+
+    public function render_admin_column( $column, $post_id ) {
+        if ( $column === 'ab_shortcode' ) {
+            echo '<code>' . esc_html( '[anchor_block id="' . (int) $post_id . '"]' ) . '</code>';
+        }
+    }
     public function register_tab( $tabs ) { return $tabs; }
     public function register_settings() {}
 }

@@ -35,7 +35,14 @@ class Anchor_Site_Config_Shortcodes {
         if ( $tag === '' ) {
             return '';
         }
-        return str_starts_with( $tag, 'config_' ) ? $tag : 'config_' . $tag;
+        return strpos( $tag, 'config_' ) === 0 ? $tag : 'config_' . $tag;
+    }
+
+    private function add_shortcode_once( $tag, $callback ) {
+        $tag = sanitize_key( (string) $tag );
+        if ( $tag !== '' && ! shortcode_exists( $tag ) ) {
+            add_shortcode( $tag, $callback );
+        }
     }
 
     private function days() {
@@ -99,16 +106,21 @@ class Anchor_Site_Config_Shortcodes {
             return esc_html( $name );
         };
         add_shortcode( 'config_business_name', $business_name );
+        $this->add_shortcode_once( 'business_name', $business_name );
 
-        add_shortcode( 'config_business_tagline', function() use ( $module ) {
+        $business_tagline = function() use ( $module ) {
             return esc_html( $module->get_options()['business']['tagline'] );
-        } );
+        };
+        add_shortcode( 'config_business_tagline', $business_tagline );
+        $this->add_shortcode_once( 'business_tagline', $business_tagline );
 
         $business_phone = function() use ( $module ) {
             return esc_html( $module->get_options()['business']['phone'] );
         };
         add_shortcode( 'config_business_phone', $business_phone );
         add_shortcode( 'config_phone',          $business_phone );
+        $this->add_shortcode_once( 'business_phone', $business_phone );
+        $this->add_shortcode_once( 'phone',          $business_phone );
 
         $business_phone_href = function() use ( $module ) {
             $raw  = $module->get_options()['business']['phone'];
@@ -117,6 +129,8 @@ class Anchor_Site_Config_Shortcodes {
         };
         add_shortcode( 'config_business_phone_href', $business_phone_href );
         add_shortcode( 'config_phone_href',          $business_phone_href );
+        $this->add_shortcode_once( 'business_phone_href', $business_phone_href );
+        $this->add_shortcode_once( 'phone_href',          $business_phone_href );
 
         $business_email = function() use ( $module ) {
             $email = $module->get_options()['business']['email'] ?: get_option( 'admin_email' );
@@ -124,6 +138,8 @@ class Anchor_Site_Config_Shortcodes {
         };
         add_shortcode( 'config_business_email', $business_email );
         add_shortcode( 'config_email',          $business_email );
+        $this->add_shortcode_once( 'business_email', $business_email );
+        $this->add_shortcode_once( 'email',          $business_email );
 
         $business_address = function() use ( $module ) {
             $loc   = $module->get_options()['location'];
@@ -137,6 +153,8 @@ class Anchor_Site_Config_Shortcodes {
         };
         add_shortcode( 'config_business_address', $business_address );
         add_shortcode( 'config_address',          $business_address );
+        $this->add_shortcode_once( 'business_address', $business_address );
+        $this->add_shortcode_once( 'address',          $business_address );
 
         $business_hours = function( $atts = [] ) use ( $module ) {
             $atts = shortcode_atts(
@@ -165,6 +183,7 @@ class Anchor_Site_Config_Shortcodes {
             return wp_kses_post( implode( '<br>', $lines ) );
         };
         add_shortcode( 'config_business_hours', $business_hours );
+        $this->add_shortcode_once( 'business_hours', $business_hours );
 
         foreach ( array_keys( $this->days() ) as $day ) {
             add_shortcode( 'config_business_hours_' . $day, function( $atts = [] ) use ( $module, $day ) {
@@ -187,22 +206,29 @@ class Anchor_Site_Config_Shortcodes {
             return $att_id ? esc_url( wp_get_attachment_url( $att_id ) ) : '';
         };
         add_shortcode( 'config_brand_logo', $brand_logo );
+        $this->add_shortcode_once( 'brand_logo', $brand_logo );
 
         add_shortcode( 'config_site_image_url',              function() use ( $brand_logo ) { return $brand_logo( [ 'variant' => 'primary_logo' ] ); } );
         add_shortcode( 'config_site_image_horizontal',       function() use ( $brand_logo ) { return $brand_logo( [ 'variant' => 'primary_logo' ] ); } );
         add_shortcode( 'config_site_image_horizontal_white', function() use ( $brand_logo ) { return $brand_logo( [ 'variant' => 'primary_logo_white' ] ); } );
         add_shortcode( 'config_site_image_white',            function() use ( $brand_logo ) { return $brand_logo( [ 'variant' => 'primary_logo_white' ] ); } );
+        $this->add_shortcode_once( 'site_image_url',              function() use ( $brand_logo ) { return $brand_logo( [ 'variant' => 'primary_logo' ] ); } );
+        $this->add_shortcode_once( 'site_image_horizontal',       function() use ( $brand_logo ) { return $brand_logo( [ 'variant' => 'primary_logo' ] ); } );
+        $this->add_shortcode_once( 'site_image_horizontal_white', function() use ( $brand_logo ) { return $brand_logo( [ 'variant' => 'primary_logo_white' ] ); } );
+        $this->add_shortcode_once( 'site_image_white',            function() use ( $brand_logo ) { return $brand_logo( [ 'variant' => 'primary_logo_white' ] ); } );
 
-        add_shortcode( 'config_site_icon_url', function() use ( $module ) {
+        $site_icon_url = function() use ( $module ) {
             $favicon = absint( $module->get_options()['brand']['favicon'] );
             if ( $favicon ) {
                 return esc_url( wp_get_attachment_url( $favicon ) );
             }
             return esc_url( get_site_icon_url() );
-        } );
+        };
+        add_shortcode( 'config_site_icon_url', $site_icon_url );
+        $this->add_shortcode_once( 'site_icon_url', $site_icon_url );
 
         // ─── Social ───
-        add_shortcode( 'config_social_link', function( $atts ) use ( $module ) {
+        $social_link = function( $atts ) use ( $module ) {
             $atts     = shortcode_atts( [ 'platform' => '', 'label' => '' ], $atts );
             $platform = sanitize_key( $atts['platform'] );
             $url      = $module->get_options()['social'][ $platform ] ?? '';
@@ -213,16 +239,24 @@ class Anchor_Site_Config_Shortcodes {
                 esc_url( $url ),
                 esc_html( $label )
             );
-        } );
+        };
+        add_shortcode( 'config_social_link', $social_link );
+        $this->add_shortcode_once( 'social_link', $social_link );
 
         // ─── Utility (absorbed from anchor-shortcodes) ───
-        add_shortcode( 'config_current_year', function() {
+        $current_year = function() {
             return esc_html( date_i18n( 'Y' ) );
-        } );
-        add_shortcode( 'config_site_title', function() {
+        };
+        add_shortcode( 'config_current_year', $current_year );
+        $this->add_shortcode_once( 'current_year', $current_year );
+
+        $site_title = function() {
             return esc_html( get_bloginfo( 'name' ) );
-        } );
-        add_shortcode( 'config_page_title', function() {
+        };
+        add_shortcode( 'config_site_title', $site_title );
+        $this->add_shortcode_once( 'site_title', $site_title );
+
+        $page_title = function() {
             // Match anchor-shortcodes' original context-aware behavior: bare titles per
             // context rather than wp_get_document_title()'s "Title – Site" composite.
             if ( is_singular() ) {
@@ -244,19 +278,27 @@ class Anchor_Site_Config_Shortcodes {
                 return esc_html( get_the_title( get_option( 'page_for_posts' ) ) );
             }
             return esc_html( wp_get_document_title() );
-        } );
+        };
+        add_shortcode( 'config_page_title', $page_title );
+        $this->add_shortcode_once( 'page_title', $page_title );
 
         // ─── Custom shortcodes from the repeater ───
         // Register custom Site Config values under config_* names so they can
         // coexist with Anchor Shortcodes or any other module.
         $custom = $this->module->get_options()['custom_shortcodes'];
         foreach ( $custom as $row ) {
-            $tag     = $this->config_tag( $row['shortcode'] );
-            $content = $row['content'];
-            if ( $tag === '' || shortcode_exists( $tag ) ) continue;
-            add_shortcode( $tag, function() use ( $content ) {
+            $raw_tag    = sanitize_key( $row['shortcode'] ?? '' );
+            $config_tag = $this->config_tag( $raw_tag );
+            $content    = $row['content'] ?? '';
+            if ( $config_tag === '' ) continue;
+
+            $callback = function() use ( $content ) {
                 return esc_html( $content );
-            } );
+            };
+            $this->add_shortcode_once( $config_tag, $callback );
+            if ( $raw_tag !== $config_tag ) {
+                $this->add_shortcode_once( $raw_tag, $callback );
+            }
         }
     }
 }

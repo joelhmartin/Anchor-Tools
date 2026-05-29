@@ -97,7 +97,7 @@ class Anchor_Site_Config_Admin {
         $rows    = $opts['custom_shortcodes'] ?? [];
         ?>
         <p class="description">
-            <?php esc_html_e( 'Define custom values here. Site Config registers them as [config_your_tag] to avoid collisions.', 'anchor-schema' ); ?>
+            <?php esc_html_e( 'Define custom values here. Site Config registers [config_your_tag] and keeps [your_tag] working when that tag is not already owned by another shortcode.', 'anchor-schema' ); ?>
         </p>
         <div class="anchor-site-config-rows">
             <?php foreach ( $rows as $i => $row ) : ?>

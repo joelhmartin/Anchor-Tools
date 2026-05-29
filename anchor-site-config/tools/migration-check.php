@@ -31,7 +31,7 @@ function anchor_site_config_migration_check_config_tag( $tag ) {
     if ( $tag === '' ) {
         return '';
     }
-    return str_starts_with( $tag, 'config_' ) ? $tag : 'config_' . $tag;
+    return strpos( $tag, 'config_' ) === 0 ? $tag : 'config_' . $tag;
 }
 
 anchor_site_config_migration_check_print( '════════════════════════════════════════════════════════════════' );
@@ -149,7 +149,7 @@ foreach ( $counts as $tag => $n ) {
     if ( $n === 0 ) continue;
     $any_used = true;
     $replacement = $legacy_shortcodes[ $tag ];
-    anchor_site_config_migration_check_print( '   ⚠ [' . $tag . '] used ' . $n . 'x → replace with ' . $replacement );
+    anchor_site_config_migration_check_print( '   ✓ [' . $tag . '] used ' . $n . 'x → legacy tag still works; optional replacement: ' . $replacement );
 }
 if ( ! $any_used ) {
     anchor_site_config_migration_check_print( '   No anchor-shortcodes shortcodes found in any published post/page content.' );
@@ -173,7 +173,7 @@ if ( ! empty( $opts['custom_shortcodes'] ) && is_array( $opts['custom_shortcodes
             }
         }
         $marker = $custom_count > 0 ? '⚠' : ' ';
-        anchor_site_config_migration_check_print( '   ' . $marker . ' [' . $tag . '] — used ' . $custom_count . 'x in content (Site Config registers [' . $config_tag . '])' );
+        anchor_site_config_migration_check_print( '   ' . $marker . ' [' . $tag . '] — used ' . $custom_count . 'x in content (Site Config registers [' . $config_tag . '] and keeps [' . sanitize_key( $tag ) . '] if available)' );
     }
 }
 
@@ -219,7 +219,7 @@ if ( empty( $theme_hits ) ) {
         }
     }
     anchor_site_config_migration_check_print( '' );
-    anchor_site_config_migration_check_print( '   (Update these references to the matching config_* Site Config shortcode.)' );
+    anchor_site_config_migration_check_print( '   (Legacy references still work unless another shortcode has already claimed the same tag.)' );
 }
 
 // ─── Done ──────────────────────────────────────────────────────────────────
@@ -230,9 +230,10 @@ anchor_site_config_migration_check_print( '   1. Pull the latest Anchor Tools (m
 anchor_site_config_migration_check_print( '   2. Settings → Anchor Tools → Modules → enable "Site Config".' );
 anchor_site_config_migration_check_print( '   3. Settings → Anchor Tools → Site Config tab → re-enter every value' );
 anchor_site_config_migration_check_print( '      from section 1 above + every custom shortcode from section 3.' );
-anchor_site_config_migration_check_print( '   4. Replace shortcode tags from section 2 with their config_* equivalents.' );
+anchor_site_config_migration_check_print( '   4. Existing shortcode tags from section 2 should keep working; replacing' );
+anchor_site_config_migration_check_print( '      them with config_* equivalents is optional when you want explicit ownership.' );
 anchor_site_config_migration_check_print( '   5. Settings → Anchor Tools → Modules → disable "Shortcodes".' );
 anchor_site_config_migration_check_print( '   6. Re-spot-check the same pages — output should be identical.' );
-anchor_site_config_migration_check_print( '   7. If anything renders wrong, re-enable Shortcodes; config_* tags avoid' );
-anchor_site_config_migration_check_print( '      shortcode ownership collisions while you migrate. No data is destroyed.' );
+anchor_site_config_migration_check_print( '   7. If anything renders wrong, re-enable Shortcodes; Site Config avoids' );
+anchor_site_config_migration_check_print( '      overriding existing tags and no data is destroyed.' );
 anchor_site_config_migration_check_print( '════════════════════════════════════════════════════════════════' );

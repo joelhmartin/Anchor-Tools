@@ -8,6 +8,7 @@
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 require_once __DIR__ . '/includes/class-apd-renderer.php';
+require_once __DIR__ . '/includes/class-apd-display-cpt.php';
 
 class Anchor_Post_Display_Module {
 
@@ -41,7 +42,13 @@ class Anchor_Post_Display_Module {
 
     private $did_enqueue = false;
 
+    /** @var Anchor_APD_Display_CPT */
+    private $cpt;
+
     public function __construct() {
+        // Editable display CPT (gallery-style builder).
+        $this->cpt = new Anchor_APD_Display_CPT();
+
         // Admin.
         add_filter( 'anchor_settings_tabs',  [ $this, 'register_tab' ], 90 );
         add_action( 'admin_init',            [ $this, 'register_settings' ] );

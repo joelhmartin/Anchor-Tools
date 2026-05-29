@@ -270,6 +270,53 @@ class Anchor_Blocks_Module {
             echo '<code>' . esc_html( '[anchor_block id="' . (int) $post_id . '"]' ) . '</code>';
         }
     }
-    public function register_tab( $tabs ) { return $tabs; }
-    public function register_settings() {}
+    public function register_tab( $tabs ) {
+        $tabs['blocks'] = [
+            'label'    => __( 'Blocks', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab_content' ],
+        ];
+        return $tabs;
+    }
+
+    public function register_settings() {
+        register_setting( 'anchor_blocks_group', self::OPTION_KEY, [
+            'type'              => 'array',
+            'sanitize_callback' => [ $this, 'sanitize_settings' ],
+            'default'           => [],
+        ] );
+    }
+
+    public function sanitize_settings( $input ) {
+        $out = [];
+        $urls = isset( $input['preview_css_urls'] ) ? (string) $input['preview_css_urls'] : '';
+        $clean = [];
+        foreach ( preg_split( '/\r\n|\r|\n/', $urls ) as $line ) {
+            $line = trim( $line );
+            if ( $line !== '' ) { $clean[] = esc_url_raw( $line ); }
+        }
+        $out['preview_css_urls'] = implode( "\n", array_filter( $clean ) );
+        return $out;
+    }
+
+    public function render_tab_content() {
+        $opts = get_option( self::OPTION_KEY, [] );
+        $urls = isset( $opts['preview_css_urls'] ) ? (string) $opts['preview_css_urls'] : '';
+        ?>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'anchor_blocks_group' ); ?>
+            <h2><?php esc_html_e( 'Anchor Blocks', 'anchor-schema' ); ?></h2>
+            <p class="description"><?php esc_html_e( 'Stylesheets listed here load in every block\'s editor preview (in addition to the active theme stylesheet). Useful for global CSS that defines your :root variables, fonts, or design tokens.', 'anchor-schema' ); ?></p>
+            <table class="form-table" role="presentation">
+                <tr>
+                    <th scope="row"><label for="ab_settings_preview_css_urls"><?php esc_html_e( 'Default preview stylesheets', 'anchor-schema' ); ?></label></th>
+                    <td>
+                        <textarea id="ab_settings_preview_css_urls" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[preview_css_urls]" rows="5" class="large-text code" placeholder="https://example.com/wp-content/uploads/global.css"><?php echo esc_textarea( $urls ); ?></textarea>
+                        <p class="description"><?php esc_html_e( 'One URL per line.', 'anchor-schema' ); ?></p>
+                    </td>
+                </tr>
+            </table>
+            <?php submit_button(); ?>
+        </form>
+        <?php
+    }
 }

@@ -23,6 +23,8 @@ class Anchor_APD_Display_CPT {
         add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         add_action( 'edit_form_after_title', [ $this, 'render_builder_after_title' ] );
         add_action( 'save_post', [ $this, 'save_meta' ] );
+        add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
+        add_action( 'wp_ajax_anchor_post_display_preview', [ $this, 'ajax_preview' ] );
     }
 
     /* ================================================================
@@ -426,5 +428,58 @@ class Anchor_APD_Display_CPT {
         }
         update_post_meta( $post_id, 'apd_src_posts', max( 1, min( 100, intval( $_POST['apd_src_posts'] ?? 12 ) ) ) );
         update_post_meta( $post_id, 'apd_src_max_posts', max( 0, intval( $_POST['apd_src_max_posts'] ?? 0 ) ) );
+    }
+
+    /* ================================================================
+       Admin assets + live preview
+       ================================================================ */
+
+    public function enqueue_admin_assets( $hook ) {
+        if ( ! in_array( $hook, [ 'post.php', 'post-new.php' ], true ) ) return;
+        if ( get_post_type() !== self::CPT ) return;
+
+        $builder_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'includes/builder/assets/';
+        $apd_base    = 'anchor-post-display/assets/';
+
+        // Shared builder chrome (tabs, device toggle, copy button).
+        wp_enqueue_style( 'anchor-builder', Anchor_Asset_Loader::url( 'includes/builder/assets/builder.css' ), [], file_exists( $builder_dir . 'builder.css' ) ? filemtime( $builder_dir . 'builder.css' ) : self::VERSION );
+        wp_enqueue_script( 'anchor-builder', Anchor_Asset_Loader::url( 'includes/builder/assets/builder.js' ), [ 'jquery' ], file_exists( $builder_dir . 'builder.js' ) ? filemtime( $builder_dir . 'builder.js' ) : self::VERSION, true );
+
+        // Frontend CSS/JS so the preview renders exactly like the front end.
+        wp_enqueue_style( 'anchor-post-display', Anchor_Asset_Loader::url( $apd_base . 'frontend.css' ), [], self::VERSION );
+        wp_enqueue_script( 'anchor-post-display', Anchor_Asset_Loader::url( $apd_base . 'frontend.js' ), [], self::VERSION, true );
+
+        // Post Display builder behaviour (live preview + conditional fields).
+        wp_enqueue_style( 'apd-builder', Anchor_Asset_Loader::url( $apd_base . 'builder.css' ), [ 'anchor-builder' ], self::VERSION );
+        wp_enqueue_script( 'apd-builder', Anchor_Asset_Loader::url( $apd_base . 'builder.js' ), [ 'anchor-builder' ], self::VERSION, true );
+        wp_localize_script( 'apd-builder', 'APD_BUILDER', [
+            'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+            'nonce'   => wp_create_nonce( self::NONCE ),
+            'postId'  => (int) get_the_ID(),
+        ] );
+    }
+
+    public function ajax_preview() {
+        check_ajax_referer( self::NONCE, 'nonce' );
+        $post_id = intval( $_POST['post_id'] ?? 0 );
+        if ( ! $post_id || ! current_user_can( 'edit_post', $post_id ) ) wp_send_json_error();
+
+        $params = self::build_params_for_post( $post_id );
+        if ( ! $params ) {
+            wp_send_json_error( [ 'message' => 'Publish or save this display to preview it.' ] );
+        }
+
+        $grid_id = 'apd-preview-' . $post_id;
+        $query   = new WP_Query( Anchor_APD_Renderer::build_query_args( $params, 1 ) );
+
+        $html  = Anchor_APD_Renderer::build_scoped_css( $grid_id, $params );
+        $html .= '<div class="anchor-post-grid-wrap anchor-post-grid-wrap--' . esc_attr( $params['layout'] ) . '" data-layout="' . esc_attr( $params['layout'] ) . '">';
+        $html .= Anchor_APD_Renderer::render_layout_open( $grid_id, $params, '' );
+        $html .= Anchor_APD_Renderer::render_grid_items( $query, $params );
+        $html .= Anchor_APD_Renderer::render_layout_close( $params );
+        $html .= '</div>';
+        wp_reset_postdata();
+
+        wp_send_json_success( [ 'html' => $html ] );
     }
 }

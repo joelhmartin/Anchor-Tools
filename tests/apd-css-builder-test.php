@@ -30,5 +30,14 @@ check( strpos( $slider, '/ 1)' ) !== false, 'slider mobile flex-basis divides by
 $gm = Anchor_APD_Renderer::build_scoped_css( 'apd-z', [ 'layout' => 'grid', 'columns' => 3, 'gap' => 16, 'gap_mobile' => 8 ] );
 check( strpos( $gm, '--apd-gap:8px' ) !== false, 'mobile gap override applied' );
 
+// Structural layout must be emitted INLINE so a stale external stylesheet
+// can't collapse the carousel into a vertical stack.
+$carousel = Anchor_APD_Renderer::build_scoped_css( 'apd-c', [ 'layout' => 'carousel', 'slider_per_view' => 3, 'gap' => 16 ] );
+check( strpos( $carousel, 'display:flex' ) !== false, 'carousel emits inline display:flex' );
+check( strpos( $carousel, ':not(.anchor-post-grid-card):not(.anchor-post-grid-empty){display:contents;}' ) !== false, 'carousel dissolves injected wrappers' );
+
+$sliderS = Anchor_APD_Renderer::build_scoped_css( 'apd-s', [ 'layout' => 'slider', 'slider_per_view' => 4, 'gap' => 16 ] );
+check( strpos( $sliderS, 'display:flex' ) !== false, 'slider emits inline display:flex' );
+
 echo $fail ? "\n$fail FAILED\n" : "\nALL PASSED\n";
 exit( $fail ? 1 : 0 );

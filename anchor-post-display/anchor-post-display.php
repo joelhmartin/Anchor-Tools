@@ -14,7 +14,7 @@ class Anchor_Post_Display_Module {
 
     const OPTION_KEY = 'anchor_post_display_options';
     const PAGE_SLUG  = 'anchor-post-display';
-    const VERSION    = '1.2.0';
+    const VERSION    = '2.0.0';
 
     private $defaults = [
         'placeholder'  => 'Search...',

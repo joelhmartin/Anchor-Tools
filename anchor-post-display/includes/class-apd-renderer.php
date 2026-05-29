@@ -142,11 +142,18 @@ class Anchor_APD_Renderer {
             $pd = max( 1, (int) ( $params['slider_per_view'] ?? 3 ) );
             $pt = max( 1, (int) ( $params['slider_per_view_tablet'] ?? 2 ) );
             $pm = max( 1, (int) ( $params['slider_per_view_mobile'] ?? 1 ) );
+            // Structural layout emitted inline so it can't be defeated by a stale
+            // cached frontend.css. The track is a single non-wrapping flex row.
+            $css .= $sel . '{display:flex;flex-wrap:nowrap;}';
             $css .= $sel . '{--apd-per-view:' . $pd . ';}';
-            $css .= $card . '{flex:0 0 calc((100% - (var(--apd-gap,16px) * (' . $pd . ' - 1))) / ' . $pd . ');}';
+            $css .= $card . '{flex:0 0 calc((100% - (var(--apd-gap,16px) * (' . $pd . ' - 1))) / ' . $pd . ');min-width:0;}';
             $css .= '@media(max-width:1024px){' . $card . '{flex-basis:calc((100% - (var(--apd-gap,16px) * (' . $pt . ' - 1))) / ' . $pt . ');}}';
             $css .= '@media(max-width:767px){' . $card . '{flex-basis:calc((100% - (var(--apd-gap,16px) * (' . $pm . ' - 1))) / ' . $pm . ');}}';
         }
+
+        // Dissolve any wrapper a page builder (Divi, wpautop, etc.) injects between
+        // the track and the cards, so the cards stay direct grid/flex items.
+        $css .= $sel . ' > *:not(.anchor-post-grid-card):not(.anchor-post-grid-empty){display:contents;}';
 
         $gap = (int) ( $params['gap'] ?? 16 );
         $css .= $sel . '{--apd-gap:' . $gap . 'px;gap:' . $gap . 'px;}';

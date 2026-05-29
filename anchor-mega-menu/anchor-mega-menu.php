@@ -229,12 +229,8 @@ class Anchor_Mega_Menu_Module {
 
     public function render_box_preview($post){
         ?>
-        <p class="description">Live preview renders your HTML/CSS/JS below inside a contained viewport so you can test scrolling and interactions.</p>
-        <div id="mm-preview-wrap">
-            <div id="mm-preview-viewport" style="border:1px solid #ccd0d4; border-radius:8px; overflow:auto; max-height:none; background:#fff;">
-                <div id="mm-preview-content" style="padding:16px;"></div>
-            </div>
-        </div>
+        <p class="description">Live preview renders your HTML/CSS/JS inside an isolated frame that loads your theme stylesheet, so <code>:root</code> variables and colors resolve as on the front end.</p>
+        <iframe id="mm-preview-frame" style="width:100%; min-height:360px; border:1px solid #ccd0d4; border-radius:8px; background:#fff;"></iframe>
         <?php
     }
 
@@ -308,8 +304,14 @@ class Anchor_Mega_Menu_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.css'), [], '1.1.4');
-            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'code-editor'], '1.1.4', true);
+            wp_enqueue_style('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.css'), [], '1.1.5');
+            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'code-editor'], '1.1.5', true);
+            wp_localize_script( 'mm-admin', 'MM_PREVIEW', [
+                'cssUrls' => array_values( array_unique( array_filter( [
+                    get_stylesheet_uri(),
+                    get_template_directory_uri() . '/style.css',
+                ] ) ) ),
+            ] );
         }
     }
 

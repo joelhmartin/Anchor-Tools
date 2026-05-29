@@ -155,7 +155,33 @@ class Anchor_Blocks_Module {
         }
         update_post_meta( $post_id, 'ab_preview_css_urls', implode( "\n", array_filter( $clean ) ) );
     }
-    public function admin_assets( $hook ) {}
+    /** Build the list of stylesheet URLs the preview should load (theme + site defaults). */
+    private function preview_css_urls() {
+        $urls = [];
+        $child  = get_stylesheet_uri();
+        $parent = get_template_directory_uri() . '/style.css';
+        if ( $child )  { $urls[] = $child; }
+        if ( $parent && $parent !== $child ) { $urls[] = $parent; }
+
+        $opts = get_option( self::OPTION_KEY, [] );
+        $defaults = isset( $opts['preview_css_urls'] ) ? (string) $opts['preview_css_urls'] : '';
+        foreach ( preg_split( '/\r\n|\r|\n/', $defaults ) as $line ) {
+            $line = trim( $line );
+            if ( $line !== '' ) { $urls[] = $line; }
+        }
+        return array_values( array_unique( array_filter( $urls ) ) );
+    }
+
+    public function admin_assets( $hook ) {
+        global $post;
+        if ( ( $hook === 'post.php' || $hook === 'post-new.php' ) && isset( $post ) && $post->post_type === self::CPT ) {
+            wp_enqueue_style( 'ab-admin', Anchor_Asset_Loader::url( 'anchor-blocks/assets/admin.css' ), [], self::ASSET_VER );
+            wp_enqueue_script( 'ab-admin', Anchor_Asset_Loader::url( 'anchor-blocks/assets/admin.js' ), [ 'jquery', 'code-editor' ], self::ASSET_VER, true );
+            wp_localize_script( 'ab-admin', 'ANCHOR_BLOCKS', [
+                'previewCssUrls' => $this->preview_css_urls(),
+            ] );
+        }
+    }
     public function print_footer_assets() {}
     public function shortcode_render( $atts ) { return ''; }
     public function add_admin_columns( $columns ) { return $columns; }

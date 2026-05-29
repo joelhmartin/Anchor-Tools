@@ -1,0 +1,5 @@
+.ab-fields .ab-field { margin-bottom: 16px; }
+.ab-fields .ab-field > label { display:block; margin-bottom:4px; }
+.ab-fields .CodeMirror { border:1px solid #ccd0d4; border-radius:4px; height:auto; }
+.ab-fields .ab-field .description code { font-size:11px; word-break:break-all; }
+#ab-preview-frame { display:block; }

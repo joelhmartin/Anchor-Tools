@@ -19,6 +19,17 @@ class Module {
         \add_action( 'init', [ $this, 'register_cpt' ] );
         \add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
+        \add_action( 'save_post_' . self::CPT, [ $this, 'save_inline_access' ] );
+
+        // Access column + inline (Quick/Bulk) editing of access controls.
+        \add_filter( 'manage_' . self::CPT . '_posts_columns', [ $this, 'add_access_column' ] );
+        \add_action( 'manage_' . self::CPT . '_posts_custom_column', [ $this, 'render_access_column' ], 10, 2 );
+        \add_action( 'quick_edit_custom_box', [ $this, 'render_inline_edit_box' ], 10, 2 );
+        \add_action( 'bulk_edit_custom_box', [ $this, 'render_inline_edit_box' ], 10, 2 );
+
+        // Inline AJAX login for gated webinars.
+        \add_action( 'wp_ajax_nopriv_anchor_webinar_login', [ $this, 'handle_login' ] );
+        \add_action( 'wp_ajax_anchor_webinar_login', [ $this, 'handle_login' ] );
 
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 50 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
@@ -31,6 +42,15 @@ class Module {
         \add_shortcode( 'anchor_webinar', [ $this, 'render_shortcode' ] );
 
         \add_filter( 'template_include', [ $this, 'template_include' ] );
+
+        // Enforce access everywhere the body could leak: archives, search,
+        // REST (content.rendered / excerpt.rendered), and feeds — not just the
+        // single template.
+        \add_filter( 'the_content', [ $this, 'gate_the_content' ], 9 );
+        \add_filter( 'the_content_feed', [ $this, 'gate_the_content' ], 9 );
+        \add_filter( 'the_excerpt_rss', [ $this, 'gate_the_content' ], 9 );
+        \add_filter( 'get_the_excerpt', [ $this, 'gate_the_excerpt' ], 9, 2 );
+        \add_action( 'template_redirect', [ $this, 'maybe_nocache_gated' ] );
 
         \add_action( 'wp_ajax_anchor_webinar_log', [ $this, 'handle_watch_log' ] );
 
@@ -90,6 +110,29 @@ class Module {
                 <label for="anchor_webinar_date"><strong><?php echo \esc_html__( 'Webinar Date', 'anchor-schema' ); ?></strong></label><br />
                 <input type="date" id="anchor_webinar_date" name="anchor_webinar_date" value="<?php echo \esc_attr( $webinar_date ); ?>" />
             </p>
+
+            <?php
+            $access     = \get_post_meta( $post->ID, '_anchor_webinar_access', true );
+            $access     = $access ? $access : 'public';
+            $sel_roles  = (array) \get_post_meta( $post->ID, '_anchor_webinar_roles', true );
+            ?>
+            <div class="anchor-webinar-access" data-access="<?php echo \esc_attr( $access ); ?>">
+                <p><strong><?php echo \esc_html__( 'Access Control', 'anchor-schema' ); ?></strong></p>
+                <p class="anchor-webinar-access__choice">
+                    <label><input type="radio" name="anchor_webinar_access" value="public" <?php \checked( $access, 'public' ); ?> /> <?php echo \esc_html__( 'Public — anyone can watch', 'anchor-schema' ); ?></label><br />
+                    <label><input type="radio" name="anchor_webinar_access" value="login" <?php \checked( $access, 'login' ); ?> /> <?php echo \esc_html__( 'Logged-in users only', 'anchor-schema' ); ?></label><br />
+                    <label><input type="radio" name="anchor_webinar_access" value="roles" <?php \checked( $access, 'roles' ); ?> /> <?php echo \esc_html__( 'Specific roles', 'anchor-schema' ); ?></label>
+                </p>
+                <div class="anchor-webinar-access__roles"<?php echo $access === 'roles' ? '' : ' style="display:none;"'; ?>>
+                    <p class="description"><?php echo \esc_html__( 'Only users with one of the checked roles can watch (administrators always can).', 'anchor-schema' ); ?></p>
+                    <?php foreach ( \get_editable_roles() as $slug => $role ) : ?>
+                        <label style="display:block;margin:.15em 0;">
+                            <input type="checkbox" name="anchor_webinar_roles[]" value="<?php echo \esc_attr( $slug ); ?>" <?php \checked( \in_array( $slug, $sel_roles, true ) ); ?> />
+                            <?php echo \esc_html( \translate_user_role( $role['name'] ) ); ?>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </div>
         </div>
         <?php
     }
@@ -110,6 +153,10 @@ class Module {
 
         \update_post_meta( $post_id, '_anchor_webinar_vimeo_id', $vimeo_id );
         \update_post_meta( $post_id, '_anchor_webinar_date', $webinar_date );
+
+        $access = \sanitize_text_field( \wp_unslash( $_POST['anchor_webinar_access'] ?? 'public' ) );
+        $roles  = isset( $_POST['anchor_webinar_roles'] ) ? (array) \wp_unslash( $_POST['anchor_webinar_roles'] ) : [];
+        $this->persist_access_meta( $post_id, $access, $roles );
 
         $this->maybe_fill_content_with_embed( $post_id, $vimeo_id, $webinar_date );
 
@@ -175,6 +222,358 @@ class Module {
         if ( ! \is_wp_error( $attachment_id ) ) {
             \set_post_thumbnail( $post_id, $attachment_id );
         }
+    }
+
+    /**
+     * Single source of truth for whether a user may view a webinar.
+     *
+     * @param int      $post_id Webinar post ID.
+     * @param int|null $user_id User to test; null = current user.
+     */
+    public function can_user_access( $post_id, $user_id = null ) {
+        $mode = \get_post_meta( $post_id, '_anchor_webinar_access', true );
+        if ( ! $mode ) {
+            $mode = 'public';
+        }
+
+        if ( $mode === 'public' ) {
+            return true;
+        }
+
+        // Editors/administrators (anyone who can edit the webinar) always bypass.
+        if ( null === $user_id ) {
+            if ( \current_user_can( 'edit_post', $post_id ) ) {
+                return true;
+            }
+            $user_id = \get_current_user_id();
+        } elseif ( \user_can( $user_id, 'edit_post', $post_id ) ) {
+            return true;
+        }
+
+        if ( ! $user_id ) {
+            return false; // logged out.
+        }
+
+        if ( $mode === 'login' ) {
+            return true;
+        }
+
+        if ( $mode === 'roles' ) {
+            $allowed = \get_post_meta( $post_id, '_anchor_webinar_roles', true );
+            if ( empty( $allowed ) || ! \is_array( $allowed ) ) {
+                return true; // roles mode with no roles selected = any logged-in user.
+            }
+            $user = \get_userdata( $user_id );
+            if ( ! $user ) {
+                return false;
+            }
+            return (bool) \array_intersect( (array) $user->roles, $allowed );
+        }
+
+        return false;
+    }
+
+    /**
+     * Replace a gated webinar's body with a locked notice anywhere the_content
+     * runs for an unauthorized user (archives, search, REST, feeds). On the
+     * single page the template already renders the gate and never calls
+     * the_content for blocked users, so this is a no-op there.
+     */
+    public function gate_the_content( $content ) {
+        $post = \get_post();
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            return $content;
+        }
+        if ( $this->can_user_access( $post->ID ) ) {
+            return $content;
+        }
+        return $this->locked_notice();
+    }
+
+    /**
+     * Excerpt counterpart to gate_the_content (covers REST excerpt.rendered and
+     * theme/archive excerpts). $post is provided by the get_the_excerpt filter.
+     */
+    public function gate_the_excerpt( $excerpt, $post = null ) {
+        $post = $post ? \get_post( $post ) : \get_post();
+        if ( ! $post || $post->post_type !== self::CPT ) {
+            return $excerpt;
+        }
+        if ( $this->can_user_access( $post->ID ) ) {
+            return $excerpt;
+        }
+        return $this->locked_notice();
+    }
+
+    private function locked_notice() {
+        return '<p class="anchor-webinar-locked">' . \esc_html__( 'This webinar is available to members only. Please sign in to watch.', 'anchor-schema' ) . '</p>';
+    }
+
+    /**
+     * Prevent full-page caches from storing/cross-serving a gated single
+     * webinar (the gate page for guests, or the player for an authorized user).
+     */
+    public function maybe_nocache_gated() {
+        if ( ! \is_singular( self::CPT ) ) {
+            return;
+        }
+        $mode = \get_post_meta( \get_queried_object_id(), '_anchor_webinar_access', true );
+        if ( ! $mode || $mode === 'public' ) {
+            return; // public webinars render the same for everyone — safe to cache.
+        }
+        // Non-public: output (gate vs. player) varies per user, never cache it.
+        \nocache_headers();
+        if ( ! \defined( 'DONOTCACHEPAGE' ) ) {
+            \define( 'DONOTCACHEPAGE', true );
+        }
+    }
+
+    /**
+     * Sanitize and write the access meta. Shared by metabox + inline-edit saves.
+     */
+    private function persist_access_meta( $post_id, $mode, $roles ) {
+        if ( ! \in_array( $mode, [ 'public', 'login', 'roles' ], true ) ) {
+            $mode = 'public';
+        }
+        \update_post_meta( $post_id, '_anchor_webinar_access', $mode );
+
+        if ( $mode === 'roles' ) {
+            // Validate against roles the saving user can actually manage, not the
+            // full role set — a crafted request can't store a hidden/privileged slug.
+            if ( ! \function_exists( 'get_editable_roles' ) ) {
+                require_once ABSPATH . 'wp-admin/includes/user.php';
+            }
+            $valid = \array_keys( \get_editable_roles() );
+            $clean = \array_values( \array_intersect( \array_map( 'sanitize_text_field', (array) $roles ), $valid ) );
+            \update_post_meta( $post_id, '_anchor_webinar_roles', $clean );
+        } else {
+            \delete_post_meta( $post_id, '_anchor_webinar_roles' );
+        }
+    }
+
+    /**
+     * Persist access changes made through Quick Edit / Bulk Edit.
+     *
+     * Inline edits do not carry the metabox nonce (save_meta bails for them);
+     * they use WordPress's own inline nonce / bulk-posts nonce, already verified
+     * by core before save_post fires. This path only runs for inline contexts.
+     */
+    public function save_inline_access( $post_id ) {
+        if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+
+        $is_quick = ( ( $_REQUEST['action'] ?? '' ) === 'inline-save' );
+        $is_bulk  = isset( $_REQUEST['bulk_edit'] );
+        if ( ! $is_quick && ! $is_bulk ) {
+            return; // normal editor save is handled by save_meta().
+        }
+
+        if ( $is_quick && ( empty( $_REQUEST['_inline_edit'] ) || ! \wp_verify_nonce( $_REQUEST['_inline_edit'], 'inlineeditnonce' ) ) ) {
+            return;
+        }
+        if ( ! \current_user_can( 'edit_post', $post_id ) ) {
+            return;
+        }
+
+        $mode = isset( $_REQUEST['anchor_webinar_access'] ) ? \sanitize_text_field( \wp_unslash( $_REQUEST['anchor_webinar_access'] ) ) : '';
+
+        // "— No Change —" (bulk default) or a missing value must never clobber an
+        // existing gate — applies to Quick Edit too, so an unrelated inline edit
+        // (e.g. just the title) can't silently reset access to public.
+        if ( $mode === '' || $mode === '-1' ) {
+            return;
+        }
+
+        $roles = isset( $_REQUEST['anchor_webinar_roles'] ) ? (array) \wp_unslash( $_REQUEST['anchor_webinar_roles'] ) : [];
+        $this->persist_access_meta( $post_id, $mode, $roles );
+    }
+
+    /**
+     * AJAX: sign a visitor in from the inline webinar login form.
+     */
+    public function handle_login() {
+        if ( ! \check_ajax_referer( 'anchor_webinar_login', 'nonce', false ) ) {
+            \wp_send_json_error( [ 'message' => \__( 'Security check failed. Please refresh the page and try again.', 'anchor-schema' ) ] );
+        }
+
+        $login = \sanitize_text_field( \wp_unslash( $_POST['log'] ?? '' ) );
+        $pass  = (string) ( $_POST['pwd'] ?? '' );
+
+        if ( $login === '' || $pass === '' ) {
+            \wp_send_json_error( [ 'message' => \__( 'Please enter your username and password.', 'anchor-schema' ) ] );
+        }
+
+        $user = \wp_signon(
+            [
+                'user_login'    => $login,
+                'user_password' => $pass,
+                'remember'      => ! empty( $_POST['rememberme'] ),
+            ],
+            \is_ssl()
+        );
+
+        if ( \is_wp_error( $user ) ) {
+            // Generic message — never reveal whether the username exists.
+            \wp_send_json_error( [ 'message' => \__( 'Invalid username or password.', 'anchor-schema' ) ] );
+        }
+
+        \wp_set_current_user( $user->ID );
+        \wp_send_json_success();
+    }
+
+    /**
+     * Render the access gate (login form or "no access" notice) for the template.
+     */
+    public function render_access_gate( $post_id ) {
+        if ( \is_user_logged_in() ) {
+            return $this->render_access_denied();
+        }
+        return $this->render_login_form( $post_id );
+    }
+
+    private function render_access_denied() {
+        \ob_start();
+        ?>
+        <div class="anchor-webinar-gate anchor-webinar-gate--denied">
+            <div class="anchor-webinar-notice">
+                <h2 class="anchor-webinar-notice__title"><?php echo \esc_html__( 'You don’t have access to this webinar', 'anchor-schema' ); ?></h2>
+                <p class="anchor-webinar-notice__text"><?php echo \esc_html__( 'Your account isn’t permitted to view this webinar. If you think this is a mistake, please contact the site administrator.', 'anchor-schema' ); ?></p>
+            </div>
+        </div>
+        <?php
+        return \ob_get_clean();
+    }
+
+    private function render_login_form( $post_id ) {
+        $register_url = \get_option( 'users_can_register' ) ? \wp_registration_url() : '';
+        $lost_url     = \wp_lostpassword_url( \get_permalink( $post_id ) );
+        \ob_start();
+        ?>
+        <div class="anchor-webinar-gate anchor-webinar-gate--login">
+            <div class="anchor-webinar-login">
+                <h2 class="anchor-webinar-login__title"><?php echo \esc_html__( 'Sign in to watch', 'anchor-schema' ); ?></h2>
+                <p class="anchor-webinar-login__subtitle"><?php echo \esc_html__( 'This webinar is available to members. Please sign in to continue watching.', 'anchor-schema' ); ?></p>
+
+                <form class="anchor-webinar-login__form" method="post" novalidate action="<?php echo \esc_url( \site_url( 'wp-login.php', 'login_post' ) ); ?>">
+                    <input type="hidden" name="redirect_to" value="<?php echo \esc_url( \get_permalink( $post_id ) ); ?>" />
+                    <div class="anchor-webinar-login__field">
+                        <label for="awl-user"><?php echo \esc_html__( 'Username or Email', 'anchor-schema' ); ?></label>
+                        <input type="text" id="awl-user" name="log" autocomplete="username" required />
+                    </div>
+                    <div class="anchor-webinar-login__field">
+                        <label for="awl-pass"><?php echo \esc_html__( 'Password', 'anchor-schema' ); ?></label>
+                        <input type="password" id="awl-pass" name="pwd" autocomplete="current-password" required />
+                    </div>
+                    <div class="anchor-webinar-login__row">
+                        <label class="anchor-webinar-login__remember">
+                            <input type="checkbox" name="rememberme" value="1" /> <?php echo \esc_html__( 'Remember me', 'anchor-schema' ); ?>
+                        </label>
+                        <a class="anchor-webinar-login__lost" href="<?php echo \esc_url( $lost_url ); ?>"><?php echo \esc_html__( 'Lost your password?', 'anchor-schema' ); ?></a>
+                    </div>
+                    <div class="anchor-webinar-login__error" role="alert" hidden></div>
+                    <button type="submit" class="anchor-webinar-login__submit"><?php echo \esc_html__( 'Sign In', 'anchor-schema' ); ?></button>
+                    <?php if ( $register_url ) : ?>
+                        <p class="anchor-webinar-login__register">
+                            <?php echo \esc_html__( 'Don’t have an account?', 'anchor-schema' ); ?>
+                            <a href="<?php echo \esc_url( $register_url ); ?>"><?php echo \esc_html__( 'Register', 'anchor-schema' ); ?></a>
+                        </p>
+                    <?php endif; ?>
+                </form>
+            </div>
+        </div>
+        <?php
+        return \ob_get_clean();
+    }
+
+    public function add_access_column( $columns ) {
+        $new = [];
+        foreach ( $columns as $key => $label ) {
+            if ( $key === 'date' ) {
+                $new['anchor_access'] = \__( 'Access', 'anchor-schema' );
+            }
+            $new[ $key ] = $label;
+        }
+        if ( ! isset( $new['anchor_access'] ) ) {
+            $new['anchor_access'] = \__( 'Access', 'anchor-schema' );
+        }
+        return $new;
+    }
+
+    public function render_access_column( $column, $post_id ) {
+        if ( $column !== 'anchor_access' ) {
+            return;
+        }
+        $mode  = \get_post_meta( $post_id, '_anchor_webinar_access', true );
+        $mode  = $mode ? $mode : 'public';
+        $roles = (array) \get_post_meta( $post_id, '_anchor_webinar_roles', true );
+
+        echo \esc_html( $this->access_label( $mode, $roles ) );
+        // Hidden payload consumed by Quick Edit JS to prefill its fields.
+        \printf(
+            '<span class="anchor-access-data" data-access="%1$s" data-roles="%2$s" style="display:none;"></span>',
+            \esc_attr( $mode ),
+            \esc_attr( \implode( ',', $roles ) )
+        );
+    }
+
+    private function access_label( $mode, $roles ) {
+        if ( $mode === 'login' ) {
+            return \__( 'Logged-in users', 'anchor-schema' );
+        }
+        if ( $mode === 'roles' ) {
+            if ( empty( $roles ) ) {
+                return \__( 'Any logged-in user', 'anchor-schema' );
+            }
+            $all   = \wp_roles()->roles;
+            $names = [];
+            foreach ( $roles as $slug ) {
+                $names[] = isset( $all[ $slug ] ) ? \translate_user_role( $all[ $slug ]['name'] ) : $slug;
+            }
+            return \sprintf( \__( 'Roles: %s', 'anchor-schema' ), \implode( ', ', $names ) );
+        }
+        return \__( 'Public', 'anchor-schema' );
+    }
+
+    /**
+     * Render the access controls inside Quick Edit and Bulk Edit.
+     * Same callback serves both hooks; context is read from current_filter().
+     */
+    public function render_inline_edit_box( $column_name, $post_type ) {
+        if ( $column_name !== 'anchor_access' || $post_type !== self::CPT ) {
+            return;
+        }
+        $is_bulk = ( \current_filter() === 'bulk_edit_custom_box' );
+        ?>
+        <fieldset class="inline-edit-col-right anchor-webinar-inline">
+            <div class="inline-edit-col">
+                <label class="inline-edit-group">
+                    <span class="title"><?php echo \esc_html__( 'Access', 'anchor-schema' ); ?></span>
+                    <select name="anchor_webinar_access" class="anchor-webinar-access-select">
+                        <?php if ( $is_bulk ) : ?>
+                            <option value="-1"><?php echo \esc_html__( '— No Change —', 'anchor-schema' ); ?></option>
+                        <?php endif; ?>
+                        <option value="public"><?php echo \esc_html__( 'Public', 'anchor-schema' ); ?></option>
+                        <option value="login"><?php echo \esc_html__( 'Logged-in users', 'anchor-schema' ); ?></option>
+                        <option value="roles"><?php echo \esc_html__( 'Specific roles', 'anchor-schema' ); ?></option>
+                    </select>
+                </label>
+                <div class="anchor-webinar-roles-wrap" style="display:none;">
+                    <span class="title"><?php echo \esc_html__( 'Roles', 'anchor-schema' ); ?></span>
+                    <ul class="cat-checklist anchor-webinar-roles-list">
+                        <?php foreach ( \get_editable_roles() as $slug => $role ) : ?>
+                            <li>
+                                <label>
+                                    <input type="checkbox" name="anchor_webinar_roles[]" value="<?php echo \esc_attr( $slug ); ?>" />
+                                    <?php echo \esc_html( \translate_user_role( $role['name'] ) ); ?>
+                                </label>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
+            </div>
+        </fieldset>
+        <?php
     }
 
     public function admin_notices() {
@@ -327,22 +726,37 @@ class Module {
         }
         if ( $hook === 'post-new.php' || $hook === 'post.php' ) {
             \wp_enqueue_style( 'anchor-webinars-admin', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/admin.css' ), [], '1.0.0' );
+            \wp_enqueue_script( 'anchor-webinars-admin-edit', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/admin-edit.js' ), [ 'jquery' ], '1.0.0', true );
+        }
+        if ( $hook === 'edit.php' ) {
+            \wp_enqueue_style( 'anchor-webinars-admin', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/admin.css' ), [], '1.0.0' );
+            \wp_enqueue_script( 'anchor-webinars-admin-list', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/admin-list.js' ), [ 'jquery', 'inline-edit-post' ], '1.0.0', true );
         }
     }
 
     public function frontend_assets() {
-        if ( \is_singular( self::CPT ) ) {
-            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.0.0' );
-        }
-        if ( \is_post_type_archive( self::CPT ) ) {
+        if ( \is_singular( self::CPT ) || \is_post_type_archive( self::CPT ) ) {
             \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.0.0' );
         }
 
-        if ( ! \is_singular( self::CPT ) || ! \is_user_logged_in() ) {
+        if ( ! \is_singular( self::CPT ) ) {
             return;
         }
 
-        $post_id  = \get_the_ID();
+        $post_id = \get_the_ID();
+
+        // Blocked visitors: load only what the gate needs, never the player/Vimeo ID.
+        if ( ! $this->can_user_access( $post_id ) ) {
+            if ( ! \is_user_logged_in() ) {
+                \wp_enqueue_script( 'anchor-webinar-login', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/login.js' ), [], '1.0.0', true );
+                \wp_localize_script( 'anchor-webinar-login', 'ANCHOR_WEBINAR_LOGIN', [
+                    'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
+                    'nonce'   => \wp_create_nonce( 'anchor_webinar_login' ),
+                ] );
+            }
+            return;
+        }
+
         $vimeo_id = \get_post_meta( $post_id, '_anchor_webinar_vimeo_id', true );
         if ( ! $vimeo_id ) {
             return;
@@ -362,9 +776,8 @@ class Module {
 
     public function template_include( $template ) {
         if ( \is_singular( self::CPT ) ) {
-            if ( ! \is_user_logged_in() ) {
-                \auth_redirect();
-            }
+            // Access is enforced inside the template via render_access_gate();
+            // we never redirect to wp-login.php anymore.
             return $this->locate_template( 'single-webinar.php' );
         }
         if ( \is_post_type_archive( self::CPT ) ) {
@@ -386,6 +799,11 @@ class Module {
         $post = $post_id ? \get_post( $post_id ) : null;
         if ( ! $post || $post->post_status !== 'publish' ) {
             return '';
+        }
+
+        // Honour the webinar's access gate even when embedded via shortcode.
+        if ( ! $this->can_user_access( $post->ID ) ) {
+            return $this->locked_notice();
         }
 
         $vimeo_id     = \get_post_meta( $post->ID, '_anchor_webinar_vimeo_id', true );
@@ -447,6 +865,10 @@ class Module {
 
         if ( ! $webinar_id || $seconds <= 0 || ! $session ) {
             \wp_send_json_error( [ 'message' => 'invalid_data' ] );
+        }
+
+        if ( ! $this->can_user_access( $webinar_id, $user_id ) ) {
+            \wp_send_json_error( [ 'message' => 'no_access' ] );
         }
 
         global $wpdb;

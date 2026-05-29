@@ -2971,6 +2971,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-code-snippets/anchor-code-snippets.php',
                 'class'       => 'Anchor_Code_Snippets_Module',
             ],
+            'blocks' => [
+                'label'       => __( 'Anchor Blocks', 'anchor-schema' ),
+                'description' => __( 'Reusable HTML/CSS/JS content blocks placed via shortcode. From a button to a full-width section.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-blocks/anchor-blocks.php',
+                'class'       => 'Anchor_Blocks_Module',
+            ],
             'optimize' => [
                 'label'       => __( 'Anchor Optimize', 'anchor-schema' ),
                 'description' => __( 'Local image compression + WebP/AVIF conversion on upload. No external APIs.', 'anchor-schema' ),

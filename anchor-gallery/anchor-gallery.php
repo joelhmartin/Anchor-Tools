@@ -53,7 +53,10 @@ class Anchor_Gallery_Module {
         'carousel_loop' => true,
         'carousel_center' => false,
         'equal_height' => false,
+        'media_min_height' => 0,
         'max_height' => 0,
+        'content_min_height' => 0,
+        'content_max_height' => 0,
         'thumb_size' => 'maxres',
         'object_fit' => 'cover',
         'title_position' => 'below',
@@ -188,6 +191,7 @@ class Anchor_Gallery_Module {
         $slider_layouts = ['slider','carousel','card_carousel'];
         $carousel_loop_layouts = ['carousel','card_carousel'];
         $marquee_layouts = ['logo_carousel'];
+        $height_layouts = array_values(array_diff($core_layouts, ['logo_carousel']));
 
         return [
             'layout' => ['type' => 'select', 'label' => 'Layout', 'section' => 'layout', 'priority' => 10, 'options' => ['grid' => 'Grid', 'masonry' => 'Masonry', 'carousel' => 'Carousel', 'slider' => 'Horizontal Scroll', 'gallery' => 'Gallery (Featured + Thumbs)', 'logo_carousel' => 'Logo Carousel', 'filterable' => 'Filterable Grid'], 'help' => 'Pick a base layout. Variants like Paginated/Lightbox/Card/Bento are available as Presets.'],
@@ -225,7 +229,10 @@ class Anchor_Gallery_Module {
             'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
             'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'style', 'priority' => 5, 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts, 'help' => 'Set to Hidden to remove the title entirely.'],
             'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'section' => 'layout', 'applies_to' => array_values(array_diff($tile_layouts, ['bento']))],
-            'max_height' => ['type' => 'number', 'label' => 'Max Thumbnail Height (px)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'applies_to' => $tile_layouts],
+            'media_min_height' => ['type' => 'number', 'label' => 'Media Min Height (px, 0=auto)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Minimum height for the image/video thumbnail area.'],
+            'max_height' => ['type' => 'number', 'label' => 'Media Max Height (px, 0=auto)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Maximum height for the image/video thumbnail area. Existing saved Max Thumbnail Height values use this control.'],
+            'content_min_height' => ['type' => 'number', 'label' => 'Tile / Content Min Height (px, 0=auto)', 'section' => 'layout', 'min' => 0, 'max' => 2000, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Minimum height for the full tile, including media, title, caption, and custom HTML content.'],
+            'content_max_height' => ['type' => 'number', 'label' => 'Tile / Content Max Height (px, 0=auto)', 'section' => 'layout', 'min' => 0, 'max' => 2000, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Maximum height for the full tile, including media, title, caption, and custom HTML content. Overflow scrolls inside the tile.'],
             'thumb_size' => ['type' => 'select', 'label' => 'Thumbnail Resolution', 'section' => 'advanced', 'options' => [
                 'maxres'   => 'Max (1280×720)',
                 'standard' => 'Standard (640×480)',
@@ -1517,13 +1524,18 @@ class Anchor_Gallery_Module {
 
     public function render_gallery($atts) {
         $atts = shortcode_atts([
-            'id'       => '',
-            'videos'   => '',
-            'autoplay' => '',
-            'layout'   => '',
-            'columns'  => '',
-            'theme'    => '',
-            'popup'    => '',
+            'id'                 => '',
+            'videos'             => '',
+            'autoplay'           => '',
+            'layout'             => '',
+            'columns'            => '',
+            'theme'              => '',
+            'popup'              => '',
+            'media_min_height'   => '',
+            'media_max_height'   => '',
+            'max_height'         => '',
+            'content_min_height' => '',
+            'content_max_height' => '',
         ], $atts);
 
         $gallery_id = trim((string) $atts['id']);
@@ -1608,6 +1620,18 @@ class Anchor_Gallery_Module {
         }
         if ($atts['popup'] !== '' && in_array($atts['popup'], ['lightbox', 'inline', 'theater', 'side_panel', 'none'])) {
             $settings['popup_style'] = $atts['popup'];
+        }
+        $height_overrides = [
+            'media_min_height'   => 'media_min_height',
+            'media_max_height'   => 'max_height',
+            'max_height'         => 'max_height',
+            'content_min_height' => 'content_min_height',
+            'content_max_height' => 'content_max_height',
+        ];
+        foreach ($height_overrides as $attr_key => $setting_key) {
+            if (isset($atts[$attr_key]) && $atts[$attr_key] !== '') {
+                $settings[$setting_key] = max(0, intval($atts[$attr_key]));
+            }
         }
 
         $videos = $this->hydrate_video_metadata($videos, $settings['thumb_size'] ?? 'maxres');
@@ -1759,6 +1783,32 @@ class Anchor_Gallery_Module {
         // 3.7.x — natural aspect ratio (lets the image set its own height).
         if (!empty($settings['thumb_aspect_auto'])) {
             $vars[] = '--avg-thumb-ratio: auto';
+        }
+
+        // 3.7.x — media and full-content height constraints.
+        $media_min_height = max(0, intval($settings['media_min_height'] ?? 0));
+        $media_max_height = max(0, intval($settings['max_height'] ?? 0));
+        if ($media_min_height > 0 && $media_max_height > 0 && $media_max_height < $media_min_height) {
+            $media_max_height = $media_min_height;
+        }
+        if ($media_min_height > 0) {
+            $vars[] = '--avg-media-min-height: ' . $media_min_height . 'px';
+        }
+        if ($media_max_height > 0) {
+            $vars[] = '--avg-media-max-height: ' . $media_max_height . 'px';
+            $vars[] = '--avg-max-height: ' . $media_max_height . 'px';
+        }
+
+        $content_min_height = max(0, intval($settings['content_min_height'] ?? 0));
+        $content_max_height = max(0, intval($settings['content_max_height'] ?? 0));
+        if ($content_min_height > 0 && $content_max_height > 0 && $content_max_height < $content_min_height) {
+            $content_max_height = $content_min_height;
+        }
+        if ($content_min_height > 0) {
+            $vars[] = '--avg-content-min-height: ' . $content_min_height . 'px';
+        }
+        if ($content_max_height > 0) {
+            $vars[] = '--avg-content-max-height: ' . $content_max_height . 'px';
         }
 
         // 3.7.x — meta area
@@ -2077,12 +2127,6 @@ class Anchor_Gallery_Module {
             '--avg-thumb-ratio: ' . $thumb_ratio,
             '--avg-object-fit: ' . esc_attr($settings['object_fit']),
         ];
-
-        $max_height = intval($settings['max_height']);
-        if ($max_height > 0) {
-            $style_vars[] = '--avg-max-height: ' . $max_height . 'px';
-            $classes[] = 'avg-has-max-height';
-        }
 
         /* 3.7.0 — Style-tab visual overrides + Advanced raw CSS var overrides */
         $style_vars = array_merge($style_vars, $this->build_v37_style_vars($settings));

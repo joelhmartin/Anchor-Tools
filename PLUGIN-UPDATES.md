@@ -52,8 +52,6 @@ If no release asset is present, PUC will use the GitHub zipball for `main`.
   (PUC stores state in `puc_*` options).
 
 ## Debugging
-The plugin logs two upgrader hooks to PHP error logs:
-- `upgrader_pre_download`
-- `upgrader_source_selection`
-
-Check the PHP error log for `[Anchor Tools]` entries if updates fail.
+The plugin does not attach global upgrader logging filters. If updates fail,
+check the WordPress update error shown in the admin UI and the PHP error log for
+messages from WordPress or the Plugin Update Checker library.

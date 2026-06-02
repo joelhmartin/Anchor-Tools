@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, and bulk content editing using AI
- * Version: 3.7.90
+ * Version: 3.7.92
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -89,24 +89,6 @@ if ( class_exists( PucFactory::class ) ) {
         $anchor_tools_vcs->enableReleaseAssets();
     }
 
-    add_filter(
-        'upgrader_pre_download',
-        function( $reply, $package ) {
-            error_log( '[Anchor Tools] pre_download package=' . $package );
-            return $reply;
-        },
-        10,
-        2
-    );
-    add_filter(
-        'upgrader_source_selection',
-        function( $source ) {
-            error_log( '[Anchor Tools] source_selection source=' . $source );
-            return $source;
-        },
-        10,
-        1
-    );
 }
 
 add_action(

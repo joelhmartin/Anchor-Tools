@@ -95,9 +95,15 @@
   border-color: var(--avg-tile-border-color, transparent);
   overflow: hidden;
   height: 100%;
+  min-height: var(--avg-content-min-height, 0);
+  max-height: var(--avg-content-max-height, none);
   display: flex;
   flex-direction: column;
   transition: transform var(--avg-transition, 250ms) ease, box-shadow var(--avg-transition, 250ms) ease;
+}
+
+.anchor-video-gallery[style*="--avg-content-max-height"] .avg-tile-inner {
+  overflow-y: auto;
 }
 
 .avg-tile:hover .avg-tile-inner { background: var(--avg-tile-hover-bg, var(--avg-tile-bg, var(--avg-bg))); }
@@ -106,6 +112,8 @@
   position: relative;
   width: 100%;
   aspect-ratio: var(--avg-thumb-ratio, 16 / 9);
+  min-height: var(--avg-media-min-height, 0);
+  max-height: var(--avg-media-max-height, none);
   background: var(--avg-thumb-empty-bg, linear-gradient(135deg, var(--avg-bg), var(--avg-border)));
   overflow: hidden;
 }
@@ -122,11 +130,16 @@
 
 /* 3.7.x — Natural aspect ratio mode: the img defines the height, not aspect-ratio.
    The absolutely-positioned default would collapse to 0px when aspect-ratio: auto. */
-.avg-aspect-auto .avg-thumb { aspect-ratio: auto; min-height: 0; }
+.avg-aspect-auto .avg-thumb {
+  aspect-ratio: auto;
+  min-height: var(--avg-media-min-height, 0);
+  max-height: var(--avg-media-max-height, none);
+}
 .avg-aspect-auto .avg-thumb-img {
   position: static;
   width: 100%;
   height: auto;
+  max-height: var(--avg-media-max-height, none);
 }
 
 .avg-meta {
@@ -371,7 +384,7 @@
 }
 
 /* ==========================================================================
-   Equal Height & Max Height
+   Equal Height & Height Constraints
    ========================================================================== */
 
 .avg-equal-height .avg-track {
@@ -389,12 +402,24 @@
   aspect-ratio: auto;
 }
 
-/* Max-Height: when set, drop aspect-ratio constraint so the thumb takes
-   the configured height and the inner img object-fits inside it. */
-.avg-has-max-height .avg-thumb {
-  aspect-ratio: auto;
-  height: var(--avg-max-height);
-  max-height: var(--avg-max-height);
+.avg-html-content {
+  min-height: var(--avg-content-min-height, 0);
+}
+
+/* Media height constraints apply to tile thumbnails and the featured layout. */
+.avg-gallery-featured .avg-thumb,
+.avg-gallery-thumb-img {
+  min-height: var(--avg-media-min-height, 0);
+  max-height: var(--avg-media-max-height, none);
+}
+
+.avg-gallery-featured {
+  min-height: var(--avg-content-min-height, 0);
+  max-height: var(--avg-content-max-height, none);
+}
+
+.anchor-video-gallery[style*="--avg-content-max-height"] .avg-gallery-featured {
+  overflow-y: auto;
 }
 
 /* ==========================================================================

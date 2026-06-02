@@ -60,10 +60,11 @@ class Anchor_Site_Config_Module {
                 'og_image'             => 0,
             ],
             'business' => [
-                'name'    => '',
-                'tagline' => '',
-                'phone'   => '',
-                'email'   => '',
+                'name'            => '',
+                'tagline'         => '',
+                'phone'           => '',
+                'emergency_phone' => '',
+                'email'           => '',
             ],
             'location' => [
                 'line1'   => '',

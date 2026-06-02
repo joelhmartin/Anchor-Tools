@@ -29,7 +29,7 @@ class Anchor_Site_Config_Admin {
             'anchor-site-config-admin',
             ANCHOR_TOOLS_PLUGIN_URL . 'anchor-site-config/assets/css/admin.css',
             [],
-            '1.0.0'
+            '1.0.1'
         );
 
         wp_enqueue_script(
@@ -116,6 +116,12 @@ class Anchor_Site_Config_Admin {
 
     private function render_custom_shortcode_row( $index, $row, $opt_key ) {
         $name_prefix = $opt_key . '[custom_shortcodes][' . $index . ']';
+        $tag         = sanitize_key( $row['shortcode'] ?? '' );
+        $config_tag  = $this->config_tag( $tag !== '' ? $tag : 'your_tag' );
+        $shortcodes  = [ '[' . $config_tag . ']' ];
+        if ( $tag !== '' && $tag !== $config_tag ) {
+            $shortcodes[] = '[' . $tag . ']';
+        }
         ?>
         <div class="anchor-site-config-row" style="margin:8px 0;padding:8px;border:1px solid #ddd;border-radius:4px;">
             <p>
@@ -125,6 +131,7 @@ class Anchor_Site_Config_Admin {
                        value="<?php echo esc_attr( $row['shortcode'] ?? '' ); ?>"
                        placeholder="my_tag" />
             </p>
+            <?php $this->render_code_reference( $shortcodes ); ?>
             <p>
                 <label><?php esc_html_e( 'Title (admin reference)', 'anchor-schema' ); ?>:</label>
                 <input type="text" class="regular-text"
@@ -165,6 +172,10 @@ class Anchor_Site_Config_Admin {
                            name="<?php echo esc_attr( $opt_key . '[social][' . $key . ']' ); ?>"
                            value="<?php echo esc_attr( $value ); ?>"
                            placeholder="https://..." />
+                    <?php $this->render_code_reference( [
+                        '[config_social_link platform="' . $key . '"]',
+                        '[social_link platform="' . $key . '"]',
+                    ] ); ?>
                 </td>
             </tr>
         <?php endforeach; ?>
@@ -184,6 +195,7 @@ class Anchor_Site_Config_Admin {
             'sunday'    => __( 'Sunday',    'anchor-schema' ),
         ];
         ?>
+        <?php $this->render_code_reference( [ '[config_business_hours]', '[business_hours]' ] ); ?>
         <table class="form-table anchor-hours-table"><tbody>
         <?php foreach ( $days as $day => $label ) :
             $row    = $opts['hours'][ $day ] ?? [ 'open' => '', 'close' => '', 'closed' => false ];
@@ -210,6 +222,10 @@ class Anchor_Site_Config_Admin {
                                <?php checked( $closed ); ?> />
                         <?php esc_html_e( 'Closed', 'anchor-schema' ); ?>
                     </label>
+                    <?php $this->render_code_reference( [
+                        '[config_business_hours_' . $day . ']',
+                        '[config_business_hours day="' . $day . '"]',
+                    ] ); ?>
                 </td>
             </tr>
         <?php endforeach; ?>
@@ -220,10 +236,11 @@ class Anchor_Site_Config_Admin {
     private function render_business_section( $opts ) {
         $opt_key = Anchor_Site_Config_Module::OPTION_KEY;
         $fields  = [
-            'name'    => [ __( 'Business name', 'anchor-schema' ), 'text' ],
-            'tagline' => [ __( 'Tagline',       'anchor-schema' ), 'text' ],
-            'phone'   => [ __( 'Phone',         'anchor-schema' ), 'tel'  ],
-            'email'   => [ __( 'Email',         'anchor-schema' ), 'email' ],
+            'name'            => [ __( 'Business name',             'anchor-schema' ), 'text',  [ '[config_business_name]', '[business_name]' ] ],
+            'tagline'         => [ __( 'Tagline',                   'anchor-schema' ), 'text',  [ '[config_business_tagline]', '[business_tagline]' ] ],
+            'phone'           => [ __( 'Phone',                     'anchor-schema' ), 'tel',   [ '[config_business_phone]', '[config_phone]', '[config_business_phone_href]', '[config_phone_href]', '[phone]', '[phone_href]' ] ],
+            'emergency_phone' => [ __( 'Emergency hotline phone',   'anchor-schema' ), 'tel',   [ '[config_emergency_phone]', '[config_emergency_phone_href]' ] ],
+            'email'           => [ __( 'Email',                     'anchor-schema' ), 'email', [ '[config_business_email]', '[config_email]', '[business_email]', '[email]' ] ],
         ];
         $this->render_text_grid( $opts['business'], $fields, $opt_key . '[business]' );
     }
@@ -238,6 +255,7 @@ class Anchor_Site_Config_Admin {
             'postal'  => [ __( 'Postal code',    'anchor-schema' ), 'text' ],
             'country' => [ __( 'Country',        'anchor-schema' ), 'text' ],
         ];
+        $this->render_code_reference( [ '[config_business_address]', '[config_address]', '[business_address]', '[address]' ] );
         $this->render_text_grid( $opts['location'], $fields, $opt_key . '[location]' );
     }
 
@@ -250,7 +268,10 @@ class Anchor_Site_Config_Admin {
     private function render_text_grid( $values, $fields, $name_prefix ) {
         ?>
         <table class="form-table"><tbody>
-        <?php foreach ( $fields as $key => list( $label, $type ) ) :
+        <?php foreach ( $fields as $key => $field ) :
+            $label      = $field[0];
+            $type       = $field[1];
+            $shortcodes = $field[2] ?? [];
             $value = $values[ $key ] ?? '';
         ?>
             <tr>
@@ -259,6 +280,7 @@ class Anchor_Site_Config_Admin {
                     <input type="<?php echo esc_attr( $type ); ?>" class="regular-text"
                            name="<?php echo esc_attr( $name_prefix . '[' . $key . ']' ); ?>"
                            value="<?php echo esc_attr( $value ); ?>" />
+                    <?php $this->render_code_reference( $shortcodes ); ?>
                 </td>
             </tr>
         <?php endforeach; ?>
@@ -275,6 +297,14 @@ class Anchor_Site_Config_Admin {
             'secondary_logo_white' => __( 'Secondary Logo (white)',      'anchor-schema' ),
             'favicon'              => __( 'Favicon',                     'anchor-schema' ),
             'og_image'             => __( 'Default Open Graph Image',    'anchor-schema' ),
+        ];
+        $shortcodes = [
+            'primary_logo'         => [ '[config_brand_logo]', '[config_brand_logo variant="primary_logo"]', '[config_site_image_url]', '[config_site_image_horizontal]', '[brand_logo]', '[site_image_url]', '[site_image_horizontal]' ],
+            'secondary_logo'       => [ '[config_brand_logo variant="secondary_logo"]', '[brand_logo variant="secondary_logo"]' ],
+            'primary_logo_white'   => [ '[config_brand_logo variant="primary_logo_white"]', '[config_site_image_horizontal_white]', '[config_site_image_white]', '[brand_logo variant="primary_logo_white"]', '[site_image_horizontal_white]', '[site_image_white]' ],
+            'secondary_logo_white' => [ '[config_brand_logo variant="secondary_logo_white"]', '[brand_logo variant="secondary_logo_white"]' ],
+            'favicon'              => [ '[config_site_icon_url]', '[site_icon_url]' ],
+            'og_image'             => [ '[config_brand_logo variant="og_image"]', '[brand_logo variant="og_image"]' ],
         ];
         ?>
         <table class="form-table"><tbody>
@@ -301,6 +331,7 @@ class Anchor_Site_Config_Admin {
                     <button type="button" class="button anchor-media-remove" <?php disabled( ! $att_id ); ?>>
                         <?php esc_html_e( 'Remove', 'anchor-schema' ); ?>
                     </button>
+                    <?php $this->render_code_reference( $shortcodes[ $key ] ?? [] ); ?>
                 </td>
             </tr>
         <?php endforeach; ?>
@@ -327,12 +358,13 @@ class Anchor_Site_Config_Admin {
                     <input type="text" class="regular-text"
                            name="<?php echo esc_attr( $opt_key . '[fonts][' . $role . '][family]' ); ?>"
                            value="<?php echo esc_attr( $family ); ?>"
-                           placeholder="e.g. Inter, Georgia, …" />
+                           placeholder="<?php echo esc_attr__( 'e.g. Inter, Georgia', 'anchor-schema' ); ?>" />
                     <select name="<?php echo esc_attr( $opt_key . '[fonts][' . $role . '][source]' ); ?>">
                         <option value="system"         <?php selected( $source, 'system' ); ?>><?php esc_html_e( 'System / web-safe',    'anchor-schema' ); ?></option>
                         <option value="google"         <?php selected( $source, 'google' ); ?>><?php esc_html_e( 'Google Fonts',         'anchor-schema' ); ?></option>
                         <option value="adobe-deferred" disabled><?php esc_html_e( 'Adobe Fonts (Phase 3.5)', 'anchor-schema' ); ?></option>
                     </select>
+                    <?php $this->render_code_reference( [ 'var(--anchor-font-' . $role . ')' ], __( 'CSS variable', 'anchor-schema' ) ); ?>
                 </td>
             </tr>
         <?php endforeach; ?>
@@ -357,10 +389,39 @@ class Anchor_Site_Config_Admin {
                            name="<?php echo esc_attr( $opt_key . '[colors][' . $color_key . ']' ); ?>"
                            value="<?php echo esc_attr( $value ); ?>"
                            data-default-color="<?php echo esc_attr( $default ); ?>" />
+                    <?php $this->render_code_reference( [ 'var(--anchor-color-' . $color_key . ')' ], __( 'CSS variable', 'anchor-schema' ) ); ?>
                 </td>
             </tr>
         <?php endforeach; ?>
         </tbody></table>
+        <?php
+    }
+
+    private function config_tag( $tag ) {
+        $tag = sanitize_key( (string) $tag );
+        if ( $tag === '' ) {
+            return '';
+        }
+        return strpos( $tag, 'config_' ) === 0 ? $tag : 'config_' . $tag;
+    }
+
+    private function render_code_reference( $codes, $label = null ) {
+        $codes = array_filter( array_map( 'strval', (array) $codes ) );
+        if ( empty( $codes ) ) {
+            return;
+        }
+        if ( null === $label ) {
+            $label = count( $codes ) > 1
+                ? __( 'Shortcodes', 'anchor-schema' )
+                : __( 'Shortcode', 'anchor-schema' );
+        }
+        ?>
+        <p class="description anchor-site-config-reference">
+            <span class="anchor-site-config-reference-label"><?php echo esc_html( $label ); ?>:</span>
+            <?php foreach ( $codes as $code ) : ?>
+                <code><?php echo esc_html( $code ); ?></code>
+            <?php endforeach; ?>
+        </p>
         <?php
     }
 
@@ -458,6 +519,9 @@ class Anchor_Site_Config_Admin {
             }
             if ( isset( $input['business']['phone'] ) ) {
                 $out['business']['phone'] = sanitize_text_field( $input['business']['phone'] );
+            }
+            if ( isset( $input['business']['emergency_phone'] ) ) {
+                $out['business']['emergency_phone'] = sanitize_text_field( $input['business']['emergency_phone'] );
             }
             if ( isset( $input['business']['email'] ) ) {
                 $email = sanitize_email( $input['business']['email'] );

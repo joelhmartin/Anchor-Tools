@@ -23,3 +23,21 @@
 .anchor-site-config-section .form-table th {
     width: 200px;
 }
+.anchor-site-config-reference {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    align-items: center;
+    margin: 6px 0 0;
+}
+.anchor-site-config-reference-label {
+    color: #50575e;
+    font-weight: 600;
+}
+.anchor-site-config-reference code {
+    border: 1px solid #dcdcde;
+    border-radius: 3px;
+    background: #f6f7f7;
+    color: #1d2327;
+    padding: 2px 6px;
+}

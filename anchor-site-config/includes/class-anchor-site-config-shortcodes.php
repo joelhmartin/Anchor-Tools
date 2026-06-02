@@ -132,6 +132,18 @@ class Anchor_Site_Config_Shortcodes {
         $this->add_shortcode_once( 'business_phone_href', $business_phone_href );
         $this->add_shortcode_once( 'phone_href',          $business_phone_href );
 
+        $emergency_phone = function() use ( $module ) {
+            return esc_html( $module->get_options()['business']['emergency_phone'] );
+        };
+        add_shortcode( 'config_emergency_phone', $emergency_phone );
+
+        $emergency_phone_href = function() use ( $module ) {
+            $raw  = $module->get_options()['business']['emergency_phone'];
+            $tel  = preg_replace( '/[^0-9+]/', '', $raw );
+            return $tel ? esc_url( 'tel:' . $tel ) : '';
+        };
+        add_shortcode( 'config_emergency_phone_href', $emergency_phone_href );
+
         $business_email = function() use ( $module ) {
             $email = $module->get_options()['business']['email'] ?: get_option( 'admin_email' );
             return esc_html( $email );

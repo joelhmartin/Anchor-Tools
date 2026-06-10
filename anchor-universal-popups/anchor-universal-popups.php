@@ -1018,6 +1018,26 @@ class Anchor_Universal_Popups_Module {
         wp_enqueue_script('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.js'), [], (string) filemtime($adir . 'frontend.js'), true);
         wp_localize_script('up-frontend', 'UP_SNIPPETS', $snippets);
 
+        // Elements used as click triggers (class/id) should look interactive by
+        // default, without the author hand-writing CSS. No !important so the
+        // theme/author can still override. Selectors mirror the frontend JS.
+        $trigger_selectors = [];
+        foreach ($snippets as $sn) {
+            $type  = isset($sn['trigger']['type']) ? $sn['trigger']['type'] : '';
+            $value = isset($sn['trigger']['value']) ? $sn['trigger']['value'] : '';
+            if ($type === 'class') {
+                $sel = $this->class_trigger_selector($value);
+            } elseif ($type === 'id') {
+                $sel = $this->id_trigger_selector($value);
+            } else {
+                $sel = '';
+            }
+            if ($sel !== '') { $trigger_selectors[$sel] = true; }
+        }
+        if (!empty($trigger_selectors)) {
+            wp_add_inline_style('up-frontend', implode(',', array_keys($trigger_selectors)) . '{cursor:pointer;}');
+        }
+
         // Warm the connection to video hosts early so the background preload
         // (and click-to-play) is as fast as possible. Only for providers that
         // actually appear on this page.
@@ -1029,6 +1049,28 @@ class Anchor_Universal_Popups_Module {
         if (!empty($this->preconnect_providers)) {
             add_filter('wp_resource_hints', [$this, 'add_video_preconnect'], 10, 2);
         }
+    }
+
+    /** Escape a CSS identifier (mirrors the JS escapeCssIdentifier regex fallback). */
+    private function escape_css_identifier($value){
+        return preg_replace('/[^a-zA-Z0-9_-]/', '\\\\$0', trim((string) $value));
+    }
+
+    /** Build a class trigger selector, e.g. "btn cta" => ".btn.cta" (mirrors frontend JS). */
+    private function class_trigger_selector($value){
+        $out = '';
+        foreach (preg_split('/\s+/', trim((string) $value)) as $part) {
+            $part = preg_replace('/^[.#]+/', '', $part);
+            if ($part === '') { continue; }
+            $out .= '.' . $this->escape_css_identifier($part);
+        }
+        return $out;
+    }
+
+    /** Build an id trigger selector, e.g. "hero" => "#hero" (mirrors frontend JS). */
+    private function id_trigger_selector($value){
+        $value = preg_replace('/^#/', '', trim((string) $value));
+        return $value !== '' ? '#' . $this->escape_css_identifier($value) : '';
     }
 
     /**

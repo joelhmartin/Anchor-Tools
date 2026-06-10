@@ -37,22 +37,37 @@ jobs:
       - name: Build minified assets
         run: node bin/build-assets.mjs
 
-      - name: Build release ZIP
+      - name: Build release ZIPs
         run: |
-          STAGE="$(mktemp -d)/anchor-tools"
-          mkdir -p "$STAGE"
-          rsync -a --exclude='.git' \
-                   --exclude='.github' \
-                   --exclude='node_modules' \
-                   --exclude='bin' \
-                   --exclude='.minifyignore' \
-                   --exclude='.gitignore' \
-                   --exclude='*.md' \
-                   ./ "$STAGE/"
-          (cd "$(dirname "$STAGE")" && zip -rq "$GITHUB_WORKSPACE/anchor-tools.zip" anchor-tools)
+          build_zip() {
+            local package_dir="$1"
+            local zip_name="$2"
+            local stage_parent
+            local stage
+
+            stage_parent="$(mktemp -d)"
+            stage="$stage_parent/$package_dir"
+            mkdir -p "$stage"
+
+            rsync -a --exclude='.git' \
+                     --exclude='.github' \
+                     --exclude='node_modules' \
+                     --exclude='bin' \
+                     --exclude='.minifyignore' \
+                     --exclude='.gitignore' \
+                     --exclude='*.md' \
+                     ./ "$stage/"
+
+            (cd "$stage_parent" && zip -rq "$GITHUB_WORKSPACE/$zip_name" "$package_dir")
+          }
+
+          build_zip "Anchor-Tools" "anchor-tools-Anchor-Tools.zip"
+          build_zip "anchor-tools" "anchor-tools.zip"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: anchor-tools.zip
+          files: |
+            anchor-tools-Anchor-Tools.zip
+            anchor-tools.zip

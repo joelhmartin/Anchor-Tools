@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, schema, galleries, forms, and content utilities.
- * Version: 3.8.02
+ * Version: 3.8.03
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -87,11 +87,30 @@ if ( class_exists( PucFactory::class ) ) {
         $anchor_tools_update->setAuthentication( $anchor_tools_token );
     }
 
+    $anchor_tools_directory_name  = basename( rtrim( ANCHOR_TOOLS_PLUGIN_DIR, '/\\' ) );
+    $anchor_tools_package_name    = ( 'Anchor-Tools' === $anchor_tools_directory_name ) ? 'anchor-tools-Anchor-Tools.zip' : 'anchor-tools.zip';
+    $anchor_tools_package_pattern = '/^' . preg_quote( $anchor_tools_package_name, '/' ) . '$/';
+
     $anchor_tools_vcs = method_exists( $anchor_tools_update, 'getVcsApi' ) ? $anchor_tools_update->getVcsApi() : null;
     if ( $anchor_tools_vcs && method_exists( $anchor_tools_vcs, 'enableReleaseAssets' ) ) {
-        $anchor_tools_vcs->enableReleaseAssets();
+        $anchor_tools_vcs->enableReleaseAssets(
+            $anchor_tools_package_pattern,
+            \YahnisElsts\PluginUpdateChecker\v5p6\Vcs\Api::REQUIRE_RELEASE_ASSETS
+        );
     }
 
+    add_filter(
+        'puc_vcs_update_detection_strategies-anchor-tools',
+        function( $strategies ) {
+            $release_strategy = \YahnisElsts\PluginUpdateChecker\v5p6\Vcs\Api::STRATEGY_LATEST_RELEASE;
+
+            if ( isset( $strategies[ $release_strategy ] ) ) {
+                return array( $release_strategy => $strategies[ $release_strategy ] );
+            }
+
+            return $strategies;
+        }
+    );
 }
 
 add_action(

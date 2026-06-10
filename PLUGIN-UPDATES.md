@@ -9,8 +9,11 @@ The configuration lives in `anchor-tools.php`.
 - Source: GitHub repo `https://github.com/joelhmartin/Anchor-Tools/`.
 - Branch: `main`.
 - Update delivery:
-  - If a GitHub release asset is available, PUC will use it.
-  - Otherwise it falls back to the repo zipball for the configured branch.
+  - PUC accepts `anchor-tools.zip` for normal lowercase installs.
+  - If the installed plugin directory is `Anchor-Tools`, PUC accepts
+    `anchor-tools-Anchor-Tools.zip`, whose ZIP root is `Anchor-Tools/`.
+  - The release ZIP is required. The updater intentionally does not fall back
+    to GitHub's auto-generated source archives.
 
 ## Requirements
 - The Composer vendor folder must be present (`vendor/autoload.php`).
@@ -33,18 +36,42 @@ Configuration in `anchor-tools.php`:
 - `PucFactory::buildUpdateChecker(...)` points at the GitHub repo URL.
 - `setBranch('main')` pins updates to the main branch.
 - `setAuthentication($token)` is used when a token is provided.
-- `enableReleaseAssets()` switches the VCS API to prefer release assets.
+- `enableReleaseAssets($expected_zip_name, REQUIRE_RELEASE_ASSETS)` makes the
+  matching release asset mandatory and rejects misnamed assets.
+- `puc_vcs_update_detection_strategies-anchor-tools` is filtered to
+  `latest_release` only, so PUC cannot fall through to generated tag or branch
+  ZIPs.
 
 ## Release Workflow
 1) Bump the plugin header `Version:` in `anchor-tools.php`.
 2) Build a release ZIP that contains the plugin folder and all required files
    (including `vendor/` if you are not installing Composer dependencies on the
    target site).
-3) Create a GitHub release for the new tag and upload the ZIP as a release
-   asset.
+   The GitHub Actions release workflow stages both `Anchor-Tools/` and
+   `anchor-tools/`, then uploads `anchor-tools-Anchor-Tools.zip` and
+   `anchor-tools.zip`.
+   This lets the updater select a package whose root folder exactly matches the
+   installed plugin directory without using asset filenames that differ only by
+   case.
+   `anchor-tools-Anchor-Tools.zip` is uploaded first so older installed updater
+   code, which accepts the first release asset, can update dev sites installed
+   from the GitHub clone folder name.
+3) Create a GitHub release for the new tag and upload both ZIP files as release
+   assets.
 4) WordPress will detect the update and offer it in the Updates screen.
 
-If no release asset is present, PUC will use the GitHub zipball for `main`.
+Do not rely on GitHub's generated "Source code" ZIPs for plugin updates. Those
+archives unpack as repository-derived folders such as `Anchor-Tools-<ref>`,
+which can force PUC to rename the extracted package. On Kinsta Local/macOS
+case-insensitive filesystems, case-only rename attempts like `anchor-tools` to
+`Anchor-Tools` can fail with:
+
+```
+Update failed: Unable to rename the update to match the existing directory.
+```
+
+The dual release assets avoid that failure for local development sites installed
+as either `anchor-tools` or `Anchor-Tools`.
 
 ## Forcing an Update Check
 - In WP Admin, go to Dashboard > Updates and click "Check Again".

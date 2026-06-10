@@ -64,8 +64,6 @@ See `ADDING-MODULES.md` for the full module development guide.
 - `Anchor_Reviews_Manager` — Google Reviews fetching/caching, `[anchor_reviews]` shortcode.
 - `Anchor_Schema_Logger` — Debug logging to PHP `error_log` (enabled in settings).
 
-The AI Bulk Rewriter (~2,700 lines) is embedded directly in `anchor-tools.php` as the `Anchor_Content_Rewriter` class.
-
 ### Constants
 
 ```php

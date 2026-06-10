@@ -17,6 +17,7 @@ class Anchor_Blocks_Module {
     private $queued       = [];   // id => ['css' => string, 'js' => string]
     private $instances    = [];   // id => int (placement counter)
     private $printed_base = false;
+    private $rendering    = [];   // id => true (recursion guard for nested embeds)
 
     public function __construct() {
         add_action( 'init',                 [ $this, 'register_cpt' ] );
@@ -29,10 +30,6 @@ class Anchor_Blocks_Module {
 
         add_filter( 'manage_' . self::CPT . '_posts_columns',       [ $this, 'add_admin_columns' ] );
         add_action( 'manage_' . self::CPT . '_posts_custom_column', [ $this, 'render_admin_column' ], 10, 2 );
-
-        // Settings tab (site-wide preview stylesheet URLs).
-        add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 95 );
-        add_action( 'admin_init',           [ $this, 'register_settings' ] );
     }
 
     public function register_cpt() {
@@ -116,6 +113,18 @@ class Anchor_Blocks_Module {
             .ab-side .description { color:#666; font-size:12px; }
         </style>
         <div class="ab-side">
+            <?php if ( $post->post_status !== 'auto-draft' ) : ?>
+                <label>Shortcode</label>
+                <div class="ab-shortcode-copy">
+                    <input type="text" readonly class="widefat" id="ab-shortcode-value"
+                           value="<?php echo esc_attr( '[anchor_block id="' . (int) $post->ID . '"]' ); ?>">
+                    <button type="button" class="button" id="ab-shortcode-copy-btn">Copy</button>
+                </div>
+            <?php else : ?>
+                <label>Shortcode</label>
+                <p class="description">Save the block to get its shortcode.</p>
+            <?php endif; ?>
+
             <label>
                 <input type="checkbox" name="ab_full_width" value="1" <?php checked( $m['full_width'], '1' ); ?>>
                 Break out to full viewport width
@@ -124,7 +133,7 @@ class Anchor_Blocks_Module {
 
             <label for="ab_preview_css_urls">Preview stylesheets (extra)</label>
             <textarea id="ab_preview_css_urls" name="ab_preview_css_urls" rows="4" placeholder="https://example.com/css/global.css"><?php echo esc_textarea( $m['preview_css_urls'] ); ?></textarea>
-            <p class="description">One URL per line. Loaded in the preview only (in addition to the theme stylesheet and any site-wide defaults set in Settings &gt; Anchor Tools &gt; Blocks).</p>
+            <p class="description">One URL per line. Loaded in this block's preview only (in addition to the harvested site CSS and any site-wide defaults set in Settings &gt; Anchor Tools &gt; Preview).</p>
         </div>
         <?php
     }
@@ -155,31 +164,15 @@ class Anchor_Blocks_Module {
         }
         update_post_meta( $post_id, 'ab_preview_css_urls', implode( "\n", array_filter( $clean ) ) );
     }
-    /** Build the list of stylesheet URLs the preview should load (theme + site defaults). */
-    private function preview_css_urls() {
-        $urls = [];
-        $child  = get_stylesheet_uri();
-        $parent = get_template_directory_uri() . '/style.css';
-        if ( $child )  { $urls[] = $child; }
-        if ( $parent && $parent !== $child ) { $urls[] = $parent; }
-
-        $opts = get_option( self::OPTION_KEY, [] );
-        $defaults = isset( $opts['preview_css_urls'] ) ? (string) $opts['preview_css_urls'] : '';
-        foreach ( preg_split( '/\r\n|\r|\n/', $defaults ) as $line ) {
-            $line = trim( $line );
-            if ( $line !== '' ) { $urls[] = $line; }
-        }
-        return array_values( array_unique( array_filter( $urls ) ) );
-    }
 
     public function admin_assets( $hook ) {
         global $post;
         if ( ( $hook === 'post.php' || $hook === 'post-new.php' ) && isset( $post ) && $post->post_type === self::CPT ) {
+            if ( class_exists( 'Anchor_Preview_CSS' ) ) {
+                Anchor_Preview_CSS::enqueue_for_admin();
+            }
             wp_enqueue_style( 'ab-admin', Anchor_Asset_Loader::url( 'anchor-blocks/assets/admin.css' ), [], self::ASSET_VER );
-            wp_enqueue_script( 'ab-admin', Anchor_Asset_Loader::url( 'anchor-blocks/assets/admin.js' ), [ 'jquery', 'code-editor' ], self::ASSET_VER, true );
-            wp_localize_script( 'ab-admin', 'ANCHOR_BLOCKS', [
-                'previewCssUrls' => $this->preview_css_urls(),
-            ] );
+            wp_enqueue_script( 'ab-admin', Anchor_Asset_Loader::url( 'anchor-blocks/assets/admin.js' ), [ 'jquery', 'code-editor', 'anchor-preview' ], self::ASSET_VER, true );
         }
     }
     public function print_footer_assets() {
@@ -233,6 +226,11 @@ class Anchor_Blocks_Module {
         if ( ! $post ) { return ''; }
 
         $id = (int) $post->ID;
+
+        // Prevent infinite loops when a block embeds itself (directly or via a cycle).
+        if ( isset( $this->rendering[ $id ] ) ) { return ''; }
+        $this->rendering[ $id ] = true;
+
         $m  = $this->get_meta( $id );
 
         // Queue CSS/JS once per page (printed in wp_footer).
@@ -244,13 +242,16 @@ class Anchor_Blocks_Module {
         $this->instances[ $id ] = ( $this->instances[ $id ] ?? 0 ) + 1;
         $instance = $this->instances[ $id ];
 
+        // Run nested shortcodes inside the block HTML (e.g. [anchor_reviews], forms).
         $inner = '<div class="anchor-block anchor-block--' . $id . '" data-anchor-block="' . $id . '" data-instance="' . $instance . '">'
-               . $m['html']
+               . do_shortcode( $m['html'] )
                . '</div>';
 
         if ( $m['full_width'] === '1' ) {
             $inner = '<div class="anchor-block-fullwidth">' . $inner . '</div>';
         }
+
+        unset( $this->rendering[ $id ] );
         return $inner;
     }
 
@@ -269,54 +270,5 @@ class Anchor_Blocks_Module {
         if ( $column === 'ab_shortcode' ) {
             echo '<code>' . esc_html( '[anchor_block id="' . (int) $post_id . '"]' ) . '</code>';
         }
-    }
-    public function register_tab( $tabs ) {
-        $tabs['blocks'] = [
-            'label'    => __( 'Blocks', 'anchor-schema' ),
-            'callback' => [ $this, 'render_tab_content' ],
-        ];
-        return $tabs;
-    }
-
-    public function register_settings() {
-        register_setting( 'anchor_blocks_group', self::OPTION_KEY, [
-            'type'              => 'array',
-            'sanitize_callback' => [ $this, 'sanitize_settings' ],
-            'default'           => [],
-        ] );
-    }
-
-    public function sanitize_settings( $input ) {
-        $out = [];
-        $urls = isset( $input['preview_css_urls'] ) ? (string) $input['preview_css_urls'] : '';
-        $clean = [];
-        foreach ( preg_split( '/\r\n|\r|\n/', $urls ) as $line ) {
-            $line = trim( $line );
-            if ( $line !== '' ) { $clean[] = esc_url_raw( $line ); }
-        }
-        $out['preview_css_urls'] = implode( "\n", array_filter( $clean ) );
-        return $out;
-    }
-
-    public function render_tab_content() {
-        $opts = get_option( self::OPTION_KEY, [] );
-        $urls = isset( $opts['preview_css_urls'] ) ? (string) $opts['preview_css_urls'] : '';
-        ?>
-        <form method="post" action="options.php">
-            <?php settings_fields( 'anchor_blocks_group' ); ?>
-            <h2><?php esc_html_e( 'Anchor Blocks', 'anchor-schema' ); ?></h2>
-            <p class="description"><?php esc_html_e( 'Stylesheets listed here load in every block\'s editor preview (in addition to the active theme stylesheet). Useful for global CSS that defines your :root variables, fonts, or design tokens.', 'anchor-schema' ); ?></p>
-            <table class="form-table" role="presentation">
-                <tr>
-                    <th scope="row"><label for="ab_settings_preview_css_urls"><?php esc_html_e( 'Default preview stylesheets', 'anchor-schema' ); ?></label></th>
-                    <td>
-                        <textarea id="ab_settings_preview_css_urls" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[preview_css_urls]" rows="5" class="large-text code" placeholder="https://example.com/wp-content/uploads/global.css"><?php echo esc_textarea( $urls ); ?></textarea>
-                        <p class="description"><?php esc_html_e( 'One URL per line.', 'anchor-schema' ); ?></p>
-                    </td>
-                </tr>
-            </table>
-            <?php submit_button(); ?>
-        </form>
-        <?php
     }
 }

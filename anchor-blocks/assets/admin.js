@@ -1,15 +1,12 @@
 (function ($) {
   var debounceTimer = null;
 
-  function previewCssLinks() {
-    var base = (window.ANCHOR_BLOCKS && ANCHOR_BLOCKS.previewCssUrls) || [];
+  function previewHead() {
     var extra = ($('#ab_preview_css_urls').val() || '')
       .split(/\r\n|\r|\n/)
       .map(function (s) { return s.trim(); })
       .filter(Boolean);
-    return base.concat(extra)
-      .map(function (u) { return '<link rel="stylesheet" href="' + u + '">'; })
-      .join('');
+    return (window.AnchorPreview ? window.AnchorPreview.headMarkup(extra) : '');
   }
 
   function buildDoc() {
@@ -18,7 +15,7 @@
     var js   = $('#ab_js').val() || '';
     return '<!DOCTYPE html><html><head><meta charset="utf-8">' +
       '<meta name="viewport" content="width=device-width, initial-scale=1">' +
-      previewCssLinks() +
+      previewHead() +
       '<style>' + css + '</style></head><body>' +
       html +
       '<script>(function(){try{' + js + '}catch(e){console.error(e);}})();<\/script>' +
@@ -59,5 +56,17 @@
 
     $('#ab_preview_css_urls').on('input', applyPreviewDebounced);
     applyPreview();
+
+    $('#ab-shortcode-copy-btn').on('click', function () {
+      var $val = $('#ab-shortcode-value');
+      var text = $val.val();
+      function done() {
+        var $b = $('#ab-shortcode-copy-btn'); var t = $b.text();
+        $b.text('Copied!'); setTimeout(function () { $b.text(t); }, 1200);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { $val.select(); document.execCommand('copy'); done(); });
+      } else { $val.select(); document.execCommand('copy'); done(); }
+    });
   });
 })(jQuery);

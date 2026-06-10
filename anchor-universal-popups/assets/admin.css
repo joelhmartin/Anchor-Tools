@@ -1,4 +1,2 @@
-#up-preview-wrap{ margin-top:8px; }
-#up-preview-viewport{ background:#fff; }
-#up-preview-content .up-viewport{ max-height:400px; overflow:auto; }
+#up-preview-frame{ margin-top:8px; }
 .up-fields .up-field{ margin-bottom:12px; }

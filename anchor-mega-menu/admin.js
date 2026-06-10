@@ -2,8 +2,7 @@
   var debounceTimer = null;
 
   function cssLinks() {
-    var urls = (window.MM_PREVIEW && MM_PREVIEW.cssUrls) || [];
-    return urls.map(function (u) { return '<link rel="stylesheet" href="' + u + '">'; }).join('');
+    return (window.AnchorPreview ? window.AnchorPreview.headMarkup() : '');
   }
 
   function buildDoc() {

@@ -99,12 +99,15 @@
 
     var css  = $('#up_css').val() || '';
     var js   = $('#up_js').val() || '';
-    var $wrap = $('#up-preview-content');
-    if(!$wrap.length) return;
-    var doc = '<style>'+css+'</style>'
-            + '<div class="up-viewport" style="max-height:400px; overflow:auto; padding:12px;">'+content+'</div>'
-            + '<script>(function(){try{'+js+'}catch(e){console.error(e)}})();<' + '/script>';
-    $wrap.empty().append(doc);
+    var frame = document.getElementById('up-preview-frame');
+    if(!frame) return;
+    var head = (window.AnchorPreview ? window.AnchorPreview.headMarkup() : '');
+    frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            + head + '<style>'+css+'</style></head><body>'
+            + '<div class="up-viewport" style="padding:12px;">'+content+'</div>'
+            + '<script>(function(){try{'+js+'}catch(e){console.error(e)}})();<' + '/script>'
+            + '</body></html>';
   }
 
   $(document).ready(function(){

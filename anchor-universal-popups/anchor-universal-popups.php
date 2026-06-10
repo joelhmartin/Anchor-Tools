@@ -768,12 +768,8 @@ class Anchor_Universal_Popups_Module {
 
     public function render_box_preview($post){
         ?>
-        <p class="description">Live preview renders your HTML, CSS, and JS below inside a contained viewport.</p>
-        <div id="up-preview-wrap">
-            <div id="up-preview-viewport" style="border:1px solid #ccd0d4; border-radius:8px; overflow:auto; max-height:400px; background:#fff;">
-                <div id="up-preview-content" style="padding:16px;"></div>
-            </div>
-        </div>
+        <p class="description">Live preview renders inside an isolated frame that loads your site's CSS, so colors, fonts and <code>:root</code> variables resolve as on the front end.</p>
+        <iframe id="up-preview-frame" style="width:100%; min-height:400px; border:1px solid #ccd0d4; border-radius:8px; background:#fff;"></iframe>
         <?php
     }
 
@@ -998,9 +994,12 @@ class Anchor_Universal_Popups_Module {
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
             wp_enqueue_media();
+            if ( class_exists( 'Anchor_Preview_CSS' ) ) {
+                Anchor_Preview_CSS::enqueue_for_admin();
+            }
             $adir = plugin_dir_path(__FILE__) . 'assets/';
             wp_enqueue_style('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.css'), [], (string) filemtime($adir . 'admin.css'));
-            wp_enqueue_script('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.js'), ['jquery','code-editor'], (string) filemtime($adir . 'admin.js'), true);
+            wp_enqueue_script('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.js'), ['jquery','code-editor','anchor-preview'], (string) filemtime($adir . 'admin.js'), true);
         }
     }
 

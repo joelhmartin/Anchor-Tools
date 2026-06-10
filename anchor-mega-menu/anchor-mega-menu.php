@@ -304,14 +304,11 @@ class Anchor_Mega_Menu_Module {
     public function admin_assets($hook){
         global $post;
         if (($hook === 'post-new.php' || $hook === 'post.php') && isset($post) && $post->post_type === self::CPT){
-            wp_enqueue_style('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.css'), [], '1.1.5');
-            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'code-editor'], '1.1.5', true);
-            wp_localize_script( 'mm-admin', 'MM_PREVIEW', [
-                'cssUrls' => array_values( array_unique( array_filter( [
-                    get_stylesheet_uri(),
-                    get_template_directory_uri() . '/style.css',
-                ] ) ) ),
-            ] );
+            if ( class_exists( 'Anchor_Preview_CSS' ) ) {
+                Anchor_Preview_CSS::enqueue_for_admin();
+            }
+            wp_enqueue_style('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.css'), [], '1.1.6');
+            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'code-editor', 'anchor-preview'], '1.1.6', true);
         }
     }
 

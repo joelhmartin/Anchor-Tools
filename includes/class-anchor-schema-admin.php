@@ -236,7 +236,11 @@ class Anchor_Schema_Admin {
         if ( function_exists('anchor_tools_get_available_modules') ) {
             foreach ( anchor_tools_get_available_modules() as $module_key => $module ) {
                 if ( ! array_key_exists( $module_key, $opts['modules'] ) ) {
-                    $opts['modules'][ $module_key ] = true;
+                    // A module not explicitly saved is disabled — matching the
+                    // bootstrap (anchor_tools_is_module_enabled treats a missing
+                    // key as off). This keeps fresh installs fully off/unchecked
+                    // and never changes a module that was explicitly enabled.
+                    $opts['modules'][ $module_key ] = false;
                 } else {
                     $opts['modules'][ $module_key ] = (bool) $opts['modules'][ $module_key ];
                 }

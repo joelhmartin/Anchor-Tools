@@ -770,10 +770,24 @@
         featured.removeAttribute('data-full-url');
       }
 
-      // Update featured thumbnail
-      var featThumb = featured.querySelector('.avg-thumb');
-      if (featThumb && thumbUrl) {
-        featThumb.style.backgroundImage = "url('" + thumbUrl + "')";
+      // Update featured thumbnail. Markup renders the image as a real
+      // <img class="avg-thumb-img"> child, so swap its src; fall back to a
+      // CSS background-image for any legacy markup that lacks the <img>.
+      var featImg = featured.querySelector('.avg-thumb-img');
+      if (featImg && thumbUrl) {
+        featImg.src = thumbUrl;
+        featImg.alt = label;
+      } else {
+        var featThumb = featured.querySelector('.avg-thumb');
+        if (featThumb && thumbUrl) {
+          featThumb.style.backgroundImage = "url('" + thumbUrl + "')";
+        }
+      }
+
+      // Toggle the featured play button for video/image switches.
+      var playEl = featured.querySelector('.avg-play');
+      if (playEl) {
+        playEl.style.display = type === 'image' ? 'none' : '';
       }
 
       // Update duration badge

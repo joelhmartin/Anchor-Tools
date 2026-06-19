@@ -603,6 +603,56 @@ class Registrations {
     }
 
     /**
+     * Lightweight seat snapshot used by the reconcile engine. Reads seat-post meta
+     * directly (HPOS governs orders/items, not the seat CPT). Returns null when the
+     * id isn't a seat post.
+     *
+     * @param int $seat_id Seat post ID.
+     * @return array{id:int,status:string,seat_index:int,event_id:int,order_item_id:int}|null
+     */
+    public function get_seat_info( $seat_id ) {
+        $seat_id = (int) $seat_id;
+        if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return null;
+        }
+        $status = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
+        return [
+            'id'            => $seat_id,
+            'status'        => $status !== '' ? $status : self::STATUS_CONFIRMED,
+            'seat_index'    => (int) \get_post_meta( $seat_id, '_anchor_event_seat_index', true ),
+            'event_id'      => (int) \get_post_meta( $seat_id, '_anchor_event_id', true ),
+            'order_item_id' => (int) \get_post_meta( $seat_id, '_anchor_event_order_item_id', true ),
+        ];
+    }
+
+    /**
+     * All seats belonging to a WooCommerce order (any status, any line item).
+     * Used by the order trash/delete capacity-release path (spec §7.8) where the
+     * order is about to disappear so per-item lookups are unavailable afterwards.
+     * Early-returns [] when $order_id <= 0.
+     *
+     * @param int $order_id WC order ID.
+     * @return int[] Seat post IDs.
+     */
+    public function get_seats_for_order( $order_id ) {
+        $order_id = (int) $order_id;
+        if ( $order_id <= 0 ) {
+            return [];
+        }
+        $q = new \WP_Query( [
+            'post_type'      => Module::REG_CPT,
+            'post_status'    => 'publish',
+            'fields'         => 'ids',
+            'posts_per_page' => -1,
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                [ 'key' => '_anchor_event_order_id', 'value' => $order_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+            ],
+        ] );
+        return \array_map( 'intval', $q->posts );
+    }
+
+    /**
      * Registrant rows for display (preserves legacy Module::get_registrations shape).
      *
      * @return array<int,array{name:string,email:string,status:string,guests:int,date:string}>

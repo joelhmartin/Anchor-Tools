@@ -15,15 +15,22 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  *  - the read-only event-side mirror (`_anchor_event_linked_products`) with its
  *    lifecycle (rebuild on link/toggle/save/delete/trash).
  *
- * Phase 2 (this phase):
+ * Phase 2:
  *  - ACTIVATES the `anchor_events_registration_form` filter so linked events show
  *    a "Register — $price" button instead of the free form (spec finding #12 —
  *    safe now because seat creation lands in the same phase),
  *  - per-seat attendee capture on the classic checkout, server-side validation +
  *    capacity re-check, and a Store-API/block-checkout fail-closed guard,
- *  - persistence of attendee data to the order line item, and
- *  - seat creation on `processing`/`completed` via the single reconcile entry
- *    point (cancellations/refunds/on-hold/resync are Phases 3–5).
+ *  - persistence of attendee data to the order line item.
+ *
+ * Phases 3 & 4 (this pass):
+ *  - `reconcile_order()` is now fully declarative & idempotent for ALL order
+ *    statuses (full status map), manual order edits, order trash/delete, and
+ *    refunds (partial line / full / amount-only),
+ *  - surplus is COUNT-based newest-first; gap-fill revives cancelled/failed and
+ *    skips refunded; variation-change-in-place is handled; one batched
+ *    `$order->save()` runs at end of pass inside the in-flight guard,
+ *  - a manual "Resync order" button + per-order seat metabox.
  */
 class WooCommerce {
 
@@ -103,11 +110,46 @@ class WooCommerce {
         \add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'guard_block_checkout' ], 10, 2 );
         \add_action( 'woocommerce_blocks_checkout_order_processed', [ $this, 'guard_block_checkout' ], 10, 1 );
 
-        // Seat creation — single mutation entry point. Phase 2 handles only
-        // processing/completed; payment_complete is idempotent insurance for
-        // gateways/"mark as paid" flows (spec finding #4).
+        // Seat creation/sync — single mutation entry point. payment_complete is
+        // idempotent insurance for gateways/"mark as paid" flows (spec finding #4).
         \add_action( 'woocommerce_order_status_changed', [ $this, 'on_status_changed' ], 10, 4 );
         \add_action( 'woocommerce_payment_complete', [ $this, 'on_payment_complete' ], 20, 1 );
+
+        /* -----------------------------------------------------------------
+         * Phase 3 — full lifecycle sync, manual edits, trash/delete, resync
+         * --------------------------------------------------------------- */
+
+        // Manual order edits (add/remove line, qty ±) — re-fetch + reconcile.
+        \add_action( 'woocommerce_saved_order_items', [ $this, 'on_saved_order_items' ], 10, 2 );
+        // Line removal — arg is an INT item id, NOT an item object (finding #14).
+        \add_action( 'woocommerce_before_delete_order_item', [ $this, 'on_delete_order_item' ], 10, 1 );
+
+        // Order trash / permanent delete — release capacity BEFORE the order is
+        // gone (finding #8); after deletion wc_get_order() returns false and
+        // reconcile early-returns, leaking capacity.
+        \add_action( 'woocommerce_before_trash_order', [ $this, 'on_order_trashed_or_deleted' ], 10, 1 );
+        \add_action( 'woocommerce_trash_order', [ $this, 'on_order_trashed_or_deleted' ], 10, 1 );
+        \add_action( 'woocommerce_before_delete_order', [ $this, 'on_order_trashed_or_deleted' ], 10, 1 );
+        // Legacy (posts) order storage delete — guard the post type inside.
+        \add_action( 'before_delete_post', [ $this, 'on_legacy_order_deleted' ], 10, 1 );
+
+        // Manual "Resync order" button + per-order seat metabox.
+        \add_action( 'admin_post_anchor_event_resync_order', [ $this, 'handle_resync_order' ] );
+        \add_action( 'add_meta_boxes', [ $this, 'register_order_metabox' ], 30, 2 );
+
+        /* -----------------------------------------------------------------
+         * Phase 4 — refunds (full / partial line / amount-only needs-review)
+         * --------------------------------------------------------------- */
+
+        // woocommerce_order_refunded( int $order_id, int $refund_id ). Full refund
+        // also drives order_status_changed → refunded; both are idempotent.
+        \add_action( 'woocommerce_order_refunded', [ $this, 'on_order_refunded' ], 10, 2 );
+
+        // NOTE: `woocommerce_update_order` is intentionally NOT hooked (finding #3).
+        // It fires on essentially every $order->save() — including reconcile's own
+        // end-of-pass save and mid-checkout while status='pending' — risking a save
+        // loop and spurious pending→cancelled sweeps. Status changes are covered by
+        // order_status_changed/payment_complete; item edits by saved_order_items.
     }
 
     /* ---------------------------------------------------------------------
@@ -1017,14 +1059,15 @@ class WooCommerce {
     }
 
     /* ---------------------------------------------------------------------
-     * Seat creation on processing/completed (spec §7 — Phase 2 subset)
+     * Order lifecycle sync — declarative & idempotent reconcile (spec §7)
      * ------------------------------------------------------------------- */
 
     /**
      * Per-PROCESS re-entrancy guard keyed by order id, to avoid a self-re-entrant
      * double run within one request (e.g. status_changed + payment_complete in the
-     * same process). NOTE: this is per-PHP-process only — the per-event GET_LOCK in
-     * claim_woo_seats() is the real cross-process concurrency guard.
+     * same process) and so the single end-of-pass $order->save() can't re-enter.
+     * NOTE: this is per-PHP-process only — the per-event GET_LOCK in the data layer
+     * is the real cross-process concurrency guard.
      *
      * @var array<int,bool>
      */
@@ -1060,15 +1103,60 @@ class WooCommerce {
     }
 
     /**
-     * The single seat-mutation entry point. PHASE 2 handles ONLY the
-     * processing/completed targets (create confirmed/waitlist seats). All other
-     * statuses, refunds, order edits, trash/delete, roster and emails are Phases
-     * 3–6. All order/item access is via WC CRUD (HPOS-safe) — zero postmeta.
+     * Map a WooCommerce order status (slug, no "wc-" prefix) to the seat status
+     * for kept/created seats (spec §7.3). Returns null for "pending" / unknown
+     * statuses — meaning there are NO active seats and any existing active seats
+     * are swept to cancelled. Terminal statuses (cancelled/refunded/failed) map to
+     * their kept terminal seat status and force expected = 0.
      *
-     * @param mixed  $order  WC_Order (handlers normalize before calling).
-     * @param string $reason Human reason for the sync log.
+     * @param string $order_status
+     * @return string|null
      */
-    public function reconcile_order( $order, $reason = '' ) {
+    public function map_order_status_to_seat( $order_status ) {
+        switch ( (string) $order_status ) {
+            case 'processing':
+            case 'completed':
+                return Registrations::STATUS_CONFIRMED;
+            case 'on-hold':
+                return Registrations::STATUS_PENDING;
+            case 'failed':
+                return Registrations::STATUS_FAILED;
+            case 'cancelled':
+                return Registrations::STATUS_CANCELLED;
+            case 'refunded':
+                return Registrations::STATUS_REFUNDED;
+            case 'pending':
+            default:
+                return null; // No active seats; sweep existing active → cancelled.
+        }
+    }
+
+    /** Terminal seat statuses (kept, excluded from capacity, not revivable as a group). */
+    private function terminal_seat_statuses() {
+        return [ Registrations::STATUS_CANCELLED, Registrations::STATUS_REFUNDED, Registrations::STATUS_FAILED ];
+    }
+
+    /**
+     * The single seat-mutation entry point: declarative & idempotent for ALL order
+     * statuses, manual edits, and refunds. Computes the desired seat set per line
+     * from the order's current state and converges existing seats toward it.
+     * Re-firing is a no-op once converged. All order/item access is via WC CRUD
+     * (HPOS-safe) — zero order/item postmeta.
+     *
+     * Save discipline (finding #3): per-line seat mutations happen via the data
+     * layer; the per-order sync log + needs-review flags are accumulated locally
+     * and written in ONE batched $order->save() at end of pass, inside the
+     * in-flight guard. $order->save() is NEVER called inside the per-line loop.
+     *
+     * @param mixed  $order          WC_Order (handlers normalize before calling).
+     * @param string $reason         Human reason for the sync log.
+     * @param string $surplus_status Status applied to surplus active seats on a
+     *                               non-terminal order ('cancelled' normally,
+     *                               'refunded' from the refund path).
+     * @param bool   $clear_review   Clear stale needs-review flags first (manual
+     *                               resync) so a clean pass leaves none.
+     */
+    public function reconcile_order( $order, $reason = '', $surplus_status = Registrations::STATUS_CANCELLED, $clear_review = false ) {
         if ( ! $order instanceof \WC_Order ) {
             return;
         }
@@ -1076,24 +1164,34 @@ class WooCommerce {
         if ( $order_id <= 0 ) {
             return;
         }
-
-        // Phase 2: only create seats for paid statuses.
-        $status = $order->get_status(); // slug, no "wc-" prefix.
-        if ( ! \in_array( $status, [ 'processing', 'completed' ], true ) ) {
-            return;
-        }
-
-        // Per-process re-entrancy guard (see $in_flight docblock).
         if ( isset( self::$in_flight[ $order_id ] ) ) {
-            return;
+            return; // Re-entrancy guard (per-process).
         }
         self::$in_flight[ $order_id ] = true;
 
+        // Local accumulators flushed once at end of pass.
+        $log_entries  = [];
+        $review_flags = [];
+
         try {
-            $customer_id   = (int) $order->get_customer_id();   // 0 = guest (spec §6.6) — never current user.
-            $billing_email = (string) $order->get_billing_email();
-            $billing_phone = (string) $order->get_billing_phone();
-            $billing_name  = \trim( (string) $order->get_formatted_billing_full_name() );
+            $order_status  = $order->get_status(); // slug, no "wc-" prefix.
+            $target        = $this->map_order_status_to_seat( $order_status );
+            // Terminal ORDER statuses force expected = 0 (sweep all active seats).
+            $terminal      = \in_array( $order_status, [ 'cancelled', 'refunded', 'failed' ], true );
+            // Active status for kept/created seats (confirmed|pending) or null.
+            $active_target = \in_array( $target, [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING ], true )
+                ? $target
+                : null;
+            // Status that surplus/swept seats move to: terminal → its mapped status;
+            // otherwise the caller-supplied surplus status (cancelled / refunded).
+            $removal_status = $terminal ? $target : (string) $surplus_status;
+
+            $billing = [
+                'name'        => \trim( (string) $order->get_formatted_billing_full_name() ),
+                'email'       => (string) $order->get_billing_email(),
+                'phone'       => (string) $order->get_billing_phone(),
+                'customer_id' => (int) $order->get_customer_id(), // 0 = guest (spec §6.6).
+            ];
 
             foreach ( $order->get_items() as $item_id => $item ) {
                 $item_id = (int) $item_id;
@@ -1104,84 +1202,364 @@ class WooCommerce {
                     continue;
                 }
 
-                $event_id = $this->event_for_order_item( $item );
+                $event_id = $this->resolve_event_for_item( $item );
                 if ( $event_id <= 0 ) {
-                    continue; // Unmapped line — left untouched this phase.
-                }
-
-                $attendees = $item->get_meta( '_anchor_attendees' );
-                if ( ! \is_array( $attendees ) || empty( $attendees ) ) {
-                    // attendees_missing backstop (finding #2/#17): never billing-fill
-                    // a whole line — flag for review instead.
-                    Events_Log::flag_review( $order_id, 'attendees_missing', 'order item ' . $item_id );
-                    Events_Log::order( $order_id, 'Attendee data missing on an event line; flagged for review.', [
-                        'item'  => $item_id,
-                        'event' => $event_id,
-                    ] );
+                    // Unmapped line (never linked / unlinked after purchase). Leave
+                    // seats untouched and log once (spec §7.4).
+                    $log_entries[] = $this->make_log_entry( 'Unmappable line left untouched.', [ 'item' => $item_id ] );
                     continue;
                 }
 
-                $product_id   = (int) $item->get_product_id();
-                $variation_id = (int) $item->get_variation_id();
-                $qty          = max( 1, (int) $item->get_quantity() );
-                $meta         = $this->module->get_meta( $event_id );
-
-                // Build the per-seat map for claim_woo_seats().
-                $seats = [];
-                for ( $i = 1; $i <= $qty; $i++ ) {
-                    $att   = ( isset( $attendees[ $i ] ) && \is_array( $attendees[ $i ] ) ) ? $attendees[ $i ] : [];
-                    $name  = \sanitize_text_field( (string) ( $att['name'] ?? '' ) );
-                    $email = \sanitize_email( (string) ( $att['email'] ?? '' ) );
-                    $phone = \sanitize_text_field( (string) ( $att['phone'] ?? '' ) );
-                    $note  = 'order #' . $order_id;
-
-                    // Individual seat entry missing within a present array → fall
-                    // back to billing identity with a note (whole-array-missing was
-                    // already handled above).
-                    if ( $name === '' && $email === '' ) {
-                        $name  = $billing_name;
-                        $email = $billing_email;
-                        $phone = $billing_phone;
-                        $note  = 'order #' . $order_id . ' (attendee data missing, used billing)';
-                    }
-
-                    $seats[ $i ] = [
-                        'name'          => $name,
-                        'email'         => $email,
-                        'phone'         => $phone,
-                        'order_id'      => $order_id,
-                        'order_item_id' => $item_id,
-                        'product_id'    => $product_id,
-                        'variation_id'  => $variation_id,
-                        'customer_id'   => $customer_id,
-                        'note'          => $note,
-                    ];
-                }
-
-                $result = $this->registrations->claim_woo_seats( $event_id, $meta, $seats );
-
-                if ( ! empty( $result['overfill'] ) ) {
-                    Events_Log::flag_review( $order_id, 'capacity_overfill', 'event ' . $event_id );
-                    Events_Log::order( $order_id, 'Capacity overfill: not all paid seats could be confirmed.', [
-                        'event' => $event_id,
-                        'item'  => $item_id,
-                    ] );
-                }
-                if ( ! empty( $result['lock_unavailable'] ) ) {
-                    Events_Log::flag_review( $order_id, 'capacity_lock_unavailable', 'event ' . $event_id );
-                }
-
-                $made = \count( $result['created'] ) + \count( $result['waitlisted'] );
-                if ( $made > 0 ) {
-                    Events_Log::order( $order_id, \sprintf( 'Created %d seat(s) for event #%d.', $made, $event_id ), [
-                        'created'    => $result['created'],
-                        'waitlisted' => $result['waitlisted'],
-                        'reason'     => (string) $reason,
-                    ] );
-                }
+                $this->reconcile_line(
+                    $order,
+                    $order_id,
+                    $item,
+                    $item_id,
+                    $event_id,
+                    $active_target,
+                    $removal_status,
+                    $billing,
+                    (string) $reason,
+                    $log_entries,
+                    $review_flags
+                );
             }
+
+            // Flush accumulators onto the order meta, then a SINGLE batched save.
+            $this->apply_order_log( $order, $log_entries );
+            $this->apply_review_flags( $order, $review_flags, (bool) $clear_review );
+            $order->save();
         } finally {
             unset( self::$in_flight[ $order_id ] );
+        }
+    }
+
+    /**
+     * Reconcile a single order line item's seats toward the desired state. All
+     * capacity-sensitive work (surplus release, flips, gap-fill revive/create)
+     * runs inside the per-event GET_LOCK so a concurrent same-order webhook can't
+     * duplicate seats (finding #9). Mutations go through the data layer; only the
+     * local $log_entries / $review_flags accumulators are touched here (by ref) —
+     * never $order->save().
+     *
+     * @param \WC_Order $order
+     * @param int       $order_id
+     * @param \WC_Order_Item_Product $item
+     * @param int       $item_id
+     * @param int       $event_id      Resolved (live) event for this line.
+     * @param string|null $active_target confirmed|pending|null.
+     * @param string    $removal_status Status surplus/swept seats move to.
+     * @param array     $billing       name/email/phone/customer_id fallback.
+     * @param string    $reason
+     * @param array     $log_entries   (by ref)
+     * @param array     $review_flags  (by ref)
+     */
+    private function reconcile_line( $order, $order_id, $item, $item_id, $event_id, $active_target, $removal_status, array $billing, $reason, array &$log_entries, array &$review_flags ) {
+        // Expected active seat count for this line. Terminal/null target ⇒ 0.
+        // Refund-safe: get_qty_refunded_for_item sign is version-dependent ⇒ abs()
+        // (finding #1). Cumulative across all refunds ⇒ re-fire safe.
+        if ( $active_target === null ) {
+            $expected = 0;
+        } else {
+            $refunded = \abs( (int) $order->get_qty_refunded_for_item( $item_id ) );
+            $expected = max( 0, (int) $item->get_quantity() - $refunded );
+        }
+
+        $meta             = $this->module->get_meta( $event_id );
+        $capacity         = (int) ( $meta['capacity'] ?? 0 );
+        $unlimited        = ( $capacity <= 0 );
+        $waitlist_enabled = ! empty( $meta['waitlist'] );
+        $terminal_set     = $this->terminal_seat_statuses();
+
+        // Attendee data for creation. Whole-line absent on a paid line ⇒ flag, do
+        // NOT billing-fill (finding #2/#17). Individual-entry-missing within a
+        // present array ⇒ billing fallback with a history note (handled per seat).
+        $attendees     = $item->get_meta( '_anchor_attendees' );
+        $has_attendees = \is_array( $attendees ) && ! empty( $attendees );
+        if ( ! \is_array( $attendees ) ) {
+            $attendees = [];
+        }
+        if ( $expected > 0 && ! $has_attendees ) {
+            $review_flags[] = $this->make_flag( 'attendees_missing', 'order item ' . $item_id );
+            $log_entries[]  = $this->make_log_entry( 'Attendee data missing on event line; no seats created.', [
+                'item'  => $item_id,
+                'event' => $event_id,
+            ] );
+        }
+        $can_create = ( $expected > 0 && $has_attendees );
+
+        $payload_base = [
+            'order_id'      => $order_id,
+            'order_item_id' => $item_id,
+            'product_id'    => (int) $item->get_product_id(),
+            'variation_id'  => (int) $item->get_variation_id(),
+            'customer_id'   => (int) $billing['customer_id'],
+        ];
+
+        $result = $this->registrations->with_event_lock( $event_id, function ( $locked ) use (
+            $event_id, $item_id, $expected, $active_target, $removal_status, $capacity, $unlimited,
+            $waitlist_enabled, $terminal_set, $attendees, $can_create, $billing, $payload_base, $order_id
+        ) {
+            $created   = [];
+            $revived   = [];
+            $removed   = [];
+            $flipped   = [];
+            $overfill  = false;
+            $moved_out = [];
+
+            // Fresh seat snapshot for this item, under the lock.
+            $all = [];
+            foreach ( $this->registrations->get_seats_for_order_item( $item_id ) as $sid ) {
+                $info = $this->registrations->get_seat_info( $sid );
+                if ( $info ) {
+                    $all[] = $info;
+                }
+            }
+
+            // Highest existing seat_index across ANY status (finding #7 max+1 alloc).
+            $max_index = 0;
+            foreach ( $all as $info ) {
+                if ( $info['seat_index'] > $max_index ) {
+                    $max_index = $info['seat_index'];
+                }
+            }
+
+            // VARIATION-CHANGE-IN-PLACE (finding #10): an existing seat whose event
+            // != the resolved event is a mismatch → cancel it on its OLD event to
+            // release that capacity; its index is vacated for the NEW event. Only
+            // matching-event seats are reconciled below.
+            $matching = [];
+            foreach ( $all as $info ) {
+                if ( $info['event_id'] !== $event_id ) {
+                    if ( ! \in_array( $info['status'], $terminal_set, true ) ) {
+                        $this->registrations->update_status( $info['id'], Registrations::STATUS_CANCELLED, 'variation changed — moved', 'woocommerce' );
+                        $moved_out[] = $info['id'];
+                    }
+                    continue; // excluded from matching either way.
+                }
+                $matching[] = $info;
+            }
+
+            // Active matching seats (anything not terminal: confirmed/pending/waitlist).
+            $active = \array_values( \array_filter( $matching, function ( $s ) use ( $terminal_set ) {
+                return ! \in_array( $s['status'], $terminal_set, true );
+            } ) );
+
+            $diff = \count( $active ) - $expected;
+
+            if ( $diff > 0 ) {
+                // SURPLUS (finding #6): COUNT-based, newest-first by integer
+                // seat_index DESC. Never threshold on seat_index > expected.
+                \usort( $active, function ( $a, $b ) {
+                    return $b['seat_index'] <=> $a['seat_index'];
+                } );
+                $to_remove = $diff;
+                foreach ( $active as $s ) {
+                    if ( $to_remove <= 0 ) {
+                        break;
+                    }
+                    if ( $this->registrations->update_status( $s['id'], $removal_status, 'order #' . $order_id . ' → ' . $removal_status, 'woocommerce' ) ) {
+                        $removed[] = $s['id'];
+                    }
+                    $to_remove--;
+                }
+            } else {
+                // Fresh recount under the lock — never the cache.
+                $reserved  = $this->registrations->count_reserved_seats( $event_id, true );
+                $remaining = $unlimited ? PHP_INT_MAX : max( 0, $capacity - $reserved );
+
+                // FLIP kept active seats to the active target where allowed
+                // (pending → confirmed on on-hold→processing). Skip waitlist
+                // (no auto-promotion in MVP) and same-status (no history spam).
+                if ( $active_target !== null ) {
+                    foreach ( $active as $s ) {
+                        if ( $s['status'] === Registrations::STATUS_PENDING && $active_target === Registrations::STATUS_CONFIRMED ) {
+                            if ( $this->registrations->update_status( $s['id'], Registrations::STATUS_CONFIRMED, 'order #' . $order_id . ' confirmed', 'woocommerce' ) ) {
+                                $flipped[] = $s['id'];
+                            }
+                        }
+                    }
+                }
+
+                // DEFICIT: produce ($expected - active) more active seats by first
+                // REVIVING cancelled/failed matching seats (finding #7), then
+                // CREATING new ones at max+1. refunded seats are terminal and never
+                // revived. All under the lock for capacity correctness.
+                $deficit = $expected - \count( $active );
+                if ( $deficit > 0 && $active_target !== null && $can_create ) {
+                    $revivable = \array_values( \array_filter( $matching, function ( $s ) {
+                        return \in_array( $s['status'], [ Registrations::STATUS_CANCELLED, Registrations::STATUS_FAILED ], true );
+                    } ) );
+                    \usort( $revivable, function ( $a, $b ) {
+                        return $a['seat_index'] <=> $b['seat_index'];
+                    } );
+
+                    while ( $deficit > 0 ) {
+                        $has_room = ( $unlimited || $remaining >= 1 );
+                        if ( ! empty( $revivable ) ) {
+                            $seat = \array_shift( $revivable );
+                            // Revival can only go to confirmed/pending (transition
+                            // table forbids cancelled→waitlist); flag overfill if no room.
+                            if ( $this->registrations->update_status( $seat['id'], $active_target, 'order #' . $order_id . ' revived', 'woocommerce' ) ) {
+                                $revived[] = $seat['id'];
+                                if ( $has_room ) {
+                                    $remaining--;
+                                } else {
+                                    $overfill = true;
+                                }
+                            }
+                        } else {
+                            // CREATE a new seat at the next free index (max+1).
+                            if ( $has_room ) {
+                                $status = $active_target;
+                                $remaining--;
+                            } elseif ( $waitlist_enabled ) {
+                                $status = Registrations::STATUS_WAITLIST;
+                            } else {
+                                // Buyer already paid, no room, no waitlist: leave
+                                // uncreated and flag overfill (spec §9.3).
+                                $overfill = true;
+                                break;
+                            }
+                            $index = ++$max_index;
+                            $att   = ( isset( $attendees[ $index ] ) && \is_array( $attendees[ $index ] ) ) ? $attendees[ $index ] : null;
+                            $name  = $att ? \sanitize_text_field( (string) ( $att['name'] ?? '' ) ) : '';
+                            $email = $att ? \sanitize_email( (string) ( $att['email'] ?? '' ) ) : '';
+                            $phone = $att ? \sanitize_text_field( (string) ( $att['phone'] ?? '' ) ) : '';
+                            $note  = 'order #' . $order_id;
+                            if ( $name === '' && $email === '' ) {
+                                $name  = $billing['name'];
+                                $email = $billing['email'];
+                                $phone = $billing['phone'];
+                                $note  = 'order #' . $order_id . ' (attendee data missing, used billing)';
+                            }
+                            $seat_id = $this->registrations->create_seat( \array_merge( $payload_base, [
+                                'event_id'   => $event_id,
+                                'status'     => $status,
+                                'seat_index' => $index,
+                                'source'     => 'woocommerce',
+                                'guests'     => 0,
+                                'actor'      => 'woocommerce',
+                                'name'       => $name,
+                                'email'      => $email,
+                                'phone'      => $phone,
+                                'note'       => $note,
+                            ] ) );
+                            if ( $seat_id ) {
+                                $created[] = $seat_id;
+                            }
+                        }
+                        $deficit--;
+                    }
+                }
+            }
+
+            return [
+                'created'          => $created,
+                'revived'          => $revived,
+                'removed'          => $removed,
+                'flipped'          => $flipped,
+                'moved_out'        => $moved_out,
+                'overfill'         => $overfill,
+                'lock_unavailable' => ! $locked,
+            ];
+        } );
+
+        // Translate the locked result into sync-log entries + needs-review flags.
+        $changed = \count( $result['created'] ) + \count( $result['revived'] )
+            + \count( $result['removed'] ) + \count( $result['flipped'] ) + \count( $result['moved_out'] );
+        if ( $changed > 0 ) {
+            $log_entries[] = $this->make_log_entry(
+                \sprintf( 'Reconciled line #%d for event #%d (%s).', $item_id, $event_id, $reason !== '' ? $reason : 'sync' ),
+                [
+                    'created'   => $result['created'],
+                    'revived'   => $result['revived'],
+                    'removed'   => $result['removed'],
+                    'flipped'   => $result['flipped'],
+                    'moved_out' => $result['moved_out'],
+                    'expected'  => $expected,
+                ]
+            );
+        }
+        if ( ! empty( $result['overfill'] ) ) {
+            $review_flags[] = $this->make_flag( 'capacity_overfill', 'event ' . $event_id . ' item ' . $item_id );
+        }
+        if ( ! empty( $result['lock_unavailable'] ) && ( ! empty( $result['created'] ) || ! empty( $result['revived'] ) ) ) {
+            $review_flags[] = $this->make_flag( 'capacity_lock_unavailable', 'event ' . $event_id );
+        }
+    }
+
+    /* ---------------------------------------------------------------------
+     * Sync-log / needs-review accumulation (batched onto a single save)
+     * ------------------------------------------------------------------- */
+
+    /** Build a sync-log entry in the Events_Log::order() shape. */
+    private function make_log_entry( $message, array $context = [] ) {
+        return [
+            'time'    => \time(),
+            'message' => (string) $message,
+            'context' => $context,
+        ];
+    }
+
+    /** Build a needs-review flag in the Events_Log::flag_review() shape. */
+    private function make_flag( $reason, $detail = '' ) {
+        return [
+            'reason' => (string) $reason,
+            'detail' => (string) $detail,
+            'time'   => \time(),
+        ];
+    }
+
+    /**
+     * Append accumulated sync-log entries to the order's capped ring buffer. Does
+     * NOT save — the caller batches a single $order->save() at end of pass.
+     */
+    private function apply_order_log( \WC_Order $order, array $entries ) {
+        if ( empty( $entries ) ) {
+            return;
+        }
+        $log = $order->get_meta( Events_Log::ORDER_LOG_META );
+        if ( ! \is_array( $log ) ) {
+            $log = [];
+        }
+        foreach ( $entries as $e ) {
+            $log[] = $e;
+        }
+        if ( \count( $log ) > Events_Log::ORDER_LOG_CAP ) {
+            $log = \array_slice( $log, -Events_Log::ORDER_LOG_CAP );
+        }
+        $order->update_meta_data( Events_Log::ORDER_LOG_META, $log );
+    }
+
+    /**
+     * Merge accumulated needs-review flags (deduped by reason). When $clear is true
+     * (manual resync) the existing flags are dropped first so a clean pass leaves
+     * none and only genuinely-still-failing reasons are re-added. Does NOT save.
+     */
+    private function apply_review_flags( \WC_Order $order, array $flags, $clear ) {
+        $existing = $clear ? [] : $order->get_meta( Events_Log::ORDER_REVIEW_META );
+        if ( ! \is_array( $existing ) ) {
+            $existing = [];
+        }
+        foreach ( $flags as $flag ) {
+            $dupe = false;
+            foreach ( $existing as $e ) {
+                if ( isset( $e['reason'] ) && $e['reason'] === $flag['reason'] ) {
+                    $dupe = true;
+                    break;
+                }
+            }
+            if ( ! $dupe ) {
+                $existing[] = $flag;
+            }
+        }
+        if ( $clear && empty( $existing ) ) {
+            $order->delete_meta_data( Events_Log::ORDER_REVIEW_META );
+            return;
+        }
+        if ( ! empty( $existing ) ) {
+            $order->update_meta_data( Events_Log::ORDER_REVIEW_META, $existing );
         }
     }
 
@@ -1214,5 +1592,344 @@ class WooCommerce {
             return $snapshot;
         }
         return $this->event_for_line( (int) $item->get_product_id(), (int) $item->get_variation_id() );
+    }
+
+    /**
+     * Resolve the LIVE event for a line item (variation link → else product link →
+     * else 0). Unlike event_for_order_item() this deliberately does NOT prefer the
+     * persisted snapshot, so a variation change in place is detectable as a
+     * seat-event mismatch (finding #10). A line resolving to 0 (never linked /
+     * unlinked after purchase) is left untouched by reconcile (spec §7.4).
+     *
+     * @param mixed $item
+     * @return int
+     */
+    private function resolve_event_for_item( $item ) {
+        if ( ! $item instanceof \WC_Order_Item_Product ) {
+            return 0;
+        }
+        return $this->event_for_line( (int) $item->get_product_id(), (int) $item->get_variation_id() );
+    }
+
+    /* ---------------------------------------------------------------------
+     * Order-edit / trash / delete / resync handlers (spec §7.6–7.8)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * woocommerce_saved_order_items( int $order_id, array $items ) — manual edits
+     * (add line, qty ±, remove line) converge through the same reconcile.
+     *
+     * @param int   $order_id
+     * @param array $items
+     */
+    public function on_saved_order_items( $order_id, $items = [] ) {
+        $order = \wc_get_order( (int) $order_id );
+        if ( ! $order ) {
+            return;
+        }
+        $this->reconcile_order( $order, 'order items saved' );
+    }
+
+    /**
+     * woocommerce_before_delete_order_item( int $item_id ) — the arg is an INT item
+     * id, NOT an item object (finding #14). Cancel that item's non-terminal seats
+     * by _anchor_event_order_item_id (they can't be resolved after deletion).
+     *
+     * @param int $item_id
+     */
+    public function on_delete_order_item( $item_id ) {
+        $item_id = (int) $item_id;
+        if ( $item_id <= 0 ) {
+            return;
+        }
+        foreach ( $this->registrations->get_seats_for_order_item( $item_id ) as $sid ) {
+            $info = $this->registrations->get_seat_info( $sid );
+            if ( ! $info || \in_array( $info['status'], $this->terminal_seat_statuses(), true ) ) {
+                continue;
+            }
+            $this->registrations->update_status( $sid, Registrations::STATUS_CANCELLED, 'line item removed', 'woocommerce' );
+        }
+    }
+
+    /**
+     * Order trash / permanent delete (HPOS). Hooks:
+     *  - woocommerce_before_trash_order( int $order_id )
+     *  - woocommerce_trash_order( int $order_id )
+     *  - woocommerce_before_delete_order( int $order_id )
+     * Release capacity BEFORE the order disappears (finding #8).
+     *
+     * @param int $order_id
+     */
+    public function on_order_trashed_or_deleted( $order_id ) {
+        $this->release_order_capacity( (int) $order_id, 'order trashed/deleted' );
+    }
+
+    /**
+     * before_delete_post( int $post_id ) — legacy (posts) order storage only.
+     * Guard the post type since this fires for every post type.
+     *
+     * @param int $post_id
+     */
+    public function on_legacy_order_deleted( $post_id ) {
+        $post_id = (int) $post_id;
+        if ( \get_post_type( $post_id ) !== 'shop_order' ) {
+            return;
+        }
+        $this->release_order_capacity( $post_id, 'order deleted' );
+    }
+
+    /**
+     * Cancel every non-terminal seat belonging to an order (found by
+     * _anchor_event_order_id while the id is still known), releasing capacity.
+     * No order save here — the order is being trashed/deleted.
+     *
+     * @param int    $order_id
+     * @param string $note
+     */
+    private function release_order_capacity( $order_id, $note ) {
+        $order_id = (int) $order_id;
+        if ( $order_id <= 0 ) {
+            return;
+        }
+        foreach ( $this->registrations->get_seats_for_order( $order_id ) as $sid ) {
+            $info = $this->registrations->get_seat_info( $sid );
+            if ( ! $info || \in_array( $info['status'], $this->terminal_seat_statuses(), true ) ) {
+                continue;
+            }
+            $this->registrations->update_status( $sid, Registrations::STATUS_CANCELLED, $note, 'woocommerce' );
+        }
+    }
+
+    /**
+     * admin-post handler for the manual "Resync order" button. Caps to
+     * edit_others_posts, verifies the per-order nonce, clears stale needs-review on
+     * a clean pass, runs the identical reconcile, and redirects back.
+     */
+    public function handle_resync_order() {
+        $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
+        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+            \wp_die( \esc_html__( 'You are not allowed to resync this order.', 'anchor-schema' ) );
+        }
+        \check_admin_referer( 'anchor_event_resync_' . $order_id );
+
+        $order = \wc_get_order( $order_id );
+        if ( $order ) {
+            // surplus_status = cancelled; clear_review = true (clean pass clears stale flags).
+            $this->reconcile_order( $order, 'manual resync', Registrations::STATUS_CANCELLED, true );
+        }
+
+        $redirect = \wp_get_referer();
+        if ( ! $redirect ) {
+            $redirect = \admin_url();
+        }
+        \wp_safe_redirect( \add_query_arg( 'anchor_event_resynced', '1', $redirect ) );
+        exit;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Order admin metabox (seat summary + sync log + resync button)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * add_meta_boxes( string $post_type, mixed $post_or_order ) pri 30. Register on
+     * both the HPOS order screen id and the legacy 'shop_order' screen.
+     */
+    public function register_order_metabox() {
+        $screens = [ 'shop_order' ];
+        if ( \function_exists( 'wc_get_page_screen_id' ) ) {
+            $hpos = \wc_get_page_screen_id( 'shop-order' );
+            if ( $hpos ) {
+                $screens[] = $hpos;
+            }
+        }
+        foreach ( \array_unique( $screens ) as $screen ) {
+            \add_meta_box(
+                'anchor_event_order_seats',
+                \__( 'Event Registrations', 'anchor-schema' ),
+                [ $this, 'render_order_metabox' ],
+                $screen,
+                'side',
+                'default'
+            );
+        }
+    }
+
+    /**
+     * Render the per-order seat summary, needs-review banner, sync log, and a
+     * nonced Resync form. Everything is escaped.
+     *
+     * @param mixed $post_or_order WP_Post (legacy) or WC_Order (HPOS).
+     */
+    public function render_order_metabox( $post_or_order ) {
+        $order = $post_or_order instanceof \WC_Order
+            ? $post_or_order
+            : \wc_get_order( isset( $post_or_order->ID ) ? (int) $post_or_order->ID : 0 );
+        if ( ! $order ) {
+            echo '<p>' . \esc_html__( 'Order not found.', 'anchor-schema' ) . '</p>';
+            return;
+        }
+        $order_id = (int) $order->get_id();
+
+        // Needs-review banner.
+        $flags = $order->get_meta( Events_Log::ORDER_REVIEW_META );
+        if ( \is_array( $flags ) && ! empty( $flags ) ) {
+            echo '<div class="notice notice-warning inline" style="margin:0 0 10px;padding:6px 10px;">';
+            echo '<strong>' . \esc_html__( 'Needs review:', 'anchor-schema' ) . '</strong><ul style="margin:4px 0 0 16px;list-style:disc;">';
+            foreach ( $flags as $flag ) {
+                $reason = isset( $flag['reason'] ) ? (string) $flag['reason'] : '';
+                $detail = isset( $flag['detail'] ) ? (string) $flag['detail'] : '';
+                echo '<li>' . \esc_html( $reason !== '' ? $reason : 'review' );
+                if ( $detail !== '' ) {
+                    echo ' — ' . \esc_html( $detail );
+                }
+                echo '</li>';
+            }
+            echo '</ul></div>';
+        }
+
+        // Per-line seat summary.
+        $any = false;
+        foreach ( $order->get_items() as $item_id => $item ) {
+            if ( ! $item instanceof \WC_Order_Item_Product ) {
+                continue;
+            }
+            $item_id  = (int) $item_id;
+            $event_id = $this->event_for_order_item( $item );
+            if ( $event_id <= 0 ) {
+                continue;
+            }
+            $any = true;
+
+            echo '<p style="margin:0 0 4px;"><strong>' . \esc_html( \get_the_title( $event_id ) ) . '</strong> '
+                . '<span style="color:#666;">(' . \esc_html__( 'event', 'anchor-schema' ) . ' #' . (int) $event_id . ')</span></p>';
+
+            $counts = [];
+            foreach ( $this->registrations->get_seats_for_order_item( $item_id ) as $sid ) {
+                $info = $this->registrations->get_seat_info( $sid );
+                if ( ! $info ) {
+                    continue;
+                }
+                $counts[ $info['status'] ] = ( $counts[ $info['status'] ] ?? 0 ) + 1;
+            }
+            if ( empty( $counts ) ) {
+                echo '<p style="margin:0 0 8px;color:#666;">' . \esc_html__( 'No seats yet.', 'anchor-schema' ) . '</p>';
+            } else {
+                echo '<ul style="margin:0 0 8px 16px;list-style:disc;">';
+                foreach ( $counts as $status => $n ) {
+                    echo '<li>' . \esc_html( $status ) . ': ' . (int) $n . '</li>';
+                }
+                echo '</ul>';
+            }
+        }
+        if ( ! $any ) {
+            echo '<p>' . \esc_html__( 'No event registrations on this order.', 'anchor-schema' ) . '</p>';
+        }
+
+        // Sync log (newest first).
+        $log = $order->get_meta( Events_Log::ORDER_LOG_META );
+        if ( \is_array( $log ) && ! empty( $log ) ) {
+            echo '<p style="margin:8px 0 4px;"><strong>' . \esc_html__( 'Sync log', 'anchor-schema' ) . '</strong></p>';
+            echo '<ul style="margin:0 0 8px 16px;list-style:disc;max-height:160px;overflow:auto;">';
+            foreach ( \array_reverse( $log ) as $entry ) {
+                $time = isset( $entry['time'] ) ? (int) $entry['time'] : 0;
+                $msg  = isset( $entry['message'] ) ? (string) $entry['message'] : '';
+                $when = $time ? \date_i18n( 'Y-m-d H:i', $time ) : '';
+                echo '<li><span style="color:#666;">' . \esc_html( $when ) . '</span> ' . \esc_html( $msg ) . '</li>';
+            }
+            echo '</ul>';
+        }
+
+        // Resync button (cap edit_others_posts).
+        if ( \current_user_can( 'edit_others_posts' ) ) {
+            echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '">';
+            echo '<input type="hidden" name="action" value="anchor_event_resync_order" />';
+            echo '<input type="hidden" name="order_id" value="' . (int) $order_id . '" />';
+            \wp_nonce_field( 'anchor_event_resync_' . $order_id );
+            echo '<button type="submit" class="button button-secondary">' . \esc_html__( 'Resync order', 'anchor-schema' ) . '</button>';
+            echo '</form>';
+        }
+    }
+
+    /* ---------------------------------------------------------------------
+     * Refunds (Phase 4 — spec §8)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * woocommerce_order_refunded( int $order_id, int $refund_id ). Classify the
+     * refund, then route through the same reconcile (surplus active seats →
+     * 'refunded' newest-first). Amount-only refunds change NO seats — they are
+     * flagged for review (never guessed). Idempotent with the full-refund
+     * order_status_changed → refunded double-fire.
+     *
+     * @param int $order_id
+     * @param int $refund_id
+     */
+    public function on_order_refunded( $order_id, $refund_id ) {
+        $order = \wc_get_order( (int) $order_id );
+        if ( ! $order ) {
+            return;
+        }
+        $class = $this->classify_refund( $order, (int) $refund_id );
+
+        if ( 'amount_only' === $class ) {
+            Events_Log::flag_review( (int) $order_id, 'amount_only_refund', 'refund #' . (int) $refund_id );
+            Events_Log::order( (int) $order_id, 'Amount-only refund — seats not changed (not guessed).', [
+                'refund' => (int) $refund_id,
+            ] );
+            return;
+        }
+
+        if ( 'mixed' === $class ) {
+            // Line seats are reconciled below; the extra unexplained amount needs review.
+            Events_Log::flag_review( (int) $order_id, 'amount_only_refund', 'mixed refund #' . (int) $refund_id . ' (extra amount)' );
+        }
+
+        // line | mixed → surplus active seats become 'refunded' (count-based,
+        // newest-first). expected already subtracts abs(get_qty_refunded_for_item)
+        // so cumulative partials monotonically lower expected and re-fire is a no-op.
+        $this->reconcile_order( $order, 'refund', Registrations::STATUS_REFUNDED );
+    }
+
+    /**
+     * Classify a refund as 'line' | 'amount_only' | 'mixed'.
+     *
+     * BLOCKER #1: refund line-item quantities are NEGATIVE — a line refund is
+     * detected via abs($refund_item->get_quantity()) > 0, NOT qty > 0 (which would
+     * misclassify every refund as amount_only). amount_only = every refund item has
+     * zero qty but the refund carries an amount. mixed = line qty AND extra amount.
+     *
+     * @param \WC_Order $order
+     * @param int       $refund_id
+     * @return string
+     */
+    private function classify_refund( $order, $refund_id ) {
+        if ( ! \function_exists( 'wc_get_order' ) ) {
+            return 'amount_only';
+        }
+        $refund = \wc_get_order( (int) $refund_id );
+        if ( ! $refund instanceof \WC_Order_Refund ) {
+            return 'amount_only';
+        }
+
+        $has_line   = false;
+        $line_total = 0.0;
+        foreach ( $refund->get_items() as $ritem ) {
+            if ( ! $ritem instanceof \WC_Order_Item_Product ) {
+                continue;
+            }
+            if ( \abs( (int) $ritem->get_quantity() ) > 0 ) {
+                $has_line = true;
+            }
+            $line_total += \abs( (float) $ritem->get_total() );
+            $line_total += \abs( (float) $ritem->get_total_tax() );
+        }
+
+        $amount = \abs( (float) $refund->get_amount() );
+
+        if ( $has_line ) {
+            // Extra unexplained amount beyond the refunded line totals → mixed.
+            return ( $amount - $line_total > 0.01 ) ? 'mixed' : 'line';
+        }
+        return 'amount_only';
     }
 }

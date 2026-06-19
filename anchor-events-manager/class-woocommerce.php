@@ -1734,6 +1734,25 @@ class WooCommerce {
      * add_meta_boxes( string $post_type, mixed $post_or_order ) pri 30. Register on
      * both the HPOS order screen id and the legacy 'shop_order' screen.
      */
+    /**
+     * Edit-screen URL for an order, HPOS-aware (spec §10.2). Falls back to the
+     * legacy post edit link when HPOS is off or the utility is unavailable.
+     *
+     * @param int $order_id
+     * @return string
+     */
+    public function order_edit_url( $order_id ) {
+        $order_id = (int) $order_id;
+        if ( $order_id <= 0 ) {
+            return '';
+        }
+        if ( \class_exists( '\Automattic\WooCommerce\Utilities\OrderUtil' )
+            && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled() ) {
+            return \admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $order_id );
+        }
+        return (string) \get_edit_post_link( $order_id );
+    }
+
     public function register_order_metabox() {
         $screens = [ 'shop_order' ];
         if ( \function_exists( 'wc_get_page_screen_id' ) ) {
@@ -1801,7 +1820,12 @@ class WooCommerce {
             $any = true;
 
             echo '<p style="margin:0 0 4px;"><strong>' . \esc_html( \get_the_title( $event_id ) ) . '</strong> '
-                . '<span style="color:#666;">(' . \esc_html__( 'event', 'anchor-schema' ) . ' #' . (int) $event_id . ')</span></p>';
+                . '<span style="color:#666;">(' . \esc_html__( 'event', 'anchor-schema' ) . ' #' . (int) $event_id . ')</span>';
+            if ( $this->module->roster ) {
+                echo ' &middot; <a href="' . \esc_url( $this->module->roster->roster_url( $event_id ) ) . '">'
+                    . \esc_html__( 'View roster', 'anchor-schema' ) . '</a>';
+            }
+            echo '</p>';
 
             $counts = [];
             foreach ( $this->registrations->get_seats_for_order_item( $item_id ) as $sid ) {

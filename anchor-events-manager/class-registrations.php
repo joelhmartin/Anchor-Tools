@@ -196,6 +196,39 @@ class Registrations {
         return true;
     }
 
+    /**
+     * Update a seat's editable contact fields (name/email/phone). Status is NOT
+     * touched here — use update_status() for that. Keeps the post_title in sync
+     * with the attendee name. Used by the roster manual-edit action so callers
+     * never write seat meta directly.
+     *
+     * @param int   $seat_id
+     * @param array $fields {name?, email?, phone?}
+     * @return bool
+     */
+    public function update_contact( $seat_id, array $fields ) {
+        $seat_id = (int) $seat_id;
+        if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return false;
+        }
+        if ( \array_key_exists( 'name', $fields ) ) {
+            $name = \sanitize_text_field( (string) $fields['name'] );
+            if ( $name !== '' ) {
+                \wp_update_post( [ 'ID' => $seat_id, 'post_title' => $name ] );
+                \update_post_meta( $seat_id, '_anchor_event_name', $name );
+            }
+        }
+        if ( \array_key_exists( 'email', $fields ) ) {
+            \update_post_meta( $seat_id, '_anchor_event_email', \sanitize_email( (string) $fields['email'] ) );
+        }
+        if ( \array_key_exists( 'phone', $fields ) ) {
+            \update_post_meta( $seat_id, '_anchor_event_phone', \sanitize_text_field( (string) $fields['phone'] ) );
+        }
+        $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
+        $this->bust_cache( $event_id );
+        return true;
+    }
+
     /* ---------------------------------------------------------------------
      * Capacity counting (single authority — spec §4.5)
      * ------------------------------------------------------------------- */
@@ -680,6 +713,306 @@ class Registrations {
             ];
         }
         return $out;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Roster queries (spec §10) — Phase 5
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Paged, filtered, sortable seat query for the roster list table (spec §10.2).
+     * All meta_query lives here (with `'type'=>'NUMERIC'` on `_anchor_event_id`,
+     * and integer casting on `seat_index` ordering — finding #19). Primes the meta
+     * cache for the page of results so DTO hydration is N+1-free.
+     *
+     * @param array $args {
+     *   @type int    $event_id Required.
+     *   @type string $status   '' / 'all' = any; 'active' = confirmed+pending; or a single status.
+     *   @type string $source   '' / 'all' = any; internal|woocommerce|manual|imported.
+     *   @type string $search   Numeric → exact order lookup (finding #15); else name/email LIKE.
+     *   @type int    $paged    1-based page.
+     *   @type int    $per_page Results per page.
+     *   @type string $orderby  attendee|email|status|source|seat|date.
+     *   @type string $order    ASC|DESC.
+     * }
+     * @return array{items:array<int,array>,total:int}
+     */
+    public function query_seats( array $args ) {
+        $event_id = (int) ( $args['event_id'] ?? 0 );
+        if ( $event_id <= 0 ) {
+            return [ 'items' => [], 'total' => 0 ];
+        }
+
+        $status   = (string) ( $args['status'] ?? '' );
+        $source   = (string) ( $args['source'] ?? '' );
+        $search   = \trim( (string) ( $args['search'] ?? '' ) );
+        $paged    = max( 1, (int) ( $args['paged'] ?? 1 ) );
+        $per_page = max( 1, (int) ( $args['per_page'] ?? 25 ) );
+        $orderby  = (string) ( $args['orderby'] ?? 'date' );
+        $order    = \strtoupper( (string) ( $args['order'] ?? 'DESC' ) ) === 'ASC' ? 'ASC' : 'DESC';
+
+        $meta_query = [
+            'relation'     => 'AND',
+            'event_clause' => [ 'key' => '_anchor_event_id', 'value' => $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+        ];
+
+        // Status filter.
+        if ( $status === 'active' ) {
+            $meta_query[] = [ 'key' => '_anchor_event_reg_status', 'value' => self::RESERVING_STATUSES, 'compare' => 'IN' ];
+        } elseif ( $status !== '' && $status !== 'all' && $this->valid_status( $status ) ) {
+            $meta_query[] = [ 'key' => '_anchor_event_reg_status', 'value' => $status, 'compare' => '=' ];
+        }
+
+        // Source filter.
+        if ( $source !== '' && $source !== 'all' ) {
+            $meta_query[] = [ 'key' => '_anchor_event_source', 'value' => $source, 'compare' => '=' ];
+        }
+
+        // Search. Numeric → exact order lookup (finding #15), NOT fuzzy.
+        if ( $search !== '' ) {
+            if ( \ctype_digit( $search ) ) {
+                $meta_query[] = [ 'key' => '_anchor_event_order_id', 'value' => (int) $search, 'compare' => '=', 'type' => 'NUMERIC' ];
+            } else {
+                $meta_query[] = [
+                    'relation' => 'OR',
+                    [ 'key' => '_anchor_event_name', 'value' => $search, 'compare' => 'LIKE' ],
+                    [ 'key' => '_anchor_event_email', 'value' => $search, 'compare' => 'LIKE' ],
+                ];
+            }
+        }
+
+        $wp_args = [
+            'post_type'              => Module::REG_CPT,
+            'post_status'            => 'publish',
+            'posts_per_page'         => $per_page,
+            'paged'                  => $paged,
+            'meta_query'             => $meta_query,
+            'update_post_meta_cache' => true, // prime meta cache for the page (no N+1).
+        ];
+
+        // Ordering. seat_index ordered as an integer (CAST .. UNSIGNED via type clause).
+        switch ( $orderby ) {
+            case 'attendee':
+                $wp_args['orderby'] = 'title';
+                $wp_args['order']   = $order;
+                break;
+            case 'seat':
+                $meta_query['seat_clause'] = [ 'key' => '_anchor_event_seat_index', 'compare' => 'EXISTS', 'type' => 'UNSIGNED' ];
+                $wp_args['meta_query']     = $meta_query;
+                $wp_args['orderby']        = [ 'seat_clause' => $order ];
+                break;
+            case 'status':
+                $meta_query['status_clause'] = [ 'key' => '_anchor_event_reg_status', 'compare' => 'EXISTS' ];
+                $wp_args['meta_query']       = $meta_query;
+                $wp_args['orderby']          = [ 'status_clause' => $order ];
+                break;
+            case 'source':
+                $meta_query['source_clause'] = [ 'key' => '_anchor_event_source', 'compare' => 'EXISTS' ];
+                $wp_args['meta_query']       = $meta_query;
+                $wp_args['orderby']          = [ 'source_clause' => $order ];
+                break;
+            case 'email':
+                $meta_query['email_clause'] = [ 'key' => '_anchor_event_email', 'compare' => 'EXISTS' ];
+                $wp_args['meta_query']      = $meta_query;
+                $wp_args['orderby']         = [ 'email_clause' => $order ];
+                break;
+            case 'date':
+            default:
+                $wp_args['orderby'] = 'date';
+                $wp_args['order']   = $order;
+                break;
+        }
+
+        $q = new \WP_Query( $wp_args );
+
+        $items = [];
+        foreach ( $q->posts as $post ) {
+            $items[] = $this->seat_dto( $post );
+        }
+
+        return [ 'items' => $items, 'total' => (int) $q->found_posts ];
+    }
+
+    /**
+     * Build a seat DTO from a (meta-cache-primed) seat post.
+     *
+     * @param \WP_Post $post
+     * @return array
+     */
+    private function seat_dto( $post ) {
+        $id = (int) $post->ID;
+        $g  = function ( $k ) use ( $id ) {
+            return \get_post_meta( $id, $k, true );
+        };
+        $status = (string) $g( '_anchor_event_reg_status' );
+        return [
+            'id'            => $id,
+            'name'          => (string) ( $g( '_anchor_event_name' ) ?: \get_the_title( $post ) ),
+            'email'         => (string) $g( '_anchor_event_email' ),
+            'phone'         => (string) $g( '_anchor_event_phone' ),
+            'status'        => $status !== '' ? $status : self::STATUS_CONFIRMED,
+            'guests'        => (int) $g( '_anchor_event_guests' ),
+            'source'        => (string) ( $g( '_anchor_event_source' ) ?: 'internal' ),
+            'order_id'      => (int) $g( '_anchor_event_order_id' ),
+            'order_item_id' => (int) $g( '_anchor_event_order_item_id' ),
+            'product_id'    => (int) $g( '_anchor_event_product_id' ),
+            'variation_id'  => (int) $g( '_anchor_event_variation_id' ),
+            'customer_id'   => (int) $g( '_anchor_event_customer_id' ),
+            'seat_index'    => (int) $g( '_anchor_event_seat_index' ),
+            'reg_fields'    => \is_array( $g( '_anchor_event_reg_fields' ) ) ? $g( '_anchor_event_reg_fields' ) : [],
+            'date'          => \get_the_date( 'Y-m-d', $post ),
+        ];
+    }
+
+    /**
+     * Header summary for the roster screen (spec §10.1). Reuses the counts()
+     * aggregate so this is a single query.
+     *
+     * @param int $event_id
+     * @return array
+     */
+    public function get_event_summary( $event_id ) {
+        $event_id = (int) $event_id;
+        $meta     = $this->module->get_meta( $event_id );
+        $capacity = (int) ( $meta['capacity'] ?? 0 );
+
+        $c          = $this->counts( $event_id );
+        $per_status = [];
+        foreach ( [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST, self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED, self::STATUS_ATTENDED, self::STATUS_NO_SHOW ] as $s ) {
+            $per_status[ $s ] = [
+                'seats'   => $c[ $s ]['seats'] ?? 0,
+                'records' => $c[ $s ]['records'] ?? 0,
+            ];
+        }
+
+        $reserved  = $this->count_reserved_seats( $event_id );
+        $waitlist  = $this->count_waitlist_seats( $event_id );
+        $confirmed = $per_status[ self::STATUS_CONFIRMED ]['seats'];
+        $pending   = $per_status[ self::STATUS_PENDING ]['seats'];
+
+        $linked     = \get_post_meta( $event_id, '_anchor_event_linked_products', true );
+        $has_linked = \is_array( $linked ) && ! empty( $linked );
+
+        return [
+            'capacity'           => $capacity,
+            'reserved'           => $reserved,
+            'confirmed'          => $confirmed,
+            'pending'            => $pending,
+            'waitlist'           => $waitlist,
+            'cancelled'          => $per_status[ self::STATUS_CANCELLED ]['seats'],
+            'refunded'           => $per_status[ self::STATUS_REFUNDED ]['seats'],
+            'failed'             => $per_status[ self::STATUS_FAILED ]['seats'],
+            'remaining'          => $capacity > 0 ? max( 0, $capacity - $reserved ) : -1, // -1 = unlimited.
+            'has_linked_product' => $has_linked,
+            'is_overbooked'      => $capacity > 0 && $reserved > $capacity,
+            'per_status'         => $per_status,
+        ];
+    }
+
+    /**
+     * Rows for the CSV export (spec §10.4). Batches order lookups via
+     * wc_get_orders(['include'=>$ids]) once, guarded by function_exists so an
+     * environment without WooCommerce simply leaves the order columns blank.
+     *
+     * @param int    $event_id
+     * @param string $scope    'active' (confirmed only) or 'all'.
+     * @return array{field_keys:string[],rows:array<int,array>}
+     */
+    public function get_export_rows( $event_id, $scope = 'all' ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 ) {
+            return [ 'field_keys' => [], 'rows' => [] ];
+        }
+
+        $meta_query = [
+            [ 'key' => '_anchor_event_id', 'value' => $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+        ];
+        if ( $scope === 'active' ) {
+            $meta_query[] = [ 'key' => '_anchor_event_reg_status', 'value' => self::STATUS_CONFIRMED, 'compare' => '=' ];
+        }
+
+        $q = new \WP_Query( [
+            'post_type'              => Module::REG_CPT,
+            'post_status'            => 'publish',
+            'posts_per_page'         => -1,
+            'no_found_rows'          => true,
+            'update_post_meta_cache' => true,
+            'meta_query'             => $meta_query,
+            'orderby'                => 'date',
+            'order'                  => 'DESC',
+        ] );
+
+        $event_title = \get_the_title( $event_id );
+
+        // Batch-load orders once (HPOS-safe), guarded by WC presence.
+        $orders    = [];
+        $order_ids = [];
+        foreach ( $q->posts as $post ) {
+            $oid = (int) \get_post_meta( $post->ID, '_anchor_event_order_id', true );
+            if ( $oid > 0 ) {
+                $order_ids[ $oid ] = true;
+            }
+        }
+        if ( ! empty( $order_ids ) && \function_exists( 'wc_get_orders' ) ) {
+            $batch = \wc_get_orders( [ 'include' => \array_keys( $order_ids ), 'limit' => -1 ] );
+            foreach ( (array) $batch as $o ) {
+                if ( $o instanceof \WC_Order ) {
+                    $orders[ (int) $o->get_id() ] = $o;
+                }
+            }
+        }
+
+        $field_keys = [];
+        $rows       = [];
+        foreach ( $q->posts as $post ) {
+            $dto = $this->seat_dto( $post );
+            foreach ( \array_keys( $dto['reg_fields'] ) as $k ) {
+                $field_keys[ $k ] = true;
+            }
+
+            $order_number = '';
+            $order_status = '';
+            $order_date   = '';
+            $cust_email   = '';
+            $oid          = $dto['order_id'];
+            if ( $oid > 0 && isset( $orders[ $oid ] ) ) {
+                $o            = $orders[ $oid ];
+                $order_number = $o->get_order_number();
+                $order_status = $o->get_status();
+                $created      = $o->get_date_created();
+                $order_date   = $created ? $created->date( 'Y-m-d' ) : '';
+                $cust_email   = $o->get_billing_email();
+            }
+
+            $product_name = $dto['product_id'] > 0 ? \get_the_title( $dto['product_id'] ) : '';
+
+            $rows[] = [
+                'seat_id'        => $dto['id'],
+                'event'          => $event_title,
+                'name'           => $dto['name'],
+                'email'          => $dto['email'],
+                'phone'          => $dto['phone'],
+                'status'         => $dto['status'],
+                'source'         => $dto['source'],
+                'guests'         => $dto['guests'],
+                'party_size'     => 1 + $dto['guests'],
+                'reg_date'       => $dto['date'],
+                'order_number'   => (string) $order_number,
+                'order_id'       => $oid > 0 ? $oid : '',
+                'order_status'   => (string) $order_status,
+                'order_date'     => (string) $order_date,
+                'customer_id'    => $dto['customer_id'] > 0 ? $dto['customer_id'] : '',
+                'customer_email' => (string) $cust_email,
+                'product'        => (string) $product_name,
+                'product_id'     => $dto['product_id'] > 0 ? $dto['product_id'] : '',
+                'variation_id'   => $dto['variation_id'] > 0 ? $dto['variation_id'] : '',
+                'order_item_id'  => $dto['order_item_id'] > 0 ? $dto['order_item_id'] : '',
+                'seat_index'     => $dto['seat_index'],
+                'fields'         => $dto['reg_fields'],
+            ];
+        }
+
+        return [ 'field_keys' => \array_keys( $field_keys ), 'rows' => $rows ];
     }
 
     /* ---------------------------------------------------------------------

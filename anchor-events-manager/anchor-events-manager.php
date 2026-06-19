@@ -20,6 +20,9 @@ class Module {
     /** @var WooCommerce|null WC integration; null when WooCommerce is inactive. */
     public $woocommerce = null;
 
+    /** @var Roster|null Roster admin screen + CSV export (always loaded). */
+    public $roster = null;
+
     public function __construct() {
         self::$instance = $this;
 
@@ -27,8 +30,10 @@ class Module {
         $dir = \plugin_dir_path( __FILE__ );
         require_once $dir . 'class-events-log.php';
         require_once $dir . 'class-registrations.php';
+        require_once $dir . 'class-roster.php';
         $this->registrations = new Registrations( $this );
-        // NOTE: class-roster.php / new Roster() deferred to Phase 5.
+        // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
+        $this->roster = new Roster( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
@@ -52,6 +57,7 @@ class Module {
         \add_filter( 'manage_' . self::CPT . '_posts_columns', [ $this, 'columns' ] );
         \add_action( 'manage_' . self::CPT . '_posts_custom_column', [ $this, 'render_column' ], 10, 2 );
         \add_filter( 'manage_edit-' . self::CPT . '_sortable_columns', [ $this, 'sortable_columns' ] );
+        \add_filter( 'post_row_actions', [ $this, 'event_row_actions' ], 10, 2 );
         \add_action( 'pre_get_posts', [ $this, 'admin_sorting' ] );
         \add_filter( 'views_edit-' . self::CPT, [ $this, 'add_quick_filters' ] );
         \add_action( 'pre_get_posts', [ $this, 'apply_quick_filters' ] );
@@ -73,7 +79,7 @@ class Module {
 
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
         \add_action( 'admin_post_nopriv_anchor_event_register', [ $this, 'handle_registration' ] );
-        \add_action( 'admin_post_anchor_event_export', [ $this, 'handle_export' ] );
+        // NOTE: `anchor_event_export` (CSV export) is now owned by Roster (Phase 5).
         \add_action( 'admin_post_anchor_event_manager_save', [ $this, 'handle_event_manager_save' ] );
         \add_action( 'admin_post_anchor_event_manager_delete', [ $this, 'handle_event_manager_delete' ] );
         \add_action( 'admin_post_nopriv_anchor_event_manager_login', [ $this, 'handle_event_manager_login' ] );
@@ -816,6 +822,9 @@ class Module {
         ?>
         <p>
             <a class="button" href="<?php echo esc_url( $export_url ); ?>"><?php echo esc_html__( 'Export CSV', 'anchor-schema' ); ?></a>
+            <?php if ( $this->roster ) : ?>
+                <a class="button button-primary" href="<?php echo esc_url( $this->roster->roster_url( $post->ID ) ); ?>"><?php echo esc_html__( 'Open full roster', 'anchor-schema' ); ?></a>
+            <?php endif; ?>
         </p>
         <div class="anchor-event-registrants">
             <?php if ( empty( $registrations ) ) : ?>
@@ -2390,73 +2399,21 @@ class Module {
         exit;
     }
 
-    public function handle_export() {
-        // Bug #1: align capability with the editors who can see the Export links
-        // (edit_others_posts), not just admins. Method re-homed to Roster in Phase 5.
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
-            \wp_die( esc_html__( 'Unauthorized', 'anchor-schema' ) );
+    /**
+     * "Roster" row action on the Events list table (spec §10.1).
+     *
+     * @param array    $actions
+     * @param \WP_Post $post
+     * @return array
+     */
+    public function event_row_actions( $actions, $post ) {
+        if ( $post instanceof \WP_Post && $post->post_type === self::CPT
+            && $this->roster && \current_user_can( Roster::CAP ) ) {
+            $url = $this->roster->roster_url( $post->ID );
+            $actions['anchor_roster'] = '<a href="' . \esc_url( $url ) . '">'
+                . \esc_html__( 'Roster', 'anchor-schema' ) . '</a>';
         }
-        \check_admin_referer( 'anchor_event_export' );
-
-        $event_id = (int) ( $_GET['event_id'] ?? 0 );
-        if ( ! $event_id ) {
-            \wp_die( esc_html__( 'Missing event.', 'anchor-schema' ) );
-        }
-
-        $query = new \WP_Query( [
-            'post_type' => self::REG_CPT,
-            'post_status' => 'publish',
-            'posts_per_page' => -1,
-            'meta_query' => [
-                [
-                    'key' => '_anchor_event_id',
-                    'value' => $event_id,
-                    'compare' => '=',
-                ],
-            ],
-            'orderby' => 'date',
-            'order' => 'DESC',
-        ] );
-
-        $rows = [];
-        $field_keys = [];
-        foreach ( $query->posts as $post ) {
-            $fields = \get_post_meta( $post->ID, '_anchor_event_reg_fields', true );
-            if ( ! is_array( $fields ) ) {
-                $fields = [];
-            }
-            foreach ( array_keys( $fields ) as $key ) {
-                $field_keys[ $key ] = true;
-            }
-            $guests = (int) \get_post_meta( $post->ID, '_anchor_event_guests', true );
-            $rows[] = [
-                'name' => \get_post_meta( $post->ID, '_anchor_event_name', true ),
-                'email' => \get_post_meta( $post->ID, '_anchor_event_email', true ),
-                'status' => \get_post_meta( $post->ID, '_anchor_event_reg_status', true ) ?: 'confirmed',
-                'guests' => $guests,
-                'party_size' => 1 + $guests,
-                'date' => \get_the_date( 'Y-m-d', $post ),
-                'fields' => $fields,
-            ];
-        }
-
-        $field_keys = array_keys( $field_keys );
-
-        header( 'Content-Type: text/csv' );
-        header( 'Content-Disposition: attachment; filename="event-registrations-' . $event_id . '.csv"' );
-
-        $out = fopen( 'php://output', 'w' );
-        $header = array_merge( [ 'Name', 'Email', 'Status', 'Guests', 'Party Size', 'Date' ], $field_keys );
-        fputcsv( $out, $header );
-        foreach ( $rows as $row ) {
-            $data = [ $row['name'], $row['email'], $row['status'], $row['guests'], $row['party_size'], $row['date'] ];
-            foreach ( $field_keys as $key ) {
-                $data[] = $row['fields'][ $key ] ?? '';
-            }
-            fputcsv( $out, $data );
-        }
-        fclose( $out );
-        exit;
+        return $actions;
     }
 
     public function register_tab( $tabs ) {

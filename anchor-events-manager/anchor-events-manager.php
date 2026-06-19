@@ -14,8 +14,19 @@ class Module {
     private static $instance = null;
     private $assets_enqueued = false;
 
+    /** @var Registrations Seat data-access layer (always loaded). */
+    public $registrations = null;
+
     public function __construct() {
         self::$instance = $this;
+
+        // Always-on data layer (spec §3, approach B). WC-gated classes load in Phase 1.
+        $dir = \plugin_dir_path( __FILE__ );
+        require_once $dir . 'class-events-log.php';
+        require_once $dir . 'class-registrations.php';
+        $this->registrations = new Registrations( $this );
+        // NOTE: class-roster.php / new Roster() deferred to Phase 5.
+        // NOTE: class-woocommerce.php loader (WC-gated) added in Phase 1.
 
         \add_action( 'init', [ $this, 'register_cpt' ] );
         \add_action( 'init', [ $this, 'register_taxonomies' ] );
@@ -24,6 +35,7 @@ class Module {
 
         \add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
+        \add_action( 'transition_post_status', [ $this, 'persist_status_on_transition' ], 10, 3 );
 
         \add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
         \add_action( 'wp_enqueue_scripts', [ $this, 'frontend_assets' ] );
@@ -70,6 +82,119 @@ class Module {
         \add_action( 'wp_head', [ $this, 'output_canonical_url' ], 1 );
         \add_filter( 'wpseo_canonical', [ $this, 'filter_yoast_canonical' ] );
         \add_filter( 'rank_math/frontend/canonical', [ $this, 'filter_yoast_canonical' ] );
+
+        // Status sweep cron (bug #2): scheduled defensively on init so it survives
+        // plugin upgrades (which don't fire register_activation_hook), plus on
+        // activation for fresh installs; cleared on deactivation.
+        \add_action( 'init', [ $this, 'maybe_schedule_status_sweep' ] );
+        \add_action( 'anchor_events_status_sweep', [ $this, 'run_status_sweep' ] );
+        if ( \defined( 'ANCHOR_TOOLS_PLUGIN_FILE' ) ) {
+            \register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, [ $this, 'on_deactivate' ] );
+        }
+
+        // Bug #5: capture wp_mail failures into the events error log.
+        \add_action( 'wp_mail_failed', [ $this, 'capture_mail_failure' ] );
+    }
+
+    /**
+     * Schedule the daily status sweep if not already scheduled. Hooked to `init`
+     * so already-active installs (upgraded via Plugin Update Checker, which does
+     * not fire activation hooks) still get the cron registered.
+     */
+    public function maybe_schedule_status_sweep() {
+        if ( ! \wp_next_scheduled( 'anchor_events_status_sweep' ) ) {
+            \wp_schedule_event( \time() + HOUR_IN_SECONDS, 'daily', 'anchor_events_status_sweep' );
+        }
+    }
+
+    /** Clear scheduled cron on plugin deactivation. */
+    public function on_deactivate() {
+        $timestamp = \wp_next_scheduled( 'anchor_events_status_sweep' );
+        if ( $timestamp ) {
+            \wp_unschedule_event( $timestamp, 'anchor_events_status_sweep' );
+        }
+        \wp_clear_scheduled_hook( 'anchor_events_status_sweep' );
+    }
+
+    /**
+     * Recompute and persist auto-mode event statuses. Replaces the former
+     * write-on-read in get_event_status() (bug #2).
+     */
+    /**
+     * Persist auto-mode event status when a post's status transitions (covers
+     * quick-edit / bulk publish where save_meta's nonce check returns early).
+     *
+     * @param string   $new_status
+     * @param string   $old_status
+     * @param \WP_Post $post
+     */
+    public function persist_status_on_transition( $new_status, $old_status, $post ) {
+        if ( ! $post instanceof \WP_Post || $post->post_type !== self::CPT ) {
+            return;
+        }
+        if ( $new_status === 'auto-draft' || ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) ) {
+            return;
+        }
+        $meta = $this->get_meta( $post->ID );
+        if ( $meta['status_mode'] === 'manual' ) {
+            return;
+        }
+        $computed = $this->calculate_status( $meta );
+        if ( $computed !== $meta['status'] ) {
+            \update_post_meta( $post->ID, $this->meta_key( 'status' ), $computed );
+        }
+    }
+
+    public function run_status_sweep() {
+        $events = \get_posts( [
+            'post_type'      => self::CPT,
+            'post_status'    => [ 'publish', 'future', 'private' ],
+            'posts_per_page' => -1,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                [ 'key' => $this->meta_key( 'status_mode' ), 'value' => 'manual', 'compare' => '!=' ],
+            ],
+        ] );
+        foreach ( $events as $event_id ) {
+            $meta = $this->get_meta( $event_id );
+            $computed = $this->calculate_status( $meta );
+            if ( $computed !== $meta['status'] ) {
+                \update_post_meta( $event_id, $this->meta_key( 'status' ), $computed );
+            }
+        }
+        $this->clear_caches();
+    }
+
+    /**
+     * wp_mail_failed handler (bug #5) — logs the failure to the events error log.
+     *
+     * @param \WP_Error $error
+     */
+    public function capture_mail_failure( $error ) {
+        if ( \is_wp_error( $error ) ) {
+            Events_Log::error( 'email_failed', [
+                'message' => $error->get_error_message(),
+                'data'    => $error->get_error_data(),
+            ] );
+        }
+    }
+
+    /**
+     * Send an HTML email and log any failure (bug #5). Centralizes the two
+     * registration wp_mail calls; the full email refactor lands in Phase 6.
+     *
+     * @return bool True on success.
+     */
+    public function send_html_email( $to, $subject, $html, $headers = [] ) {
+        if ( empty( $headers ) ) {
+            $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
+        }
+        $sent = \wp_mail( $to, $subject, $html, $headers );
+        if ( ! $sent ) {
+            Events_Log::error( 'email_send_returned_false', [ 'to' => $to, 'subject' => $subject ] );
+        }
+        return (bool) $sent;
     }
 
     public static function instance() {
@@ -262,6 +387,39 @@ class Module {
             'show_in_rest' => true,
             'auth_callback' => $reg_auth_callback,
         ] );
+
+        // New seat meta (spec §4.1). Integer keys as integer, strings as string.
+        $reg_int_keys = [
+            '_anchor_event_order_id',
+            '_anchor_event_order_item_id',
+            '_anchor_event_product_id',
+            '_anchor_event_variation_id',
+            '_anchor_event_customer_id',
+            '_anchor_event_seat_index',
+        ];
+        foreach ( $reg_int_keys as $key ) {
+            \register_post_meta( self::REG_CPT, $key, [
+                'type' => 'integer',
+                'single' => true,
+                'show_in_rest' => true,
+                'auth_callback' => $reg_auth_callback,
+            ] );
+        }
+        foreach ( [ '_anchor_event_phone', '_anchor_event_source' ] as $key ) {
+            \register_post_meta( self::REG_CPT, $key, [
+                'type' => 'string',
+                'single' => true,
+                'show_in_rest' => true,
+                'auth_callback' => $reg_auth_callback,
+            ] );
+        }
+        // History is internal-only — keep it out of REST to avoid array-schema friction.
+        \register_post_meta( self::REG_CPT, '_anchor_event_history', [
+            'type' => 'array',
+            'single' => true,
+            'show_in_rest' => false,
+            'auth_callback' => $reg_auth_callback,
+        ] );
     }
 
     private function get_meta_schema() {
@@ -296,6 +454,14 @@ class Module {
             'start_ts' => [ 'type' => 'integer' ],
             'end_ts' => [ 'type' => 'integer' ],
             'gallery' => [ 'type' => 'array', 'show_in_rest' => [ 'schema' => [ 'type' => 'array', 'items' => [ 'type' => 'integer' ] ] ] ],
+            // Product-owned mirror cache of which products/variations register for this
+            // event (spec §4.7). Written by the WooCommerce class only — intentionally
+            // excluded from save_meta()'s allow-list so event saves never clobber it.
+            'linked_products' => [ 'type' => 'array', 'show_in_rest' => false ],
+            'organizer_email' => [ 'type' => 'string' ],
+            // Per-event activity roll-up: data-model reserved only; NOT written/surfaced
+            // in MVP (activity log deferred — spec §2, §11.6).
+            'activity' => [ 'type' => 'array', 'show_in_rest' => false ],
         ];
     }
 
@@ -337,6 +503,9 @@ class Module {
             'start_ts' => 0,
             'end_ts' => 0,
             'gallery' => [],
+            'linked_products' => [],
+            'organizer_email' => '',
+            'activity' => [],
         ];
     }
 
@@ -1984,6 +2153,14 @@ class Module {
         $settings = $this->get_settings();
         $meta = $this->get_meta( $post_id );
 
+        // Render seam (spec §3): the WooCommerce class swaps the free form for a
+        // buy button on linked events by returning non-empty here. Inert until the
+        // Phase 2 filter callback is registered (no consumers otherwise).
+        $override = \apply_filters( 'anchor_events_registration_form', '', $post_id, $meta );
+        if ( $override !== '' ) {
+            return $override;
+        }
+
         if ( ! $meta['registration_enabled'] ) {
             return '';
         }
@@ -2027,6 +2204,10 @@ class Module {
         $output .= '<div class="anchor-event-field">';
         $output .= '<label for="anchor_event_email">' . esc_html__( 'Email', 'anchor-schema' ) . '</label>';
         $output .= '<input type="email" id="anchor_event_email" name="anchor_event_email" required />';
+        $output .= '</div>';
+        $output .= '<div class="anchor-event-field">';
+        $output .= '<label for="anchor_event_phone">' . esc_html__( 'Phone', 'anchor-schema' ) . '</label>';
+        $output .= '<input type="tel" id="anchor_event_phone" name="anchor_event_phone" />';
         $output .= '</div>';
 
         $max_guests = (int) ( $settings['max_guests'] ?? 0 );
@@ -2088,8 +2269,9 @@ class Module {
             exit;
         }
 
-        $name = sanitize_text_field( $_POST['anchor_event_name'] ?? '' );
-        $email = sanitize_email( $_POST['anchor_event_email'] ?? '' );
+        $name = sanitize_text_field( wp_unslash( $_POST['anchor_event_name'] ?? '' ) );
+        $email = sanitize_email( wp_unslash( $_POST['anchor_event_email'] ?? '' ) );
+        $phone = sanitize_text_field( wp_unslash( $_POST['anchor_event_phone'] ?? '' ) );
         if ( ! $name || ! $email ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_invalid' ) );
             exit;
@@ -2097,7 +2279,7 @@ class Module {
 
         $extra_fields = [];
         if ( ! empty( $_POST['anchor_event_field'] ) && is_array( $_POST['anchor_event_field'] ) ) {
-            foreach ( $_POST['anchor_event_field'] as $key => $value ) {
+            foreach ( wp_unslash( $_POST['anchor_event_field'] ) as $key => $value ) {
                 $extra_fields[ sanitize_key( $key ) ] = sanitize_text_field( $value );
             }
         }
@@ -2107,45 +2289,45 @@ class Module {
         $guests = max( 0, min( $max_guests, $guests ) );
         $party_size = 1 + $guests;
 
-        $status = $this->get_registration_status( $event_id, $meta, $party_size );
-        if ( $status === 'closed' || $status === 'full' ) {
+        // Pre-check for user-facing messaging (closed window / full + no waitlist).
+        $decision = $this->get_registration_status( $event_id, $meta, $party_size );
+        if ( $decision === 'closed' || $decision === 'full' ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
             exit;
         }
 
-        $reg_status = 'confirmed';
-        if ( $status === 'waitlist' ) {
-            $reg_status = 'waitlist';
-        }
-
-        $reg_id = \wp_insert_post( [
-            'post_type' => self::REG_CPT,
-            'post_status' => 'publish',
-            'post_title' => $name,
+        // Race-safe creation under the per-event lock (bug #3). claim_seats recounts
+        // capacity inside the lock, so concurrent submits can never oversell.
+        $result = $this->registrations->claim_seats( $event_id, $meta, 1, [
+            'source'     => 'internal',
+            'name'       => $name,
+            'email'      => $email,
+            'phone'      => $phone,
+            'guests'     => $guests,
+            'reg_fields' => $extra_fields,
+            'note'       => 'internal registration',
+            'actor'      => 'internal',
         ] );
 
-        if ( is_wp_error( $reg_id ) ) {
-            \wp_safe_redirect( $this->with_message( $redirect, 'registration_error' ) );
+        $created    = ! empty( $result['created'] );
+        $waitlisted = ! empty( $result['waitlisted'] );
+        if ( ! $created && ! $waitlisted ) {
+            // Filled up between the pre-check and acquiring the lock; waitlist off.
+            \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
             exit;
         }
 
-        \update_post_meta( $reg_id, '_anchor_event_id', $event_id );
-        \update_post_meta( $reg_id, '_anchor_event_name', $name );
-        \update_post_meta( $reg_id, '_anchor_event_email', $email );
-        \update_post_meta( $reg_id, '_anchor_event_reg_status', $reg_status );
-        \update_post_meta( $reg_id, '_anchor_event_reg_fields', $extra_fields );
-        \update_post_meta( $reg_id, '_anchor_event_guests', $guests );
-
+        $reg_status = ( $waitlisted && ! $created ) ? 'waitlist' : 'confirmed';
         $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
-
-        $this->clear_caches();
 
         \wp_safe_redirect( $this->with_message( $redirect, 'registration_success' ) );
         exit;
     }
 
     public function handle_export() {
-        if ( ! \current_user_can( 'manage_options' ) ) {
+        // Bug #1: align capability with the editors who can see the Export links
+        // (edit_others_posts), not just admins. Method re-homed to Roster in Phase 5.
+        if ( ! \current_user_can( 'edit_others_posts' ) ) {
             \wp_die( esc_html__( 'Unauthorized', 'anchor-schema' ) );
         }
         \check_admin_referer( 'anchor_event_export' );
@@ -2417,7 +2599,7 @@ class Module {
         }
     }
 
-    private function clear_caches() {
+    public function clear_caches() {
         $keys = \get_option( self::CACHE_OPTION, [] );
         if ( ! is_array( $keys ) ) {
             $keys = [];
@@ -2474,7 +2656,7 @@ class Module {
         return $query->found_posts;
     }
 
-    private function get_meta( $post_id ) {
+    public function get_meta( $post_id ) {
         $defaults = $this->get_meta_defaults();
         foreach ( $defaults as $key => $value ) {
             $stored = \get_post_meta( $post_id, $this->meta_key( $key ), true );
@@ -2495,7 +2677,7 @@ class Module {
         return $defaults;
     }
 
-    private function meta_key( $key ) {
+    public function meta_key( $key ) {
         return '_anchor_event_' . $key;
     }
 
@@ -2719,11 +2901,10 @@ class Module {
         if ( $meta['status_mode'] === 'manual' ) {
             return $meta['status'];
         }
-        $status = $this->calculate_status( $meta );
-        if ( $status !== $meta['status'] ) {
-            \update_post_meta( $post_id, $this->meta_key( 'status' ), $status );
-        }
-        return $status;
+        // Pure read (bug #2): never write during render. Persistence happens in
+        // save contexts (save_meta / handle_event_manager_save / transition_post_status)
+        // and the daily anchor_events_status_sweep cron.
+        return $this->calculate_status( $meta );
     }
 
     private function build_visibility_clause() {
@@ -2766,22 +2947,9 @@ class Module {
         ];
     }
 
-    private function get_registration_status( $event_id, $meta, $party_size = 1 ) {
-        $now = date( 'Y-m-d' );
-        if ( $meta['registration_open'] && $now < $meta['registration_open'] ) {
-            return 'closed';
-        }
-        if ( $meta['registration_close'] && $now > $meta['registration_close'] ) {
-            return 'closed';
-        }
-        if ( $meta['capacity'] ) {
-            $attendees = $this->get_attendee_count( $event_id );
-            $party_size = max( 1, (int) $party_size );
-            if ( ( $attendees + $party_size ) > (int) $meta['capacity'] ) {
-                return $meta['waitlist'] ? 'waitlist' : 'full';
-            }
-        }
-        return 'open';
+    public function get_registration_status( $event_id, $meta, $party_size = 1 ) {
+        // Single capacity authority lives in the data layer (spec §9.1).
+        return $this->registrations->capacity_decision( $event_id, $meta, $party_size );
     }
 
     private function get_registration_fields() {
@@ -2798,91 +2966,21 @@ class Module {
         \wp_send_json_success( [ 'html' => $html ] );
     }
 
-    private function get_registrations( $event_id, $limit = 50 ) {
-        $args = [
-            'post_type' => self::REG_CPT,
-            'post_status' => 'publish',
-            'posts_per_page' => $limit ? $limit : -1,
-            'meta_query' => [
-                [
-                    'key' => '_anchor_event_id',
-                    'value' => $event_id,
-                    'compare' => '=',
-                ],
-            ],
-            'orderby' => 'date',
-            'order' => 'DESC',
-        ];
-        $query = new \WP_Query( $args );
-        $registrations = [];
-        foreach ( $query->posts as $post ) {
-            $registrations[] = [
-                'name' => \get_post_meta( $post->ID, '_anchor_event_name', true ),
-                'email' => \get_post_meta( $post->ID, '_anchor_event_email', true ),
-                'status' => \get_post_meta( $post->ID, '_anchor_event_reg_status', true ) ?: 'confirmed',
-                'guests' => (int) \get_post_meta( $post->ID, '_anchor_event_guests', true ),
-                'date' => \get_the_date( 'Y-m-d', $post ),
-            ];
-        }
-        return $registrations;
+    // Counting now lives in the Registrations data layer (spec §9.1). These thin
+    // public wrappers preserve the existing internal callers and signatures.
+    public function get_registrations( $event_id, $limit = 50 ) {
+        return $this->registrations->get_registrations( $event_id, $limit );
     }
 
-    private function get_registration_count( $event_id, $status = 'confirmed' ) {
-        $args = [
-            'post_type' => self::REG_CPT,
-            'post_status' => 'publish',
-            'fields' => 'ids',
-            'meta_query' => [
-                [
-                    'key' => '_anchor_event_id',
-                    'value' => $event_id,
-                    'compare' => '=',
-                ],
-            ],
-        ];
-        if ( $status ) {
-            $args['meta_query'][] = [
-                'key' => '_anchor_event_reg_status',
-                'value' => $status,
-                'compare' => '=',
-            ];
-        }
-        $query = new \WP_Query( $args );
-        return $query->found_posts;
+    public function get_registration_count( $event_id, $status = 'confirmed' ) {
+        return $this->registrations->record_count( $event_id, $status );
     }
 
-    private function get_attendee_count( $event_id, $status = 'confirmed' ) {
-        $args = [
-            'post_type' => self::REG_CPT,
-            'post_status' => 'publish',
-            'posts_per_page' => -1,
-            'fields' => 'ids',
-            'no_found_rows' => true,
-            'meta_query' => [
-                [
-                    'key' => '_anchor_event_id',
-                    'value' => $event_id,
-                    'compare' => '=',
-                ],
-            ],
-        ];
-        if ( $status ) {
-            $args['meta_query'][] = [
-                'key' => '_anchor_event_reg_status',
-                'value' => $status,
-                'compare' => '=',
-            ];
-        }
-        $query = new \WP_Query( $args );
-        $total = 0;
-        foreach ( $query->posts as $reg_id ) {
-            $guests = (int) \get_post_meta( $reg_id, '_anchor_event_guests', true );
-            $total += 1 + max( 0, $guests );
-        }
-        return $total;
+    public function get_attendee_count( $event_id, $status = 'confirmed' ) {
+        return $this->registrations->attendee_count( $event_id, $status );
     }
 
-    private function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
+    public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
         $settings = $this->get_settings();
         $event_title = \get_the_title( $event_id );
         $event_link = \get_permalink( $event_id );
@@ -2900,18 +2998,20 @@ class Module {
                 1 + $guests,
                 $event_link
             );
-            \wp_mail( $admin_email, $subject, $message );
+            $sent = \wp_mail( $admin_email, $subject, $message );
+            if ( ! $sent ) {
+                Events_Log::error( 'email_send_returned_false', [ 'to' => $admin_email, 'subject' => $subject ] );
+            }
         }
 
         if ( ! empty( $settings['notify_user'] ) ) {
             $subject = sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title );
             $html = $this->build_registration_email_html( $event_id, $name, $status, $settings, $guests );
-            $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
-            \wp_mail( $email, $subject, $html, $headers );
+            $this->send_html_email( $email, $subject, $html );
         }
     }
 
-    private function build_registration_email_html( $event_id, $name, $status, $settings, $guests = 0 ) {
+    public function build_registration_email_html( $event_id, $name, $status, $settings, $guests = 0 ) {
         $event_title = \get_the_title( $event_id );
         $event_link = \get_permalink( $event_id );
         $image_url = \get_the_post_thumbnail_url( $event_id, 'large' );
@@ -3015,7 +3115,7 @@ class Module {
         return \add_query_arg( 'event_registration', $message, $url );
     }
 
-    private function get_settings() {
+    public function get_settings() {
         $defaults = [
             'timezone_mode' => 'site',
             'archive_hide_past' => true,

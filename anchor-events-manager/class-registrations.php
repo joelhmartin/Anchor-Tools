@@ -454,6 +454,100 @@ class Registrations {
         } );
     }
 
+    /**
+     * WooCommerce reservation routine: create DISTINCT per-seat seat records for a
+     * single order line. Unlike claim_seats() (one shared payload carrying guests
+     * for the free path), each entry in $seats carries its own attendee details.
+     *
+     * Acquires the event lock ONCE, recounts remaining capacity from the DB inside
+     * the lock (never the cache), and — for each requested seat_index — runs the
+     * (order_item_id, seat_index) existence check across ALL statuses inside the
+     * lock and SKIPS any seat that already exists (idempotency: re-firing
+     * processing→completed must not duplicate). Allocates 'confirmed' while
+     * capacity remains, else 'waitlist' when the event's waitlist toggle is on,
+     * else leaves the seat UNCREATED and flags 'overfill' (buyer already paid but
+     * no room and no waitlist — spec §9.3 finding #5/#9).
+     *
+     * @param int   $event_id Event post ID.
+     * @param array $meta     Event meta (needs 'capacity', 'waitlist').
+     * @param array $seats    Ordered map [seat_index => [
+     *     'name','email','phone','order_id','order_item_id',
+     *     'product_id','variation_id','customer_id', optional 'note'
+     * ]].
+     * @return array{created:int[],waitlisted:int[],overfill:bool,lock_unavailable:bool}
+     */
+    public function claim_woo_seats( $event_id, $meta, array $seats ) {
+        $event_id = (int) $event_id;
+
+        return $this->with_event_lock( $event_id, function ( $locked ) use ( $event_id, $meta, $seats ) {
+            $capacity         = (int) ( $meta['capacity'] ?? 0 );
+            $waitlist_enabled = ! empty( $meta['waitlist'] );
+            $unlimited        = ( $capacity <= 0 );
+
+            // Authoritative recount under the lock (spec §9.2) — never the cache.
+            $reserved  = $this->count_reserved_seats( $event_id, true );
+            $remaining = $unlimited ? PHP_INT_MAX : max( 0, $capacity - $reserved );
+
+            $created    = [];
+            $waitlisted = [];
+            $overfill   = false;
+
+            // Deterministic ascending allocation by seat_index.
+            \ksort( $seats, SORT_NUMERIC );
+
+            foreach ( $seats as $seat_index => $data ) {
+                $seat_index    = (int) $seat_index;
+                $order_item_id = (int) ( $data['order_item_id'] ?? 0 );
+
+                // Idempotency self-defense (spec §4.1 / §9.2): the existence check
+                // across any status runs INSIDE the lock, immediately before create,
+                // so a re-fire (processing→completed) never duplicates a seat.
+                if ( $order_item_id > 0 && $this->find_seat_by_item( $order_item_id, $seat_index ) ) {
+                    continue;
+                }
+
+                if ( $unlimited || $remaining >= 1 ) {
+                    $status = self::STATUS_CONFIRMED;
+                    if ( ! $unlimited ) {
+                        $remaining -= 1;
+                    }
+                } elseif ( $waitlist_enabled ) {
+                    $status = self::STATUS_WAITLIST;
+                } else {
+                    // Buyer already paid, no room, no waitlist: leave uncreated and
+                    // surface as overfill so an admin can audit (spec §9.3).
+                    $overfill = true;
+                    continue;
+                }
+
+                $seat_id = $this->create_seat( \array_merge( $data, [
+                    'event_id'   => $event_id,
+                    'status'     => $status,
+                    'seat_index' => $seat_index,
+                    'source'     => 'woocommerce',
+                    'guests'     => 0,
+                    'actor'      => 'woocommerce',
+                    'note'       => (string) ( $data['note'] ?? ( 'order #' . (int) ( $data['order_id'] ?? 0 ) ) ),
+                ] ) );
+                if ( ! $seat_id ) {
+                    continue;
+                }
+                if ( $status === self::STATUS_WAITLIST ) {
+                    $waitlisted[] = $seat_id;
+                } else {
+                    $created[] = $seat_id;
+                }
+            }
+
+            return [
+                'created'          => $created,
+                'waitlisted'       => $waitlisted,
+                'overfill'         => $overfill,
+                'lock_unavailable' => ! $locked,
+            ];
+        } );
+    }
+
     /* ---------------------------------------------------------------------
      * Queries
      * ------------------------------------------------------------------- */

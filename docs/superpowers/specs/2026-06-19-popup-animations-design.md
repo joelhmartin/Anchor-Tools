@@ -83,16 +83,52 @@ from the style's anchor edge.
 
 ### Animation definitions (CSS)
 
-Each animation is a CSS rule keyed on the `up-anim-*` classes:
+**Critical constraint:** the existing drawer/fly-in `transform` doubles as both
+*positioning* (e.g. fly-in-center uses `translateX(-50%)` to center) and the
+slide *animation*. The unified system must keep these independent, so the
+animated element's transform is **composed from two CSS variables**:
 
-- `fade` — opacity only.
-- `zoom` — opacity + `scale(.96 → 1)`.
-- `slide` — `translate` by `animation_direction` (e.g. `dir-up` = `translateY(20px → 0)`).
-- `flyin` — same translate as slide but with an overshoot easing curve
-  (`cubic-bezier(.22,.61,.36,1)`).
+```css
+transform: var(--up-pos-tx, translate(0,0)) var(--up-enter-tx, translate(0,0));
+```
 
-Easing is fixed per animation; only duration is user-configurable. Backdrop
-always cross-fades regardless of the chosen dialog animation.
+- `--up-pos-tx` — owned by the position layer. Default `translate(0,0)`;
+  `flyin-bottom` (center) sets it to `translateX(-50%)`. (`none` is invalid
+  inside a transform list, so the identity is `translate(0,0)`, not `none`.)
+- `--up-enter-tx` — owned by the animation layer. In the closed state it holds
+  the entrance offset; `.is-open` resets it to `translate(0,0)` (or `scale(1)`).
+
+The `up-anim-*` and `up-anim-dir-*` classes set `--up-enter-tx` and `opacity`:
+
+- `fade` — `opacity 0→1`, no transform offset.
+- `zoom` — `opacity 0→1` + `--up-enter-tx: scale(.94)` → `scale(1)`.
+- `slide` — `--up-enter-tx: translate*(±var(--up-slide-dist))` per direction.
+- `flyin` — same translate as slide but with overshoot easing
+  (`--up-anim-ease: cubic-bezier(.22,.61,.36,1)`).
+
+`--up-slide-dist` controls travel distance: default `24px` for centered popups;
+drawer styles override to `100%` (full panel off-screen); fly-in styles override
+to `calc(100% + 40px)` (matching today's fly-in travel).
+
+`--up-anim-dir-*` maps direction → offset (direction = edge it comes *from*):
+`up` = `translateY(calc(-1 * dist))`, `down` = `translateY(dist)`,
+`left` = `translateX(calc(-1 * dist))`, `right` = `translateX(dist)`.
+
+`auto` resolution → classes:
+- `modal` / `theater` → `up-anim-zoom`
+- `drawer-right` → `up-anim-slide up-anim-dir-right`; `drawer-left` → `dir-left`;
+  `drawer-bottom` → `dir-down`
+- `flyin-bottom*` → `up-anim-flyin up-anim-dir-down`
+
+Easing is fixed per animation (`--up-anim-ease`); only duration is
+user-configurable (`--up-anim-dur`). Backdrop always cross-fades
+(`opacity 0→1`) on the animated, non-fullscreen path; fly-ins have no backdrop
+so it's a no-op there.
+
+All new CSS is gated behind an `up-anim-*` class on `.up-modal`. Popups with
+`none` (or no class) keep today's instant behavior. Fullscreen takeover never
+receives an `up-anim-*` class (its `attach()` path returns before the shell is
+built), so its FLIP animation is untouched.
 
 ### `none`
 
@@ -125,9 +161,13 @@ opacity fade (or instant), so the popup still appears/closes but without motion.
 - `anchor-universal-popups/assets/frontend.css`
   - transition states per animation + direction; remove old drawer/flyin
     `@keyframes`; reduced-motion media query.
-- Rebuild `frontend.min.css` / `frontend.min.js`; bump the `wp_enqueue_*` version
-  strings.
-- Bump plugin `Version:` header per release process.
+- **Min/version note:** `frontend.min.css` / `frontend.min.js` are **gitignored**
+  and built by CI (`bin/build-assets.mjs` via `.github/workflows/release.yml`) on
+  release — no manual minify step. Enqueue cache-busting uses `filemtime()` on
+  the source files, so editing source is enough; no manual enqueue version bump.
+  For **local testing**, define `SCRIPT_DEBUG` true (so the loader serves source,
+  not the stale local `.min`) or delete the local `.min` files.
+- Bump plugin `Version:` header per release process (at release time).
 
 ## Testing (manual, no automated suite)
 

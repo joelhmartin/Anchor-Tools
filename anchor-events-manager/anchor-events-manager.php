@@ -17,6 +17,9 @@ class Module {
     /** @var Registrations Seat data-access layer (always loaded). */
     public $registrations = null;
 
+    /** @var WooCommerce|null WC integration; null when WooCommerce is inactive. */
+    public $woocommerce = null;
+
     public function __construct() {
         self::$instance = $this;
 
@@ -26,7 +29,13 @@ class Module {
         require_once $dir . 'class-registrations.php';
         $this->registrations = new Registrations( $this );
         // NOTE: class-roster.php / new Roster() deferred to Phase 5.
-        // NOTE: class-woocommerce.php loader (WC-gated) added in Phase 1.
+
+        // WC-gated integration loader (spec §3). Loads only when WooCommerce is
+        // active; $this->woocommerce stays null otherwise and is never dereferenced.
+        if ( \class_exists( 'WooCommerce' ) ) {
+            require_once $dir . 'class-woocommerce.php';
+            $this->woocommerce = new WooCommerce( $this, $this->registrations );
+        }
 
         \add_action( 'init', [ $this, 'register_cpt' ] );
         \add_action( 'init', [ $this, 'register_taxonomies' ] );
@@ -748,6 +757,63 @@ class Module {
         <?php if ( $waitlist ) : ?>
             <p><strong><?php echo esc_html__( 'Waitlist', 'anchor-schema' ); ?>:</strong> <?php echo esc_html( $waitlist ); ?></p>
         <?php endif; ?>
+        <?php
+        // Read-only WooCommerce linking mirror (spec §5.5). Shown when WooCommerce
+        // is active and at least one product/variation registers for this event.
+        if ( \class_exists( 'WooCommerce' ) ) {
+            $linked = \get_post_meta( $post->ID, $this->meta_key( 'linked_products' ), true );
+            if ( is_array( $linked ) && ! empty( $linked ) ) :
+                ?>
+                <div class="notice notice-info inline anchor-event-linked-products" style="margin:12px 0;padding:8px 12px;">
+                    <p><strong><?php echo esc_html__( 'Registers via:', 'anchor-schema' ); ?></strong></p>
+                    <ul style="margin:4px 0 4px 18px;list-style:disc;">
+                        <?php foreach ( $linked as $link ) :
+                            $product_id   = isset( $link['product_id'] ) ? (int) $link['product_id'] : 0;
+                            $variation_id = isset( $link['variation_id'] ) ? (int) $link['variation_id'] : 0;
+                            if ( $product_id <= 0 || \get_post_type( $product_id ) !== 'product' || \get_post_status( $product_id ) === 'trash' ) :
+                                ?>
+                                <li><?php echo esc_html__( '(product removed)', 'anchor-schema' ); ?></li>
+                                <?php
+                                continue;
+                            endif;
+                            $edit_link = \get_edit_post_link( $product_id );
+                            $title     = \get_the_title( $product_id );
+                            $var_label = '';
+                            if ( $variation_id > 0 && \function_exists( 'wc_get_product' ) ) {
+                                $variation = \wc_get_product( $variation_id );
+                                if ( $variation && \function_exists( 'wc_get_formatted_variation' ) ) {
+                                    $var_label = \wp_strip_all_tags( \wc_get_formatted_variation( $variation, true ) );
+                                }
+                            }
+                            ?>
+                            <li>
+                                <?php if ( $edit_link ) : ?>
+                                    <a href="<?php echo esc_url( $edit_link ); ?>"><?php echo esc_html( $title ); ?></a>
+                                <?php else : ?>
+                                    <?php echo esc_html( $title ); ?>
+                                <?php endif; ?>
+                                <span class="description">(#<?php echo esc_html( $product_id ); ?><?php
+                                    if ( $variation_id > 0 ) {
+                                        echo ' &middot; ' . esc_html__( 'variation', 'anchor-schema' ) . ' #' . esc_html( $variation_id );
+                                    }
+                                ?>)</span>
+                                <?php if ( $var_label ) : ?>
+                                    &mdash; <?php echo esc_html( $var_label ); ?>
+                                <?php endif; ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                    <p class="description">
+                        <?php echo esc_html__( 'The public free registration form will be replaced by WooCommerce checkout once paid checkout is enabled (coming soon). For now the free form remains active on this event.', 'anchor-schema' ); ?>
+                    </p>
+                    <p class="description">
+                        <?php echo esc_html__( 'Recommended: disable "Manage stock" on the linked product(s) so event capacity is the single source of truth for availability.', 'anchor-schema' ); ?>
+                    </p>
+                </div>
+                <?php
+            endif;
+        }
+        ?>
         <p>
             <a class="button" href="<?php echo esc_url( $export_url ); ?>"><?php echo esc_html__( 'Export CSV', 'anchor-schema' ); ?></a>
         </p>

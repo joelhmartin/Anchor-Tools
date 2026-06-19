@@ -27,6 +27,23 @@ if ( ! defined( 'ANCHOR_SCHEMA_URL' ) ) {
     define( 'ANCHOR_SCHEMA_URL', ANCHOR_TOOLS_PLUGIN_URL );
 }
 
+/**
+ * Declare WooCommerce HPOS (custom order tables) compatibility.
+ *
+ * Registered at file scope (NOT inside the priority-25 module bootstrap) because
+ * `before_woocommerce_init` can fire before that bootstrap. Self-no-ops when
+ * WooCommerce / the FeaturesUtil class is absent.
+ */
+add_action( 'before_woocommerce_init', function () {
+    if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
+            'custom_order_tables',
+            ANCHOR_TOOLS_PLUGIN_FILE,
+            true
+        );
+    }
+} );
+
 $acg_autoload = ANCHOR_TOOLS_PLUGIN_DIR . 'vendor/autoload.php';
 if ( file_exists( $acg_autoload ) ) {
     require_once $acg_autoload;

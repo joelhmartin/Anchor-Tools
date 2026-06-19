@@ -109,6 +109,10 @@ class Module {
 
         // Bug #5: capture wp_mail failures into the events error log.
         \add_action( 'wp_mail_failed', [ $this, 'capture_mail_failure' ] );
+
+        // Phase 6: clear the site-wide error log (Events settings tab panel). Lives
+        // here (not the WC class) because the error log exists on all sites.
+        \add_action( 'admin_post_anchor_events_clear_error_log', [ $this, 'handle_clear_error_log' ] );
     }
 
     /**
@@ -2537,6 +2541,63 @@ class Module {
             <?php
         }, 'anchor_events_settings', 'anchor_events_registration' );
 
+        // Phase 6 — WooCommerce registration emails. Rendered only when WC is active.
+        if ( \class_exists( 'WooCommerce' ) ) {
+            \add_settings_section( 'anchor_events_wc_emails', __( 'WooCommerce Registration Emails', 'anchor-schema' ), function() {
+                echo '<p>' . esc_html__( 'Emails for paid event registrations created through WooCommerce orders. Subject tokens: {event_title}, {site_name}, {order_number}, {buyer_name}, {remaining_seats}, {seat_count}.', 'anchor-schema' ) . '</p>';
+            }, 'anchor_events_settings' );
+
+            \add_settings_field( 'wc_notify_customer', __( 'Customer confirmation', 'anchor-schema' ), function() {
+                $opts = $this->get_settings();
+                ?>
+                <label>
+                    <input type="checkbox" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[wc_notify_customer]" value="1" <?php checked( $opts['wc_notify_customer'] ); ?> />
+                    <?php echo esc_html__( 'Send one confirmation email per order to the buyer when seats are confirmed', 'anchor-schema' ); ?>
+                </label>
+                <?php
+            }, 'anchor_events_settings', 'anchor_events_wc_emails' );
+
+            \add_settings_field( 'wc_customer_subject', __( 'Customer email subject', 'anchor-schema' ), function() {
+                $opts = $this->get_settings();
+                ?>
+                <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[wc_customer_subject]" value="<?php echo esc_attr( $opts['wc_customer_subject'] ); ?>" class="regular-text" />
+                <?php
+            }, 'anchor_events_settings', 'anchor_events_wc_emails' );
+
+            \add_settings_field( 'wc_customer_intro', __( 'Customer email intro', 'anchor-schema' ), function() {
+                $opts = $this->get_settings();
+                ?>
+                <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[wc_customer_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['wc_customer_intro'] ); ?></textarea>
+                <p class="description"><?php echo esc_html__( 'Shown above the seat list in the buyer confirmation. Plain text; line breaks become paragraphs.', 'anchor-schema' ); ?></p>
+                <?php
+            }, 'anchor_events_settings', 'anchor_events_wc_emails' );
+
+            \add_settings_field( 'wc_notify_organizer', __( 'Organizer notification', 'anchor-schema' ), function() {
+                $opts = $this->get_settings();
+                ?>
+                <label>
+                    <input type="checkbox" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[wc_notify_organizer]" value="1" <?php checked( $opts['wc_notify_organizer'] ); ?> />
+                    <?php echo esc_html__( 'Notify the organizer when seats are confirmed or released', 'anchor-schema' ); ?>
+                </label>
+                <?php
+            }, 'anchor_events_settings', 'anchor_events_wc_emails' );
+
+            \add_settings_field( 'wc_organizer_subject', __( 'Organizer email subject', 'anchor-schema' ), function() {
+                $opts = $this->get_settings();
+                ?>
+                <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[wc_organizer_subject]" value="<?php echo esc_attr( $opts['wc_organizer_subject'] ); ?>" class="regular-text" />
+                <?php
+            }, 'anchor_events_settings', 'anchor_events_wc_emails' );
+
+            \add_settings_field( 'organizer_email', __( 'Default organizer email', 'anchor-schema' ), function() {
+                $opts = $this->get_settings();
+                ?>
+                <input type="email" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[organizer_email]" value="<?php echo esc_attr( $opts['organizer_email'] ); ?>" class="regular-text" />
+                <p class="description"><?php echo esc_html__( 'Fallback recipient for organizer notices. A per-event organizer email overrides this; if both are blank, the site admin email is used.', 'anchor-schema' ); ?></p>
+                <?php
+            }, 'anchor_events_settings', 'anchor_events_wc_emails' );
+        }
+
         \add_settings_section( 'anchor_events_slugs', __( 'Permalinks', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Customize event URL slugs.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
@@ -2569,6 +2630,27 @@ class Module {
             $output['event_slug'] = $defaults['event_slug'];
         }
 
+        // Phase 6 — WooCommerce email settings. Only read from $input when the WC
+        // subsection actually renders (class_exists). Otherwise preserve the stored
+        // values so a non-WC save doesn't clobber them.
+        if ( \class_exists( 'WooCommerce' ) ) {
+            $output['wc_notify_customer']   = ! empty( $input['wc_notify_customer'] );
+            $output['wc_notify_organizer']  = ! empty( $input['wc_notify_organizer'] );
+            $output['wc_customer_subject']  = sanitize_text_field( $input['wc_customer_subject'] ?? $defaults['wc_customer_subject'] );
+            $output['wc_customer_intro']    = sanitize_textarea_field( $input['wc_customer_intro'] ?? $defaults['wc_customer_intro'] );
+            $output['wc_organizer_subject'] = sanitize_text_field( $input['wc_organizer_subject'] ?? $defaults['wc_organizer_subject'] );
+            $output['organizer_email']      = sanitize_email( $input['organizer_email'] ?? '' );
+        } else {
+            $output['wc_notify_customer']   = $defaults['wc_notify_customer'];
+            $output['wc_notify_organizer']  = $defaults['wc_notify_organizer'];
+            $output['wc_customer_subject']  = $defaults['wc_customer_subject'];
+            $output['wc_customer_intro']    = $defaults['wc_customer_intro'];
+            $output['wc_organizer_subject'] = $defaults['wc_organizer_subject'];
+            $output['organizer_email']      = $defaults['organizer_email'];
+        }
+        // Reserved/unused — preserve stored value (no UI field).
+        $output['notify_attendee'] = $defaults['notify_attendee'];
+
         return $output;
     }
 
@@ -2589,6 +2671,83 @@ class Module {
         \do_settings_sections( 'anchor_events_settings' );
         \submit_button();
         echo '</form>';
+
+        $this->render_error_log_panel();
+    }
+
+    /**
+     * Read-only "Event error log" panel for the Events settings tab. Shows the most
+     * recent entries from the site-wide anchor_events_error_log option and a nonced
+     * "Clear error log" button. Capped to users with edit_others_posts.
+     */
+    private function render_error_log_panel() {
+        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+            return;
+        }
+
+        $log = \get_option( Events_Log::ERROR_OPTION, [] );
+        if ( ! \is_array( $log ) ) {
+            $log = [];
+        }
+
+        echo '<hr style="margin:24px 0;" />';
+        echo '<h2>' . \esc_html__( 'Event error log', 'anchor-schema' ) . '</h2>';
+        echo '<p class="description">' . \esc_html__( 'Recent registration/email/sync failures. Most recent first.', 'anchor-schema' ) . '</p>';
+
+        if ( isset( $_GET['anchor_events_log_cleared'] ) ) {
+            echo '<div class="notice notice-success inline"><p>' . \esc_html__( 'Error log cleared.', 'anchor-schema' ) . '</p></div>';
+        }
+
+        if ( empty( $log ) ) {
+            echo '<p>' . \esc_html__( 'No errors logged.', 'anchor-schema' ) . '</p>';
+            return;
+        }
+
+        echo '<table class="widefat striped" style="max-width:840px;">';
+        echo '<thead><tr>';
+        echo '<th>' . \esc_html__( 'Time', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Code', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Context', 'anchor-schema' ) . '</th>';
+        echo '</tr></thead><tbody>';
+        foreach ( \array_slice( \array_reverse( $log ), 0, 100 ) as $entry ) {
+            $time    = isset( $entry['time'] ) ? (int) $entry['time'] : 0;
+            $code    = isset( $entry['code'] ) ? (string) $entry['code'] : '';
+            $context = isset( $entry['context'] ) ? $entry['context'] : [];
+            $when    = $time ? \date_i18n( 'Y-m-d H:i:s', $time ) : '';
+            $ctx_str = \is_scalar( $context ) ? (string) $context : \wp_json_encode( $context );
+            echo '<tr>';
+            echo '<td>' . \esc_html( $when ) . '</td>';
+            echo '<td><code>' . \esc_html( $code ) . '</code></td>';
+            echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
+            echo '</tr>';
+        }
+        echo '</tbody></table>';
+
+        echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-top:12px;">';
+        echo '<input type="hidden" name="action" value="anchor_events_clear_error_log" />';
+        \wp_nonce_field( 'anchor_events_clear_error_log' );
+        \submit_button( \__( 'Clear error log', 'anchor-schema' ), 'delete', 'submit', false );
+        echo '</form>';
+    }
+
+    /**
+     * admin-post handler: clear the site-wide event error log. Cap edit_others_posts
+     * + nonce. Lives in the Module (not the WC class) because the error log and its
+     * panel are present on all sites, WooCommerce or not.
+     */
+    public function handle_clear_error_log() {
+        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+            \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
+        }
+        \check_admin_referer( 'anchor_events_clear_error_log' );
+        \delete_option( Events_Log::ERROR_OPTION );
+
+        $redirect = \wp_get_referer();
+        if ( ! $redirect ) {
+            $redirect = \admin_url();
+        }
+        \wp_safe_redirect( \add_query_arg( 'anchor_events_log_cleared', '1', $redirect ) );
+        exit;
     }
 
     public function handle_settings_update( $old, $new ) {
@@ -3034,14 +3193,91 @@ class Module {
         }
     }
 
-    public function build_registration_email_html( $event_id, $name, $status, $settings, $guests = 0 ) {
-        $event_title = \get_the_title( $event_id );
-        $event_link = \get_permalink( $event_id );
-        $image_url = \get_the_post_thumbnail_url( $event_id, 'large' );
-        $site_name = \get_bloginfo( 'name' );
-        $message = isset( $settings['confirmation_message'] ) && $settings['confirmation_message'] !== ''
-            ? $settings['confirmation_message']
-            : __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' );
+    /**
+     * Replace {token} placeholders in a template string.
+     *
+     * Supported tokens depend on the caller; the array keys (without braces) are
+     * the token names. Values are cast to string. Used for email subjects/intros.
+     *
+     * @param string $template
+     * @param array  $tokens  [ token_name => value ].
+     * @return string
+     */
+    public function expand_email_tokens( $template, array $tokens ) {
+        $search  = [];
+        $replace = [];
+        foreach ( $tokens as $key => $value ) {
+            $search[]  = '{' . $key . '}';
+            $replace[] = (string) $value;
+        }
+        return \str_replace( $search, $replace, (string) $template );
+    }
+
+    /**
+     * Build the registration confirmation email HTML.
+     *
+     * Phase 6: accepts a single `$ctx` array (keys: event_id, name, status,
+     * intro_message, guests, detail_rows[[label,value]], seat_list[], cta_label,
+     * cta_url). A back-compat shim keeps the legacy positional free-path call
+     * `build_registration_email_html( $event_id, $name, $status, $settings, $guests )`
+     * working by detecting the legacy arg shape and constructing a $ctx from it.
+     *
+     * The `anchor_events_registration_email_html` filter is preserved (now passed
+     * `$html, $ctx`).
+     *
+     * @param array|int   $arg      $ctx array OR legacy event_id int.
+     * @param string|null $name     Legacy positional attendee name.
+     * @param string|null $status   Legacy positional status.
+     * @param array|null  $settings Legacy positional settings.
+     * @param int         $guests   Legacy positional guest count.
+     * @return string
+     */
+    public function build_registration_email_html( $arg, $name = null, $status = null, $settings = null, $guests = 0 ) {
+        // Back-compat shim: positional free-path call passes an int event_id.
+        if ( \is_array( $arg ) ) {
+            $ctx = $arg;
+        } else {
+            $settings = \is_array( $settings ) ? $settings : $this->get_settings();
+            $intro    = isset( $settings['confirmation_message'] ) && $settings['confirmation_message'] !== ''
+                ? $settings['confirmation_message']
+                : __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' );
+            $ctx = [
+                'event_id'      => (int) $arg,
+                'name'          => (string) $name,
+                'status'        => (string) $status,
+                'intro_message' => $intro,
+                'guests'        => (int) $guests,
+                'detail_rows'   => [],
+                'seat_list'     => [],
+                'cta_label'     => __( 'View event details', 'anchor-schema' ),
+                'cta_url'       => \get_permalink( (int) $arg ),
+            ];
+        }
+
+        $ctx = \wp_parse_args( $ctx, [
+            'event_id'      => 0,
+            'name'          => '',
+            'status'        => 'confirmed',
+            'intro_message' => '',
+            'guests'        => 0,
+            'detail_rows'   => [],
+            'seat_list'     => [],
+            'cta_label'     => __( 'View event details', 'anchor-schema' ),
+            'cta_url'       => '',
+        ] );
+
+        $event_id    = (int) $ctx['event_id'];
+        $name        = (string) $ctx['name'];
+        $status      = (string) $ctx['status'];
+        $guests      = max( 0, (int) $ctx['guests'] );
+        $event_title = $event_id ? \get_the_title( $event_id ) : \get_bloginfo( 'name' );
+        $image_url   = $event_id ? \get_the_post_thumbnail_url( $event_id, 'large' ) : '';
+        $site_name   = \get_bloginfo( 'name' );
+        $cta_label   = (string) $ctx['cta_label'];
+        $cta_url     = (string) $ctx['cta_url'];
+        $message     = (string) $ctx['intro_message'];
+        $detail_rows = \is_array( $ctx['detail_rows'] ) ? $ctx['detail_rows'] : [];
+        $seat_list   = \is_array( $ctx['seat_list'] ) ? $ctx['seat_list'] : [];
 
         $paragraphs = '';
         foreach ( preg_split( "/(\r\n|\n|\r){2,}/", trim( $message ) ) as $block ) {
@@ -3105,13 +3341,34 @@ class Module {
                                             <?php echo esc_html__( 'You are currently on the waitlist and will be notified if a spot opens up.', 'anchor-schema' ); ?>
                                         </p>
                                     <?php endif; ?>
+                                    <?php if ( ! empty( $detail_rows ) ) : ?>
+                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
+                                            <?php foreach ( $detail_rows as $row ) :
+                                                $label = isset( $row['label'] ) ? (string) $row['label'] : '';
+                                                $value = isset( $row['value'] ) ? (string) $row['value'] : '';
+                                                if ( $label === '' && $value === '' ) { continue; } ?>
+                                                <tr>
+                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;"><?php echo esc_html( $label ); ?></td>
+                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;"><?php echo esc_html( $value ); ?></td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </table>
+                                    <?php endif; ?>
+                                    <?php if ( ! empty( $seat_list ) ) : ?>
+                                        <p style="margin:0 0 6px;font-size:14px;font-weight:600;color:#333;"><?php echo esc_html__( 'Attendees', 'anchor-schema' ); ?></p>
+                                        <ul style="margin:0 0 16px;padding:0 0 0 18px;font-size:14px;line-height:1.6;color:#333;">
+                                            <?php foreach ( $seat_list as $seat ) : ?>
+                                                <li><?php echo esc_html( (string) $seat ); ?></li>
+                                            <?php endforeach; ?>
+                                        </ul>
+                                    <?php endif; ?>
                                 </td>
                             </tr>
-                            <?php if ( $event_link ) : ?>
+                            <?php if ( $cta_url && $cta_label ) : ?>
                             <tr>
                                 <td style="padding:8px 32px 32px;">
-                                    <a href="<?php echo esc_url( $event_link ); ?>" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        <?php echo esc_html__( 'View event details', 'anchor-schema' ); ?>
+                                    <a href="<?php echo esc_url( $cta_url ); ?>" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                        <?php echo esc_html( $cta_label ); ?>
                                     </a>
                                 </td>
                             </tr>
@@ -3130,7 +3387,7 @@ class Module {
         <?php
         $html = ob_get_clean();
 
-        return \apply_filters( 'anchor_events_registration_email_html', $html, $event_id, $name, $status, $settings, $guests );
+        return \apply_filters( 'anchor_events_registration_email_html', $html, $ctx );
     }
 
     private function with_message( $url, $message ) {
@@ -3152,6 +3409,15 @@ class Module {
             'register_button_label' => '',
             'register_button_color' => '#0f766e',
             'event_slug' => 'event',
+            // Phase 6 — WooCommerce registration emails (used only when WC active).
+            'wc_notify_customer'   => true,
+            'wc_notify_organizer'  => true,
+            'wc_customer_subject'  => __( 'Your event registration is confirmed', 'anchor-schema' ),
+            'wc_customer_intro'    => __( 'Thank you for your order. Your registration is confirmed — the details are below.', 'anchor-schema' ),
+            'wc_organizer_subject' => __( 'New event registration: {event_title}', 'anchor-schema' ),
+            'organizer_email'      => '',
+            // Reserved/unused in MVP (per-attendee emails are deferred).
+            'notify_attendee'      => false,
         ];
         $settings = \get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $settings ) ) {

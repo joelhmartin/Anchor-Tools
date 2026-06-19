@@ -39,6 +39,13 @@ class WooCommerce {
     /** Target event id on product (simple) or variation (per-session). */
     const META_EVENT_ID = '_anchor_evt_link_event_id';
 
+    /**
+     * Order meta: which Phase 6 emails have already been sent for this order, so a
+     * re-fired reconcile pass never re-spams. Associative: 'customer' => ts,
+     * 'organizer:{event_id}' => ts. Written via WC CRUD (HPOS-safe).
+     */
+    const EMAILS_SENT_META = '_anchor_event_emails_sent';
+
     /** @var Module */
     private $module;
 
@@ -136,6 +143,16 @@ class WooCommerce {
         // Manual "Resync order" button + per-order seat metabox.
         \add_action( 'admin_post_anchor_event_resync_order', [ $this, 'handle_resync_order' ] );
         \add_action( 'add_meta_boxes', [ $this, 'register_order_metabox' ], 30, 2 );
+
+        /* -----------------------------------------------------------------
+         * Phase 6 — emails, needs-review notices, manual order actions
+         * --------------------------------------------------------------- */
+
+        // Needs-review admin notices on Events list / WC Orders / Events settings.
+        \add_action( 'admin_notices', [ $this, 'render_needs_review_notice' ] );
+        // Per-order metabox buttons: clear review + resend buyer confirmation.
+        \add_action( 'admin_post_anchor_events_clear_review', [ $this, 'handle_clear_review' ] );
+        \add_action( 'admin_post_anchor_events_resend_confirmation', [ $this, 'handle_resend_confirmation' ] );
 
         /* -----------------------------------------------------------------
          * Phase 4 — refunds (full / partial line / amount-only needs-review)
@@ -1172,6 +1189,8 @@ class WooCommerce {
         // Local accumulators flushed once at end of pass.
         $log_entries  = [];
         $review_flags = [];
+        // Per-event seat-change tally for Phase 6 emails: [ event_id => [confirmed, waitlist, released] ].
+        $email_events = [];
 
         try {
             $order_status  = $order->get_status(); // slug, no "wc-" prefix.
@@ -1221,9 +1240,15 @@ class WooCommerce {
                     $billing,
                     (string) $reason,
                     $log_entries,
-                    $review_flags
+                    $review_flags,
+                    $email_events
                 );
             }
+
+            // Phase 6: send buyer/organizer emails for this pass's seat changes.
+            // Appends to $log_entries/$review_flags + writes the emails-sent gate
+            // onto $order; everything rides the SINGLE batched save below.
+            $this->dispatch_emails( $order, $email_events, $log_entries, $review_flags );
 
             // Flush accumulators onto the order meta, then a SINGLE batched save.
             $this->apply_order_log( $order, $log_entries );
@@ -1253,8 +1278,9 @@ class WooCommerce {
      * @param string    $reason
      * @param array     $log_entries   (by ref)
      * @param array     $review_flags  (by ref)
+     * @param array     $email_events  (by ref) per-event seat-change tally (Phase 6).
      */
-    private function reconcile_line( $order, $order_id, $item, $item_id, $event_id, $active_target, $removal_status, array $billing, $reason, array &$log_entries, array &$review_flags ) {
+    private function reconcile_line( $order, $order_id, $item, $item_id, $event_id, $active_target, $removal_status, array $billing, $reason, array &$log_entries, array &$review_flags, array &$email_events ) {
         // Expected active seat count for this line. Terminal/null target ⇒ 0.
         // Refund-safe: get_qty_refunded_for_item sign is version-dependent ⇒ abs()
         // (finding #1). Cumulative across all refunds ⇒ re-fire safe.
@@ -1486,6 +1512,34 @@ class WooCommerce {
         }
         if ( ! empty( $result['lock_unavailable'] ) && ( ! empty( $result['created'] ) || ! empty( $result['revived'] ) ) ) {
             $review_flags[] = $this->make_flag( 'capacity_lock_unavailable', 'event ' . $event_id );
+        }
+
+        // Phase 6: tally this pass's seat changes per event so reconcile_order can
+        // fire the right emails (trigger matrix §11.4). Newly-active seats are
+        // categorized confirmed vs waitlist by their resulting status; pending
+        // (on-hold) seats trigger no email. Releases count only when the surplus
+        // status is cancelled/refunded (failed never emails).
+        $confirmed_new = 0;
+        $waitlist_new  = 0;
+        foreach ( \array_merge( $result['created'], $result['revived'], $result['flipped'] ) as $sid ) {
+            $st = (string) \get_post_meta( (int) $sid, '_anchor_event_reg_status', true );
+            if ( $st === Registrations::STATUS_CONFIRMED ) {
+                $confirmed_new++;
+            } elseif ( $st === Registrations::STATUS_WAITLIST ) {
+                $waitlist_new++;
+            }
+        }
+        $released_new = \in_array( $removal_status, [ Registrations::STATUS_CANCELLED, Registrations::STATUS_REFUNDED ], true )
+            ? \count( $result['removed'] )
+            : 0;
+
+        if ( $confirmed_new || $waitlist_new || $released_new ) {
+            if ( ! isset( $email_events[ $event_id ] ) ) {
+                $email_events[ $event_id ] = [ 'confirmed' => 0, 'waitlist' => 0, 'released' => 0 ];
+            }
+            $email_events[ $event_id ]['confirmed'] += $confirmed_new;
+            $email_events[ $event_id ]['waitlist']  += $waitlist_new;
+            $email_events[ $event_id ]['released']  += $released_new;
         }
     }
 
@@ -1727,6 +1781,438 @@ class WooCommerce {
     }
 
     /* ---------------------------------------------------------------------
+     * Phase 6 — registration emails (from the confirmed sync path only)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Send Phase 6 emails for the seat changes accumulated during a reconcile pass.
+     * Customer confirmation is ONE per order (gated by emails_sent['customer']);
+     * organizer notices are one per order per event (gated by
+     * emails_sent['organizer:{id}']) plus a seats-released notice when the pass
+     * released seats (naturally idempotent — a converged re-fire releases nothing).
+     *
+     * Appends to $log_entries / $review_flags (by ref) and writes the emails-sent
+     * gate via $order->update_meta_data — it does NOT save (the caller batches one
+     * $order->save() at end of pass, inside the in-flight guard — finding #3).
+     *
+     * @param \WC_Order $order
+     * @param array     $email_events [ event_id => [confirmed,waitlist,released] ].
+     * @param array     $log_entries  (by ref)
+     * @param array     $review_flags (by ref)
+     */
+    private function dispatch_emails( \WC_Order $order, array $email_events, array &$log_entries, array &$review_flags ) {
+        if ( empty( $email_events ) ) {
+            return;
+        }
+
+        $settings         = $this->module->get_settings();
+        $notify_customer  = ! empty( $settings['wc_notify_customer'] );
+        $notify_organizer = ! empty( $settings['wc_notify_organizer'] );
+        $order_id         = (int) $order->get_id();
+
+        $sent = $order->get_meta( self::EMAILS_SENT_META );
+        if ( ! \is_array( $sent ) ) {
+            $sent = [];
+        }
+
+        // Did any event gain newly-active (confirmed/waitlist) seats this pass?
+        $has_new_active = false;
+        foreach ( $email_events as $ev ) {
+            if ( ! empty( $ev['confirmed'] ) || ! empty( $ev['waitlist'] ) ) {
+                $has_new_active = true;
+                break;
+            }
+        }
+
+        // Customer confirmation — ONE per order, gated by 'customer'.
+        if ( $notify_customer && $has_new_active && empty( $sent['customer'] ) ) {
+            if ( $this->send_customer_confirmation( $order, $settings ) ) {
+                $sent['customer'] = \time();
+                $log_entries[]    = $this->make_log_entry( 'Customer confirmation email sent.', [ 'to' => $order->get_billing_email() ] );
+            } else {
+                $review_flags[] = $this->make_flag( 'customer_email_failed', 'order #' . $order_id );
+                $log_entries[]  = $this->make_log_entry( 'Customer confirmation email FAILED.', [ 'to' => $order->get_billing_email() ] );
+            }
+        }
+
+        // Organizer notices — per event.
+        foreach ( $email_events as $event_id => $ev ) {
+            $event_id    = (int) $event_id;
+            $has_confirm = ( ! empty( $ev['confirmed'] ) || ! empty( $ev['waitlist'] ) );
+            $has_release = ! empty( $ev['released'] );
+            $gate_key    = 'organizer:' . $event_id;
+
+            if ( $notify_organizer && $has_confirm && empty( $sent[ $gate_key ] ) ) {
+                if ( $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed' ) ) {
+                    $sent[ $gate_key ] = \time();
+                    $log_entries[]     = $this->make_log_entry( 'Organizer notice sent.', [ 'event' => $event_id ] );
+                } else {
+                    $log_entries[] = $this->make_log_entry( 'Organizer notice FAILED.', [ 'event' => $event_id ] );
+                }
+            }
+
+            // Seats-released organizer notice (cancelled/refunded). Not gated by
+            // emails_sent: idempotent because reconcile only releases seats once.
+            if ( $notify_organizer && $has_release ) {
+                if ( $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released' ) ) {
+                    $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice sent.', [ 'event' => $event_id, 'released' => (int) $ev['released'] ] );
+                } else {
+                    $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice FAILED.', [ 'event' => $event_id ] );
+                }
+            }
+        }
+
+        $order->update_meta_data( self::EMAILS_SENT_META, $sent );
+    }
+
+    /**
+     * Current non-terminal (confirmed/pending/waitlist) seats for an order, grouped
+     * by event id. Reads SEAT post meta (REG_CPT posts — not the order), so it is
+     * HPOS-safe; no order postmeta is touched.
+     *
+     * @param int $order_id
+     * @return array<int,array<int,array>> [ event_id => [ {id,name,status,seat_index} ] ].
+     */
+    private function collect_order_seats( $order_id ) {
+        $by_event = [];
+        $active   = [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING, Registrations::STATUS_WAITLIST ];
+        foreach ( $this->registrations->get_seats_for_order( (int) $order_id ) as $sid ) {
+            $sid    = (int) $sid;
+            $status = (string) \get_post_meta( $sid, '_anchor_event_reg_status', true );
+            if ( $status === '' ) {
+                $status = Registrations::STATUS_CONFIRMED;
+            }
+            if ( ! \in_array( $status, $active, true ) ) {
+                continue;
+            }
+            $event_id              = (int) \get_post_meta( $sid, '_anchor_event_id', true );
+            $by_event[ $event_id ][] = [
+                'id'         => $sid,
+                'name'       => (string) \get_post_meta( $sid, '_anchor_event_name', true ),
+                'status'     => $status,
+                'seat_index' => (int) \get_post_meta( $sid, '_anchor_event_seat_index', true ),
+            ];
+        }
+        return $by_event;
+    }
+
+    /**
+     * Build + send the one-per-order buyer confirmation listing all current active
+     * seats across every event line. Returns the send result (false → caller flags
+     * customer_email_failed). Also used by the manual "Resend confirmation" button.
+     *
+     * @param \WC_Order $order
+     * @param array     $settings Module settings.
+     * @return bool
+     */
+    private function send_customer_confirmation( \WC_Order $order, array $settings ) {
+        $to = (string) $order->get_billing_email();
+        if ( $to === '' ) {
+            return false;
+        }
+        $order_id = (int) $order->get_id();
+        $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
+        $by_event = $this->collect_order_seats( $order_id );
+
+        $seat_list    = [];
+        $detail_rows  = [];
+        $any_waitlist = false;
+        $total_seats  = 0;
+        $primary_id   = 0;
+        foreach ( $by_event as $event_id => $seats ) {
+            $event_id = (int) $event_id;
+            if ( $primary_id === 0 ) {
+                $primary_id = $event_id;
+            }
+            $count         = \count( $seats );
+            $detail_rows[] = [
+                'label' => \get_the_title( $event_id ),
+                'value' => \sprintf( \_n( '%d seat', '%d seats', $count, 'anchor-schema' ), $count ),
+            ];
+            foreach ( $seats as $s ) {
+                $label = $s['name'] !== '' ? $s['name'] : \__( 'Guest', 'anchor-schema' );
+                if ( $s['status'] === Registrations::STATUS_WAITLIST ) {
+                    $any_waitlist = true;
+                    $label       .= ' — ' . \__( 'waitlisted', 'anchor-schema' );
+                }
+                $seat_list[] = \sprintf( '%s (%s)', $label, \get_the_title( $event_id ) );
+                $total_seats++;
+            }
+        }
+        if ( $total_seats === 0 ) {
+            return true; // Nothing active to confirm — treat as a no-op success.
+        }
+
+        $tokens = [
+            'site_name'    => \get_bloginfo( 'name' ),
+            'buyer_name'   => $buyer,
+            'order_number' => $order->get_order_number(),
+            'seat_count'   => $total_seats,
+            'event_title'  => $primary_id ? \get_the_title( $primary_id ) : '',
+        ];
+        $subject = $this->module->expand_email_tokens(
+            $settings['wc_customer_subject'] !== '' ? $settings['wc_customer_subject'] : \__( 'Your event registration is confirmed', 'anchor-schema' ),
+            $tokens
+        );
+        $intro = $this->module->expand_email_tokens(
+            $settings['wc_customer_intro'] !== '' ? $settings['wc_customer_intro'] : \__( 'Thank you for your order. Your registration is confirmed — the details are below.', 'anchor-schema' ),
+            $tokens
+        );
+
+        $ctx = [
+            'event_id'      => $primary_id,
+            'name'          => $buyer,
+            'status'        => $any_waitlist ? Registrations::STATUS_WAITLIST : Registrations::STATUS_CONFIRMED,
+            'intro_message' => $intro,
+            'guests'        => 0,
+            'detail_rows'   => $detail_rows,
+            'seat_list'     => $seat_list,
+            'cta_label'     => \__( 'View event details', 'anchor-schema' ),
+            'cta_url'       => $primary_id ? \get_permalink( $primary_id ) : \home_url(),
+        ];
+        $html = $this->module->build_registration_email_html( $ctx );
+        return $this->module->send_html_email( $to, $subject, $html );
+    }
+
+    /**
+     * Build + send an organizer notice for one event. $kind = 'confirmed' (new
+     * seats) or 'released' (seats cancelled/refunded). Recipient resolves
+     * per-event organizer email → global setting → admin_email.
+     *
+     * @param \WC_Order $order
+     * @param array     $settings
+     * @param int       $event_id
+     * @param array     $ev       [confirmed,waitlist,released] tally for this event.
+     * @param string    $kind     'confirmed'|'released'.
+     * @return bool
+     */
+    private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind ) {
+        $event_id = (int) $event_id;
+        $to       = $this->organizer_recipient( $event_id, $settings );
+        if ( $to === '' ) {
+            return false;
+        }
+        $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
+        if ( $buyer === '' ) {
+            $buyer = (string) $order->get_billing_email();
+        }
+        $title    = \get_the_title( $event_id );
+        $summary  = $this->registrations->get_event_summary( $event_id );
+        $remaining = ( isset( $summary['remaining'] ) && (int) $summary['remaining'] >= 0 )
+            ? (string) (int) $summary['remaining']
+            : \__( 'unlimited', 'anchor-schema' );
+
+        if ( $kind === 'released' ) {
+            $released = (int) $ev['released'];
+            $subject  = \sprintf( \__( 'Seats released: %s', 'anchor-schema' ), $title );
+            $intro    = \sprintf(
+                \_n( '%1$d seat was released for "%2$s" (order #%3$s).', '%1$d seats were released for "%2$s" (order #%3$s).', $released, 'anchor-schema' ),
+                $released,
+                $title,
+                $order->get_order_number()
+            );
+            $status_ctx = Registrations::STATUS_CANCELLED;
+        } else {
+            $tokens = [
+                'event_title'     => $title,
+                'site_name'       => \get_bloginfo( 'name' ),
+                'order_number'    => $order->get_order_number(),
+                'buyer_name'      => $buyer,
+                'remaining_seats' => $remaining,
+            ];
+            $subject = $this->module->expand_email_tokens(
+                $settings['wc_organizer_subject'] !== '' ? $settings['wc_organizer_subject'] : \__( 'New event registration: {event_title}', 'anchor-schema' ),
+                $tokens
+            );
+            $confirmed = (int) $ev['confirmed'];
+            $waitlist  = (int) $ev['waitlist'];
+            $parts     = [];
+            if ( $confirmed > 0 ) {
+                $parts[] = \sprintf( \_n( '%d confirmed seat', '%d confirmed seats', $confirmed, 'anchor-schema' ), $confirmed );
+            }
+            if ( $waitlist > 0 ) {
+                $parts[] = \sprintf( \_n( '%d waitlisted seat', '%d waitlisted seats', $waitlist, 'anchor-schema' ), $waitlist );
+            }
+            $intro = \sprintf(
+                \__( 'Order #%1$s from %2$s created %3$s for "%4$s".', 'anchor-schema' ),
+                $order->get_order_number(),
+                $buyer,
+                $parts ? \implode( ' + ', $parts ) : \__( 'new registrations', 'anchor-schema' ),
+                $title
+            );
+            $status_ctx = $waitlist > 0 ? Registrations::STATUS_WAITLIST : Registrations::STATUS_CONFIRMED;
+        }
+
+        // Per-event seat list from current active seats.
+        $seat_list = [];
+        $by_event  = $this->collect_order_seats( (int) $order->get_id() );
+        if ( isset( $by_event[ $event_id ] ) ) {
+            foreach ( $by_event[ $event_id ] as $s ) {
+                $label = $s['name'] !== '' ? $s['name'] : \__( 'Guest', 'anchor-schema' );
+                if ( $s['status'] === Registrations::STATUS_WAITLIST ) {
+                    $label .= ' — ' . \__( 'waitlisted', 'anchor-schema' );
+                }
+                $seat_list[] = $label;
+            }
+        }
+
+        $detail_rows = [
+            [ 'label' => \__( 'Order', 'anchor-schema' ), 'value' => '#' . $order->get_order_number() ],
+            [ 'label' => \__( 'Buyer', 'anchor-schema' ), 'value' => $buyer ],
+            [ 'label' => \__( 'Remaining capacity', 'anchor-schema' ), 'value' => $remaining ],
+        ];
+
+        $ctx = [
+            'event_id'      => $event_id,
+            'name'          => '',
+            'status'        => $status_ctx,
+            'intro_message' => $intro,
+            'guests'        => 0,
+            'detail_rows'   => $detail_rows,
+            'seat_list'     => $seat_list,
+            'cta_label'     => \__( 'View event', 'anchor-schema' ),
+            'cta_url'       => \get_permalink( $event_id ),
+        ];
+        $html = $this->module->build_registration_email_html( $ctx );
+        return $this->module->send_html_email( $to, $subject, $html );
+    }
+
+    /**
+     * Resolve the organizer recipient for an event: per-event organizer_email →
+     * global organizer_email setting → site admin_email.
+     *
+     * @param int   $event_id
+     * @param array $settings
+     * @return string
+     */
+    private function organizer_recipient( $event_id, array $settings ) {
+        $meta  = $this->module->get_meta( (int) $event_id );
+        $email = '';
+        if ( ! empty( $meta['organizer_email'] ) ) {
+            $email = \sanitize_email( (string) $meta['organizer_email'] );
+        }
+        if ( $email === '' && ! empty( $settings['organizer_email'] ) ) {
+            $email = \sanitize_email( (string) $settings['organizer_email'] );
+        }
+        if ( $email === '' ) {
+            $email = \sanitize_email( (string) \get_option( 'admin_email' ) );
+        }
+        return (string) $email;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Phase 6 — needs-review admin notices + manual order actions
+     * ------------------------------------------------------------------- */
+
+    /**
+     * admin_notices: surface a summary of orders flagged needs-review on the Events
+     * list, the WooCommerce Orders screen, and the Events settings tab. Flagged
+     * orders are queried HPOS-safe via wc_get_orders + meta_query EXISTS (NOT the
+     * unsupported bare 'meta_key' shorthand — finding #15), function_exists-guarded.
+     */
+    public function render_needs_review_notice() {
+        if ( ! \function_exists( 'wc_get_orders' ) || ! \current_user_can( 'edit_others_posts' ) ) {
+            return;
+        }
+        $screen = \get_current_screen();
+        if ( ! $screen ) {
+            return;
+        }
+        $relevant = ( $screen->id === 'edit-' . Module::CPT )
+            || $screen->id === 'edit-shop_order'
+            || \strpos( (string) $screen->id, 'wc-orders' ) !== false
+            || ( isset( $_GET['page'] ) && 'anchor-schema' === $_GET['page'] );
+        if ( ! $relevant ) {
+            return;
+        }
+
+        $ids = \wc_get_orders( [
+            'limit'      => -1,
+            'return'     => 'ids',
+            'meta_query' => [
+                [
+                    'key'     => Events_Log::ORDER_REVIEW_META,
+                    'compare' => 'EXISTS',
+                ],
+            ],
+        ] );
+        $count = \is_array( $ids ) ? \count( $ids ) : 0;
+        if ( $count <= 0 ) {
+            return;
+        }
+
+        echo '<div class="notice notice-warning"><p><strong>' . \esc_html__( 'Anchor Events:', 'anchor-schema' ) . '</strong> ';
+        echo \esc_html( \sprintf(
+            \_n( '%d order needs review for event registrations.', '%d orders need review for event registrations.', $count, 'anchor-schema' ),
+            $count
+        ) );
+        if ( $count === 1 ) {
+            $url = $this->order_edit_url( (int) $ids[0] );
+            if ( $url !== '' ) {
+                echo ' <a href="' . \esc_url( $url ) . '">' . \esc_html__( 'Review order', 'anchor-schema' ) . '</a>';
+            }
+        }
+        echo '</p></div>';
+    }
+
+    /**
+     * admin-post: clear all needs-review flags from an order ("Mark reviewed").
+     * Cap edit_others_posts + per-order nonce.
+     */
+    public function handle_clear_review() {
+        $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
+        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+            \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
+        }
+        \check_admin_referer( 'anchor_events_clear_review_' . $order_id );
+        Events_Log::clear_review( $order_id );
+        $this->redirect_back();
+    }
+
+    /**
+     * admin-post: re-send the buyer confirmation for an order ("Resend
+     * confirmation"). Clears the 'customer' emails-sent gate and re-sends from the
+     * order's current active seats. Cap edit_others_posts + per-order nonce.
+     */
+    public function handle_resend_confirmation() {
+        $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
+        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+            \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
+        }
+        \check_admin_referer( 'anchor_events_resend_' . $order_id );
+
+        $order = \wc_get_order( $order_id );
+        if ( $order ) {
+            $settings = $this->module->get_settings();
+            $ok       = $this->send_customer_confirmation( $order, $settings );
+
+            $sent = $order->get_meta( self::EMAILS_SENT_META );
+            if ( ! \is_array( $sent ) ) {
+                $sent = [];
+            }
+            if ( $ok ) {
+                $sent['customer'] = \time();
+                $order->update_meta_data( self::EMAILS_SENT_META, $sent );
+                $order->save();
+                Events_Log::order( $order_id, 'Customer confirmation re-sent (manual).' );
+            } else {
+                Events_Log::flag_review( $order_id, 'customer_email_failed', 'manual resend' );
+            }
+        }
+        $this->redirect_back();
+    }
+
+    /** Redirect back to the referring admin screen after an admin-post action. */
+    private function redirect_back() {
+        $redirect = \wp_get_referer();
+        if ( ! $redirect ) {
+            $redirect = \admin_url();
+        }
+        \wp_safe_redirect( $redirect );
+        exit;
+    }
+
+    /* ---------------------------------------------------------------------
      * Order admin metabox (seat summary + sync log + resync button)
      * ------------------------------------------------------------------- */
 
@@ -1863,14 +2349,32 @@ class WooCommerce {
             echo '</ul>';
         }
 
-        // Resync button (cap edit_others_posts).
+        // Action buttons (cap edit_others_posts): Resync / Mark reviewed / Resend.
         if ( \current_user_can( 'edit_others_posts' ) ) {
-            echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '">';
+            $post_url = \esc_url( \admin_url( 'admin-post.php' ) );
+
+            echo '<form method="post" action="' . $post_url . '" style="margin:0 0 6px;">';
             echo '<input type="hidden" name="action" value="anchor_event_resync_order" />';
             echo '<input type="hidden" name="order_id" value="' . (int) $order_id . '" />';
             \wp_nonce_field( 'anchor_event_resync_' . $order_id );
             echo '<button type="submit" class="button button-secondary">' . \esc_html__( 'Resync order', 'anchor-schema' ) . '</button>';
             echo '</form>';
+
+            echo '<form method="post" action="' . $post_url . '" style="margin:0 0 6px;">';
+            echo '<input type="hidden" name="action" value="anchor_events_resend_confirmation" />';
+            echo '<input type="hidden" name="order_id" value="' . (int) $order_id . '" />';
+            \wp_nonce_field( 'anchor_events_resend_' . $order_id );
+            echo '<button type="submit" class="button button-secondary">' . \esc_html__( 'Resend confirmation', 'anchor-schema' ) . '</button>';
+            echo '</form>';
+
+            if ( \is_array( $flags ) && ! empty( $flags ) ) {
+                echo '<form method="post" action="' . $post_url . '" style="margin:0;">';
+                echo '<input type="hidden" name="action" value="anchor_events_clear_review" />';
+                echo '<input type="hidden" name="order_id" value="' . (int) $order_id . '" />';
+                \wp_nonce_field( 'anchor_events_clear_review_' . $order_id );
+                echo '<button type="submit" class="button button-secondary">' . \esc_html__( 'Mark reviewed', 'anchor-schema' ) . '</button>';
+                echo '</form>';
+            }
         }
     }
 

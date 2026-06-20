@@ -15,9 +15,14 @@
             return;
         }
 
-        // Optional UX nicety: prefill the very first empty attendee from billing.
-        var $firstName = $wrap.find('input[type="text"]').first();
-        var $firstEmail = $wrap.find('input[type="email"]').first();
+        // Optional UX nicety: prefill the first EMPTY attendee from billing, so a
+        // pre-filled attendee 1 doesn't block prefilling a later empty attendee.
+        var $firstName = $wrap.find('input[type="text"]').filter(function () {
+            return $(this).val() === '';
+        }).first();
+        var $firstEmail = $wrap.find('input[type="email"]').filter(function () {
+            return $(this).val() === '';
+        }).first();
 
         if ($firstName.length && $firstName.val() === '') {
             var bFirst = $('#billing_first_name').val() || '';

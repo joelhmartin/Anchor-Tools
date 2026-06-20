@@ -328,7 +328,16 @@ class Roster {
         // Status change routed through the data layer (transition rules + history).
         $current = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
         if ( $status !== '' && $status !== $current ) {
-            $this->registrations->update_status( $seat_id, $status, 'roster edit', 'user:' . \get_current_user_id() );
+            if ( ! $this->registrations->update_status( $seat_id, $status, 'roster edit', 'user:' . \get_current_user_id() ) ) {
+                // Illegal transition — contact fields were still saved, but surface
+                // the rejected status change instead of reporting full success (CodeRabbit).
+                $this->redirect( $event_id, 'error', \sprintf(
+                    /* translators: 1: from status, 2: to status */
+                    \__( 'Contact details saved, but the status change from “%1$s” to “%2$s” is not allowed.', 'anchor-schema' ),
+                    $current,
+                    $status
+                ) );
+            }
         }
 
         $this->redirect( $event_id, 'success', \__( 'Seat updated.', 'anchor-schema' ) );
@@ -458,7 +467,17 @@ class Roster {
      */
     public function csv_safe( $v ) {
         $v = (string) $v;
-        if ( $v !== '' && \in_array( $v[0], [ '=', '+', '-', '@', "\t", "\r" ], true ) ) {
+        if ( $v === '' ) {
+            return $v;
+        }
+        $triggers = [ '=', '+', '-', '@', "\t", "\r", "\n" ];
+        // Catch a formula behind leading whitespace too (some apps strip it before
+        // evaluating), not just at the very first byte (CodeRabbit).
+        $trimmed = \ltrim( $v );
+        if (
+            \in_array( $v[0], $triggers, true )
+            || ( $trimmed !== '' && \in_array( $trimmed[0], $triggers, true ) )
+        ) {
             return "'" . $v;
         }
         return $v;

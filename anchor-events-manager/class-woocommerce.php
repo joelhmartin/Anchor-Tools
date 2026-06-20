@@ -1384,10 +1384,14 @@ class WooCommerce {
                     if ( $to_remove <= 0 ) {
                         break;
                     }
+                    // Only consume a removal slot when the transition actually
+                    // succeeds — otherwise a disallowed transition (e.g. a
+                    // waitlist seat) would silently leave a surplus seat active
+                    // while still decrementing the counter (CodeRabbit P2).
                     if ( $this->registrations->update_status( $s['id'], $removal_status, 'order #' . $order_id . ' → ' . $removal_status, 'woocommerce' ) ) {
                         $removed[] = $s['id'];
+                        $to_remove--;
                     }
-                    $to_remove--;
                 }
             } else {
                 // Fresh recount under the lock — never the cache.
@@ -1662,7 +1666,19 @@ class WooCommerce {
         if ( ! $item instanceof \WC_Order_Item_Product ) {
             return 0;
         }
-        return $this->event_for_line( (int) $item->get_product_id(), (int) $item->get_variation_id() );
+        $event_id = $this->event_for_line( (int) $item->get_product_id(), (int) $item->get_variation_id() );
+        if ( $event_id > 0 ) {
+            return $event_id;
+        }
+        // Live resolution failed (product/variation unlinked after purchase). Fall
+        // back to the checkout link snapshot persisted on the line item so a later
+        // cancel/refund still reconciles the original event and releases its
+        // capacity instead of silently skipping the line (CodeRabbit P1).
+        $snapshot = (int) $item->get_meta( '_anchor_event_id' );
+        if ( $snapshot > 0 && \get_post_type( $snapshot ) === Module::CPT ) {
+            return $snapshot;
+        }
+        return 0;
     }
 
     /* ---------------------------------------------------------------------

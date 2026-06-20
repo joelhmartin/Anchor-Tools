@@ -40,7 +40,7 @@ class Registrations {
     protected static $transitions = [
         self::STATUS_PENDING   => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED, self::STATUS_WAITLIST ],
         self::STATUS_CONFIRMED => [ self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED, self::STATUS_ATTENDED, self::STATUS_NO_SHOW ],
-        self::STATUS_WAITLIST  => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED ],
+        self::STATUS_WAITLIST  => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED ],
         self::STATUS_FAILED    => [ self::STATUS_CONFIRMED, self::STATUS_PENDING ],
         self::STATUS_CANCELLED => [ self::STATUS_CONFIRMED, self::STATUS_PENDING ],
         self::STATUS_REFUNDED  => [], // terminal — never auto-revived.
@@ -309,7 +309,7 @@ class Registrations {
 
         global $wpdb;
         $sql = "SELECT pm_status.meta_value AS status,
-                       COALESCE(SUM(1 + GREATEST(0, CAST(pm_guests.meta_value AS UNSIGNED))), 0) AS seats,
+                       COALESCE(SUM(1 + GREATEST(0, CAST(COALESCE(pm_guests.meta_value, '0') AS SIGNED))), 0) AS seats,
                        COUNT(*) AS records
                 FROM {$wpdb->posts} p
                 JOIN {$wpdb->postmeta} pm_event  ON pm_event.post_id = p.ID AND pm_event.meta_key = '_anchor_event_id'
@@ -342,7 +342,9 @@ class Registrations {
      * @return string open|closed|full|waitlist
      */
     public function capacity_decision( $event_id, $meta, $requested = 1 ) {
-        $now = \date( 'Y-m-d' );
+        // Compare the registration window in WordPress site-local time — the
+        // open/close dates are admin-entered in the site timezone (CodeRabbit).
+        $now = \current_time( 'Y-m-d' );
         if ( ! empty( $meta['registration_open'] ) && $now < $meta['registration_open'] ) {
             return 'closed';
         }

@@ -172,6 +172,10 @@ class Module {
             'fields'         => 'ids',
             'no_found_rows'  => true,
             'meta_query'     => [
+                'relation' => 'OR',
+                // Legacy auto-mode events have no status_mode meta row yet — include
+                // them so their persisted status doesn't go stale (CodeRabbit).
+                [ 'key' => $this->meta_key( 'status_mode' ), 'compare' => 'NOT EXISTS' ],
                 [ 'key' => $this->meta_key( 'status_mode' ), 'value' => 'manual', 'compare' => '!=' ],
             ],
         ] );

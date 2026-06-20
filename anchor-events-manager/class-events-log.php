@@ -43,6 +43,11 @@ class Events_Log {
      * @param array  $context Arbitrary context (kept small; not escaped).
      */
     public static function error( $code, array $context = [] ) {
+        // The error log is persisted to an option that is rendered back to editors,
+        // and mail failures can carry attendee PII (recipient/subject/body). Redact
+        // before storing so no reversible PII lands in the log (CodeRabbit).
+        $context = self::redact( $context );
+
         if ( \class_exists( '\\Anchor_Schema_Logger' ) ) {
             \Anchor_Schema_Logger::log( 'events:' . $code, $context );
         }
@@ -93,7 +98,7 @@ class Events_Log {
             $log = \array_slice( $log, -self::ORDER_LOG_CAP );
         }
         $order->update_meta_data( self::ORDER_LOG_META, $log );
-        $order->save();
+        self::safe_save( $order );
     }
 
     /**
@@ -128,7 +133,7 @@ class Events_Log {
             'time'   => \time(),
         ];
         $order->update_meta_data( self::ORDER_REVIEW_META, $flags );
-        $order->save();
+        self::safe_save( $order );
     }
 
     /**
@@ -146,7 +151,7 @@ class Events_Log {
             return;
         }
         $order->delete_meta_data( self::ORDER_REVIEW_META );
-        $order->save();
+        self::safe_save( $order );
     }
 
     /**
@@ -159,5 +164,60 @@ class Events_Log {
      */
     public static function event( $event_id, $type, array $context = [] ) {
         // Intentionally empty — activity log deferred (spec §2, §11.6).
+    }
+
+    /**
+     * Persist an order, failing soft. These are auxiliary logging/review paths,
+     * so a WooCommerce persistence exception must never bubble up and take down
+     * the surrounding checkout/admin request (CodeRabbit).
+     *
+     * @param \WC_Order $order
+     */
+    /**
+     * Redact PII from a log context array. Drops/masks values under sensitive
+     * keys (recipient, subject, body, etc.) and masks any email-looking string,
+     * so the editor-visible error log can't leak attendee data. Recurses one level.
+     *
+     * @param mixed $context
+     * @return mixed
+     */
+    private static function redact( $context ) {
+        if ( \is_array( $context ) ) {
+            $sensitive = [ 'to', 'recipient', 'recipients', 'cc', 'bcc', 'email', 'subject', 'body', 'message', 'headers' ];
+            $out = [];
+            foreach ( $context as $key => $value ) {
+                if ( \is_string( $key ) && \in_array( \strtolower( $key ), $sensitive, true ) ) {
+                    $out[ $key ] = \is_string( $value ) ? self::mask_value( $value ) : '[redacted]';
+                } else {
+                    $out[ $key ] = self::redact( $value );
+                }
+            }
+            return $out;
+        }
+        if ( \is_string( $context ) ) {
+            return self::mask_value( $context );
+        }
+        return $context;
+    }
+
+    /** Mask any email addresses inside a string (keeps the domain for debugging). */
+    private static function mask_value( $value ) {
+        return \preg_replace_callback(
+            '/[^\s@]+@([^\s@]+)/',
+            function ( $m ) {
+                return '***@' . $m[1];
+            },
+            (string) $value
+        );
+    }
+
+    private static function safe_save( $order ) {
+        try {
+            $order->save();
+        } catch ( \Throwable $e ) {
+            if ( \class_exists( '\\Anchor_Schema_Logger' ) ) {
+                \Anchor_Schema_Logger::log( 'events:order_save_failed', [ 'message' => $e->getMessage() ] );
+            }
+        }
     }
 }

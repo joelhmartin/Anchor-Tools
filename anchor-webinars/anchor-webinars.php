@@ -293,6 +293,12 @@ class Module {
     /**
      * Excerpt counterpart to gate_the_content (covers REST excerpt.rendered and
      * theme/archive excerpts). $post is provided by the get_the_excerpt filter.
+     *
+     * The short description is a public teaser and must stay visible even when
+     * the webinar is locked — the gate only applies when a visitor tries to
+     * watch. We therefore keep an author-written excerpt (post_excerpt) intact
+     * and only suppress an AUTO-generated excerpt, which WordPress derives from
+     * the gated post_content and would otherwise leak it.
      */
     public function gate_the_excerpt( $excerpt, $post = null ) {
         $post = $post ? \get_post( $post ) : \get_post();
@@ -302,7 +308,13 @@ class Module {
         if ( $this->can_user_access( $post->ID ) ) {
             return $excerpt;
         }
-        return $this->locked_notice();
+        // Author-written teaser: always show it, locked or not.
+        if ( '' !== \trim( (string) $post->post_excerpt ) ) {
+            return $excerpt;
+        }
+        // No manual excerpt → the value is auto-derived from gated content.
+        // Return nothing rather than leak the body.
+        return '';
     }
 
     private function locked_notice() {

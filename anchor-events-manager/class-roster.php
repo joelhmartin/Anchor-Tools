@@ -6,9 +6,12 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /**
  * Roster admin screen + CSV export (Phase 5 — spec §10).
  *
- * Loaded unconditionally (free + paid). A single capability — `edit_others_posts`
- * — gates the screen, the manual seat actions, and the CSV export, consistent with
- * where the Export links are exposed (fixes the original export-capability bug).
+ * Loaded unconditionally (free + paid). The screen, the manual seat actions, and
+ * the CSV export are gated by a WooCommerce-aware capability (M2): on a store the
+ * roster exposes customer PII (billing email, customer ids, order numbers) so it
+ * requires a shop-management capability (`manage_woocommerce`/`edit_shop_orders`)
+ * rather than the Editor-held `edit_others_posts`; free/internal installs keep
+ * `edit_others_posts`. See Roster::cap() / Roster::current_user_can_manage().
  *
  * This class NEVER writes seat meta directly: every mutation is delegated to the
  * Registrations data layer (claim_seats / update_status) so capacity, the event
@@ -21,9 +24,34 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 class Roster {
 
-    /** Single capability for view, export, and all manual seat actions. */
+    /** Base capability for free/internal installs (no WooCommerce). */
     const CAP  = 'edit_others_posts';
     const SLUG = 'anchor-event-roster';
+
+    /**
+     * Capability string used to register the roster submenu (M2). When WooCommerce
+     * is active the roster surfaces customer PII, so require a shop-management
+     * capability; otherwise fall back to the base capability.
+     *
+     * @return string
+     */
+    public static function cap() {
+        return \class_exists( 'WooCommerce' ) ? 'manage_woocommerce' : self::CAP;
+    }
+
+    /**
+     * Runtime gate for view / export / manual seat actions (M2). When WooCommerce
+     * is active accept either shop-management capability (admins + shop managers);
+     * otherwise the base capability for free/internal installs.
+     *
+     * @return bool
+     */
+    public static function current_user_can_manage() {
+        if ( \class_exists( 'WooCommerce' ) ) {
+            return \current_user_can( 'manage_woocommerce' ) || \current_user_can( 'edit_shop_orders' );
+        }
+        return \current_user_can( self::CAP );
+    }
 
     /** @var Module */
     private $module;
@@ -55,7 +83,7 @@ class Roster {
             'edit.php?post_type=' . Module::CPT,
             \__( 'Event Roster', 'anchor-schema' ),
             \__( 'Roster', 'anchor-schema' ),
-            self::CAP,
+            self::cap(),
             self::SLUG,
             [ $this, 'render_page' ]
         );
@@ -83,7 +111,7 @@ class Roster {
      * ------------------------------------------------------------------- */
 
     public function render_page() {
-        if ( ! \current_user_can( self::CAP ) ) {
+        if ( ! self::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You do not have permission to view rosters.', 'anchor-schema' ) );
         }
 
@@ -294,6 +322,13 @@ class Roster {
             'note'   => 'manual roster add',
         ] );
 
+        // L2: surface an admin-visible signal when a seat was created while the
+        // event capacity lock was unavailable (mirrors the paid path), so manual
+        // adds can't silently oversell under lock degradation.
+        if ( ! empty( $result['lock_unavailable'] ) && ( ! empty( $result['created'] ) || ! empty( $result['waitlisted'] ) ) ) {
+            Events_Log::error( 'capacity_lock_unavailable', [ 'event' => $event_id, 'source' => 'manual' ] );
+        }
+
         if ( ! empty( $result['created'] ) ) {
             $this->redirect( $event_id, 'success', \__( 'Attendee added.', 'anchor-schema' ) );
         } elseif ( ! empty( $result['waitlisted'] ) ) {
@@ -361,7 +396,7 @@ class Roster {
 
     /** Capability + nonce gate shared by every manual action. */
     private function guard( $nonce_action ) {
-        if ( ! \current_user_can( self::CAP ) ) {
+        if ( ! self::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
         }
         \check_admin_referer( $nonce_action );
@@ -394,7 +429,7 @@ class Roster {
      * ------------------------------------------------------------------- */
 
     public function handle_export() {
-        if ( ! \current_user_can( self::CAP ) ) {
+        if ( ! self::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
         }
         \check_admin_referer( 'anchor_event_export' );

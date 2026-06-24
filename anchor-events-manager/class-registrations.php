@@ -753,7 +753,10 @@ class Registrations {
         $source   = (string) ( $args['source'] ?? '' );
         $search   = \trim( (string) ( $args['search'] ?? '' ) );
         $paged    = max( 1, (int) ( $args['paged'] ?? 1 ) );
-        $per_page = max( 1, (int) ( $args['per_page'] ?? 25 ) );
+        $per_page = (int) ( $args['per_page'] ?? 25 );
+        if ( $per_page !== -1 ) {
+            $per_page = max( 1, $per_page ); // -1 passes through as WP_Query unlimited
+        }
         $orderby  = (string) ( $args['orderby'] ?? 'date' );
         $order    = \strtoupper( (string) ( $args['order'] ?? 'DESC' ) ) === 'ASC' ? 'ASC' : 'DESC';
 

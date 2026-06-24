@@ -106,6 +106,12 @@ class Module {
         // activation for fresh installs; cleared on deactivation.
         \add_action( 'init', [ $this, 'maybe_schedule_status_sweep' ] );
         \add_action( 'anchor_events_status_sweep', [ $this, 'run_status_sweep' ] );
+
+        // v1.1: reminder + scheduled-roster sweep (spec §5). Hourly, scheduled
+        // defensively on init so it survives plugin upgrades (no activation hook).
+        \add_action( 'init', [ $this, 'maybe_schedule_reminder_sweep' ] );
+        \add_action( 'anchor_events_reminder_sweep', [ $this, 'run_reminder_sweep' ] );
+
         if ( \defined( 'ANCHOR_TOOLS_PLUGIN_FILE' ) ) {
             \register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, [ $this, 'on_deactivate' ] );
         }
@@ -138,13 +144,30 @@ class Module {
         }
     }
 
-    /** Clear scheduled cron on plugin deactivation. */
+    /**
+     * Schedule the hourly reminder sweep if not already scheduled. Hooked to `init`
+     * so already-active installs (upgraded via Plugin Update Checker) still get the
+     * cron registered without needing an activation hook.
+     */
+    public function maybe_schedule_reminder_sweep() {
+        if ( ! \wp_next_scheduled( 'anchor_events_reminder_sweep' ) ) {
+            \wp_schedule_event( \time() + HOUR_IN_SECONDS, 'hourly', 'anchor_events_reminder_sweep' );
+        }
+    }
+
+    /** Clear scheduled crons on plugin deactivation. */
     public function on_deactivate() {
         $timestamp = \wp_next_scheduled( 'anchor_events_status_sweep' );
         if ( $timestamp ) {
             \wp_unschedule_event( $timestamp, 'anchor_events_status_sweep' );
         }
         \wp_clear_scheduled_hook( 'anchor_events_status_sweep' );
+
+        $rts = \wp_next_scheduled( 'anchor_events_reminder_sweep' );
+        if ( $rts ) {
+            \wp_unschedule_event( $rts, 'anchor_events_reminder_sweep' );
+        }
+        \wp_clear_scheduled_hook( 'anchor_events_reminder_sweep' );
     }
 
     /**
@@ -209,6 +232,150 @@ class Module {
         }
         $this->clear_caches();
     }
+
+    /* ---------------------------------------------------------------------
+     * v1.1: Pre-event reminder sweep (spec §5)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Resolve effective reminder offsets for an event: per-event override CSV
+     * takes priority; falls back to the global setting. Returns sorted unique
+     * positive integers descending.
+     *
+     * @param int   $event_id
+     * @param array $settings
+     * @return int[]
+     */
+    private function effective_offsets( $event_id, array $settings ) {
+        $meta = $this->get_meta( (int) $event_id );
+        $csv  = ! empty( $meta['reminder_offsets'] ) ? $meta['reminder_offsets'] : $settings['reminder_offsets'];
+        $days = array_filter( array_map( 'intval', explode( ',', (string) $csv ) ), function ( $d ) { return $d > 0; } );
+        rsort( $days );
+        return array_values( array_unique( $days ) );
+    }
+
+    /**
+     * Hourly cron callback: send pre-event reminder emails and hand off to the
+     * scheduled-roster pass (Task 4). Mirrors run_status_sweep() defensively:
+     * self-unschedules if the CPT is absent (module toggled off).
+     */
+    public function run_reminder_sweep() {
+        if ( ! \post_type_exists( self::CPT ) ) {
+            $this->on_deactivate(); // self-heal like run_status_sweep()
+            return;
+        }
+        $settings = $this->get_settings();
+        $now      = \time();
+
+        if ( empty( $settings['reminder_enabled'] ) && empty( $settings['organizer_roster_email'] ) ) {
+            return; // nothing to do
+        }
+
+        // Bound the scan to imminent events: start_ts in (now, now + max_offset].
+        $max_global = 0;
+        foreach ( array_map( 'intval', explode( ',', (string) $settings['reminder_offsets'] ) ) as $d ) {
+            $max_global = max( $max_global, $d );
+        }
+        $max_global = max( $max_global, (int) $settings['roster_auto_offset'] );
+        $horizon    = $now + ( max( 1, $max_global ) * DAY_IN_SECONDS );
+
+        $event_ids = \get_posts( [
+            'post_type'      => self::CPT,
+            'post_status'    => [ 'publish', 'future', 'private' ],
+            'posts_per_page' => -1,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                [ 'key' => $this->meta_key( 'start_ts' ), 'value' => [ $now, $horizon ], 'compare' => 'BETWEEN', 'type' => 'NUMERIC' ],
+            ],
+        ] );
+
+        foreach ( $event_ids as $event_id ) {
+            $meta     = $this->get_meta( $event_id );
+            $start_ts = (int) ( $meta['start_ts'] ?? 0 );
+            if ( $start_ts <= $now ) {
+                continue; // already started
+            }
+
+            // --- Reminder pass ---
+            if ( ! empty( $settings['reminder_enabled'] ) ) {
+                foreach ( $this->effective_offsets( $event_id, $settings ) as $offset ) {
+                    if ( ! ( ( $start_ts - $offset * DAY_IN_SECONDS ) <= $now && $now < $start_ts ) ) {
+                        continue; // offset not due this sweep
+                    }
+                    $seats = $this->registrations->query_seats( [
+                        'event_id' => $event_id,
+                        'status'   => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+                        'per_page' => -1,
+                    ] );
+                    foreach ( $seats['items'] as $seat ) {
+                        $sent_map = \get_post_meta( $seat['id'], '_anchor_event_reminders_sent', true );
+                        if ( ! \is_array( $sent_map ) ) {
+                            $sent_map = [];
+                        }
+                        if ( isset( $sent_map[ $offset ] ) ) {
+                            continue; // already sent this offset
+                        }
+                        if ( ! \apply_filters( 'anchor_events_should_send_reminder', true, $seat, $offset ) ) {
+                            continue;
+                        }
+                        if ( $this->send_reminder_email( $seat, $event_id, $offset ) ) {
+                            $sent_map[ $offset ] = $now;
+                            \update_post_meta( $seat['id'], '_anchor_event_reminders_sent', $sent_map );
+                            \update_post_meta( $seat['id'], '_anchor_event_attendee_notified', true );
+                        }
+                    }
+                }
+            }
+
+            // --- Scheduled roster pass (implemented in Task 4) ---
+            $this->maybe_send_scheduled_roster( $event_id, $meta, $settings, $now );
+        }
+    }
+
+    /**
+     * Send a pre-event reminder email to a single confirmed seat.
+     *
+     * @param array $seat     Seat DTO from query_seats().
+     * @param int   $event_id
+     * @param int   $offset   Days-before-start offset being sent.
+     * @return bool True on successful send.
+     */
+    public function send_reminder_email( array $seat, $event_id, $offset ) {
+        if ( empty( $seat['email'] ) ) {
+            return false;
+        }
+        $settings = $this->get_settings();
+        $tokens   = $this->email_tokens( [ 'event_id' => (int) $event_id, 'seat' => $seat ] );
+        $subject  = $this->expand_email_tokens( $settings['reminder_subject'], $tokens );
+        $intro    = $this->expand_email_tokens( $settings['reminder_intro'], $tokens );
+
+        $detail_rows = [];
+        if ( $tokens['event_date'] !== '' ) {
+            $detail_rows[] = [ 'label' => \__( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ];
+        }
+        if ( $tokens['event_time'] !== '' ) {
+            $detail_rows[] = [ 'label' => \__( 'Time', 'anchor-schema' ), 'value' => $tokens['event_time'] ];
+        }
+        if ( $tokens['venue'] !== '' ) {
+            $detail_rows[] = [ 'label' => \__( 'Location', 'anchor-schema' ), 'value' => $tokens['venue'] ];
+        }
+
+        $ctx = [
+            'event_id'      => (int) $event_id,
+            'name'          => (string) $seat['name'],
+            'status'        => \Anchor\Events\Registrations::STATUS_CONFIRMED, // enables join button for virtual
+            'intro_message' => $intro,
+            'detail_rows'   => $detail_rows,
+            'cta_label'     => \__( 'View event details', 'anchor-schema' ),
+            'cta_url'       => $tokens['event_url'],
+        ];
+        $html = $this->build_registration_email_html( $ctx );
+        return $this->send_html_email( (string) $seat['email'], $subject, $html );
+    }
+
+    /** Placeholder until Task 4 fills the scheduled-roster body. */
+    public function maybe_send_scheduled_roster( $event_id, $meta, $settings, $now ) {}
 
     /**
      * wp_mail_failed handler (bug #5) — logs the failure to the events error log.

@@ -14,6 +14,7 @@ if (!defined('ABSPATH')) {
 
 class Anchor_Gallery_Module {
     const CPT        = 'anchor_gallery';
+    const TAX        = 'anchor_gallery_group';
     const OLD_CPT    = 'anchor_video_gallery';
     const NONCE      = 'avg_nonce';
     const LEGACY_KEY = 'anchor_video_slider_items';
@@ -657,6 +658,7 @@ class Anchor_Gallery_Module {
 
     public function __construct() {
         add_action('init', [$this, 'register_cpt']);
+        add_action('init', [$this, 'register_groups']);
         add_action('add_meta_boxes', [$this, 'add_metaboxes']);
         add_action('edit_form_after_title', [$this, 'render_builder_after_title']);
         add_action('save_post', [$this, 'save_meta']);
@@ -674,6 +676,14 @@ class Anchor_Gallery_Module {
     /* ══════════════════════════════════════════════════════════
        CPT Registration
        ══════════════════════════════════════════════════════════ */
+
+    public function register_groups() {
+        Anchor_Groups::register( self::TAX, self::CPT, [
+            'name'          => __( 'Gallery Groups', 'anchor-schema' ),
+            'singular_name' => __( 'Gallery Group', 'anchor-schema' ),
+            'menu_name'     => __( 'Groups', 'anchor-schema' ),
+        ] );
+    }
 
     public function register_cpt() {
         $this->migrate_cpt_slug();

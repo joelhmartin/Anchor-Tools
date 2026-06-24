@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) exit;
 
 class Anchor_Universal_Popups_Module {
     const CPT = 'anchor_popup';
+    const TAX = 'anchor_popup_group';
     const LEGACY_CPT = 'up_popup';
     const MIGRATION_FLAG = 'anchor_universal_popups_migrated';
     const NONCE = 'anchor_popup_nonce';
@@ -16,6 +17,7 @@ class Anchor_Universal_Popups_Module {
 
     public function __construct(){
         add_action('init', [$this, 'register_cpt']);
+        add_action('init', [$this, 'register_groups']);
         add_action('add_meta_boxes', [$this, 'add_metaboxes']);
         add_action('save_post', [$this, 'save_meta']);
         add_action('admin_enqueue_scripts', [$this, 'admin_assets']);
@@ -26,6 +28,14 @@ class Anchor_Universal_Popups_Module {
         add_action('manage_' . self::CPT . '_posts_custom_column', [$this, 'admin_column_content'], 10, 2);
         add_filter('post_row_actions', [$this, 'row_actions'], 10, 2);
         add_action('admin_post_anchor_popup_duplicate', [$this, 'handle_duplicate']);
+    }
+
+    public function register_groups(){
+        Anchor_Groups::register( self::TAX, self::CPT, [
+            'name'          => __( 'Popup Groups', 'anchor-schema' ),
+            'singular_name' => __( 'Popup Group', 'anchor-schema' ),
+            'menu_name'     => __( 'Groups', 'anchor-schema' ),
+        ] );
     }
 
     public function register_cpt(){

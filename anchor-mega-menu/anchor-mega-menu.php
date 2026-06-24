@@ -7,6 +7,7 @@ if (!defined('ABSPATH')) { exit; }
 
 class Anchor_Mega_Menu_Module {
     const CPT = 'anchor_mega_snippet';
+    const TAX = 'anchor_mega_group';
     const LEGACY_CPT = 'mm_snippet';
     const MIGRATION_FLAG = 'anchor_mega_menu_migrated';
     const NONCE = 'anchor_mega_snippet_nonce';
@@ -14,6 +15,7 @@ class Anchor_Mega_Menu_Module {
 
     public function __construct(){
         add_action('init', [$this, 'register_cpt']);
+        add_action('init', [$this, 'register_groups']);
         add_action('add_meta_boxes', [$this, 'add_metaboxes']);
         add_action('save_post', [$this, 'save_meta']);
         add_action('admin_enqueue_scripts', [$this, 'admin_assets']);
@@ -43,6 +45,14 @@ class Anchor_Mega_Menu_Module {
             'menu_icon' => 'dashicons-editor-code',
             'supports' => ['title'],
         ]);
+    }
+
+    public function register_groups(){
+        Anchor_Groups::register( self::TAX, self::CPT, [
+            'name'          => __( 'Mega Menu Groups', 'anchor-schema' ),
+            'singular_name' => __( 'Mega Menu Group', 'anchor-schema' ),
+            'menu_name'     => __( 'Groups', 'anchor-schema' ),
+        ] );
     }
 
     private function maybe_migrate_legacy_posts(){

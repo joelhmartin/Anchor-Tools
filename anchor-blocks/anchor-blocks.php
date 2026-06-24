@@ -9,6 +9,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Anchor_Blocks_Module {
     const CPT          = 'anchor_block';
+    const TAX          = 'anchor_block_group';
     const NONCE        = 'anchor_block_nonce';
     const OPTION_KEY   = 'anchor_blocks_settings';
     const ASSET_VER    = '1.0.0';
@@ -21,6 +22,7 @@ class Anchor_Blocks_Module {
 
     public function __construct() {
         add_action( 'init',                 [ $this, 'register_cpt' ] );
+        add_action( 'init',                 [ $this, 'register_groups' ] );
         add_action( 'add_meta_boxes',       [ $this, 'add_metaboxes' ] );
         add_action( 'save_post',            [ $this, 'save_meta' ] );
         add_action( 'admin_enqueue_scripts',[ $this, 'admin_assets' ] );
@@ -47,6 +49,14 @@ class Anchor_Blocks_Module {
             'show_in_menu' => apply_filters( 'anchor_blocks_parent_menu', true ),
             'menu_icon'    => 'dashicons-layout',
             'supports'     => [ 'title' ],
+        ] );
+    }
+
+    public function register_groups() {
+        Anchor_Groups::register( self::TAX, self::CPT, [
+            'name'          => __( 'Block Groups', 'anchor-schema' ),
+            'singular_name' => __( 'Block Group', 'anchor-schema' ),
+            'menu_name'     => __( 'Groups', 'anchor-schema' ),
         ] );
     }
 

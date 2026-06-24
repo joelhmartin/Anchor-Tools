@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Anchor_Monaco {
 
-	const VERSION     = '1.0.0';
+	const VERSION     = '1.0.1';
 	const MONACO_VER  = '0.52.2';
 	const MONACO_BASE = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min';
 

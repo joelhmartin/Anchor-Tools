@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, schema, galleries, forms, and content utilities.
- * Version: 3.8.06
+ * Version: 3.8.07
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */

@@ -58,6 +58,12 @@ if ( class_exists( Dotenv::class ) && file_exists( ANCHOR_TOOLS_PLUGIN_DIR . '.e
 if ( ! class_exists( 'Anchor_Asset_Loader' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-asset-loader.php';
 }
+if ( ! class_exists( 'Anchor_Monaco' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-monaco.php';
+}
+if ( ! class_exists( 'Anchor_Groups' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-groups.php';
+}
 if ( ! class_exists( 'Anchor_Schema_Logger' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-schema-logger.php';
 }

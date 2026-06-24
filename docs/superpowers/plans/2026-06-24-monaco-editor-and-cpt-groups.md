@@ -15,7 +15,7 @@
 - **Asset URLs:** use `Anchor_Asset_Loader::url( 'path/from/plugin/root' )` (existing helper used by every module), never `plugin_dir_url(__FILE__)`.
 - **Options:** any `update_option()` passes `autoload=false` as the 3rd arg.
 - **Text domain:** `'anchor-schema'` for translatable strings.
-- **AJAX/asset prefixes:** module-prefixed (`up_`, `ab_`, `mm_`, etc.).
+- **AJAX actions:** prefixed `anchor_{module}_` (e.g. `wp_ajax_anchor_video_slider_preview`). Meta keys / element IDs use the short module prefix (`up_`, `ab_`, `mm_`). (This PR adds no new AJAX actions.)
 - **Admin assets only on the relevant CPT edit screen** — guard on `$hook` ∈ {`post.php`,`post-new.php`} and post type.
 - **Monaco loaded from CDN only on those CPT edit screens, never on the front end.**
 - **Group taxonomy flags (verbatim):** `public=false`, `publicly_queryable=false`, `rewrite=false`, `query_var=false`, `show_ui=true`, `show_admin_column=true`, `show_in_quick_edit=true`, `show_in_rest=false`, `hierarchical=true`.

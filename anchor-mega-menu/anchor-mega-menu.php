@@ -123,10 +123,10 @@ class Anchor_Mega_Menu_Module {
         $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
         ?>
         <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( array(
-            array( 'id' => 'mm_html',       'label' => 'HTML',       'lang' => 'html' ),
-            array( 'id' => 'mm_global_css', 'label' => 'Global CSS', 'lang' => 'css' ),
-            array( 'id' => 'mm_css',        'label' => 'CSS',        'lang' => 'css' ),
-            array( 'id' => 'mm_js',         'label' => 'JS',         'lang' => 'javascript' ),
+            array( 'id' => 'mm_html',       'label' => __( 'HTML', 'anchor-schema' ),       'lang' => 'html' ),
+            array( 'id' => 'mm_global_css', 'label' => __( 'Global CSS', 'anchor-schema' ), 'lang' => 'css' ),
+            array( 'id' => 'mm_css',        'label' => __( 'CSS', 'anchor-schema' ),        'lang' => 'css' ),
+            array( 'id' => 'mm_js',         'label' => __( 'JS', 'anchor-schema' ),         'lang' => 'javascript' ),
         ) ) ); ?>'>
         <div class="mm-fields">
             <div class="mm-field">
@@ -320,8 +320,9 @@ class Anchor_Mega_Menu_Module {
                 Anchor_Preview_CSS::enqueue_for_admin();
             }
             Anchor_Monaco::enqueue( self::CPT );
-            wp_enqueue_style('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.css'), [], '1.1.6');
-            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'anchor-monaco', 'anchor-preview'], '1.1.6', true);
+            $mdir = plugin_dir_path( __FILE__ );
+            wp_enqueue_style('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.css'), [], (string) filemtime( $mdir . 'admin.css' ));
+            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'anchor-monaco', 'anchor-preview'], (string) filemtime( $mdir . 'admin.js' ), true);
         }
     }
 

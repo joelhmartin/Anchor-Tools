@@ -94,11 +94,15 @@ class Anchor_Groups {
 		$taxonomy  = array_search( $post_type, self::$map, true );
 		if ( ! $taxonomy ) { return; }
 		if ( ! empty( $_GET[ $taxonomy ] ) ) {
-			$query->query_vars['tax_query'] = array( array(
+			$tax_query = isset( $query->query_vars['tax_query'] ) && is_array( $query->query_vars['tax_query'] )
+				? $query->query_vars['tax_query']
+				: array();
+			$tax_query[] = array(
 				'taxonomy' => $taxonomy,
 				'field'    => 'slug',
 				'terms'    => sanitize_text_field( wp_unslash( $_GET[ $taxonomy ] ) ),
-			) );
+			);
+			$query->query_vars['tax_query'] = $tax_query;
 		}
 	}
 
@@ -127,10 +131,14 @@ class Anchor_Groups {
 		$term    = get_term( $term_id );
 		if ( ! $term || is_wp_error( $term ) ) { return $redirect; }
 		$taxonomy = $term->taxonomy;
-		if ( ! in_array( $taxonomy, array_keys( self::$map ), true ) ) { return $redirect; }
+		if ( ! isset( self::$map[ $taxonomy ] ) ) { return $redirect; }
+		$cpt = self::$map[ $taxonomy ];
 		foreach ( (array) $post_ids as $pid ) {
-			if ( current_user_can( 'edit_post', $pid ) ) {
-				wp_set_object_terms( (int) $pid, $term_id, $taxonomy, true );
+			$pid = (int) $pid;
+			// Only attach the term to posts of the CPT this taxonomy belongs to,
+			// so a crafted action can't cross-assign another module's group.
+			if ( get_post_type( $pid ) === $cpt && current_user_can( 'edit_post', $pid ) ) {
+				wp_set_object_terms( $pid, $term_id, $taxonomy, true );
 			}
 		}
 		return add_query_arg( 'anchor_grouped', count( (array) $post_ids ), $redirect );

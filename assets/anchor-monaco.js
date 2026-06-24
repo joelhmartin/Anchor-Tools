@@ -183,6 +183,11 @@
 					snaps = [ current ];
 				}
 
+				// Mirror the editor's final value into the hidden textarea up front
+				// (before onDidChangeContent is wired) so a save immediately after an
+				// undo-history restore submits the editor content, not the server value.
+				ta.value = ed.getValue();
+
 				var persist = debounce( function () {
 					var v = ed.getValue();
 					if ( snaps[ snaps.length - 1 ] === v ) { return; }

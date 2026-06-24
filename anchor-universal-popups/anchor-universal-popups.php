@@ -611,9 +611,9 @@ class Anchor_Universal_Popups_Module {
             </div>
 
             <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( array(
-                array( 'id' => 'up_html', 'label' => 'HTML', 'lang' => 'html' ),
-                array( 'id' => 'up_css',  'label' => 'CSS',  'lang' => 'css' ),
-                array( 'id' => 'up_js',   'label' => 'JS',   'lang' => 'javascript' ),
+                array( 'id' => 'up_html', 'label' => __( 'HTML', 'anchor-schema' ), 'lang' => 'html' ),
+                array( 'id' => 'up_css',  'label' => __( 'CSS', 'anchor-schema' ),  'lang' => 'css' ),
+                array( 'id' => 'up_js',   'label' => __( 'JS', 'anchor-schema' ),   'lang' => 'javascript' ),
             ) ) ); ?>'>
             <div class="up-field up-field-html" data-up-show-when-mode="html">
                 <label for="up_html"><strong>HTML</strong></label>

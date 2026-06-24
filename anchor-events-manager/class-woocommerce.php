@@ -2403,18 +2403,7 @@ class WooCommerce {
      * @return string
      */
     private function organizer_recipient( $event_id, array $settings ) {
-        $meta  = $this->module->get_meta( (int) $event_id );
-        $email = '';
-        if ( ! empty( $meta['organizer_email'] ) ) {
-            $email = \sanitize_email( (string) $meta['organizer_email'] );
-        }
-        if ( $email === '' && ! empty( $settings['organizer_email'] ) ) {
-            $email = \sanitize_email( (string) $settings['organizer_email'] );
-        }
-        if ( $email === '' ) {
-            $email = \sanitize_email( (string) \get_option( 'admin_email' ) );
-        }
-        return (string) $email;
+        return $this->module->resolve_organizer_email( (int) $event_id, $settings );
     }
 
     /* ---------------------------------------------------------------------

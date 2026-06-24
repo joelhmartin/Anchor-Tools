@@ -566,6 +566,14 @@ class Module {
             'show_in_rest' => true,
             'auth_callback' => $reg_auth_callback,
         ] );
+
+        // v1.1 lifecycle email markers (spec §4.2). Written by cron/cancel tasks only.
+        \register_post_meta( self::REG_CPT, '_anchor_event_reminders_sent', [
+            'type' => 'array', 'single' => true, 'show_in_rest' => false, 'auth_callback' => $reg_auth_callback,
+        ] );
+        \register_post_meta( self::REG_CPT, '_anchor_event_cancel_emailed', [
+            'type' => 'boolean', 'single' => true, 'show_in_rest' => false, 'auth_callback' => $reg_auth_callback,
+        ] );
     }
 
     private function get_meta_schema() {
@@ -605,6 +613,9 @@ class Module {
             // excluded from save_meta()'s allow-list so event saves never clobber it.
             'linked_products' => [ 'type' => 'array', 'show_in_rest' => false ],
             'organizer_email' => [ 'type' => 'string' ],
+            // v1.1 lifecycle email per-event overrides (spec §4.2).
+            'reminder_offsets' => [ 'type' => 'string' ],
+            'roster_sent' => [ 'type' => 'integer', 'show_in_rest' => false ],
             // Per-event activity roll-up: data-model reserved only; NOT written/surfaced
             // in MVP (activity log deferred — spec §2, §11.6).
             'activity' => [ 'type' => 'array', 'show_in_rest' => false ],
@@ -651,6 +662,8 @@ class Module {
             'gallery' => [],
             'linked_products' => [],
             'organizer_email' => '',
+            'reminder_offsets' => '',
+            'roster_sent' => 0,
             'activity' => [],
         ];
     }
@@ -870,6 +883,17 @@ class Module {
                     </p>
                 </div>
             </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Email Settings', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_reminder_offsets"><?php echo esc_html__( 'Reminder offsets (days)', 'anchor-schema' ); ?></label>
+                        <input type="text" id="anchor_event_reminder_offsets" name="anchor_event_reminder_offsets" value="<?php echo esc_attr( $meta['reminder_offsets'] ); ?>" class="regular-text" />
+                        <p class="description"><?php echo esc_html__( 'Comma-separated days before start (e.g. 14,3,1). Leave blank to use the global default.', 'anchor-schema' ); ?></p>
+                    </div>
+                </div>
+            </div>
         </div>
         <?php
     }
@@ -1026,6 +1050,7 @@ class Module {
             'featured' => ! empty( $_POST['anchor_event_featured'] ),
             'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
             'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
+            'reminder_offsets' => $this->sanitize_offset_csv( $_POST['anchor_event_reminder_offsets'] ?? '' ),
         ];
 
         if ( ! $input['start_date'] ) {
@@ -2791,6 +2816,102 @@ class Module {
             }, 'anchor_events_settings', 'anchor_events_wc_emails' );
         }
 
+        // v1.1 lifecycle email settings. Always shown (free + paid registrations).
+        \add_settings_section( 'anchor_events_lifecycle_emails', __( 'Lifecycle Emails', 'anchor-schema' ), function() {
+            echo '<p>' . esc_html__( 'Automated emails for registration reminders, cancellations, and organizer roster digests. Apply to both free (internal) and paid (WooCommerce) registrations. Available tokens: {event_title}, {event_url}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}, {remaining}, {seat_count}, {order_number}, {order_url}, {status}, {site_name}.', 'anchor-schema' ) . '</p>';
+        }, 'anchor_events_settings' );
+
+        \add_settings_field( 'reminder_enabled', __( 'Send reminders', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <label>
+                <input type="checkbox" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[reminder_enabled]" value="1" <?php checked( $opts['reminder_enabled'] ); ?> />
+                <?php echo esc_html__( 'Send a reminder email to registered attendees before the event', 'anchor-schema' ); ?>
+            </label>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'reminder_offsets', __( 'Reminder offsets (days)', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[reminder_offsets]" value="<?php echo esc_attr( $opts['reminder_offsets'] ); ?>" class="regular-text" />
+            <p class="description"><?php echo esc_html__( 'Comma-separated whole days before the event start to send reminders (e.g. 7,1). Up to 5 values. Per-event overrides available in the event editor.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'reminder_subject', __( 'Reminder subject', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[reminder_subject]" value="<?php echo esc_attr( $opts['reminder_subject'] ); ?>" class="regular-text" />
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'reminder_intro', __( 'Reminder email intro', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[reminder_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['reminder_intro'] ); ?></textarea>
+            <p class="description"><?php echo esc_html__( 'Tokens: {event_title}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'notify_cancellation', __( 'Send cancellation emails', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <label>
+                <input type="checkbox" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[notify_cancellation]" value="1" <?php checked( $opts['notify_cancellation'] ); ?> />
+                <?php echo esc_html__( 'Notify the attendee when their registration is cancelled', 'anchor-schema' ); ?>
+            </label>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'cancellation_subject', __( 'Cancellation subject', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[cancellation_subject]" value="<?php echo esc_attr( $opts['cancellation_subject'] ); ?>" class="regular-text" />
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'cancellation_intro', __( 'Cancellation email intro', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[cancellation_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['cancellation_intro'] ); ?></textarea>
+            <p class="description"><?php echo esc_html__( 'Tokens: {event_title}, {attendee_name}, {status}, {site_name}.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'organizer_roster_email', __( 'Organizer roster digest', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <label>
+                <input type="checkbox" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[organizer_roster_email]" value="1" <?php checked( $opts['organizer_roster_email'] ); ?> />
+                <?php echo esc_html__( 'Email the organizer the confirmed roster before the event starts', 'anchor-schema' ); ?>
+            </label>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'roster_auto_offset', __( 'Roster digest offset (days)', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="number" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[roster_auto_offset]" value="<?php echo esc_attr( $opts['roster_auto_offset'] ); ?>" min="0" class="small-text" />
+            <p class="description"><?php echo esc_html__( 'How many days before the event start to send the roster digest (0 = day of).', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'roster_subject', __( 'Roster digest subject', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[roster_subject]" value="<?php echo esc_attr( $opts['roster_subject'] ); ?>" class="regular-text" />
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'roster_intro', __( 'Roster digest intro', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[roster_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['roster_intro'] ); ?></textarea>
+            <p class="description"><?php echo esc_html__( 'Tokens: {event_title}, {event_date}, {event_time}, {venue}, {seat_count}, {remaining}, {site_name}.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
         \add_settings_section( 'anchor_events_slugs', __( 'Permalinks', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Customize event URL slugs.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
@@ -2844,7 +2965,29 @@ class Module {
         // Reserved/unused — preserve stored value (no UI field).
         $output['notify_attendee'] = $defaults['notify_attendee'];
 
+        // v1.1 lifecycle email settings (always saved — not WC-gated).
+        $output['reminder_enabled']     = ! empty( $input['reminder_enabled'] );
+        $output['reminder_offsets']     = $this->sanitize_offset_csv( $input['reminder_offsets'] ?? $defaults['reminder_offsets'] );
+        $output['reminder_subject']     = \sanitize_text_field( $input['reminder_subject'] ?? '' ) ?: $defaults['reminder_subject'];
+        $output['reminder_intro']       = \sanitize_textarea_field( $input['reminder_intro'] ?? '' ) ?: $defaults['reminder_intro'];
+        $output['notify_cancellation']  = ! empty( $input['notify_cancellation'] );
+        $output['cancellation_subject'] = \sanitize_text_field( $input['cancellation_subject'] ?? '' ) ?: $defaults['cancellation_subject'];
+        $output['cancellation_intro']   = \sanitize_textarea_field( $input['cancellation_intro'] ?? '' ) ?: $defaults['cancellation_intro'];
+        $output['organizer_roster_email'] = ! empty( $input['organizer_roster_email'] );
+        $output['roster_auto_offset']   = max( 0, (int) ( $input['roster_auto_offset'] ?? 1 ) );
+        $output['roster_subject']       = \sanitize_text_field( $input['roster_subject'] ?? '' ) ?: $defaults['roster_subject'];
+        $output['roster_intro']         = \sanitize_textarea_field( $input['roster_intro'] ?? '' ) ?: $defaults['roster_intro'];
+
         return $output;
+    }
+
+    /** Normalize a CSV of day offsets → sorted-descending, de-duped, positive ints (≤5). */
+    private function sanitize_offset_csv( $raw ) {
+        $days = array_filter( array_map( 'intval', explode( ',', (string) $raw ) ), function ( $d ) { return $d > 0; } );
+        $days = array_values( array_unique( $days ) );
+        rsort( $days );
+        $days = array_slice( $days, 0, 5 );
+        return implode( ',', $days );
     }
 
     public function render_tab_content() {
@@ -3406,6 +3549,65 @@ class Module {
         return \str_replace( $search, $replace, (string) $template );
     }
 
+    /** Documented token set for all event emails (spec §9). */
+    public function email_tokens( array $ctx ) {
+        $event_id = (int) ( $ctx['event_id'] ?? 0 );
+        $meta     = $event_id ? $this->get_meta( $event_id ) : [];
+        $start_ts = (int) ( $meta['start_ts'] ?? 0 );
+        $seat     = isset( $ctx['seat'] ) && is_array( $ctx['seat'] ) ? $ctx['seat'] : [];
+        $order    = ( isset( $ctx['order'] ) && $ctx['order'] instanceof \WC_Order ) ? $ctx['order'] : null;
+
+        $venue = '';
+        if ( ! empty( $meta['virtual'] ) ) {
+            $venue = __( 'Online', 'anchor-schema' );
+        } elseif ( ! empty( $meta['venue'] ) ) {
+            $venue = (string) $meta['venue'];
+        }
+        $join = '';
+        if ( ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] )
+            && ( ! $seat || ( $seat['status'] ?? '' ) !== 'waitlist' ) ) {
+            $join = (string) $meta['virtual_url'];
+        }
+        $remaining = $ctx['remaining'] ?? '';
+        if ( $remaining === '' && $event_id ) {
+            $summary   = $this->registrations ? $this->registrations->get_event_summary( $event_id ) : [];
+            $remaining = ( isset( $summary['remaining'] ) && (int) $summary['remaining'] >= 0 )
+                ? (string) (int) $summary['remaining'] : __( 'unlimited', 'anchor-schema' );
+        }
+        $days_until = ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '';
+
+        return [
+            'event_title'  => $event_id ? \get_the_title( $event_id ) : \get_bloginfo( 'name' ),
+            'event_url'    => $event_id ? \get_permalink( $event_id ) : \home_url(),
+            'event_date'   => $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts ) : '',
+            'event_time'   => ( $start_ts && empty( $meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts ) : '',
+            'venue'        => $venue,
+            'days_until'   => $days_until,
+            'attendee_name'=> (string) ( $seat['name'] ?? '' ),
+            'join_link'    => $join,
+            'remaining'    => (string) $remaining,
+            'seat_count'   => (string) (int) ( $ctx['seat_count'] ?? 0 ),
+            'order_number' => $order ? (string) $order->get_order_number() : '',
+            'order_url'    => $order ? (string) $order->get_view_order_url() : '',
+            'status'       => (string) ( $seat['status'] ?? '' ),
+            'site_name'    => \get_bloginfo( 'name' ),
+        ];
+    }
+
+    /** Resolve organizer recipient: per-event meta → global setting → admin_email (spec §8.2). */
+    public function resolve_organizer_email( $event_id, $settings = null ) {
+        $settings = is_array( $settings ) ? $settings : $this->get_settings();
+        $meta  = $this->get_meta( (int) $event_id );
+        $email = ! empty( $meta['organizer_email'] ) ? \sanitize_email( (string) $meta['organizer_email'] ) : '';
+        if ( $email === '' && ! empty( $settings['organizer_email'] ) ) {
+            $email = \sanitize_email( (string) $settings['organizer_email'] );
+        }
+        if ( $email === '' ) {
+            $email = \sanitize_email( (string) \get_option( 'admin_email' ) );
+        }
+        return $email;
+    }
+
     /**
      * Build the registration confirmation email HTML.
      *
@@ -3629,6 +3831,18 @@ class Module {
             'wc_customer_intro'    => __( 'Thank you for your order. Your registration is confirmed — the details are below.', 'anchor-schema' ),
             'wc_organizer_subject' => __( 'New event registration: {event_title}', 'anchor-schema' ),
             'organizer_email'      => '',
+            // v1.1 lifecycle emails (spec §4.3). All non-WC: free + paid.
+            'reminder_enabled'       => false,                 // opt-in
+            'reminder_offsets'       => '7,1',                 // CSV whole days before start
+            'reminder_subject'       => __( 'Reminder: {event_title} is coming up', 'anchor-schema' ),
+            'reminder_intro'         => __( 'This is a friendly reminder that you are registered for {event_title} on {event_date}. We look forward to seeing you.', 'anchor-schema' ),
+            'notify_cancellation'    => true,
+            'cancellation_subject'   => __( 'Your registration for {event_title} has been cancelled', 'anchor-schema' ),
+            'cancellation_intro'     => __( 'Your registration for {event_title} has been cancelled. If this is unexpected, please contact us.', 'anchor-schema' ),
+            'organizer_roster_email' => false,
+            'roster_auto_offset'     => 1,
+            'roster_subject'         => __( 'Final roster for {event_title}', 'anchor-schema' ),
+            'roster_intro'           => __( 'Here is the current confirmed roster for {event_title} on {event_date}.', 'anchor-schema' ),
             // Reserved/unused in MVP (per-attendee emails are deferred).
             'notify_attendee'      => false,
         ];

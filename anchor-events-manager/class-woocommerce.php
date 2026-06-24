@@ -330,7 +330,7 @@ class WooCommerce {
 
     public function add_product_data_tab( $tabs ) {
         $tabs['anchor_event'] = [
-            'label'    => \__( 'Event Registration', 'anchor-schema' ),
+            'label'    => \__( 'Event Registration (advanced link)', 'anchor-schema' ),
             'target'   => 'anchor_evt_link_data',
             'class'    => [ 'show_if_simple', 'show_if_variable' ],
             'priority' => 65,
@@ -341,11 +341,36 @@ class WooCommerce {
     public function render_product_data_panel() {
         global $post;
         $product_id = $post ? (int) $post->ID : 0;
-        $enabled    = $product_id ? (bool) \get_post_meta( $product_id, self::META_ENABLED, true ) : false;
-        $selected   = $product_id ? (int) \get_post_meta( $product_id, self::META_EVENT_ID, true ) : 0;
 
         echo '<div id="anchor_evt_link_data" class="panel woocommerce_options_panel">';
+
+        // Auto-managed products are already linked to (and owned by) their event via
+        // Product_Sync. Never offer the manual link UI for them — it would allow an
+        // admin to double-link a managed product. Show a read-only note instead.
+        $managed_event = $product_id ? (int) \get_post_meta( $product_id, '_anchor_evt_managed_event', true ) : 0;
+        if ( $managed_event > 0 ) {
+            echo '<p class="form-field"><strong>'
+                . \esc_html__( 'This product is managed by its event — edit tickets on the event.', 'anchor-schema' )
+                . '</strong></p>';
+            $edit = (string) \get_edit_post_link( $managed_event );
+            if ( $edit !== '' ) {
+                echo '<p class="form-field"><a href="' . \esc_url( $edit ) . '">'
+                    . \esc_html__( 'Edit the event', 'anchor-schema' ) . '</a></p>';
+            }
+            echo '</div>';
+            return;
+        }
+
+        $enabled  = $product_id ? (bool) \get_post_meta( $product_id, self::META_ENABLED, true ) : false;
+        $selected = $product_id ? (int) \get_post_meta( $product_id, self::META_EVENT_ID, true ) : 0;
+
         \wp_nonce_field( 'anchor_evt_link_save', 'anchor_evt_link_nonce' );
+
+        // Demoted to an advanced escape hatch (spec §5): the normal path is the
+        // event editor's auto-managed product. Keep this for self-managed products.
+        echo '<p class="form-field"><span class="description">'
+            . \esc_html__( 'Most events auto-create their product from the event editor. Use this only to link an existing, self-managed product to an event.', 'anchor-schema' )
+            . '</span></p>';
 
         \woocommerce_wp_checkbox( [
             'id'          => self::META_ENABLED,

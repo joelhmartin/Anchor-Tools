@@ -113,6 +113,10 @@ class Module {
         // Phase 6: clear the site-wide error log (Events settings tab panel). Lives
         // here (not the WC class) because the error log exists on all sites.
         \add_action( 'admin_post_anchor_events_clear_error_log', [ $this, 'handle_clear_error_log' ] );
+
+        // L14: GDPR personal-data exporter + eraser for attendee PII stored on seats.
+        \add_filter( 'wp_privacy_personal_data_exporters', [ $this, 'register_privacy_exporter' ] );
+        \add_filter( 'wp_privacy_personal_data_erasers', [ $this, 'register_privacy_eraser' ] );
     }
 
     /**
@@ -165,6 +169,15 @@ class Module {
     }
 
     public function run_status_sweep() {
+        // L9: on_deactivate (which unschedules this recurring cron) is registered in
+        // the constructor, which never runs when the events_manager module is toggled
+        // off. If the event CPT isn't registered the module is effectively unavailable
+        // — self-unschedule so we don't leave an orphaned recurring event running with
+        // a no-op callback.
+        if ( ! \post_type_exists( self::CPT ) ) {
+            $this->on_deactivate();
+            return;
+        }
         $events = \get_posts( [
             'post_type'      => self::CPT,
             'post_status'    => [ 'publish', 'future', 'private' ],
@@ -218,6 +231,107 @@ class Module {
             Events_Log::error( 'email_send_returned_false', [ 'to' => $to, 'subject' => $subject ] );
         }
         return (bool) $sent;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Privacy: WP personal-data exporter + eraser (L14)
+     * ------------------------------------------------------------------- */
+
+    /** Register the attendee-PII exporter with WP Tools > Export Personal Data. */
+    public function register_privacy_exporter( $exporters ) {
+        $exporters['anchor-events'] = [
+            'exporter_friendly_name' => \__( 'Anchor Events registrations', 'anchor-schema' ),
+            'callback'               => [ $this, 'privacy_export' ],
+        ];
+        return $exporters;
+    }
+
+    /** Register the attendee-PII eraser with WP Tools > Erase Personal Data. */
+    public function register_privacy_eraser( $erasers ) {
+        $erasers['anchor-events'] = [
+            'eraser_friendly_name' => \__( 'Anchor Events registrations', 'anchor-schema' ),
+            'callback'             => [ $this, 'privacy_erase' ],
+        ];
+        return $erasers;
+    }
+
+    /**
+     * Exporter callback: return attendee fields for every seat matching the email.
+     *
+     * @param string $email_address
+     * @param int    $page 1-based.
+     * @return array{data:array,done:bool}
+     */
+    public function privacy_export( $email_address, $page = 1 ) {
+        $page     = max( 1, (int) $page );
+        $per_page = 100;
+        $seat_ids = $this->registrations->seats_by_email( $email_address, $page, $per_page );
+
+        $items = [];
+        foreach ( $seat_ids as $seat_id ) {
+            $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
+            $data     = [
+                [ 'name' => \__( 'Event', 'anchor-schema' ), 'value' => \get_the_title( $event_id ) ],
+                [ 'name' => \__( 'Name', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_name', true ) ],
+                [ 'name' => \__( 'Email', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) ],
+                [ 'name' => \__( 'Phone', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_phone', true ) ],
+                [ 'name' => \__( 'Status', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true ) ],
+            ];
+
+            // C: attendee-provided custom registration fields can themselves be PII,
+            // so include them in the export (one row per field).
+            $reg_fields = \get_post_meta( $seat_id, '_anchor_event_reg_fields', true );
+            if ( \is_array( $reg_fields ) ) {
+                foreach ( $reg_fields as $field_key => $field_value ) {
+                    $value = \is_scalar( $field_value ) ? (string) $field_value : \wp_json_encode( $field_value );
+                    $data[] = [
+                        'name'  => (string) $field_key,
+                        'value' => (string) $value,
+                    ];
+                }
+            }
+
+            $items[] = [
+                'group_id'    => 'anchor_event_registrations',
+                'group_label' => \__( 'Event Registrations', 'anchor-schema' ),
+                'item_id'     => 'anchor-event-seat-' . (int) $seat_id,
+                'data'        => $data,
+            ];
+        }
+
+        return [
+            'data' => $items,
+            'done' => \count( $seat_ids ) < $per_page,
+        ];
+    }
+
+    /**
+     * Eraser callback: anonymize attendee PII on every seat matching the email.
+     * The seat record + status/history are retained for capacity + audit.
+     *
+     * @param string $email_address
+     * @param int    $page 1-based.
+     * @return array{items_removed:bool,items_retained:bool,messages:array,done:bool}
+     */
+    public function privacy_erase( $email_address, $page = 1 ) {
+        $per_page = 100;
+        // B: anonymize_seat() clears _anchor_event_email, so the matching set shrinks
+        // between eraser calls. Always pull PAGE 1 of the remaining unscrubbed
+        // records — paging with $page > 1 would skip records as the set contracts.
+        $seat_ids = $this->registrations->seats_by_email( $email_address, 1, $per_page );
+
+        foreach ( $seat_ids as $seat_id ) {
+            $this->registrations->anonymize_seat( $seat_id );
+        }
+
+        return [
+            // Seats are retained with PII scrubbed (kept for capacity + audit), not
+            // physically deleted — so nothing is "removed", everything is "retained".
+            'items_removed'  => false,
+            'items_retained' => ! empty( $seat_ids ),
+            'messages'       => [],
+            'done'           => \count( $seat_ids ) < $per_page,
+        ];
     }
 
     public static function instance() {
@@ -441,6 +555,15 @@ class Module {
             'type' => 'array',
             'single' => true,
             'show_in_rest' => false,
+            'auth_callback' => $reg_auth_callback,
+        ] );
+
+        // L15: spec-reserved attendee-notified flag (honors the `notify_attendee`
+        // reservation; not yet written, registered so the key is recognized).
+        \register_post_meta( self::REG_CPT, '_anchor_event_attendee_notified', [
+            'type' => 'boolean',
+            'single' => true,
+            'show_in_rest' => true,
             'auth_callback' => $reg_auth_callback,
         ] );
     }
@@ -866,7 +989,7 @@ class Module {
     }
 
     public function save_meta( $post_id ) {
-        if ( ! isset( $_POST[ self::NONCE ] ) || ! \wp_verify_nonce( $_POST[ self::NONCE ], self::NONCE ) ) {
+        if ( ! isset( $_POST[ self::NONCE ] ) || ! \wp_verify_nonce( \sanitize_text_field( \wp_unslash( $_POST[ self::NONCE ] ) ), self::NONCE ) ) {
             return;
         }
         if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
@@ -1551,7 +1674,7 @@ class Module {
 
     public function handle_event_manager_login() {
         $redirect = isset( $_POST['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_POST['redirect_to'] ) ) : \home_url( '/' );
-        $nonce = $_POST['_anchor_login_nonce'] ?? '';
+        $nonce = isset( $_POST['_anchor_login_nonce'] ) ? \sanitize_text_field( \wp_unslash( $_POST['_anchor_login_nonce'] ) ) : '';
         if ( ! \wp_verify_nonce( $nonce, 'anchor_event_manager_login' ) ) {
             \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'error', $redirect ) );
             exit;
@@ -1929,7 +2052,7 @@ class Module {
     }
 
     public function handle_event_manager_save() {
-        $nonce = $_POST['anchor_event_manager_nonce'] ?? '';
+        $nonce = isset( $_POST['anchor_event_manager_nonce'] ) ? \sanitize_text_field( \wp_unslash( $_POST['anchor_event_manager_nonce'] ) ) : '';
         if ( ! \wp_verify_nonce( $nonce, 'anchor_event_manager_save' ) ) {
             \wp_die( esc_html__( 'Invalid request.', 'anchor-schema' ) );
         }
@@ -1946,6 +2069,15 @@ class Module {
             exit;
         }
 
+        // M1: the edit branch must confirm the target is actually an event before
+        // wp_update_post() forces post_type=CPT — otherwise an arbitrary post the
+        // user can edit (their own draft) could be type-confused into an event
+        // (mirror handle_event_manager_delete()).
+        if ( $is_edit && \get_post_type( $event_id ) !== self::CPT ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'error', $redirect ) );
+            exit;
+        }
+
         $title = sanitize_text_field( wp_unslash( $_POST['anchor_event_title'] ?? '' ) );
         $content = wp_kses_post( wp_unslash( $_POST['anchor_event_content'] ?? '' ) );
         $start_date = $this->sanitize_date( $_POST['anchor_event_start_date'] ?? '' );
@@ -1957,6 +2089,13 @@ class Module {
         $post_status = sanitize_key( $_POST['anchor_event_post_status'] ?? 'publish' );
         if ( ! in_array( $post_status, [ 'publish', 'draft', 'private' ], true ) ) {
             $post_status = 'publish';
+        }
+        // M1: wp_update_post()/wp_insert_post() do NOT enforce publish_posts for an
+        // explicit post_status='publish'/'private'. Downgrade to 'pending' when the
+        // user lacks the real publish capability (e.g. a Contributor) so the
+        // front-end editor can't be used to bypass the publish gate.
+        if ( in_array( $post_status, [ 'publish', 'private' ], true ) && ! \current_user_can( 'publish_posts' ) ) {
+            $post_status = 'pending';
         }
 
         $postarr = [
@@ -2207,6 +2346,43 @@ class Module {
         return '<div class="anchor-event-notice">' . esc_html( $messages[ $key ] ) . '</div>';
     }
 
+    /**
+     * Whether the current viewer may see the virtual "Join here" link (H1/A1).
+     *
+     * The link is shown to any entitled viewer:
+     * - Purely informational public events (registration disabled AND NOT linked):
+     *   nothing is gated behind the link, so it stays visible to everyone.
+     * - Roster-capability staff: always.
+     * - A logged-in viewer holding a confirmed/active seat for this event — this
+     *   covers BOTH free registrants and confirmed paid (WooCommerce-linked) buyers.
+     *
+     * Anonymous / non-seat-holders never see it on a registration or paid event
+     * (the paywall holds); guest/logged-out registrants instead receive the join
+     * link in their confirmation email.
+     *
+     * @param int   $post_id
+     * @param array $meta
+     * @return bool
+     */
+    private function can_view_virtual_link( $post_id, $meta ) {
+        $post_id   = (int) $post_id;
+        $is_linked = ( $this->woocommerce && $this->woocommerce->event_is_linked( $post_id ) );
+
+        if ( empty( $meta['registration_enabled'] ) && ! $is_linked ) {
+            // Informational public event — nothing gated behind the link.
+            return true;
+        }
+
+        if ( Roster::current_user_can_manage() ) {
+            return true;
+        }
+        if ( ! \is_user_logged_in() ) {
+            return false;
+        }
+        $user = \wp_get_current_user();
+        return $this->registrations->user_has_active_seat( $post_id, (int) $user->ID, (string) $user->user_email );
+    }
+
     public function render_single_content( $post_id ) {
         $meta = $this->get_meta( $post_id );
         $status = $this->get_event_status( $post_id, $meta );
@@ -2218,7 +2394,13 @@ class Module {
             $output .= '<div><strong>' . esc_html__( 'Venue', 'anchor-schema' ) . ':</strong> ' . esc_html( $meta['venue'] ) . '</div>';
         }
         if ( $meta['virtual'] && $meta['virtual_url'] ) {
-            $output .= '<div><strong>' . esc_html__( 'Virtual Event', 'anchor-schema' ) . ':</strong> <a href="' . esc_url( $meta['virtual_url'] ) . '" target="_blank" rel="noopener">' . esc_html__( 'Join here', 'anchor-schema' ) . '</a></div>';
+            // H1: the join link is the paid/registered deliverable — only emit it to
+            // entitled viewers. Non-entitled viewers see a notice, never the URL.
+            if ( $this->can_view_virtual_link( $post_id, $meta ) ) {
+                $output .= '<div><strong>' . esc_html__( 'Virtual Event', 'anchor-schema' ) . ':</strong> <a href="' . esc_url( $meta['virtual_url'] ) . '" target="_blank" rel="noopener">' . esc_html__( 'Join here', 'anchor-schema' ) . '</a></div>';
+            } else {
+                $output .= '<div><strong>' . esc_html__( 'Virtual Event', 'anchor-schema' ) . ':</strong> ' . esc_html__( 'The join link is available to registered attendees.', 'anchor-schema' ) . '</div>';
+            }
         }
         $output .= '<div><strong>' . esc_html__( 'Status', 'anchor-schema' ) . ':</strong> ' . esc_html( ucfirst( $status ) ) . '</div>';
         $output .= '</div>';
@@ -2329,7 +2511,7 @@ class Module {
     }
 
     public function handle_registration() {
-        if ( ! isset( $_POST[ self::REG_NONCE ] ) || ! \wp_verify_nonce( $_POST[ self::REG_NONCE ], self::REG_NONCE ) ) {
+        if ( ! isset( $_POST[ self::REG_NONCE ] ) || ! \wp_verify_nonce( \sanitize_text_field( \wp_unslash( $_POST[ self::REG_NONCE ] ) ), self::REG_NONCE ) ) {
             \wp_die( esc_html__( 'Invalid registration request.', 'anchor-schema' ) );
         }
 
@@ -2400,6 +2582,13 @@ class Module {
             exit;
         }
 
+        // L2: a seat was created while the capacity lock was unavailable (degraded
+        // mode) — record an admin-visible signal mirroring the paid path so the
+        // free path can't silently oversell.
+        if ( ! empty( $result['lock_unavailable'] ) ) {
+            Events_Log::error( 'capacity_lock_unavailable', [ 'event' => $event_id, 'source' => 'internal' ] );
+        }
+
         $reg_status = ( $waitlisted && ! $created ) ? 'waitlist' : 'confirmed';
         $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
 
@@ -2416,7 +2605,7 @@ class Module {
      */
     public function event_row_actions( $actions, $post ) {
         if ( $post instanceof \WP_Post && $post->post_type === self::CPT
-            && $this->roster && \current_user_can( Roster::CAP ) ) {
+            && $this->roster && Roster::current_user_can_manage() ) {
             $url = $this->roster->roster_url( $post->ID );
             $actions['anchor_roster'] = '<a href="' . \esc_url( $url ) . '">'
                 . \esc_html__( 'Roster', 'anchor-schema' ) . '</a>';
@@ -3283,6 +3472,17 @@ class Module {
         $detail_rows = \is_array( $ctx['detail_rows'] ) ? $ctx['detail_rows'] : [];
         $seat_list   = \is_array( $ctx['seat_list'] ) ? $ctx['seat_list'] : [];
 
+        // A2: confirmed registrants of a virtual event get the actual join link in
+        // the email so guest/logged-out attendees (free or paid) gain access without
+        // needing to be logged in on the gated event page. Never for waitlist.
+        $join_url = '';
+        if ( $event_id && $status !== 'waitlist' ) {
+            $event_meta = $this->get_meta( $event_id );
+            if ( ! empty( $event_meta['virtual'] ) && ! empty( $event_meta['virtual_url'] ) ) {
+                $join_url = (string) $event_meta['virtual_url'];
+            }
+        }
+
         $paragraphs = '';
         foreach ( preg_split( "/(\r\n|\n|\r){2,}/", trim( $message ) ) as $block ) {
             $block = trim( $block );
@@ -3368,6 +3568,15 @@ class Module {
                                     <?php endif; ?>
                                 </td>
                             </tr>
+                            <?php if ( $join_url ) : ?>
+                            <tr>
+                                <td style="padding:8px 32px 0;">
+                                    <a href="<?php echo esc_url( $join_url ); ?>" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                        <?php echo esc_html__( 'Join the event', 'anchor-schema' ); ?>
+                                    </a>
+                                </td>
+                            </tr>
+                            <?php endif; ?>
                             <?php if ( $cta_url && $cta_label ) : ?>
                             <tr>
                                 <td style="padding:8px 32px 32px;">

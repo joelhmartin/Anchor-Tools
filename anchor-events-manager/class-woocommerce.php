@@ -851,8 +851,29 @@ class WooCommerce {
         echo '<h3>' . \esc_html__( 'Attendee details', 'anchor-schema' ) . '</h3>';
 
         foreach ( $lines as $cart_item_key => $line ) {
+            // P4 — tier-label the block heading (presentational). Resolve the tier
+            // from the line's managed variation; fall back to the event title.
+            $heading   = (string) $line['event_title'];
+            $tier_label = '';
+            if ( $this->module->product_sync && (int) $line['variation_id'] > 0 && $this->module->ticket_types ) {
+                $resolved = $this->module->product_sync->tier_for_variation( (int) $line['variation_id'] );
+                if ( ! empty( $resolved['tier_id'] ) ) {
+                    $tier = $this->module->ticket_types->find( (int) $line['event_id'], (string) $resolved['tier_id'] );
+                    if ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) {
+                        $tier_label = (string) $tier['label'];
+                    }
+                }
+            }
+            if ( $tier_label !== '' ) {
+                $heading = \sprintf(
+                    /* translators: 1: event title, 2: ticket tier label. */
+                    \__( '%1$s — %2$s', 'anchor-schema' ),
+                    $line['event_title'],
+                    $tier_label
+                );
+            }
             echo '<fieldset class="anchor-event-attendee-line" data-cart-item="' . \esc_attr( $cart_item_key ) . '">';
-            echo '<legend>' . \esc_html( $line['event_title'] ) . '</legend>';
+            echo '<legend>' . \esc_html( $heading ) . '</legend>';
 
             for ( $i = 1; $i <= $line['qty']; $i++ ) {
                 $name  = isset( $posted[ $cart_item_key ][ $i ]['name'] ) ? \sanitize_text_field( $posted[ $cart_item_key ][ $i ]['name'] ) : '';
@@ -1531,9 +1552,34 @@ class WooCommerce {
             'customer_id'   => (int) $billing['customer_id'],
         ];
 
+        // P4 — resolve the ticket tier for this line once. Prefer the managed
+        // variation's tier id; fall back to the event's primary tier id (covers a
+        // null product_sync / unlinked-or-non-variation line / legacy data).
+        $variation_id = (int) $item->get_variation_id();
+        $tier_id      = '';
+        if ( $this->module->product_sync && $variation_id > 0 ) {
+            $resolved = $this->module->product_sync->tier_for_variation( $variation_id );
+            if ( ! empty( $resolved['tier_id'] ) ) {
+                $tier_id = (string) $resolved['tier_id'];
+            }
+        }
+        if ( $tier_id === '' && $this->module->ticket_types ) {
+            $tier_id = (string) $this->module->ticket_types->primary_id( $event_id );
+        }
+        if ( $tier_id === '' ) {
+            $tier_id = 'primary';
+        }
+
+        // Per-tier quota (0/empty = bounded only by the event total). find() reads
+        // event meta only; the authoritative reserved-for-tier count is taken FRESH
+        // under the lock below.
+        $tier        = ( $this->module->ticket_types ) ? $this->module->ticket_types->find( $event_id, $tier_id ) : null;
+        $tier_quota  = $tier ? (int) ( $tier['quota'] ?? 0 ) : 0;
+
         $result = $this->registrations->with_event_lock( $event_id, function ( $locked ) use (
             $event_id, $item_id, $expected, $active_target, $removal_status, $capacity, $unlimited,
-            $waitlist_enabled, $terminal_set, $attendees, $can_create, $billing, $payload_base, $order_id
+            $waitlist_enabled, $terminal_set, $attendees, $can_create, $billing, $payload_base, $order_id,
+            $tier_id, $tier_quota
         ) {
             $created   = [];
             $revived   = [];
@@ -1626,6 +1672,14 @@ class WooCommerce {
                 $reserved  = $this->registrations->count_reserved_seats( $event_id, true );
                 $remaining = $unlimited ? PHP_INT_MAX : max( 0, $capacity - $reserved );
 
+                // P4 — per-tier remaining quota, recounted FRESH under the same lock
+                // (folds in the old claim_woo_seats tier logic). quota<=0 ⇒ the tier
+                // is bounded only by the event total.
+                $tier_unlimited = ( $tier_quota <= 0 );
+                $tier_left      = $tier_unlimited
+                    ? PHP_INT_MAX
+                    : max( 0, $tier_quota - $this->registrations->count_reserved_for_tier( $event_id, $tier_id, true ) );
+
                 // DEFICIT: produce ($expected - active) more active seats by first
                 // REVIVING cancelled/failed matching seats (finding #7), then
                 // CREATING new ones at max+1. refunded seats are terminal and never
@@ -1654,20 +1708,40 @@ class WooCommerce {
                                 $revived[] = $seat['id'];
                                 if ( $has_room ) {
                                     $remaining--;
+                                    // A revived seat re-consumes its tier's quota
+                                    // (it already carries its tier from creation —
+                                    // leave the tag as-is); keep the running tier
+                                    // tally accurate for any new creates this pass.
+                                    if ( ! $tier_unlimited && $tier_left > 0 ) {
+                                        $tier_left--;
+                                    }
                                 } else {
                                     $overfill = true;
                                 }
                             }
                         } else {
                             // CREATE a new seat at the next free index (max+1).
-                            if ( $has_room ) {
+                            // P4 — decide against BOTH the event total and the tier
+                            // quota (single authority, both recounted fresh above).
+                            $event_has_room = ( $unlimited || $remaining >= 1 );
+                            $tier_has_room  = ( $tier_unlimited || $tier_left >= 1 );
+                            if ( $event_has_room && $tier_has_room ) {
+                                // Both levels have room → confirmed/active; decrement both.
                                 $status = $active_target;
                                 $remaining--;
-                            } elseif ( $waitlist_enabled ) {
+                                if ( ! $tier_unlimited ) {
+                                    $tier_left--;
+                                }
+                            } elseif ( ! $event_has_room && $waitlist_enabled ) {
+                                // EVENT total full + event waitlist toggle on →
+                                // event-level waitlist (regardless of tier).
                                 $status = Registrations::STATUS_WAITLIST;
                             } else {
-                                // Buyer already paid, no room, no waitlist: leave
-                                // uncreated and flag overfill (spec §9.3).
+                                // Either the event is full with no waitlist, OR the
+                                // tier quota is exhausted while the event still has
+                                // room (and we're not waitlisting): buyer paid but no
+                                // tier seat can be created → leave uncreated and flag
+                                // overfill so it surfaces in needs-review (spec §7/§9.3).
                                 $overfill = true;
                                 break;
                             }
@@ -1707,16 +1781,17 @@ class WooCommerce {
                                 $note  = 'order #' . $order_id . ' (attendee data missing, used billing)';
                             }
                             $seat_id = $this->registrations->create_seat( \array_merge( $payload_base, [
-                                'event_id'   => $event_id,
-                                'status'     => $status,
-                                'seat_index' => $index,
-                                'source'     => 'woocommerce',
-                                'guests'     => 0,
-                                'actor'      => 'woocommerce',
-                                'name'       => $name,
-                                'email'      => $email,
-                                'phone'      => $phone,
-                                'note'       => $note,
+                                'event_id'       => $event_id,
+                                'status'         => $status,
+                                'seat_index'     => $index,
+                                'source'         => 'woocommerce',
+                                'guests'         => 0,
+                                'actor'          => 'woocommerce',
+                                'name'           => $name,
+                                'email'          => $email,
+                                'phone'          => $phone,
+                                'note'           => $note,
+                                'ticket_type_id' => $tier_id, // P4 — tag seat with its tier.
                             ] ) );
                             if ( $seat_id ) {
                                 $created[] = $seat_id;

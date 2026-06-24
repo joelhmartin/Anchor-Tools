@@ -566,6 +566,36 @@ class Registrations {
     }
 
     /**
+     * Whether any seat (any status) exists for a given event+tier. Read-only data
+     * layer helper used by Product_Sync to decide deactivate-vs-delete a managed
+     * variation (spec §5: deactivate tiers with sales, delete tiers with none).
+     *
+     * @param int    $event_id
+     * @param string $tier_id
+     * @return bool
+     */
+    public function tier_has_seats( $event_id, $tier_id ) {
+        $event_id = (int) $event_id;
+        $tier_id  = (string) $tier_id;
+        if ( $event_id <= 0 || $tier_id === '' ) {
+            return false;
+        }
+        $q = new \WP_Query( [
+            'post_type'      => Module::REG_CPT,
+            'post_status'    => 'any',
+            'fields'         => 'ids',
+            'posts_per_page' => 1,
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                'relation' => 'AND',
+                [ 'key' => '_anchor_event_id', 'value' => $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+                [ 'key' => '_anchor_event_ticket_type_id', 'value' => $tier_id, 'compare' => '=' ],
+            ],
+        ] );
+        return ! empty( $q->posts );
+    }
+
+    /**
      * Seat post IDs whose attendee email matches, paged (GDPR export/erase — L14).
      *
      * @param string $email

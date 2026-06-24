@@ -20,6 +20,9 @@ class Module {
     /** @var WooCommerce|null WC integration; null when WooCommerce is inactive. */
     public $woocommerce = null;
 
+    /** @var Product_Sync|null Event→product sync; null when WooCommerce is inactive. */
+    public $product_sync = null;
+
     /** @var Roster|null Roster admin screen + CSV export (always loaded). */
     public $roster = null;
 
@@ -46,6 +49,10 @@ class Module {
         if ( \class_exists( 'WooCommerce' ) ) {
             require_once $dir . 'class-woocommerce.php';
             $this->woocommerce = new WooCommerce( $this, $this->registrations );
+            // Event→managed-product sync (spec §4–5). Constructed only when WC is
+            // active; depends on the always-loaded Ticket_Types model.
+            require_once $dir . 'class-product-sync.php';
+            $this->product_sync = new Product_Sync( $this, $this->ticket_types );
         }
 
         \add_action( 'init', [ $this, 'register_cpt' ] );

@@ -10,6 +10,7 @@ class Anchor_Universal_Popups_Module {
     const TAX = 'anchor_popup_group';
     const LEGACY_CPT = 'up_popup';
     const MIGRATION_FLAG = 'anchor_universal_popups_migrated';
+    const SHORTCODE_MIGRATION_FLAG = 'anchor_universal_popups_shortcode_migrated';
     const NONCE = 'anchor_popup_nonce';
 
     /** @var string[] Video providers present on this request, for preconnect hints. */
@@ -40,6 +41,7 @@ class Anchor_Universal_Popups_Module {
 
     public function register_cpt(){
         $this->maybe_migrate_legacy_posts();
+        $this->maybe_migrate_shortcode_mode();
         register_post_type(self::CPT, [
             'labels' => [
                 'name' => 'Anchor Universal Popups',
@@ -133,6 +135,35 @@ class Anchor_Universal_Popups_Module {
         if ( false !== $updated ) {
             update_option(self::MIGRATION_FLAG, 1);
         }
+    }
+
+    /**
+     * One-time migration: the dedicated "Shortcode" mode was removed in favor of
+     * HTML (which now runs do_shortcode). Convert any shortcode-mode popups to
+     * HTML mode, folding the saved shortcode into the HTML field.
+     */
+    private function maybe_migrate_shortcode_mode(){
+        if ( get_option(self::SHORTCODE_MIGRATION_FLAG) ) {
+            return;
+        }
+        $ids = get_posts([
+            'post_type'      => self::CPT,
+            'post_status'    => 'any',
+            'numberposts'    => -1,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+            'meta_query'     => [[ 'key' => 'up_mode', 'value' => 'shortcode' ]],
+        ]);
+        foreach ( $ids as $pid ) {
+            $shortcode = (string) get_post_meta($pid, 'up_shortcode', true);
+            $html      = (string) get_post_meta($pid, 'up_html', true);
+            if ( $shortcode !== '' ) {
+                $merged = ( $html === '' ) ? $shortcode : ( $html . "\n" . $shortcode );
+                update_post_meta($pid, 'up_html', $merged);
+            }
+            update_post_meta($pid, 'up_mode', 'html');
+        }
+        update_option(self::SHORTCODE_MIGRATION_FLAG, 1, false);
     }
 
     private function defaults(){
@@ -458,10 +489,10 @@ class Anchor_Universal_Popups_Module {
             <div class="up-field">
               <label><strong>Mode</strong></label>
               <select name="up_mode" id="up_mode">
-                <option value="html" <?php selected($m['mode'], 'html'); ?>>HTML</option>
-                <option value="shortcode" <?php selected($m['mode'], 'shortcode'); ?>>Shortcode</option>
+                <option value="html" <?php selected(! in_array($m['mode'], ['video', 'youtube', 'vimeo'], true)); ?>>HTML</option>
                 <option value="video" <?php selected(in_array($m['mode'], ['video', 'youtube', 'vimeo'], true)); ?>>Video</option>
               </select>
+              <p class="description">HTML supports shortcodes &mdash; paste any <code>[shortcode]</code> directly into the HTML tab.</p>
             </div>
 
             <div class="up-field up-field-video" data-up-show-when-mode="video">
@@ -604,18 +635,12 @@ class Anchor_Universal_Popups_Module {
               </div>
             </div>
 
-            <div class="up-field up-field-shortcode" data-up-show-when-mode="shortcode">
-                <label for="up_shortcode"><strong>Shortcode</strong></label>
-                <textarea id="up_shortcode" name="up_shortcode" rows="4" class="widefat code"><?php echo esc_textarea($m['shortcode']); ?></textarea>
-                <p class="description">Enter your shortcode(s) here. They will be processed and rendered. Example: [contact-form-7 id="123" title="Contact"]</p>
-            </div>
-
-            <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( array(
+            <div class="anchor-monaco" data-up-show-when-mode="html" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( array(
                 array( 'id' => 'up_html', 'label' => __( 'HTML', 'anchor-schema' ), 'lang' => 'html' ),
                 array( 'id' => 'up_css',  'label' => __( 'CSS', 'anchor-schema' ),  'lang' => 'css' ),
                 array( 'id' => 'up_js',   'label' => __( 'JS', 'anchor-schema' ),   'lang' => 'javascript' ),
             ) ) ); ?>'>
-            <div class="up-field up-field-html" data-up-show-when-mode="html">
+            <div class="up-field up-field-html">
                 <label for="up_html"><strong>HTML</strong></label>
                 <textarea id="up_html" name="up_html" rows="8" class="widefat code"><?php echo esc_textarea($m['html']); ?></textarea>
             </div>
@@ -794,7 +819,7 @@ class Anchor_Universal_Popups_Module {
             'tile_style','theme','show_title','title_position','show_duration','show_channel',
             'hover_effect','play_button_style','border_radius',
             'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','autoplay','close_color',
-            'html','shortcode','css','js',
+            'html','css','js',
             'trigger_type','trigger_value','delay_ms',
             'scroll_mode','scroll_percent','scroll_target',
             'frequency_mode','cooldown_minutes',
@@ -970,8 +995,8 @@ class Anchor_Universal_Popups_Module {
                 'flyin_max_width' => $m['flyin_max_width'],
                 'autoplay' => ($m['autoplay'] === '1'),
                 'close_color' => $m['close_color'],
-                'html' => $m['html'],
-                'shortcode_content' => $rendered_shortcode, // pre-rendered shortcode content
+                'html' => do_shortcode( $m['html'] ), // HTML supports embedded shortcodes
+                'shortcode_content' => $rendered_shortcode, // legacy pre-rendered shortcode content
                 'css' => $m['css'],
                 'js' => $m['js'],
                 'trigger' => [
@@ -1117,12 +1142,14 @@ class Anchor_Universal_Popups_Module {
             return $this->render_video_card($post_id, $m, $atts['width']);
         }
 
-        // Determine content based on mode
+        // Determine content based on mode. HTML runs through do_shortcode() so
+        // any [shortcode] embedded in the HTML is processed; the legacy
+        // shortcode mode is still honored for any popup not yet migrated.
         $content = '';
         if ( $m['mode'] === 'shortcode' && ! empty( $m['shortcode'] ) ) {
             $content = do_shortcode( $m['shortcode'] );
         } else {
-            $content = $m['html'];
+            $content = do_shortcode( $m['html'] );
         }
 
         ob_start(); ?>

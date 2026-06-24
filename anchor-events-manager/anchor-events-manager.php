@@ -277,6 +277,25 @@ class Module {
             $max_global = max( $max_global, $d );
         }
         $max_global = max( $max_global, (int) $settings['roster_auto_offset'] );
+
+        // Fold in per-event reminder override offsets so events whose largest
+        // per-event offset exceeds $max_global are still pulled into the scan.
+        if ( ! empty( $settings['reminder_enabled'] ) ) {
+            $override_events = \get_posts( [
+                'post_type'      => self::CPT,
+                'post_status'    => [ 'publish', 'future', 'private' ],
+                'posts_per_page' => -1,
+                'fields'         => 'ids',
+                'no_found_rows'  => true,
+                'meta_query'     => [ [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ] ],
+            ] );
+            foreach ( $override_events as $oid ) {
+                foreach ( array_map( 'intval', explode( ',', (string) \get_post_meta( $oid, $this->meta_key( 'reminder_offsets' ), true ) ) ) as $d ) {
+                    $max_global = max( $max_global, $d );
+                }
+            }
+        }
+
         $horizon    = $now + ( max( 1, $max_global ) * DAY_IN_SECONDS );
 
         $event_ids = \get_posts( [
@@ -3058,13 +3077,6 @@ class Module {
                 <?php
             }, 'anchor_events_settings', 'anchor_events_wc_emails' );
 
-            \add_settings_field( 'organizer_email', __( 'Default organizer email', 'anchor-schema' ), function() {
-                $opts = $this->get_settings();
-                ?>
-                <input type="email" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[organizer_email]" value="<?php echo esc_attr( $opts['organizer_email'] ); ?>" class="regular-text" />
-                <p class="description"><?php echo esc_html__( 'Fallback recipient for organizer notices. A per-event organizer email overrides this; if both are blank, the site admin email is used.', 'anchor-schema' ); ?></p>
-                <?php
-            }, 'anchor_events_settings', 'anchor_events_wc_emails' );
         }
 
         // v1.1 lifecycle email settings. Always shown (free + paid registrations).
@@ -3127,6 +3139,14 @@ class Module {
             ?>
             <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[cancellation_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['cancellation_intro'] ); ?></textarea>
             <p class="description"><?php echo esc_html__( 'Tokens: {event_title}, {attendee_name}, {status}, {site_name}.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'organizer_email', __( 'Default organizer email', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="email" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[organizer_email]" value="<?php echo esc_attr( $opts['organizer_email'] ); ?>" class="regular-text" />
+            <p class="description"><?php echo esc_html__( 'Fallback recipient for organizer notices. A per-event organizer email overrides this; if both are blank, the site admin email is used.', 'anchor-schema' ); ?></p>
             <?php
         }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
 
@@ -3198,20 +3218,21 @@ class Module {
         // Phase 6 — WooCommerce email settings. Only read from $input when the WC
         // subsection actually renders (class_exists). Otherwise preserve the stored
         // values so a non-WC save doesn't clobber them.
+        // organizer_email is now an always-shown lifecycle field (free + paid sites).
+        $output['organizer_email'] = sanitize_email( $input['organizer_email'] ?? '' );
+
         if ( \class_exists( 'WooCommerce' ) ) {
             $output['wc_notify_customer']   = ! empty( $input['wc_notify_customer'] );
             $output['wc_notify_organizer']  = ! empty( $input['wc_notify_organizer'] );
             $output['wc_customer_subject']  = sanitize_text_field( $input['wc_customer_subject'] ?? $defaults['wc_customer_subject'] );
             $output['wc_customer_intro']    = sanitize_textarea_field( $input['wc_customer_intro'] ?? $defaults['wc_customer_intro'] );
             $output['wc_organizer_subject'] = sanitize_text_field( $input['wc_organizer_subject'] ?? $defaults['wc_organizer_subject'] );
-            $output['organizer_email']      = sanitize_email( $input['organizer_email'] ?? '' );
         } else {
             $output['wc_notify_customer']   = $defaults['wc_notify_customer'];
             $output['wc_notify_organizer']  = $defaults['wc_notify_organizer'];
             $output['wc_customer_subject']  = $defaults['wc_customer_subject'];
             $output['wc_customer_intro']    = $defaults['wc_customer_intro'];
             $output['wc_organizer_subject'] = $defaults['wc_organizer_subject'];
-            $output['organizer_email']      = $defaults['organizer_email'];
         }
         // Reserved/unused — preserve stored value (no UI field).
         $output['notify_attendee'] = $defaults['notify_attendee'];
@@ -3844,14 +3865,14 @@ class Module {
         $status   = (string) $info['status']; // cancelled | refunded
         $order    = ( $order_id > 0 && \function_exists( 'wc_get_order' ) ) ? \wc_get_order( $order_id ) : null;
 
-        $tokens = $this->email_tokens( [ 'event_id' => $event_id, 'seat' => $info, 'order' => $order ?: null ] );
+        $tokens = $this->email_tokens( [ 'event_id' => $event_id, 'seat' => array_merge( $info, [ 'name' => $name, 'status' => $status ] ), 'order' => $order ?: null ] );
         $is_refund = ( $status === \Anchor\Events\Registrations::STATUS_REFUNDED );
         $subject = $this->expand_email_tokens(
-            $is_refund ? \str_replace( 'cancelled', 'refunded', $settings['cancellation_subject'] ) : $settings['cancellation_subject'],
+            $is_refund ? \str_ireplace( 'cancelled', 'refunded', $settings['cancellation_subject'] ) : $settings['cancellation_subject'],
             $tokens
         );
         $intro = $this->expand_email_tokens(
-            $is_refund ? \str_replace( 'cancelled', 'refunded', $settings['cancellation_intro'] ) : $settings['cancellation_intro'],
+            $is_refund ? \str_ireplace( 'cancelled', 'refunded', $settings['cancellation_intro'] ) : $settings['cancellation_intro'],
             $tokens
         );
         $detail_rows = [ [ 'label' => \__( 'Event', 'anchor-schema' ), 'value' => $tokens['event_title'] ] ];
@@ -4025,9 +4046,10 @@ class Module {
 
         // A2: confirmed registrants of a virtual event get the actual join link in
         // the email so guest/logged-out attendees (free or paid) gain access without
-        // needing to be logged in on the gated event page. Never for waitlist.
+        // needing to be logged in on the gated event page. Allowlisted to confirmed
+        // only — cancelled/refunded/waitlist statuses must never receive the link.
         $join_url = '';
-        if ( $event_id && $status !== 'waitlist' ) {
+        if ( $event_id && $status === 'confirmed' ) {
             $event_meta = $this->get_meta( $event_id );
             if ( ! empty( $event_meta['virtual'] ) && ! empty( $event_meta['virtual_url'] ) ) {
                 $join_url = (string) $event_meta['virtual_url'];

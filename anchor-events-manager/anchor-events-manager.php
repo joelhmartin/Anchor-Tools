@@ -29,6 +29,9 @@ class Module {
     /** @var Ticket_Types|null Per-event ticket-tier model (always loaded). */
     public $ticket_types = null;
 
+    /** @var Series|null Event-series taxonomy + archive (always loaded). */
+    public $series = null;
+
     public function __construct() {
         self::$instance = $this;
 
@@ -38,11 +41,15 @@ class Module {
         require_once $dir . 'class-registrations.php';
         require_once $dir . 'class-roster.php';
         require_once $dir . 'class-ticket-types.php';
+        require_once $dir . 'class-series.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
         // Ticket-tier model (spec §3.2) — free + paid; no WooCommerce dependency.
         $this->ticket_types = new Ticket_Types( $this );
+        // Series taxonomy + archive (spec §3.3, §6) — free + paid; registers the
+        // `event_series` taxonomy on `init` and renders the series landing page.
+        $this->series = new Series( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
@@ -1394,6 +1401,9 @@ class Module {
         }
         if ( \is_post_type_archive( self::CPT ) ) {
             return $this->locate_template( 'archive-event.php' );
+        }
+        if ( \is_tax( Series::TAXONOMY ) ) {
+            return $this->locate_template( 'taxonomy-event_series.php' );
         }
         return $template;
     }

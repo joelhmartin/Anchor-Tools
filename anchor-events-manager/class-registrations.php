@@ -110,6 +110,10 @@ class Registrations {
             '_anchor_event_email'         => \sanitize_email( (string) ( $args['email'] ?? '' ) ),
             '_anchor_event_phone'         => \sanitize_text_field( (string) ( $args['phone'] ?? '' ) ),
             '_anchor_event_reg_status'    => $status,
+            // Ticket tier this seat belongs to (spec §3.4). Free/paid callers
+            // pass 'ticket_type_id'; absent → the event's primary tier so
+            // pre-tier seats read consistently.
+            '_anchor_event_ticket_type_id' => \sanitize_key( (string) ( $args['ticket_type_id'] ?? 'primary' ) ) ?: 'primary',
             '_anchor_event_reg_fields'    => \is_array( $args['reg_fields'] ?? null ) ? $args['reg_fields'] : [],
             '_anchor_event_guests'        => max( 0, (int) ( $args['guests'] ?? 0 ) ),
             '_anchor_event_source'        => $source,
@@ -660,6 +664,8 @@ class Registrations {
             'seat_index'    => (int) \get_post_meta( $seat_id, '_anchor_event_seat_index', true ),
             'event_id'      => (int) \get_post_meta( $seat_id, '_anchor_event_id', true ),
             'order_item_id' => (int) \get_post_meta( $seat_id, '_anchor_event_order_item_id', true ),
+            // Pre-tier seats have no meta — default to the primary tier id.
+            'ticket_type_id' => (string) ( \get_post_meta( $seat_id, '_anchor_event_ticket_type_id', true ) ?: 'primary' ),
         ];
     }
 
@@ -864,6 +870,8 @@ class Registrations {
             'variation_id'  => (int) $g( '_anchor_event_variation_id' ),
             'customer_id'   => (int) $g( '_anchor_event_customer_id' ),
             'seat_index'    => (int) $g( '_anchor_event_seat_index' ),
+            // Pre-tier seats have no meta — default to the primary tier id.
+            'ticket_type_id' => (string) ( $g( '_anchor_event_ticket_type_id' ) ?: 'primary' ),
             'reg_fields'    => \is_array( $g( '_anchor_event_reg_fields' ) ) ? $g( '_anchor_event_reg_fields' ) : [],
             'date'          => \get_the_date( 'Y-m-d', $post ),
         ];

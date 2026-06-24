@@ -23,6 +23,9 @@ class Module {
     /** @var Roster|null Roster admin screen + CSV export (always loaded). */
     public $roster = null;
 
+    /** @var Ticket_Types|null Per-event ticket-tier model (always loaded). */
+    public $ticket_types = null;
+
     public function __construct() {
         self::$instance = $this;
 
@@ -31,9 +34,12 @@ class Module {
         require_once $dir . 'class-events-log.php';
         require_once $dir . 'class-registrations.php';
         require_once $dir . 'class-roster.php';
+        require_once $dir . 'class-ticket-types.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
+        // Ticket-tier model (spec §3.2) — free + paid; no WooCommerce dependency.
+        $this->ticket_types = new Ticket_Types( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
@@ -484,6 +490,15 @@ class Module {
             ], $schema ) );
         }
 
+        // Ticket-tier list (spec §3.2). Structured array; managed by the
+        // Ticket_Types model + the Tickets / Pricing metabox, not REST.
+        \register_post_meta( self::CPT, Ticket_Types::META_KEY, [
+            'type'          => 'array',
+            'single'        => true,
+            'show_in_rest'  => false,
+            'auth_callback' => $event_auth_callback,
+        ] );
+
         $reg_auth_callback = function ( $allowed, $meta_key, $post_id ) {
             return \current_user_can( 'edit_post', $post_id );
         };
@@ -542,7 +557,7 @@ class Module {
                 'auth_callback' => $reg_auth_callback,
             ] );
         }
-        foreach ( [ '_anchor_event_phone', '_anchor_event_source' ] as $key ) {
+        foreach ( [ '_anchor_event_phone', '_anchor_event_source', '_anchor_event_ticket_type_id' ] as $key ) {
             \register_post_meta( self::REG_CPT, $key, [
                 'type' => 'string',
                 'single' => true,
@@ -666,6 +681,15 @@ class Module {
         );
 
         \add_meta_box(
+            'anchor_event_ticket_types',
+            __( 'Tickets / Pricing', 'anchor-schema' ),
+            [ $this, 'render_ticket_types_metabox' ],
+            self::CPT,
+            'normal',
+            'default'
+        );
+
+        \add_meta_box(
             'anchor_event_registrants',
             __( 'Registrations', 'anchor-schema' ),
             [ $this, 'render_registrants_metabox' ],
@@ -673,6 +697,111 @@ class Module {
             'normal',
             'default'
         );
+    }
+
+    /**
+     * Tickets / Pricing metabox (spec §3.2). A repeatable table of ticket tiers
+     * (label / price / quota / sale window / active). The Ticket_Types model
+     * owns normalization + persistence; this only renders the rows + a hidden
+     * template row consumed by ticket-types-admin.js. Nonce is shared with the
+     * Event Details box (self::NONCE), verified once in save_meta().
+     *
+     * @param \WP_Post $post
+     */
+    public function render_ticket_types_metabox( $post ) {
+        $tiers = $this->ticket_types->get( $post->ID );
+        // The implicit-primary synthesized tier is not persisted; only show
+        // authored rows so a blank event starts with an empty table.
+        $stored = \get_post_meta( $post->ID, Ticket_Types::META_KEY, true );
+        $rows   = ( \is_array( $stored ) && ! empty( $stored ) ) ? $tiers : [];
+        ?>
+        <div class="anchor-event-tickets" id="anchor-event-tickets">
+            <p class="description">
+                <?php echo esc_html__( 'Define one or more ticket tiers for this event. Each tier has its own price and optional per-tier quota and sale window. Leave the table empty to use the single "Price" field above as the default registration tier.', 'anchor-schema' ); ?>
+            </p>
+            <table class="widefat anchor-event-tickets-table">
+                <thead>
+                    <tr>
+                        <th class="anchor-ticket-handle" aria-hidden="true"></th>
+                        <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Price', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Quota', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Sale start', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Sale end', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Active', 'anchor-schema' ); ?></th>
+                        <th aria-hidden="true"></th>
+                    </tr>
+                </thead>
+                <tbody class="anchor-event-tickets-rows">
+                    <?php foreach ( $rows as $i => $tier ) : ?>
+                        <?php echo $this->ticket_type_row_html( (int) $i, $tier ); // already escaped ?>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+            <p>
+                <button type="button" class="button anchor-event-ticket-add"><?php echo esc_html__( 'Add ticket tier', 'anchor-schema' ); ?></button>
+            </p>
+            <script type="text/html" id="anchor-event-ticket-template">
+                <?php echo $this->ticket_type_row_html( 0, null, true ); // already escaped ?>
+            </script>
+        </div>
+        <?php
+    }
+
+    /**
+     * Render a single ticket-tier table row. Field names use the index scheme
+     * anchor_event_tickets[<index>][...]; a blank `id` marks a new row. When
+     * $template is true, the literal token __INDEX__ is used so the JS can
+     * substitute a fresh row index on add.
+     *
+     * @param int        $index
+     * @param array|null $tier
+     * @param bool       $template
+     * @return string Escaped HTML.
+     */
+    private function ticket_type_row_html( $index, $tier = null, $template = false ) {
+        $idx = $template ? '__INDEX__' : (string) $index;
+        $base = 'anchor_event_tickets[' . $idx . ']';
+
+        $id         = $tier['id'] ?? '';
+        $label      = $tier['label'] ?? '';
+        $price      = isset( $tier['price'] ) ? (string) $tier['price'] : '';
+        $quota      = isset( $tier['quota'] ) ? (int) $tier['quota'] : 0;
+        $sale_start = $tier['sale_start'] ?? '';
+        $sale_end   = $tier['sale_end'] ?? '';
+        $active     = $tier ? ! empty( $tier['active'] ) : true;
+
+        \ob_start();
+        ?>
+        <tr class="anchor-event-ticket-row">
+            <td class="anchor-ticket-handle">
+                <span class="dashicons dashicons-move" aria-hidden="true"></span>
+            </td>
+            <td>
+                <input type="hidden" name="<?php echo esc_attr( $base . '[id]' ); ?>" value="<?php echo esc_attr( $id ); ?>" class="anchor-ticket-id" />
+                <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $label ); ?>" class="anchor-ticket-label" placeholder="<?php echo esc_attr__( 'e.g. General, VIP', 'anchor-schema' ); ?>" />
+            </td>
+            <td>
+                <input type="number" step="0.01" min="0" name="<?php echo esc_attr( $base . '[price]' ); ?>" value="<?php echo esc_attr( $price ); ?>" class="anchor-ticket-price" />
+            </td>
+            <td>
+                <input type="number" step="1" min="0" name="<?php echo esc_attr( $base . '[quota]' ); ?>" value="<?php echo esc_attr( $quota ); ?>" class="anchor-ticket-quota" placeholder="0" />
+            </td>
+            <td>
+                <input type="date" name="<?php echo esc_attr( $base . '[sale_start]' ); ?>" value="<?php echo esc_attr( $sale_start ); ?>" class="anchor-ticket-sale-start" />
+            </td>
+            <td>
+                <input type="date" name="<?php echo esc_attr( $base . '[sale_end]' ); ?>" value="<?php echo esc_attr( $sale_end ); ?>" class="anchor-ticket-sale-end" />
+            </td>
+            <td class="anchor-ticket-active-cell">
+                <input type="checkbox" name="<?php echo esc_attr( $base . '[active]' ); ?>" value="1" <?php checked( $active ); ?> class="anchor-ticket-active" />
+            </td>
+            <td>
+                <button type="button" class="button-link-delete anchor-event-ticket-remove" aria-label="<?php echo esc_attr__( 'Remove ticket tier', 'anchor-schema' ); ?>">&times;</button>
+            </td>
+        </tr>
+        <?php
+        return (string) \ob_get_clean();
     }
 
     public function render_meta_box( $post ) {
@@ -1051,6 +1180,15 @@ class Module {
             \update_post_meta( $post_id, $this->meta_key( $key ), $value );
         }
 
+        // Ticket tiers (spec §3.2). The Ticket_Types model sanitizes the rows,
+        // assigns stable ids, drops empty rows, and persists. An empty table
+        // clears the meta so the legacy single `price` field stays the
+        // implicit-primary fallback.
+        $ticket_rows = isset( $_POST['anchor_event_tickets'] ) && is_array( $_POST['anchor_event_tickets'] )
+            ? \wp_unslash( $_POST['anchor_event_tickets'] )
+            : [];
+        $this->ticket_types->save( $post_id, $ticket_rows );
+
         $this->maybe_append_registration_shortcode( $post_id, $input );
 
         $this->clear_caches();
@@ -1112,6 +1250,8 @@ class Module {
         \wp_enqueue_media();
         \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.1' );
         \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.1', true );
+        // Ticket-tier repeatable table (spec §3.2).
+        \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.0', true );
     }
 
     public function frontend_assets() {
@@ -2462,6 +2602,23 @@ class Module {
         $output .= '<input type="hidden" name="event_id" value="' . esc_attr( $post_id ) . '" />';
         $output .= '<input type="hidden" name="redirect_to" value="' . esc_url( $redirect ) . '" />';
         $output .= \wp_nonce_field( self::REG_NONCE, self::REG_NONCE, true, false );
+
+        // Ticket-tier selector (spec §9). The free form sells FREE tiers only;
+        // paid tiers go through WooCommerce checkout. Render a selector only
+        // when the event has more than one active free tier — a single
+        // (implicit primary) tier needs no choice.
+        $free_tiers = $this->get_active_free_tiers( $post_id );
+        if ( count( $free_tiers ) > 1 ) {
+            $output .= '<div class="anchor-event-field">';
+            $output .= '<label for="anchor_event_ticket_type">' . esc_html__( 'Ticket type', 'anchor-schema' ) . '</label>';
+            $output .= '<select id="anchor_event_ticket_type" name="anchor_event_ticket_type">';
+            foreach ( $free_tiers as $tier ) {
+                $output .= '<option value="' . esc_attr( $tier['id'] ) . '">' . esc_html( $tier['label'] ) . '</option>';
+            }
+            $output .= '</select>';
+            $output .= '</div>';
+        }
+
         $output .= '<div class="anchor-event-field">';
         $output .= '<label for="anchor_event_name">' . esc_html__( 'Name', 'anchor-schema' ) . '</label>';
         $output .= '<input type="text" id="anchor_event_name" name="anchor_event_name" required />';
@@ -2554,6 +2711,20 @@ class Module {
         $guests = max( 0, min( $max_guests, $guests ) );
         $party_size = 1 + $guests;
 
+        // Resolve + validate the chosen ticket tier (spec §9). The free form may
+        // only sell active FREE tiers; anything else (missing/unknown/paid)
+        // falls back to the event's primary tier.
+        $posted_tier = isset( $_POST['anchor_event_ticket_type'] )
+            ? sanitize_key( wp_unslash( $_POST['anchor_event_ticket_type'] ) )
+            : '';
+        $tier_id = $this->ticket_types->primary_id( $event_id );
+        if ( $posted_tier !== '' ) {
+            $tier = $this->ticket_types->find( $event_id, $posted_tier );
+            if ( $tier && ! empty( $tier['active'] ) && (float) ( $tier['price'] ?? 0 ) <= 0 ) {
+                $tier_id = $tier['id'];
+            }
+        }
+
         // Pre-check for user-facing messaging (closed window / full + no waitlist).
         $decision = $this->get_registration_status( $event_id, $meta, $party_size );
         if ( $decision === 'closed' || $decision === 'full' ) {
@@ -2564,14 +2735,15 @@ class Module {
         // Race-safe creation under the per-event lock (bug #3). claim_seats recounts
         // capacity inside the lock, so concurrent submits can never oversell.
         $result = $this->registrations->claim_seats( $event_id, $meta, 1, [
-            'source'     => 'internal',
-            'name'       => $name,
-            'email'      => $email,
-            'phone'      => $phone,
-            'guests'     => $guests,
-            'reg_fields' => $extra_fields,
-            'note'       => 'internal registration',
-            'actor'      => 'internal',
+            'source'         => 'internal',
+            'name'           => $name,
+            'email'          => $email,
+            'phone'          => $phone,
+            'guests'         => $guests,
+            'reg_fields'     => $extra_fields,
+            'ticket_type_id' => $tier_id,
+            'note'           => 'internal registration',
+            'actor'          => 'internal',
         ] );
 
         $created    = ! empty( $result['created'] );
@@ -3054,6 +3226,27 @@ class Module {
 
     public function meta_key( $key ) {
         return '_anchor_event_' . $key;
+    }
+
+    /**
+     * Active FREE tiers (price == 0) for an event, in order. Used by the inline
+     * registration form (paid tiers are sold through WooCommerce, not here).
+     *
+     * @param int $event_id
+     * @return array<int,array>
+     */
+    public function get_active_free_tiers( $event_id ) {
+        $tiers = [];
+        foreach ( $this->ticket_types->get( $event_id ) as $tier ) {
+            if ( empty( $tier['active'] ) ) {
+                continue;
+            }
+            if ( (float) ( $tier['price'] ?? 0 ) > 0 ) {
+                continue;
+            }
+            $tiers[] = $tier;
+        }
+        return $tiers;
     }
 
     private function sanitize_date( $value ) {

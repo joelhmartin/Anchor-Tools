@@ -193,6 +193,7 @@ class Registrations {
 
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
+        \do_action( 'anchor_events_seat_status_changed', $seat_id, $from, $to, (string) $actor );
         return true;
     }
 

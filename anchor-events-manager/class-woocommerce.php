@@ -1324,6 +1324,11 @@ class WooCommerce {
             } finally {
                 $this->release_order_lock( $order_id, $have_lock );
             }
+            // v1.1: flush queued attendee cancellation/refund emails now that
+            // both the event-level seat lock and the order-level named lock have
+            // been released.  Shutdown still covers correctness; this call is
+            // best-effort promptness only.
+            $this->module->flush_cancellation_emails();
         } finally {
             unset( self::$in_flight[ $order_id ] );
         }

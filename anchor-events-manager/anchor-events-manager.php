@@ -23,6 +23,9 @@ class Module {
     /** @var Roster|null Roster admin screen + CSV export (always loaded). */
     public $roster = null;
 
+    /** @var int[] Seat ids queued for a cancellation email this request. */
+    private $pending_cancellation_emails = [];
+
     public function __construct() {
         self::$instance = $this;
 
@@ -117,6 +120,11 @@ class Module {
         // L14: GDPR personal-data exporter + eraser for attendee PII stored on seats.
         \add_filter( 'wp_privacy_personal_data_exporters', [ $this, 'register_privacy_exporter' ] );
         \add_filter( 'wp_privacy_personal_data_erasers', [ $this, 'register_privacy_eraser' ] );
+
+        // v1.1: attendee cancellation/refund email (spec §7). Enqueue on transition,
+        // flush after the event lock releases (shutdown) so no wp_mail runs under GET_LOCK.
+        \add_action( 'anchor_events_seat_status_changed', [ $this, 'on_seat_status_changed' ], 10, 4 );
+        \add_action( 'shutdown', [ $this, 'flush_cancellation_emails' ] );
     }
 
     /**
@@ -3527,6 +3535,104 @@ class Module {
             $html = $this->build_registration_email_html( $event_id, $name, $status, $settings, $guests );
             $this->send_html_email( $email, $subject, $html );
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // v1.1: Attendee cancellation / refund email (spec §7)
+    // -------------------------------------------------------------------------
+
+    /** Enqueue (do not send) on a live→cancelled/refunded transition (spec §7.2). */
+    public function on_seat_status_changed( $seat_id, $from, $to, $actor ) {
+        $terminal = [ \Anchor\Events\Registrations::STATUS_CANCELLED, \Anchor\Events\Registrations::STATUS_REFUNDED ];
+        $live     = [ \Anchor\Events\Registrations::STATUS_CONFIRMED, \Anchor\Events\Registrations::STATUS_WAITLIST ];
+        if ( ! \in_array( $to, $terminal, true ) || ! \in_array( $from, $live, true ) ) {
+            return;
+        }
+        $settings = $this->get_settings();
+        if ( empty( $settings['notify_cancellation'] ) ) {
+            return;
+        }
+        if ( \get_post_meta( (int) $seat_id, '_anchor_event_cancel_emailed', true ) ) {
+            return;
+        }
+        $this->pending_cancellation_emails[ (int) $seat_id ] = (int) $seat_id;
+    }
+
+    /** Flush queued cancellation emails outside any lock (shutdown + explicit end-of-reconcile). */
+    public function flush_cancellation_emails() {
+        if ( empty( $this->pending_cancellation_emails ) ) {
+            return;
+        }
+        $queue = $this->pending_cancellation_emails;
+        $this->pending_cancellation_emails = [];
+        foreach ( $queue as $seat_id ) {
+            $this->send_cancellation_email( (int) $seat_id );
+        }
+    }
+
+    /**
+     * Build + send one attendee cancellation/refund email; idempotent via marker.
+     *
+     * Note: Registrations::get_seat_info() does not return email, name, or order_id
+     * (it returns id, status, seat_index, event_id, order_item_id). Those three
+     * fields are read directly from seat post meta here.
+     *
+     * @param int $seat_id
+     * @return bool
+     */
+    public function send_cancellation_email( $seat_id ) {
+        $seat_id = (int) $seat_id;
+        if ( \get_post_meta( $seat_id, '_anchor_event_cancel_emailed', true ) ) {
+            return true;
+        }
+        $info  = $this->registrations->get_seat_info( $seat_id );
+        if ( ! \is_array( $info ) ) {
+            return false;
+        }
+        // get_seat_info() omits email, name, order_id — read from meta directly.
+        $email    = (string) \get_post_meta( $seat_id, '_anchor_event_email', true );
+        $name     = (string) \get_post_meta( $seat_id, '_anchor_event_name', true );
+        $order_id = (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true );
+        if ( $email === '' ) {
+            return false;
+        }
+        $settings = $this->get_settings();
+        $event_id = (int) $info['event_id'];
+        $status   = (string) $info['status']; // cancelled | refunded
+        $order    = ( $order_id > 0 && \function_exists( 'wc_get_order' ) ) ? \wc_get_order( $order_id ) : null;
+
+        $tokens = $this->email_tokens( [ 'event_id' => $event_id, 'seat' => $info, 'order' => $order ?: null ] );
+        $is_refund = ( $status === \Anchor\Events\Registrations::STATUS_REFUNDED );
+        $subject = $this->expand_email_tokens(
+            $is_refund ? \str_replace( 'cancelled', 'refunded', $settings['cancellation_subject'] ) : $settings['cancellation_subject'],
+            $tokens
+        );
+        $intro = $this->expand_email_tokens(
+            $is_refund ? \str_replace( 'cancelled', 'refunded', $settings['cancellation_intro'] ) : $settings['cancellation_intro'],
+            $tokens
+        );
+        $detail_rows = [ [ 'label' => \__( 'Event', 'anchor-schema' ), 'value' => $tokens['event_title'] ] ];
+        if ( $tokens['event_date'] !== '' ) {
+            $detail_rows[] = [ 'label' => \__( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ];
+        }
+        if ( $order ) {
+            $detail_rows[] = [ 'label' => \__( 'Order', 'anchor-schema' ), 'value' => '#' . $order->get_order_number() ];
+        }
+        $ctx = [
+            'event_id'      => $event_id,
+            'name'          => $name,
+            'status'        => $status,          // suppresses join link in the builder
+            'intro_message' => $intro,
+            'detail_rows'   => $detail_rows,
+            'cta_label'     => '',
+            'cta_url'       => '',
+        ];
+        $html = $this->build_registration_email_html( $ctx );
+        $sent = $this->send_html_email( $email, $subject, $html );
+        if ( $sent ) {
+            \update_post_meta( $seat_id, '_anchor_event_cancel_emailed', true );
+        }
+        return $sent;
     }
 
     /**

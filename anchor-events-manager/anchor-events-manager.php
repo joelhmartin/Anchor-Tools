@@ -374,8 +374,84 @@ class Module {
         return $this->send_html_email( (string) $seat['email'], $subject, $html );
     }
 
-    /** Placeholder until Task 4 fills the scheduled-roster body. */
-    public function maybe_send_scheduled_roster( $event_id, $meta, $settings, $now ) {}
+    /** Build + send the organizer roster digest (confirmed attendees + counts). */
+    public function send_roster_email( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( \get_post_type( $event_id ) !== self::CPT ) {
+            return false;
+        }
+        $settings = $this->get_settings();
+        $to       = $this->resolve_organizer_email( $event_id, $settings );
+        if ( $to === '' ) {
+            return false;
+        }
+        $summary = $this->registrations->get_event_summary( $event_id );
+        $seats   = $this->registrations->query_seats( [
+            'event_id' => $event_id,
+            'status'   => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+            'per_page' => -1,
+        ] );
+        $tokens  = $this->email_tokens( [ 'event_id' => $event_id, 'seat_count' => count( $seats['items'] ) ] );
+        $subject = $this->expand_email_tokens( $settings['roster_subject'], $tokens );
+        $intro   = $this->expand_email_tokens( $settings['roster_intro'], $tokens );
+
+        $cap         = isset( $summary['capacity'] ) ? (int) $summary['capacity'] : 0;
+        $remaining   = isset( $summary['remaining'] ) && (int) $summary['remaining'] >= 0
+            ? (string) (int) $summary['remaining']
+            : \__( 'Unlimited', 'anchor-schema' );
+        $detail_rows = [
+            [ 'label' => \__( 'Date', 'anchor-schema' ),      'value' => $tokens['event_date'] ],
+            [ 'label' => \__( 'Venue', 'anchor-schema' ),     'value' => $tokens['venue'] ],
+            [ 'label' => \__( 'Capacity', 'anchor-schema' ),  'value' => $cap ? (string) $cap : \__( 'Unlimited', 'anchor-schema' ) ],
+            [ 'label' => \__( 'Confirmed', 'anchor-schema' ), 'value' => (string) (int) ( $summary['confirmed'] ?? 0 ) ],
+            [ 'label' => \__( 'Waitlist', 'anchor-schema' ),  'value' => (string) (int) ( $summary['waitlist'] ?? 0 ) ],
+            [ 'label' => \__( 'Remaining', 'anchor-schema' ), 'value' => $remaining ],
+        ];
+        $seat_list = [];
+        foreach ( $seats['items'] as $s ) {
+            $name  = $s['name'] !== '' ? $s['name'] : \__( 'Guest', 'anchor-schema' );
+            $line  = $name . ' — ' . $s['email'];
+            if ( ! empty( $s['phone'] ) ) { $line .= ' — ' . $s['phone']; }
+            if ( ! empty( $s['source'] ) ) { $line .= ' (' . $s['source'] . ')'; }
+            $seat_list[] = $line;
+        }
+        $ctx = [
+            'event_id'      => $event_id,
+            'name'          => '',
+            'status'        => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+            'intro_message' => $intro,
+            'detail_rows'   => $detail_rows,
+            'seat_list'     => $seat_list,
+            'cta_label'     => \__( 'Open full roster', 'anchor-schema' ),
+            'cta_url'       => ( $this->roster && \method_exists( $this->roster, 'roster_url' ) )
+                ? $this->roster->roster_url( $event_id )
+                : \get_permalink( $event_id ),
+        ];
+        $html = $this->build_registration_email_html( $ctx );
+        return $this->send_html_email( $to, $subject, $html );
+    }
+
+    /**
+     * Scheduled roster pass — called by the hourly reminder sweep (Task 3).
+     * Sends the organizer digest if the auto-offset window is active and the digest
+     * has not already been sent for this event.
+     */
+    public function maybe_send_scheduled_roster( $event_id, $meta, $settings, $now ) {
+        if ( empty( $settings['organizer_roster_email'] ) ) {
+            return;
+        }
+        $start_ts = (int) ( $meta['start_ts'] ?? 0 );
+        $offset   = (int) $settings['roster_auto_offset'];
+        if ( ! ( ( $start_ts - $offset * DAY_IN_SECONDS ) <= $now && $now < $start_ts ) ) {
+            return; // not due
+        }
+        if ( (int) ( $meta['roster_sent'] ?? 0 ) > 0 ) {
+            return; // already sent
+        }
+        if ( $this->send_roster_email( $event_id ) ) {
+            \update_post_meta( $event_id, $this->meta_key( 'roster_sent' ), $now );
+        }
+    }
 
     /**
      * wp_mail_failed handler (bug #5) — logs the failure to the events error log.

@@ -242,12 +242,15 @@ class Module {
      * takes priority; falls back to the global setting. Returns sorted unique
      * positive integers descending.
      *
-     * @param int   $event_id
-     * @param array $settings
+     * @param int        $event_id
+     * @param array      $settings
+     * @param array|null $meta     Pre-loaded event meta; loaded if not supplied.
      * @return int[]
      */
-    private function effective_offsets( $event_id, array $settings ) {
-        $meta = $this->get_meta( (int) $event_id );
+    private function effective_offsets( $event_id, array $settings, $meta = null ) {
+        if ( ! \is_array( $meta ) ) {
+            $meta = $this->get_meta( (int) $event_id );
+        }
         $csv  = ! empty( $meta['reminder_offsets'] ) ? $meta['reminder_offsets'] : $settings['reminder_offsets'];
         $days = array_filter( array_map( 'intval', explode( ',', (string) $csv ) ), function ( $d ) { return $d > 0; } );
         rsort( $days );
@@ -318,7 +321,7 @@ class Module {
 
             // --- Reminder pass ---
             if ( ! empty( $settings['reminder_enabled'] ) ) {
-                foreach ( $this->effective_offsets( $event_id, $settings ) as $offset ) {
+                foreach ( $this->effective_offsets( $event_id, $settings, $meta ) as $offset ) {
                     if ( ! ( ( $start_ts - $offset * DAY_IN_SECONDS ) <= $now && $now < $start_ts ) ) {
                         continue; // offset not due this sweep
                     }
@@ -338,7 +341,7 @@ class Module {
                         if ( ! \apply_filters( 'anchor_events_should_send_reminder', true, $seat, $offset ) ) {
                             continue;
                         }
-                        if ( $this->send_reminder_email( $seat, $event_id, $offset ) ) {
+                        if ( $this->send_reminder_email( $seat, $event_id, $offset, $settings ) ) {
                             $sent_map[ $offset ] = $now;
                             \update_post_meta( $seat['id'], '_anchor_event_reminders_sent', $sent_map );
                             \update_post_meta( $seat['id'], '_anchor_event_attendee_notified', true );
@@ -355,16 +358,19 @@ class Module {
     /**
      * Send a pre-event reminder email to a single confirmed seat.
      *
-     * @param array $seat     Seat DTO from query_seats().
-     * @param int   $event_id
-     * @param int   $offset   Days-before-start offset being sent.
+     * @param array      $seat     Seat DTO from query_seats().
+     * @param int        $event_id
+     * @param int        $offset   Days-before-start offset being sent.
+     * @param array|null $settings Pre-resolved settings; loaded if not supplied.
      * @return bool True on successful send.
      */
-    public function send_reminder_email( array $seat, $event_id, $offset ) {
+    public function send_reminder_email( array $seat, $event_id, $offset, $settings = null ) {
         if ( empty( $seat['email'] ) ) {
             return false;
         }
-        $settings = $this->get_settings();
+        if ( ! \is_array( $settings ) ) {
+            $settings = $this->get_settings();
+        }
         $tokens   = $this->email_tokens( [ 'event_id' => (int) $event_id, 'seat' => $seat ] );
         $subject  = $this->expand_email_tokens( $settings['reminder_subject'], $tokens );
         $intro    = $this->expand_email_tokens( $settings['reminder_intro'], $tokens );
@@ -410,14 +416,15 @@ class Module {
             'status'   => \Anchor\Events\Registrations::STATUS_CONFIRMED,
             'per_page' => -1,
         ] );
-        $tokens  = $this->email_tokens( [ 'event_id' => $event_id, 'seat_count' => count( $seats['items'] ) ] );
-        $subject = $this->expand_email_tokens( $settings['roster_subject'], $tokens );
-        $intro   = $this->expand_email_tokens( $settings['roster_intro'], $tokens );
-
         $cap         = isset( $summary['capacity'] ) ? (int) $summary['capacity'] : 0;
         $remaining   = isset( $summary['remaining'] ) && (int) $summary['remaining'] >= 0
             ? (string) (int) $summary['remaining']
             : \__( 'Unlimited', 'anchor-schema' );
+        // Pass the already-computed remaining so email_tokens() doesn't recount.
+        $tokens  = $this->email_tokens( [ 'event_id' => $event_id, 'seat_count' => count( $seats['items'] ), 'remaining' => $remaining ] );
+        $subject = $this->expand_email_tokens( $settings['roster_subject'], $tokens );
+        $intro   = $this->expand_email_tokens( $settings['roster_intro'], $tokens );
+
         $detail_rows = [
             [ 'label' => \__( 'Date', 'anchor-schema' ),      'value' => $tokens['event_date'] ],
             [ 'label' => \__( 'Venue', 'anchor-schema' ),     'value' => $tokens['venue'] ],
@@ -3849,6 +3856,12 @@ class Module {
         if ( \get_post_meta( $seat_id, '_anchor_event_cancel_emailed', true ) ) {
             return true;
         }
+        // Defense-in-depth: this method is public, so re-honor the toggle here even
+        // though on_seat_status_changed() already gates the normal enqueue path.
+        $settings = $this->get_settings();
+        if ( empty( $settings['notify_cancellation'] ) ) {
+            return false;
+        }
         $info  = $this->registrations->get_seat_info( $seat_id );
         if ( ! \is_array( $info ) ) {
             return false;
@@ -3860,7 +3873,6 @@ class Module {
         if ( $email === '' ) {
             return false;
         }
-        $settings = $this->get_settings();
         $event_id = (int) $info['event_id'];
         $status   = (string) $info['status']; // cancelled | refunded
         $order    = ( $order_id > 0 && \function_exists( 'wc_get_order' ) ) ? \wc_get_order( $order_id ) : null;

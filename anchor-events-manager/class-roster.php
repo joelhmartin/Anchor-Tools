@@ -239,7 +239,7 @@ class Roster {
         echo '<p class="description">' . \esc_html__( 'Manually added seats honor capacity (waitlisted if full and the waitlist is enabled, otherwise blocked).', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:24px;">';
         echo '<input type="hidden" name="action" value="anchor_roster_add" />';
-        echo '<input type="hidden" name="event_id" value="' . $event_id . '" />';
+        echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
         \wp_nonce_field( 'anchor_roster_add_' . $event_id );
         echo '<table class="form-table"><tbody>';
         $this->text_row( 'roster_name', \__( 'Name', 'anchor-schema' ), '', true );
@@ -267,11 +267,11 @@ class Roster {
         $is_woo = ( $source === 'woocommerce' );
 
         echo '<div class="anchor-roster-edit" style="margin:12px 0;padding:12px 16px;background:#fff;border:1px solid #2271b1;border-radius:3px;">';
-        echo '<h2 style="margin-top:0;">' . \esc_html__( 'Edit seat', 'anchor-schema' ) . ' #' . $seat_id . '</h2>';
+        echo '<h2 style="margin-top:0;">' . \esc_html__( 'Edit seat', 'anchor-schema' ) . ' #' . \esc_html( (string) $seat_id ) . '</h2>';
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '">';
         echo '<input type="hidden" name="action" value="anchor_roster_edit" />';
-        echo '<input type="hidden" name="event_id" value="' . $event_id . '" />';
-        echo '<input type="hidden" name="seat_id" value="' . $seat_id . '" />';
+        echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
+        echo '<input type="hidden" name="seat_id" value="' . \esc_attr( (string) $seat_id ) . '" />';
         \wp_nonce_field( 'anchor_roster_edit_' . $event_id );
         echo '<table class="form-table"><tbody>';
         $this->text_row( 'roster_name', \__( 'Name', 'anchor-schema' ), $name );

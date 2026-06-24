@@ -590,8 +590,8 @@ class Registrations {
 
     /**
      * Anonymize a seat's attendee PII in place (GDPR eraser — L14). Keeps the
-     * seat record + status/history for capacity + audit; scrubs only name/email/
-     * phone. Busts the event cache (the post_title also changes).
+     * seat record + status/history for capacity + audit; scrubs name/email/phone
+     * and any custom registration fields. Busts the event cache (post_title changes).
      *
      * @param int $seat_id
      * @return bool True if the seat was scrubbed.
@@ -605,6 +605,8 @@ class Registrations {
         \update_post_meta( $seat_id, '_anchor_event_name', $anon );
         \update_post_meta( $seat_id, '_anchor_event_email', '' );
         \update_post_meta( $seat_id, '_anchor_event_phone', '' );
+        // D: attendee-provided custom registration fields may hold PII too — clear them.
+        \update_post_meta( $seat_id, '_anchor_event_reg_fields', [] );
         \wp_update_post( [ 'ID' => $seat_id, 'post_title' => $anon ] );
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );

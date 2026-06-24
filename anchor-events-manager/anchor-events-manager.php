@@ -270,17 +270,32 @@ class Module {
         $items = [];
         foreach ( $seat_ids as $seat_id ) {
             $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
-            $items[]  = [
+            $data     = [
+                [ 'name' => \__( 'Event', 'anchor-schema' ), 'value' => \get_the_title( $event_id ) ],
+                [ 'name' => \__( 'Name', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_name', true ) ],
+                [ 'name' => \__( 'Email', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) ],
+                [ 'name' => \__( 'Phone', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_phone', true ) ],
+                [ 'name' => \__( 'Status', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true ) ],
+            ];
+
+            // C: attendee-provided custom registration fields can themselves be PII,
+            // so include them in the export (one row per field).
+            $reg_fields = \get_post_meta( $seat_id, '_anchor_event_reg_fields', true );
+            if ( \is_array( $reg_fields ) ) {
+                foreach ( $reg_fields as $field_key => $field_value ) {
+                    $value = \is_scalar( $field_value ) ? (string) $field_value : \wp_json_encode( $field_value );
+                    $data[] = [
+                        'name'  => (string) $field_key,
+                        'value' => (string) $value,
+                    ];
+                }
+            }
+
+            $items[] = [
                 'group_id'    => 'anchor_event_registrations',
                 'group_label' => \__( 'Event Registrations', 'anchor-schema' ),
                 'item_id'     => 'anchor-event-seat-' . (int) $seat_id,
-                'data'        => [
-                    [ 'name' => \__( 'Event', 'anchor-schema' ), 'value' => \get_the_title( $event_id ) ],
-                    [ 'name' => \__( 'Name', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_name', true ) ],
-                    [ 'name' => \__( 'Email', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) ],
-                    [ 'name' => \__( 'Phone', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_phone', true ) ],
-                    [ 'name' => \__( 'Status', 'anchor-schema' ), 'value' => (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true ) ],
-                ],
+                'data'        => $data,
             ];
         }
 
@@ -299,22 +314,21 @@ class Module {
      * @return array{items_removed:bool,items_retained:bool,messages:array,done:bool}
      */
     public function privacy_erase( $email_address, $page = 1 ) {
-        $page     = max( 1, (int) $page );
         $per_page = 100;
-        // Erased seats no longer match the email, so each pass returns the next
-        // unscrubbed batch; page 1 every time would also work.
-        $seat_ids = $this->registrations->seats_by_email( $email_address, $page, $per_page );
+        // B: anonymize_seat() clears _anchor_event_email, so the matching set shrinks
+        // between eraser calls. Always pull PAGE 1 of the remaining unscrubbed
+        // records — paging with $page > 1 would skip records as the set contracts.
+        $seat_ids = $this->registrations->seats_by_email( $email_address, 1, $per_page );
 
-        $removed = false;
         foreach ( $seat_ids as $seat_id ) {
-            if ( $this->registrations->anonymize_seat( $seat_id ) ) {
-                $removed = true;
-            }
+            $this->registrations->anonymize_seat( $seat_id );
         }
 
         return [
-            'items_removed'  => $removed,
-            'items_retained' => $removed, // seat kept for audit; PII scrubbed only.
+            // Seats are retained with PII scrubbed (kept for capacity + audit), not
+            // physically deleted — so nothing is "removed", everything is "retained".
+            'items_removed'  => false,
+            'items_retained' => ! empty( $seat_ids ),
             'messages'       => [],
             'done'           => \count( $seat_ids ) < $per_page,
         ];
@@ -2333,15 +2347,18 @@ class Module {
     }
 
     /**
-     * Whether the current viewer may see the virtual "Join here" link (H1).
+     * Whether the current viewer may see the virtual "Join here" link (H1/A1).
      *
-     * - WooCommerce-linked (paid) events: never on the public page for buyers —
-     *   the link is delivered via the purchase confirmation / attendee area. Only
-     *   roster-capability staff see it here.
-     * - Registration disabled and NOT linked: a purely informational public event;
-     *   no paywall to bypass, so the link stays visible to everyone.
-     * - Free registration events: roster-capability staff always; otherwise only a
-     *   logged-in viewer holding a confirmed/pending seat for this event.
+     * The link is shown to any entitled viewer:
+     * - Purely informational public events (registration disabled AND NOT linked):
+     *   nothing is gated behind the link, so it stays visible to everyone.
+     * - Roster-capability staff: always.
+     * - A logged-in viewer holding a confirmed/active seat for this event — this
+     *   covers BOTH free registrants and confirmed paid (WooCommerce-linked) buyers.
+     *
+     * Anonymous / non-seat-holders never see it on a registration or paid event
+     * (the paywall holds); guest/logged-out registrants instead receive the join
+     * link in their confirmation email.
      *
      * @param int   $post_id
      * @param array $meta
@@ -2351,12 +2368,7 @@ class Module {
         $post_id   = (int) $post_id;
         $is_linked = ( $this->woocommerce && $this->woocommerce->event_is_linked( $post_id ) );
 
-        if ( $is_linked ) {
-            // Paid deliverable: never expose on the public page except to staff.
-            return Roster::current_user_can_manage();
-        }
-
-        if ( empty( $meta['registration_enabled'] ) ) {
+        if ( empty( $meta['registration_enabled'] ) && ! $is_linked ) {
             // Informational public event — nothing gated behind the link.
             return true;
         }
@@ -3460,6 +3472,17 @@ class Module {
         $detail_rows = \is_array( $ctx['detail_rows'] ) ? $ctx['detail_rows'] : [];
         $seat_list   = \is_array( $ctx['seat_list'] ) ? $ctx['seat_list'] : [];
 
+        // A2: confirmed registrants of a virtual event get the actual join link in
+        // the email so guest/logged-out attendees (free or paid) gain access without
+        // needing to be logged in on the gated event page. Never for waitlist.
+        $join_url = '';
+        if ( $event_id && $status !== 'waitlist' ) {
+            $event_meta = $this->get_meta( $event_id );
+            if ( ! empty( $event_meta['virtual'] ) && ! empty( $event_meta['virtual_url'] ) ) {
+                $join_url = (string) $event_meta['virtual_url'];
+            }
+        }
+
         $paragraphs = '';
         foreach ( preg_split( "/(\r\n|\n|\r){2,}/", trim( $message ) ) as $block ) {
             $block = trim( $block );
@@ -3545,6 +3568,15 @@ class Module {
                                     <?php endif; ?>
                                 </td>
                             </tr>
+                            <?php if ( $join_url ) : ?>
+                            <tr>
+                                <td style="padding:8px 32px 0;">
+                                    <a href="<?php echo esc_url( $join_url ); ?>" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                        <?php echo esc_html__( 'Join the event', 'anchor-schema' ); ?>
+                                    </a>
+                                </td>
+                            </tr>
+                            <?php endif; ?>
                             <?php if ( $cta_url && $cta_label ) : ?>
                             <tr>
                                 <td style="padding:8px 32px 32px;">

@@ -1221,14 +1221,12 @@ class WooCommerce {
             $target        = $this->map_order_status_to_seat( $order_status );
 
             // M6 — unknown/custom status: leave every seat exactly as-is (do NOT
-            // sweep, do NOT force expected=0). Log once, then fall through to the
-            // batched-save section so only this note is persisted.
-            $unknown_status = ( $target === self::SEAT_TARGET_UNKNOWN );
-            if ( $unknown_status ) {
-                $log_entries[] = $this->make_log_entry(
-                    'Unknown order status; seats left as-is.',
-                    [ 'status' => (string) $order_status ]
-                );
+            // sweep, do NOT force expected=0). A true no-op for converged passes:
+            // do NOT append a sync-log entry and do NOT save (writing a log entry
+            // every pass would mark the order dirty and save even though nothing
+            // changed). Just release the in-flight guard via the outer finally.
+            if ( $target === self::SEAT_TARGET_UNKNOWN ) {
+                return;
             }
 
             // Terminal ORDER statuses force expected = 0 (sweep all active seats).
@@ -1248,7 +1246,7 @@ class WooCommerce {
                 'customer_id' => (int) $order->get_customer_id(), // 0 = guest (spec §6.6).
             ];
 
-            foreach ( $unknown_status ? [] : $order->get_items() as $item_id => $item ) {
+            foreach ( $order->get_items() as $item_id => $item ) {
                 $item_id = (int) $item_id;
                 if ( $item_id <= 0 ) {
                     continue; // (0,1) wildcard guard (finding #11).
@@ -1378,14 +1376,20 @@ class WooCommerce {
      * rather than churning attendees_missing each cycle. Returns [] when nothing
      * usable is found. function_exists-guarded — inert without WC Subscriptions.
      *
-     * @param int $order_id Renewal order id.
-     * @param int $event_id Event the line resolves to.
+     * @param int $order_id     Renewal order id.
+     * @param int $event_id     Event the line resolves to.
+     * @param int $product_id   Parent product id of the current line.
+     * @param int $variation_id Variation id of the current line (0 = simple).
      * @return array Attendee payload keyed 1..n, or [].
      */
-    private function copy_renewal_attendees( $order_id, $event_id ) {
+    private function copy_renewal_attendees( $order_id, $event_id, $product_id, $variation_id ) {
         if ( ! \function_exists( 'wcs_get_subscriptions_for_renewal_order' ) ) {
             return [];
         }
+        $event_id     = (int) $event_id;
+        $product_id   = (int) $product_id;
+        $variation_id = (int) $variation_id;
+
         $subs = \wcs_get_subscriptions_for_renewal_order( (int) $order_id );
         if ( ! \is_array( $subs ) ) {
             return [];
@@ -1398,7 +1402,16 @@ class WooCommerce {
                 if ( ! $sub_item instanceof \WC_Order_Item_Product ) {
                     continue;
                 }
-                if ( $this->event_for_order_item( $sub_item ) !== (int) $event_id ) {
+                // Match by event AND product (and variation when set) so two
+                // subscription lines mapping to one event don't copy each other's
+                // attendee payload (finding M-renewal-2).
+                if ( $this->event_for_order_item( $sub_item ) !== $event_id ) {
+                    continue;
+                }
+                if ( (int) $sub_item->get_product_id() !== $product_id ) {
+                    continue;
+                }
+                if ( $variation_id > 0 && (int) $sub_item->get_variation_id() !== $variation_id ) {
                     continue;
                 }
                 $att = $sub_item->get_meta( '_anchor_attendees' );
@@ -1463,7 +1476,7 @@ class WooCommerce {
         $is_renewal = \function_exists( 'wcs_order_contains_renewal' ) && \wcs_order_contains_renewal( $order_id );
 
         if ( $expected > 0 && ! $has_attendees && $is_renewal ) {
-            $copied = $this->copy_renewal_attendees( $order_id, $event_id );
+            $copied = $this->copy_renewal_attendees( $order_id, $event_id, (int) $item->get_product_id(), (int) $item->get_variation_id() );
             if ( ! empty( $copied ) ) {
                 $attendees     = $copied;
                 $has_attendees = true;
@@ -1471,14 +1484,14 @@ class WooCommerce {
                     'item'  => $item_id,
                     'event' => $event_id,
                 ] );
-            } else {
-                // No attendee data to copy: skip the churn (no flag, no recreate).
-                $log_entries[] = $this->make_log_entry( 'Renewal order — no attendee data; seats left as-is (no churn).', [
-                    'item'  => $item_id,
-                    'event' => $event_id,
-                ] );
             }
-        } elseif ( $expected > 0 && ! $has_attendees ) {
+            // On copy FAILURE we deliberately do NOT short-circuit here: fall
+            // through to the standard missing-attendee handling below so the
+            // seat-less paid renewal is flagged needs-review + noted on the order
+            // rather than silently skipped (finding M-renewal-3).
+        }
+
+        if ( $expected > 0 && ! $has_attendees ) {
             // M3 — paid line reached an active status with no captured attendees
             // (order-pay / admin-created order). Flag for review AND drop a visible
             // order note so staff see it on the order. Keep the no-seat behavior.
@@ -1618,6 +1631,11 @@ class WooCommerce {
                 // CREATING new ones at max+1. refunded seats are terminal and never
                 // revived. All under the lock for capacity correctness.
                 $deficit = $expected - \count( $active );
+                // L1/finding-4 — number of seats that ALREADY occupy attendee slots
+                // on this line before this pass creates any. New creates index their
+                // fallback attendee ordinal AFTER these so an existing active seat
+                // plus one new seat doesn't re-use attendee payload #1.
+                $existing_active = \count( $active );
                 if ( $deficit > 0 && $active_target !== null && $can_create ) {
                     $revivable = \array_values( \array_filter( $matching, function ( $s ) {
                         return \in_array( $s['status'], [ Registrations::STATUS_CANCELLED, Registrations::STATUS_FAILED ], true );
@@ -1662,9 +1680,21 @@ class WooCommerce {
                                 $dup_prevented = true;
                                 break;
                             }
-                            // L1 — attendee payload by creation-sequence position over
-                            // present entries (NOT the inflated absolute index).
-                            $att   = ( isset( $attendee_seq[ $create_seq ] ) && \is_array( $attendee_seq[ $create_seq ] ) ) ? $attendee_seq[ $create_seq ] : null;
+                            // L1/finding-4 — prefer the explicit attendee keyed by the
+                            // NEW seat's index when present (so seat #2 gets attendee
+                            // #2, not #1, even if the line already had an active seat).
+                            // Otherwise fall back to the next ordinal AFTER the
+                            // pre-existing active seats — never restart from 0 and
+                            // never overwrite real attendee data with the wrong entry.
+                            $att = null;
+                            if ( isset( $attendees[ $index ] ) && \is_array( $attendees[ $index ] ) ) {
+                                $att = $attendees[ $index ];
+                            } else {
+                                $seq_pos = $existing_active + $create_seq;
+                                if ( isset( $attendee_seq[ $seq_pos ] ) && \is_array( $attendee_seq[ $seq_pos ] ) ) {
+                                    $att = $attendee_seq[ $seq_pos ];
+                                }
+                            }
                             $create_seq++;
                             $name  = $att ? \sanitize_text_field( (string) ( $att['name'] ?? '' ) ) : '';
                             $email = $att ? \sanitize_email( (string) ( $att['email'] ?? '' ) ) : '';
@@ -2491,8 +2521,10 @@ class WooCommerce {
 
     /**
      * admin-post: re-send the buyer confirmation for an order ("Resend
-     * confirmation"). Clears the 'customer' emails-sent gate and re-sends from the
-     * order's current active seats. Cap edit_others_posts + per-order nonce.
+     * confirmation"). Re-sends from the order's current active seats and marks the
+     * per-event customer emails-sent gates (emails_sent['customer:'.$event_id]) so a
+     * later reconcile won't auto-send another confirmation for an already-covered
+     * event. Cap edit_others_posts + per-order nonce.
      */
     public function handle_resend_confirmation() {
         $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
@@ -2511,7 +2543,15 @@ class WooCommerce {
                 $sent = [];
             }
             if ( $ok ) {
-                $sent['customer'] = \time();
+                // finding-5 — dispatch_emails() gates the buyer confirmation PER
+                // EVENT (emails_sent['customer:'.$event_id]); the legacy 'customer'
+                // key is no longer consulted. Mark every event the order currently
+                // has active seats for so a later reconcile won't auto-send another
+                // confirmation for an already-covered event.
+                $now = \time();
+                foreach ( $this->collect_order_seats( $order_id ) as $eid => $seats ) {
+                    $sent[ 'customer:' . (int) $eid ] = $now;
+                }
                 $order->update_meta_data( self::EMAILS_SENT_META, $sent );
                 $order->save();
                 Events_Log::order( $order_id, 'Customer confirmation re-sent (manual).' );
@@ -2715,6 +2755,13 @@ class WooCommerce {
     public function on_order_refunded( $order_id, $refund_id ) {
         $order = \wc_get_order( (int) $order_id );
         if ( ! $order ) {
+            return;
+        }
+        // H2/finding-6 — refunds on ordinary non-event orders must be a complete
+        // no-op. The amount_only branch below writes review meta/log/notice BEFORE
+        // any per-line event check, so guard here explicitly. (The line/mixed path
+        // routes through reconcile_order which already guards on event lines.)
+        if ( ! $this->order_has_event_lines( $order ) ) {
             return;
         }
         $class = $this->classify_refund( $order, (int) $refund_id );

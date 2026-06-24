@@ -9,9 +9,10 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * Loaded unconditionally (free + paid). The screen, the manual seat actions, and
  * the CSV export are gated by a WooCommerce-aware capability (M2): on a store the
  * roster exposes customer PII (billing email, customer ids, order numbers) so it
- * requires a shop-management capability (`manage_woocommerce`/`edit_shop_orders`)
- * rather than the Editor-held `edit_others_posts`; free/internal installs keep
- * `edit_others_posts`. See Roster::cap() / Roster::current_user_can_manage().
+ * requires the `manage_woocommerce` capability rather than the Editor-held
+ * `edit_others_posts`; free/internal installs keep `edit_others_posts`. The submenu
+ * registration and every runtime check share a single source of truth via
+ * Roster::cap(); current_user_can_manage() is just current_user_can( cap() ).
  *
  * This class NEVER writes seat meta directly: every mutation is delegated to the
  * Registrations data layer (claim_seats / update_status) so capacity, the event
@@ -40,17 +41,16 @@ class Roster {
     }
 
     /**
-     * Runtime gate for view / export / manual seat actions (M2). When WooCommerce
-     * is active accept either shop-management capability (admins + shop managers);
-     * otherwise the base capability for free/internal installs.
+     * Runtime gate for view / export / manual seat actions (M2). Single source of
+     * truth with the submenu registration: both use self::cap() so the menu cap and
+     * every runtime check resolve to the exact same capability (manage_woocommerce
+     * when WooCommerce is active, else edit_others_posts). This prevents a user from
+     * passing the runtime gate / seeing roster links while WP denies the page.
      *
      * @return bool
      */
     public static function current_user_can_manage() {
-        if ( \class_exists( 'WooCommerce' ) ) {
-            return \current_user_can( 'manage_woocommerce' ) || \current_user_can( 'edit_shop_orders' );
-        }
-        return \current_user_can( self::CAP );
+        return \current_user_can( self::cap() );
     }
 
     /** @var Module */

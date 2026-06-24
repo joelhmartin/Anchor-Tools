@@ -30,7 +30,7 @@
   }
 
   $(document).ready(function () {
-    if (window.wp && wp.codeEditor) {
+    if (!window.AnchorMonaco && window.wp && wp.codeEditor) {
       ['mm_html', 'mm_global_css', 'mm_css', 'mm_js'].forEach(function (id) {
         var $ta = $('#' + id);
         if (!$ta.length) { return; }

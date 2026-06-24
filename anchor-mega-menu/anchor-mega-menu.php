@@ -111,12 +111,13 @@ class Anchor_Mega_Menu_Module {
         wp_nonce_field(self::NONCE, self::NONCE);
         $m = $this->get_meta($post->ID);
         $global_css = get_option(self::GLOBAL_CSS_OPTION, '');
-        wp_enqueue_code_editor(array('type' => 'text/html'));
-        wp_enqueue_code_editor(array('type' => 'text/css'));
-        wp_enqueue_code_editor(array('type' => 'application/javascript'));
-        wp_enqueue_script('code-editor');
-        wp_enqueue_style('code-editor');
         ?>
+        <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( array(
+            array( 'id' => 'mm_html',       'label' => 'HTML',       'lang' => 'html' ),
+            array( 'id' => 'mm_global_css', 'label' => 'Global CSS', 'lang' => 'css' ),
+            array( 'id' => 'mm_css',        'label' => 'CSS',        'lang' => 'css' ),
+            array( 'id' => 'mm_js',         'label' => 'JS',         'lang' => 'javascript' ),
+        ) ) ); ?>'>
         <div class="mm-fields">
             <div class="mm-field">
                 <label for="mm_html"><strong>HTML</strong></label>
@@ -134,6 +135,7 @@ class Anchor_Mega_Menu_Module {
                 <label for="mm_js"><strong>JavaScript</strong></label>
                 <textarea id="mm_js" name="mm_js" rows="8" class="widefat code"><?php echo esc_textarea($m['js']); ?></textarea>
             </div>
+        </div>
         </div>
         <?php
     }
@@ -307,8 +309,9 @@ class Anchor_Mega_Menu_Module {
             if ( class_exists( 'Anchor_Preview_CSS' ) ) {
                 Anchor_Preview_CSS::enqueue_for_admin();
             }
+            Anchor_Monaco::enqueue( self::CPT );
             wp_enqueue_style('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.css'), [], '1.1.6');
-            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'code-editor', 'anchor-preview'], '1.1.6', true);
+            wp_enqueue_script('mm-admin', Anchor_Asset_Loader::url('anchor-mega-menu/admin.js'), ['jquery', 'anchor-monaco', 'anchor-preview'], '1.1.6', true);
         }
     }
 

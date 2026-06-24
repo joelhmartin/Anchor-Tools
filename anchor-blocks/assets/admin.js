@@ -33,7 +33,7 @@
   }
 
   $(document).ready(function () {
-    if (window.wp && wp.codeEditor) {
+    if (!window.AnchorMonaco && window.wp && wp.codeEditor) {
       ['ab_html', 'ab_css', 'ab_js'].forEach(function (id) {
         var $ta = $('#' + id);
         if (!$ta.length) { return; }

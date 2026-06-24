@@ -77,12 +77,12 @@ class Anchor_Blocks_Module {
     public function render_box_code( $post ) {
         wp_nonce_field( self::NONCE, self::NONCE );
         $m = $this->get_meta( $post->ID );
-        wp_enqueue_code_editor( [ 'type' => 'text/html' ] );
-        wp_enqueue_code_editor( [ 'type' => 'text/css' ] );
-        wp_enqueue_code_editor( [ 'type' => 'application/javascript' ] );
-        wp_enqueue_script( 'code-editor' );
-        wp_enqueue_style( 'code-editor' );
         ?>
+        <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( [
+            [ 'id' => 'ab_html', 'label' => 'HTML', 'lang' => 'html' ],
+            [ 'id' => 'ab_css',  'label' => 'CSS',  'lang' => 'css' ],
+            [ 'id' => 'ab_js',   'label' => 'JS',   'lang' => 'javascript' ],
+        ] ) ); ?>'>
         <div class="ab-fields">
             <div class="ab-field">
                 <label for="ab_html"><strong>HTML</strong></label>
@@ -100,6 +100,7 @@ class Anchor_Blocks_Module {
                     <code>document.querySelectorAll('.anchor-block--<?php echo (int) $post->ID; ?>').forEach(function(el){ /* init using el */ });</code>
                 </p>
             </div>
+        </div>
         </div>
         <?php
     }
@@ -171,8 +172,9 @@ class Anchor_Blocks_Module {
             if ( class_exists( 'Anchor_Preview_CSS' ) ) {
                 Anchor_Preview_CSS::enqueue_for_admin();
             }
+            Anchor_Monaco::enqueue( self::CPT );
             wp_enqueue_style( 'ab-admin', Anchor_Asset_Loader::url( 'anchor-blocks/assets/admin.css' ), [], self::ASSET_VER );
-            wp_enqueue_script( 'ab-admin', Anchor_Asset_Loader::url( 'anchor-blocks/assets/admin.js' ), [ 'jquery', 'code-editor', 'anchor-preview' ], self::ASSET_VER, true );
+            wp_enqueue_script( 'ab-admin', Anchor_Asset_Loader::url( 'anchor-blocks/assets/admin.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview' ], self::ASSET_VER, true );
         }
     }
     public function print_footer_assets() {

@@ -441,11 +441,6 @@ class Anchor_Universal_Popups_Module {
     public function render_box_code($post){
         wp_nonce_field(self::NONCE, self::NONCE);
         $m = $this->get_meta($post->ID);
-        wp_enqueue_code_editor(array('type' => 'text/html'));
-        wp_enqueue_code_editor(array('type' => 'text/css'));
-        wp_enqueue_code_editor(array('type' => 'application/javascript'));
-        wp_enqueue_script('code-editor');
-        wp_enqueue_style('code-editor');
         ?>
         <div class="up-fields">
             <style>.up-fields .up-field{ margin-bottom:12px; }</style>
@@ -605,6 +600,11 @@ class Anchor_Universal_Popups_Module {
                 <p class="description">Enter your shortcode(s) here. They will be processed and rendered. Example: [contact-form-7 id="123" title="Contact"]</p>
             </div>
 
+            <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( array(
+                array( 'id' => 'up_html', 'label' => 'HTML', 'lang' => 'html' ),
+                array( 'id' => 'up_css',  'label' => 'CSS',  'lang' => 'css' ),
+                array( 'id' => 'up_js',   'label' => 'JS',   'lang' => 'javascript' ),
+            ) ) ); ?>'>
             <div class="up-field up-field-html" data-up-show-when-mode="html">
                 <label for="up_html"><strong>HTML</strong></label>
                 <textarea id="up_html" name="up_html" rows="8" class="widefat code"><?php echo esc_textarea($m['html']); ?></textarea>
@@ -616,6 +616,7 @@ class Anchor_Universal_Popups_Module {
             <div class="up-field">
                 <label for="up_js"><strong>JavaScript</strong></label>
                 <textarea id="up_js" name="up_js" rows="6" class="widefat code"><?php echo esc_textarea($m['js']); ?></textarea>
+            </div>
             </div>
         </div>
         <?php
@@ -998,8 +999,9 @@ class Anchor_Universal_Popups_Module {
                 Anchor_Preview_CSS::enqueue_for_admin();
             }
             $adir = plugin_dir_path(__FILE__) . 'assets/';
+            Anchor_Monaco::enqueue( self::CPT );
             wp_enqueue_style('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.css'), [], (string) filemtime($adir . 'admin.css'));
-            wp_enqueue_script('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.js'), ['jquery','code-editor','anchor-preview'], (string) filemtime($adir . 'admin.js'), true);
+            wp_enqueue_script('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.js'), ['jquery','anchor-monaco','anchor-preview'], (string) filemtime($adir . 'admin.js'), true);
         }
     }
 

@@ -100,10 +100,16 @@
 		wrap.insertBefore( toolbar, wrap.firstChild );
 		wrap.appendChild( host );
 
-		// Hide the source textareas.
+		// Hide the source textareas and their now-redundant labels (the tabs
+		// label each field). We hide the elements themselves — never a parent's
+		// display — so mode-toggle logic that shows/hides a field's wrapper
+		// (e.g. Popups) can't re-reveal a raw textarea.
 		fields.forEach( function ( f ) {
 			var ta = document.getElementById( f.id );
-			if ( ta ) { ta.classList.add( 'anchor-monaco-hidden' ); }
+			if ( ! ta ) { return; }
+			ta.classList.add( 'anchor-monaco-hidden' );
+			var prev = ta.previousElementSibling;
+			if ( prev && prev.tagName === 'LABEL' ) { prev.classList.add( 'anchor-monaco-hidden' ); }
 		} );
 
 		var editors = {};

@@ -3,9 +3,14 @@
 	'use strict';
 
 	// Set synchronously so module scripts (depending on this handle) can skip
-	// their own CodeMirror init before their ready handler runs.
+	// their own CodeMirror init before their ready handler runs — but ONLY when
+	// the Monaco AMD loader actually loaded. The loader.js script tag runs before
+	// this one (dependency order); if the CDN request was blocked/offline the
+	// global `require` is absent, so we leave AnchorMonaco.active unset and let
+	// each module keep its native textareas + CodeMirror path.
 	window.AnchorMonaco = window.AnchorMonaco || {};
-	window.AnchorMonaco.active = true;
+	var LOADER_OK = ( typeof window.require === 'function' && typeof window.require.config === 'function' );
+	if ( LOADER_OK ) { window.AnchorMonaco.active = true; }
 
 	var UNDO_PREFIX = 'anchorMonacoUndo:';
 	var UNDO_CAP    = 40;
@@ -116,6 +121,23 @@
 		var active = fields[ 0 ].id;
 		var restored = false;
 
+		// Restore the native textareas if Monaco can't be loaded at runtime, so the
+		// code fields never end up hidden-and-uneditable. The module's own input→
+		// preview wiring already ran (its else-branch fires when active is set), so
+		// reverting just needs to un-hide the fields and drop the Monaco chrome.
+		function revertToTextareas() {
+			toolbar.parentNode && toolbar.parentNode.removeChild( toolbar );
+			host.parentNode && host.parentNode.removeChild( host );
+			fields.forEach( function ( f ) {
+				var ta = document.getElementById( f.id );
+				if ( ! ta ) { return; }
+				ta.classList.remove( 'anchor-monaco-hidden' );
+				var prev = ta.previousElementSibling;
+				if ( prev && prev.tagName === 'LABEL' ) { prev.classList.remove( 'anchor-monaco-hidden' ); }
+			} );
+			flash( 'Monaco editor failed to load — using plain text fields.' );
+		}
+
 		require.config( { paths: { vs: AnchorMonaco.monacoBase + '/vs' } } );
 		require( [ 'vs/editor/editor.main' ], function () {
 			fields.forEach( function ( f, idx ) {
@@ -191,6 +213,9 @@
 			} );
 
 			if ( restored ) { flash( 'Undo history restored — Ctrl/Cmd+Z still works.' ); }
+		}, function () {
+			// AMD load error (e.g. editor.main blocked) — fall back to textareas.
+			revertToTextareas();
 		} );
 
 		function showTab( fieldId ) {
@@ -242,6 +267,9 @@
 	}
 
 	$( function () {
+		// Loader never arrived — do nothing; native textareas + the module's own
+		// CodeMirror path stay in place (AnchorMonaco.active was left unset).
+		if ( ! LOADER_OK ) { return; }
 		var wraps = document.querySelectorAll( '.anchor-monaco[data-anchor-monaco]' );
 		for ( var i = 0; i < wraps.length; i++ ) { initWrapper( wraps[ i ] ); }
 	} );

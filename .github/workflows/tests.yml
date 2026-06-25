@@ -1,0 +1,86 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  phpunit:
+    name: PHPUnit (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.2']
+
+    # MySQL backing store for the WP test library. The service pre-creates the
+    # `wordpress_test` database, so install-wp-tests.sh is invoked with
+    # skip-db-create=true (its last arg) to avoid the interactive "DB exists" prompt.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: wordpress_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    # ------------------------------------------------------------------------
+    # WooCommerce install-path contract (MUST match tests/bootstrap.php):
+    #
+    #   - install-wp-tests.sh downloads WP core into WP_CORE_DIR (here /tmp/wordpress)
+    #     and the test library into WP_TESTS_DIR (here /tmp/wordpress-tests-lib).
+    #   - The WP test config sets ABSPATH = WP_CORE_DIR, so WP_CONTENT_DIR resolves
+    #     to {WP_CORE_DIR}/wp-content.
+    #   - tests/bootstrap.php requires WooCommerce from
+    #     WP_CONTENT_DIR . '/plugins/woocommerce/woocommerce.php'.
+    #   => Therefore we unzip WooCommerce into {WP_CORE_DIR}/wp-content/plugins/.
+    #
+    # If WooCommerce is absent the bootstrap still boots and the WC-tagged tests
+    # (product-sync, reconcile) self-skip via markTestSkipped().
+    # ------------------------------------------------------------------------
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-tests-lib
+      WP_CORE_DIR: /tmp/wordpress
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mysqli
+          tools: composer
+          coverage: none
+
+      # subversion is required by install-wp-tests.sh (svn export of the test lib).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y subversion
+
+      # composer.lock is committed and in sync (dev deps locked), so a
+      # reproducible install of prod + dev dependencies is used.
+      - name: Install Composer dependencies (with dev)
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Install WP test library
+        run: bash bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 latest true
+
+      - name: Install WooCommerce into the WP test install
+        run: |
+          curl -sL https://downloads.wordpress.org/plugin/woocommerce.latest-stable.zip -o /tmp/woocommerce.zip
+          mkdir -p "${WP_CORE_DIR}/wp-content/plugins"
+          unzip -q /tmp/woocommerce.zip -d "${WP_CORE_DIR}/wp-content/plugins"
+          test -f "${WP_CORE_DIR}/wp-content/plugins/woocommerce/woocommerce.php"
+
+      - name: Run PHPUnit
+        run: composer test

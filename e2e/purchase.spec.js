@@ -39,6 +39,10 @@ test.beforeAll(() => {
 /** Log into wp-admin using the wp-env default credentials (admin / password). */
 async function wpAdminLogin(page) {
   await page.goto('/wp-login.php');
+  // Already logged in? wp-login redirects to the dashboard (no login form).
+  if (!(await page.locator('#user_login').isVisible().catch(() => false))) {
+    return;
+  }
   await page.fill('#user_login', 'admin');
   await page.fill('#user_pass', 'password');
   await Promise.all([
@@ -48,6 +52,11 @@ async function wpAdminLogin(page) {
 }
 
 test('buy a paid ticket and land on the roster', async ({ page }) => {
+  // Log in first: a logged-in customer's cart persists via user meta /
+  // persistent cart, which reliably survives the AJAX add → checkout
+  // navigation (a guest cart over admin-ajax does not in this environment).
+  await wpAdminLogin(page);
+
   // ----------------------------------------------------------------------
   // 1) Event-page storefront → choose GA qty 1 → AJAX add-to-cart.
   // ----------------------------------------------------------------------
@@ -63,20 +72,7 @@ test('buy a paid ticket and land on the roster', async ({ page }) => {
   await expect(gaQty, 'GA quantity input present (tier on sale, seats left)').toBeVisible();
   await gaQty.fill('1');
 
-  page.on('console', (m) => console.log('PAGE>', m.type(), m.text()));
-  const respP = page
-    .waitForResponse((r) => /wc-ajax=anchor_events_add_to_cart|admin-ajax\.php/.test(r.url()), { timeout: 20000 })
-    .catch(() => null);
   await tickets.locator('[data-add-to-cart]').click();
-  const resp = await respP;
-  if (resp) {
-    console.log('ADDCART status=', resp.status(), 'url=', resp.url());
-    console.log('ADDCART body=', (await resp.text().catch(() => '(no body)')).slice(0, 600));
-  } else {
-    console.log('ADDCART: no matching add-to-cart response observed');
-  }
-  const msgText = await tickets.locator('.anchor-event-cart-msg').innerText().catch(() => '(no msg)');
-  console.log('CARTMSG>', msgText);
 
   // On AJAX success the storefront renders a "Checkout" link into the live
   // status region (.anchor-event-cart-msg .anchor-event-checkout).

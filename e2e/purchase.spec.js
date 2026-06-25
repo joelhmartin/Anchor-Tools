@@ -117,14 +117,13 @@ test('buy a paid ticket and land on the roster', async ({ page }) => {
   // ----------------------------------------------------------------------
   // Let WooCommerce's update_checkout AJAX settle (it re-renders payment methods).
   await page.waitForLoadState('networkidle').catch(() => {});
-  const payText = await page.locator('#payment, .woocommerce-checkout-payment').first().innerText().catch(() => '(no payment block)');
-  console.log('PAYMENT>', payText.slice(0, 600));
-  const notices = await page.locator('.woocommerce-error li, .woocommerce-error, .woocommerce-info, .woocommerce-message').allInnerTexts().catch(() => []);
-  console.log('NOTICES>', JSON.stringify(notices).slice(0, 600));
 
-  const cod = page.locator('#payment_method_cod');
-  await expect(cod, 'Cash on Delivery available').toBeVisible();
-  await cod.check();
+  // WooCommerce hides the radio input via CSS and exposes a clickable label, so
+  // assert/select via the label rather than the (not-"visible") input.
+  const codLabel = page.locator('label[for="payment_method_cod"]');
+  await expect(codLabel, 'Cash on Delivery available').toBeVisible();
+  await codLabel.click();
+  await expect(page.locator('#payment_method_cod')).toBeChecked();
 
   // WC submits the checkout via AJAX then redirects to order-received.
   await page.locator('#place_order').click();

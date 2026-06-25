@@ -52,6 +52,10 @@ jobs:
       - name: Run Playwright E2E tests
         run: npm run test:e2e
 
+      - name: Show WP debug log (diagnostics)
+        if: always()
+        run: npx wp-env run cli cat wp-content/debug.log || echo "(no debug.log)"
+
       - name: Stop wp-env
         if: always()
         run: npx wp-env stop

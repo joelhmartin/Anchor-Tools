@@ -174,7 +174,9 @@
       var $tab  = $builder.find('.anchor-builder__tab[data-tab="' + key + '"]');
       var $fields = $pane.find('.anchor-builder__field');
       if (!$fields.length) { $tab.show(); return; }   // non-settings pane: never hide
-      var anyVisible = $fields.filter(':visible').length > 0;
+      var anyVisible = $fields.filter(function(){
+        return $(this).css('display') !== 'none';
+      }).length > 0;
       $tab.toggle(anyVisible);
       if (!anyVisible && $tab.hasClass('is-active')) activeHidden = true;
     });

@@ -899,7 +899,6 @@ class WooCommerce {
      * gates (which remain in place). Guards all WooCommerce (wc_* / WC()) access.
      */
     public function ajax_add_to_cart() {
-        \error_log( '[anchor-addcart] handler entered; wc-ajax=' . ( isset( $_GET['wc-ajax'] ) ? '1' : '0' ) . ' user=' . \get_current_user_id() ); // TEMP diag
         \check_ajax_referer( 'anchor_events_add_to_cart', 'nonce' );
 
         if (

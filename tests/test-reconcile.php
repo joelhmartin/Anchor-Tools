@@ -72,6 +72,9 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 		$order->add_item( $item );
 		$order->set_billing_email( 'buyer@example.test' );
 		$order->set_billing_first_name( 'Buyer' );
+		// Compute the order total from the line so the order has a refundable amount
+		// (wc_create_refund rejects refunds exceeding get_remaining_refund_amount()).
+		$order->calculate_totals( false );
 		$order->save();
 
 		// Move to processing AFTER the items (incl. attendee meta) are persisted.

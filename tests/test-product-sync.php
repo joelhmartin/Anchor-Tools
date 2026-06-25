@@ -135,7 +135,10 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 
 		$this->assertSame( 1, $this->variation_count( $product_id ) );
 		$this->assertSame( 0, $this->product_sync()->variation_for_tier( $event_id, $vip['id'] ) );
-		$this->assertFalse( (bool) wc_get_product( $vip_vid ) );
+		// The variation post is force-deleted; check the DB directly (wc_get_product
+		// can return a stale runtime-cached object after deletion).
+		wp_cache_flush();
+		$this->assertNull( get_post( $vip_vid ), 'The removed no-sales tier variation should be hard-deleted.' );
 	}
 
 	/** Trashing the event demotes the managed product to draft (never deleted). */

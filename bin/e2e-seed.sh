@@ -57,8 +57,9 @@ log "Plugins active: woocommerce + ${PLUGIN_SLUG}"
 # ---------------------------------------------------------------------------
 # Enable the Anchor Events module (gate the events feature on).
 # ---------------------------------------------------------------------------
-wp option get anchor_schema_settings >/dev/null 2>&1 || wp option add anchor_schema_settings '{}' --format=json --autoload=no >/dev/null
-wp option patch update anchor_schema_settings modules '{"events_manager":true}' --format=json >/dev/null
+# Fresh test site: set the whole option (no other keys to preserve). `patch
+# update modules` would fail because the nested key doesn't exist yet.
+wp option update anchor_schema_settings '{"modules":{"events_manager":true}}' --format=json --autoload=no >/dev/null
 log "Events module enabled."
 
 # ---------------------------------------------------------------------------

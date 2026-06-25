@@ -1,0 +1,15 @@
+{
+  "name": "anchor-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "End-to-end (Playwright + @wordpress/env) test harness for the Anchor Tools WordPress plugin.",
+  "scripts": {
+    "wp-env": "wp-env",
+    "test:e2e": "playwright test",
+    "env:seed": "wp-env run cli --env-cwd=wp-content/plugins/anchor-tools bash bin/e2e-seed.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0",
+    "@wordpress/env": "^10.0.0"
+  }
+}

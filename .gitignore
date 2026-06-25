@@ -9,3 +9,8 @@
 
 # Node deps from running the build script locally
 /node_modules/
+
+# Playwright / wp-env E2E artifacts
+/playwright-report/
+/test-results/
+/e2e/.seed.json

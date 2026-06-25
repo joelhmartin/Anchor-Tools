@@ -992,6 +992,17 @@ class WooCommerce {
             \wp_send_json_error( [ 'messages' => $messages ] );
         }
 
+        // Force the WooCommerce customer session cookie to be set on this
+        // (admin-ajax) response so a GUEST's cart persists to the cart/checkout
+        // page load — admin-ajax doesn't reliably set it otherwise, which would
+        // leave the buyer with an empty cart at checkout.
+        if ( WC()->session && \method_exists( WC()->session, 'set_customer_session_cookie' ) ) {
+            WC()->session->set_customer_session_cookie( true );
+        }
+        if ( \method_exists( WC()->cart, 'maybe_set_cart_cookies' ) ) {
+            WC()->cart->maybe_set_cart_cookies();
+        }
+
         \wp_send_json_success( [
             'added'        => $added,
             'cart_url'     => \wc_get_cart_url(),

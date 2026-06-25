@@ -574,6 +574,13 @@ class Product_Sync {
         }
 
         if ( $spec['active'] ) {
+            // Event tickets are virtual — no shipping. Without this WooCommerce
+            // treats them as physical, demands a shipping method, and can block
+            // checkout/payment when none is configured.
+            if ( ! $variation->is_virtual() ) {
+                $variation->set_virtual( true );
+                $dirty = true;
+            }
             // Price.
             if ( (float) $variation->get_regular_price() !== (float) $spec['price'] ) {
                 $variation->set_regular_price( (string) $spec['price'] );

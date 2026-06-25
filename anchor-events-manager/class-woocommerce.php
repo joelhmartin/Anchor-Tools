@@ -869,8 +869,14 @@ class WooCommerce {
             '1.0.0',
             true
         );
+        // Prefer WooCommerce's wc-ajax endpoint (frontend context → reliable guest
+        // cart session/cookies); the action is encoded in the URL. Fall back to
+        // admin-ajax only if WC_AJAX is unavailable.
+        $ajax_url = \class_exists( '\\WC_AJAX' )
+            ? \WC_AJAX::get_endpoint( 'anchor_events_add_to_cart' )
+            : \admin_url( 'admin-ajax.php' );
         \wp_localize_script( 'anchor-event-storefront', 'AnchorEventsStore', [
-            'ajaxUrl'   => \admin_url( 'admin-ajax.php' ),
+            'ajaxUrl'   => $ajax_url,
             'nonce'     => \wp_create_nonce( 'anchor_events_add_to_cart' ),
             'addAction' => 'anchor_events_add_to_cart',
             'i18n'      => [
@@ -893,6 +899,7 @@ class WooCommerce {
      * gates (which remain in place). Guards all WooCommerce (wc_* / WC()) access.
      */
     public function ajax_add_to_cart() {
+        \error_log( '[anchor-addcart] handler entered; wc-ajax=' . ( isset( $_GET['wc-ajax'] ) ? '1' : '0' ) . ' user=' . \get_current_user_id() ); // TEMP diag
         \check_ajax_referer( 'anchor_events_add_to_cart', 'nonce' );
 
         if (

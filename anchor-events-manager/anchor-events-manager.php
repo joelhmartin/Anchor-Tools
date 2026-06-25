@@ -588,10 +588,12 @@ class Module {
             'show_in_rest' => true,
             'auth_callback' => $reg_auth_callback,
         ] );
+        // Internal custom-field values — keep out of REST to avoid the
+        // "array meta without schema items" notice (and it isn't needed there).
         \register_post_meta( self::REG_CPT, '_anchor_event_reg_fields', [
             'type' => 'array',
             'single' => true,
-            'show_in_rest' => true,
+            'show_in_rest' => false,
             'auth_callback' => $reg_auth_callback,
         ] );
         \register_post_meta( self::REG_CPT, '_anchor_event_guests', [

@@ -52,10 +52,9 @@ async function wpAdminLogin(page) {
 }
 
 test('buy a paid ticket and land on the roster', async ({ page }) => {
-  // Log in first: a logged-in customer's cart persists via user meta /
-  // persistent cart, which reliably survives the AJAX add → checkout
-  // navigation (a guest cart over admin-ajax does not in this environment).
-  await wpAdminLogin(page);
+  // GUEST purchase (no prior login) — the real-world path: a logged-out buyer
+  // must be able to add a ticket and complete checkout. The cart is added via
+  // WooCommerce's wc-ajax endpoint so the guest session persists to checkout.
 
   // ----------------------------------------------------------------------
   // 1) Event-page storefront → choose GA qty 1 → AJAX add-to-cart.

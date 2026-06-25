@@ -73,15 +73,7 @@ test('buy a paid ticket and land on the roster', async ({ page }) => {
   // ----------------------------------------------------------------------
   // 2) Classic WooCommerce checkout → billing + per-seat attendee fields.
   // ----------------------------------------------------------------------
-  // Visit the cart first: asserts the AJAX add actually persisted to the
-  // session the browser carries, and surfaces what's there for diagnostics.
-  await page.goto('/cart/');
-  const cartText = (await page.locator('body').innerText()).slice(0, 800);
-  console.log('=== CART BODY ===\n' + cartText + '\n=== /CART BODY ===');
-
   await page.goto('/checkout/');
-  const checkoutText = (await page.locator('body').innerText()).slice(0, 1200);
-  console.log('=== CHECKOUT BODY ===\n' + checkoutText + '\n=== /CHECKOUT BODY ===');
 
   // Wait for the classic checkout form to hydrate.
   await expect(page.locator('#billing_first_name')).toBeVisible();

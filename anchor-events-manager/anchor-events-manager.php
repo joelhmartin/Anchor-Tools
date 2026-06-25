@@ -244,13 +244,60 @@ class Module {
      */
     public function send_html_email( $to, $subject, $html, $headers = [] ) {
         if ( empty( $headers ) ) {
-            $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
+            // Apply the configured event sender identity (From / Reply-To / BCC).
+            $headers = $this->email_headers( [ 'Content-Type: text/html; charset=UTF-8' ] );
         }
         $sent = \wp_mail( $to, $subject, $html, $headers );
         if ( ! $sent ) {
             Events_Log::error( 'email_send_returned_false', [ 'to' => $to, 'subject' => $subject ] );
         }
         return (bool) $sent;
+    }
+
+    /**
+     * Build the per-message header lines that carry the configured event email
+     * sender identity (From / Reply-To / BCC). Each header is emitted only when a
+     * valid address is configured; blank settings fall back to WordPress defaults.
+     * This only sets headers — actual delivery still relies on the site's mail
+     * service (Mailgun, WP Mail SMTP, etc.), which may override the From address.
+     *
+     * @param array $extra Header lines to prepend (e.g. the Content-Type line).
+     * @return array
+     */
+    public function email_headers( array $extra = [] ) {
+        $settings = $this->get_settings();
+        $headers  = $extra;
+
+        $from_email = \sanitize_email( $settings['email_from_address'] ?? '' );
+        if ( $from_email ) {
+            $from_name = \sanitize_text_field( $settings['email_from_name'] ?? '' );
+            $headers[] = $from_name !== ''
+                ? sprintf( 'From: %s <%s>', $this->encode_email_name( $from_name ), $from_email )
+                : 'From: ' . $from_email;
+        }
+
+        $reply_email = \sanitize_email( $settings['email_reply_to_address'] ?? '' );
+        if ( $reply_email ) {
+            $reply_name = \sanitize_text_field( $settings['email_reply_to_name'] ?? '' );
+            $headers[] = $reply_name !== ''
+                ? sprintf( 'Reply-To: %s <%s>', $this->encode_email_name( $reply_name ), $reply_email )
+                : 'Reply-To: ' . $reply_email;
+        }
+
+        $bcc = \sanitize_email( $settings['email_bcc'] ?? '' );
+        if ( $bcc ) {
+            $headers[] = 'Bcc: ' . $bcc;
+        }
+
+        return $headers;
+    }
+
+    /** Quote a display name for an email header if it contains characters that need it. */
+    private function encode_email_name( $name ) {
+        if ( preg_match( '/[",:;<>@()\[\]\\\\]/', $name ) ) {
+            return '"' . str_replace( '"', '', $name ) . '"';
+        }
+        return $name;
     }
 
     /* ---------------------------------------------------------------------
@@ -2848,6 +2895,38 @@ class Module {
             <?php
         }, 'anchor_events_settings', 'anchor_events_main' );
 
+        \add_settings_section( 'anchor_events_email_sender', __( 'Email Sender', 'anchor-schema' ), function() {
+            echo '<p>' . esc_html__( 'From / Reply-To / BCC identity applied to all event emails. Leave blank to use WordPress defaults.', 'anchor-schema' ) . '</p>';
+            echo '<p class="description">' . esc_html__( 'This only sets the email headers — actual delivery still relies on your site\'s mail service (e.g. Mailgun, WP Mail SMTP). The From address should be on a domain that service is authorized to send for (SPF/DKIM), or mail may be marked as spam. Some SMTP/Mailgun plugins force their own From address and will override this; Reply-To is usually respected.', 'anchor-schema' ) . '</p>';
+        }, 'anchor_events_settings' );
+
+        $email_text_field = function( $key, $type, $placeholder ) {
+            $opts = $this->get_settings();
+            printf(
+                '<input type="%1$s" name="%2$s[%3$s]" value="%4$s" class="regular-text" placeholder="%5$s" />',
+                esc_attr( $type ),
+                esc_attr( self::OPTION_KEY ),
+                esc_attr( $key ),
+                esc_attr( $opts[ $key ] ?? '' ),
+                esc_attr( $placeholder )
+            );
+        };
+        \add_settings_field( 'email_from_name', __( 'From name', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_from_name', 'text', __( 'e.g. Acme Events', 'anchor-schema' ) );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+        \add_settings_field( 'email_from_address', __( 'From email', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_from_address', 'email', 'events@yoursite.com' );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+        \add_settings_field( 'email_reply_to_name', __( 'Reply-To name', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_reply_to_name', 'text', '' );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+        \add_settings_field( 'email_reply_to_address', __( 'Reply-To email', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_reply_to_address', 'email', '' );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+        \add_settings_field( 'email_bcc', __( 'BCC email (optional)', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_bcc', 'email', '' );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+
         \add_settings_section( 'anchor_events_registration', __( 'Registration Settings', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Control internal registration and email notifications.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
@@ -3030,6 +3109,13 @@ class Module {
             $output['wc_organizer_subject'] = $defaults['wc_organizer_subject'];
             $output['organizer_email']      = $defaults['organizer_email'];
         }
+        // Email sender identity (applied as per-message headers on event emails).
+        $output['email_from_name']        = sanitize_text_field( $input['email_from_name'] ?? '' );
+        $output['email_from_address']     = sanitize_email( $input['email_from_address'] ?? '' );
+        $output['email_reply_to_name']    = sanitize_text_field( $input['email_reply_to_name'] ?? '' );
+        $output['email_reply_to_address'] = sanitize_email( $input['email_reply_to_address'] ?? '' );
+        $output['email_bcc']              = sanitize_email( $input['email_bcc'] ?? '' );
+
         // Reserved/unused — preserve stored value (no UI field).
         $output['notify_attendee'] = $defaults['notify_attendee'];
 
@@ -3583,7 +3669,8 @@ class Module {
                 1 + $guests,
                 $event_link
             );
-            $sent = \wp_mail( $admin_email, $subject, $message );
+            // Plain-text email, but still carry the configured sender identity.
+            $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
             if ( ! $sent ) {
                 Events_Log::error( 'email_send_returned_false', [ 'to' => $admin_email, 'subject' => $subject ] );
             }
@@ -3841,6 +3928,12 @@ class Module {
             'organizer_email'      => '',
             // Reserved/unused in MVP (per-attendee emails are deferred).
             'notify_attendee'      => false,
+            // Email sender identity (applied as per-message headers on event emails).
+            'email_from_name'        => '',
+            'email_from_address'     => '',
+            'email_reply_to_name'    => '',
+            'email_reply_to_address' => '',
+            'email_bcc'              => '',
         ];
         $settings = \get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $settings ) ) {

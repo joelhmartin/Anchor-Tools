@@ -220,11 +220,11 @@ class Anchor_Gallery_Module {
                 'desaturate' => 'Desaturate (color on hover)',
             ], 'applies_to' => $tile_layouts],
             'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'section' => 'video', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'applies_to' => $core_layouts],
-            'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 2],
+            'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 2, 'applies_to' => $height_layouts],
             'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'section' => 'layout', 'priority' => 20, 'min' => 1, 'max' => 6, 'applies_to' => $col_layouts],
             'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'section' => 'responsive', 'min' => 1, 'max' => 4, 'applies_to' => $col_layouts],
             'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'section' => 'responsive', 'min' => 1, 'max' => 2, 'applies_to' => $col_layouts],
-            'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4],
+            'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4, 'applies_to' => $height_layouts],
             'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'video', 'applies_to' => array_values(array_diff($core_layouts, ['thumbnail_gallery']))],
             'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'video', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
             'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'style', 'priority' => 5, 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts, 'help' => 'Set to Hidden to remove the title entirely.'],
@@ -268,7 +268,7 @@ class Anchor_Gallery_Module {
             'marquee_grayscale' => ['type' => 'checkbox', 'label' => 'Grayscale (color on hover)', 'section' => 'style', 'applies_to' => $marquee_layouts],
             'marquee_eager_count' => ['type' => 'number', 'label' => 'Eager-Load First N Logos', 'section' => 'advanced', 'min' => 0, 'max' => 30, 'step' => 1, 'applies_to' => $marquee_layouts],
             'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'section' => 'advanced', 'min' => 0, 'max' => 24, 'step' => 1, 'applies_to' => $core_layouts],
-            'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 60, 'step' => 2],
+            'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 60, 'step' => 2, 'applies_to' => $height_layouts],
             'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'section' => 'style', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'applies_to' => $core_layouts],
 
             /* ── Phase 5: Carousel controls ─────────────────────────── */
@@ -388,7 +388,7 @@ class Anchor_Gallery_Module {
             'overlay_gradient_strength' => ['type' => 'number', 'label' => 'Overlay Gradient Strength (0-100)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_style' => 'overlay'], 'help' => 'Alpha of the bottom gradient stop on the overlay tile style.'],
 
             /* ── 3.7.0: Behavior ──────────────────────────────────────── */
-            'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'layout', 'min' => 50, 'max' => 800, 'step' => 10, 'help' => 'Global tile / thumb / title transition speed.'],
+            'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'layout', 'min' => 50, 'max' => 800, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Global tile / thumb / title transition speed.'],
 
             /* ── 3.7.0: Advanced — raw CSS var overrides ──────────────── */
             'css_var_bg'         => ['type' => 'color', 'label' => 'Override: Tile Background (--avg-bg)', 'section' => 'advanced', 'help' => 'Theme-level default. Style tab Tile Background Color overrides this.'],

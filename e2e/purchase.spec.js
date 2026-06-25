@@ -115,6 +115,13 @@ test('buy a paid ticket and land on the roster', async ({ page }) => {
   // ----------------------------------------------------------------------
   // 3) Select Cash on Delivery and place the order.
   // ----------------------------------------------------------------------
+  // Let WooCommerce's update_checkout AJAX settle (it re-renders payment methods).
+  await page.waitForLoadState('networkidle').catch(() => {});
+  const payText = await page.locator('#payment, .woocommerce-checkout-payment').first().innerText().catch(() => '(no payment block)');
+  console.log('PAYMENT>', payText.slice(0, 600));
+  const notices = await page.locator('.woocommerce-error li, .woocommerce-error, .woocommerce-info, .woocommerce-message').allInnerTexts().catch(() => []);
+  console.log('NOTICES>', JSON.stringify(notices).slice(0, 600));
+
   const cod = page.locator('#payment_method_cod');
   await expect(cod, 'Cash on Delivery available').toBeVisible();
   await cod.check();

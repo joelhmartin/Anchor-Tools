@@ -36,11 +36,21 @@ log "Plugin slug: ${PLUGIN_SLUG}"
 log "Plugin dir : ${PLUGIN_DIR}"
 
 # ---------------------------------------------------------------------------
-# Activate plugins (wp-env auto-activates listed plugins; assert to be safe).
+# Ensure WooCommerce + the plugin are active. Don't assume wp-env installed/
+# activated the WooCommerce zip — install it via WP-CLI if missing (deterministic).
 # ---------------------------------------------------------------------------
-wp plugin activate woocommerce >/dev/null 2>&1 || true
+if wp plugin is-installed woocommerce; then
+  wp plugin activate woocommerce >/dev/null 2>&1 || true
+else
+  log "WooCommerce not installed — installing via WP-CLI..."
+  wp plugin install woocommerce --activate
+fi
 wp plugin activate "${PLUGIN_SLUG}" >/dev/null 2>&1 || true
-wp plugin is-active woocommerce       || { log "ERROR: WooCommerce is not active"; exit 1; }
+
+log "Installed plugins:"
+wp plugin list --fields=name,status,version || true
+
+wp plugin is-active woocommerce       || { log "ERROR: WooCommerce is not active after install"; exit 1; }
 wp plugin is-active "${PLUGIN_SLUG}"  || { log "ERROR: ${PLUGIN_SLUG} is not active"; exit 1; }
 log "Plugins active: woocommerce + ${PLUGIN_SLUG}"
 

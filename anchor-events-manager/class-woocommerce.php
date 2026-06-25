@@ -155,13 +155,13 @@ class WooCommerce {
         \add_action( 'admin_post_anchor_event_resync_order', [ $this, 'handle_resync_order' ] );
         \add_action( 'add_meta_boxes', [ $this, 'register_order_metabox' ], 30, 2 );
 
-        // Event-page storefront — inline add-to-cart. Use WooCommerce's wc-ajax
-        // endpoint (frontend context) rather than admin-ajax: WC reliably loads the
-        // cart and persists the guest session cookie there, so the added item
-        // survives to the cart/checkout page. One nonce-verified handler for both
-        // logged-in and guest requests.
+        // Event-page storefront — inline add-to-cart. Registered on BOTH WooCommerce's
+        // wc-ajax endpoint (frontend context — best for guest cart session handling)
+        // AND admin-ajax (broad compatibility). The localized endpoint prefers
+        // wc-ajax; one nonce-verified handler serves logged-in + guest requests.
+        \add_action( 'wp_ajax_anchor_events_add_to_cart', [ $this, 'ajax_add_to_cart' ] );
+        \add_action( 'wp_ajax_nopriv_anchor_events_add_to_cart', [ $this, 'ajax_add_to_cart' ] );
         \add_action( 'wc_ajax_anchor_events_add_to_cart', [ $this, 'ajax_add_to_cart' ] );
-        \add_action( 'wc_ajax_nopriv_anchor_events_add_to_cart', [ $this, 'ajax_add_to_cart' ] );
 
         /* -----------------------------------------------------------------
          * Phase 6 — emails, needs-review notices, manual order actions
@@ -869,14 +869,8 @@ class WooCommerce {
             '1.0.0',
             true
         );
-        // Prefer WooCommerce's wc-ajax endpoint (the action is encoded in the URL,
-        // so the POST body's `action` is ignored there); fall back to admin-ajax
-        // only if WC_AJAX is somehow unavailable.
-        $ajax_url = \class_exists( 'WC_AJAX' )
-            ? \WC_AJAX::get_endpoint( 'anchor_events_add_to_cart' )
-            : \admin_url( 'admin-ajax.php' );
         \wp_localize_script( 'anchor-event-storefront', 'AnchorEventsStore', [
-            'ajaxUrl'   => $ajax_url,
+            'ajaxUrl'   => \admin_url( 'admin-ajax.php' ),
             'nonce'     => \wp_create_nonce( 'anchor_events_add_to_cart' ),
             'addAction' => 'anchor_events_add_to_cart',
             'i18n'      => [

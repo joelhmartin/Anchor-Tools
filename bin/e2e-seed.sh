@@ -55,6 +55,16 @@ wp plugin is-active "${PLUGIN_SLUG}"  || { log "ERROR: ${PLUGIN_SLUG} is not act
 log "Plugins active: woocommerce + ${PLUGIN_SLUG}"
 
 # ---------------------------------------------------------------------------
+# Install a real, WooCommerce-friendly theme. The wp-env default theme in this
+# WordPress build renders without header/footer, breaking cart/checkout output.
+# Storefront (WooCommerce's own theme) renders the shop pages reliably.
+# ---------------------------------------------------------------------------
+if ! wp theme is-active storefront; then
+  wp theme install storefront --activate || log "WARNING: could not install Storefront theme."
+fi
+log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
+
+# ---------------------------------------------------------------------------
 # Enable the Anchor Events module (gate the events feature on).
 # ---------------------------------------------------------------------------
 # Fresh test site: set the whole option (no other keys to preserve). `patch

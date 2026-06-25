@@ -428,7 +428,7 @@ class Product_Sync {
             // Create/update each variation; collect tier → variation id map.
             $tier_variation_map = [];
             foreach ( $specs as $spec ) {
-                $vid = $this->write_variation( $product_id, $spec, $mutated );
+                $vid = $this->write_variation( $product_id, $event_id, $spec, $mutated );
                 if ( $vid > 0 ) {
                     $tier_variation_map[ $spec['tier_id'] ] = $vid;
                 }
@@ -479,6 +479,13 @@ class Product_Sync {
         }
         if ( (int) $product->get_meta( self::PRODUCT_EVENT_META ) !== (int) $event_id ) {
             $product->update_meta_data( self::PRODUCT_EVENT_META, (int) $event_id );
+            $dirty = true;
+        }
+        // Populate the link meta the checkout/reconcile resolver reads
+        // (WooCommerce::event_for_line) so managed-product carts are recognized as
+        // event lines — attendee fields render and seats reconcile after payment.
+        if ( (string) $product->get_meta( WooCommerce::META_ENABLED ) !== '1' ) {
+            $product->update_meta_data( WooCommerce::META_ENABLED, '1' );
             $dirty = true;
         }
 
@@ -533,7 +540,7 @@ class Product_Sync {
      * @param bool  $mutated Set true (by reference) when this write changed data.
      * @return int
      */
-    private function write_variation( $product_id, array $spec, &$mutated = false ) {
+    private function write_variation( $product_id, $event_id, array $spec, &$mutated = false ) {
         $variation = $spec['variation'];
         $created   = false;
         if ( ! $variation instanceof \WC_Product_Variation ) {
@@ -547,6 +554,13 @@ class Product_Sync {
         // Tier id meta (stable identity).
         if ( (string) $variation->get_meta( self::VARIATION_TIER_META ) !== (string) $spec['tier_id'] ) {
             $variation->update_meta_data( self::VARIATION_TIER_META, (string) $spec['tier_id'] );
+            $dirty = true;
+        }
+
+        // Link-event-id meta the resolver reads (WooCommerce::event_for_line) so this
+        // variation resolves to its event during checkout detection + reconcile.
+        if ( (int) $variation->get_meta( WooCommerce::META_EVENT_ID ) !== (int) $event_id ) {
+            $variation->update_meta_data( WooCommerce::META_EVENT_ID, (int) $event_id );
             $dirty = true;
         }
 

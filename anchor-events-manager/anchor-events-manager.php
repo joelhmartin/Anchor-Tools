@@ -2781,23 +2781,33 @@ class Module {
         $posted_tier = isset( $_POST['anchor_event_ticket_type'] )
             ? sanitize_key( wp_unslash( $_POST['anchor_event_ticket_type'] ) )
             : '';
-        $tier_id = $this->ticket_types->primary_id( $event_id );
+        // Default to the (single) active FREE tier, NOT primary_id() — primary may be
+        // a paid tier ordered first, which would misfile a free signup + skew that
+        // paid tier's quota/roster (PR review). Fall back to primary only if there
+        // are no free tiers at all.
+        $free_tiers = $this->get_active_free_tiers( $event_id );
+        $tier_id    = ! empty( $free_tiers ) ? $free_tiers[0]['id'] : $this->ticket_types->primary_id( $event_id );
         if ( $posted_tier !== '' ) {
             $tier = $this->ticket_types->find( $event_id, $posted_tier );
             if ( $tier && ! empty( $tier['active'] ) && (float) ( $tier['price'] ?? 0 ) <= 0 ) {
                 $tier_id = $tier['id'];
             }
         }
+        // The resolved tier drives per-tier quota enforcement in both the pre-check
+        // and the locked claim below.
+        $tier = $this->ticket_types->find( $event_id, $tier_id );
 
-        // Pre-check for user-facing messaging (closed window / full + no waitlist).
-        $decision = $this->get_registration_status( $event_id, $meta, $party_size );
+        // Pre-check for user-facing messaging (closed window / full + no waitlist),
+        // honoring the tier's own quota.
+        $decision = $this->get_registration_status( $event_id, $meta, $party_size, $tier );
         if ( $decision === 'closed' || $decision === 'full' ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
             exit;
         }
 
         // Race-safe creation under the per-event lock (bug #3). claim_seats recounts
-        // capacity inside the lock, so concurrent submits can never oversell.
+        // capacity inside the lock, so concurrent submits can never oversell; the
+        // tier arg enforces the free tier's per-tier quota too.
         $result = $this->registrations->claim_seats( $event_id, $meta, 1, [
             'source'         => 'internal',
             'name'           => $name,
@@ -2808,7 +2818,7 @@ class Module {
             'ticket_type_id' => $tier_id,
             'note'           => 'internal registration',
             'actor'          => 'internal',
-        ] );
+        ], $tier );
 
         $created    = ! empty( $result['created'] );
         $waitlisted = ! empty( $result['waitlisted'] );
@@ -3618,9 +3628,10 @@ class Module {
         ];
     }
 
-    public function get_registration_status( $event_id, $meta, $party_size = 1 ) {
-        // Single capacity authority lives in the data layer (spec §9.1).
-        return $this->registrations->capacity_decision( $event_id, $meta, $party_size );
+    public function get_registration_status( $event_id, $meta, $party_size = 1, $tier = null ) {
+        // Single capacity authority lives in the data layer (spec §9.1). Passing the
+        // tier enforces its per-tier quota alongside the event total.
+        return $this->registrations->capacity_decision( $event_id, $meta, $party_size, $tier );
     }
 
     private function get_registration_fields() {

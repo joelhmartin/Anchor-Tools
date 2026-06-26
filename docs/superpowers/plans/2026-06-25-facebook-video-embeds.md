@@ -15,7 +15,7 @@
 - Asset URLs: `ANCHOR_TOOLS_PLUGIN_URL . 'anchor-{module}/assets/'`.
 - `update_option()` always passes `autoload=false` as the 3rd arg (not relevant here — no new options).
 - JS is jQuery IIFE / vanilla `(function(){…})()` — no ES modules.
-- When editing an asset, **bump the `wp_enqueue_*` version string** for that file and keep the readable `.js` and the `.min.js` copies in sync (no minifier is run; mirror the change into both).
+- **Asset build (CORRECTED during execution — supersedes stale CLAUDE.md "no build tools"):** edit only the readable source `.js` (the committed file). The `.min.js` files are **gitignored generated artifacts** produced by `node bin/build-assets.mjs` (terser) — run that after editing source to regenerate them locally; do NOT hand-edit or commit `.min.js`. Enqueues are versioned by `filemtime()`, so there is **no version string to bump**. (The original plan's "mirror into .min.js" and "bump enqueue version" steps are obsolete — ignore them.)
 - Facebook embed src form: `https://www.facebook.com/plugins/video.php?href={url-encoded canonical url}&show_text=false&autoplay={true|false}`; append `mute=1` whenever autoplay is on (Facebook only autoplays muted).
 - Aspect values are stored as ratio strings (`16:9`, `9:16`, `1:1`) to match the existing aspect handling (`opts.aspect.replace(':', ' / ')`). An empty value means "inherit the gallery/popup-level aspect".
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, schema, galleries, forms, and content utilities.
- * Version: 3.9.05
+ * Version: 3.9.06
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -57,6 +57,12 @@ if ( class_exists( Dotenv::class ) && file_exists( ANCHOR_TOOLS_PLUGIN_DIR . '.e
 
 if ( ! class_exists( 'Anchor_Asset_Loader' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-asset-loader.php';
+}
+if ( ! class_exists( 'Anchor_Monaco' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-monaco.php';
+}
+if ( ! class_exists( 'Anchor_Groups' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-groups.php';
 }
 if ( ! class_exists( 'Anchor_Schema_Logger' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-schema-logger.php';

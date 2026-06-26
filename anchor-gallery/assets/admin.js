@@ -158,6 +158,33 @@
       $row.toggle(visible);
     });
     applyForcedSettings();
+    hideEmptyTabs();
+  }
+
+  // Hide a builder tab when its pane has setting fields but none are currently
+  // visible for the active layout. Panes with no .anchor-builder__field at all
+  // (Content, Preset) are left alone. Keeps the active tab valid.
+  function hideEmptyTabs(){
+    var $builder = $('.anchor-builder').first();
+    if (!$builder.length) return;
+    var activeHidden = false;
+    $builder.find('.anchor-builder__pane').each(function(){
+      var $pane = $(this);
+      var key   = $pane.attr('data-pane');
+      var $tab  = $builder.find('.anchor-builder__tab[data-tab="' + key + '"]');
+      var $fields = $pane.find('.anchor-builder__field');
+      if (!$fields.length) { $tab.show(); return; }   // non-settings pane: never hide
+      var anyVisible = $fields.filter(function(){
+        return $(this).css('display') !== 'none';
+      }).length > 0;
+      $tab.toggle(anyVisible);
+      if (!anyVisible && $tab.hasClass('is-active')) activeHidden = true;
+    });
+    // If the active tab was just hidden, activate the first visible tab.
+    if (activeHidden) {
+      var $first = $builder.find('.anchor-builder__tab:visible').first();
+      if ($first.length) $first.trigger('click');
+    }
   }
 
   function updateAspectRatioState(){

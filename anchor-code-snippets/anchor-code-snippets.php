@@ -4,11 +4,13 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 class Anchor_Code_Snippets_Module {
 
     const CPT   = 'anchor_snippet';
+    const TAX   = 'anchor_snippet_group';
     const NONCE = 'anchor_snippet_nonce';
     const MU_PREFIX = 'anchor-snippet-';
 
     public function __construct() {
         add_action( 'init',                  [ $this, 'register_cpt' ] );
+        add_action( 'init',                  [ $this, 'register_groups' ] );
         add_action( 'add_meta_boxes',        [ $this, 'add_metaboxes' ] );
         add_action( 'edit_form_after_title',  [ $this, 'render_code_after_title' ] );
         add_action( 'save_post',             [ $this, 'save_meta' ] );
@@ -36,6 +38,14 @@ class Anchor_Code_Snippets_Module {
     }
 
     /* ─── CPT ──────────────────────────────────────────────── */
+
+    public function register_groups() {
+        Anchor_Groups::register( self::TAX, self::CPT, [
+            'name'          => __( 'Snippet Groups', 'anchor-schema' ),
+            'singular_name' => __( 'Snippet Group', 'anchor-schema' ),
+            'menu_name'     => __( 'Groups', 'anchor-schema' ),
+        ] );
+    }
 
     public function register_cpt() {
         register_post_type( self::CPT, [

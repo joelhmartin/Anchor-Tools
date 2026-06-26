@@ -252,13 +252,13 @@ to:
 
 - [ ] **Step 4: Add `applies_to` to `transition_duration_ms`**
 
-Change:
+Task 1 already changed this setting's section to `layout`, so the current line reads with `'section' => 'layout'`. Change:
 
 ```php
-            'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'behavior', 'min' => 50, 'max' => 800, 'step' => 10, 'help' => 'Global tile / thumb / title transition speed.'],
+            'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'layout', 'min' => 50, 'max' => 800, 'step' => 10, 'help' => 'Global tile / thumb / title transition speed.'],
 ```
 
-to (note this also picks up the Task 1 section change to `layout`):
+to:
 
 ```php
             'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'layout', 'min' => 50, 'max' => 800, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Global tile / thumb / title transition speed.'],

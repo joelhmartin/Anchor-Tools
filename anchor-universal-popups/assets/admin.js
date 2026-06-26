@@ -136,7 +136,7 @@
       }
     });
 
-    if (window.wp && wp.codeEditor){
+    if (!(window.AnchorMonaco && window.AnchorMonaco.active) && window.wp && wp.codeEditor){
       ['up_html','up_shortcode','up_css','up_js'].forEach(function(id){
         var $ta = $('#'+id);
         if($ta.length){

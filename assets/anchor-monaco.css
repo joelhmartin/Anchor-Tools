@@ -1,0 +1,18 @@
+.anchor-monaco { margin: 0 0 8px; }
+.anchor-monaco-toolbar {
+	display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 6px;
+	padding: 6px; background: #1e1e1e; border: 1px solid #0e0e0e;
+	border-bottom: 0; border-radius: 6px 6px 0 0;
+}
+.anchor-monaco-tabs { display: flex; gap: 2px; }
+.anchor-monaco-tab {
+	background: #2d2d2d; color: #ccc; border: 0; cursor: pointer;
+	padding: 6px 14px; font-size: 12px; border-radius: 4px 4px 0 0;
+}
+.anchor-monaco-tab.is-active { background: #1e1e1e; color: #fff; box-shadow: inset 0 -2px 0 #2271b1; }
+.anchor-monaco-toolbar .button { display: inline-flex; align-items: center; gap: 4px; }
+.anchor-monaco-host {
+	height: 480px; border: 1px solid #0e0e0e; border-radius: 0 0 6px 6px; overflow: hidden;
+}
+.anchor-monaco-pane { height: 100%; }
+.anchor-monaco-hidden { display: none !important; }

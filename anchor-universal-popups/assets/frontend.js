@@ -499,8 +499,14 @@
     // Fullscreen takeover is its own self-anchoring mode (driven by the inline
     // shortcode card, not the trigger system) — handled entirely separately.
     if(popupStyle === 'fullscreen'){
-      setupFullscreenTakeover(sn, isVideo);
-      return;
+      // Fullscreen takeover relies on the postMessage preload + scroll-driven
+      // play mechanism, which Facebook's embed plugin doesn't support. Fall
+      // back to a normal modal for Facebook so the card still opens on click.
+      if(resolveProvider(sn) !== 'facebook'){
+        setupFullscreenTakeover(sn, isVideo);
+        return;
+      }
+      popupStyle = 'modal';
     }
 
     var modal = buildModalShell(isVideo, popupStyle);

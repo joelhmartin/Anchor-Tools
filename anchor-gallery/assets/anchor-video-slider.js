@@ -26,12 +26,27 @@
     return 'https://player.vimeo.com/video/' + encodeURIComponent(id) + '?' + params.toString();
   }
 
+  function buildFacebookSrc(url, autoplay) {
+    var params = new URLSearchParams({
+      href: url,
+      show_text: 'false',
+      autoplay: autoplay ? 'true' : 'false'
+    });
+    if (autoplay) {
+      params.set('mute', '1');
+    }
+    return 'https://www.facebook.com/plugins/video.php?' + params.toString();
+  }
+
   function getVideoSrc(provider, id, autoplay) {
     if (provider === 'youtube') {
       return buildYouTubeSrc(id, autoplay);
     }
     if (provider === 'vimeo') {
       return buildVimeoSrc(id, autoplay);
+    }
+    if (provider === 'facebook') {
+      return buildFacebookSrc(id, autoplay);
     }
     return '';
   }
@@ -42,6 +57,9 @@
     }
     if (provider === 'vimeo') {
       return 'https://vimeo.com/' + encodeURIComponent(id);
+    }
+    if (provider === 'facebook') {
+      return id;
     }
     return '';
   }
@@ -449,9 +467,10 @@
     var captionAttr = tile.getAttribute('data-caption') || '';
     var showCaption = gallery.getAttribute('data-popup-caption');
     if (showCaption === null) showCaption = '1';
+    var tileAspect = tile.getAttribute('data-aspect') || '';
     var popupOpts = {
       maxWidth: gallery.getAttribute('data-popup-max-width') || '',
-      aspect: gallery.getAttribute('data-popup-aspect') || '',
+      aspect: tileAspect || gallery.getAttribute('data-popup-aspect') || '',
       caption: (showCaption === '1' && captionAttr) ? captionAttr : ''
     };
 
@@ -844,13 +863,16 @@
         // Preconnect to video CDN origins
         ensureLink('preconnect', 'https://www.youtube-nocookie.com');
         ensureLink('preconnect', 'https://player.vimeo.com');
+        ensureLink('preconnect', 'https://www.facebook.com');
         ensureLink('dns-prefetch', 'https://i.ytimg.com');
 
-        // Prefetch each video's embed URL
+        // Prefetch each video's embed URL (YouTube/Vimeo only — Facebook's
+        // embed URL is per-video href, nothing useful to prefetch by id).
         thumbs.forEach(function(thumb) {
           var provider = thumb.getAttribute('data-provider');
           var videoId  = thumb.getAttribute('data-video-id');
           if (!provider || !videoId) return;
+          if (provider !== 'youtube' && provider !== 'vimeo') return;
 
           var embedUrl = provider === 'youtube'
             ? 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(videoId)

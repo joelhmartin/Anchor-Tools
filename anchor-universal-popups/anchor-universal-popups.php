@@ -511,7 +511,7 @@ class Anchor_Universal_Popups_Module {
               }
               ?>
               <input type="url" name="up_video_url" value="<?php echo esc_attr($video_url_display); ?>" placeholder="YouTube, Vimeo, or Facebook video / reel URL" class="widefat"/>
-              <p class="description">Paste the full YouTube or Vimeo URL. The video ID will be extracted automatically.</p>
+              <p class="description">Paste a YouTube, Vimeo, or Facebook video / reel URL.</p>
             </div>
 
             <div class="up-field" data-up-show-when-mode="video">
@@ -1127,8 +1127,9 @@ class Anchor_Universal_Popups_Module {
     public function add_video_preconnect($hints, $relation_type){
         if ($relation_type !== 'preconnect') return $hints;
         $map = [
-            'youtube' => ['https://www.youtube.com', 'https://i.ytimg.com'],
-            'vimeo'   => ['https://player.vimeo.com', 'https://i.vimeocdn.com'],
+            'youtube'  => ['https://www.youtube.com', 'https://i.ytimg.com'],
+            'vimeo'    => ['https://player.vimeo.com', 'https://i.vimeocdn.com'],
+            'facebook' => ['https://www.facebook.com'],
         ];
         foreach (array_keys($this->preconnect_providers) as $provider) {
             if (!empty($map[$provider])) {

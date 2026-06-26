@@ -404,6 +404,10 @@
     if(provider === 'facebook'){
       var fbSrc = getVideoSrc(provider, id, { autoplay: !!autoplay, muted: !!autoplay });
       frameWrap.innerHTML = videoIframe(fbSrc);
+      // Facebook-only: override the default 16/9 CSS aspect-ratio on the frame wrapper
+      // so vertical reels (9:16) aren't letterboxed. YouTube/Vimeo are unaffected.
+      var fbRatioMap = {'16:9':'16 / 9','4:3':'4 / 3','1:1':'1 / 1','9:16':'9 / 16','21:9':'21 / 9'};
+      frameWrap.style.aspectRatio = fbRatioMap[extra && extra.aspect] || '16 / 9';
     } else if(modal._preloaded){
       // Reuse the player that's already warmed up in the background.
       if(autoplay){ playPreloaded(modal, provider, opts.muted); }
@@ -563,7 +567,7 @@
         var userClick = (trig && (trig.type === 'class' || trig.type === 'id'));
         var muteForAutoplay = !!sn.autoplay && !userClick;
         var vidRef = (provider === 'facebook') ? sn.video_url : sn.video_id;
-        openVideo(modal, provider, vidRef, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
+        openVideo(modal, provider, vidRef, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay, aspect: sn.aspect_ratio });
       } else {
         // Use pre-rendered shortcode content if in shortcode mode, otherwise use HTML
         var content = (sn.mode === 'shortcode' && sn.shortcode_content) ? sn.shortcode_content : sn.html;

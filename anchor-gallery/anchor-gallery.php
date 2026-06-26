@@ -2546,6 +2546,7 @@ class Anchor_Gallery_Module {
                  data-provider="<?php echo esc_attr($first['provider']); ?>"
                  data-video-id="<?php echo esc_attr($first['id']); ?>"
                  data-url="<?php echo esc_attr($first['raw_url'] ?? ''); ?>"
+                 <?php if ( ! empty( $first['aspect'] ) ): ?>data-aspect="<?php echo esc_attr($first['aspect']); ?>"<?php endif; ?>
                  <?php else: ?>
                  data-full-url="<?php echo esc_url($first['full_url'] ?? $first['thumb']); ?>"
                  <?php endif; ?>>

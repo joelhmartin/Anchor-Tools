@@ -223,7 +223,7 @@ class Roster {
     private function render_add_form( $event_id ) {
         $event_id = (int) $event_id;
         echo '<h2>' . \esc_html__( 'Add attendee', 'anchor-schema' ) . '</h2>';
-        echo '<p class="description">' . \esc_html__( 'Manually added seats honor capacity (waitlisted if full and the waitlist is enabled, otherwise blocked).', 'anchor-schema' ) . '</p>';
+        echo '<p class="description">' . \esc_html__( 'Manually added seats honor capacity (waitlisted if full and the waitlist is enabled, otherwise blocked). Use “Allow over capacity” to deliberately exceed the event capacity and tier quota (recorded in the seat history).', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:24px;">';
         echo '<input type="hidden" name="action" value="anchor_roster_add" />';
         echo '<input type="hidden" name="event_id" value="' . $event_id . '" />';
@@ -233,6 +233,8 @@ class Roster {
         $this->text_row( 'roster_email', \__( 'Email', 'anchor-schema' ), '', false, 'email' );
         $this->text_row( 'roster_phone', \__( 'Phone', 'anchor-schema' ), '' );
         $this->text_row( 'roster_guests', \__( 'Additional guests', 'anchor-schema' ), '0', false, 'number' );
+        $this->tier_row( $event_id );
+        $this->override_row();
         echo '</tbody></table>';
         \submit_button( \__( 'Add attendee', 'anchor-schema' ) );
         echo '</form>';
@@ -294,6 +296,88 @@ class Roster {
         echo '</td></tr>';
     }
 
+    /**
+     * Ticket-type selector for the manual add form (Phase 7 — spec §10). Options
+     * come from the event's active ticket tiers (value = stable tier id, label +
+     * price). When only the implicit primary tier exists the select still shows
+     * that single option so the chosen tier is always explicit.
+     *
+     * @param int $event_id
+     */
+    private function tier_row( $event_id ) {
+        $tt = isset( $this->module->ticket_types ) ? $this->module->ticket_types : null;
+        if ( ! $tt ) {
+            return;
+        }
+        $tiers  = (array) $tt->get( (int) $event_id );
+        $active = [];
+        foreach ( $tiers as $t ) {
+            if ( ! empty( $t['active'] ) ) {
+                $active[] = $t;
+            }
+        }
+        if ( empty( $active ) ) {
+            // Defensive: keep at least the implicit primary so the field is usable.
+            $active = $tiers;
+        }
+        if ( empty( $active ) ) {
+            return;
+        }
+
+        $primary = (string) $tt->primary_id( (int) $event_id );
+
+        echo '<tr><th scope="row"><label for="roster_ticket_type">' . \esc_html__( 'Ticket type', 'anchor-schema' ) . '</label></th><td>';
+        echo '<select name="roster_ticket_type" id="roster_ticket_type">';
+        foreach ( $active as $t ) {
+            $id    = (string) ( $t['id'] ?? 'primary' );
+            $label = ( isset( $t['label'] ) && $t['label'] !== '' ) ? (string) $t['label'] : \__( 'Registration', 'anchor-schema' );
+            $price = (float) ( $t['price'] ?? 0 );
+            if ( $price > 0 ) {
+                $price_str = \function_exists( 'wc_price' )
+                    ? \wp_strip_all_tags( \wc_price( $price ) )
+                    : \number_format_i18n( $price, 2 );
+                $label    .= ' — ' . $price_str;
+            }
+            echo '<option value="' . \esc_attr( $id ) . '"' . \selected( $primary, $id, false ) . '>' . \esc_html( $label ) . '</option>';
+        }
+        echo '</select>';
+        echo '</td></tr>';
+    }
+
+    /** "Allow over capacity" override checkbox for the manual add form (spec §10). */
+    private function override_row() {
+        echo '<tr><th scope="row">' . \esc_html__( 'Capacity', 'anchor-schema' ) . '</th><td>';
+        echo '<label><input type="checkbox" name="roster_allow_over" value="1" /> '
+            . \esc_html__( 'Allow over capacity (bypass the event capacity and tier quota)', 'anchor-schema' )
+            . '</label>';
+        echo '</td></tr>';
+    }
+
+    /**
+     * Resolve a ticket-type id to its human label for an event. Falls back to the
+     * tier id (or "Primary" for the implicit-primary id) when the tier can't be
+     * resolved — e.g. a legacy seat or a removed tier. Used by the roster list
+     * table column and the CSV export.
+     *
+     * @param int    $event_id
+     * @param string $tier_id
+     * @return string
+     */
+    public function tier_label( $event_id, $tier_id ) {
+        $tier_id = (string) $tier_id;
+        if ( $tier_id === '' ) {
+            $tier_id = 'primary';
+        }
+        $tt = isset( $this->module->ticket_types ) ? $this->module->ticket_types : null;
+        if ( $tt ) {
+            $tier = $tt->find( (int) $event_id, $tier_id );
+            if ( \is_array( $tier ) && isset( $tier['label'] ) && $tier['label'] !== '' ) {
+                return (string) $tier['label'];
+            }
+        }
+        return $tier_id === 'primary' ? \__( 'Primary', 'anchor-schema' ) : $tier_id;
+    }
+
     /* ---------------------------------------------------------------------
      * Manual seat actions (delegate to the data layer)
      * ------------------------------------------------------------------- */
@@ -307,20 +391,46 @@ class Roster {
         $phone  = \sanitize_text_field( \wp_unslash( $_POST['roster_phone'] ?? '' ) );
         $guests = max( 0, (int) \wp_unslash( $_POST['roster_guests'] ?? 0 ) );
 
+        // Ticket tier (Phase 7 — spec §10). Validate the posted id against the
+        // event's tiers; fall back to the primary tier id when missing/invalid.
+        $tt         = isset( $this->module->ticket_types ) ? $this->module->ticket_types : null;
+        $tier_id    = \sanitize_key( (string) \wp_unslash( $_POST['roster_ticket_type'] ?? '' ) );
+        $tier       = null;
+        if ( $tt ) {
+            $primary = (string) $tt->primary_id( $event_id );
+            if ( $tier_id !== '' ) {
+                $tier = $tt->find( $event_id, $tier_id );
+            }
+            if ( ! \is_array( $tier ) ) {
+                $tier_id = $primary;
+                $tier    = $tt->find( $event_id, $tier_id );
+            } else {
+                $tier_id = (string) ( $tier['id'] ?? $tier_id );
+            }
+        }
+        if ( $tier_id === '' ) {
+            $tier_id = 'primary';
+        }
+
+        // Over-capacity override (spec §10). Bypasses both the event capacity and
+        // the per-tier quota in the seat layer; recorded in the seat history note.
+        $allow_over = ! empty( $_POST['roster_allow_over'] );
+
         if ( $name === '' ) {
             $this->redirect( $event_id, 'error', \__( 'A name is required.', 'anchor-schema' ) );
         }
 
         $meta   = $this->module->get_meta( $event_id );
         $result = $this->registrations->claim_seats( $event_id, $meta, 1, [
-            'source' => 'manual',
-            'name'   => $name,
-            'email'  => $email,
-            'phone'  => $phone,
-            'guests' => $guests,
-            'actor'  => 'user:' . \get_current_user_id(),
-            'note'   => 'manual roster add',
-        ] );
+            'source'         => 'manual',
+            'name'           => $name,
+            'email'          => $email,
+            'phone'          => $phone,
+            'guests'         => $guests,
+            'ticket_type_id' => $tier_id,
+            'actor'          => 'user:' . \get_current_user_id(),
+            'note'           => $allow_over ? 'manual add (capacity override)' : 'manual roster add',
+        ], $tier, $allow_over );
 
         // L2: surface an admin-visible signal when a seat was created while the
         // event capacity lock was unavailable (mirrors the paid path), so manual
@@ -457,6 +567,7 @@ class Roster {
             \__( 'Phone', 'anchor-schema' ),
             \__( 'Status', 'anchor-schema' ),
             \__( 'Source', 'anchor-schema' ),
+            \__( 'Ticket Type', 'anchor-schema' ),
             \__( 'Guests', 'anchor-schema' ),
             \__( 'Party Size', 'anchor-schema' ),
             \__( 'Registration Date', 'anchor-schema' ),
@@ -476,9 +587,16 @@ class Roster {
         fputcsv( $out, \array_map( [ $this, 'csv_safe' ], $header ) );
 
         foreach ( $data['rows'] as $row ) {
+            // Tier label: get_export_rows() rows don't carry the tier id, so resolve
+            // it from the seat meta (falls back to Primary for legacy seats).
+            $tier_label = $this->tier_label(
+                $event_id,
+                (string) \get_post_meta( (int) $row['seat_id'], '_anchor_event_ticket_type_id', true )
+            );
+
             $cells = [
                 $row['seat_id'], $row['event'], $row['name'], $row['email'], $row['phone'],
-                $row['status'], $row['source'], $row['guests'], $row['party_size'], $row['reg_date'],
+                $row['status'], $row['source'], $tier_label, $row['guests'], $row['party_size'], $row['reg_date'],
                 $row['order_number'], $row['order_id'], $row['order_status'], $row['order_date'],
                 $row['customer_id'], $row['customer_email'], $row['product'], $row['product_id'],
                 $row['variation_id'], $row['order_item_id'], $row['seat_index'],
@@ -619,6 +737,7 @@ if ( \is_admin() ) {
                     'email'    => \__( 'Email', 'anchor-schema' ),
                     'phone'    => \__( 'Phone', 'anchor-schema' ),
                     'status'   => \__( 'Status', 'anchor-schema' ),
+                    'tier'     => \__( 'Tier', 'anchor-schema' ),
                     'guests'   => \__( 'Guests', 'anchor-schema' ),
                     'source'   => \__( 'Source', 'anchor-schema' ),
                     'order'    => \__( 'Order', 'anchor-schema' ),
@@ -736,6 +855,11 @@ if ( \is_admin() ) {
                         return \esc_html( $item['email'] );
                     case 'phone':
                         return \esc_html( $item['phone'] );
+                    case 'tier':
+                        return \esc_html( $this->roster->tier_label(
+                            $this->event_id,
+                            isset( $item['ticket_type_id'] ) ? (string) $item['ticket_type_id'] : 'primary'
+                        ) );
                     case 'guests':
                         return \esc_html( (string) (int) $item['guests'] );
                     case 'source':

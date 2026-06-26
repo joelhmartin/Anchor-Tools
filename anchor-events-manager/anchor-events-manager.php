@@ -20,8 +20,17 @@ class Module {
     /** @var WooCommerce|null WC integration; null when WooCommerce is inactive. */
     public $woocommerce = null;
 
+    /** @var Product_Sync|null Event→product sync; null when WooCommerce is inactive. */
+    public $product_sync = null;
+
     /** @var Roster|null Roster admin screen + CSV export (always loaded). */
     public $roster = null;
+
+    /** @var Ticket_Types|null Per-event ticket-tier model (always loaded). */
+    public $ticket_types = null;
+
+    /** @var Series|null Event-series taxonomy + archive (always loaded). */
+    public $series = null;
 
     public function __construct() {
         self::$instance = $this;
@@ -31,15 +40,26 @@ class Module {
         require_once $dir . 'class-events-log.php';
         require_once $dir . 'class-registrations.php';
         require_once $dir . 'class-roster.php';
+        require_once $dir . 'class-ticket-types.php';
+        require_once $dir . 'class-series.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
+        // Ticket-tier model (spec §3.2) — free + paid; no WooCommerce dependency.
+        $this->ticket_types = new Ticket_Types( $this );
+        // Series taxonomy + archive (spec §3.3, §6) — free + paid; registers the
+        // `event_series` taxonomy on `init` and renders the series landing page.
+        $this->series = new Series( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
         if ( \class_exists( 'WooCommerce' ) ) {
             require_once $dir . 'class-woocommerce.php';
             $this->woocommerce = new WooCommerce( $this, $this->registrations );
+            // Event→managed-product sync (spec §4–5). Constructed only when WC is
+            // active; depends on the always-loaded Ticket_Types model.
+            require_once $dir . 'class-product-sync.php';
+            $this->product_sync = new Product_Sync( $this, $this->ticket_types );
         }
 
         \add_action( 'init', [ $this, 'register_cpt' ] );
@@ -224,13 +244,60 @@ class Module {
      */
     public function send_html_email( $to, $subject, $html, $headers = [] ) {
         if ( empty( $headers ) ) {
-            $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
+            // Apply the configured event sender identity (From / Reply-To / BCC).
+            $headers = $this->email_headers( [ 'Content-Type: text/html; charset=UTF-8' ] );
         }
         $sent = \wp_mail( $to, $subject, $html, $headers );
         if ( ! $sent ) {
             Events_Log::error( 'email_send_returned_false', [ 'to' => $to, 'subject' => $subject ] );
         }
         return (bool) $sent;
+    }
+
+    /**
+     * Build the per-message header lines that carry the configured event email
+     * sender identity (From / Reply-To / BCC). Each header is emitted only when a
+     * valid address is configured; blank settings fall back to WordPress defaults.
+     * This only sets headers — actual delivery still relies on the site's mail
+     * service (Mailgun, WP Mail SMTP, etc.), which may override the From address.
+     *
+     * @param array $extra Header lines to prepend (e.g. the Content-Type line).
+     * @return array
+     */
+    public function email_headers( array $extra = [] ) {
+        $settings = $this->get_settings();
+        $headers  = $extra;
+
+        $from_email = \sanitize_email( $settings['email_from_address'] ?? '' );
+        if ( $from_email ) {
+            $from_name = \sanitize_text_field( $settings['email_from_name'] ?? '' );
+            $headers[] = $from_name !== ''
+                ? sprintf( 'From: %s <%s>', $this->encode_email_name( $from_name ), $from_email )
+                : 'From: ' . $from_email;
+        }
+
+        $reply_email = \sanitize_email( $settings['email_reply_to_address'] ?? '' );
+        if ( $reply_email ) {
+            $reply_name = \sanitize_text_field( $settings['email_reply_to_name'] ?? '' );
+            $headers[] = $reply_name !== ''
+                ? sprintf( 'Reply-To: %s <%s>', $this->encode_email_name( $reply_name ), $reply_email )
+                : 'Reply-To: ' . $reply_email;
+        }
+
+        $bcc = \sanitize_email( $settings['email_bcc'] ?? '' );
+        if ( $bcc ) {
+            $headers[] = 'Bcc: ' . $bcc;
+        }
+
+        return $headers;
+    }
+
+    /** Quote a display name for an email header if it contains characters that need it. */
+    private function encode_email_name( $name ) {
+        if ( preg_match( '/[",:;<>@()\[\]\\\\]/', $name ) ) {
+            return '"' . str_replace( '"', '', $name ) . '"';
+        }
+        return $name;
     }
 
     /* ---------------------------------------------------------------------
@@ -484,6 +551,15 @@ class Module {
             ], $schema ) );
         }
 
+        // Ticket-tier list (spec §3.2). Structured array; managed by the
+        // Ticket_Types model + the Tickets / Pricing metabox, not REST.
+        \register_post_meta( self::CPT, Ticket_Types::META_KEY, [
+            'type'          => 'array',
+            'single'        => true,
+            'show_in_rest'  => false,
+            'auth_callback' => $event_auth_callback,
+        ] );
+
         $reg_auth_callback = function ( $allowed, $meta_key, $post_id ) {
             return \current_user_can( 'edit_post', $post_id );
         };
@@ -512,10 +588,12 @@ class Module {
             'show_in_rest' => true,
             'auth_callback' => $reg_auth_callback,
         ] );
+        // Internal custom-field values — keep out of REST to avoid the
+        // "array meta without schema items" notice (and it isn't needed there).
         \register_post_meta( self::REG_CPT, '_anchor_event_reg_fields', [
             'type' => 'array',
             'single' => true,
-            'show_in_rest' => true,
+            'show_in_rest' => false,
             'auth_callback' => $reg_auth_callback,
         ] );
         \register_post_meta( self::REG_CPT, '_anchor_event_guests', [
@@ -542,7 +620,7 @@ class Module {
                 'auth_callback' => $reg_auth_callback,
             ] );
         }
-        foreach ( [ '_anchor_event_phone', '_anchor_event_source' ] as $key ) {
+        foreach ( [ '_anchor_event_phone', '_anchor_event_source', '_anchor_event_ticket_type_id' ] as $key ) {
             \register_post_meta( self::REG_CPT, $key, [
                 'type' => 'string',
                 'single' => true,
@@ -666,6 +744,15 @@ class Module {
         );
 
         \add_meta_box(
+            'anchor_event_ticket_types',
+            __( 'Tickets / Pricing', 'anchor-schema' ),
+            [ $this, 'render_ticket_types_metabox' ],
+            self::CPT,
+            'normal',
+            'default'
+        );
+
+        \add_meta_box(
             'anchor_event_registrants',
             __( 'Registrations', 'anchor-schema' ),
             [ $this, 'render_registrants_metabox' ],
@@ -673,6 +760,111 @@ class Module {
             'normal',
             'default'
         );
+    }
+
+    /**
+     * Tickets / Pricing metabox (spec §3.2). A repeatable table of ticket tiers
+     * (label / price / quota / sale window / active). The Ticket_Types model
+     * owns normalization + persistence; this only renders the rows + a hidden
+     * template row consumed by ticket-types-admin.js. Nonce is shared with the
+     * Event Details box (self::NONCE), verified once in save_meta().
+     *
+     * @param \WP_Post $post
+     */
+    public function render_ticket_types_metabox( $post ) {
+        $tiers = $this->ticket_types->get( $post->ID );
+        // The implicit-primary synthesized tier is not persisted; only show
+        // authored rows so a blank event starts with an empty table.
+        $stored = \get_post_meta( $post->ID, Ticket_Types::META_KEY, true );
+        $rows   = ( \is_array( $stored ) && ! empty( $stored ) ) ? $tiers : [];
+        ?>
+        <div class="anchor-event-tickets" id="anchor-event-tickets">
+            <p class="description">
+                <?php echo esc_html__( 'Define one or more ticket tiers for this event. Each tier has its own price and optional per-tier quota and sale window. Leave the table empty to use the single "Price" field above as the default registration tier.', 'anchor-schema' ); ?>
+            </p>
+            <table class="widefat anchor-event-tickets-table">
+                <thead>
+                    <tr>
+                        <th class="anchor-ticket-handle" aria-hidden="true"></th>
+                        <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Price', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Quota', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Sale start', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Sale end', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Active', 'anchor-schema' ); ?></th>
+                        <th aria-hidden="true"></th>
+                    </tr>
+                </thead>
+                <tbody class="anchor-event-tickets-rows">
+                    <?php foreach ( $rows as $i => $tier ) : ?>
+                        <?php echo $this->ticket_type_row_html( (int) $i, $tier ); // already escaped ?>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+            <p>
+                <button type="button" class="button anchor-event-ticket-add"><?php echo esc_html__( 'Add ticket tier', 'anchor-schema' ); ?></button>
+            </p>
+            <script type="text/html" id="anchor-event-ticket-template">
+                <?php echo $this->ticket_type_row_html( 0, null, true ); // already escaped ?>
+            </script>
+        </div>
+        <?php
+    }
+
+    /**
+     * Render a single ticket-tier table row. Field names use the index scheme
+     * anchor_event_tickets[<index>][...]; a blank `id` marks a new row. When
+     * $template is true, the literal token __INDEX__ is used so the JS can
+     * substitute a fresh row index on add.
+     *
+     * @param int        $index
+     * @param array|null $tier
+     * @param bool       $template
+     * @return string Escaped HTML.
+     */
+    private function ticket_type_row_html( $index, $tier = null, $template = false ) {
+        $idx = $template ? '__INDEX__' : (string) $index;
+        $base = 'anchor_event_tickets[' . $idx . ']';
+
+        $id         = $tier['id'] ?? '';
+        $label      = $tier['label'] ?? '';
+        $price      = isset( $tier['price'] ) ? (string) $tier['price'] : '';
+        $quota      = isset( $tier['quota'] ) ? (int) $tier['quota'] : 0;
+        $sale_start = $tier['sale_start'] ?? '';
+        $sale_end   = $tier['sale_end'] ?? '';
+        $active     = $tier ? ! empty( $tier['active'] ) : true;
+
+        \ob_start();
+        ?>
+        <tr class="anchor-event-ticket-row">
+            <td class="anchor-ticket-handle">
+                <span class="dashicons dashicons-move" aria-hidden="true"></span>
+            </td>
+            <td>
+                <input type="hidden" name="<?php echo esc_attr( $base . '[id]' ); ?>" value="<?php echo esc_attr( $id ); ?>" class="anchor-ticket-id" />
+                <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $label ); ?>" class="anchor-ticket-label" placeholder="<?php echo esc_attr__( 'e.g. General, VIP', 'anchor-schema' ); ?>" />
+            </td>
+            <td>
+                <input type="number" step="0.01" min="0" name="<?php echo esc_attr( $base . '[price]' ); ?>" value="<?php echo esc_attr( $price ); ?>" class="anchor-ticket-price" />
+            </td>
+            <td>
+                <input type="number" step="1" min="0" name="<?php echo esc_attr( $base . '[quota]' ); ?>" value="<?php echo esc_attr( $quota ); ?>" class="anchor-ticket-quota" placeholder="0" />
+            </td>
+            <td>
+                <input type="date" name="<?php echo esc_attr( $base . '[sale_start]' ); ?>" value="<?php echo esc_attr( $sale_start ); ?>" class="anchor-ticket-sale-start" />
+            </td>
+            <td>
+                <input type="date" name="<?php echo esc_attr( $base . '[sale_end]' ); ?>" value="<?php echo esc_attr( $sale_end ); ?>" class="anchor-ticket-sale-end" />
+            </td>
+            <td class="anchor-ticket-active-cell">
+                <input type="checkbox" name="<?php echo esc_attr( $base . '[active]' ); ?>" value="1" <?php checked( $active ); ?> class="anchor-ticket-active" />
+            </td>
+            <td>
+                <button type="button" class="button-link-delete anchor-event-ticket-remove" aria-label="<?php echo esc_attr__( 'Remove ticket tier', 'anchor-schema' ); ?>">&times;</button>
+            </td>
+        </tr>
+        <?php
+        return (string) \ob_get_clean();
     }
 
     public function render_meta_box( $post ) {
@@ -1051,6 +1243,15 @@ class Module {
             \update_post_meta( $post_id, $this->meta_key( $key ), $value );
         }
 
+        // Ticket tiers (spec §3.2). The Ticket_Types model sanitizes the rows,
+        // assigns stable ids, drops empty rows, and persists. An empty table
+        // clears the meta so the legacy single `price` field stays the
+        // implicit-primary fallback.
+        $ticket_rows = isset( $_POST['anchor_event_tickets'] ) && is_array( $_POST['anchor_event_tickets'] )
+            ? \wp_unslash( $_POST['anchor_event_tickets'] )
+            : [];
+        $this->ticket_types->save( $post_id, $ticket_rows );
+
         $this->maybe_append_registration_shortcode( $post_id, $input );
 
         $this->clear_caches();
@@ -1112,6 +1313,8 @@ class Module {
         \wp_enqueue_media();
         \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.1' );
         \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.1', true );
+        // Ticket-tier repeatable table (spec §3.2).
+        \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.0', true );
     }
 
     public function frontend_assets() {
@@ -1247,6 +1450,9 @@ class Module {
         }
         if ( \is_post_type_archive( self::CPT ) ) {
             return $this->locate_template( 'archive-event.php' );
+        }
+        if ( \is_tax( Series::TAXONOMY ) ) {
+            return $this->locate_template( 'taxonomy-event_series.php' );
         }
         return $template;
     }
@@ -2462,6 +2668,23 @@ class Module {
         $output .= '<input type="hidden" name="event_id" value="' . esc_attr( $post_id ) . '" />';
         $output .= '<input type="hidden" name="redirect_to" value="' . esc_url( $redirect ) . '" />';
         $output .= \wp_nonce_field( self::REG_NONCE, self::REG_NONCE, true, false );
+
+        // Ticket-tier selector (spec §9). The free form sells FREE tiers only;
+        // paid tiers go through WooCommerce checkout. Render a selector only
+        // when the event has more than one active free tier — a single
+        // (implicit primary) tier needs no choice.
+        $free_tiers = $this->get_active_free_tiers( $post_id );
+        if ( count( $free_tiers ) > 1 ) {
+            $output .= '<div class="anchor-event-field">';
+            $output .= '<label for="anchor_event_ticket_type">' . esc_html__( 'Ticket type', 'anchor-schema' ) . '</label>';
+            $output .= '<select id="anchor_event_ticket_type" name="anchor_event_ticket_type">';
+            foreach ( $free_tiers as $tier ) {
+                $output .= '<option value="' . esc_attr( $tier['id'] ) . '">' . esc_html( $tier['label'] ) . '</option>';
+            }
+            $output .= '</select>';
+            $output .= '</div>';
+        }
+
         $output .= '<div class="anchor-event-field">';
         $output .= '<label for="anchor_event_name">' . esc_html__( 'Name', 'anchor-schema' ) . '</label>';
         $output .= '<input type="text" id="anchor_event_name" name="anchor_event_name" required />';
@@ -2554,25 +2777,50 @@ class Module {
         $guests = max( 0, min( $max_guests, $guests ) );
         $party_size = 1 + $guests;
 
-        // Pre-check for user-facing messaging (closed window / full + no waitlist).
-        $decision = $this->get_registration_status( $event_id, $meta, $party_size );
+        // Resolve + validate the chosen ticket tier (spec §9). The free form may
+        // only sell active FREE tiers; anything else (missing/unknown/paid)
+        // falls back to the event's primary tier.
+        $posted_tier = isset( $_POST['anchor_event_ticket_type'] )
+            ? sanitize_key( wp_unslash( $_POST['anchor_event_ticket_type'] ) )
+            : '';
+        // Default to the (single) active FREE tier, NOT primary_id() — primary may be
+        // a paid tier ordered first, which would misfile a free signup + skew that
+        // paid tier's quota/roster (PR review). Fall back to primary only if there
+        // are no free tiers at all.
+        $free_tiers = $this->get_active_free_tiers( $event_id );
+        $tier_id    = ! empty( $free_tiers ) ? $free_tiers[0]['id'] : $this->ticket_types->primary_id( $event_id );
+        if ( $posted_tier !== '' ) {
+            $tier = $this->ticket_types->find( $event_id, $posted_tier );
+            if ( $tier && ! empty( $tier['active'] ) && (float) ( $tier['price'] ?? 0 ) <= 0 ) {
+                $tier_id = $tier['id'];
+            }
+        }
+        // The resolved tier drives per-tier quota enforcement in both the pre-check
+        // and the locked claim below.
+        $tier = $this->ticket_types->find( $event_id, $tier_id );
+
+        // Pre-check for user-facing messaging (closed window / full + no waitlist),
+        // honoring the tier's own quota.
+        $decision = $this->get_registration_status( $event_id, $meta, $party_size, $tier );
         if ( $decision === 'closed' || $decision === 'full' ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
             exit;
         }
 
         // Race-safe creation under the per-event lock (bug #3). claim_seats recounts
-        // capacity inside the lock, so concurrent submits can never oversell.
+        // capacity inside the lock, so concurrent submits can never oversell; the
+        // tier arg enforces the free tier's per-tier quota too.
         $result = $this->registrations->claim_seats( $event_id, $meta, 1, [
-            'source'     => 'internal',
-            'name'       => $name,
-            'email'      => $email,
-            'phone'      => $phone,
-            'guests'     => $guests,
-            'reg_fields' => $extra_fields,
-            'note'       => 'internal registration',
-            'actor'      => 'internal',
-        ] );
+            'source'         => 'internal',
+            'name'           => $name,
+            'email'          => $email,
+            'phone'          => $phone,
+            'guests'         => $guests,
+            'reg_fields'     => $extra_fields,
+            'ticket_type_id' => $tier_id,
+            'note'           => 'internal registration',
+            'actor'          => 'internal',
+        ], $tier );
 
         $created    = ! empty( $result['created'] );
         $waitlisted = ! empty( $result['waitlisted'] );
@@ -2658,6 +2906,38 @@ class Module {
             </select>
             <?php
         }, 'anchor_events_settings', 'anchor_events_main' );
+
+        \add_settings_section( 'anchor_events_email_sender', __( 'Email Sender', 'anchor-schema' ), function() {
+            echo '<p>' . esc_html__( 'From / Reply-To / BCC identity applied to all event emails. Leave blank to use WordPress defaults.', 'anchor-schema' ) . '</p>';
+            echo '<p class="description">' . esc_html__( 'This only sets the email headers — actual delivery still relies on your site\'s mail service (e.g. Mailgun, WP Mail SMTP). The From address should be on a domain that service is authorized to send for (SPF/DKIM), or mail may be marked as spam. Some SMTP/Mailgun plugins force their own From address and will override this; Reply-To is usually respected.', 'anchor-schema' ) . '</p>';
+        }, 'anchor_events_settings' );
+
+        $email_text_field = function( $key, $type, $placeholder ) {
+            $opts = $this->get_settings();
+            printf(
+                '<input type="%1$s" name="%2$s[%3$s]" value="%4$s" class="regular-text" placeholder="%5$s" />',
+                esc_attr( $type ),
+                esc_attr( self::OPTION_KEY ),
+                esc_attr( $key ),
+                esc_attr( $opts[ $key ] ?? '' ),
+                esc_attr( $placeholder )
+            );
+        };
+        \add_settings_field( 'email_from_name', __( 'From name', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_from_name', 'text', __( 'e.g. Acme Events', 'anchor-schema' ) );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+        \add_settings_field( 'email_from_address', __( 'From email', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_from_address', 'email', 'events@yoursite.com' );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+        \add_settings_field( 'email_reply_to_name', __( 'Reply-To name', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_reply_to_name', 'text', '' );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+        \add_settings_field( 'email_reply_to_address', __( 'Reply-To email', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_reply_to_address', 'email', '' );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
+        \add_settings_field( 'email_bcc', __( 'BCC email (optional)', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_bcc', 'email', '' );
+        }, 'anchor_events_settings', 'anchor_events_email_sender' );
 
         \add_settings_section( 'anchor_events_registration', __( 'Registration Settings', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Control internal registration and email notifications.', 'anchor-schema' ) . '</p>';
@@ -2841,6 +3121,13 @@ class Module {
             $output['wc_organizer_subject'] = $defaults['wc_organizer_subject'];
             $output['organizer_email']      = $defaults['organizer_email'];
         }
+        // Email sender identity (applied as per-message headers on event emails).
+        $output['email_from_name']        = sanitize_text_field( $input['email_from_name'] ?? '' );
+        $output['email_from_address']     = sanitize_email( $input['email_from_address'] ?? '' );
+        $output['email_reply_to_name']    = sanitize_text_field( $input['email_reply_to_name'] ?? '' );
+        $output['email_reply_to_address'] = sanitize_email( $input['email_reply_to_address'] ?? '' );
+        $output['email_bcc']              = sanitize_email( $input['email_bcc'] ?? '' );
+
         // Reserved/unused — preserve stored value (no UI field).
         $output['notify_attendee'] = $defaults['notify_attendee'];
 
@@ -3054,6 +3341,27 @@ class Module {
 
     public function meta_key( $key ) {
         return '_anchor_event_' . $key;
+    }
+
+    /**
+     * Active FREE tiers (price == 0) for an event, in order. Used by the inline
+     * registration form (paid tiers are sold through WooCommerce, not here).
+     *
+     * @param int $event_id
+     * @return array<int,array>
+     */
+    public function get_active_free_tiers( $event_id ) {
+        $tiers = [];
+        foreach ( $this->ticket_types->get( $event_id ) as $tier ) {
+            if ( empty( $tier['active'] ) ) {
+                continue;
+            }
+            if ( (float) ( $tier['price'] ?? 0 ) > 0 ) {
+                continue;
+            }
+            $tiers[] = $tier;
+        }
+        return $tiers;
     }
 
     private function sanitize_date( $value ) {
@@ -3322,9 +3630,10 @@ class Module {
         ];
     }
 
-    public function get_registration_status( $event_id, $meta, $party_size = 1 ) {
-        // Single capacity authority lives in the data layer (spec §9.1).
-        return $this->registrations->capacity_decision( $event_id, $meta, $party_size );
+    public function get_registration_status( $event_id, $meta, $party_size = 1, $tier = null ) {
+        // Single capacity authority lives in the data layer (spec §9.1). Passing the
+        // tier enforces its per-tier quota alongside the event total.
+        return $this->registrations->capacity_decision( $event_id, $meta, $party_size, $tier );
     }
 
     private function get_registration_fields() {
@@ -3373,7 +3682,8 @@ class Module {
                 1 + $guests,
                 $event_link
             );
-            $sent = \wp_mail( $admin_email, $subject, $message );
+            // Plain-text email, but still carry the configured sender identity.
+            $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
             if ( ! $sent ) {
                 Events_Log::error( 'email_send_returned_false', [ 'to' => $admin_email, 'subject' => $subject ] );
             }
@@ -3631,6 +3941,12 @@ class Module {
             'organizer_email'      => '',
             // Reserved/unused in MVP (per-attendee emails are deferred).
             'notify_attendee'      => false,
+            // Email sender identity (applied as per-message headers on event emails).
+            'email_from_name'        => '',
+            'email_from_address'     => '',
+            'email_reply_to_name'    => '',
+            'email_reply_to_address' => '',
+            'email_bcc'              => '',
         ];
         $settings = \get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $settings ) ) {

@@ -155,6 +155,14 @@ class WooCommerce {
         \add_action( 'admin_post_anchor_event_resync_order', [ $this, 'handle_resync_order' ] );
         \add_action( 'add_meta_boxes', [ $this, 'register_order_metabox' ], 30, 2 );
 
+        // Event-page storefront — inline add-to-cart. Registered on BOTH WooCommerce's
+        // wc-ajax endpoint (frontend context — best for guest cart session handling)
+        // AND admin-ajax (broad compatibility). The localized endpoint prefers
+        // wc-ajax; one nonce-verified handler serves logged-in + guest requests.
+        \add_action( 'wp_ajax_anchor_events_add_to_cart', [ $this, 'ajax_add_to_cart' ] );
+        \add_action( 'wp_ajax_nopriv_anchor_events_add_to_cart', [ $this, 'ajax_add_to_cart' ] );
+        \add_action( 'wc_ajax_anchor_events_add_to_cart', [ $this, 'ajax_add_to_cart' ] );
+
         /* -----------------------------------------------------------------
          * Phase 6 — emails, needs-review notices, manual order actions
          * --------------------------------------------------------------- */
@@ -325,7 +333,7 @@ class WooCommerce {
 
     public function add_product_data_tab( $tabs ) {
         $tabs['anchor_event'] = [
-            'label'    => \__( 'Event Registration', 'anchor-schema' ),
+            'label'    => \__( 'Event Registration (advanced link)', 'anchor-schema' ),
             'target'   => 'anchor_evt_link_data',
             'class'    => [ 'show_if_simple', 'show_if_variable' ],
             'priority' => 65,
@@ -336,11 +344,36 @@ class WooCommerce {
     public function render_product_data_panel() {
         global $post;
         $product_id = $post ? (int) $post->ID : 0;
-        $enabled    = $product_id ? (bool) \get_post_meta( $product_id, self::META_ENABLED, true ) : false;
-        $selected   = $product_id ? (int) \get_post_meta( $product_id, self::META_EVENT_ID, true ) : 0;
 
         echo '<div id="anchor_evt_link_data" class="panel woocommerce_options_panel">';
+
+        // Auto-managed products are already linked to (and owned by) their event via
+        // Product_Sync. Never offer the manual link UI for them — it would allow an
+        // admin to double-link a managed product. Show a read-only note instead.
+        $managed_event = $product_id ? (int) \get_post_meta( $product_id, '_anchor_evt_managed_event', true ) : 0;
+        if ( $managed_event > 0 ) {
+            echo '<p class="form-field"><strong>'
+                . \esc_html__( 'This product is managed by its event — edit tickets on the event.', 'anchor-schema' )
+                . '</strong></p>';
+            $edit = (string) \get_edit_post_link( $managed_event );
+            if ( $edit !== '' ) {
+                echo '<p class="form-field"><a href="' . \esc_url( $edit ) . '">'
+                    . \esc_html__( 'Edit the event', 'anchor-schema' ) . '</a></p>';
+            }
+            echo '</div>';
+            return;
+        }
+
+        $enabled  = $product_id ? (bool) \get_post_meta( $product_id, self::META_ENABLED, true ) : false;
+        $selected = $product_id ? (int) \get_post_meta( $product_id, self::META_EVENT_ID, true ) : 0;
+
         \wp_nonce_field( 'anchor_evt_link_save', 'anchor_evt_link_nonce' );
+
+        // Demoted to an advanced escape hatch (spec §5): the normal path is the
+        // event editor's auto-managed product. Keep this for self-managed products.
+        echo '<p class="form-field"><span class="description">'
+            . \esc_html__( 'Most events auto-create their product from the event editor. Use this only to link an existing, self-managed product to an event.', 'anchor-schema' )
+            . '</span></p>';
 
         \woocommerce_wp_checkbox( [
             'id'          => self::META_ENABLED,
@@ -609,18 +642,28 @@ class WooCommerce {
     }
 
     /* ---------------------------------------------------------------------
-     * Registration-form swap (Phase 2 — now hooked)
+     * Registration-form swap → event-page ticket storefront (Phase 3)
      * ------------------------------------------------------------------- */
 
+    /** Per-PHP-process guard so the free-tier render seam can't re-enter. */
+    private static $rendering_free = [];
+
+    /** Sane upper bound for a single tier's quantity selector (unlimited cap). */
+    const QTY_CAP = 20;
+
     /**
-     * Swap the free `[event_registration]` form for a WooCommerce "Register"
-     * button on linked events. Returns '' for unlinked events so the free form
-     * renders unchanged (spec §3 render seam / finding #12).
+     * Swap the free `[event_registration]` form for the inline WooCommerce ticket
+     * storefront (spec §6). For an event with ≥1 ACTIVE PAID tier this returns a
+     * multi-tier ticket block with per-tier availability states + an AJAX
+     * add-to-cart button. Events with no managed paid tier return `$html`
+     * unchanged so the free inline form (or the legacy escape-hatch product link)
+     * renders instead (spec §3 render seam / finding #12).
      *
-     * Button states (class `.anchor-event-register`):
-     *  - "Register — $price"        when seats remain (links to the product page),
-     *  - "Sold out"                 disabled, when sold out + waitlist off,
-     *  - "Join waitlist — $price"   when over capacity + waitlist on.
+     * Per-tier states (spec §6/§7):
+     *  - outside the sale window → "Sales open <date>" (no qty),
+     *  - tier/event sold out + waitlist off → disabled "Sold out" (no qty),
+     *  - event full + waitlist on → "Join waitlist" note + qty input,
+     *  - otherwise → a quantity input bounded by the remaining seats.
      *
      * @param string $html    Current form HTML ('' = render the free form).
      * @param int    $post_id Event post id.
@@ -629,16 +672,149 @@ class WooCommerce {
      */
     public function filter_registration_form( $html, $post_id, $meta ) {
         $event_id = (int) $post_id;
-        $links    = $this->products_for_event( $event_id );
-        if ( empty( $links ) ) {
-            return $html; // Not linked → let the free form render.
-        }
 
-        if ( ! \function_exists( 'wc_get_product' ) ) {
+        // Re-entry from our own free-tier render seam → let the native free form
+        // build (this filter returns '' so render_registration_form continues).
+        if ( ! empty( self::$rendering_free[ $event_id ] ) ) {
             return $html;
         }
 
-        // Use the first linked product/variation as the registration target.
+        if ( ! $this->module->ticket_types ) {
+            return $html;
+        }
+
+        $tiers           = $this->module->ticket_types->get( $event_id );
+        $paid_active     = [];
+        $has_free_active = false;
+        foreach ( $tiers as $tier ) {
+            if ( empty( $tier['active'] ) ) {
+                continue;
+            }
+            if ( (float) $tier['price'] > 0 ) {
+                $paid_active[] = $tier;
+            } else {
+                $has_free_active = true;
+            }
+        }
+
+        // No managed paid tiers → fall back to the legacy escape-hatch product
+        // link (if any) or let the free inline form render.
+        if ( empty( $paid_active ) ) {
+            return $this->legacy_product_link_form( $html, $event_id, $meta );
+        }
+
+        // Paid tiers require WooCommerce; degrade to the free form when absent.
+        if ( ! \function_exists( 'wc_get_product' ) || ! $this->module->product_sync ) {
+            return $html;
+        }
+
+        $waitlist = ! empty( $meta['waitlist'] );
+
+        $rows = '';
+        foreach ( $paid_active as $tier ) {
+            $rows .= $this->render_ticket_row( $event_id, $tier, $waitlist );
+        }
+
+        $out  = '<div class="anchor-event-registration anchor-event-tickets" data-event="' . \esc_attr( $event_id ) . '">';
+        $out .= '<div class="anchor-event-ticket-rows">' . $rows . '</div>';
+        $out .= '<div class="anchor-event-tickets-actions">';
+        $out .= '<button type="button" class="anchor-event-button anchor-event-register" data-add-to-cart>'
+            . \esc_html__( 'Register / Add to cart', 'anchor-schema' ) . '</button>';
+        $out .= '</div>';
+        $out .= '<div class="anchor-event-cart-msg" aria-live="polite"></div>';
+
+        // Mixed free + paid event → also render the lightweight inline free form.
+        if ( $has_free_active ) {
+            self::$rendering_free[ $event_id ] = true;
+            $free = (string) $this->module->render_registration_form( $event_id );
+            unset( self::$rendering_free[ $event_id ] );
+            if ( $free !== '' ) {
+                $out .= '<div class="anchor-event-free-registration">' . $free . '</div>';
+            }
+        }
+
+        $out .= '</div>';
+
+        $this->enqueue_storefront_assets();
+
+        return $out;
+    }
+
+    /**
+     * Render one ticket-tier row: label, price, and availability (state-dependent
+     * qty input). All dynamic output is escaped; wc_price() returns safe markup.
+     *
+     * @param int   $event_id
+     * @param array $tier     Normalized tier array.
+     * @param bool  $waitlist Event-level waitlist toggle.
+     * @return string
+     */
+    private function render_ticket_row( $event_id, array $tier, $waitlist ) {
+        $tier_id = (string) $tier['id'];
+        $label   = ( $tier['label'] !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
+        $price   = (float) $tier['price'];
+
+        $price_html = \function_exists( 'wc_price' )
+            ? \wc_price( $price )
+            : \esc_html( \number_format_i18n( $price, 2 ) );
+
+        $row  = '<div class="anchor-event-ticket-row" data-tier="' . \esc_attr( $tier_id ) . '">';
+        $row .= '<span class="anchor-event-ticket-label">' . \esc_html( $label ) . '</span>';
+        $row .= '<span class="anchor-event-ticket-price">' . $price_html . '</span>';
+
+        // Outside the sale window → message only, no quantity input.
+        if ( ! $this->module->ticket_types->is_on_sale( $tier ) ) {
+            $start = (string) ( $tier['sale_start'] ?? '' );
+            $msg   = ( $start !== '' )
+                ? \sprintf( /* translators: %s: sale-start date. */ \__( 'Sales open %s', 'anchor-schema' ), $start )
+                : \__( 'Not on sale', 'anchor-schema' );
+            $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-upcoming">' . \esc_html( $msg ) . '</span>';
+            $row .= '</div>';
+            return $row;
+        }
+
+        $remaining = (int) $this->registrations->tier_remaining( $event_id, $tier );
+
+        // Sold out (tier quota or event total exhausted) + waitlist off.
+        if ( $remaining <= 0 && ! $waitlist ) {
+            $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-soldout" aria-disabled="true">'
+                . \esc_html__( 'Sold out', 'anchor-schema' ) . '</span>';
+            $row .= '</div>';
+            return $row;
+        }
+
+        if ( $remaining <= 0 && $waitlist ) {
+            // Event full but waitlist on → allow a request beyond capacity.
+            $max  = self::QTY_CAP;
+            $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-waitlist">'
+                . \esc_html__( 'Join waitlist', 'anchor-schema' ) . '</span>';
+        } else {
+            $max = \max( 1, \min( $remaining, self::QTY_CAP ) );
+        }
+
+        $row .= '<input type="number" class="anchor-event-ticket-qty" min="0" max="' . \esc_attr( $max ) . '"'
+            . ' step="1" value="0" data-tier="' . \esc_attr( $tier_id ) . '"'
+            . ' aria-label="' . \esc_attr( \sprintf( /* translators: %s: ticket tier label. */ \__( 'Quantity for %s', 'anchor-schema' ), $label ) ) . '" />';
+        $row .= '</div>';
+        return $row;
+    }
+
+    /**
+     * Legacy escape-hatch: an event with a manually-linked product but no managed
+     * paid tiers keeps the original "Register — $price" link to the product page.
+     * Returns `$html` unchanged when the event has no linked product (free form).
+     *
+     * @param string $html
+     * @param int    $event_id
+     * @param array  $meta
+     * @return string
+     */
+    private function legacy_product_link_form( $html, $event_id, $meta ) {
+        $links = $this->products_for_event( $event_id );
+        if ( empty( $links ) || ! \function_exists( 'wc_get_product' ) ) {
+            return $html; // Not linked → let the free form render.
+        }
+
         $link         = $links[0];
         $product_id   = (int) $link['product_id'];
         $variation_id = (int) $link['variation_id'];
@@ -656,9 +832,7 @@ class WooCommerce {
         $sold_out  = ( ! $unlimited && $remaining <= 0 );
 
         $price_html = $product->get_price_html();
-        // Link to the parent product page so variable products let the buyer pick
-        // the session/variation; simple products land on their own page.
-        $url = \get_permalink( $product_id );
+        $url        = \get_permalink( $product_id );
 
         $out = '<div class="anchor-event-registration anchor-event-registration-woocommerce">';
 
@@ -678,6 +852,169 @@ class WooCommerce {
 
         $out .= '</div>';
         return $out;
+    }
+
+    /** Enqueue + localize the storefront JS once per request (footer script). */
+    private function enqueue_storefront_assets() {
+        static $done = false;
+        if ( $done || ! \function_exists( 'wp_enqueue_script' ) ) {
+            return;
+        }
+        $done = true;
+
+        \wp_enqueue_script(
+            'anchor-event-storefront',
+            \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/event-storefront.js' ),
+            [ 'jquery' ],
+            '1.0.0',
+            true
+        );
+        // Prefer WooCommerce's wc-ajax endpoint (frontend context → reliable guest
+        // cart session/cookies); the action is encoded in the URL. Fall back to
+        // admin-ajax only if WC_AJAX is unavailable.
+        $ajax_url = \class_exists( '\\WC_AJAX' )
+            ? \WC_AJAX::get_endpoint( 'anchor_events_add_to_cart' )
+            : \admin_url( 'admin-ajax.php' );
+        \wp_localize_script( 'anchor-event-storefront', 'AnchorEventsStore', [
+            'ajaxUrl'   => $ajax_url,
+            'nonce'     => \wp_create_nonce( 'anchor_events_add_to_cart' ),
+            'addAction' => 'anchor_events_add_to_cart',
+            'i18n'      => [
+                'selectQty' => \__( 'Please choose at least one ticket.', 'anchor-schema' ),
+                'error'     => \__( 'Sorry, something went wrong. Please try again.', 'anchor-schema' ),
+                'viewCart'  => \__( 'View cart', 'anchor-schema' ),
+                'checkout'  => \__( 'Checkout', 'anchor-schema' ),
+            ],
+        ] );
+    }
+
+    /* ---------------------------------------------------------------------
+     * Add-to-cart AJAX endpoint (Task 3.2)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Map the posted {tier_id => qty} selection to the event's managed product
+     * variations and add them to the cart. Validates each tier server-side
+     * (active + on sale + capacity) under the same authority as the back-stop
+     * gates (which remain in place). Guards all WooCommerce (wc_* / WC()) access.
+     */
+    public function ajax_add_to_cart() {
+        \check_ajax_referer( 'anchor_events_add_to_cart', 'nonce' );
+
+        if (
+            ! \function_exists( 'WC' ) || ! WC() || ! WC()->cart
+            || ! \function_exists( 'wc_get_cart_url' )
+        ) {
+            \wp_send_json_error( [ 'messages' => [ \__( 'The cart is currently unavailable.', 'anchor-schema' ) ] ] );
+        }
+
+        $event_id = isset( $_POST['event_id'] ) ? (int) $_POST['event_id'] : 0;
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== Module::CPT ) {
+            \wp_send_json_error( [ 'messages' => [ \__( 'Invalid event.', 'anchor-schema' ) ] ] );
+        }
+        if ( ! $this->module->ticket_types || ! $this->module->product_sync ) {
+            \wp_send_json_error( [ 'messages' => [ \__( 'Registration is not available for this event.', 'anchor-schema' ) ] ] );
+        }
+
+        // Normalize the posted tier map to sanitized tier_id => positive int qty.
+        $raw       = ( isset( $_POST['tiers'] ) && \is_array( $_POST['tiers'] ) ) ? \wp_unslash( $_POST['tiers'] ) : [];
+        $requested = [];
+        foreach ( $raw as $tid => $qty ) {
+            $tid = \sanitize_key( (string) $tid );
+            $qty = \max( 0, (int) $qty );
+            if ( $tid !== '' && $qty > 0 ) {
+                $requested[ $tid ] = ( $requested[ $tid ] ?? 0 ) + $qty;
+            }
+        }
+        if ( empty( $requested ) ) {
+            \wp_send_json_error( [ 'messages' => [ \__( 'Please choose at least one ticket.', 'anchor-schema' ) ] ] );
+        }
+
+        $meta              = $this->module->get_meta( $event_id );
+        $parent_product_id = (int) $this->module->product_sync->managed_product_id( $event_id );
+        if ( $parent_product_id <= 0 ) {
+            \wp_send_json_error( [ 'messages' => [ \__( 'Registration is not available for this event.', 'anchor-schema' ) ] ] );
+        }
+
+        $added    = 0;
+        $messages = [];
+
+        foreach ( $requested as $tier_id => $qty ) {
+            $tier  = $this->module->ticket_types->find( $event_id, $tier_id );
+            $label = ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
+
+            if ( ! $tier || empty( $tier['active'] ) || (float) $tier['price'] <= 0 ) {
+                /* translators: %s: ticket tier label. */
+                $messages[] = \sprintf( \__( '%s is not available.', 'anchor-schema' ), $label );
+                continue;
+            }
+            if ( ! $this->module->ticket_types->is_on_sale( $tier ) ) {
+                /* translators: %s: ticket tier label. */
+                $messages[] = \sprintf( \__( 'Sales for %s are not open.', 'anchor-schema' ), $label );
+                continue;
+            }
+
+            $variation_id = (int) $this->module->product_sync->variation_for_tier( $event_id, $tier_id );
+            if ( $variation_id <= 0 ) {
+                /* translators: %s: ticket tier label. */
+                $messages[] = \sprintf( \__( '%s is not available.', 'anchor-schema' ), $label );
+                continue;
+            }
+
+            // Server-side capacity validation (single authority, spec §7).
+            $decision = $this->registrations->capacity_decision( $event_id, $meta, $qty, $tier );
+            if ( 'closed' === $decision ) {
+                /* translators: %s: ticket tier label. */
+                $messages[] = \sprintf( \__( 'Registration for %s is closed.', 'anchor-schema' ), $label );
+                continue;
+            }
+            if ( 'full' === $decision ) {
+                /* translators: %s: ticket tier label. */
+                $messages[] = \sprintf( \__( '%s is sold out.', 'anchor-schema' ), $label );
+                continue;
+            }
+
+            // 'open' or 'waitlist' → add (waitlist seats are resolved at creation).
+            $key = WC()->cart->add_to_cart( $parent_product_id, $qty, $variation_id, [], [] );
+            if ( $key ) {
+                $added += $qty;
+                if ( Registrations::STATUS_WAITLIST === $decision ) {
+                    /* translators: 1: quantity, 2: ticket tier label. */
+                    $messages[] = \sprintf( \__( 'Added %1$d × %2$s to the waitlist.', 'anchor-schema' ), $qty, $label );
+                } else {
+                    /* translators: 1: quantity, 2: ticket tier label. */
+                    $messages[] = \sprintf( \__( 'Added %1$d × %2$s.', 'anchor-schema' ), $qty, $label );
+                }
+            } else {
+                /* translators: %s: ticket tier label. */
+                $messages[] = \sprintf( \__( 'Could not add %s to the cart.', 'anchor-schema' ), $label );
+            }
+        }
+
+        if ( $added <= 0 ) {
+            if ( empty( $messages ) ) {
+                $messages[] = \__( 'Nothing could be added to the cart.', 'anchor-schema' );
+            }
+            \wp_send_json_error( [ 'messages' => $messages ] );
+        }
+
+        // Force the WooCommerce customer session cookie to be set on this
+        // (admin-ajax) response so a GUEST's cart persists to the cart/checkout
+        // page load — admin-ajax doesn't reliably set it otherwise, which would
+        // leave the buyer with an empty cart at checkout.
+        if ( WC()->session && \method_exists( WC()->session, 'set_customer_session_cookie' ) ) {
+            WC()->session->set_customer_session_cookie( true );
+        }
+        if ( \method_exists( WC()->cart, 'maybe_set_cart_cookies' ) ) {
+            WC()->cart->maybe_set_cart_cookies();
+        }
+
+        \wp_send_json_success( [
+            'added'        => $added,
+            'cart_url'     => \wc_get_cart_url(),
+            'checkout_url' => \function_exists( 'wc_get_checkout_url' ) ? \wc_get_checkout_url() : '',
+            'messages'     => $messages,
+        ] );
     }
 
     /* ---------------------------------------------------------------------
@@ -851,8 +1188,29 @@ class WooCommerce {
         echo '<h3>' . \esc_html__( 'Attendee details', 'anchor-schema' ) . '</h3>';
 
         foreach ( $lines as $cart_item_key => $line ) {
+            // P4 — tier-label the block heading (presentational). Resolve the tier
+            // from the line's managed variation; fall back to the event title.
+            $heading   = (string) $line['event_title'];
+            $tier_label = '';
+            if ( $this->module->product_sync && (int) $line['variation_id'] > 0 && $this->module->ticket_types ) {
+                $resolved = $this->module->product_sync->tier_for_variation( (int) $line['variation_id'] );
+                if ( ! empty( $resolved['tier_id'] ) ) {
+                    $tier = $this->module->ticket_types->find( (int) $line['event_id'], (string) $resolved['tier_id'] );
+                    if ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) {
+                        $tier_label = (string) $tier['label'];
+                    }
+                }
+            }
+            if ( $tier_label !== '' ) {
+                $heading = \sprintf(
+                    /* translators: 1: event title, 2: ticket tier label. */
+                    \__( '%1$s — %2$s', 'anchor-schema' ),
+                    $line['event_title'],
+                    $tier_label
+                );
+            }
             echo '<fieldset class="anchor-event-attendee-line" data-cart-item="' . \esc_attr( $cart_item_key ) . '">';
-            echo '<legend>' . \esc_html( $line['event_title'] ) . '</legend>';
+            echo '<legend>' . \esc_html( $heading ) . '</legend>';
 
             for ( $i = 1; $i <= $line['qty']; $i++ ) {
                 $name  = isset( $posted[ $cart_item_key ][ $i ]['name'] ) ? \sanitize_text_field( $posted[ $cart_item_key ][ $i ]['name'] ) : '';
@@ -1531,9 +1889,34 @@ class WooCommerce {
             'customer_id'   => (int) $billing['customer_id'],
         ];
 
+        // P4 — resolve the ticket tier for this line once. Prefer the managed
+        // variation's tier id; fall back to the event's primary tier id (covers a
+        // null product_sync / unlinked-or-non-variation line / legacy data).
+        $variation_id = (int) $item->get_variation_id();
+        $tier_id      = '';
+        if ( $this->module->product_sync && $variation_id > 0 ) {
+            $resolved = $this->module->product_sync->tier_for_variation( $variation_id );
+            if ( ! empty( $resolved['tier_id'] ) ) {
+                $tier_id = (string) $resolved['tier_id'];
+            }
+        }
+        if ( $tier_id === '' && $this->module->ticket_types ) {
+            $tier_id = (string) $this->module->ticket_types->primary_id( $event_id );
+        }
+        if ( $tier_id === '' ) {
+            $tier_id = 'primary';
+        }
+
+        // Per-tier quota (0/empty = bounded only by the event total). find() reads
+        // event meta only; the authoritative reserved-for-tier count is taken FRESH
+        // under the lock below.
+        $tier        = ( $this->module->ticket_types ) ? $this->module->ticket_types->find( $event_id, $tier_id ) : null;
+        $tier_quota  = $tier ? (int) ( $tier['quota'] ?? 0 ) : 0;
+
         $result = $this->registrations->with_event_lock( $event_id, function ( $locked ) use (
             $event_id, $item_id, $expected, $active_target, $removal_status, $capacity, $unlimited,
-            $waitlist_enabled, $terminal_set, $attendees, $can_create, $billing, $payload_base, $order_id
+            $waitlist_enabled, $terminal_set, $attendees, $can_create, $billing, $payload_base, $order_id,
+            $tier_id, $tier_quota
         ) {
             $created   = [];
             $revived   = [];
@@ -1626,6 +2009,14 @@ class WooCommerce {
                 $reserved  = $this->registrations->count_reserved_seats( $event_id, true );
                 $remaining = $unlimited ? PHP_INT_MAX : max( 0, $capacity - $reserved );
 
+                // P4 — per-tier remaining quota, recounted FRESH under the same lock
+                // (folds in the old claim_woo_seats tier logic). quota<=0 ⇒ the tier
+                // is bounded only by the event total.
+                $tier_unlimited = ( $tier_quota <= 0 );
+                $tier_left      = $tier_unlimited
+                    ? PHP_INT_MAX
+                    : max( 0, $tier_quota - $this->registrations->count_reserved_for_tier( $event_id, $tier_id, true ) );
+
                 // DEFICIT: produce ($expected - active) more active seats by first
                 // REVIVING cancelled/failed matching seats (finding #7), then
                 // CREATING new ones at max+1. refunded seats are terminal and never
@@ -1654,20 +2045,40 @@ class WooCommerce {
                                 $revived[] = $seat['id'];
                                 if ( $has_room ) {
                                     $remaining--;
+                                    // A revived seat re-consumes its tier's quota
+                                    // (it already carries its tier from creation —
+                                    // leave the tag as-is); keep the running tier
+                                    // tally accurate for any new creates this pass.
+                                    if ( ! $tier_unlimited && $tier_left > 0 ) {
+                                        $tier_left--;
+                                    }
                                 } else {
                                     $overfill = true;
                                 }
                             }
                         } else {
                             // CREATE a new seat at the next free index (max+1).
-                            if ( $has_room ) {
+                            // P4 — decide against BOTH the event total and the tier
+                            // quota (single authority, both recounted fresh above).
+                            $event_has_room = ( $unlimited || $remaining >= 1 );
+                            $tier_has_room  = ( $tier_unlimited || $tier_left >= 1 );
+                            if ( $event_has_room && $tier_has_room ) {
+                                // Both levels have room → confirmed/active; decrement both.
                                 $status = $active_target;
                                 $remaining--;
-                            } elseif ( $waitlist_enabled ) {
+                                if ( ! $tier_unlimited ) {
+                                    $tier_left--;
+                                }
+                            } elseif ( ! $event_has_room && $waitlist_enabled ) {
+                                // EVENT total full + event waitlist toggle on →
+                                // event-level waitlist (regardless of tier).
                                 $status = Registrations::STATUS_WAITLIST;
                             } else {
-                                // Buyer already paid, no room, no waitlist: leave
-                                // uncreated and flag overfill (spec §9.3).
+                                // Either the event is full with no waitlist, OR the
+                                // tier quota is exhausted while the event still has
+                                // room (and we're not waitlisting): buyer paid but no
+                                // tier seat can be created → leave uncreated and flag
+                                // overfill so it surfaces in needs-review (spec §7/§9.3).
                                 $overfill = true;
                                 break;
                             }
@@ -1707,16 +2118,17 @@ class WooCommerce {
                                 $note  = 'order #' . $order_id . ' (attendee data missing, used billing)';
                             }
                             $seat_id = $this->registrations->create_seat( \array_merge( $payload_base, [
-                                'event_id'   => $event_id,
-                                'status'     => $status,
-                                'seat_index' => $index,
-                                'source'     => 'woocommerce',
-                                'guests'     => 0,
-                                'actor'      => 'woocommerce',
-                                'name'       => $name,
-                                'email'      => $email,
-                                'phone'      => $phone,
-                                'note'       => $note,
+                                'event_id'       => $event_id,
+                                'status'         => $status,
+                                'seat_index'     => $index,
+                                'source'         => 'woocommerce',
+                                'guests'         => 0,
+                                'actor'          => 'woocommerce',
+                                'name'           => $name,
+                                'email'          => $email,
+                                'phone'          => $phone,
+                                'note'           => $note,
+                                'ticket_type_id' => $tier_id, // P4 — tag seat with its tier.
                             ] ) );
                             if ( $seat_id ) {
                                 $created[] = $seat_id;

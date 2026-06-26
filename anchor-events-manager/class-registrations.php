@@ -110,6 +110,10 @@ class Registrations {
             '_anchor_event_email'         => \sanitize_email( (string) ( $args['email'] ?? '' ) ),
             '_anchor_event_phone'         => \sanitize_text_field( (string) ( $args['phone'] ?? '' ) ),
             '_anchor_event_reg_status'    => $status,
+            // Ticket tier this seat belongs to (spec §3.4). Free/paid callers
+            // pass 'ticket_type_id'; absent → the event's primary tier so
+            // pre-tier seats read consistently.
+            '_anchor_event_ticket_type_id' => \sanitize_key( (string) ( $args['ticket_type_id'] ?? 'primary' ) ) ?: 'primary',
             '_anchor_event_reg_fields'    => \is_array( $args['reg_fields'] ?? null ) ? $args['reg_fields'] : [],
             '_anchor_event_guests'        => max( 0, (int) ( $args['guests'] ?? 0 ) ),
             '_anchor_event_source'        => $source,
@@ -288,6 +292,64 @@ class Registrations {
     }
 
     /**
+     * Weighted reserved-seat count (confirmed + pending) for ONE tier of an event
+     * (spec §7). Nested under the event total — this is the per-tier half of the
+     * single capacity authority. Built from the same aggregate as counts(), grouped
+     * additionally by `_anchor_event_ticket_type_id`; legacy seats with no tier meta
+     * COALESCE to 'primary' so pre-tier data counts under the implicit primary tier.
+     * Cached per event like counts(); pass $fresh=true for the authoritative recount
+     * under the lock.
+     *
+     * @param int    $event_id
+     * @param string $tier_id
+     * @param bool   $fresh
+     * @return int
+     */
+    public function count_reserved_for_tier( $event_id, $tier_id, $fresh = false ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 ) {
+            return 0;
+        }
+        $tier_id = \sanitize_key( (string) $tier_id );
+        if ( $tier_id === '' ) {
+            $tier_id = 'primary';
+        }
+        $by_tier  = $this->tier_counts( $event_id, $fresh );
+        $statuses = $by_tier[ $tier_id ] ?? [];
+        $total    = 0;
+        foreach ( self::RESERVING_STATUSES as $s ) {
+            $total += $statuses[ $s ] ?? 0;
+        }
+        return $total;
+    }
+
+    /**
+     * Remaining seats for a tier: min( event remaining, tier-quota remaining ).
+     * The event total is the outer bound (capacity from the event meta — the single
+     * authority). A tier quota of 0/empty means the tier is bounded only by the
+     * event total.
+     *
+     * @param int   $event_id
+     * @param array $tier     Normalized tier array (needs 'id' + 'quota').
+     * @param bool  $fresh
+     * @return int
+     */
+    public function tier_remaining( $event_id, array $tier, $fresh = false ) {
+        $event_id        = (int) $event_id;
+        $meta            = $this->module->get_meta( $event_id );
+        $capacity        = (int) ( $meta['capacity'] ?? 0 );
+        $event_remaining = $this->remaining_capacity( $event_id, $capacity, $fresh );
+
+        $quota = (int) ( $tier['quota'] ?? 0 );
+        if ( $quota <= 0 ) {
+            return $event_remaining; // tier bounded only by the event total.
+        }
+        $tier_id              = \sanitize_key( (string) ( $tier['id'] ?? 'primary' ) ) ?: 'primary';
+        $tier_quota_remaining = max( 0, $quota - $this->count_reserved_for_tier( $event_id, $tier_id, $fresh ) );
+        return min( $event_remaining, $tier_quota_remaining );
+    }
+
+    /**
      * Per-status weighted seat + record counts via one aggregate query.
      * Cached in transient `anchor_evt_caps_{id}`; pass $fresh=true to bypass
      * (the authoritative recount under the lock always uses fresh).
@@ -336,12 +398,77 @@ class Registrations {
     }
 
     /**
-     * Capacity decision for a prospective registration. Preserves the legacy
-     * get_registration_status() window/closed/full/waitlist semantics.
+     * Per-tier weighted seat counts via one aggregate query, keyed
+     * [ tier_id => [ status => seats ] ]. Extends the counts() aggregate with a
+     * GROUP BY on `_anchor_event_ticket_type_id`; the LEFT JOIN + COALESCE/NULLIF
+     * folds NULL (no meta row) and '' (empty meta) into 'primary' so legacy seats
+     * count under the implicit primary tier. Cast/COALESCE-safe like counts().
+     * Cached in transient `anchor_evt_tier_caps_{id}`; $fresh=true bypasses (the
+     * authoritative per-tier recount under the lock always uses fresh).
      *
+     * @return array<string,array<string,int>>
+     */
+    private function tier_counts( $event_id, $fresh = false ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 ) {
+            return [];
+        }
+        $key = 'anchor_evt_tier_caps_' . $event_id;
+        if ( ! $fresh ) {
+            $cached = \get_transient( $key );
+            if ( \is_array( $cached ) ) {
+                return $cached;
+            }
+        }
+
+        global $wpdb;
+        $sql = "SELECT COALESCE(NULLIF(pm_tier.meta_value, ''), 'primary') AS tier_id,
+                       pm_status.meta_value AS status,
+                       COALESCE(SUM(1 + GREATEST(0, CAST(COALESCE(pm_guests.meta_value, '0') AS SIGNED))), 0) AS seats
+                FROM {$wpdb->posts} p
+                JOIN {$wpdb->postmeta} pm_event  ON pm_event.post_id = p.ID AND pm_event.meta_key = '_anchor_event_id'
+                JOIN {$wpdb->postmeta} pm_status ON pm_status.post_id = p.ID AND pm_status.meta_key = '_anchor_event_reg_status'
+                LEFT JOIN {$wpdb->postmeta} pm_guests ON pm_guests.post_id = p.ID AND pm_guests.meta_key = '_anchor_event_guests'
+                LEFT JOIN {$wpdb->postmeta} pm_tier   ON pm_tier.post_id   = p.ID AND pm_tier.meta_key   = '_anchor_event_ticket_type_id'
+                WHERE p.post_type = %s AND p.post_status = 'publish' AND pm_event.meta_value = %d
+                GROUP BY tier_id, pm_status.meta_value";
+        $rows = $wpdb->get_results( $wpdb->prepare( $sql, Module::REG_CPT, $event_id ), ARRAY_A );
+
+        $out = [];
+        foreach ( (array) $rows as $row ) {
+            $tier = (string) $row['tier_id'];
+            if ( $tier === '' ) {
+                $tier = 'primary';
+            }
+            $status = (string) $row['status'];
+            if ( $status === '' ) {
+                $status = self::STATUS_CONFIRMED; // legacy rows that defaulted via `?: 'confirmed'`.
+            }
+            if ( ! isset( $out[ $tier ] ) ) {
+                $out[ $tier ] = [];
+            }
+            $out[ $tier ][ $status ] = (int) $row['seats'];
+        }
+
+        \set_transient( $key, $out, HOUR_IN_SECONDS );
+        return $out;
+    }
+
+    /**
+     * Capacity decision for a prospective registration. Preserves the legacy
+     * get_registration_status() window/closed/full/waitlist semantics; when a
+     * $tier (with a quota) is supplied, a request is also `full` if it would
+     * exceed that tier's quota while the event total still has room (tier
+     * "sold out" never triggers the waitlist — the waitlist stays event-level,
+     * spec §7).
+     *
+     * @param int        $event_id
+     * @param array      $meta      Event meta (capacity, waitlist, window).
+     * @param int        $requested Seats requested.
+     * @param array|null $tier      Optional normalized tier (needs 'id' + 'quota').
      * @return string open|closed|full|waitlist
      */
-    public function capacity_decision( $event_id, $meta, $requested = 1 ) {
+    public function capacity_decision( $event_id, $meta, $requested = 1, $tier = null ) {
         // Compare the registration window in WordPress site-local time — the
         // open/close dates are admin-entered in the site timezone (CodeRabbit).
         $now = \current_time( 'Y-m-d' );
@@ -351,13 +478,27 @@ class Registrations {
         if ( ! empty( $meta['registration_close'] ) && $now > $meta['registration_close'] ) {
             return 'closed';
         }
+        $requested = max( 1, (int) $requested );
+
+        // Event total governs the waitlist (spec §7): if the event total is full,
+        // the waitlist toggle decides waitlist-vs-full regardless of any tier.
         $capacity = (int) ( $meta['capacity'] ?? 0 );
-        if ( $capacity > 0 ) {
-            $requested = max( 1, (int) $requested );
-            if ( ( $this->count_reserved_seats( $event_id ) + $requested ) > $capacity ) {
-                return ! empty( $meta['waitlist'] ) ? self::STATUS_WAITLIST : 'full';
+        if ( $capacity > 0 && ( $this->count_reserved_seats( $event_id ) + $requested ) > $capacity ) {
+            return ! empty( $meta['waitlist'] ) ? self::STATUS_WAITLIST : 'full';
+        }
+
+        // Per-tier quota (optional): the event still has room, but this tier is
+        // exhausted → `full` for that tier (no waitlist — that stays event-level).
+        if ( \is_array( $tier ) ) {
+            $quota = (int) ( $tier['quota'] ?? 0 );
+            if ( $quota > 0 ) {
+                $tier_id = \sanitize_key( (string) ( $tier['id'] ?? 'primary' ) ) ?: 'primary';
+                if ( ( $this->count_reserved_for_tier( $event_id, $tier_id ) + $requested ) > $quota ) {
+                    return 'full';
+                }
             }
         }
+
         return 'open';
     }
 
@@ -400,17 +541,23 @@ class Registrations {
      * confirmed/pending seats up to remaining and overflow as waitlist (when the
      * event's waitlist toggle is on).
      *
-     * @param int   $event_id Event ID.
-     * @param array $meta     Event meta (needs 'capacity', 'waitlist').
-     * @param int   $qty      Number of seats to create.
-     * @param array $payload  Per-seat create_seat() args (source, name, email, phone, order ids, etc.).
+     * @param int        $event_id   Event ID.
+     * @param array      $meta       Event meta (needs 'capacity', 'waitlist').
+     * @param int        $qty        Number of seats to create.
+     * @param array      $payload    Per-seat create_seat() args (source, name, email, phone, order ids, etc.).
+     * @param array|null $tier       Optional normalized tier (needs 'id' + 'quota'). When given with a
+     *                               quota>0, allocation respects the tier quota (nested under the event
+     *                               total, spec §7). Null = event-bounded only (legacy behavior).
+     * @param bool       $allow_over Manual-admin override: when true, bypass BOTH the event ceiling and
+     *                               the tier quota — every seat is created `confirmed`. Default false.
      * @return array{created:int[],waitlisted:int[],remaining_before:int,lock_unavailable:bool,status:string}
      */
-    public function claim_seats( $event_id, $meta, $qty, array $payload ) {
-        $event_id = (int) $event_id;
-        $qty      = max( 1, (int) $qty );
+    public function claim_seats( $event_id, $meta, $qty, array $payload, $tier = null, $allow_over = false ) {
+        $event_id   = (int) $event_id;
+        $qty        = max( 1, (int) $qty );
+        $allow_over = (bool) $allow_over;
 
-        return $this->with_event_lock( $event_id, function ( $locked ) use ( $event_id, $meta, $qty, $payload ) {
+        return $this->with_event_lock( $event_id, function ( $locked ) use ( $event_id, $meta, $qty, $payload, $tier, $allow_over ) {
             $capacity         = (int) ( $meta['capacity'] ?? 0 );
             $waitlist_enabled = ! empty( $meta['waitlist'] );
             $unlimited        = ( $capacity <= 0 );
@@ -418,6 +565,20 @@ class Registrations {
             // Fresh recount under the lock (spec §9.2) — never the cache.
             $reserved  = $this->count_reserved_seats( $event_id, true );
             $remaining = $unlimited ? PHP_INT_MAX : max( 0, $capacity - $reserved );
+
+            // Per-tier quota (spec §7), nested under the event total. Counted FRESH
+            // under the lock — never cached. No tier / quota 0 = event-bounded only,
+            // so callers that pass no tier behave exactly as before.
+            $tier_quota = ( \is_array( $tier ) && (int) ( $tier['quota'] ?? 0 ) > 0 ) ? (int) $tier['quota'] : 0;
+            $tier_id    = \is_array( $tier )
+                ? \sanitize_key( (string) ( $tier['id'] ?? '' ) )
+                : \sanitize_key( (string) ( $payload['ticket_type_id'] ?? '' ) );
+            if ( $tier_id === '' ) {
+                $tier_id = 'primary';
+            }
+            $tier_remaining = ( $tier_quota > 0 )
+                ? max( 0, $tier_quota - $this->count_reserved_for_tier( $event_id, $tier_id, true ) )
+                : PHP_INT_MAX;
 
             $is_woo     = ( (int) ( $payload['order_item_id'] ?? 0 ) > 0 );
             $base_index = max( 1, (int) ( $payload['seat_index'] ?? 1 ) );
@@ -445,13 +606,25 @@ class Registrations {
                     }
                 }
 
-                if ( $unlimited || $remaining >= $weight ) {
-                    $status     = self::STATUS_CONFIRMED;
-                    $remaining -= $weight;
-                } elseif ( $waitlist_enabled ) {
+                $event_has_room = $unlimited || $remaining >= $weight;
+                $tier_has_room  = $tier_remaining >= $weight; // PHP_INT_MAX when no quota.
+
+                if ( $allow_over ) {
+                    // Manual-admin override: bypass both ceilings (spec §10) —
+                    // always confirmed. The caller records the override note via payload.
+                    $status = self::STATUS_CONFIRMED;
+                    if ( ! $unlimited )    { $remaining      -= $weight; }
+                    if ( $tier_quota > 0 ) { $tier_remaining -= $weight; }
+                } elseif ( $event_has_room && $tier_has_room ) {
+                    $status = self::STATUS_CONFIRMED;
+                    if ( ! $unlimited )    { $remaining      -= $weight; }
+                    if ( $tier_quota > 0 ) { $tier_remaining -= $weight; }
+                } elseif ( ! $event_has_room && $waitlist_enabled ) {
+                    // Event total full → event-level waitlist (regardless of tier).
                     $status = self::STATUS_WAITLIST;
                 } else {
-                    // No room, no waitlist: create nothing. Caller decides how to surface.
+                    // Event full + no waitlist, OR tier quota hit while the event has
+                    // room (tier "sold out" never waitlists): create nothing.
                     continue;
                 }
 
@@ -562,6 +735,36 @@ class Registrations {
     }
 
     /**
+     * Whether any seat (any status) exists for a given event+tier. Read-only data
+     * layer helper used by Product_Sync to decide deactivate-vs-delete a managed
+     * variation (spec §5: deactivate tiers with sales, delete tiers with none).
+     *
+     * @param int    $event_id
+     * @param string $tier_id
+     * @return bool
+     */
+    public function tier_has_seats( $event_id, $tier_id ) {
+        $event_id = (int) $event_id;
+        $tier_id  = (string) $tier_id;
+        if ( $event_id <= 0 || $tier_id === '' ) {
+            return false;
+        }
+        $q = new \WP_Query( [
+            'post_type'      => Module::REG_CPT,
+            'post_status'    => 'any',
+            'fields'         => 'ids',
+            'posts_per_page' => 1,
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                'relation' => 'AND',
+                [ 'key' => '_anchor_event_id', 'value' => $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+                [ 'key' => '_anchor_event_ticket_type_id', 'value' => $tier_id, 'compare' => '=' ],
+            ],
+        ] );
+        return ! empty( $q->posts );
+    }
+
+    /**
      * Seat post IDs whose attendee email matches, paged (GDPR export/erase — L14).
      *
      * @param string $email
@@ -660,6 +863,8 @@ class Registrations {
             'seat_index'    => (int) \get_post_meta( $seat_id, '_anchor_event_seat_index', true ),
             'event_id'      => (int) \get_post_meta( $seat_id, '_anchor_event_id', true ),
             'order_item_id' => (int) \get_post_meta( $seat_id, '_anchor_event_order_item_id', true ),
+            // Pre-tier seats have no meta — default to the primary tier id.
+            'ticket_type_id' => (string) ( \get_post_meta( $seat_id, '_anchor_event_ticket_type_id', true ) ?: 'primary' ),
         ];
     }
 
@@ -864,6 +1069,8 @@ class Registrations {
             'variation_id'  => (int) $g( '_anchor_event_variation_id' ),
             'customer_id'   => (int) $g( '_anchor_event_customer_id' ),
             'seat_index'    => (int) $g( '_anchor_event_seat_index' ),
+            // Pre-tier seats have no meta — default to the primary tier id.
+            'ticket_type_id' => (string) ( $g( '_anchor_event_ticket_type_id' ) ?: 'primary' ),
             'reg_fields'    => \is_array( $g( '_anchor_event_reg_fields' ) ) ? $g( '_anchor_event_reg_fields' ) : [],
             'date'          => \get_the_date( 'Y-m-d', $post ),
         ];
@@ -1032,12 +1239,13 @@ class Registrations {
         ], true );
     }
 
-    /** Invalidate cached counts for an event + the module's list/calendar caches. */
+    /** Invalidate cached counts (event total + per-tier) + the module's list/calendar caches. */
     private function bust_cache( $event_id ) {
         // Capacity correctness: the per-event caps transient MUST be busted on every
         // seat write.
         if ( (int) $event_id > 0 ) {
             \delete_transient( 'anchor_evt_caps_' . (int) $event_id );
+            \delete_transient( 'anchor_evt_tier_caps_' . (int) $event_id );
         }
         // L4: the module list/calendar cache clear used to do a full
         // get_option + update_option(CACHE_OPTION, []) registry wipe on every seat

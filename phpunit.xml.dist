@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!--
+    PHPUnit 9 configuration for the Anchor Events Manager integration suite.
+
+    Tests are real WP_UnitTestCase integration tests: they boot the full
+    WordPress test library (see tests/bootstrap.php) against a live MySQL
+    database, so they cannot run in this editor — they run in CI
+    (.github/workflows/tests.yml) and locally after `bin/install-wp-tests.sh`.
+
+    The testsuite scans ./tests but only loads files named `test-*.php`, so the
+    bootstrap (tests/bootstrap.php) and the shared base case
+    (tests/class-anchor-events-testcase.php) are NOT picked up as test classes.
+-->
+<phpunit
+    bootstrap="tests/bootstrap.php"
+    backupGlobals="false"
+    colors="true"
+    convertDeprecationsToExceptions="false"
+    convertErrorsToExceptions="true"
+    convertNoticesToExceptions="false"
+    convertWarningsToExceptions="false"
+    beStrictAboutTestsThatDoNotTestAnything="false"
+    verbose="true"
+>
+    <testsuites>
+        <testsuite name="anchor-events">
+            <directory prefix="test-" suffix=".php">./tests</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

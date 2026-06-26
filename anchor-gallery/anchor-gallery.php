@@ -379,7 +379,7 @@ class Anchor_Gallery_Module {
             'caption_color' => ['type' => 'color',  'label' => 'Caption Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_caption' => true]],
             'caption_size'  => ['type' => 'number', 'label' => 'Caption Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_caption' => true]],
 
-            /* ── 3.7.0: Style — play button (hidden when play button is off) ───── */
+            /* ── 3.7.0: Video — play button (hidden when play button is off) ───── */
             'play_button_color'    => ['type' => 'color',  'label' => 'Play Button Color', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
             'play_button_bg_color' => ['type' => 'color',  'label' => 'Play Button Background', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
             'play_button_size'     => ['type' => 'number', 'label' => 'Play Button Size (px, 0=auto)', 'section' => 'video', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
@@ -387,7 +387,7 @@ class Anchor_Gallery_Module {
             /* ── 3.7.0: Style — overlay tile gradient strength ────────── */
             'overlay_gradient_strength' => ['type' => 'number', 'label' => 'Overlay Gradient Strength (0-100)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_style' => 'overlay'], 'help' => 'Alpha of the bottom gradient stop on the overlay tile style.'],
 
-            /* ── 3.7.0: Behavior ──────────────────────────────────────── */
+            /* ── 3.7.0: Layout — global transition speed ──────────────── */
             'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'layout', 'min' => 50, 'max' => 800, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Global tile / thumb / title transition speed.'],
 
             /* ── 3.7.0: Advanced — raw CSS var overrides ──────────────── */
@@ -421,17 +421,17 @@ class Anchor_Gallery_Module {
             'title_line_clamp' => ['type' => 'number', 'label' => 'Title Max Lines (0 = unlimited)', 'section' => 'style', 'min' => 0, 'max' => 6, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
             'title_line_height' => ['type' => 'number', 'label' => 'Title Line Height (×, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 3, 'step' => 0.1, 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
 
-            /* ── 3.7.x: Style — channel ──────────────────────────────────── */
+            /* ── 3.7.x: Video — channel ──────────────────────────────────── */
             'channel_color' => ['type' => 'color', 'label' => 'Channel Color', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['show_channel' => true]],
             'channel_size'  => ['type' => 'number', 'label' => 'Channel Size (px, 0=auto)', 'section' => 'video', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_channel' => true]],
 
-            /* ── 3.7.x: Style — duration badge ────────────────────────────── */
+            /* ── 3.7.x: Video — duration badge ────────────────────────────── */
             'duration_bg_color' => ['type' => 'color',  'label' => 'Duration Badge Background', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
             'duration_color'    => ['type' => 'color',  'label' => 'Duration Badge Text', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
             'duration_size'     => ['type' => 'number', 'label' => 'Duration Badge Size (px, 0=auto)', 'section' => 'video', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
             'duration_radius'   => ['type' => 'number', 'label' => 'Duration Badge Radius (px, 0=auto)', 'section' => 'video', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
 
-            /* ── 3.7.x: Style — play button extras ───────────────────────── */
+            /* ── 3.7.x: Video — play button extras ───────────────────────── */
             'play_button_shadow' => ['type' => 'checkbox', 'label' => 'Play Button Drop Shadow', 'section' => 'video', 'applies_to' => $tile_layouts, 'help' => 'Uncheck for a flat play button with no drop shadow.'],
 
             /* ── 3.7.x: Style — slider arrows (Nav) ──────────────────────── */

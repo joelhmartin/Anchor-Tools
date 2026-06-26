@@ -195,7 +195,7 @@ class Anchor_Gallery_Module {
 
         return [
             'layout' => ['type' => 'select', 'label' => 'Layout', 'section' => 'layout', 'priority' => 10, 'options' => ['grid' => 'Grid', 'masonry' => 'Masonry', 'carousel' => 'Carousel', 'slider' => 'Horizontal Scroll', 'gallery' => 'Gallery (Featured + Thumbs)', 'logo_carousel' => 'Logo Carousel', 'filterable' => 'Filterable Grid'], 'help' => 'Pick a base layout. Variants like Paginated/Lightbox/Card/Bento are available as Presets.'],
-            'popup_style' => ['type' => 'select', 'label' => 'Popup / Click Behavior', 'section' => 'behavior', 'priority' => 10, 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'None (no popup — direct link)'], 'applies_to' => $core_layouts, 'help' => 'Pick "None" to disable popups entirely — items will either link to their URL (if Link URL is set per-item) or do nothing.',
+            'popup_style' => ['type' => 'select', 'label' => 'Popup / Click Behavior', 'section' => 'video', 'priority' => 10, 'options' => ['lightbox' => 'Lightbox', 'inline' => 'Inline Expand', 'theater' => 'Theater Mode', 'side_panel' => 'Side Panel', 'none' => 'None (no popup — direct link)'], 'applies_to' => $core_layouts, 'help' => 'Pick "None" to disable popups entirely — items will either link to their URL (if Link URL is set per-item) or do nothing.',
                 'forced_by' => ['lightbox_grid' => 'lightbox'],
                 'forced_by_note' => ['lightbox_grid' => 'Locked by Lightbox Grid layout — change layout to edit.'],
             ],
@@ -219,14 +219,14 @@ class Anchor_Gallery_Module {
                 'brighten'   => 'Brighten',
                 'desaturate' => 'Desaturate (color on hover)',
             ], 'applies_to' => $tile_layouts],
-            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'section' => 'style', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'applies_to' => $core_layouts],
-            'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 2],
+            'play_button_style' => ['type' => 'select', 'label' => 'Play Button', 'section' => 'video', 'options' => ['circle' => 'Circle', 'square' => 'Square', 'youtube' => 'YouTube', 'minimal' => 'Minimal', 'none' => 'Hidden'], 'applies_to' => $core_layouts],
+            'border_radius' => ['type' => 'number', 'label' => 'Border Radius (px)', 'section' => 'style', 'min' => 0, 'max' => 32, 'step' => 2, 'applies_to' => $height_layouts],
             'columns_desktop' => ['type' => 'number', 'label' => 'Desktop Columns', 'section' => 'layout', 'priority' => 20, 'min' => 1, 'max' => 6, 'applies_to' => $col_layouts],
             'columns_tablet' => ['type' => 'number', 'label' => 'Tablet Columns', 'section' => 'responsive', 'min' => 1, 'max' => 4, 'applies_to' => $col_layouts],
             'columns_mobile' => ['type' => 'number', 'label' => 'Mobile Columns', 'section' => 'responsive', 'min' => 1, 'max' => 2, 'applies_to' => $col_layouts],
-            'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4],
-            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'content', 'applies_to' => array_values(array_diff($core_layouts, ['thumbnail_gallery']))],
-            'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'content', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
+            'gap' => ['type' => 'number', 'label' => 'Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 60, 'step' => 4, 'applies_to' => $height_layouts],
+            'show_duration' => ['type' => 'checkbox', 'label' => 'Show Duration', 'section' => 'video', 'applies_to' => array_values(array_diff($core_layouts, ['thumbnail_gallery']))],
+            'show_channel' => ['type' => 'checkbox', 'label' => 'Show Channel', 'section' => 'video', 'applies_to' => ['slider','grid','carousel','masonry','filterable','paginated','bento','card_carousel']],
             'title_position' => ['type' => 'select', 'label' => 'Title Position', 'section' => 'style', 'priority' => 5, 'options' => ['hidden' => 'Hidden', 'below' => 'Below Image', 'overlay' => 'Overlay on Image'], 'applies_to' => $tile_layouts, 'help' => 'Set to Hidden to remove the title entirely.'],
             'equal_height' => ['type' => 'checkbox', 'label' => 'Equal Height Tiles', 'section' => 'layout', 'applies_to' => array_values(array_diff($tile_layouts, ['bento']))],
             'media_min_height' => ['type' => 'number', 'label' => 'Media Min Height (px, 0=auto)', 'section' => 'layout', 'min' => 0, 'max' => 1200, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Minimum height for the image/video thumbnail area.'],
@@ -240,24 +240,24 @@ class Anchor_Gallery_Module {
                 'medium'   => 'Medium (320×180)',
             ], 'applies_to' => $core_layouts],
             'object_fit' => ['type' => 'select', 'label' => 'Object Fit', 'section' => 'style', 'options' => ['cover' => 'Cover', 'contain' => 'Contain', 'fill' => 'Fill', 'scale-down' => 'Scale Down', 'none' => 'None']],
-            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'section' => 'behavior', 'applies_to' => $core_layouts, 'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']], 'help' => 'Only meaningful when a popup style is set.'],
-            'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'section' => 'behavior', 'applies_to' => $pag_layouts, 'help' => 'Used by Grid, Masonry, and Filterable Grid layouts.',
+            'autoplay' => ['type' => 'checkbox', 'label' => 'Autoplay on popup open', 'section' => 'video', 'applies_to' => $core_layouts, 'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']], 'help' => 'Only meaningful when a popup style is set.'],
+            'pagination_enabled' => ['type' => 'checkbox', 'label' => 'Enable Pagination', 'section' => 'layout', 'applies_to' => $pag_layouts, 'help' => 'Used by Grid, Masonry, and Filterable Grid layouts.',
                 'forced_by' => ['paginated' => '1'],
                 'forced_by_note' => ['paginated' => 'Locked by Paginated Grid layout — change layout to edit.'],
             ],
-            'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'section' => 'behavior', 'min' => 1, 'max' => 100, 'applies_to' => $pag_layouts, 'depends_on' => ['pagination_enabled' => true]],
-            'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'section' => 'behavior', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'applies_to' => $pag_layouts, 'depends_on' => ['pagination_enabled' => true]],
-            'slider_arrows' => ['type' => 'checkbox', 'label' => 'Navigation Arrows', 'section' => 'behavior', 'applies_to' => $slider_layouts],
-            'slider_dots' => ['type' => 'checkbox', 'label' => 'Dots Navigation', 'section' => 'behavior', 'applies_to' => $slider_layouts],
-            'slider_autoplay' => ['type' => 'checkbox', 'label' => 'Auto-advance', 'section' => 'behavior', 'applies_to' => $slider_layouts],
-            'slider_autoplay_speed' => ['type' => 'number', 'label' => 'Autoplay Speed (ms)', 'section' => 'behavior', 'min' => 1000, 'max' => 15000, 'step' => 500, 'applies_to' => $slider_layouts, 'depends_on' => ['slider_autoplay' => true]],
-            'carousel_loop' => ['type' => 'checkbox', 'label' => 'Loop Continuously', 'section' => 'behavior', 'applies_to' => $carousel_loop_layouts],
-            'carousel_center' => ['type' => 'checkbox', 'label' => 'Center Active Slide', 'section' => 'behavior', 'applies_to' => $carousel_loop_layouts],
-            'marquee_speed' => ['type' => 'number', 'label' => 'Scroll Speed (seconds)', 'section' => 'behavior', 'min' => 5, 'max' => 120, 'step' => 5, 'applies_to' => $marquee_layouts],
+            'videos_per_page' => ['type' => 'number', 'label' => 'Items Per Page', 'section' => 'layout', 'min' => 1, 'max' => 100, 'applies_to' => $pag_layouts, 'depends_on' => ['pagination_enabled' => true]],
+            'pagination_style' => ['type' => 'select', 'label' => 'Pagination Style', 'section' => 'layout', 'options' => ['numbered' => 'Numbered', 'load_more' => 'Load More', 'infinite' => 'Infinite Scroll'], 'applies_to' => $pag_layouts, 'depends_on' => ['pagination_enabled' => true]],
+            'slider_arrows' => ['type' => 'checkbox', 'label' => 'Navigation Arrows', 'section' => 'layout', 'applies_to' => $slider_layouts],
+            'slider_dots' => ['type' => 'checkbox', 'label' => 'Dots Navigation', 'section' => 'layout', 'applies_to' => $slider_layouts],
+            'slider_autoplay' => ['type' => 'checkbox', 'label' => 'Auto-advance', 'section' => 'layout', 'applies_to' => $slider_layouts],
+            'slider_autoplay_speed' => ['type' => 'number', 'label' => 'Autoplay Speed (ms)', 'section' => 'layout', 'min' => 1000, 'max' => 15000, 'step' => 500, 'applies_to' => $slider_layouts, 'depends_on' => ['slider_autoplay' => true]],
+            'carousel_loop' => ['type' => 'checkbox', 'label' => 'Loop Continuously', 'section' => 'layout', 'applies_to' => $carousel_loop_layouts],
+            'carousel_center' => ['type' => 'checkbox', 'label' => 'Center Active Slide', 'section' => 'layout', 'applies_to' => $carousel_loop_layouts],
+            'marquee_speed' => ['type' => 'number', 'label' => 'Scroll Speed (seconds)', 'section' => 'layout', 'min' => 5, 'max' => 120, 'step' => 5, 'applies_to' => $marquee_layouts],
             'marquee_gap' => ['type' => 'number', 'label' => 'Item Gap (px)', 'section' => 'layout', 'min' => 0, 'max' => 120, 'step' => 4, 'applies_to' => $marquee_layouts],
             'marquee_item_width' => ['type' => 'number', 'label' => 'Item Width (px)', 'section' => 'layout', 'min' => 50, 'max' => 400, 'step' => 10, 'applies_to' => $marquee_layouts],
-            'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'section' => 'behavior', 'applies_to' => $marquee_layouts],
-            'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'section' => 'behavior', 'options' => ['left' => 'Left', 'right' => 'Right'], 'applies_to' => $marquee_layouts],
+            'marquee_pause_on_hover' => ['type' => 'checkbox', 'label' => 'Pause on Hover', 'section' => 'layout', 'applies_to' => $marquee_layouts],
+            'marquee_direction' => ['type' => 'select', 'label' => 'Scroll Direction', 'section' => 'layout', 'options' => ['left' => 'Left', 'right' => 'Right'], 'applies_to' => $marquee_layouts],
             'marquee_reverse_row' => ['type' => 'checkbox', 'label' => 'Add Reverse Row', 'section' => 'layout', 'applies_to' => $marquee_layouts],
             'marquee_item_height' => ['type' => 'number', 'label' => 'Item Max Height (px)', 'section' => 'layout', 'min' => 20, 'max' => 400, 'step' => 5, 'applies_to' => $marquee_layouts],
             'marquee_item_width_mobile' => ['type' => 'number', 'label' => 'Mobile Item Width (px, 0 = use Item Width)', 'section' => 'responsive', 'min' => 0, 'max' => 400, 'step' => 5, 'applies_to' => $marquee_layouts],
@@ -268,30 +268,30 @@ class Anchor_Gallery_Module {
             'marquee_grayscale' => ['type' => 'checkbox', 'label' => 'Grayscale (color on hover)', 'section' => 'style', 'applies_to' => $marquee_layouts],
             'marquee_eager_count' => ['type' => 'number', 'label' => 'Eager-Load First N Logos', 'section' => 'advanced', 'min' => 0, 'max' => 30, 'step' => 1, 'applies_to' => $marquee_layouts],
             'eager_load_count' => ['type' => 'number', 'label' => 'Eager-Load First N Thumbnails', 'section' => 'advanced', 'min' => 0, 'max' => 24, 'step' => 1, 'applies_to' => $core_layouts],
-            'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 60, 'step' => 2],
+            'gap_mobile' => ['type' => 'number', 'label' => 'Mobile Gap (px, 0 = use Gap)', 'section' => 'responsive', 'min' => 0, 'max' => 60, 'step' => 2, 'applies_to' => $height_layouts],
             'tile_shadow' => ['type' => 'select', 'label' => 'Tile Shadow', 'section' => 'style', 'options' => ['none' => 'None', 'soft' => 'Soft', 'medium' => 'Medium', 'strong' => 'Strong'], 'applies_to' => $core_layouts],
 
             /* ── Phase 5: Carousel controls ─────────────────────────── */
             'carousel_slides_to_scroll' => [
-                'type' => 'number', 'label' => 'Slides to Scroll', 'section' => 'behavior', 'priority' => 60,
+                'type' => 'number', 'label' => 'Slides to Scroll', 'section' => 'layout', 'priority' => 60,
                 'min' => 1, 'max' => 10, 'step' => 1,
                 'applies_to' => ['carousel', 'card_carousel'],
                 'help' => 'How many slides advance per arrow / dot click.',
             ],
             'carousel_transition_speed' => [
-                'type' => 'number', 'label' => 'Transition Speed (ms)', 'section' => 'behavior', 'priority' => 61,
+                'type' => 'number', 'label' => 'Transition Speed (ms)', 'section' => 'layout', 'priority' => 61,
                 'min' => 0, 'max' => 3000, 'step' => 50,
                 'applies_to' => ['carousel', 'card_carousel', 'slider'],
                 'help' => 'Carousel/slider track animation duration in milliseconds.',
             ],
             'carousel_pause_on_hover' => [
-                'type' => 'checkbox', 'label' => 'Pause on Hover', 'section' => 'behavior', 'priority' => 62,
+                'type' => 'checkbox', 'label' => 'Pause on Hover', 'section' => 'layout', 'priority' => 62,
                 'applies_to' => ['carousel', 'card_carousel'],
                 'depends_on' => ['slider_autoplay' => true],
                 'help' => 'Pause auto-advance while the pointer is over the gallery.',
             ],
             'carousel_peek' => [
-                'type' => 'select', 'label' => 'Neighbor Peek', 'section' => 'behavior', 'priority' => 63,
+                'type' => 'select', 'label' => 'Neighbor Peek', 'section' => 'layout', 'priority' => 63,
                 'options' => ['none' => 'None', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'],
                 'applies_to' => ['carousel', 'card_carousel'],
                 'help' => 'Show a sliver of the previous/next slide on either side.',
@@ -304,19 +304,19 @@ class Anchor_Gallery_Module {
 
             /* ── Phase 5: Popup controls ────────────────────────────── */
             'popup_max_width' => [
-                'type' => 'text', 'label' => 'Popup Max Width', 'section' => 'behavior', 'priority' => 70,
+                'type' => 'text', 'label' => 'Popup Max Width', 'section' => 'video', 'priority' => 70,
                 'applies_to' => $core_layouts,
                 'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']],
                 'help' => 'Max width for popup container (e.g. 960px or 80vw). Empty = theme default.',
             ],
             'popup_aspect_ratio' => [
-                'type' => 'select', 'label' => 'Popup Aspect Ratio', 'section' => 'behavior', 'priority' => 71,
+                'type' => 'select', 'label' => 'Popup Aspect Ratio', 'section' => 'video', 'priority' => 71,
                 'options' => ['16:9' => '16:9', '4:3' => '4:3', '1:1' => '1:1', '21:9' => '21:9', 'auto' => 'Auto'],
                 'applies_to' => $core_layouts,
                 'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']],
             ],
             'popup_show_caption' => [
-                'type' => 'checkbox', 'label' => 'Show Caption in Popup', 'section' => 'behavior', 'priority' => 72,
+                'type' => 'checkbox', 'label' => 'Show Caption in Popup', 'section' => 'video', 'priority' => 72,
                 'applies_to' => $core_layouts,
                 'depends_on' => ['popup_style' => ['lightbox', 'theater', 'side_panel', 'inline']],
                 'help' => 'Render the item caption beneath the media inside the popup.',
@@ -341,17 +341,17 @@ class Anchor_Gallery_Module {
                 'applies_to' => ['filterable'],
             ],
             'filter_default' => [
-                'type' => 'text', 'label' => 'Default Filter Category', 'section' => 'behavior', 'priority' => 90,
+                'type' => 'text', 'label' => 'Default Filter Category', 'section' => 'layout', 'priority' => 90,
                 'applies_to' => ['filterable'],
                 'help' => 'Category name to load active. Empty means "All".',
             ],
             'filter_all_label' => [
-                'type' => 'text', 'label' => '"All" Button Label', 'section' => 'content', 'priority' => 90,
+                'type' => 'text', 'label' => '"All" Button Label', 'section' => 'layout', 'priority' => 90,
                 'applies_to' => ['filterable'],
             ],
 
             /* ── 3.7.0: Content additions ─────────────────────────────── */
-            'show_caption' => ['type' => 'checkbox', 'label' => 'Show Caption', 'section' => 'content', 'priority' => 30, 'applies_to' => $core_layouts],
+            'show_caption' => ['type' => 'checkbox', 'label' => 'Show Caption', 'section' => 'style', 'priority' => 30, 'applies_to' => $core_layouts],
 
             /* ── 3.7.0: Style — hover ─────────────────────────────────── */
             'hover_intensity' => ['type' => 'select', 'label' => 'Hover Intensity', 'section' => 'style', 'options' => ['subtle' => 'Subtle', 'normal' => 'Normal', 'strong' => 'Strong'], 'applies_to' => $tile_layouts, 'depends_on' => ['hover_effect' => ['lift','zoom','glow','tilt','fade','slide-up','brighten','desaturate']]],
@@ -379,16 +379,16 @@ class Anchor_Gallery_Module {
             'caption_color' => ['type' => 'color',  'label' => 'Caption Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_caption' => true]],
             'caption_size'  => ['type' => 'number', 'label' => 'Caption Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_caption' => true]],
 
-            /* ── 3.7.0: Style — play button (hidden when play button is off) ───── */
-            'play_button_color'    => ['type' => 'color',  'label' => 'Play Button Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
-            'play_button_bg_color' => ['type' => 'color',  'label' => 'Play Button Background', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
-            'play_button_size'     => ['type' => 'number', 'label' => 'Play Button Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
+            /* ── 3.7.0: Video — play button (hidden when play button is off) ───── */
+            'play_button_color'    => ['type' => 'color',  'label' => 'Play Button Color', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
+            'play_button_bg_color' => ['type' => 'color',  'label' => 'Play Button Background', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
+            'play_button_size'     => ['type' => 'number', 'label' => 'Play Button Size (px, 0=auto)', 'section' => 'video', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => $tile_layouts, 'depends_on' => ['play_button_style' => ['circle','square','youtube','minimal']]],
 
             /* ── 3.7.0: Style — overlay tile gradient strength ────────── */
             'overlay_gradient_strength' => ['type' => 'number', 'label' => 'Overlay Gradient Strength (0-100)', 'section' => 'style', 'min' => 0, 'max' => 100, 'step' => 5, 'applies_to' => $tile_layouts, 'depends_on' => ['tile_style' => 'overlay'], 'help' => 'Alpha of the bottom gradient stop on the overlay tile style.'],
 
-            /* ── 3.7.0: Behavior ──────────────────────────────────────── */
-            'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'behavior', 'min' => 50, 'max' => 800, 'step' => 10, 'help' => 'Global tile / thumb / title transition speed.'],
+            /* ── 3.7.0: Layout — global transition speed ──────────────── */
+            'transition_duration_ms' => ['type' => 'number', 'label' => 'Transition Duration (ms)', 'section' => 'layout', 'min' => 50, 'max' => 800, 'step' => 10, 'applies_to' => $height_layouts, 'help' => 'Global tile / thumb / title transition speed.'],
 
             /* ── 3.7.0: Advanced — raw CSS var overrides ──────────────── */
             'css_var_bg'         => ['type' => 'color', 'label' => 'Override: Tile Background (--avg-bg)', 'section' => 'advanced', 'help' => 'Theme-level default. Style tab Tile Background Color overrides this.'],
@@ -421,18 +421,18 @@ class Anchor_Gallery_Module {
             'title_line_clamp' => ['type' => 'number', 'label' => 'Title Max Lines (0 = unlimited)', 'section' => 'style', 'min' => 0, 'max' => 6, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
             'title_line_height' => ['type' => 'number', 'label' => 'Title Line Height (×, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 3, 'step' => 0.1, 'applies_to' => $tile_layouts, 'depends_on' => ['title_position' => ['below', 'overlay']]],
 
-            /* ── 3.7.x: Style — channel ──────────────────────────────────── */
-            'channel_color' => ['type' => 'color', 'label' => 'Channel Color', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_channel' => true]],
-            'channel_size'  => ['type' => 'number', 'label' => 'Channel Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_channel' => true]],
+            /* ── 3.7.x: Video — channel ──────────────────────────────────── */
+            'channel_color' => ['type' => 'color', 'label' => 'Channel Color', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['show_channel' => true]],
+            'channel_size'  => ['type' => 'number', 'label' => 'Channel Size (px, 0=auto)', 'section' => 'video', 'min' => 0, 'max' => 22, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_channel' => true]],
 
-            /* ── 3.7.x: Style — duration badge ────────────────────────────── */
-            'duration_bg_color' => ['type' => 'color',  'label' => 'Duration Badge Background', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
-            'duration_color'    => ['type' => 'color',  'label' => 'Duration Badge Text', 'section' => 'style', 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
-            'duration_size'     => ['type' => 'number', 'label' => 'Duration Badge Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
-            'duration_radius'   => ['type' => 'number', 'label' => 'Duration Badge Radius (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
+            /* ── 3.7.x: Video — duration badge ────────────────────────────── */
+            'duration_bg_color' => ['type' => 'color',  'label' => 'Duration Badge Background', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
+            'duration_color'    => ['type' => 'color',  'label' => 'Duration Badge Text', 'section' => 'video', 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
+            'duration_size'     => ['type' => 'number', 'label' => 'Duration Badge Size (px, 0=auto)', 'section' => 'video', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
+            'duration_radius'   => ['type' => 'number', 'label' => 'Duration Badge Radius (px, 0=auto)', 'section' => 'video', 'min' => 0, 'max' => 20, 'step' => 1, 'applies_to' => $tile_layouts, 'depends_on' => ['show_duration' => true]],
 
-            /* ── 3.7.x: Style — play button extras ───────────────────────── */
-            'play_button_shadow' => ['type' => 'checkbox', 'label' => 'Play Button Drop Shadow', 'section' => 'style', 'applies_to' => $tile_layouts, 'help' => 'Uncheck for a flat play button with no drop shadow.'],
+            /* ── 3.7.x: Video — play button extras ───────────────────────── */
+            'play_button_shadow' => ['type' => 'checkbox', 'label' => 'Play Button Drop Shadow', 'section' => 'video', 'applies_to' => $tile_layouts, 'help' => 'Uncheck for a flat play button with no drop shadow.'],
 
             /* ── 3.7.x: Style — slider arrows (Nav) ──────────────────────── */
             'nav_size'   => ['type' => 'number', 'label' => 'Arrow Button Size (px, 0=auto)', 'section' => 'style', 'min' => 0, 'max' => 96, 'step' => 2, 'applies_to' => ['slider','carousel','card_carousel']],
@@ -808,7 +808,7 @@ class Anchor_Gallery_Module {
             'preset'     => 'Preset',
             'layout'     => 'Layout',
             'style'      => 'Style',
-            'behavior'   => 'Behavior',
+            'video'      => 'Video',
             'responsive' => 'Responsive',
             'advanced'   => 'Advanced',
         ];

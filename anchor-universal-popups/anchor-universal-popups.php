@@ -1194,7 +1194,9 @@ class Anchor_Universal_Popups_Module {
             }
         }
 
-        if (!$provider || !$video_id) {
+        // Facebook uses the full URL (no extracted ID), so it is valid with an
+        // empty $video_id; all other providers still require an ID.
+        if (!$provider || ($provider !== 'facebook' && !$video_id)) {
             return '<!-- Universal Popup: Invalid video URL -->';
         }
 

@@ -265,6 +265,7 @@
       +   '<input type="text" name="'+ prefix +'[categories]"   value="'+ escapeAttr(item.categories || '') +'"   class="avg-item-cats"        style="display:none" />'
       +   '<input type="url"  name="'+ prefix +'[link_url]"     value="'+ escapeAttr(item.link_url || '') +'"     class="avg-item-link-url"    style="display:none" />'
       +   '<input type="text" name="'+ prefix +'[link_target]"  value="'+ escapeAttr(item.link_target || '_self') +'" class="avg-item-link-target" style="display:none" />'
+      +   '<input type="hidden" name="'+ prefix +'[aspect]"      value="'+ escapeAttr(item.aspect || '') +'"      class="avg-item-aspect" />'
       + '</div>';
     return html;
   }
@@ -293,7 +294,8 @@
       caption:             $row.find('.avg-item-caption').val() || '',
       categories:          $row.find('.avg-item-cats').val() || '',
       link_url:            $row.find('.avg-item-link-url').val() || '',
-      link_target:         $row.find('.avg-item-link-target').val() || '_self'
+      link_target:         $row.find('.avg-item-link-target').val() || '_self',
+      aspect:              $row.find('.avg-item-aspect').val() || ''
     };
   }
 
@@ -357,6 +359,7 @@
     $p.find('.avg-insp-html').val(item.html);
     $p.find('.avg-insp-link-url').val(item.link_url);
     $p.find('.avg-insp-link-target').val(item.link_target);
+    $p.find('.avg-insp-aspect').val(item.aspect || '');
 
     syncInspectorRows(item.type);
     syncInspectorImagePreview(item.attachment_id);
@@ -401,7 +404,8 @@
       categories:  '.avg-item-cats',
       html:        '.avg-item-html',
       link_url:    '.avg-item-link-url',
-      link_target: '.avg-item-link-target'
+      link_target: '.avg-item-link-target',
+      aspect:      '.avg-item-aspect'
     };
     if (!map[field]) return;
     $activeRow.find(map[field]).val(value);
@@ -499,7 +503,7 @@
       text.split(/[\r\n]+/).forEach(function(line){
         line = line.trim();
         if (!line) return;
-        if (/youtu\.?be|vimeo\.com/.test(line)) {
+        if (/youtu\.?be|youtube\.com|vimeo\.com|facebook\.com|fb\.watch/.test(line)) {
           addItem({ type: 'video', url: line });
         }
       });
@@ -549,6 +553,7 @@
     $(document).on('input change', '.avg-insp-html',        function(){ commitInspectorField('html',        $(this).val()); });
     $(document).on('input change', '.avg-insp-link-url',    function(){ commitInspectorField('link_url',    $(this).val()); });
     $(document).on('change',       '.avg-insp-link-target', function(){ commitInspectorField('link_target', $(this).val()); });
+    $(document).on('change', '.avg-insp-aspect', function(){ commitInspectorField('aspect', $(this).val()); });
 
     $(document).on('click', '.avg-insp-choose-image', function(){
       if (!$activeRow) return; openImagePicker($activeRow);

@@ -1067,7 +1067,17 @@ class Anchor_Gallery_Module {
                 </p>
                 <p class="avg-insp-row-video">
                     <label><strong>Video URL</strong></label>
-                    <input type="url" class="avg-insp-url widefat" placeholder="https://youtube.com/watch?v=..." />
+                    <input type="url" class="avg-insp-url widefat" placeholder="YouTube, Vimeo, or Facebook video / reel URL" />
+                </p>
+                <p class="avg-insp-row-video">
+                    <label><strong>Orientation</strong></label>
+                    <select class="avg-insp-aspect widefat">
+                        <option value="">Auto (use gallery setting)</option>
+                        <option value="16:9">Landscape (16:9)</option>
+                        <option value="9:16">Vertical / Reel (9:16)</option>
+                        <option value="1:1">Square (1:1)</option>
+                    </select>
+                    <span class="description">For Facebook reels choose Vertical. Also sets a custom thumbnail via "Custom Thumbnail" below.</span>
                 </p>
                 <p class="avg-insp-row-image">
                     <label><strong>Image</strong></label><br>

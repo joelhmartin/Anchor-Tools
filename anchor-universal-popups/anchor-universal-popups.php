@@ -293,6 +293,12 @@ class Anchor_Universal_Popups_Module {
             return ['provider' => 'vimeo', 'id' => $matches[1]];
         }
 
+        // Facebook videos and reels. The embed plugin uses the full URL (href),
+        // so there is no separate ID — callers use video_url for Facebook.
+        if (preg_match('~(?:facebook\.com|fb\.watch)~i', $url)) {
+            return ['provider' => 'facebook', 'id' => ''];
+        }
+
         return null;
     }
 
@@ -504,7 +510,7 @@ class Anchor_Universal_Popups_Module {
                   $video_url_display = $this->reconstruct_video_url($m['mode'], $m['video_id']);
               }
               ?>
-              <input type="url" name="up_video_url" value="<?php echo esc_attr($video_url_display); ?>" placeholder="https://youtube.com/watch?v=... or https://vimeo.com/..." class="widefat"/>
+              <input type="url" name="up_video_url" value="<?php echo esc_attr($video_url_display); ?>" placeholder="YouTube, Vimeo, or Facebook video / reel URL" class="widefat"/>
               <p class="description">Paste the full YouTube or Vimeo URL. The video ID will be extracted automatically.</p>
             </div>
 
@@ -966,8 +972,12 @@ class Anchor_Universal_Popups_Module {
                     }
                 }
 
-                // Fetch metadata
-                if ($provider && $video_id) {
+                // Fetch metadata. Facebook has no public thumbnail API, so it
+                // always uses the manually-set custom thumbnail; YouTube/Vimeo
+                // auto-fetch as before.
+                if ($provider === 'facebook') {
+                    $video_thumb = $m['custom_thumb'];
+                } elseif ($provider && $video_id) {
                     $meta = $this->fetch_video_meta($provider, $video_id, $m['thumb_size']);
                     $video_thumb = ! empty( $m['custom_thumb'] ) ? $m['custom_thumb'] : $meta['thumb'];
                     $video_title = $meta['title'];

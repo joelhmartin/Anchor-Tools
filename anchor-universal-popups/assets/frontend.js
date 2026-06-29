@@ -159,6 +159,28 @@
     return 'https://player.vimeo.com/video/' + encodeURIComponent(id) + '?' + p.toString();
   }
 
+  function buildFacebookSrc(url, opts){
+    opts = opts || {};
+    var p = new URLSearchParams({
+      href: url,
+      show_text: 'false',
+      autoplay: opts.autoplay ? 'true' : 'false'
+    });
+    // Facebook only autoplays muted.
+    if(opts.autoplay || opts.muted){
+      p.set('mute', '1');
+    }
+    return 'https://www.facebook.com/plugins/video.php?' + p.toString();
+  }
+
+  // Build the embed src for any provider. For Facebook, `ref` is the full
+  // video URL; for YouTube/Vimeo it is the video id.
+  function getVideoSrc(provider, ref, opts){
+    if(provider === 'facebook') return buildFacebookSrc(ref, opts);
+    if(provider === 'vimeo')    return buildVimeoSrc(ref, opts);
+    return buildYouTubeSrc(ref, opts);
+  }
+
   /**
    * Activate <script> tags inside a container after innerHTML insertion.
    * innerHTML does not execute scripts, so we replace each <script> with
@@ -315,9 +337,7 @@
     if(modal._preloaded){
       playPreloaded(modal, provider, true);
     } else if(frameWrap){
-      var src = provider === 'youtube'
-        ? buildYouTubeSrc(id, { autoplay: true, muted: true })
-        : buildVimeoSrc(id, { autoplay: true, muted: true });
+      var src = getVideoSrc(provider, id, { autoplay: true, muted: true });
       frameWrap.innerHTML = videoIframe(src);
     }
 
@@ -381,11 +401,18 @@
     if(!frameWrap) return;
 
     var opts = { autoplay: !!autoplay, muted: !!(extra && extra.muted) };
-    if(modal._preloaded){
+    if(provider === 'facebook'){
+      var fbSrc = getVideoSrc(provider, id, { autoplay: !!autoplay, muted: !!autoplay });
+      frameWrap.innerHTML = videoIframe(fbSrc);
+      // Facebook-only: override the default 16/9 CSS aspect-ratio on the frame wrapper
+      // so vertical reels (9:16) aren't letterboxed. YouTube/Vimeo are unaffected.
+      var fbRatioMap = {'16:9':'16 / 9','4:3':'4 / 3','1:1':'1 / 1','9:16':'9 / 16','21:9':'21 / 9'};
+      frameWrap.style.aspectRatio = fbRatioMap[extra && extra.aspect] || '16 / 9';
+    } else if(modal._preloaded){
       // Reuse the player that's already warmed up in the background.
       if(autoplay){ playPreloaded(modal, provider, opts.muted); }
     } else {
-      var src = provider === 'youtube' ? buildYouTubeSrc(id, opts) : buildVimeoSrc(id, opts);
+      var src = getVideoSrc(provider, id, opts);
       frameWrap.innerHTML = videoIframe(src);
     }
 
@@ -476,8 +503,14 @@
     // Fullscreen takeover is its own self-anchoring mode (driven by the inline
     // shortcode card, not the trigger system) — handled entirely separately.
     if(popupStyle === 'fullscreen'){
-      setupFullscreenTakeover(sn, isVideo);
-      return;
+      // Fullscreen takeover relies on the postMessage preload + scroll-driven
+      // play mechanism, which Facebook's embed plugin doesn't support. Fall
+      // back to a normal modal for Facebook so the card still opens on click.
+      if(resolveProvider(sn) !== 'facebook'){
+        setupFullscreenTakeover(sn, isVideo);
+        return;
+      }
+      popupStyle = 'modal';
     }
 
     var modal = buildModalShell(isVideo, popupStyle);
@@ -533,7 +566,8 @@
         // browsers block unmuted autoplay for page_load/scroll-triggered playback.
         var userClick = (trig && (trig.type === 'class' || trig.type === 'id'));
         var muteForAutoplay = !!sn.autoplay && !userClick;
-        openVideo(modal, provider, sn.video_id, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay });
+        var vidRef = (provider === 'facebook') ? sn.video_url : sn.video_id;
+        openVideo(modal, provider, vidRef, !!sn.autoplay, { html: sn.html, css: sn.css, js: sn.js, muted: muteForAutoplay, aspect: sn.aspect_ratio });
       } else {
         // Use pre-rendered shortcode content if in shortcode mode, otherwise use HTML
         var content = (sn.mode === 'shortcode' && sn.shortcode_content) ? sn.shortcode_content : sn.html;

@@ -293,6 +293,12 @@ class Anchor_Universal_Popups_Module {
             return ['provider' => 'vimeo', 'id' => $matches[1]];
         }
 
+        // Facebook videos and reels. The embed plugin uses the full URL (href),
+        // so there is no separate ID — callers use video_url for Facebook.
+        if (preg_match('~(?:facebook\.com|fb\.watch)~i', $url)) {
+            return ['provider' => 'facebook', 'id' => ''];
+        }
+
         return null;
     }
 
@@ -504,8 +510,8 @@ class Anchor_Universal_Popups_Module {
                   $video_url_display = $this->reconstruct_video_url($m['mode'], $m['video_id']);
               }
               ?>
-              <input type="url" name="up_video_url" value="<?php echo esc_attr($video_url_display); ?>" placeholder="https://youtube.com/watch?v=... or https://vimeo.com/..." class="widefat"/>
-              <p class="description">Paste the full YouTube or Vimeo URL. The video ID will be extracted automatically.</p>
+              <input type="url" name="up_video_url" value="<?php echo esc_attr($video_url_display); ?>" placeholder="YouTube, Vimeo, or Facebook video / reel URL" class="widefat"/>
+              <p class="description">Paste a YouTube, Vimeo, or Facebook video / reel URL.</p>
             </div>
 
             <div class="up-field" data-up-show-when-mode="video">
@@ -966,8 +972,12 @@ class Anchor_Universal_Popups_Module {
                     }
                 }
 
-                // Fetch metadata
-                if ($provider && $video_id) {
+                // Fetch metadata. Facebook has no public thumbnail API, so it
+                // always uses the manually-set custom thumbnail; YouTube/Vimeo
+                // auto-fetch as before.
+                if ($provider === 'facebook') {
+                    $video_thumb = $m['custom_thumb'];
+                } elseif ($provider && $video_id) {
                     $meta = $this->fetch_video_meta($provider, $video_id, $m['thumb_size']);
                     $video_thumb = ! empty( $m['custom_thumb'] ) ? $m['custom_thumb'] : $meta['thumb'];
                     $video_title = $meta['title'];
@@ -1117,8 +1127,9 @@ class Anchor_Universal_Popups_Module {
     public function add_video_preconnect($hints, $relation_type){
         if ($relation_type !== 'preconnect') return $hints;
         $map = [
-            'youtube' => ['https://www.youtube.com', 'https://i.ytimg.com'],
-            'vimeo'   => ['https://player.vimeo.com', 'https://i.vimeocdn.com'],
+            'youtube'  => ['https://www.youtube.com', 'https://i.ytimg.com'],
+            'vimeo'    => ['https://player.vimeo.com', 'https://i.vimeocdn.com'],
+            'facebook' => ['https://www.facebook.com'],
         ];
         foreach (array_keys($this->preconnect_providers) as $provider) {
             if (!empty($map[$provider])) {
@@ -1184,7 +1195,9 @@ class Anchor_Universal_Popups_Module {
             }
         }
 
-        if (!$provider || !$video_id) {
+        // Facebook uses the full URL (no extracted ID), so it is valid with an
+        // empty $video_id; all other providers still require an ID.
+        if (!$provider || ($provider !== 'facebook' && !$video_id)) {
             return '<!-- Universal Popup: Invalid video URL -->';
         }
 

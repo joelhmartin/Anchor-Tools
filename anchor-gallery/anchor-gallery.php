@@ -1067,7 +1067,17 @@ class Anchor_Gallery_Module {
                 </p>
                 <p class="avg-insp-row-video">
                     <label><strong>Video URL</strong></label>
-                    <input type="url" class="avg-insp-url widefat" placeholder="https://youtube.com/watch?v=..." />
+                    <input type="url" class="avg-insp-url widefat" placeholder="YouTube, Vimeo, or Facebook video / reel URL" />
+                </p>
+                <p class="avg-insp-row-video">
+                    <label><strong>Orientation</strong></label>
+                    <select class="avg-insp-aspect widefat">
+                        <option value="">Auto (use gallery setting)</option>
+                        <option value="16:9">Landscape (16:9)</option>
+                        <option value="9:16">Vertical / Reel (9:16)</option>
+                        <option value="1:1">Square (1:1)</option>
+                    </select>
+                    <span class="description">For Facebook reels choose Vertical. Also sets a custom thumbnail via "Custom Thumbnail" below.</span>
                 </p>
                 <p class="avg-insp-row-image">
                     <label><strong>Image</strong></label><br>
@@ -2249,6 +2259,7 @@ class Anchor_Gallery_Module {
                      data-provider="<?php echo esc_attr($video['provider']); ?>"
                      data-video-id="<?php echo esc_attr($video['id']); ?>"
                      data-url="<?php echo esc_attr($video['raw_url'] ?? ''); ?>"
+                     <?php if ( ! empty( $video['aspect'] ) ): ?>data-aspect="<?php echo esc_attr($video['aspect']); ?>"<?php endif; ?>
                      <?php if (!empty($video['duration'])): ?>data-duration="<?php echo esc_attr($video['duration']); ?>"<?php endif; ?>
                      <?php else: ?>
                      data-full-url="<?php echo esc_url($video['full_url'] ?? $video['thumb']); ?>"
@@ -2535,6 +2546,7 @@ class Anchor_Gallery_Module {
                  data-provider="<?php echo esc_attr($first['provider']); ?>"
                  data-video-id="<?php echo esc_attr($first['id']); ?>"
                  data-url="<?php echo esc_attr($first['raw_url'] ?? ''); ?>"
+                 <?php if ( ! empty( $first['aspect'] ) ): ?>data-aspect="<?php echo esc_attr($first['aspect']); ?>"<?php endif; ?>
                  <?php else: ?>
                  data-full-url="<?php echo esc_url($first['full_url'] ?? $first['thumb']); ?>"
                  <?php endif; ?>>
@@ -2778,6 +2790,9 @@ class Anchor_Gallery_Module {
                 if ( $c !== '' && ! in_array( $c, $categories, true ) ) $categories[] = $c;
             }
 
+            $aspect = (string) ( $row['aspect'] ?? '' );
+            if ( ! in_array( $aspect, [ '16:9', '9:16', '1:1' ], true ) ) $aspect = '';
+
             $extras = [
                 'alt'                 => $alt,
                 'caption'             => $caption,
@@ -2786,6 +2801,7 @@ class Anchor_Gallery_Module {
                 'link_target'         => $link_target,
                 'categories'          => $categories,
                 'category'            => $categories ? $categories[0] : ( (string) ( $row['category'] ?? '' ) ),
+                'aspect'              => $aspect,
             ];
 
             if ( $type === 'html' ) {
@@ -2866,6 +2882,28 @@ class Anchor_Gallery_Module {
                 'fallback_thumb' => '',
                 'label'          => 'Vimeo Video',
                 'raw_url'        => $url,
+                'duration'       => '',
+                'channel'        => '',
+            ];
+        }
+
+        // Facebook videos and reels. Facebook's embed plugin needs the full
+        // page URL (href), not an extracted ID, so we store the canonical URL
+        // as the "id". fb.watch short links and already-formed plugin URLs are
+        // normalized to the real video URL where possible.
+        if (preg_match('~(?:facebook\.com|fb\.watch)~i', $url)) {
+            $canonical = $url;
+            // Unwrap an already-formed embed URL: plugins/video.php?href=ENCODED
+            if (preg_match('~plugins/video\.php\?.*\bhref=([^&]+)~i', $url, $m)) {
+                $canonical = urldecode($m[1]);
+            }
+            return [
+                'provider'       => 'facebook',
+                'id'             => $canonical,
+                'thumb'          => '',
+                'fallback_thumb' => '',
+                'label'          => 'Facebook Video',
+                'raw_url'        => $canonical,
                 'duration'       => '',
                 'channel'        => '',
             ];

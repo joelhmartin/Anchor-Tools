@@ -1,0 +1,35 @@
+/* Anchor Post Display — builder-specific admin styles. */
+
+.apd-preview {
+    background: #fff;
+    padding: 16px;
+    border: 1px solid #e1e5ea;
+    border-radius: 6px;
+    transition: max-width .2s ease;
+}
+
+.apd-preview__hint {
+    color: #646970;
+    font-style: italic;
+    margin: 0;
+}
+
+.apd-source__group {
+    border: 1px solid #e1e5ea;
+    padding: 12px;
+    border-radius: 4px;
+    margin-bottom: 14px;
+}
+
+.apd-source__group legend {
+    padding: 0 6px;
+}
+
+.apd-source__check {
+    display: inline-block;
+    margin: 0 14px 6px 0;
+}
+
+.apd-source p {
+    margin: 10px 0;
+}

@@ -5,6 +5,8 @@
 
 if (!defined('ABSPATH')) exit;
 
+require_once __DIR__ . '/includes/class-up-schedule.php';
+
 class Anchor_Universal_Popups_Module {
     const CPT = 'anchor_popup';
     const TAX = 'anchor_popup_group';
@@ -211,6 +213,10 @@ class Anchor_Universal_Popups_Module {
             // exclusions
             'exclude_urls' => '',           // comma separated list, full or relative
             'exclude_cats' => '',           // comma separated list of slugs or IDs
+
+            // schedule (optional date range; '' on either side means unbounded)
+            'schedule_start' => '',         // local 'Y-m-d\TH:i', blank = live immediately
+            'schedule_end'   => '',         // local 'Y-m-d\TH:i', blank = runs forever
         ];
     }
 
@@ -823,7 +829,8 @@ class Anchor_Universal_Popups_Module {
             'trigger_type','trigger_value','delay_ms',
             'scroll_mode','scroll_percent','scroll_target',
             'frequency_mode','cooldown_minutes',
-            'exclude_urls','exclude_cats'
+            'exclude_urls','exclude_cats',
+            'schedule_start','schedule_end'
         ];
         foreach ($fields as $f){
             $key = "up_$f";
@@ -831,6 +838,9 @@ class Anchor_Universal_Popups_Module {
             if (in_array($f, ['html','shortcode','css','js'], true)){
                 // allow markup in these fields in admin
                 update_post_meta($post_id, $key, $val);
+            } elseif (in_array($f, ['schedule_start','schedule_end'], true)){
+                // strict format validation; anything malformed stores as '' (unbounded)
+                update_post_meta($post_id, $key, Anchor_UP_Schedule::sanitize_local($val));
             } else {
                 update_post_meta($post_id, $key, sanitize_text_field($val));
             }

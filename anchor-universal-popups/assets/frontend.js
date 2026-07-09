@@ -685,9 +685,23 @@
     });
   }
 
-  // Build a lookup map for snippets by ID
+  // Schedule gate. UP_SNIPPETS is inlined into HTML that may be served from a
+  // full-page cache, so the PHP gate alone cannot be trusted at fire time.
+  // Bounds are absolute UTC epoch seconds, so the visitor's timezone does not
+  // matter — only clock skew, which is immaterial at day-scale windows.
+  function withinSchedule(sn){
+    var s = (sn && sn.schedule) || {};
+    var now = Math.floor(Date.now() / 1000);
+    if (s.starts && now <  s.starts) return false;
+    if (s.ends   && now >= s.ends)   return false;
+    return true;
+  }
+
+  // Build a lookup map for snippets by ID. Out-of-window popups are omitted, so
+  // a cached shortcode-rendered card finds no snippet and its click does nothing.
   var snippetMap = {};
   UP_SNIPPETS.forEach(function(sn) {
+    if (!withinSchedule(sn)) return;
     snippetMap[sn.id] = sn;
   });
 
@@ -743,6 +757,7 @@
 
   document.addEventListener('DOMContentLoaded', function(){
     UP_SNIPPETS.forEach(function(sn){
+      if (!withinSchedule(sn)) return;
       try{ attach(sn); }catch(e){}
     });
     processPreloadQueue();

@@ -521,6 +521,10 @@
     }
 
     function triggerOpen(){
+      // Re-check at fire time, not just at bind time: a page may sit open across a
+      // window boundary, and delay_ms timers / scroll observers fire long after attach().
+      if(!withinSchedule(sn)) return;
+
       // Close any other open popups first
       closeAllPopups(modal);
 
@@ -664,7 +668,7 @@
     preloadQueue.unshift({ modal: modal, provider: provider, id: sn.video_id, muted: true });
 
     // Clicking the thumbnail expands from that card too (handled in click listener).
-    sn._fsExpand = function(anchor){ expandTakeover(modal, provider, sn.video_id, anchor || anchors[0]); };
+    sn._fsExpand = function(anchor){ if(!withinSchedule(sn)) return; expandTakeover(modal, provider, sn.video_id, anchor || anchors[0]); };
 
     var EXPAND_AT = 0.5; // ≥50% of the card visible → expand; gone → collapse
     if(!('IntersectionObserver' in window)) return; // no IO → click-to-expand only
@@ -674,7 +678,7 @@
         for(var k = 0; k < entries.length; k++){
           var en = entries[k];
           if(en.isIntersecting && en.intersectionRatio >= EXPAND_AT){
-            if(!modal._expanded){ expandTakeover(modal, provider, sn.video_id, anchor); }
+            if(!modal._expanded && withinSchedule(sn)){ expandTakeover(modal, provider, sn.video_id, anchor); }
           } else if(!en.isIntersecting || en.intersectionRatio <= 0.01){
             // Collapse only when the card that opened it has scrolled away.
             if(modal._expanded && modal._anchor === anchor){ collapseTakeover(modal); }
@@ -685,9 +689,23 @@
     });
   }
 
-  // Build a lookup map for snippets by ID
+  // Schedule gate. UP_SNIPPETS is inlined into HTML that may be served from a
+  // full-page cache, so the PHP gate alone cannot be trusted at fire time.
+  // Bounds are absolute UTC epoch seconds, so the visitor's timezone does not
+  // matter — only clock skew, which is immaterial at day-scale windows.
+  function withinSchedule(sn){
+    var s = (sn && sn.schedule) || {};
+    var now = Math.floor(Date.now() / 1000);
+    if (s.starts && now <  s.starts) return false;
+    if (s.ends   && now >= s.ends)   return false;
+    return true;
+  }
+
+  // Build a lookup map for snippets by ID. Out-of-window popups are omitted, so
+  // a cached shortcode-rendered card finds no snippet and its click does nothing.
   var snippetMap = {};
   UP_SNIPPETS.forEach(function(sn) {
+    if (!withinSchedule(sn)) return;
     snippetMap[sn.id] = sn;
   });
 
@@ -743,6 +761,7 @@
 
   document.addEventListener('DOMContentLoaded', function(){
     UP_SNIPPETS.forEach(function(sn){
+      if (!withinSchedule(sn)) return;
       try{ attach(sn); }catch(e){}
     });
     processPreloadQueue();

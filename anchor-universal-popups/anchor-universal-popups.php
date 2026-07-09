@@ -60,6 +60,37 @@ class Anchor_Universal_Popups_Module {
         ]);
     }
 
+    /**
+     * Human-readable schedule state for a popup. Computed, never stored.
+     * Returns [ string $state, string $label ].
+     */
+    private function schedule_status($post_id){
+        $tz    = wp_timezone();
+        $start = Anchor_UP_Schedule::to_epoch(get_post_meta($post_id, 'up_schedule_start', true), $tz);
+        $end   = Anchor_UP_Schedule::to_epoch(get_post_meta($post_id, 'up_schedule_end', true), $tz);
+        $state = Anchor_UP_Schedule::state($start, $end, time());
+
+        switch ($state) {
+            case 'pending':
+                $label = sprintf('Scheduled · starts %s', wp_date('M j', $start));
+                break;
+            case 'active':
+                $label = $end !== null
+                    ? sprintf('Active · ends %s', wp_date('M j', $end))
+                    : 'Active';
+                break;
+            case 'expired':
+                $label = sprintf('Expired %s', wp_date('M j', $end));
+                break;
+            case 'invalid':
+                $label = 'Invalid range';
+                break;
+            default:
+                $label = '—';
+        }
+        return [$state, $label];
+    }
+
     public function admin_columns($columns) {
         $new = [];
         foreach ($columns as $k => $v) {
@@ -67,6 +98,7 @@ class Anchor_Universal_Popups_Module {
             if ($k === 'title') {
                 $new['up_shortcode'] = 'Shortcode';
                 $new['up_mode'] = 'Mode';
+                $new['up_schedule'] = 'Schedule';
             }
         }
         return $new;
@@ -79,6 +111,14 @@ class Anchor_Universal_Popups_Module {
             $mode = get_post_meta($post_id, 'up_mode', true);
             if (in_array($mode, ['youtube', 'vimeo'], true)) $mode = 'video';
             echo esc_html(ucfirst($mode ?: 'html'));
+        } elseif ($column === 'up_schedule') {
+            list($state, $label) = $this->schedule_status($post_id);
+            $dim = in_array($state, ['expired', 'invalid'], true);
+            printf(
+                '<span style="%s">%s</span>',
+                $dim ? 'color:#b32d2e;' : '',
+                esc_html($label)
+            );
         }
     }
 
@@ -482,6 +522,7 @@ class Anchor_Universal_Popups_Module {
     public function add_metaboxes(){
         add_meta_box('up_popup_code', 'Popup Content (HTML, CSS, JS or Video)', [$this, 'render_box_code'], self::CPT, 'normal', 'high');
         add_meta_box('up_popup_settings', 'Trigger, Frequency, Exclusions', [$this, 'render_box_settings'], self::CPT, 'side');
+        add_meta_box('up_popup_schedule', 'Schedule', [$this, 'render_box_schedule'], self::CPT, 'side');
         add_meta_box('up_popup_preview', 'Live Preview', [$this, 'render_box_preview'], self::CPT, 'normal', 'default');
     }
 
@@ -812,6 +853,42 @@ class Anchor_Universal_Popups_Module {
         ?>
         <p class="description">Live preview renders inside an isolated frame that loads your site's CSS, so colors, fonts and <code>:root</code> variables resolve as on the front end.</p>
         <iframe id="up-preview-frame" style="width:100%; min-height:400px; border:1px solid #ccd0d4; border-radius:8px; background:#fff;"></iframe>
+        <?php
+    }
+
+    public function render_box_schedule($post){
+        $m = $this->get_meta($post->ID);
+        list($state, $label) = $this->schedule_status($post->ID);
+
+        $badge_bg = '#f0f0f1';
+        if ($state === 'active')  $badge_bg = '#d5e5d5';
+        if ($state === 'pending') $badge_bg = '#fcf3d7';
+        if ($state === 'expired' || $state === 'invalid') $badge_bg = '#f7d9d9';
+        ?>
+        <p style="margin-top:0;">
+          <span style="display:inline-block;padding:3px 8px;border-radius:3px;background:<?php echo esc_attr($badge_bg); ?>;">
+            <?php echo esc_html($label); ?>
+          </span>
+        </p>
+
+        <p>
+          <label for="up_schedule_start"><strong>Start</strong></label><br/>
+          <input type="datetime-local" id="up_schedule_start" name="up_schedule_start"
+                 value="<?php echo esc_attr($m['schedule_start']); ?>" style="width:100%;"/>
+          <span class="description">Leave blank to go live immediately.</span>
+        </p>
+
+        <p>
+          <label for="up_schedule_end"><strong>End</strong></label><br/>
+          <input type="datetime-local" id="up_schedule_end" name="up_schedule_end"
+                 value="<?php echo esc_attr($m['schedule_end']); ?>" style="width:100%;"/>
+          <span class="description">Leave blank to run forever.</span>
+        </p>
+
+        <p class="description">
+          Times use the site timezone (<?php echo esc_html(wp_timezone_string()); ?>).
+          A schedule only ever hides a published popup — it never publishes a draft.
+        </p>
         <?php
     }
 

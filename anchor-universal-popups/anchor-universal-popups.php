@@ -1136,10 +1136,16 @@ class Anchor_Universal_Popups_Module {
             return null;
         }
 
-        // Schedule: same cache envelope as get_published_popups().
+        // Schedule: strict gate, NOT the wide cache envelope used by get_published_popups().
+        // shortcode_render() emits this popup's real content server-side — its CSS, its HTML and
+        // a <script> block that executes — and nothing on the client gates that markup. So the
+        // envelope's pending/recently-expired grace would leak a promo's content up to a day early
+        // and keep it up a day late. Server-rendered content must be gated on the actual window.
+        // Cost: on a full-page-cached page an embed appears/disappears only once the page
+        // regenerates. Showing it late is strictly safer than leaking it early.
         $sched_meta = $this->get_meta($post->ID);
         list($sched_start, $sched_end, $sched_grace) = $this->schedule_bounds($sched_meta);
-        if (!Anchor_UP_Schedule::should_ship($sched_start, $sched_end, time(), $sched_grace)) {
+        if (!Anchor_UP_Schedule::is_active($sched_start, $sched_end, time())) {
             return null;
         }
 

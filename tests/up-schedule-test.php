@@ -88,5 +88,23 @@ check( Anchor_UP_Schedule::should_ship( $NOW + 10, null, $NOW, $DAY ) === true, 
 check( Anchor_UP_Schedule::should_ship( $NOW + $DAY, null, $NOW, $DAY ) === true, 'start exactly at grace ships' );
 check( Anchor_UP_Schedule::should_ship( $NOW + $DAY + 1, null, $NOW, $DAY ) === false, 'start one second beyond grace does not ship' );
 
+// --- property: the ship-set is a strict superset of the fire-set -----------
+// Anything active must ship, at every grace value. If this ever fails, a live
+// popup could be dropped from the payload and silently never render.
+$violations = 0;
+foreach ( [ 0, 1, 3600, 86400 ] as $g ) {
+    foreach ( [ null, 100, 500, 900 ] as $s ) {
+        foreach ( [ null, 100, 500, 900 ] as $e ) {
+            foreach ( [ 0, 99, 100, 101, 499, 500, 501, 899, 900, 901, 5000 ] as $n ) {
+                if ( Anchor_UP_Schedule::is_active( $s, $e, $n )
+                    && ! Anchor_UP_Schedule::should_ship( $s, $e, $n, $g ) ) {
+                    $violations++;
+                }
+            }
+        }
+    }
+}
+check( $violations === 0, 'is_active implies should_ship for all grace values' );
+
 echo $fail ? "\n$fail FAILED\n" : "\nALL PASSED\n";
 exit( $fail ? 1 : 0 );

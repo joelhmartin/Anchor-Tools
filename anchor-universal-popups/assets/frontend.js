@@ -521,6 +521,10 @@
     }
 
     function triggerOpen(){
+      // Re-check at fire time, not just at bind time: a page may sit open across a
+      // window boundary, and delay_ms timers / scroll observers fire long after attach().
+      if(!withinSchedule(sn)) return;
+
       // Close any other open popups first
       closeAllPopups(modal);
 
@@ -664,7 +668,7 @@
     preloadQueue.unshift({ modal: modal, provider: provider, id: sn.video_id, muted: true });
 
     // Clicking the thumbnail expands from that card too (handled in click listener).
-    sn._fsExpand = function(anchor){ expandTakeover(modal, provider, sn.video_id, anchor || anchors[0]); };
+    sn._fsExpand = function(anchor){ if(!withinSchedule(sn)) return; expandTakeover(modal, provider, sn.video_id, anchor || anchors[0]); };
 
     var EXPAND_AT = 0.5; // ≥50% of the card visible → expand; gone → collapse
     if(!('IntersectionObserver' in window)) return; // no IO → click-to-expand only
@@ -674,7 +678,7 @@
         for(var k = 0; k < entries.length; k++){
           var en = entries[k];
           if(en.isIntersecting && en.intersectionRatio >= EXPAND_AT){
-            if(!modal._expanded){ expandTakeover(modal, provider, sn.video_id, anchor); }
+            if(!modal._expanded && withinSchedule(sn)){ expandTakeover(modal, provider, sn.video_id, anchor); }
           } else if(!en.isIntersecting || en.intersectionRatio <= 0.01){
             // Collapse only when the card that opened it has scrolled away.
             if(modal._expanded && modal._anchor === anchor){ collapseTakeover(modal); }

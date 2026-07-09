@@ -930,6 +930,20 @@ class Anchor_Universal_Popups_Module {
         return false;
     }
 
+    /**
+     * Resolve a popup's schedule bounds to absolute UTC epochs, plus the
+     * cache-envelope grace. Returns [ ?int $start, ?int $end, int $grace ].
+     */
+    private function schedule_bounds(array $m){
+        $tz    = wp_timezone();
+        $grace = (int) apply_filters('anchor_popup_schedule_cache_grace', DAY_IN_SECONDS);
+        return [
+            Anchor_UP_Schedule::to_epoch($m['schedule_start'], $tz),
+            Anchor_UP_Schedule::to_epoch($m['schedule_end'], $tz),
+            $grace,
+        ];
+    }
+
     private function get_published_popups(){
         $q = new WP_Query([
             'post_type' => self::CPT,
@@ -940,6 +954,12 @@ class Anchor_Universal_Popups_Module {
         $items = [];
         foreach ($q->posts as $p){
             $m = $this->get_meta($p->ID);
+
+            // Schedule: drop popups outside the cache envelope. Popups that are
+            // merely pending or just-expired still ship — the JS gate opens and
+            // closes their window on pages served from the full-page cache.
+            list($sched_start, $sched_end, $sched_grace) = $this->schedule_bounds($m);
+            if (!Anchor_UP_Schedule::should_ship($sched_start, $sched_end, time(), $sched_grace)) continue;
 
             // For shortcode mode, process the shortcode content server-side
             $rendered_shortcode = '';
@@ -1023,6 +1043,11 @@ class Anchor_Universal_Popups_Module {
                 ],
                 'exclude_urls' => $m['exclude_urls'],
                 'exclude_cats' => $m['exclude_cats'],
+                'schedule' => [
+                    // Absolute UTC epochs, so the visitor's timezone is irrelevant.
+                    'starts' => $sched_start,
+                    'ends'   => $sched_end,
+                ],
             ];
         }
         return $items;
@@ -1033,6 +1058,14 @@ class Anchor_Universal_Popups_Module {
         if (!$post || $post->post_type !== self::CPT || $post->post_status !== 'publish') {
             return null;
         }
+
+        // Schedule: same cache envelope as get_published_popups().
+        $sched_meta = $this->get_meta($post->ID);
+        list($sched_start, $sched_end, $sched_grace) = $this->schedule_bounds($sched_meta);
+        if (!Anchor_UP_Schedule::should_ship($sched_start, $sched_end, time(), $sched_grace)) {
+            return null;
+        }
+
         return $post;
     }
 

@@ -7,11 +7,14 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+require_once __DIR__ . '/includes/class-apd-renderer.php';
+require_once __DIR__ . '/includes/class-apd-display-cpt.php';
+
 class Anchor_Post_Display_Module {
 
     const OPTION_KEY = 'anchor_post_display_options';
     const PAGE_SLUG  = 'anchor-post-display';
-    const VERSION    = '1.2.0';
+    const VERSION    = '2.0.0';
 
     private $defaults = [
         'placeholder'  => 'Search...',
@@ -39,7 +42,13 @@ class Anchor_Post_Display_Module {
 
     private $did_enqueue = false;
 
+    /** @var Anchor_APD_Display_CPT */
+    private $cpt;
+
     public function __construct() {
+        // Editable display CPT (gallery-style builder).
+        $this->cpt = new Anchor_APD_Display_CPT();
+
         // Admin.
         add_filter( 'anchor_settings_tabs',  [ $this, 'register_tab' ], 90 );
         add_action( 'admin_init',            [ $this, 'register_settings' ] );
@@ -186,6 +195,15 @@ class Anchor_Post_Display_Module {
         </form>
         <hr>
         <h2><?php esc_html_e( 'Shortcode Reference', 'anchor-schema' ); ?></h2>
+        <p><strong><?php esc_html_e( 'Post Displays (new):', 'anchor-schema' ); ?></strong>
+        <?php
+        printf(
+            /* translators: %s: example shortcode */
+            esc_html__( 'Build reusable, fully-configurable displays under %1$s in the admin menu, then embed one with %2$s. Each display has its own layout (grid, list, slider, carousel), style, and desktop/tablet/mobile responsive settings.', 'anchor-schema' ),
+            '<em>Post Displays</em>',
+            '<code>[anchor_post_grid id="123"]</code>'
+        );
+        ?></p>
         <?php $this->render_shortcode_reference(); ?>
         <?php
     }
@@ -221,7 +239,7 @@ class Anchor_Post_Display_Module {
             [ 'show_date',         'no',                'Show date on cards' ],
             [ 'show_type',         'no',                'Show post type badge' ],
             [ 'no_results',        'No results found.', 'No results message' ],
-            [ 'id',                '(auto)',            'HTML id for search targeting' ],
+            [ 'id',                '(auto)',            'Render a saved Post Display by numeric ID or slug; inline atts override it. (When not a Post Display, used as the HTML id for search targeting.)' ],
             [ 'teaser_words',      '26',                'Excerpt word limit' ],
             [ 'fields',            '(default)',         'Comma-separated field names &amp; display order (see below)' ],
             [ 'slider_autoplay',    'no',                'Autoplay when layout is slider' ],
@@ -397,6 +415,7 @@ class Anchor_Post_Display_Module {
 
     public function shortcode_grid( $atts = [] ) {
         $opts = $this->get_option();
+        $user_atts = is_array( $atts ) ? $atts : [];
         $atts = shortcode_atts( [
             'post_type'        => '',
             'taxonomy'         => 'category',
@@ -424,6 +443,37 @@ class Anchor_Post_Display_Module {
             'slider_per_view'  => $opts['slider_per_view'],
         ], $atts, 'anchor_post_grid' );
 
+        // CPT mode: [anchor_post_grid id="123"] or id="my-slug". Only hijacks `id`
+        // when it resolves to a published Post Display; otherwise the legacy
+        // inline behavior (id = HTML id for search targeting) still applies.
+        $raw_id = isset( $atts['id'] ) ? trim( (string) $atts['id'] ) : '';
+        if ( $raw_id !== '' ) {
+            $resolved = null;
+            if ( ctype_digit( $raw_id ) ) {
+                $resolved = Anchor_APD_Display_CPT::build_params_for_post( (int) $raw_id );
+            }
+            if ( ! $resolved ) {
+                $by_slug = get_posts( [
+                    'post_type'      => Anchor_APD_Display_CPT::CPT,
+                    'name'           => $raw_id,
+                    'posts_per_page' => 1,
+                    'post_status'    => 'publish',
+                ] );
+                if ( $by_slug ) {
+                    $resolved = Anchor_APD_Display_CPT::build_params_for_post( $by_slug[0]->ID );
+                }
+            }
+            if ( $resolved ) {
+                // Inline atts the user actually typed still override the saved display.
+                foreach ( [ 'layout', 'columns', 'posts', 'orderby', 'order', 'fields', 'pagination', 'search' ] as $ov ) {
+                    if ( isset( $user_atts[ $ov ] ) && $user_atts[ $ov ] !== '' ) {
+                        $resolved[ $ov ] = $user_atts[ $ov ];
+                    }
+                }
+                return $this->render_resolved_display( $resolved );
+            }
+        }
+
         $this->enqueue_assets();
 
         $params = $this->normalize_params( $atts );
@@ -434,34 +484,49 @@ class Anchor_Post_Display_Module {
             $params['search'] = sanitize_text_field( wp_unslash( $_GET['s'] ) );
         }
 
-        $query = new WP_Query( $this->build_query_args( $params, 1 ) );
+        $query = new WP_Query( Anchor_APD_Renderer::build_query_args( $params, 1 ) );
 
         // Data attributes for JS pagination / search filtering.
         $data_attrs = $this->build_data_attrs( $params );
+        $scoped_css = Anchor_APD_Renderer::build_scoped_css( $grid_id, $params );
 
         ob_start();
-        ?>
-        <div class="anchor-post-grid-wrap anchor-post-grid-wrap--<?php echo esc_attr( $params['layout'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>">
-            <?php if ( 'slider' === $params['layout'] ) : ?>
-                <div class="anchor-post-slider">
-                    <div class="anchor-post-slider-viewport">
-                        <div id="<?php echo esc_attr( $grid_id ); ?>" class="anchor-post-grid anchor-post-slider-track" data-columns="<?php echo intval( $params['columns'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>"<?php echo $data_attrs; ?>>
-                            <?php echo $this->render_grid_items( $query, $params ); ?>
-                        </div>
-                    </div>
-                    <div class="anchor-post-slider-nav">
-                        <button type="button" class="anchor-post-slider-btn anchor-post-slider-prev" aria-label="<?php esc_attr_e( 'Previous posts', 'anchor-schema' ); ?>">&lsaquo;</button>
-                        <button type="button" class="anchor-post-slider-btn anchor-post-slider-next" aria-label="<?php esc_attr_e( 'Next posts', 'anchor-schema' ); ?>">&rsaquo;</button>
-                    </div>
-                </div>
-            <?php else : ?>
-                <div id="<?php echo esc_attr( $grid_id ); ?>" class="anchor-post-grid" data-columns="<?php echo intval( $params['columns'] ); ?>" data-layout="<?php echo esc_attr( $params['layout'] ); ?>"<?php echo $data_attrs; ?>>
-                    <?php echo $this->render_grid_items( $query, $params ); ?>
-                </div>
-            <?php endif; ?>
-            <?php echo $this->render_pagination( $query, $params, 1 ); ?>
-        </div>
-        <?php
+        echo $scoped_css;
+        echo '<div class="anchor-post-grid-wrap anchor-post-grid-wrap--' . esc_attr( $params['layout'] ) . '" data-layout="' . esc_attr( $params['layout'] ) . '">';
+        echo Anchor_APD_Renderer::render_layout_open( $grid_id, $params, $data_attrs );
+        echo Anchor_APD_Renderer::render_grid_items( $query, $params );
+        echo Anchor_APD_Renderer::render_layout_close( $params );
+        echo Anchor_APD_Renderer::render_pagination( $query, $params, 1 );
+        echo '</div>';
+        wp_reset_postdata();
+        return ob_get_clean();
+    }
+
+    /**
+     * Render a display resolved from the CPT (params already built by
+     * Anchor_APD_Display_CPT::build_params_for_post). Shares the renderer's
+     * markup helpers + scoped responsive CSS with the inline path.
+     */
+    private function render_resolved_display( $params ) {
+        $this->enqueue_assets();
+        $grid_id = ! empty( $params['id'] ) ? sanitize_html_class( $params['id'] ) : 'apd-' . wp_unique_id();
+
+        if ( empty( $params['search'] ) && isset( $_GET['s'] ) ) {
+            $params['search'] = sanitize_text_field( wp_unslash( $_GET['s'] ) );
+        }
+
+        $query      = new WP_Query( Anchor_APD_Renderer::build_query_args( $params, 1 ) );
+        $data_attrs = $this->build_data_attrs( $params );
+        $scoped_css = Anchor_APD_Renderer::build_scoped_css( $grid_id, $params );
+
+        ob_start();
+        echo $scoped_css;
+        echo '<div class="anchor-post-grid-wrap anchor-post-grid-wrap--' . esc_attr( $params['layout'] ) . '" data-layout="' . esc_attr( $params['layout'] ) . '">';
+        echo Anchor_APD_Renderer::render_layout_open( $grid_id, $params, $data_attrs );
+        echo Anchor_APD_Renderer::render_grid_items( $query, $params );
+        echo Anchor_APD_Renderer::render_layout_close( $params );
+        echo Anchor_APD_Renderer::render_pagination( $query, $params, 1 );
+        echo '</div>';
         wp_reset_postdata();
         return ob_get_clean();
     }
@@ -518,291 +583,14 @@ class Anchor_Post_Display_Module {
         $params = $this->normalize_params( $_POST );
         $page   = max( 1, intval( $_POST['page'] ?? 1 ) );
 
-        $query = new WP_Query( $this->build_query_args( $params, $page ) );
+        $query = new WP_Query( Anchor_APD_Renderer::build_query_args( $params, $page ) );
 
         wp_send_json_success( [
-            'html'            => $this->render_grid_items( $query, $params ),
-            'pagination_html' => $this->render_pagination( $query, $params, $page ),
-            'total_pages'     => $this->get_total_pages( $query, $params ),
+            'html'            => Anchor_APD_Renderer::render_grid_items( $query, $params ),
+            'pagination_html' => Anchor_APD_Renderer::render_pagination( $query, $params, $page ),
+            'total_pages'     => Anchor_APD_Renderer::get_total_pages( $query, $params ),
             'current_page'    => $page,
         ] );
-    }
-
-    /* ================================================================
-       Shared: Query builder
-       ================================================================ */
-
-    private function build_query_args( $params, $page = 1 ) {
-        $post_types = $this->resolve_post_types( $params['post_type'] );
-        $count      = intval( $params['posts'] );
-        $max_posts  = max( 0, intval( $params['max_posts'] ?? 0 ) );
-
-        $args = [
-            'post_type'        => ! empty( $post_types ) ? $post_types : 'any',
-            'posts_per_page'   => $count,
-            'post_status'      => 'publish',
-            'suppress_filters' => true,
-            'orderby'          => sanitize_key( $params['orderby'] ),
-            'order'            => in_array( strtoupper( $params['order'] ), [ 'ASC', 'DESC' ], true ) ? strtoupper( $params['order'] ) : 'DESC',
-        ];
-
-        if ( -1 === $count ) {
-            $args['posts_per_page'] = $max_posts > 0 ? $max_posts : -1;
-            $args['no_found_rows']  = true;
-        } elseif ( $max_posts > 0 ) {
-            $offset = max( 0, ( max( 1, (int) $page ) - 1 ) * $count );
-            if ( $offset >= $max_posts ) {
-                $args['post__in']       = [ 0 ];
-                $args['posts_per_page'] = 1;
-            } else {
-                $args['offset']         = $offset;
-                $args['posts_per_page'] = min( $count, $max_posts - $offset );
-            }
-        } else {
-            $args['paged'] = $page;
-        }
-
-        if ( ! empty( $params['search'] ) ) {
-            $args['s'] = sanitize_text_field( $params['search'] );
-        }
-
-        // Taxonomy filters.
-        $tax_query = [];
-
-        if ( ! empty( $params['terms'] ) ) {
-            $include = array_filter( array_map( 'trim', explode( ',', $params['terms'] ) ) );
-            if ( $include ) {
-                $tax_query[] = [
-                    'taxonomy' => sanitize_text_field( $params['taxonomy'] ),
-                    'field'    => 'slug',
-                    'terms'    => $include,
-                    'operator' => 'IN',
-                ];
-            }
-        }
-
-        if ( ! empty( $params['exclude_terms'] ) ) {
-            $exclude = array_filter( array_map( 'trim', explode( ',', $params['exclude_terms'] ) ) );
-            if ( $exclude ) {
-                $tax_query[] = [
-                    'taxonomy' => sanitize_text_field( $params['exclude_taxonomy'] ?: 'category' ),
-                    'field'    => 'slug',
-                    'terms'    => $exclude,
-                    'operator' => 'NOT IN',
-                ];
-            }
-        }
-
-        if ( $tax_query ) {
-            $args['tax_query'] = array_merge( [ 'relation' => 'AND' ], $tax_query );
-        }
-
-        return $args;
-    }
-
-    /* ================================================================
-       Shared: Card renderer
-       ================================================================ */
-
-    private function render_grid_items( $query, $params ) {
-        if ( ! $query->have_posts() ) {
-            return '<div class="anchor-post-grid-empty">' . esc_html( $params['no_results'] ) . '</div>';
-        }
-
-        $show_date  = ( 'yes' === strtolower( $params['show_date'] ) );
-        $show_type  = ( 'yes' === strtolower( $params['show_type'] ) );
-        $image_size = sanitize_text_field( $params['image_size'] );
-        $word_limit = max( 1, intval( $params['teaser_words'] ) );
-
-        // Custom field order: comma-separated list of field names.
-        // Built-in tokens: image, title, date, type, excerpt.
-        // Anything else is treated as an ACF / post_meta field key.
-        $fields = array_filter( array_map( 'trim', explode( ',', $params['fields'] ?? '' ) ) );
-        $use_custom_fields = ! empty( $fields );
-
-        // Default field order when none specified (preserves legacy behavior).
-        if ( ! $use_custom_fields ) {
-            $fields = [ 'image', 'title', 'meta', 'excerpt' ];
-        }
-
-        $html = '';
-        while ( $query->have_posts() ) {
-            $query->the_post();
-            $pid = get_the_ID();
-            $pto = get_post_type_object( get_post_type() );
-
-            $html .= '<a class="anchor-post-grid-card" href="' . esc_url( get_permalink() ) . '">';
-
-            $body_started = false;
-
-            foreach ( $fields as $field ) {
-
-                // --- Built-in: image ---
-                if ( 'image' === $field ) {
-                    if ( has_post_thumbnail() ) {
-                        $html .= '<div class="anchor-post-grid-image">';
-                        $html .= get_the_post_thumbnail( $pid, $image_size, [ 'alt' => esc_attr( get_the_title() ) ] );
-                        $html .= '</div>';
-                    }
-                    continue;
-                }
-
-                // Everything after image goes inside .body wrapper.
-                if ( ! $body_started ) {
-                    $html .= '<div class="anchor-post-grid-body">';
-                    $body_started = true;
-                }
-
-                // --- Built-in: title ---
-                if ( 'title' === $field ) {
-                    $html .= '<h3 class="anchor-post-grid-title">' . esc_html( get_the_title() ) . '</h3>';
-                    continue;
-                }
-
-                // --- Built-in: date ---
-                if ( 'date' === $field ) {
-                    $html .= '<span class="anchor-post-grid-date">' . esc_html( get_the_date() ) . '</span>';
-                    continue;
-                }
-
-                // --- Built-in: type ---
-                if ( 'type' === $field ) {
-                    if ( $pto ) {
-                        $html .= '<span class="anchor-post-grid-type-badge">' . esc_html( $pto->labels->singular_name ) . '</span>';
-                    }
-                    continue;
-                }
-
-                // --- Built-in: meta (legacy combo of date + type) ---
-                if ( 'meta' === $field ) {
-                    if ( $show_date || $show_type ) {
-                        $html .= '<div class="anchor-post-grid-meta">';
-                        if ( $show_date ) {
-                            $html .= '<span class="anchor-post-grid-date">' . esc_html( get_the_date() ) . '</span>';
-                        }
-                        if ( $show_type && $pto ) {
-                            $html .= '<span class="anchor-post-grid-type-badge">' . esc_html( $pto->labels->singular_name ) . '</span>';
-                        }
-                        $html .= '</div>';
-                    }
-                    continue;
-                }
-
-                // --- Built-in: excerpt ---
-                if ( 'excerpt' === $field ) {
-                    $teaser = $this->get_teaser( $pid, $word_limit );
-                    if ( $teaser ) {
-                        $html .= '<p class="anchor-post-grid-excerpt">' . $teaser . '</p>';
-                    }
-                    continue;
-                }
-
-                // --- ACF / custom field (fail silently if empty) ---
-                $value = $this->get_custom_field_html( $pid, $field, $image_size );
-                if ( $value ) {
-                    $html .= $value;
-                }
-            }
-
-            if ( ! $body_started ) {
-                $html .= '<div class="anchor-post-grid-body">';
-            }
-            $html .= '</div>'; // .body
-            $html .= '</a>';
-        }
-        wp_reset_postdata();
-        return $html;
-    }
-
-    /**
-     * Resolve a custom / ACF field value and return HTML.
-     * Returns empty string if the field is empty or doesn't exist (fail silently).
-     */
-    private function get_custom_field_html( $post_id, $field_name, $image_size = 'medium' ) {
-        $value = null;
-
-        // Try ACF first (handles repeaters, groups, images, etc.).
-        if ( function_exists( 'get_field' ) ) {
-            $value = get_field( $field_name, $post_id );
-        }
-
-        // Fallback to raw post_meta.
-        if ( null === $value || '' === $value ) {
-            $value = get_post_meta( $post_id, $field_name, true );
-        }
-
-        if ( empty( $value ) ) {
-            return '';
-        }
-
-        $safe_class = 'anchor-post-grid-field-' . sanitize_html_class( $field_name );
-
-        // ACF image field — returns array with url/sizes, or attachment ID.
-        if ( is_array( $value ) && ! empty( $value['url'] ) ) {
-            $url = $value['sizes'][ $image_size ] ?? $value['url'];
-            return '<div class="anchor-post-grid-image ' . $safe_class . '"><img src="' . esc_url( $url ) . '" alt="' . esc_attr( $value['alt'] ?? '' ) . '" /></div>';
-        }
-        if ( is_numeric( $value ) && wp_attachment_is_image( (int) $value ) ) {
-            return '<div class="anchor-post-grid-image ' . $safe_class . '">' . wp_get_attachment_image( (int) $value, $image_size ) . '</div>';
-        }
-
-        // Scalar text / HTML value.
-        if ( is_scalar( $value ) ) {
-            return '<div class="' . $safe_class . '">' . wp_kses_post( $value ) . '</div>';
-        }
-
-        return '';
-    }
-
-    /* ================================================================
-       Shared: Pagination renderer
-       ================================================================ */
-
-    private function render_pagination( $query, $params, $current_page ) {
-        $pagination = sanitize_key( $params['pagination'] );
-        $total      = $this->get_total_pages( $query, $params );
-
-        if ( 'none' === $pagination || $total <= 1 ) {
-            return '';
-        }
-
-        if ( 'load_more' === $pagination && $current_page < $total ) {
-            return '<button class="anchor-post-grid-load-more" type="button">' . esc_html__( 'Load More', 'anchor-schema' ) . '</button>';
-        }
-
-        if ( 'numbered' === $pagination ) {
-            $window = max( 1, intval( $params['pagination_window'] ?? 7 ) );
-            $half   = (int) floor( $window / 2 );
-            $start  = max( 1, (int) $current_page - $half );
-            $end    = min( $total, $start + $window - 1 );
-
-            if ( ( $end - $start + 1 ) < $window ) {
-                $start = max( 1, $end - $window + 1 );
-            }
-
-            $html = '<nav class="anchor-post-grid-pagination" aria-label="' . esc_attr__( 'Post pagination', 'anchor-schema' ) . '">';
-            if ( $start > 1 ) {
-                $html .= '<span class="page-num" data-page="1">1</span>';
-                if ( $start > 2 ) {
-                    $html .= '<span class="page-dots" aria-hidden="true">&hellip;</span>';
-                }
-            }
-            for ( $i = $start; $i <= $end; $i++ ) {
-                $active = ( $i === (int) $current_page ) ? ' is-current' : '';
-                $aria   = $active ? ' aria-current="page"' : '';
-                $html .= '<span class="page-num' . $active . '" data-page="' . $i . '"' . $aria . '>' . $i . '</span>';
-            }
-            if ( $end < $total ) {
-                if ( $end < $total - 1 ) {
-                    $html .= '<span class="page-dots" aria-hidden="true">&hellip;</span>';
-                }
-                $html .= '<span class="page-num" data-page="' . $total . '">' . $total . '</span>';
-            }
-            $html .= '</nav>';
-            return $html;
-        }
-
-        return '';
     }
 
     /* ================================================================
@@ -818,10 +606,10 @@ class Anchor_Post_Display_Module {
             'exclude_taxonomy' => sanitize_text_field( $input['exclude_taxonomy'] ?? 'category' ),
             'exclude_terms'    => sanitize_text_field( $input['exclude_terms'] ?? '' ),
             'image_size'       => sanitize_text_field( $input['image_size'] ?? $opts['image_size'] ),
-            'posts'            => $this->normalize_post_count( $input['posts'] ?? $opts['posts_per_page'] ),
+            'posts'            => Anchor_APD_Renderer::normalize_post_count( $input['posts'] ?? $opts['posts_per_page'] ),
             'search'           => sanitize_text_field( $input['search'] ?? '' ),
             'columns'          => max( 1, min( 4, intval( $input['columns'] ?? $opts['columns'] ) ) ),
-            'layout'           => in_array( ( $input['layout'] ?? '' ), [ 'grid', 'list', 'slider' ], true ) ? $input['layout'] : $opts['layout'],
+            'layout'           => in_array( ( $input['layout'] ?? '' ), [ 'grid', 'list', 'slider', 'carousel' ], true ) ? $input['layout'] : $opts['layout'],
             'pagination'       => in_array( ( $input['pagination'] ?? '' ), [ 'none', 'numbered', 'load_more' ], true ) ? $input['pagination'] : $opts['pagination'],
             'pagination_window'=> max( 1, min( 20, intval( $input['pagination_window'] ?? $opts['pagination_window'] ) ) ),
             'orderby'          => sanitize_key( $input['orderby'] ?? $opts['orderby'] ),
@@ -863,95 +651,20 @@ class Anchor_Post_Display_Module {
             'slider_autoplay' => 'slider-autoplay',
             'slider_speed' => 'slider-speed',
             'slider_per_view' => 'slider-per-view',
+            'slider_per_view_tablet' => 'slider-per-view-tablet',
+            'slider_per_view_mobile' => 'slider-per-view-mobile',
+            'carousel_loop' => 'carousel-loop',
+            'carousel_arrows' => 'carousel-arrows',
+            'carousel_dots' => 'carousel-dots',
+            'carousel_pause_on_hover' => 'carousel-pause-on-hover',
         ];
         foreach ( $keys as $param_key => $data_key ) {
-            $val = $params[ $param_key ] ?? '';
+            if ( ! array_key_exists( $param_key, $params ) ) continue;
+            $val = $params[ $param_key ];
             if ( is_int( $val ) ) $val = (string) $val;
             $attrs .= ' data-' . $data_key . '="' . esc_attr( $val ) . '"';
         }
         return $attrs;
     }
 
-    private function normalize_post_count( $value ) {
-        $count = intval( $value );
-        if ( -1 === $count ) {
-            return -1;
-        }
-        return max( 1, min( 100, $count ) );
-    }
-
-    private function get_total_pages( $query, $params ) {
-        $per_page = intval( $params['posts'] ?? 0 );
-        if ( -1 === $per_page ) {
-            return 1;
-        }
-
-        $total_posts = (int) $query->found_posts;
-        $max_posts   = max( 0, intval( $params['max_posts'] ?? 0 ) );
-        if ( $max_posts > 0 ) {
-            $total_posts = min( $total_posts, $max_posts );
-        }
-
-        return max( 1, (int) ceil( $total_posts / max( 1, $per_page ) ) );
-    }
-
-    private function resolve_post_types( $csv ) {
-        $csv = trim( (string) $csv );
-        if ( '' !== $csv ) {
-            return array_filter( array_map( 'trim', explode( ',', $csv ) ) );
-        }
-        return $this->get_searchable_types();
-    }
-
-    private function get_searchable_types() {
-        $types = array_values( get_post_types( [ 'exclude_from_search' => false ], 'names' ) );
-        return array_diff( $types, [ 'attachment' ] );
-    }
-
-    /**
-     * Teaser text: ACF short_description > excerpt > SEO meta > content fallback.
-     */
-    private function get_teaser( $post_id, $limit = 26 ) {
-        // ACF short_description.
-        if ( function_exists( 'get_field' ) ) {
-            $acf = get_field( 'short_description', $post_id );
-            if ( $acf ) {
-                return wp_kses_post( $acf );
-            }
-        }
-
-        // WP excerpt.
-        $excerpt = get_the_excerpt( $post_id );
-        if ( ! empty( $excerpt ) ) {
-            return wp_kses_post( $excerpt );
-        }
-
-        // SEO plugin meta descriptions.
-        $meta_keys = [
-            '_yoast_wpseo_metadesc',
-            '_rank_math_description',
-            'rank_math_description',
-            '_seopress_titles_desc',
-            '_aioseo_description',
-        ];
-        foreach ( $meta_keys as $key ) {
-            $val = get_post_meta( $post_id, $key, true );
-            if ( ! empty( $val ) ) {
-                return esc_html( $val );
-            }
-        }
-
-        // Clean content fallback.
-        $raw   = get_post_field( 'post_content', $post_id );
-        $plain = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( strip_shortcodes( (string) $raw ) ) ) );
-        if ( '' !== $plain ) {
-            $words = preg_split( '/\s+/', $plain );
-            if ( count( $words ) > $limit ) {
-                $plain = implode( ' ', array_slice( $words, 0, $limit ) ) . "\u{2026}";
-            }
-            return esc_html( $plain );
-        }
-
-        return '';
-    }
 }

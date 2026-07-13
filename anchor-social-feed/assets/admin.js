@@ -114,4 +114,14 @@
         });
     });
 
+    // A playlist bypasses the uploads-only filters, so dim them while one is set.
+    var $playlist = $('input[name="asf_yt_playlist_id"]');
+    if ($playlist.length) {
+        var syncUploadsOnly = function () {
+            $('.asf-yt-uploads-only').toggleClass('is-disabled', $.trim($playlist.val()) !== '');
+        };
+        $playlist.on('input change', syncUploadsOnly);
+        syncUploadsOnly();
+    }
+
 })(jQuery);

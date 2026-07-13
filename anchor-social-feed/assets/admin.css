@@ -136,3 +136,13 @@
     color: #666;
     font-style: italic;
 }
+.asf-uploads-only-note {
+    display: none;
+}
+.asf-yt-uploads-only.is-disabled {
+    opacity: 0.5;
+}
+.asf-yt-uploads-only.is-disabled .asf-uploads-only-note {
+    display: block;
+    font-style: italic;
+}

@@ -1077,9 +1077,12 @@ class Module {
             // in MVP (activity log deferred — spec §2, §11.6).
             'activity' => [ 'type' => 'array', 'show_in_rest' => false ],
             // Event-type / registration-mode data model (Task 1.1+1.2). Metabox
-            // authoring UI + save_meta() wiring landed in Task 1.3+1.4 —
-            // offering/recurring type controls remain Phase 2 (placeholder note only).
-            // These six keys are edited ONLY via the classic metabox (see save_meta()).
+            // authoring UI + save_meta() wiring landed in Task 1.3+1.4; front-end
+            // manager-form parity (same fields, same sanitize_event_type_input()
+            // helper) landed in Task 1.5 — offering/recurring type controls remain
+            // Phase 2 (placeholder note only).
+            // These six keys are edited ONLY via the classic metabox and the
+            // front-end manager form (see save_meta() / handle_event_manager_save()).
             // show_in_rest is intentionally false: exposing them to REST/Gutenberg
             // creates a last-write-wins race between the classic metabox save and any
             // REST/block-editor autosave that can silently revert a just-saved value
@@ -1779,19 +1782,14 @@ class Module {
             'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
             'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
             'reminder_offsets' => $this->sanitize_offset_csv( $_POST['anchor_event_reminder_offsets'] ?? '' ),
-            // Event-type / registration-mode authoring UI (Task 1.3+1.4).
-            // Occurrence only — offering/recurring get a placeholder note in
-            // the metabox; no seats/capacity/tiers/product logic here.
-            'type' => $this->sanitize_event_type( \wp_unslash( $_POST['anchor_event_type'] ?? '' ) ),
-            'registration_mode' => $this->sanitize_registration_mode( \wp_unslash( $_POST['anchor_event_registration_mode'] ?? '' ), $current_registration_mode ),
-            'sessions' => $this->sanitize_sessions_rows( isset( $_POST['anchor_event_sessions'] ) && is_array( $_POST['anchor_event_sessions'] ) ? \wp_unslash( $_POST['anchor_event_sessions'] ) : [] ),
-            'external_url' => esc_url_raw( \wp_unslash( $_POST['anchor_event_external_url'] ?? '' ) ),
-            // Reuses the SAME wp_kses() allowlist sanitizer as the REST write
-            // path (sanitize_external_embed()) so this field is never stored
-            // raw regardless of which save path wrote it.
-            'external_embed' => $this->sanitize_external_embed( \wp_unslash( $_POST['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
-            'external_display_price' => sanitize_text_field( \wp_unslash( $_POST['anchor_event_external_display_price'] ?? '' ) ),
         ];
+
+        // Event-type / registration-mode authoring UI (Task 1.3+1.4, front-end
+        // parity in Task 1.5). Occurrence only — offering/recurring get a
+        // placeholder note in both forms; no seats/capacity/tiers/product logic
+        // here. Shared with handle_event_manager_save() so the two save paths
+        // can never drift on how these six keys are sanitized.
+        $input = array_merge( $input, $this->sanitize_event_type_input( $_POST, $current_registration_mode ) );
 
         if ( ! $input['start_date'] ) {
             \add_filter( 'redirect_post_location', function( $location ) {
@@ -1828,6 +1826,53 @@ class Module {
         $this->maybe_append_registration_shortcode( $post_id, $input );
 
         $this->clear_caches();
+    }
+
+    /**
+     * Shared sanitizer for the event-type / registration-mode authoring fields
+     * (type, registration_mode, sessions, external_url, external_embed,
+     * external_display_price). Called by BOTH save paths — the admin metabox
+     * save_meta() and the front-end manager form handle_event_manager_save()
+     * (Task 1.5) — so the two forms can never drift out of sync on how these
+     * six keys are sanitized.
+     *
+     * $src is a raw, NOT-yet-unslashed input array shaped like $_POST; every
+     * value is wp_unslash()ed here (esp. external_embed, unslashed BEFORE it
+     * hits wp_kses() in sanitize_external_embed() — never store it raw).
+     *
+     * @param array  $src                        Raw input array ($_POST-shaped).
+     * @param string $registration_mode_fallback Pre-resolved registration_mode()
+     *                                            value (computed by the caller
+     *                                            BEFORE this save writes any meta)
+     *                                            to fall back to when the posted
+     *                                            registration_mode is missing or
+     *                                            invalid — see
+     *                                            sanitize_registration_mode().
+     * @return array{
+     *     type: string,
+     *     registration_mode: string,
+     *     sessions: array,
+     *     external_url: string,
+     *     external_embed: string,
+     *     external_display_price: string,
+     * }
+     */
+    private function sanitize_event_type_input( array $src, $registration_mode_fallback ) {
+        $sessions_raw = isset( $src['anchor_event_sessions'] ) && is_array( $src['anchor_event_sessions'] )
+            ? \wp_unslash( $src['anchor_event_sessions'] )
+            : [];
+
+        return [
+            'type' => $this->sanitize_event_type( \wp_unslash( $src['anchor_event_type'] ?? '' ) ),
+            'registration_mode' => $this->sanitize_registration_mode( \wp_unslash( $src['anchor_event_registration_mode'] ?? '' ), $registration_mode_fallback ),
+            'sessions' => $this->sanitize_sessions_rows( $sessions_raw ),
+            'external_url' => esc_url_raw( \wp_unslash( $src['anchor_event_external_url'] ?? '' ) ),
+            // Reuses the SAME wp_kses() allowlist sanitizer as the REST write
+            // path (sanitize_external_embed()) so this field is never stored
+            // raw regardless of which save path wrote it.
+            'external_embed' => $this->sanitize_external_embed( \wp_unslash( $src['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
+            'external_display_price' => sanitize_text_field( \wp_unslash( $src['anchor_event_external_display_price'] ?? '' ) ),
+        ];
     }
 
     /**
@@ -1966,7 +2011,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.6' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.7' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         \wp_add_inline_style( 'anchor-events-frontend', sprintf(
@@ -2389,7 +2434,7 @@ class Module {
             'anchor-events-manager-frontend',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
-            '1.0.0',
+            '1.0.1',
             true
         );
 
@@ -2751,6 +2796,16 @@ class Module {
         $base_url = \remove_query_arg( [ 'event_action', 'event_id', 'event_manager_notice' ] );
         $timezone_options = \wp_timezone_choice( $meta['timezone'] );
 
+        // Event-type / registration-mode authoring (Task 1.3 metabox parity,
+        // Task 1.5). These resolvers apply the same enum-fallback validation as
+        // the metabox and are safe to call with $event_id === 0 (new event):
+        // get_post_meta( 0, ... ) reads nothing, so each resolver returns its
+        // documented default (single / free / []).
+        $event_type = $this->event_type( $event_id );
+        $registration_mode = $this->registration_mode( $event_id );
+        $wc_active = \class_exists( 'WooCommerce' );
+        $sessions = $this->get_sessions( $event_id );
+
         ob_start();
         ?>
         <form class="anchor-event-manager-form" method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>">
@@ -2787,6 +2842,32 @@ class Module {
             </div>
 
             <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Event Type & Registration', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_type"><?php echo esc_html__( 'Event Type', 'anchor-schema' ); ?></label>
+                        <select id="anchor_event_type" name="anchor_event_type">
+                            <option value="single" <?php selected( $event_type, 'single' ); ?>><?php echo esc_html__( 'Single event', 'anchor-schema' ); ?></option>
+                            <option value="multisession" <?php selected( $event_type, 'multisession' ); ?>><?php echo esc_html__( 'Multi-session series', 'anchor-schema' ); ?></option>
+                            <option value="offering" <?php selected( $event_type, 'offering' ); ?>><?php echo esc_html__( 'Pick-one offerings', 'anchor-schema' ); ?></option>
+                            <option value="recurring" <?php selected( $event_type, 'recurring' ); ?>><?php echo esc_html__( 'Recurring schedule', 'anchor-schema' ); ?></option>
+                        </select>
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_registration_mode"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></label>
+                        <select id="anchor_event_registration_mode" name="anchor_event_registration_mode">
+                            <option value="wc" <?php selected( $registration_mode, 'wc' ); ?> <?php disabled( ! $wc_active ); ?>><?php echo esc_html__( 'WooCommerce ticketed', 'anchor-schema' ); ?><?php echo $wc_active ? '' : ' ' . esc_html__( '(requires WooCommerce)', 'anchor-schema' ); ?></option>
+                            <option value="free" <?php selected( $registration_mode, 'free' ); ?>><?php echo esc_html__( 'Free registration', 'anchor-schema' ); ?></option>
+                            <option value="external" <?php selected( $registration_mode, 'external' ); ?>><?php echo esc_html__( 'External registration', 'anchor-schema' ); ?></option>
+                        </select>
+                        <?php if ( ! $wc_active ) : ?>
+                            <p class="description"><?php echo esc_html__( 'WooCommerce is inactive, so WooCommerce-ticketed registration is unavailable until it is activated.', 'anchor-schema' ); ?></p>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+            <div class="anchor-event-section">
                 <h3><?php echo esc_html__( 'Date & Time', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
@@ -2813,6 +2894,38 @@ class Module {
                         <label><input type="checkbox" id="anchor_event_all_day" name="anchor_event_all_day" value="1" <?php checked( $meta['all_day'] ); ?> /> <?php echo esc_html__( 'All-day event', 'anchor-schema' ); ?></label>
                     </div>
                 </div>
+            </div>
+
+            <div class="anchor-event-section anchor-event-conditional" data-when-type="multisession">
+                <h3><?php echo esc_html__( 'Sessions', 'anchor-schema' ); ?></h3>
+                <p class="description"><?php echo esc_html__( 'Add one row per session date/time in this series.', 'anchor-schema' ); ?></p>
+                <table class="widefat anchor-event-sessions-table">
+                    <thead>
+                        <tr>
+                            <th><?php echo esc_html__( 'Date', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
+                            <th aria-hidden="true"></th>
+                        </tr>
+                    </thead>
+                    <tbody class="anchor-event-sessions-rows">
+                        <?php foreach ( $sessions as $i => $session ) : ?>
+                            <?php echo $this->event_session_row_html( (int) $i, $session ); // already escaped ?>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <p>
+                    <button type="button" class="anchor-event-button-secondary anchor-event-session-add"><?php echo esc_html__( 'Add session', 'anchor-schema' ); ?></button>
+                </p>
+                <script type="text/html" id="anchor-event-session-template">
+                    <?php echo $this->event_session_row_html( 0, null, true ); // already escaped ?>
+                </script>
+            </div>
+
+            <div class="anchor-event-section anchor-event-conditional" data-when-type="offering recurring">
+                <h3><?php echo esc_html__( 'Offering / Recurring Schedule', 'anchor-schema' ); ?></h3>
+                <p class="description"><?php echo esc_html__( 'Offering dates / recurrence are configured in the next phase.', 'anchor-schema' ); ?></p>
             </div>
 
             <div class="anchor-event-section">
@@ -2844,6 +2957,26 @@ class Module {
                         </select>
                     </div>
                     <div class="anchor-event-field anchor-event-registration-fields" id="anchor-event-registration-url"><label for="anchor_event_registration_url"><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></label><input type="url" id="anchor_event_registration_url" name="anchor_event_registration_url" value="<?php echo esc_attr( $meta['registration_url'] ); ?>" /></div>
+                </div>
+            </div>
+
+            <div class="anchor-event-section anchor-event-conditional" data-when-mode="external">
+                <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_external_url"><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></label>
+                        <input type="url" id="anchor_event_external_url" name="anchor_event_external_url" value="<?php echo esc_attr( $meta['external_url'] ); ?>" />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_external_display_price"><?php echo esc_html__( 'Display price', 'anchor-schema' ); ?></label>
+                        <input type="text" id="anchor_event_external_display_price" name="anchor_event_external_display_price" value="<?php echo esc_attr( $meta['external_display_price'] ); ?>" />
+                        <p class="description"><?php echo esc_html__( 'Display-only price label, e.g. $495. Not connected to WooCommerce.', 'anchor-schema' ); ?></p>
+                    </div>
+                    <div class="anchor-event-field" style="grid-column:1/-1;">
+                        <label for="anchor_event_external_embed"><?php echo esc_html__( 'Embed code', 'anchor-schema' ); ?></label>
+                        <textarea id="anchor_event_external_embed" name="anchor_event_external_embed" rows="5" class="large-text code"><?php echo esc_textarea( $meta['external_embed'] ); ?></textarea>
+                        <p class="description"><?php echo esc_html__( 'Paste a third-party embed. Iframes allowed; scripts stripped by default.', 'anchor-schema' ); ?></p>
+                    </div>
                 </div>
             </div>
 
@@ -2920,6 +3053,13 @@ class Module {
             exit;
         }
 
+        // Resolved BEFORE the save below (mirrors save_meta()) so an invalid/missing
+        // posted registration_mode falls back to whatever the event currently
+        // resolves to, not a hardcoded default. A brand-new event (event_id === 0)
+        // has no prior resolution to fall back to, so registration_mode( 0 ) — which
+        // reads nothing and derives 'free' — is the correct starting fallback.
+        $current_registration_mode = $this->registration_mode( $event_id );
+
         $title = sanitize_text_field( wp_unslash( $_POST['anchor_event_title'] ?? '' ) );
         $content = wp_kses_post( wp_unslash( $_POST['anchor_event_content'] ?? '' ) );
         $start_date = $this->sanitize_date( $_POST['anchor_event_start_date'] ?? '' );
@@ -2958,6 +3098,35 @@ class Module {
             exit;
         }
 
+        $this->save_event_manager_fields( $saved_id, $start_date, $current_registration_mode );
+
+        \wp_safe_redirect( \add_query_arg( 'event_manager_notice', $is_edit ? 'saved' : 'created', $redirect ) );
+        exit;
+    }
+
+    /**
+     * Persist the front-end manager-form's event fields to $saved_id's post
+     * meta: Date & Time, Location, Registration, the event-type/registration-mode/
+     * sessions/external fields (via sanitize_event_type_input(), Task 1.5),
+     * gallery, featured image, and the auto-append registration shortcode.
+     * Reads from $_POST.
+     *
+     * Extracted out of handle_event_manager_save() (Task 1.5) so the save
+     * logic is directly unit-testable: that method ends in
+     * wp_safe_redirect()+exit, which a PHPUnit process cannot safely exercise.
+     * Purely a refactor of what handle_event_manager_save() already did
+     * inline — behavior-preserving, no new logic.
+     *
+     * @param int    $saved_id                   Post ID already inserted/updated as self::CPT
+     *                                            (handle_event_manager_save() calls this AFTER
+     *                                            wp_insert_post()/wp_update_post()).
+     * @param string $start_date                 Pre-sanitized start date (validated non-empty by the caller).
+     * @param string $current_registration_mode  Pre-resolved registration_mode() fallback, resolved
+     *                                            BEFORE this save writes any meta — see
+     *                                            sanitize_event_type_input().
+     * @return array The sanitized meta values written (mainly useful to callers/tests).
+     */
+    public function save_event_manager_fields( $saved_id, $start_date, $current_registration_mode ) {
         $input = [
             'start_date' => $start_date,
             'end_date' => $this->sanitize_date( $_POST['anchor_event_end_date'] ?? '' ),
@@ -2985,6 +3154,12 @@ class Module {
             'priority' => 0,
             'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
         ];
+
+        // Event-type / registration-mode authoring UI (Task 1.3 metabox parity,
+        // Task 1.5). Same six keys, same sanitize_event_type_input() helper as
+        // save_meta() — see that method's docblock.
+        $input = array_merge( $input, $this->sanitize_event_type_input( $_POST, $current_registration_mode ) );
+
         $input['status_mode'] = 'auto';
         $input['status'] = $this->calculate_status( $input );
         $timestamps = $this->calculate_timestamps( $input );
@@ -3005,8 +3180,7 @@ class Module {
         $this->maybe_append_registration_shortcode( $saved_id, $input );
         $this->clear_caches();
 
-        \wp_safe_redirect( \add_query_arg( 'event_manager_notice', $is_edit ? 'saved' : 'created', $redirect ) );
-        exit;
+        return $input;
     }
 
     public function handle_event_manager_delete() {

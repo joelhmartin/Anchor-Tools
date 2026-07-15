@@ -669,6 +669,38 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   resize:vertical;
 }
 
+/* Sessions repeater (Task 1.3 metabox parity, Task 1.5) — .widefat is a
+   wp-admin core class with no frontend styles, so the table gets minimal
+   local styling here rather than relying on it. */
+.anchor-event-manager-form .anchor-event-sessions-table{
+  width:100%;
+  border-collapse:collapse;
+  margin:0 0 10px;
+}
+
+.anchor-event-manager-form .anchor-event-sessions-table th,
+.anchor-event-manager-form .anchor-event-sessions-table td{
+  padding:6px 8px;
+  text-align:left;
+  border-bottom:1px solid var(--anchor-event-border);
+}
+
+.anchor-event-manager-form .anchor-event-sessions-table input[type="date"],
+.anchor-event-manager-form .anchor-event-sessions-table input[type="time"],
+.anchor-event-manager-form .anchor-event-sessions-table input[type="text"]{
+  width:100%;
+}
+
+.anchor-event-manager-form .anchor-event-session-remove{
+  background:none;
+  border:none;
+  color:#b32d2e;
+  cursor:pointer;
+  font-size:16px;
+  line-height:1;
+  padding:2px 6px;
+}
+
 .anchor-event-button,
 .anchor-event-button-secondary{
   display:inline-block;

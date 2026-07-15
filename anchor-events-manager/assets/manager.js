@@ -32,6 +32,63 @@
     }
   }
 
+  // Task 1.3+1.4 metabox parity (Task 1.5): show/hide the type-dependent and
+  // mode-dependent form sections. A container carries data-when-type="a b"
+  // and/or data-when-mode="c d" (space-separated). No such attribute on a
+  // container means "always shown" for that axis. A container with BOTH
+  // attributes only shows when both match. Mirrors admin.js exactly so the
+  // metabox and the front-end manager form behave identically.
+  function applyConditionalVisibility(){
+    var type = $('#anchor_event_type').val();
+    var mode = $('#anchor_event_registration_mode').val();
+
+    $('.anchor-event-conditional').each(function(){
+      var $el = $(this);
+      var whenType = $el.attr('data-when-type');
+      var whenMode = $el.attr('data-when-mode');
+
+      var typeMatches = !whenType || whenType.split(/\s+/).indexOf(type) !== -1;
+      var modeMatches = !whenMode || whenMode.split(/\s+/).indexOf(mode) !== -1;
+
+      $el.toggle(typeMatches && modeMatches);
+    });
+  }
+
+  // Session repeater (Sessions section, data-when-type="multisession").
+  // Dependency-free jQuery: clone the hidden template row, re-index every
+  // row's field names on add/remove so anchor_event_sessions[n][...] stays
+  // contiguous. Mirrors admin.js's initSessionsRepeater() exactly.
+  function initSessionsRepeater(){
+    var $section = $('.anchor-event-sessions-table').closest('.anchor-event-conditional');
+    if(!$section.length){ return; }
+    var $rows = $section.find('.anchor-event-sessions-rows');
+    var $template = $('#anchor-event-session-template');
+
+    function reindexRows(){
+      $rows.find('.anchor-event-session-row').each(function(i){
+        $(this).find('input').each(function(){
+          var name = $(this).attr('name');
+          if(!name){ return; }
+          name = name.replace(/anchor_event_sessions\[\d+\]/, 'anchor_event_sessions[' + i + ']');
+          $(this).attr('name', name);
+        });
+      });
+    }
+
+    $section.on('click', '.anchor-event-session-add', function(e){
+      e.preventDefault();
+      var index = $rows.find('.anchor-event-session-row').length;
+      var html = $template.html().replace(/__INDEX__/g, index);
+      $rows.append(html);
+    });
+
+    $section.on('click', '.anchor-event-session-remove', function(e){
+      e.preventDefault();
+      $(this).closest('.anchor-event-session-row').remove();
+      reindexRows();
+    });
+  }
+
   function initThumbnailField(){
     var $field = $('.anchor-event-thumbnail-field');
     if(!$field.length || !window.wp || !wp.media){ return; }
@@ -159,11 +216,14 @@
     toggleRegistrationType();
     initThumbnailField();
     initGalleryField();
+    initSessionsRepeater();
     initDeleteConfirms();
+    applyConditionalVisibility();
 
     $('#anchor_event_all_day').on('change', toggleAllDay);
     $('#anchor_event_virtual').on('change', toggleVirtual);
     $('#anchor_event_registration_enabled').on('change', toggleRegistration);
     $('#anchor_event_registration_type').on('change', toggleRegistrationType);
+    $('#anchor_event_type, #anchor_event_registration_mode').on('change', applyConditionalVisibility);
   });
 })(jQuery);

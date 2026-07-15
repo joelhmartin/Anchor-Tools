@@ -33,7 +33,21 @@ if ( $module ) {
         </div>
         <?php
         if ( $module ) {
-            echo $module->render_registration_form( get_the_ID() );
+            $event_id = get_the_ID();
+            if ( $module->occurrences->is_group_parent( $event_id ) ) {
+                // Task 2.4: a group parent is a container, not directly
+                // bookable — the "choose a date" picker over its live
+                // children REPLACES the (already-suppressed) registration form.
+                echo $module->render_choose_date_list( $event_id );
+            } else {
+                echo $module->render_registration_form( $event_id );
+                if ( $module->occurrences->is_group_child( $event_id ) ) {
+                    // Task 2.4: sibling-date nav, shown for both live and
+                    // soft-closed children so a closed child's own page still
+                    // offers a way to find a live date.
+                    echo $module->render_sibling_dates( $event_id );
+                }
+            }
         }
         ?>
     <?php endwhile; ?>

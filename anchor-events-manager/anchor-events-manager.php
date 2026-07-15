@@ -2632,7 +2632,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.9' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.10' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         \wp_add_inline_style( 'anchor-events-frontend', sprintf(
@@ -4158,6 +4158,28 @@ class Module {
         $settings = $this->get_settings();
         $meta = $this->get_meta( $post_id );
 
+        // Task 2.4: a group PARENT is a container, not directly bookable — it
+        // never gets its own registration form/ticket UI, regardless of mode.
+        // single-event.php renders render_choose_date_list() over its live
+        // children instead. Checked before every other branch (including the
+        // WC override filter below) so nothing can re-introduce a bookable
+        // form on a parent page.
+        if ( $this->occurrences->is_group_parent( $post_id ) ) {
+            return '';
+        }
+
+        // Task 2.4 / Task 2.1 known quirk: a soft-closed group child is
+        // excluded from its parent's live children()/siblings() set, but the
+        // post itself is still directly reachable by URL. Its own
+        // registration_enabled meta cannot be trusted here — get_meta()'s
+        // ''->default quirk reads it back as true for a closed child — so
+        // closedness is determined purely via the engine's own
+        // children($parent,false) exclusion (never a meta read). A directly
+        // visited closed child always gets this notice, never a booking form.
+        if ( $this->is_closed_group_child( $post_id ) ) {
+            return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'This date is no longer available.', 'anchor-schema' ) . '</div>';
+        }
+
         // Render seam (spec §3): the WooCommerce class swaps the free form for a
         // buy button on linked events by returning non-empty here. Inert until the
         // Phase 2 filter callback is registered (no consumers otherwise).
@@ -4274,6 +4296,194 @@ class Module {
         $output .= '</form>';
 
         return $output;
+    }
+
+    /**
+     * Whether a post is a group child whose occurrence is currently
+     * soft-closed (Task 2.4). Deliberately does NOT read the
+     * `registration_enabled`/`occurrence_closed` meta directly — a closed
+     * child's `registration_enabled` reads back as its schema default
+     * (`true`) via get_meta()'s ''->default quirk (Task 2.1 review note), so
+     * the only trustworthy signal is whether the engine's own
+     * children($parent_id, false) (live-only) set still includes this post.
+     *
+     * @param int $post_id
+     * @return bool
+     */
+    private function is_closed_group_child( $post_id ) {
+        $post_id = (int) $post_id;
+        if ( ! $this->occurrences->is_group_child( $post_id ) ) {
+            return false;
+        }
+        $parent_id = $this->occurrences->parent_of( $post_id );
+        if ( $parent_id <= 0 ) {
+            return false;
+        }
+        return ! \in_array( $post_id, $this->occurrences->children( $parent_id, false ), true );
+    }
+
+    /**
+     * "Choose a date" picker for a group PARENT single-event page (Task 2.4):
+     * lists the parent's LIVE children — Occurrences::children($parent_id,
+     * false), which already excludes soft-closed occurrences via the
+     * engine's own bookkeeping (never a meta-value check) — ordered by date
+     * ascending (children() itself returns them pre-sorted), each with a
+     * date/time label, an availability hint sourced from the same seat-layer
+     * capacity authority the registration form uses, and a link to that
+     * child's own page. The parent is a container, never directly bookable,
+     * so single-event.php renders THIS in place of render_registration_form()
+     * on a parent page (see that method's is_group_parent() guard).
+     *
+     * @param int $parent_id
+     * @return string
+     */
+    public function render_choose_date_list( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        $children  = $this->occurrences->children( $parent_id, false );
+
+        $output  = '<section class="anchor-event-choose-date">';
+        $output .= '<h2 class="anchor-event-choose-date-title">' . esc_html__( 'Choose a date', 'anchor-schema' ) . '</h2>';
+
+        if ( empty( $children ) ) {
+            $output .= '<p class="anchor-event-choose-date-empty">' . esc_html__( 'No dates currently scheduled.', 'anchor-schema' ) . '</p>';
+            $output .= '</section>';
+            return $output;
+        }
+
+        $output .= '<ul class="anchor-event-choose-date-list">';
+        foreach ( $children as $child_id ) {
+            $output .= $this->render_choose_date_row( (int) $child_id );
+        }
+        $output .= '</ul>';
+        $output .= '</section>';
+
+        return $output;
+    }
+
+    /**
+     * "Other dates" sibling picker for a group CHILD single-event page (Task
+     * 2.4): lists the child's LIVE siblings — Occurrences::siblings($child_id,
+     * false), same soft-close exclusion as render_choose_date_list() — plus a
+     * link back to the parent's own choose-a-date page, so a visitor can
+     * switch dates from either a live child or a soft-closed one (a closed
+     * child's own page still shows this block alongside the "no longer
+     * available" registration notice — see render_registration_form()'s
+     * is_closed_group_child() guard). Empty string for anything that is not
+     * a group child at all.
+     *
+     * @param int $child_id
+     * @return string
+     */
+    public function render_sibling_dates( $child_id ) {
+        $child_id = (int) $child_id;
+        if ( ! $this->occurrences->is_group_child( $child_id ) ) {
+            return '';
+        }
+        $parent_id = $this->occurrences->parent_of( $child_id );
+        if ( $parent_id <= 0 ) {
+            return '';
+        }
+        $siblings = $this->occurrences->siblings( $child_id, false );
+
+        $output  = '<section class="anchor-event-other-dates">';
+        $output .= '<h2 class="anchor-event-other-dates-title">' . esc_html__( 'Other dates', 'anchor-schema' ) . '</h2>';
+
+        if ( empty( $siblings ) ) {
+            $output .= '<p class="anchor-event-other-dates-empty">' . esc_html__( 'No other dates currently scheduled.', 'anchor-schema' ) . '</p>';
+        } else {
+            $output .= '<ul class="anchor-event-choose-date-list anchor-event-other-dates-list">';
+            foreach ( $siblings as $sibling_id ) {
+                $output .= $this->render_choose_date_row( (int) $sibling_id );
+            }
+            $output .= '</ul>';
+        }
+
+        $output .= '<p class="anchor-event-other-dates-all"><a class="anchor-event-other-dates-link" href="' . esc_url( \get_permalink( $parent_id ) ) . '">' . esc_html__( 'See all dates', 'anchor-schema' ) . '</a></p>';
+        $output .= '</section>';
+
+        return $output;
+    }
+
+    /**
+     * One row shared by render_choose_date_list() and render_sibling_dates()
+     * (Task 2.4): date/time label, an availability hint, and a
+     * register-or-details link to the occurrence's own page. Pure display —
+     * reads capacity through the existing seat-layer authority
+     * (Registrations::remaining_capacity()/get_registration_status()) exactly
+     * like render_registration_form() already does, never Woo stock.
+     *
+     * @param int $event_id A live child (or the parent itself, defensively).
+     * @return string
+     */
+    private function render_choose_date_row( $event_id ) {
+        $event_id = (int) $event_id;
+        $meta     = $this->get_meta( $event_id );
+
+        $output  = '<li class="anchor-event-choose-date-row">';
+        $output .= '<a class="anchor-event-choose-date-link" href="' . esc_url( \get_permalink( $event_id ) ) . '">';
+        $output .= '<span class="anchor-event-choose-date-date">' . esc_html( $this->format_date_time( $meta, true ) ) . '</span>';
+        $output .= '</a>';
+        $output .= '<span class="anchor-event-choose-date-availability">' . esc_html( $this->choose_date_availability_hint( $event_id, $meta ) ) . '</span>';
+        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $event_id, $meta ) ) . '</a>';
+        $output .= '</li>';
+
+        return $output;
+    }
+
+    /**
+     * Short availability hint for a choose-date row: "Registration closed"
+     * when the occurrence itself has registration disabled, else the same
+     * open/full/waitlist decision get_registration_status() already computes
+     * for the registration form, rendered as "Sold out" / "Waitlist only" /
+     * "N spot(s) left" / "Open" (unlimited capacity).
+     *
+     * @param int   $event_id
+     * @param array $meta
+     * @return string
+     */
+    private function choose_date_availability_hint( $event_id, array $meta ) {
+        if ( empty( $meta['registration_enabled'] ) ) {
+            return \__( 'Registration closed', 'anchor-schema' );
+        }
+
+        $status = $this->get_registration_status( $event_id, $meta );
+        if ( $status === 'full' ) {
+            return \__( 'Sold out', 'anchor-schema' );
+        }
+        if ( $status === 'closed' ) {
+            return \__( 'Registration closed', 'anchor-schema' );
+        }
+        if ( $status === 'waitlist' ) {
+            return \__( 'Waitlist only', 'anchor-schema' );
+        }
+
+        $capacity = (int) ( $meta['capacity'] ?? 0 );
+        if ( $capacity <= 0 ) {
+            return \__( 'Open', 'anchor-schema' );
+        }
+        $remaining = $this->registrations->remaining_capacity( $event_id, $capacity );
+        /* translators: %d: number of remaining spots. */
+        return \sprintf( \_n( '%d spot left', '%d spots left', $remaining, 'anchor-schema' ), $remaining );
+    }
+
+    /**
+     * CTA label for a choose-date row: "Details" when the occurrence isn't
+     * currently accepting new registrations (closed/full/registration
+     * disabled), else "Register".
+     *
+     * @param int   $event_id
+     * @param array $meta
+     * @return string
+     */
+    private function choose_date_cta_label( $event_id, array $meta ) {
+        if ( empty( $meta['registration_enabled'] ) ) {
+            return \__( 'Details', 'anchor-schema' );
+        }
+        $status = $this->get_registration_status( $event_id, $meta );
+        if ( $status === 'full' || $status === 'closed' ) {
+            return \__( 'Details', 'anchor-schema' );
+        }
+        return \__( 'Register', 'anchor-schema' );
     }
 
     public function handle_registration() {

@@ -164,3 +164,12 @@
   color:#b91c1c;
   font-weight:600;
 }
+
+/* Inline group-authoring validation (Task 2.3 notice fix): the Gutenberg
+   admin editor saves via REST with no page redirect, so the classic
+   add_query_arg() admin notice never surfaces there — these render inline
+   inside the metabox instead, which regenerates on every block-editor save. */
+.anchor-event-offering-error,
+.anchor-event-recurrence-error{
+  margin:0 0 12px;
+}

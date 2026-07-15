@@ -28,9 +28,17 @@ const { test, expect } = require('@playwright/test');
  *
  * Test 2 proves the VALIDATION GUARD on a freshly created recurring event: an
  * incomplete rule (no count/until) must show persist_group_authoring()'s
- * admin notice and generate ZERO children, and completing the rule (setting
- * count=3) must then reconcile it to 3 — proving the guard blocks reconcile()
- * exactly until the rule is complete, never before or after.
+ * validation message and generate ZERO children, and completing the rule
+ * (setting count=3) must then reconcile it to 3 — proving the guard blocks
+ * reconcile() exactly until the rule is complete, never before or after.
+ *
+ * The event editor is Gutenberg (block editor): it saves via REST with NO
+ * page redirect, so the classic add_query_arg()/admin_notices() notice
+ * (still used by the front-end classic manager form) never surfaces here.
+ * The validation is instead rendered INLINE inside the metabox
+ * (`.anchor-event-recurrence-error`), driven off the STORED recurrence
+ * rule, which survives a block-editor save because the metabox regenerates
+ * on every full page load / iframe refresh (render_group_authoring_sections()).
  */
 
 const SEED_PATH = path.join(__dirname, '.seed.json');
@@ -140,6 +148,10 @@ test('offering repeater: editing the seeded 2-date event to 3 dates reconciles t
 });
 
 test('recurrence guard: an incomplete rule reconciles zero children; completing it reconciles the full count', async ({ page }) => {
+  // Two full reload+reconcile round trips (guard check, then completion) —
+  // give this one more room than the file/global 120s default rather than
+  // widening it for every spec.
+  test.setTimeout(240000);
   await page.goto('/wp-admin/post-new.php?post_type=event');
   await page.waitForTimeout(1500);
   await dismissWelcomeGuide(page);
@@ -167,21 +179,22 @@ test('recurrence guard: an incomplete rule reconciles zero children; completing 
   await page.waitForURL(/post\.php\?post=\d+&action=edit/, { timeout: 30000 });
   await page.waitForLoadState('networkidle').catch(() => {});
 
-  // The guard's admin notice must appear, and the generated-count affordance
-  // must NOT (it only renders when Occurrences::children() is non-empty) —
+  // The guard's validation must appear INLINE inside the metabox (the
+  // Gutenberg editor has no page-redirect for the classic admin_notices()
+  // query-arg notice to ride on), and the generated-count affordance must
+  // NOT (it only renders when Occurrences::children() is non-empty) —
   // together these prove reconcile() never ran for the incomplete rule.
   await expect(async () => {
     await page.reload();
     await page.waitForTimeout(600);
+    await expandMetaBoxes(page);
     await expect(
-      page.locator('.notice-error', { hasText: 'Set an end for the recurrence' })
+      page.locator('.anchor-event-recurrence-error', { hasText: 'Set an end for the recurrence' })
     ).toBeVisible();
+    await expect(page.locator('.anchor-event-recurrence-weekdays').locator('../..')).not.toContainText(
+      'generated occurrence'
+    );
   }).toPass({ timeout: 20000, intervals: [1000, 1500, 2000, 3000] });
-
-  await expandMetaBoxes(page);
-  await expect(page.locator('.anchor-event-recurrence-weekdays').locator('../..')).not.toContainText(
-    'generated occurrence'
-  );
 
   // Complete the rule (count=3) and re-save.
   await page.locator('#anchor_event_recurrence_count').fill('3');
@@ -198,5 +211,8 @@ test('recurrence guard: an incomplete rule reconciles zero children; completing 
     await expect(page.locator('.anchor-event-recurrence-weekdays').locator('../..')).toContainText(
       '3 generated occurrences are currently live.'
     );
+    // The inline error must be gone now that the rule is complete and
+    // reconcile() ran — the guard is validation, not a permanent banner.
+    await expect(page.locator('.anchor-event-recurrence-error')).toBeHidden();
   }).toPass({ timeout: 20000, intervals: [1000, 1500, 2000, 3000] });
 });

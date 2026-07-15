@@ -126,7 +126,10 @@
   // Task 2.3. Not a repeater — just: (a) show the weekday checkboxes only for
   // freq=weekly, and (b) a client-side hint (no hard block — the server-side
   // guard in persist_group_authoring() is the real enforcement) nudging the
-  // user to set a count or an until date before saving.
+  // user to set a count or an until date before saving, plus (c) live
+  // show/hide of the same inline error render_group_authoring_sections()
+  // renders server-side from the STORED rule (Task 2.3 notice fix) — this
+  // gives instant pre-save feedback; PHP still has the final say on load/reload.
   function initRecurrenceBuilder(){
     var $freq = $('#anchor_event_recurrence_freq');
     if(!$freq.length){ return; }
@@ -134,6 +137,7 @@
     var $count = $('#anchor_event_recurrence_count');
     var $until = $('#anchor_event_recurrence_until');
     var $hint = $('.anchor-event-recurrence-terminator-hint');
+    var $error = $('.anchor-event-recurrence-error');
 
     function toggleWeekdays(){
       $weekdays.toggle($freq.val() === 'weekly');
@@ -142,6 +146,7 @@
     function toggleTerminatorHint(){
       var hasTerminator = !!($count.val() || $until.val());
       $hint.toggleClass('anchor-event-recurrence-terminator-missing', !hasTerminator);
+      $error.toggle(!hasTerminator);
     }
 
     $freq.on('change', toggleWeekdays);

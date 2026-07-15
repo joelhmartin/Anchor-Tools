@@ -1501,9 +1501,25 @@ class Module {
             ? count( $this->occurrences->children( $post_id ) )
             : 0;
         ?>
+        <?php
+        // Inline validation surfacing (Task 2.3 notice fix): the Gutenberg
+        // block editor saves via REST with NO redirect, so the classic
+        // add_query_arg()/admin_notices() notice queued by
+        // persist_group_authoring()'s guard never reaches the admin editor —
+        // it only ever surfaced on the front-end classic manager form's
+        // full-page redirect. Rendering the SAME validation inline here,
+        // driven off the STORED meta, survives a block-editor save because
+        // this metabox regenerates via Gutenberg's metabox iframe on every
+        // save. The redirect-notice path (queue_group_notice()/
+        // admin_notices()) is left in place unchanged for the front-end form.
+        $offering_invalid = ( $event_type === 'offering' && empty( $offering_dates ) );
+        ?>
         <div class="anchor-event-section anchor-event-conditional" data-when-type="offering">
             <h3><?php echo esc_html__( 'Offering Dates', 'anchor-schema' ); ?></h3>
             <p class="description"><?php echo esc_html__( 'Add one row per date visitors can pick from. Saving generates/manages one full event per date — its own capacity, seats, and (when WooCommerce ticketing is enabled) its own product. Rows with no date are ignored.', 'anchor-schema' ); ?></p>
+            <div class="notice notice-error inline anchor-event-offering-error"<?php echo $offering_invalid ? '' : ' style="display:none;"'; ?>>
+                <p><?php echo esc_html__( 'Add at least one offering date before saving — no dates were generated/updated.', 'anchor-schema' ); ?></p>
+            </div>
             <?php if ( $child_count > 0 && $event_type === 'offering' ) : ?>
                 <p class="description"><strong><?php echo esc_html( sprintf( /* translators: %d: number of generated child events */ _n( '%d generated date is currently live.', '%d generated dates are currently live.', $child_count, 'anchor-schema' ), $child_count ) ); ?></strong></p>
             <?php endif; ?>
@@ -1532,10 +1548,16 @@ class Module {
             </script>
         </div>
 
+        <?php
+        $recurrence_invalid = ( $event_type === 'recurring' && empty( $recurrence['count'] ) && empty( $recurrence['until'] ) );
+        ?>
         <?php if ( $include_recurrence ) : ?>
         <div class="anchor-event-section anchor-event-conditional" data-when-type="recurring">
             <h3><?php echo esc_html__( 'Recurring Schedule', 'anchor-schema' ); ?></h3>
             <p class="description"><?php echo esc_html__( 'Define a repeating rule (weekly or monthly). Saving generates/manages one full event per occurrence, anchored on this event\'s Start Date above. You must set an end — a number of occurrences OR an until date — before this rule will generate anything.', 'anchor-schema' ); ?></p>
+            <div class="notice notice-error inline anchor-event-recurrence-error"<?php echo $recurrence_invalid ? '' : ' style="display:none;"'; ?>>
+                <p><?php echo esc_html__( 'Set an end for the recurrence — a number of occurrences or an until date — before saving. No occurrences were generated/updated.', 'anchor-schema' ); ?></p>
+            </div>
             <?php if ( $child_count > 0 && $event_type === 'recurring' ) : ?>
                 <p class="description"><strong><?php echo esc_html( sprintf( /* translators: %d: number of generated child events */ _n( '%d generated occurrence is currently live.', '%d generated occurrences are currently live.', $child_count, 'anchor-schema' ), $child_count ) ); ?></strong></p>
             <?php endif; ?>
@@ -2499,8 +2521,8 @@ class Module {
             return;
         }
         \wp_enqueue_media();
-        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.3' );
-        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.3', true );
+        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.4' );
+        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.4', true );
         // Ticket-tier repeatable table (spec §3.2).
         \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.0', true );
     }

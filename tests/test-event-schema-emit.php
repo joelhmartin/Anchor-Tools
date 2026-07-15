@@ -277,6 +277,77 @@ class Test_Event_Schema_Emit extends Anchor_Events_TestCase {
 		$this->decode_schema_script( $html );
 	}
 
+	/* ------------------------------------------------------------------
+	 * 8. Stored-XSS regression: literal </script> in the title must not
+	 *    break out of the wrapping <script type="application/ld+json">
+	 *    element (JSON_UNESCAPED_SLASHES disables the default `/` -> `\/`
+	 *    escaping that makes JSON safe to inline in HTML).
+	 * ------------------------------------------------------------------ */
+
+	public function test_script_breakout_in_title_does_not_escape_the_script_tag() {
+		$breakout = '</script><script>alert(1)</script>';
+		$title    = 'Evil ' . $breakout;
+
+		// The vulnerable title comes straight from get_the_title() with no
+		// escaping, so the realistic attacker is any user capable of
+		// setting it verbatim — i.e. anyone with unfiltered_html, which is
+		// administrators by default on a single-site install. Without an
+		// unfiltered_html-capable current user, wp_insert_post()/wp_update_post()
+		// run post_title/post_excerpt through wp_kses and strip the <script>
+		// tags before they ever reach the database, masking the bug.
+		$admin_id = self::factory()->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $admin_id );
+
+		$event_id = $this->make_event( [
+			'title'      => $title,
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+
+		// For good measure: same payload via the description path
+		// (post_excerpt). description() runs values through
+		// wp_strip_all_tags() before they ever reach the JSON, so this
+		// documents that the description path is independently safe — it
+		// is NOT expected to drive this test red/green on its own; the
+		// title (raw get_the_title(), no escaping) is the actual vector.
+		wp_update_post( [
+			'ID'           => $event_id,
+			'post_excerpt' => 'Summary ' . $breakout,
+		] );
+
+		$html = $this->module()->render_event_schema( $event_id );
+		$this->assertNotSame( '', $html );
+
+		// The ONLY "</script>" substring anywhere in the rendered string
+		// must be the legitimate closing tag of the wrapping <script>
+		// element. A browser's HTML parser terminates a <script> element
+		// on the FIRST "</script>" it sees, full stop — it does not know
+		// or care that the bytes came from inside a JSON string. Any extra
+		// occurrence means the attacker's injected markup becomes a live
+		// sibling <script>alert(1)</script> element that executes.
+		$this->assertSame(
+			1,
+			substr_count( $html, '</script>' ),
+			'A raw "</script>" leaked into the JSON-LD body — this is a stored-XSS <script> tag breakout.'
+		);
+
+		// The escaping is transparent to JSON parsers: still valid JSON,
+		// and the decoded name is byte-for-byte the original, un-mangled
+		// title (proving we escaped for the HTML host, not the data).
+		$this->assertSame(
+			1,
+			\preg_match( '#<script type="application/ld\+json">(.*)</script>#s', $html, $m ),
+			'Expected exactly one ld+json script tag to be extractable.'
+		);
+		$data = json_decode( $m[1], true );
+		$this->assertSame( JSON_ERROR_NONE, json_last_error(), 'Emitted JSON must decode without error: ' . json_last_error_msg() );
+		$this->assertSame( $title, $data['name'] );
+
+		// Confirm the actual fix mechanism: forward slashes are escaped,
+		// so the dangerous sequence survives only as the harmless `<\/script>`.
+		$this->assertStringContainsString( '<\/script>', $html );
+	}
+
 	public function test_output_event_schema_is_silent_off_single_event_views() {
 		$event_id = $this->make_event( [
 			'start_date' => '2027-03-01',

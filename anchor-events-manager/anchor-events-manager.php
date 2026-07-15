@@ -1077,7 +1077,13 @@ class Module {
 
         $payload = \array_merge( [ '@context' => 'https://schema.org' ], $data );
 
-        return '<script type="application/ld+json">' . \wp_json_encode( $payload, \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE ) . '</script>';
+        // Deliberately no JSON_UNESCAPED_SLASHES: the default `/` -> `\/`
+        // escaping is what keeps a literal "</script>" in any data value
+        // (e.g. an event title) from breaking out of this <script> tag.
+        // Escaped slashes decode back to plain "/" for any JSON consumer
+        // (browsers, Google, json_decode()) — this is purely a safe-HTML-
+        // embedding concern, it does not change the parsed JSON values.
+        return '<script type="application/ld+json">' . \wp_json_encode( $payload, \JSON_UNESCAPED_UNICODE ) . '</script>';
     }
 
     /**

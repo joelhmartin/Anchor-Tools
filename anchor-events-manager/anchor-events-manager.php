@@ -201,6 +201,13 @@ class Module {
         \add_filter( 'wpseo_canonical', [ $this, 'filter_yoast_canonical' ] );
         \add_filter( 'rank_math/frontend/canonical', [ $this, 'filter_yoast_canonical' ] );
 
+        // Phase 4, Task 4.2: Event JSON-LD on single-event views (data built
+        // by Event_Schema, Task 4.1). Priority 5 — well before the parent
+        // Anchor Schema plugin's own output_active_schemas() (priority 99),
+        // though ordering doesn't matter for de-dupe since that's decided by
+        // reading post meta, not by output order.
+        \add_action( 'wp_head', [ $this, 'output_event_schema' ], 5 );
+
         // Status sweep cron (bug #2): scheduled defensively on init so it survives
         // plugin upgrades (which don't fire register_activation_hook), plus on
         // activation for fresh installs; cleared on deactivation.
@@ -995,6 +1002,134 @@ class Module {
             return $our_canonical;
         }
         return $canonical;
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       Phase 4, Task 4.2 — Event JSON-LD front-end emission
+       ═══════════════════════════════════════════════════════════ */
+
+    /**
+     * Thin wp_head wrapper around render_event_schema() — the interesting
+     * logic (and everything testable) lives in render_event_schema() itself,
+     * which returns a string instead of echoing so it can be unit-tested
+     * without booting the full query/template stack.
+     */
+    public function output_event_schema() {
+        echo $this->render_event_schema(); // phpcs:ignore WordPress.Security.EscapeOutput -- render_event_schema() returns pre-escaped-for-<script> JSON via wp_json_encode(); nothing here needs esc_html.
+    }
+
+    /**
+     * Build the `<script type="application/ld+json">` tag for one event, or
+     * '' when nothing should be emitted.
+     *
+     * When $event_id is omitted, resolves the current single-event front-end
+     * view via is_singular( self::CPT ) + get_queried_object_id() — this is
+     * the wp_head codepath. Passing $event_id explicitly (as tests do) skips
+     * that query-dependent resolution entirely, which is what makes this
+     * method unit-testable outside a real front-end request.
+     *
+     * Nothing is emitted when:
+     *   - not a single `event` CPT view (query-resolved path only);
+     *   - Event_Schema::for_event() has nothing to advertise ([] — no usable
+     *     start date, or a group parent with zero live children);
+     *   - the parent Anchor Schema plugin already has an ENABLED manual
+     *     'Event' schema item configured for this exact post (real de-dupe
+     *     check against Anchor_Schema_Admin::META_KEY post meta — see
+     *     parent_schema_plugin_has_event_schema() for the full reasoning);
+     *   - the `anchor_events_emit_event_schema` filter returns false.
+     *
+     * @param int|null $event_id
+     * @return string
+     */
+    public function render_event_schema( $event_id = null ) {
+        if ( $event_id === null ) {
+            if ( \is_admin() || ! \is_singular( self::CPT ) ) {
+                return '';
+            }
+            $event_id = \get_queried_object_id();
+        }
+
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
+            return '';
+        }
+
+        $data = $this->event_schema->for_event( $event_id );
+        if ( empty( $data ) ) {
+            return '';
+        }
+
+        $should_emit = ! $this->parent_schema_plugin_has_event_schema( $event_id );
+
+        /**
+         * Filter whether Task 4.2 emits Event JSON-LD for a given event.
+         * Defaults to true unless the parent Anchor Schema plugin already
+         * has an enabled manual 'Event' schema item for this post (de-dupe
+         * — avoids two conflicting Event nodes on the same page).
+         *
+         * @param bool $should_emit
+         * @param int  $event_id
+         */
+        $should_emit = (bool) \apply_filters( 'anchor_events_emit_event_schema', $should_emit, $event_id );
+        if ( ! $should_emit ) {
+            return '';
+        }
+
+        $payload = \array_merge( [ '@context' => 'https://schema.org' ], $data );
+
+        return '<script type="application/ld+json">' . \wp_json_encode( $payload, \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE ) . '</script>';
+    }
+
+    /**
+     * De-dupe check vs the parent Anchor Schema plugin (Anchor_Schema_Render
+     * / Anchor_Schema_Admin, includes/class-anchor-schema-*.php).
+     *
+     * Investigated behavior: Anchor_Schema_Render::output_active_schemas()
+     * hooks wp_head and, for ANY singular post, reads
+     * get_post_meta( $post->ID, Anchor_Schema_Admin::META_KEY, true )
+     * ('_anchor_schema_items') — an array of manually-configured schema
+     * items, each with 'type' / 'enabled' / 'json' keys — and prints the
+     * 'json' (or 'min_json') of every item with enabled === true. It does
+     * NOT auto-map the `event` CPT (or any CPT) to an Event type; it only
+     * ever emits what a site editor explicitly added via the Schema admin
+     * UI for that specific post. So by default (no manual schema configured)
+     * the parent plugin never emits anything for an event post, and ours
+     * emits normally.
+     *
+     * The one real conflict case is when an editor HAS manually added an
+     * enabled 'Event'-typed item to this exact post via that UI — printing
+     * ours too would put two competing Event nodes on the same page. This
+     * checks for exactly that case (an enabled item whose 'type' is
+     * 'Event') and defers to the manually-configured one.
+     *
+     * A non-Event manual item (e.g. FAQPage) or a disabled item never
+     * matches — those don't produce a conflicting Event node, so ours still
+     * emits.
+     *
+     * @param int $event_id
+     * @return bool True when the parent plugin will emit an Event node for this post.
+     */
+    protected function parent_schema_plugin_has_event_schema( $event_id ) {
+        if ( ! \class_exists( 'Anchor_Schema_Admin' ) ) {
+            return false;
+        }
+
+        $items = \get_post_meta( $event_id, \Anchor_Schema_Admin::META_KEY, true );
+        if ( ! \is_array( $items ) ) {
+            return false;
+        }
+
+        foreach ( $items as $item ) {
+            if ( empty( $item['enabled'] ) ) {
+                continue;
+            }
+            $type = isset( $item['type'] ) ? (string) $item['type'] : '';
+            if ( \strcasecmp( $type, 'Event' ) === 0 ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function register_cpt() {

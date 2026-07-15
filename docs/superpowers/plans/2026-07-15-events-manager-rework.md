@@ -13,7 +13,7 @@
 Copied from `CLAUDE.md` + spec. Every task's requirements implicitly include this section.
 
 - **No build tools.** Raw PHP/CSS/JS. No transpile/bundle. Edit `.js`/`.css` directly; regenerate `.min.*` only via the repo's existing release minifier (do not hand-edit `.min.*` / `.map`).
-- **No automated test suite.** Verification = `php -l` + static invariant greps + manual smoke on the **staging** site (`deka-stage` skill → `stg-dekalasers-stage.kinsta.cloud`, the throwaway copy). Never smoke-test on live.
+- **Test harness EXISTS — use it (TDD).** The events module has PHPUnit (`phpunit/phpunit ^9.6`, `phpunit.xml.dist`, `composer test`, WP test-lib via `bin/install-wp-tests.sh`, base `Anchor_Events_TestCase extends WP_UnitTestCase` with event/seat factories; existing suites `tests/test-capacity.php|test-product-sync.php|test-reconcile.php|test-status-transitions.php|test-ticket-types.php`) AND Playwright E2E on `@wordpress/env` (`.wp-env.json`, `bin/e2e-seed.sh`, `npm run env:seed`, `npm run test:e2e`, existing `e2e/purchase.spec.js`). New logic MUST ship with PHPUnit tests written test-first; new UI flows MUST ship with a Playwright spec. Environment is local/disposable — never test on staging or live.
 - **Asset paths:** `Anchor_Asset_Loader::url('anchor-events-manager/assets/…')` (or `ANCHOR_TOOLS_PLUGIN_URL . 'anchor-events-manager/assets/'`). Never `plugin_dir_url(__FILE__)` inside the module.
 - **Options:** always pass `autoload=false` as the 3rd arg to `update_option()`.
 - **Text domain:** `'anchor-schema'` for all translatable strings.
@@ -32,14 +32,22 @@ Copied from `CLAUDE.md` + spec. Every task's requirements implicitly include thi
 
 ## Verification Loop (used by every task)
 
-Since there is no test runner, "the test" for each task is an explicit, reproducible check. Every task ends with:
+The module has a real test harness (see Global Constraints). Verification is **tiered by task type**, applied in this order; each task ends by committing only once its tier's checks pass.
 
-1. **Lint:** `php -l <each changed .php>` → expect `No syntax errors detected`.
-2. **Static invariant check(s):** task-specific `grep`/`rg` assertions listed in the task (e.g. "the new key appears in all four required locations").
-3. **Manual smoke (behavioral tasks only):** the exact click-path on staging, with expected observed result. If a subagent cannot reach staging, it marks the smoke step "PENDING-HUMAN" and the reviewer runs it before merge.
-4. **Commit** with the given message.
+**One-time environment bootstrap (Task 0.0, before anything else):**
+- `composer install` (installs PHPUnit + polyfills into `vendor/`).
+- `bin/install-wp-tests.sh wordpress_test root '' localhost latest` (or set `WP_TESTS_DIR`) so `composer test` can boot the WP test library. Confirm `composer test` runs the existing suites green **before** writing new code — this is the baseline.
+- `npm install` (installs `@wordpress/env` + Playwright), `npm run wp-env start`, `npm run env:seed` (Docker is running; Node 22 present). Confirm `npm run test:e2e` passes `e2e/purchase.spec.js` green — the E2E baseline.
 
-Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module files to `stg-dekalasers-stage.kinsta.cloud`; the plugin auto-loads changed PHP. (Staging is a clone-of-a-clone — safe to break.)
+**Per task:**
+1. **Lint:** `php -l <each changed .php>` → `No syntax errors detected`.
+2. **Logic tasks — PHPUnit, test-first (red→green):** add a test to `tests/` extending `Anchor_Events_TestCase` (use its event/seat factories); run `composer test -- --filter <TestName>` and watch it FAIL first, implement, then watch it PASS. Add the file to `phpunit.xml.dist`'s suite if needed. Applies to: resolvers/migration (1.2), reconcile (2.2), recurrence expansion (2.3), template resolve/render (3.1/3.2), schema build (4.1/4.2).
+3. **UI/flow tasks — Playwright on wp-env:** extend `bin/e2e-seed.sh` with any needed fixture (idempotent), add/extend an `e2e/*.spec.js`, run `npm run env:seed && npm run test:e2e -- <spec>` green. Applies to: choosers/repeater/external render (1.3–1.6), choose-your-date (2.6), email builder preview (3.3–3.6).
+4. **Static invariant check(s):** task-specific `rg` assertions listed in the task.
+5. **Spot checks:** `npm run wp-env run cli wp eval '<php>'` for quick in-WP assertions (e.g. dump generated schema JSON, expand a recurrence rule).
+6. **Commit** with the given message.
+
+A subagent that cannot start Docker/wp-env marks E2E steps `PENDING-HUMAN` and the reviewer runs them at the phase gate; PHPUnit (which needs only `composer install` + the WP test-lib, no Docker) must still be run.
 
 ---
 
@@ -52,6 +60,15 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 - Auto-merged (verify only): `class-registrations.php`, `class-roster.php`, `class-woocommerce.php`
 - New from branch: `anchor-events-manager/EMAILS.md`
 - Trivial: `anchor-tools.php` version-header line (keep higher)
+
+### Task 0.0: Bootstrap + baseline the test harness (before any code)
+
+- [ ] **Step 1: PHP deps** — `composer install` → `vendor/bin/phpunit` present.
+- [ ] **Step 2: WP test library** — `bin/install-wp-tests.sh wordpress_test root '' 127.0.0.1 latest` (adjust DB creds as needed) or export `WP_TESTS_DIR`. Ensure WooCommerce is available to the suite per `tests/bootstrap.php`'s path contract.
+- [ ] **Step 3: PHPUnit baseline** — `composer test` → existing suites (capacity/product-sync/reconcile/status/tickets) pass. Record the pass count as the baseline.
+- [ ] **Step 4: E2E env** — `npm install`; `npm run wp-env start`; `npm run env:seed` → writes `e2e/.seed.json`.
+- [ ] **Step 5: E2E baseline** — `npm run test:e2e` → `e2e/purchase.spec.js` passes.
+- [ ] **Step 6: Checkpoint** — no code changes; record both baselines in the phase-gate notes. If either baseline is red on the pristine branch, STOP and report before merging.
 
 ### Task 0.1: Perform the merge and resolve conflicts
 
@@ -115,8 +132,8 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 - [ ] **Step 4: Static check**
   Run: `rg -n "text/html" anchor-events-manager/anchor-events-manager.php` → the header appears in `send_html_email()`.
 
-- [ ] **Step 5: Smoke (staging)**
-  Deploy to staging. Create a free event, register a test attendee, confirm the confirmation email arrives rendered as HTML (not raw markup). Trigger a reminder via `wp cron event run anchor_events_reminder_sweep` after setting `start_date` ~1 day out and `reminder_enabled=1`. Expected: HTML email received.
+- [ ] **Step 5: Smoke (wp-env)**
+  In the running wp-env, capture the header: `npm run wp-env run cli wp eval '$m=\Anchor\Events\Module::instance(); $h=""; add_filter("wp_mail",function($a)use(&$h){$h=$a["headers"];return $a;}); $m->send_html_email(get_option("admin_email"),"t","<b>hi</b>"); echo is_array($h)?implode("|",$h):$h;'` → output contains `Content-Type: text/html`. (Behavioral email delivery is covered by the reminder PHPUnit path; this asserts the header fix directly.)
 
 - [ ] **Step 6: Commit**
   ```bash
@@ -127,15 +144,15 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 ### Task 0.4: Confirm settings + cron surface
 
 - [ ] **Step 1: Smoke the settings tab**
-  On staging, open Settings → Anchor Tools → Events. Expected: the "Lifecycle Emails" and (WC active) "WooCommerce Registration Emails" sections render with all keys from Task 0.1 Interfaces.
+  In wp-env (`http://localhost:8888/wp-admin`), open Settings → Anchor Tools → Events. Expected: the "Lifecycle Emails" and (WC active) "WooCommerce Registration Emails" sections render with all keys from Task 0.1 Interfaces.
 
 - [ ] **Step 2: Confirm cron scheduled**
-  Run on staging: `wp cron event list | grep anchor_events_reminder_sweep` → an hourly schedule exists.
+  Run: `npm run wp-env run cli wp cron event list | grep anchor_events_reminder_sweep` → an hourly schedule exists.
 
 - [ ] **Step 3: Commit doc**
   Ensure `EMAILS.md` came over from the branch (`git show HEAD:anchor-events-manager/EMAILS.md | head`). No code change; this is a checkpoint.
 
-**Phase 0 review gate.** Reviewer confirms lint clean, both semantic checks pass, HTML email verified on staging. Do not start Phase 1 until merged state is green.
+**Phase 0 review gate.** Reviewer confirms `composer test` + `npm run test:e2e` baselines green post-merge, both semantic checks pass, and the `text/html` header assertion passes. Do not start Phase 1 until merged state is green.
 
 ---
 
@@ -179,7 +196,7 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 
 - [ ] **Step 3: Lint + static** — `php -l` clean; `rg -n "function event_type|function registration_mode|function get_sessions" …` present.
 
-- [ ] **Step 4: Smoke (staging)** — existing events still show correct registration behavior; `event_type()` returns `single` for them.
+- [ ] **Step 4: Smoke (wp-env)** — existing events still show correct registration behavior; `event_type()` returns `single` for them.
 
 - [ ] **Step 5: Commit** — `feat(events): type/mode resolvers + BC shim + one-time mode migration`.
 
@@ -210,7 +227,7 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 
 - [ ] **Step 4: Version-bump** the `wp_enqueue_*` version strings for admin.js/admin.css.
 
-- [ ] **Step 5: Smoke (staging)** — switching type/mode reveals the right fields; add two session rows, save, reopen — rows persist; set external mode with a URL + display price, save, reopen — persists.
+- [ ] **Step 5: Smoke (wp-env)** — switching type/mode reveals the right fields; add two session rows, save, reopen — rows persist; set external mode with a URL + display price, save, reopen — persists.
 
 - [ ] **Step 6: Commit** — `feat(events): admin JS/CSS for conditional fields + session repeater`.
 
@@ -224,7 +241,7 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 
 - [ ] **Step 3: Lint + static** — `php -l` clean; the shared sanitizer method is called from both `save_meta()` and the front-end save (`rg -n`).
 
-- [ ] **Step 4: Smoke (staging)** — create a multisession + an external event via the front-end manager form; verify parity with admin.
+- [ ] **Step 4: Smoke (wp-env)** — create a multisession + an external event via the front-end manager form; verify parity with admin.
 
 - [ ] **Step 5: Commit** — `feat(events): front-end manager form parity for type/mode/sessions/external`.
 
@@ -236,7 +253,7 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 
 - [ ] **Step 3: frontend.css/js** — style the session list + external block; version-bump.
 
-- [ ] **Step 4: Smoke (staging)** — view a multisession event (all sessions listed) and an external paid event (embed/link + "$X" label shown, no cart).
+- [ ] **Step 4: Smoke (wp-env)** — view a multisession event (all sessions listed) and an external paid event (embed/link + "$X" label shown, no cart).
 
 - [ ] **Step 5: Commit** — `feat(events): front-end rendering for sessions + external registration + display price`.
 
@@ -259,7 +276,7 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 - `Occurrences::reconcile(int $parent_id): array` (idempotent create/update/soft-close of children; returns child IDs).
 - `Occurrences::children(int $parent_id): int[]`, `Occurrences::siblings(int $child_id): int[]`.
 
-**Tasks (each with the standard lint + static + staging-smoke + commit loop):**
+**Tasks (each with the standard lint + PHPUnit/Playwright + static + commit loop):**
 
 - **2.1** `Occurrences` class scaffold + parent/child meta registration (excluded from user allow-list). Static check: keys not present in `save_meta()` allow-list.
 - **2.2** Reconcile algorithm: for each offering date / generated recurrence date, find-or-create a child event post keyed by `(group_id, date)`; update shared content from parent; **soft-close** (set status closed, never delete) any child whose date was removed **and preserve its roster/seats**. Idempotent: second run with no changes creates nothing. Smoke: add 3 offering dates → 3 children; remove 1 → 2 active + 1 closed with seats intact.
@@ -291,7 +308,7 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 **Tasks (standard loop each):**
 
 - **3.1** Seed global default template options from the current hardcoded shell (extract the `build_registration_email_html()` markup into a default template string with tokens). Verify: rendering the default produces byte-equivalent output to pre-refactor for a fixed `$ctx` (capture before/after via `wp eval`).
-- **3.2** Refactor `build_registration_email_html()` to render from `resolve_email_template()` through `expand_email_tokens()`; preserve `$ctx` contract + the `anchor_events_registration_email_html` filter. Regression smoke: confirmation/reminder emails still render correctly on staging.
+- **3.2** Refactor `build_registration_email_html()` to render from `resolve_email_template()` through `expand_email_tokens()`; preserve `$ctx` contract + the `anchor_events_registration_email_html` filter. PHPUnit regression: assert rendered output for a fixed `$ctx` equals the 3.1 captured baseline.
 - **3.3** Emails metabox: four tabs, each a `Anchor_Monaco` HTML field + token palette + `srcdoc` preview iframe + "reset to global default" + "render with real tokens" button.
 - **3.4** `email-builder.js`/`.css` cloned from anchor-blocks; wire Monaco synthetic `input` → debounced `srcdoc`; token-insert buttons; AJAX real-token preview. Version-bump enqueues.
 - **3.5** AJAX `anchor_events_email_preview` endpoint (nonce + cap; returns rendered HTML for event+type). Smoke: preview matches a real send.
@@ -327,7 +344,7 @@ Staging deploy for smoke: use the `deka-stage` skill to `rsync`/`wp` the module 
 **Tasks:**
 - **5.1** String audit: `rg -ni "deka|jotform|jot form|anchor dental|<other client names>" anchor-events-manager/` → zero functional matches; neutralize any found (labels become generic/filterable).
 - **5.2** Docs: refresh `EVENTS-WOOCOMMERCE.md`, `EMAILS.md`; add an `EVENTS.md` covering event types + external registration + email builder. Update root `ADDING-MODULES.md` cross-refs if needed.
-- **5.3** Full staging regression pass across all four types × three registration modes + emails + schema (checklist).
+- **5.3** Full regression: `composer test` (all PHPUnit suites) + `npm run test:e2e` (all Playwright specs) green across all four types × three registration modes + emails + schema.
 - **5.4** Version bump `anchor-tools.php` `Version:` header; merge `feature/events-rework` → `main`; tag/release **from main**; regenerate `.min.*` via the release minifier.
 
 **Phase 5 review gate → release.**

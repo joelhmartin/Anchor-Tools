@@ -201,14 +201,125 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Create (or reuse) a published MULTISESSION event (Task 1.6): a "Sessions"
+# list is rendered on the single-event page from _anchor_event_sessions.
+# Read by e2e/event-frontend.spec.js. Idempotent, same idiom as the paid-event
+# fixture above.
+# ---------------------------------------------------------------------------
+MULTI_SLUG="e2e-multisession-event"
+MULTI_EVENT_ID="$(wp post list --post_type=event --post_status=any --name="${MULTI_SLUG}" --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${MULTI_EVENT_ID}" ]; then
+  MULTI_EVENT_ID="$(wp post create \
+    --post_type=event \
+    --post_status=publish \
+    --post_title='E2E Multisession Event' \
+    --post_name="${MULTI_SLUG}" \
+    --post_content='Automated end-to-end multisession fixture event.' \
+    --porcelain)"
+  log "Created multisession event #${MULTI_EVENT_ID}."
+else
+  wp post update "${MULTI_EVENT_ID}" --post_status=publish >/dev/null
+  log "Reusing multisession event #${MULTI_EVENT_ID}."
+fi
+
+MULTI_START_DATE="$(wp eval 'echo gmdate("Y-m-d", strtotime("+50 days"));')"
+MULTI_START_TS="$(wp eval 'echo (int) strtotime("+50 days 09:00:00");')"
+MULTI_DAY2_DATE="$(wp eval 'echo gmdate("Y-m-d", strtotime("+51 days"));')"
+MULTI_DAY3_DATE="$(wp eval 'echo gmdate("Y-m-d", strtotime("+52 days"));')"
+wp post meta update "${MULTI_EVENT_ID}" _anchor_event_type        "multisession"        >/dev/null
+wp post meta update "${MULTI_EVENT_ID}" _anchor_event_start_date  "${MULTI_START_DATE}" >/dev/null
+wp post meta update "${MULTI_EVENT_ID}" _anchor_event_start_ts    "${MULTI_START_TS}"   >/dev/null
+wp post meta update "${MULTI_EVENT_ID}" _anchor_event_end_date    "${MULTI_DAY3_DATE}"  >/dev/null
+wp post meta update "${MULTI_EVENT_ID}" _anchor_event_status      "upcoming"            >/dev/null
+wp post meta update "${MULTI_EVENT_ID}" _anchor_event_status_mode "manual"              >/dev/null
+wp post meta update "${MULTI_EVENT_ID}" _anchor_event_sessions '[{"date":"'"${MULTI_START_DATE}"'","start_time":"09:00","end_time":"10:30","label":"Day 1: Orientation"},{"date":"'"${MULTI_DAY2_DATE}"'","start_time":"09:00","end_time":"12:00","label":"Day 2: Workshop"},{"date":"'"${MULTI_DAY3_DATE}"'","start_time":"09:00","end_time":"11:00","label":"Day 3: Wrap-up"}]' --format=json >/dev/null
+log "Multisession event meta + 3 sessions set."
+
+# ---------------------------------------------------------------------------
+# Create (or reuse) a published EXTERNAL-registration event, LINK variant
+# (Task 1.6): registration_mode=external with only a URL — renders the
+# link-out button + display price, no cart/ticket UI. Read by
+# e2e/event-frontend.spec.js.
+# ---------------------------------------------------------------------------
+EXT_SLUG="e2e-external-event"
+EXT_EVENT_ID="$(wp post list --post_type=event --post_status=any --name="${EXT_SLUG}" --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${EXT_EVENT_ID}" ]; then
+  EXT_EVENT_ID="$(wp post create \
+    --post_type=event \
+    --post_status=publish \
+    --post_title='E2E External Event' \
+    --post_name="${EXT_SLUG}" \
+    --post_content='Automated end-to-end external-registration fixture event.' \
+    --porcelain)"
+  log "Created external event #${EXT_EVENT_ID}."
+else
+  wp post update "${EXT_EVENT_ID}" --post_status=publish >/dev/null
+  log "Reusing external event #${EXT_EVENT_ID}."
+fi
+
+EXT_START_DATE="$(wp eval 'echo gmdate("Y-m-d", strtotime("+45 days"));')"
+EXT_START_TS="$(wp eval 'echo (int) strtotime("+45 days 09:00:00");')"
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_start_date           "${EXT_START_DATE}" >/dev/null
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_start_ts             "${EXT_START_TS}"   >/dev/null
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_end_date             "${EXT_START_DATE}" >/dev/null
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_status               "upcoming"          >/dev/null
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_status_mode          "manual"            >/dev/null
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_registration_enabled 1                   >/dev/null
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_registration_mode    "external"          >/dev/null
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_external_url         "https://example.test/e2e-external-register" >/dev/null
+wp post meta update "${EXT_EVENT_ID}" _anchor_event_external_display_price '$495' >/dev/null
+log "External (link variant) event meta set."
+
+# ---------------------------------------------------------------------------
+# Create (or reuse) a published EXTERNAL-registration event, EMBED variant
+# (Task 1.6): registration_mode=external with an already-sanitized
+# `external_embed` (a real <iframe src=...>) — renders the embed as trusted
+# HTML plus the display price. Read by e2e/event-frontend.spec.js.
+# ---------------------------------------------------------------------------
+EXT_EMBED_SLUG="e2e-external-embed-event"
+EXT_EMBED_EVENT_ID="$(wp post list --post_type=event --post_status=any --name="${EXT_EMBED_SLUG}" --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${EXT_EMBED_EVENT_ID}" ]; then
+  EXT_EMBED_EVENT_ID="$(wp post create \
+    --post_type=event \
+    --post_status=publish \
+    --post_title='E2E External Embed Event' \
+    --post_name="${EXT_EMBED_SLUG}" \
+    --post_content='Automated end-to-end external-embed fixture event.' \
+    --porcelain)"
+  log "Created external embed event #${EXT_EMBED_EVENT_ID}."
+else
+  wp post update "${EXT_EMBED_EVENT_ID}" --post_status=publish >/dev/null
+  log "Reusing external embed event #${EXT_EMBED_EVENT_ID}."
+fi
+
+EXT_EMBED_START_DATE="$(wp eval 'echo gmdate("Y-m-d", strtotime("+46 days"));')"
+EXT_EMBED_START_TS="$(wp eval 'echo (int) strtotime("+46 days 09:00:00");')"
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_start_date           "${EXT_EMBED_START_DATE}" >/dev/null
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_start_ts             "${EXT_EMBED_START_TS}"   >/dev/null
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_end_date             "${EXT_EMBED_START_DATE}" >/dev/null
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_status               "upcoming"                >/dev/null
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_status_mode          "manual"                  >/dev/null
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_registration_enabled 1                         >/dev/null
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_registration_mode    "external"                >/dev/null
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_external_embed       '<iframe src="https://example.test/e2e-embed" width="600" height="400" allowfullscreen></iframe>' >/dev/null
+wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_external_display_price '$150' >/dev/null
+log "External (embed variant) event meta set."
+
+# ---------------------------------------------------------------------------
 # Emit the fixture for the Playwright specs (written via WP so the path is
 # correct inside the container; the bind mount surfaces it on the host).
 # ---------------------------------------------------------------------------
 EVENT_URL="$(wp eval 'echo get_permalink('"${EVENT_ID}"');')"
 MANAGER_PAGE_URL="$(wp eval 'echo get_permalink('"${MANAGER_PAGE_ID}"');')"
+MULTI_EVENT_URL="$(wp eval 'echo get_permalink('"${MULTI_EVENT_ID}"');')"
+EXT_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EVENT_ID}"');')"
+EXT_EMBED_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EMBED_EVENT_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
+log "Multisession event URL: ${MULTI_EVENT_URL}"
+log "External (link) event URL: ${EXT_EVENT_URL}"
+log "External (embed) event URL: ${EXT_EMBED_EVENT_URL}"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 log "Seed complete."

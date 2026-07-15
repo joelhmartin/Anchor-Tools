@@ -2011,7 +2011,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.7' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.8' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         \wp_add_inline_style( 'anchor-events-frontend', sprintf(
@@ -3434,6 +3434,90 @@ class Module {
         }
 
         $output .= '</section>';
+        $output .= $this->render_sessions_list( $post_id );
+        return $output;
+    }
+
+    /**
+     * Multi-session series (Task 1.6): a titled list of the event's sessions
+     * (date + start/end time + label), rendered only when the event is
+     * type=multisession AND has at least one normalized session row (rows
+     * with an empty date are already dropped by get_sessions()). Every field
+     * is plain text — escaped on output, no trusted-HTML fields here.
+     *
+     * occurrence = event post: this is a pure read of `sessions` meta, it does
+     * not touch seats/capacity/tiers/product/roster/reconcile.
+     *
+     * @param int $post_id
+     * @return string
+     */
+    private function render_sessions_list( $post_id ) {
+        if ( $this->event_type( $post_id ) !== 'multisession' ) {
+            return '';
+        }
+        $sessions = $this->get_sessions( $post_id );
+        if ( empty( $sessions ) ) {
+            return '';
+        }
+
+        $output = '<section class="anchor-event-sessions">';
+        $output .= '<h2 class="anchor-event-sessions-title">' . esc_html__( 'Sessions', 'anchor-schema' ) . '</h2>';
+        $output .= '<table class="anchor-event-sessions-list">';
+        $output .= '<thead><tr>';
+        $output .= '<th>' . esc_html__( 'Date', 'anchor-schema' ) . '</th>';
+        $output .= '<th>' . esc_html__( 'Time', 'anchor-schema' ) . '</th>';
+        $output .= '<th>' . esc_html__( 'Session', 'anchor-schema' ) . '</th>';
+        $output .= '</tr></thead>';
+        $output .= '<tbody>';
+        foreach ( $sessions as $session ) {
+            $time_range = trim( $session['start_time'] . ( $session['end_time'] ? ' – ' . $session['end_time'] : '' ) );
+            $output .= '<tr>';
+            $output .= '<td>' . esc_html( $session['date'] ) . '</td>';
+            $output .= '<td>' . esc_html( $time_range ) . '</td>';
+            $output .= '<td>' . esc_html( $session['label'] ) . '</td>';
+            $output .= '</tr>';
+        }
+        $output .= '</tbody>';
+        $output .= '</table>';
+        $output .= '</section>';
+
+        return $output;
+    }
+
+    /**
+     * External registration mode (Task 1.6): the event is registered/
+     * ticketed off-site. Renders EITHER the embedded form (when
+     * `external_embed` is set) OR a link-out button (when only `external_url`
+     * is set), plus the optional display-only price label. This is a pure
+     * display block — occurrence = event post, it does not invoke any cart/
+     * registration/seat code.
+     *
+     * SECURITY: `external_embed` is stored ALREADY-SANITIZED via a wp_kses()
+     * allowlist at save time (sanitize_external_embed()) and is echoed here
+     * as trusted HTML — it must NOT be esc_html()'d/esc_attr()'d, or the
+     * iframe/allowed markup would render as literal escaped text instead of
+     * HTML. EVERY other field (external_url, external_display_price) is
+     * escaped on output as usual.
+     *
+     * @param int   $post_id
+     * @param array $meta get_meta( $post_id ) result.
+     * @return string
+     */
+    private function render_external_registration( $post_id, $meta ) {
+        $output = '<div class="anchor-event-registration anchor-event-registration-external">';
+
+        if ( $meta['external_embed'] !== '' ) {
+            // Already sanitized at save time — echo as trusted HTML.
+            $output .= '<div class="anchor-event-external-embed">' . $meta['external_embed'] . '</div>';
+        } elseif ( $meta['external_url'] !== '' ) {
+            $output .= '<a class="anchor-event-button anchor-event-register" href="' . esc_url( $meta['external_url'] ) . '" target="_blank" rel="noopener">' . esc_html__( 'Register', 'anchor-schema' ) . '</a>';
+        }
+
+        if ( $meta['external_display_price'] !== '' ) {
+            $output .= '<p class="anchor-event-external-price">' . esc_html( $meta['external_display_price'] ) . '</p>';
+        }
+
+        $output .= '</div>';
         return $output;
     }
 
@@ -3447,6 +3531,15 @@ class Module {
         $override = \apply_filters( 'anchor_events_registration_form', '', $post_id, $meta );
         if ( $override !== '' ) {
             return $override;
+        }
+
+        // External registration mode (Task 1.6): the event's registration/
+        // checkout happens off-site. This is authoritative and independent of
+        // the `registration_enabled` toggle / legacy registration_type below —
+        // when registration_mode is explicitly 'external', always render the
+        // link/embed + price block in place of the internal/WC form.
+        if ( $this->registration_mode( $post_id ) === 'external' ) {
+            return $this->render_external_registration( $post_id, $meta );
         }
 
         if ( ! $meta['registration_enabled'] ) {

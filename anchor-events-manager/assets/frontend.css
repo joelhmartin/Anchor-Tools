@@ -168,6 +168,60 @@
   font-size:15px;
 }
 
+/* Multi-session series list (Task 1.6) */
+.anchor-event-sessions{
+  margin:20px 0;
+}
+
+.anchor-event-sessions-title{
+  margin:0 0 10px;
+  font-size:18px;
+  color:var(--anchor-event-text);
+}
+
+.anchor-event-sessions-list{
+  width:100%;
+  border-collapse:collapse;
+  font-size:14px;
+}
+
+.anchor-event-sessions-list th,
+.anchor-event-sessions-list td{
+  padding:8px 10px;
+  text-align:left;
+  border-bottom:1px solid var(--anchor-event-border);
+}
+
+.anchor-event-sessions-list thead th{
+  background:#f3f4f6;
+  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:0.04em;
+  color:var(--anchor-event-muted);
+}
+
+/* External registration block (Task 1.6): link-out button or embed, plus
+   the optional display-only price label — no cart/registration form. */
+.anchor-event-registration-external{
+  display:grid;
+  gap:14px;
+}
+
+.anchor-event-external-embed{
+  max-width:100%;
+}
+
+.anchor-event-external-embed iframe{
+  max-width:100%;
+}
+
+.anchor-event-external-price{
+  margin:0;
+  font-size:18px;
+  font-weight:700;
+  color:var(--anchor-event-text);
+}
+
 .anchor-event-notice{
   padding:12px 16px;
   border-radius:8px;

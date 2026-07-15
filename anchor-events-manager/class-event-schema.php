@@ -440,7 +440,9 @@ class Event_Schema {
      * words of the content, HTML stripped either way. Reads the raw post
      * fields directly (not get_the_excerpt()/the_content filters) so this
      * works correctly outside The Loop and never picks up
-     * theme/plugin-added "read more" markup.
+     * theme/plugin-added "read more" markup. HTML entities (e.g. `&amp;`,
+     * `&#8217;`) left behind by wp_strip_all_tags() are decoded so the
+     * JSON-LD value is clean text, not markup source.
      *
      * @param int $event_id
      * @return string
@@ -456,7 +458,8 @@ class Event_Schema {
             $excerpt = \wp_trim_words( \wp_strip_all_tags( (string) $post->post_content ), 55, '…' );
         }
 
-        return \trim( \wp_strip_all_tags( $excerpt ) );
+        $excerpt = \trim( \wp_strip_all_tags( $excerpt ) );
+        return \html_entity_decode( $excerpt, \ENT_QUOTES, 'UTF-8' );
     }
 
     /**

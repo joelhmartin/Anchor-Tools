@@ -13,6 +13,11 @@ use Anchor\Events\Module;
  */
 class Test_Event_Schema extends Anchor_Events_TestCase {
 
+	public function tear_down() {
+		delete_option( Module::OPTION_KEY );
+		parent::tear_down();
+	}
+
 	/** @return Event_Schema */
 	protected function schema() {
 		return $this->module()->event_schema;
@@ -95,6 +100,26 @@ class Test_Event_Schema extends Anchor_Events_TestCase {
 		$this->assertNotSame( '', $node['image'] );
 	}
 
+	public function test_description_decodes_html_entities() {
+		$event_id = $this->make_event( [
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+
+		wp_update_post( [
+			'ID'           => $event_id,
+			'post_excerpt' => 'Tom &amp; Jerry&#8217;s Big Adventure',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		// &#8217; decodes to a curly right single quote (U+2019 ’), not a
+		// straight apostrophe — assert the actual decoded character.
+		$this->assertStringContainsString( 'Tom & Jerry' . "\u{2019}" . 's Big Adventure', $node['description'] );
+		$this->assertStringNotContainsString( '&amp;', $node['description'] );
+		$this->assertStringNotContainsString( '&#8217;', $node['description'] );
+	}
+
 	public function test_no_start_date_returns_empty_array() {
 		$event_id = $this->make_event( [ 'start_date' => '' ] );
 
@@ -114,6 +139,37 @@ class Test_Event_Schema extends Anchor_Events_TestCase {
 		$node = $this->schema()->for_event( $event_id );
 
 		$this->assertSame( 'https://schema.org/EventCancelled', $node['eventStatus'] );
+	}
+
+	/**
+	 * Exercises resolve_timezone()'s 'event' branch (as opposed to 'site',
+	 * which every other test in this file uses). Module::get_settings()
+	 * defaults `timezone_mode` to 'site' (-> UTC in the WP test env), so
+	 * without this test the 'event' branch — and a UTC-fallback regression
+	 * in it — would never be exercised by the suite.
+	 *
+	 * 2027-07-15 is within US DST, so America/New_York is EDT (-04:00) on
+	 * that date. Asserting the EXACT offset (not just "some offset exists")
+	 * means a broken/UTC-fallback resolve_timezone() fails this test:
+	 * verified by temporarily forcing resolve_timezone() to always take the
+	 * 'site' branch, which flips the produced offset to '+00:00' and fails
+	 * both assertions below.
+	 */
+	public function test_per_event_timezone_mode_uses_event_timezone_offset() {
+		update_option( Module::OPTION_KEY, [ 'timezone_mode' => 'event' ], false );
+
+		$event_id = $this->make_event( [
+			'start_date' => '2027-07-15',
+			'end_date'   => '2027-07-15',
+			'start_time' => '09:00',
+			'end_time'   => '11:00',
+			'timezone'   => 'America/New_York',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertStringEndsWith( '-04:00', $node['startDate'], 'Expected America/New_York summer (EDT) offset, not UTC/site fallback.' );
+		$this->assertStringEndsWith( '-04:00', $node['endDate'], 'Expected America/New_York summer (EDT) offset, not UTC/site fallback.' );
 	}
 
 	/* ------------------------------------------------------------------

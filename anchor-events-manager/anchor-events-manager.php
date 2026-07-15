@@ -574,6 +574,163 @@ class Module {
     }
 
     /**
+     * Task 3.3 — read-only "upcoming sends" schedule, computed on the fly from
+     * the exact same inputs run_reminder_sweep()/maybe_send_scheduled_roster()
+     * use (effective_offsets(), the settings flags, the per-seat
+     * `_anchor_event_reminders_sent` markers, and the per-event `roster_sent`
+     * marker). NO new storage, NO send/reschedule side effects — this only
+     * reads state and reports what the sweep already has done / will do.
+     *
+     * Return shape:
+     * [
+     *   'notice' => ''|'invalid'|'group_parent'|'disabled'|'no_start',
+     *   'rows'   => [
+     *     [
+     *       'type'         => 'reminder'|'roster',
+     *       'offset_days'  => int,
+     *       'scheduled_ts' => int,        // start_ts - offset_days*DAY_IN_SECONDS
+     *       'recipient'    => string,     // human-readable recipient description
+     *       'sent_count'   => int,        // reminders: seats w/ the offset marker; roster: 0|1
+     *       'total_count'  => int,        // reminders: confirmed seats; roster: 1
+     *       'state'        => 'sent'|'partial'|'scheduled'|'past',
+     *     ],
+     *     ...
+     *   ],
+     * ]
+     * Rows are ordered by scheduled_ts ascending.
+     *
+     * Grouped events: a group PARENT never itself takes registrations — its
+     * children (each a full event post with its own start_ts + seats) are
+     * what the sweep actually processes. Rather than aggregate every child's
+     * schedule into one (more moving parts, easy to get subtly wrong), the
+     * parent gets an explicit 'group_parent' notice pointing at the per-date
+     * children; a child computes its own schedule exactly like a standalone
+     * event.
+     *
+     * @param int $event_id
+     * @return array{notice:string,rows:array}
+     */
+    public function compute_email_schedule( int $event_id ): array {
+        $event_id = (int) $event_id;
+        $result   = [ 'notice' => '', 'rows' => [] ];
+
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
+            $result['notice'] = 'invalid';
+            return $result;
+        }
+
+        if ( $this->occurrences->is_group_parent( $event_id ) ) {
+            $result['notice'] = 'group_parent';
+            return $result;
+        }
+
+        $settings     = $this->get_settings();
+        $reminders_on = ! empty( $settings['reminder_enabled'] );
+        $roster_on    = ! empty( $settings['organizer_roster_email'] );
+
+        if ( ! $reminders_on && ! $roster_on ) {
+            $result['notice'] = 'disabled';
+            return $result;
+        }
+
+        $meta     = $this->get_meta( $event_id );
+        $start_ts = (int) ( $meta['start_ts'] ?? 0 );
+        if ( $start_ts <= 0 ) {
+            $result['notice'] = 'no_start';
+            return $result;
+        }
+
+        $now  = \time();
+        $rows = [];
+
+        if ( $reminders_on ) {
+            // Mirrors run_reminder_sweep()'s own seat query exactly (same
+            // status + per_page) so "confirmed seats" here can never drift
+            // from what the sweep would actually count/notify.
+            $seats = $this->registrations->query_seats( [
+                'event_id' => $event_id,
+                'status'   => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+                'per_page' => -1,
+            ] );
+            $total = \count( $seats['items'] );
+
+            foreach ( $this->effective_offsets( $event_id, $settings, $meta ) as $offset ) {
+                $scheduled_ts = $start_ts - ( $offset * DAY_IN_SECONDS );
+                $sent_count   = 0;
+                foreach ( $seats['items'] as $seat ) {
+                    $sent_map = \get_post_meta( $seat['id'], '_anchor_event_reminders_sent', true );
+                    if ( \is_array( $sent_map ) && isset( $sent_map[ $offset ] ) ) {
+                        $sent_count++;
+                    }
+                }
+                $rows[] = [
+                    'type'         => 'reminder',
+                    'offset_days'  => $offset,
+                    'scheduled_ts' => $scheduled_ts,
+                    'recipient'    => \sprintf(
+                        /* translators: %d: number of confirmed attendees. */
+                        \_n( '%d confirmed attendee', '%d confirmed attendees', $total, 'anchor-schema' ),
+                        $total
+                    ),
+                    'sent_count'   => $sent_count,
+                    'total_count'  => $total,
+                    'state'        => $this->schedule_row_state( $scheduled_ts, $now, $sent_count, $total ),
+                ];
+            }
+        }
+
+        if ( $roster_on ) {
+            $offset       = (int) $settings['roster_auto_offset'];
+            $scheduled_ts = $start_ts - ( $offset * DAY_IN_SECONDS );
+            $already_sent = (int) ( $meta['roster_sent'] ?? 0 ) > 0;
+            $email        = $this->resolve_organizer_email( $event_id, $settings );
+
+            $rows[] = [
+                'type'         => 'roster',
+                'offset_days'  => $offset,
+                'scheduled_ts' => $scheduled_ts,
+                'recipient'    => $email !== '' ? $email : \__( 'Organizer', 'anchor-schema' ),
+                'sent_count'   => $already_sent ? 1 : 0,
+                'total_count'  => 1,
+                'state'        => $already_sent ? 'sent' : ( $now < $scheduled_ts ? 'scheduled' : 'past' ),
+            ];
+        }
+
+        \usort( $rows, function ( $a, $b ) {
+            return $a['scheduled_ts'] <=> $b['scheduled_ts'];
+        } );
+
+        $result['rows'] = $rows;
+        return $result;
+    }
+
+    /**
+     * State for one compute_email_schedule() reminder row.
+     * - 'sent'      : every confirmed seat has the offset marker (total>0).
+     * - 'partial'   : some, but not all, confirmed seats have it — honestly
+     *                 surfaces mixed state instead of collapsing it into
+     *                 either "sent" or "scheduled".
+     * - 'scheduled' : none sent yet, send window still in the future.
+     * - 'past'      : none sent yet, send window already passed (e.g.
+     *                 reminders were enabled after the window elapsed).
+     *
+     * @param int $scheduled_ts
+     * @param int $now
+     * @param int $sent_count
+     * @param int $total_count
+     * @return string
+     */
+    private function schedule_row_state( $scheduled_ts, $now, $sent_count, $total_count ) {
+        if ( $total_count > 0 && $sent_count === $total_count ) {
+            return 'sent';
+        }
+        if ( $sent_count > 0 ) {
+            return 'partial';
+        }
+        return $now < $scheduled_ts ? 'scheduled' : 'past';
+    }
+
+    /**
      * wp_mail_failed handler (bug #5) — logs the failure to the events error log.
      *
      * @param \WP_Error $error
@@ -1305,6 +1462,17 @@ class Module {
             [ $this, 'render_email_builder_metabox' ],
             self::CPT,
             'normal',
+            'default'
+        );
+
+        // Task 3.3 — read-only "upcoming sends" schedule (computed on the fly
+        // by compute_email_schedule(); no cron/send/offset behavior changes).
+        \add_meta_box(
+            'anchor_event_upcoming_sends',
+            __( 'Upcoming Sends', 'anchor-schema' ),
+            [ $this, 'render_upcoming_sends_metabox' ],
+            self::CPT,
+            'side',
             'default'
         );
     }
@@ -2200,6 +2368,73 @@ class Module {
             <?php endforeach; ?>
         </div>
         <?php
+    }
+
+    /**
+     * Task 3.3 — renders the read-only "upcoming sends" panel. Pulls its data
+     * exclusively from compute_email_schedule() (unit-tested separately) and
+     * escapes everything on the way out; this method has no side effects and
+     * offers no send/reschedule controls — it is purely informational.
+     *
+     * @param \WP_Post $post
+     */
+    public function render_upcoming_sends_metabox( $post ) {
+        $schedule = $this->compute_email_schedule( (int) $post->ID );
+        $notices  = [
+            'invalid'      => __( 'This event could not be loaded.', 'anchor-schema' ),
+            'group_parent' => __( 'Sends are scheduled per date — see each date\'s event for its own reminder/roster schedule.', 'anchor-schema' ),
+            'disabled'     => __( 'Reminders and the roster digest are both off. Enable them in Settings › Anchor Tools › Events to schedule sends for this event.', 'anchor-schema' ),
+            'no_start'     => __( 'Set a start date/time for this event to see its send schedule.', 'anchor-schema' ),
+        ];
+
+        echo '<div class="anchor-upcoming-sends">';
+
+        if ( $schedule['notice'] !== '' && isset( $notices[ $schedule['notice'] ] ) ) {
+            echo '<p class="description">' . esc_html( $notices[ $schedule['notice'] ] ) . '</p>';
+            echo '</div>';
+            return;
+        }
+
+        if ( empty( $schedule['rows'] ) ) {
+            echo '<p class="description">' . esc_html__( 'No sends are currently scheduled for this event.', 'anchor-schema' ) . '</p>';
+            echo '</div>';
+            return;
+        }
+
+        $type_labels = [
+            'reminder' => __( 'Reminder', 'anchor-schema' ),
+            'roster'   => __( 'Roster digest', 'anchor-schema' ),
+        ];
+        $state_labels = [
+            'sent'      => __( 'Sent', 'anchor-schema' ),
+            'scheduled' => __( 'Scheduled', 'anchor-schema' ),
+            'past'      => __( 'Past — not sent', 'anchor-schema' ),
+        ];
+        $date_format = \get_option( 'date_format' ) . ' ' . \get_option( 'time_format' );
+
+        echo '<ul class="anchor-upcoming-sends-list">';
+        foreach ( $schedule['rows'] as $row ) {
+            $type_label  = $type_labels[ $row['type'] ] ?? ucfirst( $row['type'] );
+            $when        = \wp_date( $date_format, (int) $row['scheduled_ts'] );
+            $state       = (string) $row['state'];
+            $state_label = $state === 'partial'
+                ? \sprintf(
+                    /* translators: 1: number sent, 2: total confirmed. */
+                    \__( 'Sent to %1$d of %2$d', 'anchor-schema' ),
+                    (int) $row['sent_count'],
+                    (int) $row['total_count']
+                )
+                : ( $state_labels[ $state ] ?? ucfirst( $state ) );
+
+            echo '<li class="anchor-upcoming-send anchor-upcoming-send-' . esc_attr( $state ) . '">';
+            echo '<strong>' . esc_html( $type_label ) . '</strong> ';
+            echo '<span class="anchor-upcoming-send-when">' . esc_html( $when ) . '</span><br />';
+            echo '<span class="anchor-upcoming-send-recipient">' . esc_html( $row['recipient'] ) . '</span> — ';
+            echo '<span class="anchor-upcoming-send-state">' . esc_html( $state_label ) . '</span>';
+            echo '</li>';
+        }
+        echo '</ul>';
+        echo '</div>';
     }
 
     /**

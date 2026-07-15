@@ -59,3 +59,39 @@
     border-radius: 8px;
     background: #fff;
 }
+
+/* Task 3.3 — read-only "upcoming sends" schedule panel. */
+.anchor-upcoming-sends-list {
+    margin: 0;
+    list-style: none;
+}
+.anchor-upcoming-send {
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.anchor-upcoming-send:last-child {
+    border-bottom: none;
+}
+.anchor-upcoming-send-when {
+    color: #444;
+}
+.anchor-upcoming-send-recipient {
+    color: #666;
+}
+.anchor-upcoming-send-state {
+    font-weight: 600;
+}
+.anchor-upcoming-send-sent .anchor-upcoming-send-state {
+    color: #2271b1;
+}
+.anchor-upcoming-send-scheduled .anchor-upcoming-send-state {
+    color: #666;
+}
+.anchor-upcoming-send-partial .anchor-upcoming-send-state {
+    color: #b26200;
+}
+.anchor-upcoming-send-past .anchor-upcoming-send-state {
+    color: #d63638;
+}

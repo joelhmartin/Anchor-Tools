@@ -325,4 +325,210 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 			'revive_if_closed() must not force registration_enabled=true; the parent-synced value (false) must win.'
 		);
 	}
+
+	/* ------------------------------------------------------------------
+	 * Recurrence generator (Phase 2, Task 2.2) — pure expand_recurrence().
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * Create a `recurring`-type parent event whose recurrence rule + anchor
+	 * (start_date) drive Occurrences::reconcile() via expand_recurrence().
+	 *
+	 * @param array $rule Recurrence rule.
+	 * @param array $meta Additional parent meta overrides (e.g. start_date).
+	 * @return int Parent event post id.
+	 */
+	protected function make_recurring_parent( array $rule, array $meta = [] ) {
+		$parent_id = $this->make_event( array_merge( [
+			'title'    => 'Weekly Class',
+			'venue'    => 'Main Hall',
+			'timezone' => 'UTC',
+			'type'     => 'recurring',
+		], $meta ) );
+		update_post_meta( $parent_id, '_anchor_event_recurrence', $rule );
+		return $parent_id;
+	}
+
+	public function test_expand_weekly_interval_1_count_4_yields_consecutive_mondays() {
+		$rule = [
+			'freq'     => 'weekly',
+			'interval' => 1,
+			'count'    => 4,
+			'start_time' => '09:00',
+			'end_time'   => '10:00',
+			'capacity'   => 5,
+		];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' ); // a Monday.
+
+		$this->assertSame(
+			[ '2027-03-01', '2027-03-08', '2027-03-15', '2027-03-22' ],
+			array_column( $rows, 'date' )
+		);
+		foreach ( $rows as $row ) {
+			$this->assertSame( '09:00', $row['start_time'] );
+			$this->assertSame( '10:00', $row['end_time'] );
+			$this->assertSame( 5, $row['capacity'] );
+		}
+	}
+
+	public function test_expand_weekly_interval_2_count_3_yields_biweekly_dates() {
+		$rule = [ 'freq' => 'weekly', 'interval' => 2, 'count' => 3 ];
+
+		$rows  = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' );
+		$dates = array_column( $rows, 'date' );
+
+		$this->assertSame( [ '2027-03-01', '2027-03-15', '2027-03-29' ], $dates );
+		$this->assertSame( 14, ( strtotime( $dates[1] ) - strtotime( $dates[0] ) ) / DAY_IN_SECONDS );
+		$this->assertSame( 14, ( strtotime( $dates[2] ) - strtotime( $dates[1] ) ) / DAY_IN_SECONDS );
+	}
+
+	public function test_expand_weekly_multi_weekday_orders_dates_across_weeks() {
+		$rule = [
+			'freq'     => 'weekly',
+			'interval' => 1,
+			'weekdays' => [ 1, 3 ], // Mon, Wed.
+			'count'    => 4,
+		];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' ); // a Monday.
+
+		$this->assertSame(
+			[ '2027-03-01', '2027-03-03', '2027-03-08', '2027-03-10' ],
+			array_column( $rows, 'date' )
+		);
+	}
+
+	public function test_expand_monthly_interval_1_count_3_same_day_of_month() {
+		$rule = [ 'freq' => 'monthly', 'interval' => 1, 'count' => 3 ];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-15' );
+
+		$this->assertSame(
+			[ '2027-03-15', '2027-04-15', '2027-05-15' ],
+			array_column( $rows, 'date' )
+		);
+	}
+
+	public function test_expand_monthly_day_31_skips_short_months_without_rolling_over() {
+		// April 2027 has 30 days, June 2027 has 30 days — both must be
+		// skipped entirely rather than rolling the occurrence to the 1st (or
+		// last day) of the short month.
+		$rule = [ 'freq' => 'monthly', 'interval' => 1, 'count' => 3 ];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-31' );
+
+		$this->assertSame(
+			[ '2027-03-31', '2027-05-31', '2027-07-31' ],
+			array_column( $rows, 'date' )
+		);
+	}
+
+	public function test_expand_weekly_until_stops_inclusive() {
+		$rule = [ 'freq' => 'weekly', 'interval' => 1, 'until' => '2027-03-22' ];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' );
+
+		$this->assertSame(
+			[ '2027-03-01', '2027-03-08', '2027-03-15', '2027-03-22' ],
+			array_column( $rows, 'date' )
+		);
+	}
+
+	public function test_expand_safety_cap_never_exceeds_hard_max() {
+		$rule = [ 'freq' => 'weekly', 'interval' => 1, 'count' => 10000 ];
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-01-04' );
+		$this->assertLessThanOrEqual( 104, count( $rows ) );
+		$this->assertSame( 104, count( $rows ), 'An unbounded request must stop exactly at the documented cap.' );
+
+		// No terminator at all (neither count nor until) must also be capped,
+		// not loop unbounded.
+		$rule_no_terminator = [ 'freq' => 'weekly', 'interval' => 1 ];
+		$rows2 = $this->occurrences()->expand_recurrence( $rule_no_terminator, '2027-01-04' );
+		$this->assertSame( 104, count( $rows2 ) );
+	}
+
+	public function test_expand_recurrence_is_deterministic() {
+		$rule = [ 'freq' => 'weekly', 'interval' => 1, 'count' => 6, 'weekdays' => [ 2, 5 ] ];
+
+		$first  = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' );
+		$second = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' );
+
+		$this->assertSame( $first, $second );
+	}
+
+	/* ------------------------------------------------------------------
+	 * Recurrence wiring into reconcile() — same guarantees as offerings.
+	 * ------------------------------------------------------------------ */
+
+	public function test_recurring_parent_reconciles_via_expand_recurrence() {
+		$rule = [
+			'freq'       => 'weekly',
+			'interval'   => 1,
+			'count'      => 4,
+			'start_time' => '09:00',
+			'end_time'   => '10:00',
+			'capacity'   => 8,
+		];
+		$parent_id = $this->make_recurring_parent( $rule, [ 'start_date' => '2027-03-01' ] );
+
+		$live = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertCount( 4, $live );
+		$this->assertCount( 4, $this->occurrences()->children( $parent_id ) );
+
+		$dates = [];
+		foreach ( $live as $child_id ) {
+			$meta     = $this->module()->get_meta( $child_id );
+			$dates[]  = $meta['start_date'];
+			$this->assertSame( 'single', $meta['type'] );
+			$this->assertSame( 8, $meta['capacity'] );
+		}
+		sort( $dates );
+		$this->assertSame( [ '2027-03-01', '2027-03-08', '2027-03-15', '2027-03-22' ], $dates );
+
+		// Idempotent: a second reconcile creates no new children.
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+		sort( $live );
+		sort( $live2 );
+		$this->assertSame( $live, $live2 );
+		$this->assertCount( 4, $this->occurrences()->children( $parent_id, true ) );
+	}
+
+	public function test_recurring_parent_reduce_count_soft_closes_seated_child_and_trashes_unseated() {
+		$rule = [ 'freq' => 'weekly', 'interval' => 1, 'count' => 4 ];
+		$parent_id = $this->make_recurring_parent( $rule, [ 'start_date' => '2027-03-01' ] );
+
+		$live = $this->occurrences()->reconcile( $parent_id );
+		$this->assertCount( 4, $live );
+
+		usort( $live, function ( $a, $b ) {
+			return get_post_meta( $a, '_anchor_event_start_date', true ) <=> get_post_meta( $b, '_anchor_event_start_date', true );
+		} );
+		[ $keep1, $keep2, $drop_seated, $drop_unseated ] = $live;
+
+		// Give one of the soon-to-be-dropped children a seat.
+		$seat_id = $this->make_seat( $drop_seated );
+
+		// Reduce the rule's count to 2 -> only the first two Mondays remain desired.
+		update_post_meta( $parent_id, '_anchor_event_recurrence', [ 'freq' => 'weekly', 'interval' => 1, 'count' => 2 ] );
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertCount( 2, $live2 );
+		$this->assertContains( $keep1, $live2 );
+		$this->assertContains( $keep2, $live2 );
+		$this->assertNotContains( $drop_seated, $live2 );
+		$this->assertNotContains( $drop_unseated, $live2 );
+
+		// Unseated dropped child -> trashed.
+		$this->assertSame( 'trash', get_post_status( $drop_unseated ) );
+
+		// Seated dropped child -> soft-closed, roster preserved (same Task 2.1 guarantee).
+		$this->assertNotSame( 'trash', get_post_status( $drop_seated ) );
+		$this->assertTrue( (bool) get_post_meta( $drop_seated, '_anchor_event_occurrence_closed', true ) );
+		$this->assertSame( 'cancelled', get_post_meta( $drop_seated, '_anchor_event_status', true ) );
+		$result = $this->registrations()->query_seats( [ 'event_id' => $drop_seated, 'status' => 'all' ] );
+		$this->assertSame( 1, $result['total'] );
+		$this->assertSame( $seat_id, $result['items'][0]['id'] );
+	}
 }

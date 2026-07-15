@@ -1118,6 +1118,16 @@ class Module {
             'offering_dates' => [ 'type' => 'array', 'show_in_rest' => false ],
             'occurrence_key' => [ 'type' => 'string', 'show_in_rest' => false ],
             'occurrence_closed' => [ 'type' => 'boolean', 'show_in_rest' => false ],
+            // Recurrence generator (Phase 2, Task 2.2) — PARENT-only rule
+            // ({freq,interval,count?,until?,weekdays?,start_time,end_time,
+            // capacity}) that Occurrences::expand_recurrence() expands into
+            // the same date-row shape as offering_dates. Engine-owned, same
+            // pattern as offering_dates above: show_in_rest=false and
+            // intentionally absent from save_meta()'s $input allow-list, so
+            // it's never written by the classic metabox/REST/Gutenberg save
+            // paths — only ever by whatever future authoring UI/AJAX handler
+            // is built for it (out of scope for this task).
+            'recurrence' => [ 'type' => 'array', 'show_in_rest' => false ],
         ];
     }
 
@@ -1176,6 +1186,7 @@ class Module {
             'offering_dates' => [],
             'occurrence_key' => '',
             'occurrence_closed' => false,
+            'recurrence' => [],
         ];
     }
 

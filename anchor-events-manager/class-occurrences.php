@@ -105,9 +105,18 @@ class Occurrences {
         'group_role',
         'group_id',
         'offering_dates',
+        'recurrence',
         'occurrence_key',
         'occurrence_closed',
     ];
+
+    /**
+     * Hard safety cap on the number of rows expand_recurrence() will ever
+     * return, regardless of the rule's count/until (spec Phase 2, Task 2.2).
+     * ~2 years of weekly occurrences. Guarantees the generator can never loop
+     * unbounded, including a rule with neither `count` nor `until` set.
+     */
+    const RECURRENCE_MAX_ROWS = 104;
 
     /** @var Module */
     private $module;
@@ -140,7 +149,7 @@ class Occurrences {
         $this->set_group_role( $parent_id, 'parent' );
 
         $desired_map  = [];
-        foreach ( $this->get_offering_dates( $parent_id ) as $row ) {
+        foreach ( $this->get_desired_dates( $parent_id ) as $row ) {
             $desired_map[ $row['date'] ] = $row;
         }
 
@@ -259,6 +268,244 @@ class Occurrences {
             return 0;
         }
         return (int) \get_post_meta( $child_id, $this->module->meta_key( 'group_id' ), true );
+    }
+
+    /**
+     * Pure, deterministic weekly/monthly date expansion (spec Phase 2, Task
+     * 2.2). NOT full RFC-5545 RRULE — only `weekly` and `monthly` frequencies
+     * are supported. The result is a function of $rule + $anchor_date ONLY
+     * (no current-time dependence), so calling it twice with the same inputs
+     * always returns the identical array.
+     *
+     * Rule shape:
+     *   freq      : 'weekly' | 'monthly' (default 'weekly' for any other value).
+     *   interval  : int >= 1, every N weeks/months (default 1).
+     *   count     : int, number of occurrences to generate.
+     *   until     : Y-m-d, inclusive last date.
+     *               Exactly one of count/until normally terminates the rule;
+     *               if both are given, generation stops at whichever is hit
+     *               first. If NEITHER is given, generation stops at the
+     *               safety cap (RECURRENCE_MAX_ROWS) — a rule is never
+     *               required to self-terminate; the cap always does.
+     *   weekdays  : optional int[] 0 (Sun) .. 6 (Sat), weekly only. When
+     *               given, every listed weekday within each active week is
+     *               included (chronological order); when omitted, only
+     *               $anchor_date's own weekday is used.
+     *   start_time/end_time/capacity : copied onto every generated row as-is
+     *               (same normalization as get_offering_dates()'s rows).
+     *
+     * Monthly semantics: same day-of-month as $anchor_date, every `interval`
+     * months. SHORT-MONTH HANDLING (documented choice): when the target month
+     * has fewer days than the anchor's day-of-month (e.g. day 31 in a 30-day
+     * month), that month is SKIPPED ENTIRELY — no occurrence is generated for
+     * it, and it is NOT rolled forward/back to a different day. The next
+     * month that does have the day contributes the next occurrence.
+     *
+     * Weekly safety: with weekdays given, no explicit cap is needed to
+     * guarantee progress (>=1 weekday per active week is always guaranteed by
+     * falling back to the anchor's weekday when the list is empty).
+     *
+     * SAFETY CAP: never returns more than RECURRENCE_MAX_ROWS rows. This is
+     * enforced independently of count/until so a pathological rule (e.g.
+     * count=10000, or neither count nor until set) can never loop unbounded.
+     *
+     * @param array  $rule        Recurrence rule (see above).
+     * @param string $anchor_date The first occurrence date (Y-m-d) — normally
+     *                            the parent's start_date.
+     * @return array<int,array{date:string,start_time:string,end_time:string,label:string,capacity:int}>
+     *         Ordered ascending, deduped by date.
+     */
+    public function expand_recurrence( array $rule, $anchor_date ) {
+        $anchor_date = $this->normalize_date( (string) $anchor_date );
+        if ( $anchor_date === '' ) {
+            return [];
+        }
+        $anchor_ts = \strtotime( $anchor_date . ' 00:00:00' );
+        if ( $anchor_ts === false ) {
+            return [];
+        }
+
+        $freq     = ( ( $rule['freq'] ?? '' ) === 'monthly' ) ? 'monthly' : 'weekly';
+        $interval = \max( 1, (int) ( $rule['interval'] ?? 1 ) );
+
+        $count = null;
+        if ( isset( $rule['count'] ) && $rule['count'] !== '' ) {
+            $count = \max( 0, (int) $rule['count'] );
+        }
+        $until    = isset( $rule['until'] ) ? $this->normalize_date( (string) $rule['until'] ) : '';
+        $until_ts = $until !== '' ? \strtotime( $until . ' 00:00:00' ) : null;
+
+        // The cap always applies, independent of count/until — a rule with
+        // neither terminator stops at the cap instead of looping unbounded.
+        $limit = ( $count !== null && $count > 0 ) ? \min( $count, self::RECURRENCE_MAX_ROWS ) : self::RECURRENCE_MAX_ROWS;
+        if ( $count === 0 ) {
+            $limit = 0;
+        }
+
+        $date_timestamps = ( $freq === 'monthly' )
+            ? $this->expand_monthly_timestamps( $anchor_ts, $interval, $limit, $until_ts )
+            : $this->expand_weekly_timestamps( $anchor_ts, $interval, $limit, $until_ts, $rule['weekdays'] ?? null );
+
+        $start_time = $this->normalize_time( (string) ( $rule['start_time'] ?? '' ) );
+        $end_time   = $this->normalize_time( (string) ( $rule['end_time'] ?? '' ) );
+        $label      = \sanitize_text_field( (string) ( $rule['label'] ?? '' ) );
+        $capacity   = \max( 0, (int) ( $rule['capacity'] ?? 0 ) );
+
+        $rows = [];
+        $seen = [];
+        foreach ( $date_timestamps as $ts ) {
+            $date = \date( 'Y-m-d', $ts );
+            if ( isset( $seen[ $date ] ) ) {
+                continue;
+            }
+            $seen[ $date ] = true;
+            $rows[]        = [
+                'date'       => $date,
+                'start_time' => $start_time,
+                'end_time'   => $end_time,
+                'label'      => $label,
+                'capacity'   => $capacity,
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * Weekly-frequency timestamp expansion for expand_recurrence(). Walks
+     * active weeks (every $interval weeks starting from the anchor's week)
+     * and, within each, every listed weekday in ascending order — which keeps
+     * the overall sequence strictly ascending since weeks are always more
+     * than 6 days apart. Stops on $limit rows, on the first candidate whose
+     * date exceeds $until_ts, or on a generous internal iteration ceiling
+     * (defensive; normal termination is always via $limit or $until_ts).
+     *
+     * @param int      $anchor_ts
+     * @param int      $interval
+     * @param int      $limit
+     * @param int|null $until_ts
+     * @param mixed    $weekdays_raw
+     * @return int[] Ascending, unix timestamps at local midnight.
+     */
+    private function expand_weekly_timestamps( $anchor_ts, $interval, $limit, $until_ts, $weekdays_raw ) {
+        if ( $limit <= 0 ) {
+            return [];
+        }
+
+        $weekdays = [];
+        if ( \is_array( $weekdays_raw ) ) {
+            foreach ( $weekdays_raw as $wd ) {
+                $wd = (int) $wd;
+                if ( $wd >= 0 && $wd <= 6 ) {
+                    $weekdays[] = $wd;
+                }
+            }
+            $weekdays = \array_values( \array_unique( $weekdays ) );
+            \sort( $weekdays );
+        }
+        if ( empty( $weekdays ) ) {
+            $weekdays = [ (int) \date( 'w', $anchor_ts ) ];
+        }
+
+        $anchor_dow    = (int) \date( 'w', $anchor_ts );
+        $week_start_ts = \strtotime( '-' . $anchor_dow . ' days', $anchor_ts );
+
+        $out              = [];
+        $max_week_index   = self::RECURRENCE_MAX_ROWS * 8; // defensive ceiling; see docblock.
+        for ( $week_index = 0; $week_index < $max_week_index; $week_index++ ) {
+            $this_week_start = \strtotime( '+' . ( $week_index * $interval * 7 ) . ' days', $week_start_ts );
+
+            foreach ( $weekdays as $wd ) {
+                $date_ts = \strtotime( '+' . $wd . ' days', $this_week_start );
+                if ( $date_ts < $anchor_ts ) {
+                    continue; // Before the series' own first occurrence.
+                }
+                if ( $until_ts !== null && $date_ts > $until_ts ) {
+                    return $out; // Ascending order guaranteed -> nothing later qualifies.
+                }
+                $out[] = $date_ts;
+                if ( \count( $out ) >= $limit ) {
+                    return $out;
+                }
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Monthly-frequency timestamp expansion for expand_recurrence(). Walks
+     * months every $interval months starting at the anchor's month; a month
+     * that doesn't have the anchor's day-of-month (short-month case, e.g. day
+     * 31 in a 30-day month) is SKIPPED ENTIRELY (documented choice — no
+     * roll-forward/back). Uses the target month's 1st as a monotonic
+     * termination proxy against $until_ts so a run of skipped months can't
+     * defeat the until check.
+     *
+     * @param int      $anchor_ts
+     * @param int      $interval
+     * @param int      $limit
+     * @param int|null $until_ts
+     * @return int[] Ascending, unix timestamps at local midnight.
+     */
+    private function expand_monthly_timestamps( $anchor_ts, $interval, $limit, $until_ts ) {
+        if ( $limit <= 0 ) {
+            return [];
+        }
+
+        $anchor_day = (int) \date( 'j', $anchor_ts );
+
+        $out             = [];
+        $max_iterations  = self::RECURRENCE_MAX_ROWS * 4; // covers the worst case (day 31, mostly-short months).
+        for ( $month_offset = 0; $month_offset < $max_iterations; $month_offset++ ) {
+            [ $year, $month ] = $this->add_months( $anchor_ts, $month_offset * $interval );
+
+            $first_of_month_ts = \mktime( 0, 0, 0, $month, 1, $year );
+            if ( $until_ts !== null && $first_of_month_ts > $until_ts ) {
+                break; // Every later month is even further past $until_ts.
+            }
+
+            $days_in_month = (int) \date( 't', $first_of_month_ts );
+            if ( $anchor_day > $days_in_month ) {
+                continue; // Short month — skip entirely, do not roll over.
+            }
+
+            $date_ts = \mktime( 0, 0, 0, $month, $anchor_day, $year );
+            if ( $date_ts < $anchor_ts ) {
+                continue;
+            }
+            if ( $until_ts !== null && $date_ts > $until_ts ) {
+                break;
+            }
+
+            $out[] = $date_ts;
+            if ( \count( $out ) >= $limit ) {
+                break;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Add $months_offset calendar months to $anchor_ts's year/month,
+     * returning [year, month] (month always 1..12, year rolls over
+     * correctly). The day-of-month is deliberately NOT part of this helper —
+     * callers decide short-month handling themselves.
+     *
+     * @param int $anchor_ts
+     * @param int $months_offset
+     * @return array{0:int,1:int}
+     */
+    private function add_months( $anchor_ts, $months_offset ) {
+        $anchor_year  = (int) \date( 'Y', $anchor_ts );
+        $anchor_month = (int) \date( 'n', $anchor_ts );
+
+        $zero_based = ( $anchor_month - 1 ) + $months_offset;
+        $year       = $anchor_year + \intdiv( $zero_based, 12 );
+        $month      = $zero_based % 12;
+        if ( $month < 0 ) {
+            $month += 12;
+            $year--;
+        }
+        return [ $year, $month + 1 ];
     }
 
     /* ═══════════════════════════════════════════════════════════
@@ -712,6 +959,31 @@ class Occurrences {
      */
     private function start_ts( $child_id ) {
         return (int) \get_post_meta( $child_id, $this->module->meta_key( 'start_ts' ), true );
+    }
+
+    /**
+     * The unified "desired dates" resolver reconcile() drives off of (spec
+     * Phase 2, Task 2.2): branches on the parent's `_anchor_event_type` to
+     * pick the date SOURCE only — everything downstream (create/soft-close/
+     * revive/idempotency) is the exact same reconcile() code path for both
+     * event types.
+     *   - `recurring` -> expand_recurrence() over the parent's `recurrence`
+     *                    rule, anchored at the parent's own start_date.
+     *   - anything else (incl. `offering`) -> the existing offering_dates
+     *                    path, unchanged.
+     *
+     * @param int $parent_id
+     * @return array<int,array>
+     */
+    private function get_desired_dates( $parent_id ) {
+        $type = (string) \get_post_meta( $parent_id, $this->module->meta_key( 'type' ), true );
+        if ( $type === 'recurring' ) {
+            $rule = \get_post_meta( $parent_id, $this->module->meta_key( 'recurrence' ), true );
+            $rule = \is_array( $rule ) ? $rule : [];
+            $anchor_date = (string) \get_post_meta( $parent_id, $this->module->meta_key( 'start_date' ), true );
+            return $this->expand_recurrence( $rule, $anchor_date );
+        }
+        return $this->get_offering_dates( $parent_id );
     }
 
     /**

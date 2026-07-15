@@ -3533,17 +3533,17 @@ class Module {
             return $override;
         }
 
-        // External registration mode (Task 1.6): the event's registration/
-        // checkout happens off-site. This is authoritative and independent of
-        // the `registration_enabled` toggle / legacy registration_type below —
-        // when registration_mode is explicitly 'external', always render the
-        // link/embed + price block in place of the internal/WC form.
-        if ( $this->registration_mode( $post_id ) === 'external' ) {
-            return $this->render_external_registration( $post_id, $meta );
-        }
-
         if ( ! $meta['registration_enabled'] ) {
             return '';
+        }
+
+        // External registration mode (Task 1.6): the event's registration/
+        // checkout happens off-site. Still gated by `registration_enabled`
+        // above, matching the legacy external-URL path, can_view_virtual_link(),
+        // and maybe_append_registration_shortcode() — when registration is
+        // disabled, no registration UI renders at all, external or otherwise.
+        if ( $this->registration_mode( $post_id ) === 'external' ) {
+            return $this->render_external_registration( $post_id, $meta );
         }
 
         if ( $meta['registration_type'] === 'external' ) {

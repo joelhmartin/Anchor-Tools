@@ -142,6 +142,30 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'should-not-appear', $html );
 	}
 
+	/**
+	 * External mode is NOT authoritative over `registration_enabled` — when
+	 * registration is explicitly disabled, render_registration_form() must
+	 * return an empty string even though registration_mode is 'external' and
+	 * external_url is set, matching the legacy external-URL path,
+	 * can_view_virtual_link(), and maybe_append_registration_shortcode(),
+	 * which all treat registration_enabled=false as "no registration UI".
+	 */
+	public function test_external_event_with_registration_disabled_renders_nothing() {
+		$event_id = $this->make_event(
+			[
+				'registration_enabled'   => false,
+				'registration_mode'      => 'external',
+				'external_url'           => 'https://example.test/register',
+				'external_display_price' => '$495',
+			]
+		);
+
+		$html = $this->module()->render_registration_form( $event_id );
+
+		$this->assertSame( '', $html );
+		$this->assertStringNotContainsString( 'anchor-event-registration-external', $html );
+	}
+
 	/** A `free` mode event still renders the normal inline registration form (no regression). */
 	public function test_free_event_still_renders_normal_registration_form() {
 		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );

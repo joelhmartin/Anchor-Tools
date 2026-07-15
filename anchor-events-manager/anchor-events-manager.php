@@ -46,6 +46,9 @@ class Module {
     /** @var Occurrences|null Parent→child offering-dates reconcile engine (Phase 2, Task 2.1; always loaded). */
     public $occurrences = null;
 
+    /** @var Event_Schema|null schema.org/Event JSON-LD data builder (Phase 4, Task 4.1; always loaded, read-only). */
+    public $event_schema = null;
+
     /** @var int[] Seat ids queued for a cancellation email this request. */
     private $pending_cancellation_emails = [];
 
@@ -102,6 +105,7 @@ class Module {
         require_once $dir . 'class-ticket-types.php';
         require_once $dir . 'class-series.php';
         require_once $dir . 'class-occurrences.php';
+        require_once $dir . 'class-event-schema.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
@@ -114,6 +118,10 @@ class Module {
         // child-event reconcile for "Pick-one offerings". No hooks of its own;
         // driven explicitly (metabox wiring is a later task).
         $this->occurrences = new Occurrences( $this );
+        // Event JSON-LD data builder (Phase 4, Task 4.1) — free + paid; pure
+        // read-only data projection, no hooks of its own. Front-end emission
+        // (wp_head) is a later task.
+        $this->event_schema = new Event_Schema( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.

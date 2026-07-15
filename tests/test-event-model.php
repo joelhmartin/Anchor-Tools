@@ -16,6 +16,20 @@
  */
 class Test_Event_Model extends Anchor_Events_TestCase {
 
+	/**
+	 * WP_UnitTestCase_Base::tear_down() calls unregister_all_meta_keys() after
+	 * every test, but register_meta() (the module's `init` callback) only
+	 * fires once, during the WP test bootstrap — so from the second test in
+	 * the whole run onward, get_registered_meta_keys() returns nothing unless
+	 * something re-registers. Explicitly re-run register_meta() before each
+	 * test in this class so meta-schema assertions (show_in_rest, etc.) are
+	 * deterministic regardless of what ran before this class/test.
+	 */
+	public function set_up() {
+		parent::set_up();
+		$this->module()->register_meta();
+	}
+
 	/** event_type() falls back to 'single' when no type meta is stored. */
 	public function test_event_type_defaults_to_single() {
 		$event_id = $this->make_event();
@@ -146,10 +160,12 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * `external_embed` is REST-writable, so its sanitize_callback must run on
-	 * the REST write path — exercised here via sanitize_meta(), which is what
-	 * WordPress's REST meta-fields controller calls before persisting. An
-	 * allowed <iframe> survives; `script` is absent from the default
+	 * `external_embed` is show_in_rest=false (Task 1.3: classic-metabox-only,
+	 * to avoid a Gutenberg/classic-metabox save race), but sanitize_meta()
+	 * still runs the registered sanitize_callback on EVERY write regardless
+	 * of REST exposure — including the direct update_post_meta() call in
+	 * save_meta() — so this is exercised here via sanitize_meta() directly.
+	 * An allowed <iframe> survives; `script` is absent from the default
 	 * allowlist, so wp_kses() strips the tag itself outright — both an
 	 * inline `<script>alert(1)</script>` payload and a `<script src="...">`
 	 * loader tag lose their opening/closing tags, along with a disallowed
@@ -159,7 +175,7 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 	 * <script> wrapper is gone; the loader tag leaves nothing behind since
 	 * it has no text body.
 	 */
-	public function test_external_embed_sanitizer_strips_disallowed_markup_via_rest_write_path() {
+	public function test_external_embed_sanitizer_strips_disallowed_markup_on_every_write() {
 		$event_id = $this->make_event();
 		$meta_key = $this->module()->meta_key( 'external_embed' );
 
@@ -168,9 +184,10 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 			. '<script src="https://evil.example/x.js"></script>'
 			. '<div onclick="alert(2)">click me</div>';
 
-		// sanitize_meta() is the function WP's REST meta-fields controller calls
-		// before writing REST-supplied meta — this exercises the exact exposed
-		// surface the HIGH finding is about, without needing a full REST request.
+		// sanitize_meta() applies the registered sanitize_callback unconditionally
+		// — this is the same function update_metadata()/update_post_meta() call
+		// internally, so it exercises the exact codepath every write goes through,
+		// classic-metabox or otherwise.
 		$sanitized = sanitize_meta( $meta_key, $dirty, 'post', \Anchor\Events\Module::CPT );
 		update_post_meta( $event_id, $meta_key, $sanitized );
 
@@ -184,6 +201,38 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		// The div itself is allowed, but its onclick attribute is not — the
 		// stripped opening tag should remain as plain <div>.
 		$this->assertStringContainsString( '<div>click me</div>', $stored );
+	}
+
+	/**
+	 * Regression guard (Task 1.3 fix): these six meta keys are edited ONLY via
+	 * the classic metabox and must stay off REST/Gutenberg's meta save path —
+	 * exposing them created a last-write-wins race where a REST/block-editor
+	 * autosave could silently revert a just-saved classic-metabox value (e.g.
+	 * event type, registration mode) back to its default on Publish. Asserted
+	 * directly against the registered meta schema so a future change that
+	 * flips show_in_rest back to true fails loudly here instead of
+	 * resurfacing as a silent data-loss bug.
+	 */
+	public function test_classic_only_meta_keys_are_not_rest_exposed() {
+		$classic_only_keys = [
+			'type',
+			'sessions',
+			'registration_mode',
+			'external_url',
+			'external_embed',
+			'external_display_price',
+		];
+
+		$registered = get_registered_meta_keys( 'post', \Anchor\Events\Module::CPT );
+
+		foreach ( $classic_only_keys as $key ) {
+			$meta_key = $this->module()->meta_key( $key );
+			$this->assertArrayHasKey( $meta_key, $registered, "Expected {$meta_key} to be registered." );
+			$this->assertFalse(
+				$registered[ $meta_key ]['show_in_rest'],
+				"Expected {$meta_key} to have show_in_rest === false (classic-metabox-only, avoids Gutenberg save race)."
+			);
+		}
 	}
 
 	/** The `anchor_events_embed_allowed_html` filter can extend the allowlist (e.g. a custom tag). */

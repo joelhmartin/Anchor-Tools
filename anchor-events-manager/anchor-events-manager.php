@@ -952,10 +952,13 @@ class Module {
 
     /**
      * sanitize_callback for the `external_embed` meta key (Task 1.1+1.2 fix).
-     * This is the exposed surface: `external_embed` is show_in_rest=true and
-     * gated only by `edit_post`, so an editor could otherwise store raw
-     * <script>. Runs the value through an allowlisted wp_kses() so only
-     * third-party-embed-shaped markup survives.
+     * `external_embed` is show_in_rest=false (Task 1.3: classic-metabox-only,
+     * to avoid a Gutenberg/classic-metabox save race), but sanitize_meta()
+     * still runs this callback on every write regardless of REST exposure —
+     * including the direct update_post_meta() call in save_meta() — so an
+     * editor could otherwise store raw <script> via any write path. Runs the
+     * value through an allowlisted wp_kses() so only third-party-embed-shaped
+     * markup survives.
      *
      * `script` is deliberately absent from the default allowlist — wp_kses()
      * strips any tag not in the allowed set entirely (open tag, body, and
@@ -1076,26 +1079,23 @@ class Module {
             // Event-type / registration-mode data model (Task 1.1+1.2). Metabox
             // authoring UI + save_meta() wiring landed in Task 1.3+1.4 —
             // offering/recurring type controls remain Phase 2 (placeholder note only).
-            'type' => [ 'type' => 'string' ],
-            'sessions' => [ 'type' => 'array', 'show_in_rest' => [ 'schema' => [
-                'type' => 'array',
-                'items' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'date' => [ 'type' => 'string' ],
-                        'start_time' => [ 'type' => 'string' ],
-                        'end_time' => [ 'type' => 'string' ],
-                        'label' => [ 'type' => 'string' ],
-                    ],
-                ],
-            ] ] ],
-            'registration_mode' => [ 'type' => 'string' ],
-            'external_url' => [ 'type' => 'string' ],
-            // Third-party embed markup (spec §Task 1.1+1.2). REST-writable, so it's
-            // run through an allowlisted wp_kses() on every write (including REST)
-            // to close the XSS surface — see sanitize_external_embed().
-            'external_embed' => [ 'type' => 'string', 'sanitize_callback' => [ $this, 'sanitize_external_embed' ] ],
-            'external_display_price' => [ 'type' => 'string' ],
+            // These six keys are edited ONLY via the classic metabox (see save_meta()).
+            // show_in_rest is intentionally false: exposing them to REST/Gutenberg
+            // creates a last-write-wins race between the classic metabox save and any
+            // REST/block-editor autosave that can silently revert a just-saved value
+            // on Publish. sanitize_callback still runs on every write regardless of
+            // show_in_rest (sanitize_meta() applies it unconditionally), so this does
+            // not weaken sanitization for external_embed.
+            'type' => [ 'type' => 'string', 'show_in_rest' => false ],
+            'sessions' => [ 'type' => 'array', 'show_in_rest' => false ],
+            'registration_mode' => [ 'type' => 'string', 'show_in_rest' => false ],
+            'external_url' => [ 'type' => 'string', 'show_in_rest' => false ],
+            // Third-party embed markup (spec §Task 1.1+1.2). Classic-metabox-only
+            // (show_in_rest=false), but sanitize_callback still runs on every write
+            // via sanitize_meta() regardless of REST exposure — kept as defense-in-depth
+            // alongside the explicit sanitize_external_embed() call in save_meta().
+            'external_embed' => [ 'type' => 'string', 'show_in_rest' => false, 'sanitize_callback' => [ $this, 'sanitize_external_embed' ] ],
+            'external_display_price' => [ 'type' => 'string', 'show_in_rest' => false ],
         ];
     }
 

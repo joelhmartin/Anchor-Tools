@@ -88,6 +88,70 @@
     });
   }
 
+  // Offering-dates repeater (Offering Dates section, data-when-type="offering").
+  // Task 2.3. Same dependency-free clone-template-row idiom as
+  // initSessionsRepeater() above, one column wider (adds Capacity).
+  function initOfferingRepeater(){
+    var $section = $('.anchor-event-offering-table').closest('.anchor-event-conditional');
+    if(!$section.length){ return; }
+    var $rows = $section.find('.anchor-event-offering-rows');
+    var $template = $('#anchor-event-offering-template');
+
+    function reindexRows(){
+      $rows.find('.anchor-event-offering-row').each(function(i){
+        $(this).find('input').each(function(){
+          var name = $(this).attr('name');
+          if(!name){ return; }
+          name = name.replace(/anchor_event_offering_dates\[\d+\]/, 'anchor_event_offering_dates[' + i + ']');
+          $(this).attr('name', name);
+        });
+      });
+    }
+
+    $section.on('click', '.anchor-event-offering-add', function(e){
+      e.preventDefault();
+      var index = $rows.find('.anchor-event-offering-row').length;
+      var html = $template.html().replace(/__INDEX__/g, index);
+      $rows.append(html);
+    });
+
+    $section.on('click', '.anchor-event-offering-remove', function(e){
+      e.preventDefault();
+      $(this).closest('.anchor-event-offering-row').remove();
+      reindexRows();
+    });
+  }
+
+  // Recurrence rule builder (Recurring Schedule section, data-when-type="recurring").
+  // Task 2.3. Not a repeater — just: (a) show the weekday checkboxes only for
+  // freq=weekly, and (b) a client-side hint (no hard block — the server-side
+  // guard in persist_group_authoring() is the real enforcement) nudging the
+  // user to set a count or an until date before saving.
+  function initRecurrenceBuilder(){
+    var $freq = $('#anchor_event_recurrence_freq');
+    if(!$freq.length){ return; }
+    var $weekdays = $('.anchor-event-recurrence-weekdays');
+    var $count = $('#anchor_event_recurrence_count');
+    var $until = $('#anchor_event_recurrence_until');
+    var $hint = $('.anchor-event-recurrence-terminator-hint');
+
+    function toggleWeekdays(){
+      $weekdays.toggle($freq.val() === 'weekly');
+    }
+
+    function toggleTerminatorHint(){
+      var hasTerminator = !!($count.val() || $until.val());
+      $hint.toggleClass('anchor-event-recurrence-terminator-missing', !hasTerminator);
+    }
+
+    $freq.on('change', toggleWeekdays);
+    $count.on('input', toggleTerminatorHint);
+    $until.on('input', toggleTerminatorHint);
+
+    toggleWeekdays();
+    toggleTerminatorHint();
+  }
+
   function initGalleryField(){
     var $field = $('.anchor-event-gallery-field');
     if(!$field.length){ return; }
@@ -183,6 +247,8 @@
     toggleRegistrationType();
     initGalleryField();
     initSessionsRepeater();
+    initOfferingRepeater();
+    initRecurrenceBuilder();
     applyConditionalVisibility();
 
     $('#anchor_event_all_day').on('change', toggleAllDay);

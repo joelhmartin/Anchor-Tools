@@ -306,6 +306,81 @@ wp post meta update "${EXT_EMBED_EVENT_ID}" _anchor_event_external_display_price
 log "External (embed variant) event meta set."
 
 # ---------------------------------------------------------------------------
+# Create (or reuse) a published OFFERING-type parent event (Task 2.3): a
+# "Pick-one offerings" event with 2 offering_dates, reconciled into 2 CHILD
+# event posts via Occurrences::reconcile(). Read by
+# e2e/event-grouping-authoring.spec.js, which edits it to 3 dates in the
+# metabox and asserts the child count follows. Idempotent: re-seeding
+# re-applies the same offering_dates and re-runs reconcile(), which is itself
+# idempotent (Task 2.1) — no duplicate children accumulate across re-runs.
+# ---------------------------------------------------------------------------
+OFFERING_SLUG="e2e-offering-event"
+OFFERING_EVENT_ID="$(wp post list --post_type=event --post_status=any --name="${OFFERING_SLUG}" --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${OFFERING_EVENT_ID}" ]; then
+  OFFERING_EVENT_ID="$(wp post create \
+    --post_type=event \
+    --post_status=publish \
+    --post_title='E2E Offering Event' \
+    --post_name="${OFFERING_SLUG}" \
+    --post_content='Automated end-to-end pick-one-offerings fixture event.' \
+    --porcelain)"
+  log "Created offering event #${OFFERING_EVENT_ID}."
+else
+  wp post update "${OFFERING_EVENT_ID}" --post_status=publish >/dev/null
+  log "Reusing offering event #${OFFERING_EVENT_ID}."
+fi
+
+OFFERING_DATE_1="$(wp eval 'echo gmdate("Y-m-d", strtotime("+60 days"));')"
+OFFERING_DATE_2="$(wp eval 'echo gmdate("Y-m-d", strtotime("+67 days"));')"
+wp post meta update "${OFFERING_EVENT_ID}" _anchor_event_type                 "offering"           >/dev/null
+wp post meta update "${OFFERING_EVENT_ID}" _anchor_event_start_date           "${OFFERING_DATE_1}" >/dev/null
+wp post meta update "${OFFERING_EVENT_ID}" _anchor_event_end_date             "${OFFERING_DATE_1}" >/dev/null
+wp post meta update "${OFFERING_EVENT_ID}" _anchor_event_status               "upcoming"           >/dev/null
+wp post meta update "${OFFERING_EVENT_ID}" _anchor_event_status_mode          "manual"             >/dev/null
+wp post meta update "${OFFERING_EVENT_ID}" _anchor_event_registration_enabled 1                    >/dev/null
+wp post meta update "${OFFERING_EVENT_ID}" _anchor_event_registration_mode    "free"               >/dev/null
+wp post meta update "${OFFERING_EVENT_ID}" _anchor_event_offering_dates '[{"date":"'"${OFFERING_DATE_1}"'","start_time":"09:00","end_time":"11:00","label":"Session A","capacity":10},{"date":"'"${OFFERING_DATE_2}"'","start_time":"09:00","end_time":"11:00","label":"Session B","capacity":10}]' --format=json >/dev/null
+
+OFFERING_LIVE_COUNT="$(wp eval '$m = \Anchor\Events\Module::instance(); echo ( $m && $m->occurrences ) ? count( $m->occurrences->reconcile( '"${OFFERING_EVENT_ID}"' ) ) : 0;')"
+log "Offering event #${OFFERING_EVENT_ID} reconciled -> ${OFFERING_LIVE_COUNT} live child date(s)."
+
+# ---------------------------------------------------------------------------
+# Create (or reuse) a published RECURRING-type parent event (Task 2.3): a
+# weekly rule bounded by count=3, reconciled into 3 CHILD event posts. Read by
+# e2e/event-grouping-authoring.spec.js (the incomplete-rule guard + the
+# complete-rule reconcile). Same idempotency note as the offering fixture
+# above.
+# ---------------------------------------------------------------------------
+RECURRING_SLUG="e2e-recurring-event"
+RECURRING_EVENT_ID="$(wp post list --post_type=event --post_status=any --name="${RECURRING_SLUG}" --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${RECURRING_EVENT_ID}" ]; then
+  RECURRING_EVENT_ID="$(wp post create \
+    --post_type=event \
+    --post_status=publish \
+    --post_title='E2E Recurring Event' \
+    --post_name="${RECURRING_SLUG}" \
+    --post_content='Automated end-to-end recurring-schedule fixture event.' \
+    --porcelain)"
+  log "Created recurring event #${RECURRING_EVENT_ID}."
+else
+  wp post update "${RECURRING_EVENT_ID}" --post_status=publish >/dev/null
+  log "Reusing recurring event #${RECURRING_EVENT_ID}."
+fi
+
+RECURRING_START_DATE="$(wp eval 'echo gmdate("Y-m-d", strtotime("next monday +80 days"));')"
+wp post meta update "${RECURRING_EVENT_ID}" _anchor_event_type                 "recurring"               >/dev/null
+wp post meta update "${RECURRING_EVENT_ID}" _anchor_event_start_date           "${RECURRING_START_DATE}" >/dev/null
+wp post meta update "${RECURRING_EVENT_ID}" _anchor_event_end_date             "${RECURRING_START_DATE}" >/dev/null
+wp post meta update "${RECURRING_EVENT_ID}" _anchor_event_status               "upcoming"                >/dev/null
+wp post meta update "${RECURRING_EVENT_ID}" _anchor_event_status_mode          "manual"                  >/dev/null
+wp post meta update "${RECURRING_EVENT_ID}" _anchor_event_registration_enabled 1                         >/dev/null
+wp post meta update "${RECURRING_EVENT_ID}" _anchor_event_registration_mode    "free"                    >/dev/null
+wp post meta update "${RECURRING_EVENT_ID}" _anchor_event_recurrence '{"freq":"weekly","interval":1,"count":3,"start_time":"09:00","end_time":"10:00","capacity":8}' --format=json >/dev/null
+
+RECURRING_LIVE_COUNT="$(wp eval '$m = \Anchor\Events\Module::instance(); echo ( $m && $m->occurrences ) ? count( $m->occurrences->reconcile( '"${RECURRING_EVENT_ID}"' ) ) : 0;')"
+log "Recurring event #${RECURRING_EVENT_ID} reconciled -> ${RECURRING_LIVE_COUNT} live occurrence(s)."
+
+# ---------------------------------------------------------------------------
 # Emit the fixture for the Playwright specs (written via WP so the path is
 # correct inside the container; the bind mount surfaces it on the host).
 # ---------------------------------------------------------------------------
@@ -314,12 +389,16 @@ MANAGER_PAGE_URL="$(wp eval 'echo get_permalink('"${MANAGER_PAGE_ID}"');')"
 MULTI_EVENT_URL="$(wp eval 'echo get_permalink('"${MULTI_EVENT_ID}"');')"
 EXT_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EVENT_ID}"');')"
 EXT_EMBED_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EMBED_EVENT_ID}"');')"
+OFFERING_EVENT_URL="$(wp eval 'echo get_permalink('"${OFFERING_EVENT_ID}"');')"
+RECURRING_EVENT_URL="$(wp eval 'echo get_permalink('"${RECURRING_EVENT_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Multisession event URL: ${MULTI_EVENT_URL}"
 log "External (link) event URL: ${EXT_EVENT_URL}"
 log "External (embed) event URL: ${EXT_EMBED_EVENT_URL}"
+log "Offering event URL: ${OFFERING_EVENT_URL}"
+log "Recurring event URL: ${RECURRING_EVENT_URL}"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 log "Seed complete."

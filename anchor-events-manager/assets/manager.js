@@ -89,6 +89,41 @@
     });
   }
 
+  // Offering-dates repeater (Offering Dates section, data-when-type="offering").
+  // Task 2.3 front-end parity. The recurrence rule builder is admin-only (see
+  // render_group_authoring_sections()'s $include_recurrence=false for this
+  // form) — mirrors admin.js's initOfferingRepeater() exactly.
+  function initOfferingRepeater(){
+    var $section = $('.anchor-event-offering-table').closest('.anchor-event-conditional');
+    if(!$section.length){ return; }
+    var $rows = $section.find('.anchor-event-offering-rows');
+    var $template = $('#anchor-event-offering-template');
+
+    function reindexRows(){
+      $rows.find('.anchor-event-offering-row').each(function(i){
+        $(this).find('input').each(function(){
+          var name = $(this).attr('name');
+          if(!name){ return; }
+          name = name.replace(/anchor_event_offering_dates\[\d+\]/, 'anchor_event_offering_dates[' + i + ']');
+          $(this).attr('name', name);
+        });
+      });
+    }
+
+    $section.on('click', '.anchor-event-offering-add', function(e){
+      e.preventDefault();
+      var index = $rows.find('.anchor-event-offering-row').length;
+      var html = $template.html().replace(/__INDEX__/g, index);
+      $rows.append(html);
+    });
+
+    $section.on('click', '.anchor-event-offering-remove', function(e){
+      e.preventDefault();
+      $(this).closest('.anchor-event-offering-row').remove();
+      reindexRows();
+    });
+  }
+
   function initThumbnailField(){
     var $field = $('.anchor-event-thumbnail-field');
     if(!$field.length || !window.wp || !wp.media){ return; }
@@ -217,6 +252,7 @@
     initThumbnailField();
     initGalleryField();
     initSessionsRepeater();
+    initOfferingRepeater();
     initDeleteConfirms();
     applyConditionalVisibility();
 

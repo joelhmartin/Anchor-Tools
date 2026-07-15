@@ -38,6 +38,22 @@ class Module {
     /** @var int[] Seat ids queued for a cancellation email this request. */
     private $pending_cancellation_emails = [];
 
+    /**
+     * Re-entrancy guard for persist_group_authoring()'s call into
+     * Occurrences::reconcile() (Phase 2, Task 2.3). reconcile() creates/
+     * updates/trashes CHILD event posts, each of which fires save_post_event
+     * again; this static flag blocks a nested call from re-entering
+     * persist_group_authoring() (and therefore reconcile()) even if some
+     * other hook chain calls save_meta()/save_event_manager_fields() while a
+     * reconcile() for this request is already in flight. The primary guard —
+     * removing the save_post_event action for the duration of the
+     * reconcile() call itself — lives in run_reconcile(); this is
+     * defense-in-depth on top of that.
+     *
+     * @var bool
+     */
+    private static $reconciling = false;
+
     public function __construct() {
         self::$instance = $this;
 
@@ -1367,6 +1383,210 @@ class Module {
         return (string) \ob_get_clean();
     }
 
+    /**
+     * Render a single offering-dates repeater row (Phase 2, Task 2.3 — Offering
+     * Dates section, data-when-type="offering"). Field names use the index
+     * scheme anchor_event_offering_dates[<index>][...], matching the session/
+     * ticket-tier repeater convention above. When $template is true, the
+     * literal token __INDEX__ is used so the JS can substitute a fresh row
+     * index on add. Values are display-only here; save_meta()'s
+     * sanitize_offering_dates_rows() is the single validated place these are
+     * persisted (never the generic save_meta() allow-list — see
+     * persist_group_authoring()).
+     *
+     * @param int        $index
+     * @param array|null $row
+     * @param bool       $template
+     * @return string Escaped HTML.
+     */
+    private function event_offering_row_html( $index, $row = null, $template = false ) {
+        $idx = $template ? '__INDEX__' : (string) $index;
+        $base = 'anchor_event_offering_dates[' . $idx . ']';
+
+        $date = $row['date'] ?? '';
+        $start_time = $row['start_time'] ?? '';
+        $end_time = $row['end_time'] ?? '';
+        $label = $row['label'] ?? '';
+        $capacity = ( $row && ! empty( $row['capacity'] ) ) ? (int) $row['capacity'] : '';
+
+        \ob_start();
+        ?>
+        <tr class="anchor-event-offering-row">
+            <td>
+                <input type="date" name="<?php echo esc_attr( $base . '[date]' ); ?>" value="<?php echo esc_attr( $date ); ?>" class="anchor-offering-date" />
+            </td>
+            <td>
+                <input type="time" name="<?php echo esc_attr( $base . '[start_time]' ); ?>" value="<?php echo esc_attr( $start_time ); ?>" class="anchor-offering-start-time" />
+            </td>
+            <td>
+                <input type="time" name="<?php echo esc_attr( $base . '[end_time]' ); ?>" value="<?php echo esc_attr( $end_time ); ?>" class="anchor-offering-end-time" />
+            </td>
+            <td>
+                <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $label ); ?>" class="anchor-offering-label" placeholder="<?php echo esc_attr__( 'e.g. Morning session', 'anchor-schema' ); ?>" />
+            </td>
+            <td>
+                <input type="number" min="0" step="1" name="<?php echo esc_attr( $base . '[capacity]' ); ?>" value="<?php echo esc_attr( $capacity ); ?>" class="anchor-offering-capacity" placeholder="<?php echo esc_attr__( 'Default', 'anchor-schema' ); ?>" />
+            </td>
+            <td>
+                <button type="button" class="button-link-delete anchor-event-offering-remove" aria-label="<?php echo esc_attr__( 'Remove date', 'anchor-schema' ); ?>">&times;</button>
+            </td>
+        </tr>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * Sun(0)..Sat(6) short weekday labels for the recurrence builder's
+     * weekday checkboxes (Phase 2, Task 2.3), matching the 0..6 index scheme
+     * PHP's date('w') and Occurrences::expand_recurrence()'s `weekdays` rule
+     * key both use.
+     *
+     * @return array<int,string>
+     */
+    private function weekday_labels() {
+        return [
+            0 => __( 'Sun', 'anchor-schema' ),
+            1 => __( 'Mon', 'anchor-schema' ),
+            2 => __( 'Tue', 'anchor-schema' ),
+            3 => __( 'Wed', 'anchor-schema' ),
+            4 => __( 'Thu', 'anchor-schema' ),
+            5 => __( 'Fri', 'anchor-schema' ),
+            6 => __( 'Sat', 'anchor-schema' ),
+        ];
+    }
+
+    /**
+     * Normalize a stored/posted recurrence rule for display, filling in the
+     * builder's default shape so render callers can safely read every key
+     * without isset() checks. Purely a read-side convenience — sanitization
+     * for PERSISTENCE is sanitize_recurrence_rule()'s job, not this.
+     *
+     * @param mixed $raw
+     * @return array{freq:string,interval:int|string,count:int|string,until:string,weekdays:array,start_time:string,end_time:string,capacity:int|string}
+     */
+    private function recurrence_display_defaults( $raw ) {
+        return \wp_parse_args( \is_array( $raw ) ? $raw : [], [
+            'freq' => 'weekly',
+            'interval' => 1,
+            'count' => '',
+            'until' => '',
+            'weekdays' => [],
+            'start_time' => '',
+            'end_time' => '',
+            'capacity' => '',
+        ] );
+    }
+
+    /**
+     * Renders the Offering Dates repeater (data-when-type="offering") + the
+     * Recurring Schedule rule builder (data-when-type="recurring") shared by
+     * the classic metabox and, offering-only, the front-end manager form
+     * (Phase 2, Task 2.3). $include_recurrence is false for the front-end
+     * form — the recurrence builder is admin-only per spec; a front-end user
+     * who selects "Recurring schedule" simply gets no way to complete the
+     * rule, so persist_group_authoring()'s validation guard always blocks
+     * reconcile() for it there (documented, not a bug).
+     *
+     * @param int  $post_id
+     * @param array $meta   get_meta()'s result for $post_id (or defaults for a new post).
+     * @param string $event_type
+     * @param bool $include_recurrence
+     * @return void Echoes directly (called from inside an existing ob context in both callers).
+     */
+    private function render_group_authoring_sections( $post_id, array $meta, $event_type, $include_recurrence = true ) {
+        $offering_dates = \is_array( $meta['offering_dates'] ) ? $meta['offering_dates'] : [];
+        $recurrence = $this->recurrence_display_defaults( $meta['recurrence'] );
+        $weekday_labels = $this->weekday_labels();
+        $child_count = ( $post_id && in_array( $event_type, [ 'offering', 'recurring' ], true ) )
+            ? count( $this->occurrences->children( $post_id ) )
+            : 0;
+        ?>
+        <div class="anchor-event-section anchor-event-conditional" data-when-type="offering">
+            <h3><?php echo esc_html__( 'Offering Dates', 'anchor-schema' ); ?></h3>
+            <p class="description"><?php echo esc_html__( 'Add one row per date visitors can pick from. Saving generates/manages one full event per date — its own capacity, seats, and (when WooCommerce ticketing is enabled) its own product. Rows with no date are ignored.', 'anchor-schema' ); ?></p>
+            <?php if ( $child_count > 0 && $event_type === 'offering' ) : ?>
+                <p class="description"><strong><?php echo esc_html( sprintf( /* translators: %d: number of generated child events */ _n( '%d generated date is currently live.', '%d generated dates are currently live.', $child_count, 'anchor-schema' ), $child_count ) ); ?></strong></p>
+            <?php endif; ?>
+            <table class="widefat anchor-event-offering-table">
+                <thead>
+                    <tr>
+                        <th><?php echo esc_html__( 'Date', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></th>
+                        <th aria-hidden="true"></th>
+                    </tr>
+                </thead>
+                <tbody class="anchor-event-offering-rows">
+                    <?php foreach ( $offering_dates as $i => $row ) : ?>
+                        <?php echo $this->event_offering_row_html( (int) $i, $row ); // already escaped ?>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+            <p>
+                <button type="button" class="button anchor-event-offering-add"><?php echo esc_html__( 'Add date', 'anchor-schema' ); ?></button>
+            </p>
+            <script type="text/html" id="anchor-event-offering-template">
+                <?php echo $this->event_offering_row_html( 0, null, true ); // already escaped ?>
+            </script>
+        </div>
+
+        <?php if ( $include_recurrence ) : ?>
+        <div class="anchor-event-section anchor-event-conditional" data-when-type="recurring">
+            <h3><?php echo esc_html__( 'Recurring Schedule', 'anchor-schema' ); ?></h3>
+            <p class="description"><?php echo esc_html__( 'Define a repeating rule (weekly or monthly). Saving generates/manages one full event per occurrence, anchored on this event\'s Start Date above. You must set an end — a number of occurrences OR an until date — before this rule will generate anything.', 'anchor-schema' ); ?></p>
+            <?php if ( $child_count > 0 && $event_type === 'recurring' ) : ?>
+                <p class="description"><strong><?php echo esc_html( sprintf( /* translators: %d: number of generated child events */ _n( '%d generated occurrence is currently live.', '%d generated occurrences are currently live.', $child_count, 'anchor-schema' ), $child_count ) ); ?></strong></p>
+            <?php endif; ?>
+            <div class="anchor-event-grid">
+                <div class="anchor-event-field">
+                    <label for="anchor_event_recurrence_freq"><?php echo esc_html__( 'Frequency', 'anchor-schema' ); ?></label>
+                    <select id="anchor_event_recurrence_freq" name="anchor_event_recurrence[freq]">
+                        <option value="weekly" <?php selected( $recurrence['freq'], 'weekly' ); ?>><?php echo esc_html__( 'Weekly', 'anchor-schema' ); ?></option>
+                        <option value="monthly" <?php selected( $recurrence['freq'], 'monthly' ); ?>><?php echo esc_html__( 'Monthly', 'anchor-schema' ); ?></option>
+                    </select>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_recurrence_interval"><?php echo esc_html__( 'Every', 'anchor-schema' ); ?></label>
+                    <input type="number" min="1" step="1" id="anchor_event_recurrence_interval" name="anchor_event_recurrence[interval]" value="<?php echo esc_attr( $recurrence['interval'] ? $recurrence['interval'] : 1 ); ?>" />
+                </div>
+                <div class="anchor-event-field anchor-event-recurrence-weekdays" data-when-freq="weekly">
+                    <label><?php echo esc_html__( 'Repeat on', 'anchor-schema' ); ?></label>
+                    <?php foreach ( $weekday_labels as $wd => $label ) : ?>
+                        <label class="anchor-event-weekday-checkbox">
+                            <input type="checkbox" name="anchor_event_recurrence[weekdays][]" value="<?php echo esc_attr( $wd ); ?>" <?php checked( in_array( $wd, (array) $recurrence['weekdays'], true ) ); ?> />
+                            <?php echo esc_html( $label ); ?>
+                        </label>
+                    <?php endforeach; ?>
+                    <p class="description"><?php echo esc_html__( 'Leave all unchecked to repeat on the Start Date\'s own weekday only.', 'anchor-schema' ); ?></p>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_recurrence_count"><?php echo esc_html__( 'End after (# occurrences)', 'anchor-schema' ); ?></label>
+                    <input type="number" min="1" step="1" id="anchor_event_recurrence_count" name="anchor_event_recurrence[count]" value="<?php echo esc_attr( $recurrence['count'] ); ?>" />
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_recurrence_until"><?php echo esc_html__( '...or end by date', 'anchor-schema' ); ?></label>
+                    <input type="date" id="anchor_event_recurrence_until" name="anchor_event_recurrence[until]" value="<?php echo esc_attr( $recurrence['until'] ); ?>" />
+                </div>
+                <div class="anchor-event-field anchor-event-time-fields">
+                    <label for="anchor_event_recurrence_start_time"><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></label>
+                    <input type="time" id="anchor_event_recurrence_start_time" name="anchor_event_recurrence[start_time]" value="<?php echo esc_attr( $recurrence['start_time'] ); ?>" />
+                </div>
+                <div class="anchor-event-field anchor-event-time-fields">
+                    <label for="anchor_event_recurrence_end_time"><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></label>
+                    <input type="time" id="anchor_event_recurrence_end_time" name="anchor_event_recurrence[end_time]" value="<?php echo esc_attr( $recurrence['end_time'] ); ?>" />
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_recurrence_capacity"><?php echo esc_html__( 'Capacity per occurrence', 'anchor-schema' ); ?></label>
+                    <input type="number" min="0" step="1" id="anchor_event_recurrence_capacity" name="anchor_event_recurrence[capacity]" value="<?php echo esc_attr( $recurrence['capacity'] ); ?>" />
+                </div>
+            </div>
+            <p class="description anchor-event-recurrence-terminator-hint"><?php echo esc_html__( 'Required: set "End after" OR "...or end by date" (or both — whichever is hit first wins). Without one of these, saving will NOT generate any events.', 'anchor-schema' ); ?></p>
+        </div>
+        <?php endif;
+    }
+
     public function render_meta_box( $post ) {
         \wp_nonce_field( self::NONCE, self::NONCE );
         $meta = $this->get_meta( $post->ID );
@@ -1465,10 +1685,7 @@ class Module {
                 </script>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-type="offering recurring">
-                <h3><?php echo esc_html__( 'Offering / Recurring Schedule', 'anchor-schema' ); ?></h3>
-                <p class="description"><?php echo esc_html__( 'Offering dates / recurrence are configured in the next phase.', 'anchor-schema' ); ?></p>
-            </div>
+            <?php $this->render_group_authoring_sections( $post->ID, $meta, $event_type, true ); ?>
 
             <div class="anchor-event-section">
                 <h3><?php echo esc_html__( 'Location', 'anchor-schema' ); ?></h3>
@@ -1859,6 +2076,13 @@ class Module {
             : [];
         $this->ticket_types->save( $post_id, $ticket_rows );
 
+        // Group authoring (offering_dates / recurrence / group_role) — Phase 2,
+        // Task 2.3. Deliberately NOT part of the generic $input allow-list
+        // above (see get_meta_schema()'s docblock on those keys); this is the
+        // one dedicated, validated place they're written, and the only place
+        // Occurrences::reconcile() is ever called from.
+        $this->persist_group_authoring( $post_id, $input['type'] );
+
         $this->maybe_append_registration_shortcode( $post_id, $input );
 
         $this->clear_caches();
@@ -1974,6 +2198,244 @@ class Module {
         return $sessions;
     }
 
+    /* ══════════════════════════════════════════════════════════
+       Group authoring: offering_dates / recurrence validated persist +
+       Occurrences::reconcile() wiring (spec Phase 2, Task 2.3).
+       ══════════════════════════════════════════════════════════ */
+
+    /**
+     * The single, DEDICATED, validated place `offering_dates` / `recurrence` /
+     * `group_role` are ever written (Phase 2, Task 2.3). These three keys are
+     * intentionally OUT of save_meta()'s / save_event_manager_fields()'s
+     * generic $input allow-list (see get_meta_schema()'s docblock on them) —
+     * exposing them there would let a REST write or an unrelated form field
+     * silently clobber engine-owned state. Called from BOTH save paths
+     * (save_meta() and save_event_manager_fields()) with the already-sanitized
+     * `type`, so the two forms can never drift on this logic.
+     *
+     * VALIDATION GUARD (critical — see class docblock intro / spec): an
+     * offering with zero valid dates, or a recurrence rule with neither
+     * `count` nor `until`, is NEVER passed to reconcile(). A rule with no
+     * terminator would expand to Occurrences::RECURRENCE_MAX_ROWS (104) rows;
+     * silently reconciling it would create up to 104 child posts from one
+     * save. On an invalid config the sanitized-but-incomplete input is still
+     * PERSISTED (so the metabox/form shows back exactly what was typed on the
+     * next load) but reconcile() is skipped entirely and an admin notice is
+     * queued instead — existing children (if any) are left exactly as they
+     * were, since reconcile() never runs.
+     *
+     * TYPE CHANGE AWAY (documented choice): when a post that IS currently a
+     * group parent (is_group_parent()) is saved with a type other than
+     * offering/recurring, its offering_dates/recurrence are cleared and
+     * reconcile() is called once against that now-empty desired set — this
+     * reuses reconcile()'s existing soft-close/trash logic (the same path a
+     * dropped offering-dates row already takes), so seated children are
+     * preserved (soft-closed, roster intact) and unseated ones are trashed,
+     * never left orphaned. group_role is then explicitly reset to '' —
+     * reconcile() itself always stamps 'parent', which is no longer correct
+     * once the type has changed away. An event that was NEVER a group parent
+     * (ordinary single/multisession) has nothing to reconcile away and is a
+     * no-op here.
+     *
+     * RE-ENTRANCY (critical — see class docblock intro / spec): reconcile()
+     * creates/updates/trashes CHILD event posts, each of which fires
+     * save_post_event again.
+     *   1. A CHILD post (Occurrences::is_group_child()) is NEVER treated as an
+     *      authored parent — this method returns immediately for one, so a
+     *      human editing a child directly can never turn it into a nested
+     *      parent.
+     *   2. run_reconcile() removes the save_post_event action for the
+     *      duration of the reconcile() call (the SAME established pattern
+     *      already used by maybe_append_registration_shortcode()'s
+     *      wp_update_post() call above), so none of reconcile()'s own
+     *      wp_insert_post()/wp_update_post()/wp_trash_post() calls can
+     *      re-enter save_meta() — and therefore this method — at all.
+     *   3. The static self::$reconciling flag is additional defense-in-depth
+     *      in case some other, unrelated hook chain calls save_meta()/
+     *      save_event_manager_fields() while a reconcile() for this request
+     *      is already in flight.
+     *
+     * @param int    $post_id
+     * @param string $type Already-sanitized event type (sanitize_event_type_input()'s 'type').
+     */
+    private function persist_group_authoring( $post_id, $type ) {
+        if ( self::$reconciling ) {
+            return;
+        }
+        if ( $this->occurrences->is_group_child( $post_id ) ) {
+            return;
+        }
+
+        $was_parent = $this->occurrences->is_group_parent( $post_id );
+
+        if ( $type === 'offering' ) {
+            $rows = $this->sanitize_offering_dates_rows( $_POST['anchor_event_offering_dates'] ?? [] );
+            \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), $rows );
+            \update_post_meta( $post_id, $this->meta_key( 'recurrence' ), [] );
+
+            if ( empty( $rows ) ) {
+                // Guard: never reconcile an offering with zero valid dates —
+                // that would trash/soft-close every existing child. Leave any
+                // existing children exactly as they are.
+                $this->queue_group_notice( 'offering_incomplete' );
+                return;
+            }
+
+            $this->run_reconcile( $post_id );
+            return;
+        }
+
+        if ( $type === 'recurring' ) {
+            $rule = $this->sanitize_recurrence_rule( $_POST['anchor_event_recurrence'] ?? [] );
+            \update_post_meta( $post_id, $this->meta_key( 'recurrence' ), $rule );
+            \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), [] );
+
+            $has_terminator = ( ! empty( $rule['count'] ) && (int) $rule['count'] > 0 ) || ! empty( $rule['until'] );
+            if ( ! $has_terminator ) {
+                // Guard: never reconcile an unterminated rule — expand_recurrence()
+                // would otherwise expand it to the RECURRENCE_MAX_ROWS (104) safety
+                // cap, i.e. up to 104 child posts from one incomplete save.
+                $this->queue_group_notice( 'recurrence_incomplete' );
+                return;
+            }
+
+            $this->run_reconcile( $post_id );
+            return;
+        }
+
+        // Type changed away from offering/recurring. Only act when this post
+        // WAS a group parent — an ordinary single/multisession event was
+        // never group-authored and has nothing to reconcile away.
+        if ( $was_parent ) {
+            \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), [] );
+            \update_post_meta( $post_id, $this->meta_key( 'recurrence' ), [] );
+            $this->run_reconcile( $post_id ); // Empty desired set -> retires every existing child (soft-close seated, trash unseated).
+            \update_post_meta( $post_id, $this->meta_key( 'group_role' ), '' ); // reconcile() always stamps 'parent'; not correct once the type has changed away.
+        }
+    }
+
+    /**
+     * Call Occurrences::reconcile() with the save_post_event hook removed for
+     * its duration (+ a static flag as defense-in-depth) so none of
+     * reconcile()'s own child-post writes can re-enter save_meta() /
+     * persist_group_authoring() (spec Phase 2, Task 2.3 — see
+     * persist_group_authoring()'s docblock, point 2).
+     *
+     * @param int $post_id
+     */
+    private function run_reconcile( $post_id ) {
+        self::$reconciling = true;
+        \remove_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
+        try {
+            $this->occurrences->reconcile( $post_id );
+        } finally {
+            \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
+            self::$reconciling = false;
+        }
+    }
+
+    /**
+     * Sanitize the posted offering-dates repeater rows (Offering Dates
+     * section, data-when-type="offering", spec Phase 2, Task 2.3). Rows with
+     * no parseable date are dropped — same normalization
+     * Occurrences::get_offering_dates() applies on read, kept here too so
+     * what's persisted is already clean. Reuses the SAME sanitize_date()/
+     * sanitize_time() helpers the rest of save_meta() uses (strict Y-m-d /
+     * H:i regex — matches the <input type="date">/<input type="time"> the
+     * repeater renders).
+     *
+     * @param mixed $raw Raw anchor_event_offering_dates[] rows from $_POST (NOT yet unslashed).
+     * @return array<int,array{date:string,start_time:string,end_time:string,label:string,capacity:int}>
+     */
+    private function sanitize_offering_dates_rows( $raw ) {
+        $rows = [];
+        foreach ( (array) \wp_unslash( $raw ) as $row ) {
+            if ( ! is_array( $row ) ) {
+                continue;
+            }
+            $date = $this->sanitize_date( $row['date'] ?? '' );
+            if ( $date === '' ) {
+                continue;
+            }
+            $rows[] = [
+                'date' => $date,
+                'start_time' => $this->sanitize_time( $row['start_time'] ?? '' ),
+                'end_time' => $this->sanitize_time( $row['end_time'] ?? '' ),
+                'label' => \sanitize_text_field( $row['label'] ?? '' ),
+                'capacity' => \max( 0, (int) ( $row['capacity'] ?? 0 ) ),
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * Sanitize the posted recurrence rule (Recurring Schedule section,
+     * data-when-type="recurring", spec Phase 2, Task 2.3) into the exact
+     * shape Occurrences::expand_recurrence() expects. `count` is only set
+     * when it's a valid positive integer; `until` only when it's a valid
+     * date; `weekdays` only for freq=weekly and only when at least one valid
+     * 0..6 value was checked — omitting all three when unset/invalid (rather
+     * than writing 0/''/[]) is what lets persist_group_authoring()'s
+     * has_terminator check with a plain empty()/isset() read cleanly.
+     *
+     * @param mixed $raw Raw anchor_event_recurrence[] map from $_POST (NOT yet unslashed).
+     * @return array{freq:string,interval:int,start_time:string,end_time:string,capacity:int,count?:int,until?:string,weekdays?:array<int,int>}
+     */
+    private function sanitize_recurrence_rule( $raw ) {
+        $raw = is_array( $raw ) ? \wp_unslash( $raw ) : [];
+
+        $freq = ( ( $raw['freq'] ?? '' ) === 'monthly' ) ? 'monthly' : 'weekly';
+        $interval = \max( 1, (int) ( $raw['interval'] ?? 1 ) );
+
+        $rule = [
+            'freq' => $freq,
+            'interval' => $interval,
+            'start_time' => $this->sanitize_time( $raw['start_time'] ?? '' ),
+            'end_time' => $this->sanitize_time( $raw['end_time'] ?? '' ),
+            'capacity' => \max( 0, (int) ( $raw['capacity'] ?? 0 ) ),
+        ];
+
+        $count_raw = (int) ( $raw['count'] ?? 0 );
+        if ( $count_raw > 0 ) {
+            $rule['count'] = $count_raw;
+        }
+
+        $until = $this->sanitize_date( $raw['until'] ?? '' );
+        if ( $until !== '' ) {
+            $rule['until'] = $until;
+        }
+
+        if ( $freq === 'weekly' && isset( $raw['weekdays'] ) && is_array( $raw['weekdays'] ) ) {
+            $weekdays = [];
+            foreach ( $raw['weekdays'] as $wd ) {
+                $wd = (int) $wd;
+                if ( $wd >= 0 && $wd <= 6 ) {
+                    $weekdays[] = $wd;
+                }
+            }
+            $weekdays = \array_values( \array_unique( $weekdays ) );
+            \sort( $weekdays );
+            if ( ! empty( $weekdays ) ) {
+                $rule['weekdays'] = $weekdays;
+            }
+        }
+
+        return $rule;
+    }
+
+    /**
+     * Queue an admin-notice query arg on the post-save redirect, same idiom
+     * as save_meta()'s existing missing_start_date guard — see
+     * admin_notices() for the rendered copy.
+     *
+     * @param string $code
+     */
+    private function queue_group_notice( $code ) {
+        \add_filter( 'redirect_post_location', function ( $location ) use ( $code ) {
+            return \add_query_arg( 'anchor_event_notice', $code, $location );
+        } );
+    }
+
     private function sanitize_gallery_ids( $raw ) {
         if ( is_array( $raw ) ) {
             $ids = $raw;
@@ -2017,6 +2479,15 @@ class Module {
         if ( $notice === 'missing_start_date' ) {
             echo '<div class="notice notice-error"><p>' . esc_html__( 'Event start date is required.', 'anchor-schema' ) . '</p></div>';
         }
+        // Group authoring validation guards (Phase 2, Task 2.3) — see
+        // persist_group_authoring(). Neither ever reaches reconcile(); child
+        // events were left exactly as they were before this save.
+        if ( $notice === 'offering_incomplete' ) {
+            echo '<div class="notice notice-error"><p>' . esc_html__( 'Add at least one offering date before saving — no dates were generated/updated.', 'anchor-schema' ) . '</p></div>';
+        }
+        if ( $notice === 'recurrence_incomplete' ) {
+            echo '<div class="notice notice-error"><p>' . esc_html__( 'Set an end for the recurrence — a number of occurrences or an until date — before saving. No occurrences were generated/updated.', 'anchor-schema' ) . '</p></div>';
+        }
     }
 
     public function admin_assets( $hook ) {
@@ -2028,8 +2499,8 @@ class Module {
             return;
         }
         \wp_enqueue_media();
-        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.2' );
-        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.2', true );
+        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.3' );
+        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.3', true );
         // Ticket-tier repeatable table (spec §3.2).
         \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.0', true );
     }
@@ -2047,7 +2518,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.8' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.9' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         \wp_add_inline_style( 'anchor-events-frontend', sprintf(
@@ -2470,7 +2941,7 @@ class Module {
             'anchor-events-manager-frontend',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
-            '1.0.1',
+            '1.0.2',
             true
         );
 
@@ -2959,10 +3430,7 @@ class Module {
                 </script>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-type="offering recurring">
-                <h3><?php echo esc_html__( 'Offering / Recurring Schedule', 'anchor-schema' ); ?></h3>
-                <p class="description"><?php echo esc_html__( 'Offering dates / recurrence are configured in the next phase.', 'anchor-schema' ); ?></p>
-            </div>
+            <?php $this->render_group_authoring_sections( $event_id, $meta, $event_type, false ); ?>
 
             <div class="anchor-event-section">
                 <h3><?php echo esc_html__( 'Location', 'anchor-schema' ); ?></h3>
@@ -3219,6 +3687,11 @@ class Module {
         } else {
             \delete_post_thumbnail( $saved_id );
         }
+
+        // Group authoring (Task 2.3) — SAME dedicated validated persist+reconcile
+        // step as save_meta(), reused (not duplicated) so the two save paths can
+        // never drift. See persist_group_authoring()'s docblock.
+        $this->persist_group_authoring( $saved_id, $input['type'] );
 
         $this->maybe_append_registration_shortcode( $saved_id, $input );
         $this->clear_caches();

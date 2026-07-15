@@ -124,3 +124,43 @@
 .anchor-event-tickets-table td{
   vertical-align:middle;
 }
+
+.anchor-event-offering-table{
+  margin-bottom:8px;
+}
+
+.anchor-event-offering-table input[type="date"],
+.anchor-event-offering-table input[type="time"],
+.anchor-event-offering-table input[type="text"],
+.anchor-event-offering-table input[type="number"]{
+  width:100%;
+}
+
+.anchor-event-offering-row td{
+  vertical-align:middle;
+}
+
+.anchor-event-recurrence-weekdays{
+  grid-column:1/-1;
+}
+
+.anchor-event-weekday-checkbox{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  font-weight:normal;
+  margin:0 12px 4px 0;
+}
+
+.anchor-event-weekday-checkbox input{
+  margin:0;
+}
+
+.anchor-event-recurrence-terminator-hint{
+  grid-column:1/-1;
+}
+
+.anchor-event-recurrence-terminator-missing{
+  color:#b91c1c;
+  font-weight:600;
+}

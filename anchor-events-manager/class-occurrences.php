@@ -1,0 +1,725 @@
+<?php
+/**
+ * Occurrences — parent→child reconcile engine for "Pick-one offerings" (spec
+ * Phase 2, Task 2.1).
+ *
+ * One responsibility: given a group PARENT event post that holds a list of
+ * explicit offering dates (`_anchor_event_offering_dates`), reconcile a set of
+ * CHILD event posts — one per desired date — so each occurrence is a full,
+ * standalone event post that reuses the existing per-event engine unchanged
+ * (its own date/timestamps/status, capacity, ticket tiers, seats/roster,
+ * managed WooCommerce product). This class ORCHESTRATES child event posts; it
+ * never reaches into seats/capacity/tiers/product-sync/roster internals — it
+ * only calls their existing public APIs on a per-child basis, exactly as the
+ * classic per-event admin save path already does for a single event.
+ *
+ * Field split (see class docblock sections below):
+ *   - PER-OCCURRENCE meta ("owned" by the child once created; never touched by
+ *     an ongoing reconcile of a still-desired date): start_date, end_date,
+ *     start_time, end_time, start_ts, end_ts, capacity, status_mode, status.
+ *     Also implicitly per-occurrence: seats/roster (REG_CPT rows keyed by
+ *     event id) and the managed WooCommerce product
+ *     (`_anchor_event_managed_product`) — both are per-post already and are
+ *     never copied from the parent.
+ *   - SHARED meta (copied at child creation AND re-synced on every reconcile
+ *     of a still-live child, so editing the parent propagates): everything
+ *     else in the event meta schema except the per-occurrence keys above and
+ *     the NEVER_COPY_KEYS below (product/engine-owned mirrors + fields that
+ *     don't make sense to copy). This covers title-ish/content, location
+ *     fields, ticket_types, registration_mode, external_*, the capacity
+ *     *default*, timezone, and the remaining registration-policy fields
+ *     (registration_enabled, waitlist, registration_open/close,
+ *     registration_type, registration_url, price, hide_from_archive,
+ *     featured, priority, organizer_email, reminder_offsets, gallery,
+ *     all_day). A child's `type` meta is force-set to 'single' (never
+ *     inherits 'offering'/'recurring') because each occurrence is itself a
+ *     plain single event.
+ *
+ * Soft-close representation: a removed-but-seated occurrence is NEVER
+ * deleted. It is marked with the existing status vocabulary
+ * (status_mode=manual, status=cancelled, registration_enabled=false) plus an
+ * engine-owned flag (`_anchor_event_occurrence_closed=1`) so it can be
+ * unambiguously excluded from the active "choose a date" set (children()
+ * with $include_closed=false) while its post + roster survive untouched and
+ * remain reachable via children($include_closed=true). Re-adding the same
+ * occurrence_key later REVIVES the same child (clears the closed flag,
+ * restores auto status/registration) instead of creating a duplicate, so its
+ * historical roster is retained.
+ *
+ * Idempotency: a child is matched to a desired offering-dates row by a
+ * stable `occurrence_key` (the row's normalized date string) stored on the
+ * child at creation. reconcile() is a pure function of (parent's
+ * offering_dates, existing children keyed by occurrence_key) — an unchanged
+ * desired set produces no new posts, no closures, and no meta churn beyond
+ * re-writing identical shared-field values.
+ *
+ * @package Anchor\Events
+ */
+
+namespace Anchor\Events;
+
+if ( ! \defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+class Occurrences {
+
+    /**
+     * Event meta keys (WITHOUT the `_anchor_event_` prefix) that belong to a
+     * single occurrence and are NEVER re-synced from the parent once a child
+     * exists — they are set once at creation (from the matched offering-dates
+     * row / the parent's then-current default) and are the child's own from
+     * then on.
+     */
+    const PER_OCCURRENCE_KEYS = [
+        'start_date',
+        'end_date',
+        'start_time',
+        'end_time',
+        'start_ts',
+        'end_ts',
+        'capacity',
+        'status_mode',
+        'status',
+    ];
+
+    /**
+     * Event meta keys that are never copied parent→child at all (engine-owned
+     * mirrors, product-sync-owned caches, or fields that don't apply to a
+     * child occurrence).
+     */
+    const NEVER_COPY_KEYS = [
+        'linked_products',
+        'roster_sent',
+        'activity',
+        'type',
+        'sessions',
+        'group_role',
+        'group_id',
+        'offering_dates',
+        'occurrence_key',
+        'occurrence_closed',
+    ];
+
+    /** @var Module */
+    private $module;
+
+    public function __construct( Module $module ) {
+        $this->module = $module;
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       Public API
+       ═══════════════════════════════════════════════════════════ */
+
+    /**
+     * Idempotently reconcile a group parent's desired offering dates against
+     * its existing child event posts.
+     *
+     * @param int $parent_id
+     * @return int[] Live (non-closed, non-trashed) child post ids.
+     */
+    public function reconcile( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 || \get_post_type( $parent_id ) !== Module::CPT ) {
+            return [];
+        }
+        // A child post is never itself treated as a group parent.
+        if ( $this->is_group_child( $parent_id ) ) {
+            return [];
+        }
+
+        $this->set_group_role( $parent_id, 'parent' );
+
+        $desired_map  = [];
+        foreach ( $this->get_offering_dates( $parent_id ) as $row ) {
+            $desired_map[ $row['date'] ] = $row;
+        }
+
+        $existing_map = $this->existing_children_map( $parent_id ); // occurrence_key => child_id (live + closed, excludes trash)
+
+        $live_ids = [];
+
+        foreach ( $desired_map as $key => $row ) {
+            if ( isset( $existing_map[ $key ] ) ) {
+                $child_id = (int) $existing_map[ $key ];
+                $this->sync_child_from_parent( $parent_id, $child_id, $row );
+                $this->revive_if_closed( $child_id );
+                $live_ids[] = $child_id;
+            } else {
+                $child_id = $this->create_child( $parent_id, $row, $key );
+                if ( $child_id > 0 ) {
+                    $live_ids[] = $child_id;
+                }
+            }
+        }
+
+        foreach ( $existing_map as $key => $child_id ) {
+            if ( isset( $desired_map[ $key ] ) ) {
+                continue; // still desired — handled above.
+            }
+            $this->retire_child( (int) $child_id );
+        }
+
+        $this->assign_series( $parent_id, $live_ids );
+
+        \usort( $live_ids, function ( $a, $b ) {
+            return $this->start_ts( $a ) <=> $this->start_ts( $b );
+        } );
+
+        return $live_ids;
+    }
+
+    /**
+     * Live (or all, incl. soft-closed) child post ids for a group parent.
+     * Never includes trashed children.
+     *
+     * @param int  $parent_id
+     * @param bool $include_closed
+     * @return int[]
+     */
+    public function children( $parent_id, $include_closed = false ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 ) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ( $this->existing_children_map( $parent_id ) as $child_id ) {
+            $child_id = (int) $child_id;
+            if ( ! $include_closed && $this->is_closed( $child_id ) ) {
+                continue;
+            }
+            $ids[] = $child_id;
+        }
+
+        \usort( $ids, function ( $a, $b ) {
+            return $this->start_ts( $a ) <=> $this->start_ts( $b );
+        } );
+
+        return $ids;
+    }
+
+    /**
+     * Sibling child ids (same group, excluding $child_id itself).
+     *
+     * @param int  $child_id
+     * @param bool $include_closed
+     * @return int[]
+     */
+    public function siblings( $child_id, $include_closed = false ) {
+        $child_id  = (int) $child_id;
+        $parent_id = $this->parent_of( $child_id );
+        if ( $parent_id <= 0 ) {
+            return [];
+        }
+        return \array_values( \array_diff( $this->children( $parent_id, $include_closed ), [ $child_id ] ) );
+    }
+
+    /**
+     * Whether a post is a group parent (has been reconciled at least once as
+     * one — stamped by reconcile()).
+     *
+     * @param int $id
+     * @return bool
+     */
+    public function is_group_parent( $id ) {
+        $id = (int) $id;
+        return $id > 0 && \get_post_meta( $id, $this->module->meta_key( 'group_role' ), true ) === 'parent';
+    }
+
+    /**
+     * Whether a post is a group child (created by reconcile()).
+     *
+     * @param int $id
+     * @return bool
+     */
+    public function is_group_child( $id ) {
+        $id = (int) $id;
+        return $id > 0 && \get_post_meta( $id, $this->module->meta_key( 'group_role' ), true ) === 'child';
+    }
+
+    /**
+     * The parent event post id for a child (0 when not a child).
+     *
+     * @param int $child_id
+     * @return int
+     */
+    public function parent_of( $child_id ) {
+        $child_id = (int) $child_id;
+        if ( $child_id <= 0 || ! $this->is_group_child( $child_id ) ) {
+            return 0;
+        }
+        return (int) \get_post_meta( $child_id, $this->module->meta_key( 'group_id' ), true );
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       Reconcile internals
+       ═══════════════════════════════════════════════════════════ */
+
+    /**
+     * Create a new child event post for a desired occurrence row.
+     *
+     * @param int    $parent_id
+     * @param array  $row       Normalized offering-dates row (date/start_time/end_time/label/capacity).
+     * @param string $key       occurrence_key (== $row['date']).
+     * @return int New child post id, or 0 on failure.
+     */
+    private function create_child( $parent_id, array $row, $key ) {
+        $parent_meta = $this->module->get_meta( $parent_id );
+
+        $child_id = \wp_insert_post( [
+            'post_type'    => Module::CPT,
+            'post_status'  => 'publish',
+            'post_title'   => $this->child_title( $parent_id, $row ),
+            'post_content' => (string) \get_post_field( 'post_content', $parent_id ),
+            'post_excerpt' => (string) \get_post_field( 'post_excerpt', $parent_id ),
+        ], true );
+
+        if ( \is_wp_error( $child_id ) || ! $child_id ) {
+            return 0;
+        }
+        $child_id = (int) $child_id;
+
+        // Engine-owned identity meta.
+        \update_post_meta( $child_id, $this->module->meta_key( 'group_role' ), 'child' );
+        \update_post_meta( $child_id, $this->module->meta_key( 'group_id' ), $parent_id );
+        \update_post_meta( $child_id, $this->module->meta_key( 'occurrence_key' ), $key );
+        \update_post_meta( $child_id, $this->module->meta_key( 'occurrence_closed' ), false );
+
+        // A child occurrence is always a plain single event.
+        \update_post_meta( $child_id, $this->module->meta_key( 'type' ), 'single' );
+
+        // Per-occurrence date/capacity meta, set ONCE from the row (falling
+        // back to the parent's current capacity default when the row carries
+        // no override).
+        $this->apply_occurrence_dates( $child_id, $row, $parent_meta );
+
+        // Shared fields (title[+suffix] handled above already; everything
+        // else copied here), ticket tiers, and product sync.
+        $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
+        $this->sync_ticket_types( $parent_id, $child_id );
+        $this->sync_product( $child_id, $parent_meta );
+
+        return $child_id;
+    }
+
+    /**
+     * Re-sync an existing live child from the parent (shared fields + title +
+     * ticket tiers + product), WITHOUT touching its own date/capacity/status
+     * or seats.
+     *
+     * @param int   $parent_id
+     * @param int   $child_id
+     * @param array $row Matched offering-dates row (used only for the title suffix).
+     */
+    private function sync_child_from_parent( $parent_id, $child_id, array $row ) {
+        $parent_meta = $this->module->get_meta( $parent_id );
+
+        \wp_update_post( [
+            'ID'           => $child_id,
+            'post_title'   => $this->child_title( $parent_id, $row ),
+            'post_content' => (string) \get_post_field( 'post_content', $parent_id ),
+            'post_excerpt' => (string) \get_post_field( 'post_excerpt', $parent_id ),
+        ] );
+
+        $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
+        $this->sync_ticket_types( $parent_id, $child_id );
+        $this->sync_product( $child_id, $parent_meta );
+    }
+
+    /**
+     * Write the PER_OCCURRENCE_KEYS meta on a freshly-created child: its own
+     * date/time (from the row), derived start_ts/end_ts + auto status (reusing
+     * the Module's own timestamp/status calculation), and its capacity (row
+     * override, else the parent's capacity default at creation time).
+     *
+     * @param int   $child_id
+     * @param array $row
+     * @param array $parent_meta
+     */
+    private function apply_occurrence_dates( $child_id, array $row, array $parent_meta ) {
+        $mk = function ( $k ) {
+            return $this->module->meta_key( $k );
+        };
+
+        $start_time = $row['start_time'];
+        $end_time   = $row['end_time'] !== '' ? $row['end_time'] : $start_time;
+        $capacity   = $row['capacity'] > 0 ? $row['capacity'] : (int) ( $parent_meta['capacity'] ?? 0 );
+
+        \update_post_meta( $child_id, $mk( 'start_date' ), $row['date'] );
+        \update_post_meta( $child_id, $mk( 'end_date' ), $row['date'] );
+        \update_post_meta( $child_id, $mk( 'start_time' ), $start_time );
+        \update_post_meta( $child_id, $mk( 'end_time' ), $end_time );
+        \update_post_meta( $child_id, $mk( 'capacity' ), $capacity );
+
+        $occurrence_meta = [
+            'start_date' => $row['date'],
+            'end_date'   => $row['date'],
+            'start_time' => $start_time,
+            'end_time'   => $end_time,
+            'all_day'    => ! empty( $parent_meta['all_day'] ),
+            'timezone'   => (string) ( $parent_meta['timezone'] ?? '' ),
+        ];
+        $timestamps = $this->module->compute_timestamps( $occurrence_meta );
+
+        \update_post_meta( $child_id, $mk( 'start_ts' ), $timestamps['start'] );
+        \update_post_meta( $child_id, $mk( 'end_ts' ), $timestamps['end'] );
+        \update_post_meta( $child_id, $mk( 'status_mode' ), 'auto' );
+        \update_post_meta( $child_id, $mk( 'status' ), $this->module->compute_status( $occurrence_meta ) );
+    }
+
+    /**
+     * Copy every SHARED meta key (parent meta minus PER_OCCURRENCE_KEYS minus
+     * NEVER_COPY_KEYS) from parent to child.
+     *
+     * @param int        $parent_id
+     * @param int        $child_id
+     * @param array|null $parent_meta Pre-fetched parent meta (avoids a re-read).
+     */
+    private function sync_shared_meta( $parent_id, $child_id, ?array $parent_meta = null ) {
+        $parent_meta = $parent_meta ?? $this->module->get_meta( $parent_id );
+
+        $excluded = \array_flip( \array_merge( self::PER_OCCURRENCE_KEYS, self::NEVER_COPY_KEYS ) );
+        $shared   = \array_diff_key( $parent_meta, $excluded );
+
+        foreach ( $shared as $key => $value ) {
+            \update_post_meta( $child_id, $this->module->meta_key( $key ), $value );
+        }
+    }
+
+    /**
+     * Copy the parent's ticket-tier rows to the child, resetting each row's
+     * `wc_variation_id` to 0 — each child gets its OWN managed product /
+     * variations via sync_product(); the parent's variation ids never belong
+     * on a child's tiers. An empty parent tier list clears the child's list
+     * too (both fall back to the same implicit-primary-from-price tier).
+     *
+     * @param int $parent_id
+     * @param int $child_id
+     */
+    private function sync_ticket_types( $parent_id, $child_id ) {
+        $raw = \get_post_meta( $parent_id, Ticket_Types::META_KEY, true );
+        if ( ! \is_array( $raw ) || empty( $raw ) ) {
+            $this->module->ticket_types->save( $child_id, [] );
+            return;
+        }
+
+        $rows = [];
+        foreach ( $raw as $row ) {
+            if ( ! \is_array( $row ) ) {
+                continue;
+            }
+            $row['wc_variation_id'] = 0;
+            $rows[]                 = $row;
+        }
+
+        $this->module->ticket_types->save( $child_id, $rows );
+    }
+
+    /**
+     * Ensure the child has its own managed WooCommerce product when the
+     * parent's registration_mode is 'wc'. No-op (and product_sync itself is
+     * idempotent) otherwise, mirroring how a single event is already synced.
+     *
+     * @param int   $child_id
+     * @param array $parent_meta
+     */
+    private function sync_product( $child_id, array $parent_meta ) {
+        if ( ( $parent_meta['registration_mode'] ?? '' ) !== 'wc' ) {
+            return;
+        }
+        if ( ! $this->module->product_sync ) {
+            return;
+        }
+        $this->module->product_sync->sync_event( $child_id );
+    }
+
+    /**
+     * Retire an existing child whose occurrence is no longer desired:
+     * soft-close when it has any seats (roster-preserving), else trash it.
+     *
+     * @param int $child_id
+     */
+    private function retire_child( $child_id ) {
+        if ( $this->has_seats( $child_id ) ) {
+            $this->soft_close( $child_id );
+            return;
+        }
+        if ( $this->is_closed( $child_id ) ) {
+            // Already soft-closed with (now) no seats — leave the closed
+            // state as-is rather than surprise-trashing a previously
+            // preserved occurrence.
+            return;
+        }
+        \wp_trash_post( $child_id );
+    }
+
+    /**
+     * Soft-close a child: preserve the post + roster, mark it closed via the
+     * existing status vocabulary (manual/cancelled + registration disabled)
+     * plus the engine's own closed flag. Idempotent (no-op if already closed).
+     *
+     * @param int $child_id
+     */
+    private function soft_close( $child_id ) {
+        if ( $this->is_closed( $child_id ) ) {
+            return;
+        }
+        $mk = function ( $k ) {
+            return $this->module->meta_key( $k );
+        };
+        \update_post_meta( $child_id, $mk( 'status_mode' ), 'manual' );
+        \update_post_meta( $child_id, $mk( 'status' ), 'cancelled' );
+        \update_post_meta( $child_id, $mk( 'registration_enabled' ), false );
+        \update_post_meta( $child_id, $mk( 'occurrence_closed' ), true );
+    }
+
+    /**
+     * Revive a previously soft-closed child whose occurrence_key has been
+     * re-added to the parent's offering_dates: clear the closed flag and
+     * restore auto status/registration, WITHOUT touching its date or seats.
+     * No-op if the child isn't currently closed.
+     *
+     * @param int $child_id
+     */
+    private function revive_if_closed( $child_id ) {
+        if ( ! $this->is_closed( $child_id ) ) {
+            return;
+        }
+        $mk = function ( $k ) {
+            return $this->module->meta_key( $k );
+        };
+        $meta = $this->module->get_meta( $child_id );
+
+        \update_post_meta( $child_id, $mk( 'occurrence_closed' ), false );
+        \update_post_meta( $child_id, $mk( 'registration_enabled' ), true );
+        \update_post_meta( $child_id, $mk( 'status_mode' ), 'auto' );
+        \update_post_meta( $child_id, $mk( 'status' ), $this->module->compute_status( $meta ) );
+    }
+
+    /**
+     * Find-or-create a stable event_series term derived from the parent
+     * ("group-{parent_id}" slug, parent title as the name) and assign it to
+     * the parent + every live child.
+     *
+     * @param int   $parent_id
+     * @param int[] $live_child_ids
+     */
+    private function assign_series( $parent_id, array $live_child_ids ) {
+        if ( ! \taxonomy_exists( Series::TAXONOMY ) ) {
+            return;
+        }
+
+        $slug = 'group-' . $parent_id;
+        $name = (string) \get_the_title( $parent_id );
+        if ( $name === '' ) {
+            $name = $slug;
+        }
+
+        $term = \get_term_by( 'slug', $slug, Series::TAXONOMY );
+        if ( ! $term ) {
+            $result = \wp_insert_term( $name, Series::TAXONOMY, [ 'slug' => $slug ] );
+            if ( \is_wp_error( $result ) ) {
+                return;
+            }
+            $term_id = (int) $result['term_id'];
+        } else {
+            $term_id = (int) $term->term_id;
+            if ( $term->name !== $name ) {
+                \wp_update_term( $term_id, Series::TAXONOMY, [ 'name' => $name ] );
+            }
+        }
+
+        \wp_set_object_terms( $parent_id, [ $term_id ], Series::TAXONOMY, false );
+        foreach ( $live_child_ids as $child_id ) {
+            \wp_set_object_terms( (int) $child_id, [ $term_id ], Series::TAXONOMY, false );
+        }
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       Small helpers
+       ═══════════════════════════════════════════════════════════ */
+
+    /**
+     * Set the group_role meta on a post (idempotent: skips the write when
+     * unchanged).
+     *
+     * @param int    $id
+     * @param string $role 'parent'|'child'|''.
+     */
+    private function set_group_role( $id, $role ) {
+        $key = $this->module->meta_key( 'group_role' );
+        if ( \get_post_meta( $id, $key, true ) !== $role ) {
+            \update_post_meta( $id, $key, $role );
+        }
+    }
+
+    /**
+     * Whether a child is currently soft-closed.
+     *
+     * @param int $child_id
+     * @return bool
+     */
+    private function is_closed( $child_id ) {
+        return (bool) \get_post_meta( $child_id, $this->module->meta_key( 'occurrence_closed' ), true );
+    }
+
+    /**
+     * Whether a child has any seat (registration) rows at all, any status —
+     * the roster-preservation trigger. Reuses Registrations::query_seats()
+     * unchanged (spec constraint: never touch seat internals directly).
+     *
+     * @param int $child_id
+     * @return bool
+     */
+    private function has_seats( $child_id ) {
+        $result = $this->module->registrations->query_seats( [
+            'event_id' => $child_id,
+            'status'   => 'all',
+            'per_page' => 1,
+        ] );
+        return ( (int) ( $result['total'] ?? 0 ) ) > 0;
+    }
+
+    /**
+     * occurrence_key => child post id map for ALL of a parent's children
+     * (live + soft-closed; trashed posts are excluded because they're
+     * queried out by post_status=publish).
+     *
+     * @param int $parent_id
+     * @return array<string,int>
+     */
+    private function existing_children_map( $parent_id ) {
+        $ids = \get_posts( [
+            'post_type'      => Module::CPT,
+            'post_status'    => 'publish',
+            'posts_per_page' => -1,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                'relation' => 'AND',
+                [ 'key' => $this->module->meta_key( 'group_role' ), 'value' => 'child', 'compare' => '=' ],
+                [ 'key' => $this->module->meta_key( 'group_id' ), 'value' => (int) $parent_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+            ],
+        ] );
+
+        $map = [];
+        foreach ( $ids as $id ) {
+            $id  = (int) $id;
+            $key = (string) \get_post_meta( $id, $this->module->meta_key( 'occurrence_key' ), true );
+            if ( $key === '' ) {
+                continue;
+            }
+            $map[ $key ] = $id;
+        }
+        return $map;
+    }
+
+    /**
+     * Build a child's title: "<parent title> — <row label, or formatted date>".
+     *
+     * @param int   $parent_id
+     * @param array $row
+     * @return string
+     */
+    private function child_title( $parent_id, array $row ) {
+        $label = $row['label'] !== '' ? $row['label'] : $this->format_date_label( $row['date'] );
+        return (string) \get_the_title( $parent_id ) . ' — ' . $label;
+    }
+
+    /**
+     * Human date label ("Jan 5, 2027") for a Y-m-d date string.
+     *
+     * @param string $date
+     * @return string
+     */
+    private function format_date_label( $date ) {
+        $ts = \strtotime( $date );
+        return $ts ? \date_i18n( 'M j, Y', $ts ) : $date;
+    }
+
+    /**
+     * A child's start_ts (0 if unset) — used only for display ordering.
+     *
+     * @param int $child_id
+     * @return int
+     */
+    private function start_ts( $child_id ) {
+        return (int) \get_post_meta( $child_id, $this->module->meta_key( 'start_ts' ), true );
+    }
+
+    /**
+     * Normalized, deduped list of the parent's desired offering-date rows.
+     * Each row: date (Y-m-d), start_time (H:i or ''), end_time (H:i or ''),
+     * label (string), capacity (int, 0 = use the parent's default). Rows with
+     * no parseable date are dropped; a duplicate date keeps the FIRST row.
+     *
+     * @param int $parent_id
+     * @return array<int,array>
+     */
+    private function get_offering_dates( $parent_id ) {
+        $raw = \get_post_meta( $parent_id, $this->module->meta_key( 'offering_dates' ), true );
+        if ( ! \is_array( $raw ) ) {
+            return [];
+        }
+
+        $out  = [];
+        $seen = [];
+        foreach ( $raw as $row ) {
+            if ( ! \is_array( $row ) ) {
+                continue;
+            }
+            $date = $this->normalize_date( (string) ( $row['date'] ?? '' ) );
+            if ( $date === '' || isset( $seen[ $date ] ) ) {
+                continue;
+            }
+            $seen[ $date ] = true;
+
+            $out[] = [
+                'date'       => $date,
+                'start_time' => $this->normalize_time( (string) ( $row['start_time'] ?? '' ) ),
+                'end_time'   => $this->normalize_time( (string) ( $row['end_time'] ?? '' ) ),
+                'label'      => \sanitize_text_field( (string) ( $row['label'] ?? '' ) ),
+                'capacity'   => \max( 0, (int) ( $row['capacity'] ?? 0 ) ),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Normalize a date to Y-m-d, or '' when unparseable.
+     *
+     * @param string $date
+     * @return string
+     */
+    private function normalize_date( $date ) {
+        $date = \trim( $date );
+        if ( $date === '' ) {
+            return '';
+        }
+        if ( \preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+            return $date;
+        }
+        $ts = \strtotime( $date );
+        return $ts ? \date( 'Y-m-d', $ts ) : '';
+    }
+
+    /**
+     * Normalize a time to H:i, or '' when unparseable/blank.
+     *
+     * @param string $time
+     * @return string
+     */
+    private function normalize_time( $time ) {
+        $time = \trim( $time );
+        if ( $time === '' ) {
+            return '';
+        }
+        if ( \preg_match( '/^\d{2}:\d{2}$/', $time ) ) {
+            return $time;
+        }
+        $ts = \strtotime( $time );
+        return $ts ? \date( 'H:i', $ts ) : '';
+    }
+}

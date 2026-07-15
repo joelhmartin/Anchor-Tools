@@ -32,6 +32,9 @@ class Module {
     /** @var Series|null Event-series taxonomy + archive (always loaded). */
     public $series = null;
 
+    /** @var Occurrences|null Parent→child offering-dates reconcile engine (Phase 2, Task 2.1; always loaded). */
+    public $occurrences = null;
+
     /** @var int[] Seat ids queued for a cancellation email this request. */
     private $pending_cancellation_emails = [];
 
@@ -45,6 +48,7 @@ class Module {
         require_once $dir . 'class-roster.php';
         require_once $dir . 'class-ticket-types.php';
         require_once $dir . 'class-series.php';
+        require_once $dir . 'class-occurrences.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
@@ -53,6 +57,10 @@ class Module {
         // Series taxonomy + archive (spec §3.3, §6) — free + paid; registers the
         // `event_series` taxonomy on `init` and renders the series landing page.
         $this->series = new Series( $this );
+        // Occurrences engine (Phase 2, Task 2.1) — free + paid; group-parent →
+        // child-event reconcile for "Pick-one offerings". No hooks of its own;
+        // driven explicitly (metabox wiring is a later task).
+        $this->occurrences = new Occurrences( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.
@@ -1099,6 +1107,17 @@ class Module {
             // alongside the explicit sanitize_external_embed() call in save_meta().
             'external_embed' => [ 'type' => 'string', 'show_in_rest' => false, 'sanitize_callback' => [ $this, 'sanitize_external_embed' ] ],
             'external_display_price' => [ 'type' => 'string', 'show_in_rest' => false ],
+            // Occurrences engine (Phase 2, Task 2.1) — parent/child group meta.
+            // Engine-owned: written only by Occurrences, never by save_meta()'s
+            // allow-list (see the $input array in save_meta() below — these five
+            // keys are intentionally absent from it, same pattern as
+            // linked_products/roster_sent/activity above). show_in_rest=false so
+            // REST/Gutenberg can never write them either.
+            'group_role' => [ 'type' => 'string', 'show_in_rest' => false ],
+            'group_id' => [ 'type' => 'integer', 'show_in_rest' => false ],
+            'offering_dates' => [ 'type' => 'array', 'show_in_rest' => false ],
+            'occurrence_key' => [ 'type' => 'string', 'show_in_rest' => false ],
+            'occurrence_closed' => [ 'type' => 'boolean', 'show_in_rest' => false ],
         ];
     }
 
@@ -1151,6 +1170,12 @@ class Module {
             'external_url' => '',
             'external_embed' => '',
             'external_display_price' => '',
+            // Occurrences engine (Phase 2, Task 2.1) — see get_meta_schema().
+            'group_role' => '',
+            'group_id' => 0,
+            'offering_dates' => [],
+            'occurrence_key' => '',
+            'occurrence_closed' => false,
         ];
     }
 
@@ -4547,6 +4572,30 @@ class Module {
             'cancelled' => __( 'Cancelled', 'anchor-schema' ),
             'draft' => __( 'Draft', 'anchor-schema' ),
         ];
+    }
+
+    /**
+     * Public wrapper around calculate_timestamps() (spec Phase 2, Task 2.1) so
+     * the Occurrences engine can derive a child occurrence's start_ts/end_ts
+     * using the exact same timezone/all-day logic as the classic per-event
+     * save path, without duplicating it.
+     *
+     * @param array $meta Meta array with start_date/end_date/start_time/end_time/timezone/all_day.
+     * @return array{start:int,end:int}
+     */
+    public function compute_timestamps( array $meta ) {
+        return $this->calculate_timestamps( $meta );
+    }
+
+    /**
+     * Public wrapper around calculate_status() (spec Phase 2, Task 2.1) — auto
+     * status derivation from start/end dates, for the Occurrences engine.
+     *
+     * @param array $meta
+     * @return string
+     */
+    public function compute_status( array $meta ) {
+        return $this->calculate_status( $meta );
     }
 
     private function calculate_status( $meta ) {

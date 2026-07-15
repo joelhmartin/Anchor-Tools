@@ -4171,8 +4171,12 @@ class Module {
         // Task 2.4 / Task 2.1 known quirk: a soft-closed group child is
         // excluded from its parent's live children()/siblings() set, but the
         // post itself is still directly reachable by URL. Its own
-        // registration_enabled meta cannot be trusted here — get_meta()'s
-        // ''->default quirk reads it back as true for a closed child — so
+        // registration_enabled meta is NOT used to detect closedness here —
+        // correction (review round): it actually reads back `false`
+        // (get_meta_defaults()'s own schema default, and also written
+        // explicitly by Occurrences::soft_close()), not `true` as an earlier
+        // comment here claimed. It's still not used, because relying on it
+        // would only work by coincidence of those two values agreeing — so
         // closedness is determined purely via the engine's own
         // children($parent,false) exclusion (never a meta read). A directly
         // visited closed child always gets this notice, never a booking form.
@@ -4301,11 +4305,15 @@ class Module {
     /**
      * Whether a post is a group child whose occurrence is currently
      * soft-closed (Task 2.4). Deliberately does NOT read the
-     * `registration_enabled`/`occurrence_closed` meta directly — a closed
-     * child's `registration_enabled` reads back as its schema default
-     * (`true`) via get_meta()'s ''->default quirk (Task 2.1 review note), so
-     * the only trustworthy signal is whether the engine's own
-     * children($parent_id, false) (live-only) set still includes this post.
+     * `registration_enabled`/`occurrence_closed` meta directly — correction
+     * (review round): a closed child's `registration_enabled` actually reads
+     * back `false` (get_meta_defaults()'s schema default, and also written
+     * explicitly by Occurrences::soft_close()), not `true` as a previous
+     * version of this comment claimed. It's still not read directly, because
+     * the only trustworthy signal for "closed" is the engine's own
+     * definition of it — whether children($parent_id, false) (live-only)
+     * still includes this post — not a meta value that merely happens to
+     * agree.
      *
      * @param int $post_id
      * @return bool
@@ -4398,7 +4406,14 @@ class Module {
             $output .= '</ul>';
         }
 
-        $output .= '<p class="anchor-event-other-dates-all"><a class="anchor-event-other-dates-link" href="' . esc_url( \get_permalink( $parent_id ) ) . '">' . esc_html__( 'See all dates', 'anchor-schema' ) . '</a></p>';
+        // FIX 2 (review round): a seated child stays published via soft-close
+        // even after its parent is trashed (Module::retire_children_on_parent_trash()),
+        // so the parent's own permalink can 404 in that state. Only link to it
+        // when the parent is still actually published; the sibling list above
+        // (if any) still renders either way.
+        if ( \get_post_status( $parent_id ) === 'publish' ) {
+            $output .= '<p class="anchor-event-other-dates-all"><a class="anchor-event-other-dates-link" href="' . esc_url( \get_permalink( $parent_id ) ) . '">' . esc_html__( 'See all dates', 'anchor-schema' ) . '</a></p>';
+        }
         $output .= '</section>';
 
         return $output;
@@ -4406,9 +4421,10 @@ class Module {
 
     /**
      * One row shared by render_choose_date_list() and render_sibling_dates()
-     * (Task 2.4): date/time label, an availability hint, and a
-     * register-or-details link to the occurrence's own page. Pure display —
-     * reads capacity through the existing seat-layer authority
+     * (Task 2.4): date/time, the occurrence's own label, an availability
+     * hint, and a register-or-details link to the occurrence's own page —
+     * the brief calls for "date + time + label" (FIX 1, review round). Pure
+     * display — reads capacity through the existing seat-layer authority
      * (Registrations::remaining_capacity()/get_registration_status()) exactly
      * like render_registration_form() already does, never Woo stock.
      *
@@ -4418,16 +4434,66 @@ class Module {
     private function render_choose_date_row( $event_id ) {
         $event_id = (int) $event_id;
         $meta     = $this->get_meta( $event_id );
+        $label    = $this->occurrence_label( $event_id, $meta );
 
         $output  = '<li class="anchor-event-choose-date-row">';
         $output .= '<a class="anchor-event-choose-date-link" href="' . esc_url( \get_permalink( $event_id ) ) . '">';
         $output .= '<span class="anchor-event-choose-date-date">' . esc_html( $this->format_date_time( $meta, true ) ) . '</span>';
+        if ( $label !== '' ) {
+            $output .= '<span class="anchor-event-choose-date-label">' . esc_html( $label ) . '</span>';
+        }
         $output .= '</a>';
         $output .= '<span class="anchor-event-choose-date-availability">' . esc_html( $this->choose_date_availability_hint( $event_id, $meta ) ) . '</span>';
         $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $event_id, $meta ) ) . '</a>';
         $output .= '</li>';
 
         return $output;
+    }
+
+    /**
+     * Occurrence-specific label for a choose-date row (Task 2.4 FIX 1 —
+     * review found the brief's "date + time + label" requirement unmet).
+     * Preference order:
+     *   1. A dedicated `label` occurrence meta value, if a future engine
+     *      variant ever stores the offering-dates row's label directly on
+     *      the child post (defensive — the current engine does not; see
+     *      Occurrences::child_title()).
+     *   2. The occurrence-specific suffix of the post title.
+     *      Occurrences::child_title() bakes the row's label (or a formatted
+     *      date) into the child's post_title as "<parent title> — <label or
+     *      date>"; strip the parent-title prefix to surface just that
+     *      suffix.
+     *   3. The formatted date/time, when neither of the above applies (e.g.
+     *      $event_id isn't a group child at all).
+     *
+     * @param int   $event_id
+     * @param array $meta get_meta( $event_id ) — passed in to avoid a
+     *                     redundant lookup by the (only) caller.
+     * @return string
+     */
+    private function occurrence_label( $event_id, array $meta ) {
+        $event_id = (int) $event_id;
+
+        $meta_label = \get_post_meta( $event_id, $this->meta_key( 'label' ), true );
+        if ( \is_string( $meta_label ) && $meta_label !== '' ) {
+            return $meta_label;
+        }
+
+        if ( $this->occurrences->is_group_child( $event_id ) ) {
+            $parent_id = $this->occurrences->parent_of( $event_id );
+            if ( $parent_id > 0 ) {
+                $prefix = (string) \get_the_title( $parent_id ) . ' — ';
+                $title  = (string) \get_the_title( $event_id );
+                if ( $prefix !== ' — ' && \strpos( $title, $prefix ) === 0 ) {
+                    $suffix = \substr( $title, \strlen( $prefix ) );
+                    if ( $suffix !== '' ) {
+                        return $suffix;
+                    }
+                }
+            }
+        }
+
+        return $this->format_date_time( $meta, true );
     }
 
     /**
@@ -5117,7 +5183,17 @@ class Module {
             return;
         }
         $settings = $this->get_settings();
-        $meta_query = [ $this->build_hide_clause() ];
+        // FIX 3 (review round): the plain CPT archive is unaware of Task 2.4's
+        // soft-close state — a soft-closed group child stays post_status=publish
+        // (its roster is preserved) so it was showing up here as a normal "View
+        // Event" card that dead-ends into render_registration_form()'s "no
+        // longer available" notice. Excluded the same way hide_from_archive
+        // already is (build_hide_clause()) — a meta_query addition, not a
+        // template-level filter. The series-taxonomy archive needs no such
+        // guard: Occurrences::reconcile() only assigns the series term to live
+        // children (see assign_series()), so a closed child was never tagged
+        // into a series archive in the first place.
+        $meta_query = [ $this->build_hide_clause(), $this->build_closed_clause() ];
         if ( ! empty( $settings['archive_hide_past'] ) ) {
             $meta_query[] = $this->build_visibility_clause();
         }
@@ -5628,6 +5704,30 @@ class Module {
             ],
             [
                 'key' => $this->meta_key( 'hide_from_archive' ),
+                'value' => '1',
+                'compare' => '!=',
+            ],
+        ];
+    }
+
+    /**
+     * Excludes soft-closed group children (Task 2.4 FIX 3, review round) —
+     * mirrors build_hide_clause()'s NOT-EXISTS-or-not-truthy shape so a
+     * post that has never had the `occurrence_closed` meta written (i.e.
+     * every non-grouped event, and every group child before its first
+     * soft-close) is unaffected.
+     *
+     * @return array
+     */
+    private function build_closed_clause() {
+        return [
+            'relation' => 'OR',
+            [
+                'key' => $this->meta_key( 'occurrence_closed' ),
+                'compare' => 'NOT EXISTS',
+            ],
+            [
+                'key' => $this->meta_key( 'occurrence_closed' ),
                 'value' => '1',
                 'compare' => '!=',
             ],

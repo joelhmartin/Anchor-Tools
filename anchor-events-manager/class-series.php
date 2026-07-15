@@ -149,8 +149,12 @@ class Series {
      * "choose a date" row instead, EXCLUDING soft-closed children entirely: a
      * closed child is checked purely via the engine's own
      * children($parent_id, false) (live-only) set, never a meta-value read
-     * (Task 2.1 known quirk — a closed child's own registration_enabled meta
-     * reads back as its schema default). A group PARENT represents itself.
+     * (Task 2.1 review note — correction, review round: a closed child's own
+     * registration_enabled meta actually reads back `false`, its schema
+     * default, not `true` as a previous version of this comment claimed; it's
+     * still not read directly here because the engine's own live-children set
+     * is the authoritative definition of "closed", not a meta value that
+     * merely happens to agree with it). A group PARENT represents itself.
      *
      * @param int $event_id
      * @return int Representative post id to render (0 = render nothing — a

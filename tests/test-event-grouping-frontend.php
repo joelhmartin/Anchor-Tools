@@ -256,4 +256,72 @@ class Test_Event_Grouping_Frontend extends Anchor_Events_TestCase {
 
 		$this->assertStringContainsString( 'No sessions found in this series.', $html );
 	}
+
+	/* ------------------------------------------------------------------
+	 * D. Review-round fixes: FIX 1 (occurrence label on date rows), FIX 2
+	 * (guard the sibling "See all dates" link against a trashed parent),
+	 * FIX 3 (plain archive excludes soft-closed children).
+	 * ------------------------------------------------------------------ */
+
+	public function test_choose_date_parent_picker_row_shows_occurrence_label() {
+		[ $parent_id ] = $this->make_offering( $this->three_rows() );
+
+		$html = $this->module()->render_choose_date_list( $parent_id );
+
+		// The brief requires date + time + label; each child's label is baked
+		// into its post_title by Occurrences::child_title() as "<parent
+		// title> — <label>" — assert the bare label text (not just the date)
+		// is surfaced on the row, wrapped in its own element.
+		$this->assertStringContainsString( '<span class="anchor-event-choose-date-label">Session A</span>', $html );
+		$this->assertStringContainsString( '<span class="anchor-event-choose-date-label">Session B</span>', $html );
+		$this->assertStringContainsString( '<span class="anchor-event-choose-date-label">Session C</span>', $html );
+	}
+
+	public function test_sibling_dates_row_also_shows_occurrence_label() {
+		[ , $live ] = $this->make_offering( $this->three_rows() );
+		[ $a ] = $live;
+
+		$html = $this->module()->render_sibling_dates( $a );
+
+		$this->assertStringContainsString( '<span class="anchor-event-choose-date-label">Session B</span>', $html );
+		$this->assertStringContainsString( '<span class="anchor-event-choose-date-label">Session C</span>', $html );
+	}
+
+	public function test_sibling_dates_omits_link_to_trashed_parent() {
+		[ $parent_id, $live ] = $this->make_offering( $this->three_rows() );
+		$seated = $live[0];
+		$this->make_seat( $seated ); // gives it a seat, so the parent-trash retirement soft-closes it instead of trashing it.
+
+		\wp_trash_post( $parent_id );
+
+		$this->assertSame( 'trash', \get_post_status( $parent_id ), 'The parent itself must actually be trashed for this scenario.' );
+		$this->assertSame( 'publish', \get_post_status( $seated ), 'A seated child must stay published (soft-closed, not trashed) when its parent is trashed.' );
+
+		$html = $this->module()->render_sibling_dates( $seated );
+
+		$this->assertStringNotContainsString( 'href="' . esc_url( \get_permalink( $parent_id ) ) . '"', $html, 'Must not link to the trashed parent (would 404).' );
+		$this->assertStringNotContainsString( 'See all dates', $html );
+	}
+
+	protected function go_to_plain_archive() {
+		$this->go_to( \get_post_type_archive_link( Module::CPT ) );
+	}
+
+	public function test_plain_archive_excludes_soft_closed_child() {
+		[ $parent_id, $live ] = $this->make_offering( $this->three_rows() );
+		$closed = $live[0];
+		$this->make_seat( $closed ); // give it a seat so retiring soft-closes (not trashes).
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', array_slice( $this->three_rows(), 1 ) );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( (bool) get_post_meta( $closed, '_anchor_event_occurrence_closed', true ) );
+		$this->assertSame( 'publish', get_post_status( $closed ), 'A soft-closed occurrence stays published — it must be excluded from the archive query itself, not rely on post_status.' );
+
+		$this->go_to_plain_archive();
+
+		global $wp_query;
+		$ids = \wp_list_pluck( $wp_query->posts, 'ID' );
+
+		$this->assertNotContains( $closed, $ids, 'A soft-closed occurrence must not appear as its own "View Event" card on the plain archive.' );
+	}
 }

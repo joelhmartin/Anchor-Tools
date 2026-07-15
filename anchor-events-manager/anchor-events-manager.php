@@ -950,6 +950,103 @@ class Module {
         ] );
     }
 
+    /**
+     * sanitize_callback for the `external_embed` meta key (Task 1.1+1.2 fix).
+     * This is the exposed surface: `external_embed` is show_in_rest=true and
+     * gated only by `edit_post`, so an editor could otherwise store raw
+     * <script>. Runs the value through an allowlisted wp_kses() so only
+     * third-party-embed-shaped markup survives.
+     *
+     * @param mixed  $meta_value
+     * @param string $meta_key
+     * @param string $object_type
+     * @return string
+     */
+    public function sanitize_external_embed( $meta_value, $meta_key, $object_type ) {
+        $value = \wp_kses( (string) $meta_value, $this->get_embed_allowed_html() );
+
+        // wp_kses() only filters attributes on an allowed tag — it doesn't strip
+        // a <script> tag's inline body. The allowlist permits <script> so
+        // legitimate third-party embed loaders (e.g. <script src="...widget.js"
+        // async>) keep working, but those never carry inline content, so any
+        // <script>...</script> with a non-empty body is injected code and is
+        // dropped entirely here. This is what actually closes the XSS surface.
+        $value = \preg_replace_callback(
+            '#<script\b([^>]*)>(.*?)</script\s*>#is',
+            function ( $matches ) {
+                return trim( $matches[2] ) === '' ? $matches[0] : '';
+            },
+            $value
+        );
+
+        return (string) $value;
+    }
+
+    /**
+     * Allowlisted tags/attributes for `external_embed` markup, filterable so
+     * sites can extend it for embed providers with unusual attributes.
+     *
+     * @return array wp_kses() allowed_html array.
+     */
+    private function get_embed_allowed_html() {
+        $default_allowed = [
+            'iframe' => [
+                'src' => true,
+                'width' => true,
+                'height' => true,
+                'frameborder' => true,
+                'allow' => true,
+                'allowfullscreen' => true,
+                'style' => true,
+                'title' => true,
+                'loading' => true,
+                'name' => true,
+                'sandbox' => true,
+                'referrerpolicy' => true,
+            ],
+            'script' => [
+                'src' => true,
+                'async' => true,
+                'defer' => true,
+                'type' => true,
+                'charset' => true,
+                'crossorigin' => true,
+            ],
+            'div' => [
+                'class' => true,
+                'id' => true,
+                'style' => true,
+                'data-*' => true,
+            ],
+            'span' => [
+                'class' => true,
+                'id' => true,
+                'style' => true,
+                'data-*' => true,
+            ],
+            'a' => [
+                'href' => true,
+                'target' => true,
+                'rel' => true,
+                'class' => true,
+                'id' => true,
+                'style' => true,
+            ],
+            'p' => [
+                'class' => true,
+            ],
+            'br' => [],
+        ];
+
+        /**
+         * Filter the wp_kses() allowlist used to sanitize the `external_embed`
+         * event meta on save (including REST writes).
+         *
+         * @param array $default_allowed wp_kses() allowed_html array.
+         */
+        return \apply_filters( 'anchor_events_embed_allowed_html', $default_allowed );
+    }
+
     private function get_meta_schema() {
         return [
             'start_date' => [ 'type' => 'string' ],
@@ -1011,7 +1108,10 @@ class Module {
             ] ] ],
             'registration_mode' => [ 'type' => 'string' ],
             'external_url' => [ 'type' => 'string' ],
-            'external_embed' => [ 'type' => 'string' ],
+            // Third-party embed markup (spec §Task 1.1+1.2). REST-writable, so it's
+            // run through an allowlisted wp_kses() on every write (including REST)
+            // to close the XSS surface — see sanitize_external_embed().
+            'external_embed' => [ 'type' => 'string', 'sanitize_callback' => [ $this, 'sanitize_external_embed' ] ],
             'external_display_price' => [ 'type' => 'string' ],
         ];
     }
@@ -3861,7 +3961,7 @@ class Module {
             return 'external';
         }
 
-        $managed_product = \get_post_meta( $event_id, '_anchor_event_managed_product', true );
+        $managed_product = \get_post_meta( $event_id, $this->meta_key( 'managed_product' ), true );
         if ( ! empty( $managed_product ) ) {
             return 'wc';
         }

@@ -144,4 +144,57 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 
 		$this->assertSame( 'free', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 	}
+
+	/**
+	 * `external_embed` is REST-writable, so its sanitize_callback must run on
+	 * the REST write path — exercised here via sanitize_meta(), which is what
+	 * WordPress's REST meta-fields controller calls before persisting. An
+	 * allowed <iframe> survives; a <script> tag and an onclick attribute (both
+	 * outside the allowlist) are stripped.
+	 */
+	public function test_external_embed_sanitizer_strips_disallowed_markup_via_rest_write_path() {
+		$event_id = $this->make_event();
+		$meta_key = $this->module()->meta_key( 'external_embed' );
+
+		$dirty = '<iframe src="https://example.com" width="600" height="400" allowfullscreen></iframe>'
+			. '<script>alert(1)</script>'
+			. '<div onclick="alert(2)">click me</div>';
+
+		// sanitize_meta() is the function WP's REST meta-fields controller calls
+		// before writing REST-supplied meta — this exercises the exact exposed
+		// surface the HIGH finding is about, without needing a full REST request.
+		$sanitized = sanitize_meta( $meta_key, $dirty, 'post', \Anchor\Events\Module::CPT );
+		update_post_meta( $event_id, $meta_key, $sanitized );
+
+		$stored = get_post_meta( $event_id, $meta_key, true );
+
+		$this->assertStringContainsString( '<iframe', $stored, 'Allowed <iframe> must survive sanitization.' );
+		$this->assertStringContainsString( 'src="https://example.com"', $stored );
+		$this->assertStringNotContainsString( '<script', $stored, 'Disallowed <script> must be stripped.' );
+		$this->assertStringNotContainsString( 'alert(1)', $stored );
+		$this->assertStringNotContainsString( 'onclick', $stored, 'Disallowed onclick attribute must be stripped.' );
+		// The div itself is allowed, but its onclick attribute is not — the
+		// stripped opening tag should remain as plain <div>.
+		$this->assertStringContainsString( '<div>click me</div>', $stored );
+	}
+
+	/** The `anchor_events_embed_allowed_html` filter can extend the allowlist (e.g. a custom tag). */
+	public function test_external_embed_sanitizer_honors_allowed_html_filter() {
+		$event_id = $this->make_event();
+		$meta_key = $this->module()->meta_key( 'external_embed' );
+
+		$allow_mark = function ( $allowed ) {
+			$allowed['mark'] = [ 'class' => true ];
+			return $allowed;
+		};
+		add_filter( 'anchor_events_embed_allowed_html', $allow_mark );
+
+		$dirty     = '<mark class="highlight">Sale!</mark><script>alert(1)</script>';
+		$sanitized = sanitize_meta( $meta_key, $dirty, 'post', \Anchor\Events\Module::CPT );
+
+		remove_filter( 'anchor_events_embed_allowed_html', $allow_mark );
+
+		$this->assertStringContainsString( '<mark class="highlight">Sale!</mark>', $sanitized, 'Tag added via the anchor_events_embed_allowed_html filter must survive.' );
+		$this->assertStringNotContainsString( '<script', $sanitized );
+	}
 }

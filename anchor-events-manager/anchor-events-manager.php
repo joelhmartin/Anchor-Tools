@@ -523,6 +523,21 @@ class Module {
         if ( empty( $headers ) ) {
             // Apply the configured event sender identity (From / Reply-To / BCC).
             $headers = $this->email_headers( [ 'Content-Type: text/html; charset=UTF-8' ] );
+        } else {
+            // Caller supplied headers explicitly (e.g. Bcc) — normalize to an array
+            // and make sure a text/html Content-Type is present exactly once,
+            // without dropping anything the caller passed in.
+            $headers = is_array( $headers ) ? $headers : preg_split( "/\r\n|\r|\n/", (string) $headers, -1, PREG_SPLIT_NO_EMPTY );
+            $has_content_type = false;
+            foreach ( $headers as $header_line ) {
+                if ( stripos( trim( (string) $header_line ), 'Content-Type:' ) === 0 ) {
+                    $has_content_type = true;
+                    break;
+                }
+            }
+            if ( ! $has_content_type ) {
+                array_unshift( $headers, 'Content-Type: text/html; charset=UTF-8' );
+            }
         }
         $sent = \wp_mail( $to, $subject, $html, $headers );
         if ( ! $sent ) {

@@ -214,6 +214,50 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 	}
 
 	/* ------------------------------------------------------------------
+	 * 6b. Matched-child editable field propagation (Fix 2.1a)
+	 * ------------------------------------------------------------------ */
+
+	public function test_matched_child_editable_fields_propagate_from_parent_row() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child_id  = $live[0]; // 2027-03-01, Session A, 09:00-11:00, capacity 10.
+		$seat_id   = $this->make_seat( $child_id );
+
+		$before_meta = $this->module()->get_meta( $child_id );
+		$before_key  = get_post_meta( $child_id, '_anchor_event_occurrence_key', true );
+
+		// Edit that row's start_time/capacity/label in the parent's offering_dates.
+		$rows                   = $this->two_rows();
+		$rows[0]['start_time']  = '14:00';
+		$rows[0]['capacity']    = 25;
+		$rows[0]['label']       = 'Session A (Updated)';
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $rows );
+
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertContains( $child_id, $live2, 'The SAME child id must be reused (matched, not recreated).' );
+
+		$after_meta = $this->module()->get_meta( $child_id );
+
+		// Non-identity per-occurrence fields propagated from the edited row.
+		$this->assertSame( '14:00', $after_meta['start_time'] );
+		$this->assertSame( 25, $after_meta['capacity'] );
+		$this->assertStringContainsString( 'Session A (Updated)', get_the_title( $child_id ) );
+		$this->assertGreaterThan( 0, $after_meta['start_ts'] );
+		$this->assertNotSame( $before_meta['start_ts'], $after_meta['start_ts'], 'start_ts must be recomputed from the new start_time.' );
+
+		// Date identity untouched.
+		$this->assertSame( $before_meta['start_date'], $after_meta['start_date'] );
+		$this->assertSame( '2027-03-01', $after_meta['start_date'] );
+		$this->assertSame( $before_key, get_post_meta( $child_id, '_anchor_event_occurrence_key', true ) );
+
+		// Seat preserved.
+		$result = $this->registrations()->query_seats( [ 'event_id' => $child_id, 'status' => 'all' ] );
+		$this->assertSame( 1, $result['total'] );
+		$this->assertSame( $seat_id, $result['items'][0]['id'] );
+	}
+
+	/* ------------------------------------------------------------------
 	 * 7. Series term shared by parent + live children
 	 * ------------------------------------------------------------------ */
 
@@ -246,5 +290,39 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 
 		// A non-child post has no siblings.
 		$this->assertSame( [], $this->occurrences()->siblings( $parent_id ) );
+	}
+
+	/* ------------------------------------------------------------------
+	 * 9. Revive respects parent's registration_enabled (Fix 2.1b)
+	 * ------------------------------------------------------------------ */
+
+	public function test_revive_respects_parent_registration_enabled_false() {
+		$parent_id = $this->make_parent( $this->two_rows(), [ 'registration_enabled' => false ] );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated );
+
+		// Drop its date -> soft-close (roster-preserving).
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( (bool) get_post_meta( $seated, '_anchor_event_occurrence_closed', true ) );
+
+		// Parent's registration stays disabled throughout.
+		update_post_meta( $parent_id, '_anchor_event_registration_enabled', false );
+
+		// Re-add the date -> revive the same child.
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->two_rows() );
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertContains( $seated, $live2, 'The SAME child id must be revived.' );
+		$this->assertFalse( (bool) get_post_meta( $seated, '_anchor_event_occurrence_closed', true ) );
+
+		// Read RAW meta (bypassing get_meta()'s '' -> default-true quirk) so a
+		// stored `false` isn't masked by the schema default.
+		$raw = get_post_meta( $seated, '_anchor_event_registration_enabled', true );
+		$this->assertFalse(
+			(bool) $raw,
+			'revive_if_closed() must not force registration_enabled=true; the parent-synced value (false) must win.'
+		);
 	}
 }

@@ -14,10 +14,15 @@
  * classic per-event admin save path already does for a single event.
  *
  * Field split (see class docblock sections below):
- *   - PER-OCCURRENCE meta ("owned" by the child once created; never touched by
- *     an ongoing reconcile of a still-desired date): start_date, end_date,
- *     start_time, end_time, start_ts, end_ts, capacity, status_mode, status.
- *     Also implicitly per-occurrence: seats/roster (REG_CPT rows keyed by
+ *   - PER-OCCURRENCE meta ("owned" by the child once created): start_date,
+ *     end_date, start_time, end_time, start_ts, end_ts, capacity,
+ *     status_mode, status. Of these, only start_date/end_date (the date
+ *     IDENTITY, via occurrence_key) and status/status_mode are frozen once
+ *     set — start_time/end_time/capacity are the row's EDITABLE fields and
+ *     ARE re-applied (parent-row-wins) on every reconcile of a still-desired
+ *     date, with start_ts/end_ts recomputed accordingly (see
+ *     apply_occurrence_editable_fields()). Also implicitly per-occurrence:
+ *     seats/roster (REG_CPT rows keyed by
  *     event id) and the managed WooCommerce product
  *     (`_anchor_event_managed_product`) — both are per-post already and are
  *     never copied from the parent.
@@ -66,10 +71,13 @@ class Occurrences {
 
     /**
      * Event meta keys (WITHOUT the `_anchor_event_` prefix) that belong to a
-     * single occurrence and are NEVER re-synced from the parent once a child
-     * exists — they are set once at creation (from the matched offering-dates
-     * row / the parent's then-current default) and are the child's own from
-     * then on.
+     * single occurrence and are NEVER copied verbatim from the parent's own
+     * meta of the same name (they're excluded from sync_shared_meta()).
+     * start_date/end_date (the date identity) and status/status_mode are set
+     * once at creation and then frozen; start_time/end_time/capacity are the
+     * offering-dates row's editable fields and ARE re-applied from the
+     * matched row on every reconcile (see apply_occurrence_editable_fields())
+     * — never blindly copied from the parent's own same-named meta.
      */
     const PER_OCCURRENCE_KEYS = [
         'start_date',
@@ -323,6 +331,12 @@ class Occurrences {
             'post_excerpt' => (string) \get_post_field( 'post_excerpt', $parent_id ),
         ] );
 
+        // Per-occurrence time/capacity (row override, else parent default),
+        // re-applied on every reconcile so editing a row's time/capacity/label
+        // propagates to the already-materialized child (spec Fix 2.1a). Date
+        // identity, status, and seats/roster are never touched here.
+        $this->apply_occurrence_editable_fields( $child_id, $row, $parent_meta );
+
         $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
         $this->sync_ticket_types( $parent_id, $child_id );
         $this->sync_product( $child_id, $parent_meta );
@@ -330,9 +344,11 @@ class Occurrences {
 
     /**
      * Write the PER_OCCURRENCE_KEYS meta on a freshly-created child: its own
-     * date/time (from the row), derived start_ts/end_ts + auto status (reusing
-     * the Module's own timestamp/status calculation), and its capacity (row
-     * override, else the parent's capacity default at creation time).
+     * date identity (from the row, set ONCE and never touched again), its
+     * editable time/capacity fields (delegated to
+     * apply_occurrence_editable_fields() so creation and later re-syncs share
+     * one code path), and derived start_ts/end_ts + auto status (reusing the
+     * Module's own timestamp/status calculation).
      *
      * @param int   $child_id
      * @param array $row
@@ -343,19 +359,67 @@ class Occurrences {
             return $this->module->meta_key( $k );
         };
 
+        // Date identity — set ONCE at creation; never re-applied by a later
+        // reconcile of a matched child (see apply_occurrence_editable_fields).
+        \update_post_meta( $child_id, $mk( 'start_date' ), $row['date'] );
+        \update_post_meta( $child_id, $mk( 'end_date' ), $row['date'] );
+
+        $this->apply_occurrence_editable_fields( $child_id, $row, $parent_meta );
+
+        $start_time = $row['start_time'];
+        $end_time   = $row['end_time'] !== '' ? $row['end_time'] : $start_time;
+        $occurrence_meta = [
+            'start_date' => $row['date'],
+            'end_date'   => $row['date'],
+            'start_time' => $start_time,
+            'end_time'   => $end_time,
+            'all_day'    => ! empty( $parent_meta['all_day'] ),
+            'timezone'   => (string) ( $parent_meta['timezone'] ?? '' ),
+        ];
+
+        \update_post_meta( $child_id, $mk( 'status_mode' ), 'auto' );
+        \update_post_meta( $child_id, $mk( 'status' ), $this->module->compute_status( $occurrence_meta ) );
+    }
+
+    /**
+     * Apply the row's NON-IDENTITY per-occurrence fields — start_time,
+     * end_time, and capacity (parent-row-wins) — to a child, and recompute
+     * start_ts/end_ts from those plus the child's OWN, immutable
+     * start_date/end_date. Called both at creation (create_child, via
+     * apply_occurrence_dates, after the date identity is set) and on every
+     * reconcile of an already-matched child (sync_child_from_parent), so
+     * editing a row's start_time/end_time/capacity/label later propagates to
+     * an already-materialized child instead of silently no-op'ing. The row's
+     * `label` itself is applied separately, via the post_title suffix
+     * (child_title()) — already re-applied on every sync. Never touches the
+     * child's date identity (occurrence_key/start_date/end_date), status, or
+     * seats/roster.
+     *
+     * @param int   $child_id
+     * @param array $row
+     * @param array $parent_meta
+     */
+    private function apply_occurrence_editable_fields( $child_id, array $row, array $parent_meta ) {
+        $mk = function ( $k ) {
+            return $this->module->meta_key( $k );
+        };
+
         $start_time = $row['start_time'];
         $end_time   = $row['end_time'] !== '' ? $row['end_time'] : $start_time;
         $capacity   = $row['capacity'] > 0 ? $row['capacity'] : (int) ( $parent_meta['capacity'] ?? 0 );
 
-        \update_post_meta( $child_id, $mk( 'start_date' ), $row['date'] );
-        \update_post_meta( $child_id, $mk( 'end_date' ), $row['date'] );
         \update_post_meta( $child_id, $mk( 'start_time' ), $start_time );
         \update_post_meta( $child_id, $mk( 'end_time' ), $end_time );
         \update_post_meta( $child_id, $mk( 'capacity' ), $capacity );
 
+        // Recompute from the row's (possibly changed) times + the child's OWN
+        // immutable date identity — never the row's date.
+        $start_date = (string) \get_post_meta( $child_id, $mk( 'start_date' ), true );
+        $end_date   = (string) \get_post_meta( $child_id, $mk( 'end_date' ), true );
+
         $occurrence_meta = [
-            'start_date' => $row['date'],
-            'end_date'   => $row['date'],
+            'start_date' => $start_date,
+            'end_date'   => $end_date,
             'start_time' => $start_time,
             'end_time'   => $end_time,
             'all_day'    => ! empty( $parent_meta['all_day'] ),
@@ -365,8 +429,6 @@ class Occurrences {
 
         \update_post_meta( $child_id, $mk( 'start_ts' ), $timestamps['start'] );
         \update_post_meta( $child_id, $mk( 'end_ts' ), $timestamps['end'] );
-        \update_post_meta( $child_id, $mk( 'status_mode' ), 'auto' );
-        \update_post_meta( $child_id, $mk( 'status' ), $this->module->compute_status( $occurrence_meta ) );
     }
 
     /**
@@ -478,7 +540,11 @@ class Occurrences {
     /**
      * Revive a previously soft-closed child whose occurrence_key has been
      * re-added to the parent's offering_dates: clear the closed flag and
-     * restore auto status/registration, WITHOUT touching its date or seats.
+     * restore auto status, WITHOUT touching its date or seats. Does NOT
+     * force registration_enabled — that's a SHARED field already re-synced
+     * from the parent by sync_child_from_parent() (called first, in
+     * reconcile()'s matched branch), so a parent with registration disabled
+     * stays disabled on the revived child instead of being force-enabled.
      * No-op if the child isn't currently closed.
      *
      * @param int $child_id
@@ -493,7 +559,6 @@ class Occurrences {
         $meta = $this->module->get_meta( $child_id );
 
         \update_post_meta( $child_id, $mk( 'occurrence_closed' ), false );
-        \update_post_meta( $child_id, $mk( 'registration_enabled' ), true );
         \update_post_meta( $child_id, $mk( 'status_mode' ), 'auto' );
         \update_post_meta( $child_id, $mk( 'status' ), $this->module->compute_status( $meta ) );
     }

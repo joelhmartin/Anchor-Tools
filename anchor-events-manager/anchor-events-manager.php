@@ -957,29 +957,20 @@ class Module {
      * <script>. Runs the value through an allowlisted wp_kses() so only
      * third-party-embed-shaped markup survives.
      *
+     * `script` is deliberately absent from the default allowlist — wp_kses()
+     * strips any tag not in the allowed set entirely (open tag, body, and
+     * close tag), so both inline `<script>alert(1)</script>` and loader tags
+     * like `<script src="...widget.js" async>` are removed cleanly with no
+     * extra regex needed. Sites that genuinely need script-based embeds can
+     * opt back in via the `anchor_events_embed_allowed_html` filter below.
+     *
      * @param mixed  $meta_value
      * @param string $meta_key
      * @param string $object_type
      * @return string
      */
     public function sanitize_external_embed( $meta_value, $meta_key, $object_type ) {
-        $value = \wp_kses( (string) $meta_value, $this->get_embed_allowed_html() );
-
-        // wp_kses() only filters attributes on an allowed tag — it doesn't strip
-        // a <script> tag's inline body. The allowlist permits <script> so
-        // legitimate third-party embed loaders (e.g. <script src="...widget.js"
-        // async>) keep working, but those never carry inline content, so any
-        // <script>...</script> with a non-empty body is injected code and is
-        // dropped entirely here. This is what actually closes the XSS surface.
-        $value = \preg_replace_callback(
-            '#<script\b([^>]*)>(.*?)</script\s*>#is',
-            function ( $matches ) {
-                return trim( $matches[2] ) === '' ? $matches[0] : '';
-            },
-            $value
-        );
-
-        return (string) $value;
+        return (string) \wp_kses( (string) $meta_value, $this->get_embed_allowed_html() );
     }
 
     /**
@@ -1003,14 +994,6 @@ class Module {
                 'name' => true,
                 'sandbox' => true,
                 'referrerpolicy' => true,
-            ],
-            'script' => [
-                'src' => true,
-                'async' => true,
-                'defer' => true,
-                'type' => true,
-                'charset' => true,
-                'crossorigin' => true,
             ],
             'div' => [
                 'class' => true,

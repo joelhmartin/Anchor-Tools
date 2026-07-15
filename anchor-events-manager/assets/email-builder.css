@@ -1,0 +1,61 @@
+.anchor-email-builder .anchor-email-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid #ccd0d4;
+    margin: 8px 0 16px;
+    flex-wrap: wrap;
+}
+.anchor-email-builder .anchor-email-tab {
+    background: #f0f0f1;
+    border: 1px solid #ccd0d4;
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.anchor-email-builder .anchor-email-tab.is-active {
+    background: #fff;
+    font-weight: 600;
+    position: relative;
+    top: 1px;
+}
+.anchor-email-builder .anchor-email-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+}
+@media (max-width: 1100px) {
+    .anchor-email-builder .anchor-email-columns { grid-template-columns: 1fr; }
+}
+.anchor-email-builder .anchor-email-token-palette {
+    margin-bottom: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+.anchor-email-builder .anchor-email-token-label {
+    font-size: 12px;
+    color: #666;
+    margin-right: 4px;
+}
+.anchor-email-builder .anchor-email-token {
+    font-family: Consolas, Monaco, monospace;
+    font-size: 11px;
+}
+.anchor-email-builder .anchor-monaco .CodeMirror,
+.anchor-email-builder .anchor-monaco-host {
+    border: 1px solid #ccd0d4;
+    border-radius: 4px;
+    min-height: 420px;
+}
+.anchor-email-builder .anchor-email-preview-frame {
+    display: block;
+    width: 100%;
+    min-height: 480px;
+    border: 1px solid #ccd0d4;
+    border-radius: 8px;
+    background: #fff;
+}

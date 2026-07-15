@@ -50,6 +50,19 @@ class Module {
     private $pending_cancellation_emails = [];
 
     /**
+     * Task 3.2 — transient (never persisted) substitution for
+     * resolve_email_template(), set only inside ajax_email_preview()'s
+     * try/finally. Lets "Preview with real data" render the admin's
+     * in-progress (unsaved) editor content through the exact same
+     * build_registration_email_html() renderer real sends use, without
+     * writing anything and without affecting any other request. Shape:
+     * [ 'type' => string, 'html' => string ] | null.
+     *
+     * @var array{type:string,html:string}|null
+     */
+    private $preview_template_override = null;
+
+    /**
      * Re-entrancy guard for persist_group_authoring()'s call into
      * Occurrences::reconcile() (Phase 2, Task 2.3). reconcile() creates/
      * updates/trashes CHILD event posts, each of which fires save_post_event
@@ -160,6 +173,10 @@ class Module {
         \add_action( 'admin_post_anchor_event_manager_lostpass', [ $this, 'handle_event_manager_lostpass' ] );
         \add_action( 'wp_ajax_anchor_events_calendar', [ $this, 'ajax_calendar' ] );
         \add_action( 'wp_ajax_nopriv_anchor_events_calendar', [ $this, 'ajax_calendar' ] );
+
+        // Task 3.2 — Emails builder metabox "Preview with real data". Admin-only
+        // (edit_post-capable), no nopriv counterpart — never sends anything.
+        \add_action( 'wp_ajax_anchor_events_email_preview', [ $this, 'ajax_email_preview' ] );
 
         \add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'handle_settings_update' ], 10, 2 );
         \add_action( 'before_delete_post', [ $this, 'clear_caches_on_delete' ] );
@@ -1278,6 +1295,18 @@ class Module {
             'normal',
             'default'
         );
+
+        // Task 3.2 — per-event lifecycle-email authoring UI (Monaco + token
+        // palette + live/real-data preview) over Task 3.1's template model.
+        // Full-width 'normal' box (editor + preview side-by-side needs room).
+        \add_meta_box(
+            'anchor_event_emails',
+            __( 'Emails', 'anchor-schema' ),
+            [ $this, 'render_email_builder_metabox' ],
+            self::CPT,
+            'normal',
+            'default'
+        );
     }
 
     /**
@@ -2082,6 +2111,378 @@ class Module {
         <?php
     }
 
+    /**
+     * Task 3.2 — token palette list for the Emails builder UI. The exact
+     * scalar + block token keys documented for admin-authored templates
+     * (spec §9 / Task 3.1's build_registration_email_html() $tokens map
+     * docblock), read directly from that map rather than re-derived: every
+     * name below is a real key in $tokens there. There is NO separate
+     * {footer} block token — the footer region only substitutes the
+     * {site_name} scalar (see default_email_shell()'s docblock) — so it is
+     * deliberately not offered here; a {footer} button would insert dead
+     * literal text.
+     *
+     * @return string[] Token names WITHOUT braces.
+     */
+    private function documented_email_tokens() {
+        return [
+            'event_title', 'event_date', 'event_time', 'venue', 'attendee_name',
+            'join_link', 'event_url', 'site_name', 'intro',
+            'detail_rows', 'seat_list', 'cta_button', 'header_image',
+        ];
+    }
+
+    /** Human labels for the Emails builder's outer (email-type) tab bar. */
+    private function email_type_labels() {
+        return [
+            'confirmation' => __( 'Confirmation', 'anchor-schema' ),
+            'reminder'     => __( 'Reminder', 'anchor-schema' ),
+            'cancellation' => __( 'Cancellation', 'anchor-schema' ),
+            'roster'       => __( 'Roster digest', 'anchor-schema' ),
+        ];
+    }
+
+    /**
+     * "Emails" metabox (Task 3.2). Four tabs (one per EMAIL_TEMPLATE_TYPES
+     * entry), each a Monaco HTML editor (Anchor_Monaco wrapper contract,
+     * cloned from anchor-blocks) pre-filled via resolve_email_template() —
+     * the per-event override if one exists, else the effective global/
+     * default template — plus a token-insert palette, a raw client-side
+     * live preview iframe, a "Preview with real data" AJAX button, and a
+     * "Reset to default" button. Persistence is save_email_templates(), a
+     * dedicated validated path called from save_meta() — never the generic
+     * $input allow-list loop.
+     *
+     * @param \WP_Post $post
+     */
+    public function render_email_builder_metabox( $post ) {
+        $labels = $this->email_type_labels();
+        $tokens = $this->documented_email_tokens();
+        ?>
+        <div class="anchor-email-builder">
+            <p class="description">
+                <?php echo esc_html__( 'Customize the HTML sent for this event only. Leave a tab untouched (or use "Reset to default") to keep using the site-wide template for that email type.', 'anchor-schema' ); ?>
+            </p>
+            <div class="anchor-email-tabs">
+                <?php $first = true; foreach ( $labels as $type => $label ) : ?>
+                    <button type="button" class="anchor-email-tab<?php echo $first ? ' is-active' : ''; ?>" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html( $label ); ?></button>
+                    <?php $first = false; ?>
+                <?php endforeach; ?>
+            </div>
+            <?php $first = true; foreach ( $labels as $type => $label ) : ?>
+                <div class="anchor-email-panel" data-email-type="<?php echo esc_attr( $type ); ?>"<?php echo $first ? '' : ' style="display:none;"'; ?>>
+                    <div class="anchor-email-columns">
+                        <div class="anchor-email-editor-col">
+                            <div class="anchor-email-token-palette">
+                                <span class="anchor-email-token-label"><?php echo esc_html__( 'Insert token:', 'anchor-schema' ); ?></span>
+                                <?php foreach ( $tokens as $token ) : ?>
+                                    <button type="button" class="button button-small anchor-email-token" data-token="<?php echo esc_attr( '{' . $token . '}' ); ?>">{<?php echo esc_html( $token ); ?>}</button>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( [
+                                [ 'id' => 'anchor_email_tpl_' . $type, 'label' => __( 'HTML', 'anchor-schema' ), 'lang' => 'html' ],
+                            ] ) ); ?>'>
+                                <label for="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" class="screen-reader-text"><?php echo esc_html( $label ); ?></label>
+                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code"><?php echo esc_textarea( $this->resolve_email_template( $type, $post->ID ) ); ?></textarea>
+                            </div>
+                            <p>
+                                <button type="button" class="button anchor-email-preview-real" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Preview with real data', 'anchor-schema' ); ?></button>
+                                <button type="button" class="button anchor-email-reset" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Reset to default', 'anchor-schema' ); ?></button>
+                            </p>
+                        </div>
+                        <div class="anchor-email-preview-col">
+                            <p class="description"><?php echo esc_html__( 'Live preview (tokens shown literally until you click "Preview with real data").', 'anchor-schema' ); ?></p>
+                            <iframe class="anchor-email-preview-frame" data-email-type="<?php echo esc_attr( $type ); ?>"></iframe>
+                        </div>
+                    </div>
+                </div>
+                <?php $first = false; ?>
+            <?php endforeach; ?>
+        </div>
+        <?php
+    }
+
+    /**
+     * Task 3.2 — dedicated, validated per-event email-template save path.
+     * Deliberately NOT part of save_meta()'s generic $input allow-list loop
+     * (matching the sanitize_external_embed()/persist_group_authoring()
+     * pattern already used for other engine/UI-owned fields): every posted
+     * value here goes through an email-safe wp_kses() allowlist before it is
+     * ever written, and content that matches the event's override-less
+     * resolved default (global option, else the default constant — i.e.
+     * resolve_email_template( $type, 0 )) is stored as '' instead of a
+     * redundant literal copy, exactly like clicking "Reset to default" and
+     * saving without further edits would produce. Called from save_meta()
+     * AFTER that method's own nonce + DOING_AUTOSAVE + edit_post cap checks —
+     * this method assumes the caller already gated the request.
+     *
+     * @param int $post_id
+     */
+    private function save_email_templates( $post_id ) {
+        foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
+            $field = 'anchor_email_tpl_' . $type;
+            if ( ! isset( $_POST[ $field ] ) ) {
+                continue; // Metabox not submitted for this type — leave existing meta untouched.
+            }
+            $raw      = (string) \wp_unslash( $_POST[ $field ] );
+            $fallback = $this->resolve_email_template( $type, 0 ); // global option -> default constant, no per-event lookup.
+
+            if ( \trim( $raw ) === \trim( $fallback ) ) {
+                // Unmodified (or explicitly reset by the JS "Reset to default"
+                // button, which writes the same fallback text into the editor
+                // before submit) — store no override.
+                \update_post_meta( $post_id, '_anchor_event_email_tpl_' . $type, '' );
+                continue;
+            }
+
+            \update_post_meta( $post_id, '_anchor_event_email_tpl_' . $type, $this->sanitize_email_template_html( $raw ) );
+        }
+    }
+
+    /**
+     * Email-safe wp_kses() sanitizer for per-event/global custom email
+     * template HTML (Task 3.2). Mirrors sanitize_external_embed()'s
+     * filterable-allowlist approach (Task 1.1). `{token}` braces are plain
+     * text to wp_kses and pass through untouched; `<script>` is off the
+     * default allowlist so it — and any other disallowed tag — is stripped
+     * entirely, open tag/body/close tag, with no extra regex needed.
+     *
+     * @param string $tpl
+     * @return string
+     */
+    private function sanitize_email_template_html( $tpl ) {
+        return (string) \wp_kses( (string) $tpl, $this->get_email_template_allowed_html() );
+    }
+
+    /**
+     * Allowlisted tags/attributes for custom email template HTML,
+     * filterable so sites can extend it for their own email markup needs.
+     * Covers the shell markup used by default_email_shell() (html/head/
+     * meta/title/body/table structure) plus common email-safe formatting
+     * tags. `style` is allowed on the block-level elements that carry it in
+     * the shipped shell — wp_kses further restricts the VALUE of any
+     * allowed `style` attribute to WordPress's safe-CSS property list
+     * (safecss_filter_attr()), so this is not an escape hatch for arbitrary
+     * CSS/JS.
+     *
+     * @return array wp_kses() allowed_html array.
+     */
+    private function get_email_template_allowed_html() {
+        $default_allowed = [
+            'html'   => [],
+            'head'   => [],
+            'meta'   => [ 'charset' => true, 'name' => true, 'content' => true ],
+            'title'  => [],
+            'body'   => [ 'style' => true ],
+            'table'  => [ 'role' => true, 'width' => true, 'cellpadding' => true, 'cellspacing' => true, 'style' => true, 'align' => true, 'border' => true ],
+            'thead'  => [],
+            'tbody'  => [],
+            'tr'     => [ 'style' => true ],
+            'td'     => [ 'style' => true, 'align' => true, 'valign' => true, 'width' => true, 'colspan' => true ],
+            'th'     => [ 'style' => true, 'align' => true, 'valign' => true, 'width' => true, 'colspan' => true ],
+            'div'    => [ 'style' => true, 'class' => true, 'id' => true, 'align' => true ],
+            'span'   => [ 'style' => true, 'class' => true, 'id' => true ],
+            'p'      => [ 'style' => true, 'class' => true, 'align' => true ],
+            'br'     => [],
+            'hr'     => [ 'style' => true ],
+            'h1'     => [ 'style' => true ],
+            'h2'     => [ 'style' => true ],
+            'h3'     => [ 'style' => true ],
+            'h4'     => [ 'style' => true ],
+            'a'      => [ 'href' => true, 'style' => true, 'target' => true, 'rel' => true, 'class' => true, 'id' => true ],
+            'img'    => [ 'src' => true, 'alt' => true, 'width' => true, 'height' => true, 'style' => true, 'class' => true ],
+            'strong' => [],
+            'em'     => [],
+            'b'      => [],
+            'i'      => [],
+            'ul'     => [ 'style' => true ],
+            'ol'     => [ 'style' => true ],
+            'li'     => [ 'style' => true ],
+        ];
+
+        /**
+         * Filter the wp_kses() allowlist used to sanitize per-event/global
+         * custom email template HTML on save (Task 3.2) and on the
+         * "Preview with real data" AJAX endpoint.
+         *
+         * @param array $default_allowed wp_kses() allowed_html array.
+         */
+        return \apply_filters( 'anchor_events_email_template_allowed_html', $default_allowed );
+    }
+
+    /**
+     * Task 3.2 — representative $ctx for the "Preview with real data" AJAX
+     * endpoint (ajax_email_preview()). Built the same way each live sender
+     * (send_registration_emails()/send_reminder_email()/
+     * send_cancellation_email()/send_roster_email()) builds its own $ctx —
+     * real event data, real settings copy — but substitutes a synthetic
+     * "Sample Attendee" seat when the event has no real confirmed
+     * registrant yet, so a brand-new event still previews something
+     * meaningful. Preview-only: never sends, never persists.
+     *
+     * @param int    $event_id
+     * @param string $type One of EMAIL_TEMPLATE_TYPES.
+     * @return array $ctx shape consumed by build_registration_email_html().
+     */
+    private function build_preview_ctx( $event_id, $type ) {
+        $event_id = (int) $event_id;
+        $settings = $this->get_settings();
+
+        $seat = null;
+        if ( $this->registrations ) {
+            $seats = $this->registrations->query_seats( [
+                'event_id' => $event_id,
+                'status'   => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+                'per_page' => 1,
+            ] );
+            $seat = $seats['items'][0] ?? null;
+        }
+        $sample_seat = $seat ?: [
+            'name'   => __( 'Sample Attendee', 'anchor-schema' ),
+            'email'  => 'sample@example.test',
+            'status' => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+        ];
+
+        $tokens = $this->email_tokens( [ 'event_id' => $event_id, 'seat' => $sample_seat ] );
+
+        switch ( $type ) {
+            case 'reminder':
+                $intro       = $this->expand_email_tokens( $settings['reminder_intro'], $tokens );
+                $detail_rows = [];
+                if ( $tokens['event_date'] !== '' ) { $detail_rows[] = [ 'label' => __( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ]; }
+                if ( $tokens['event_time'] !== '' ) { $detail_rows[] = [ 'label' => __( 'Time', 'anchor-schema' ), 'value' => $tokens['event_time'] ]; }
+                if ( $tokens['venue'] !== '' ) { $detail_rows[] = [ 'label' => __( 'Location', 'anchor-schema' ), 'value' => $tokens['venue'] ]; }
+                return [
+                    'event_id'      => $event_id,
+                    'name'          => (string) $sample_seat['name'],
+                    'status'        => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+                    'intro_message' => $intro,
+                    'detail_rows'   => $detail_rows,
+                    'cta_label'     => __( 'View event details', 'anchor-schema' ),
+                    'cta_url'       => $tokens['event_url'],
+                    'type'          => 'reminder',
+                ];
+
+            case 'cancellation':
+                $intro       = $this->expand_email_tokens( $settings['cancellation_intro'], $tokens );
+                $detail_rows = [ [ 'label' => __( 'Event', 'anchor-schema' ), 'value' => $tokens['event_title'] ] ];
+                if ( $tokens['event_date'] !== '' ) { $detail_rows[] = [ 'label' => __( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ]; }
+                return [
+                    'event_id'      => $event_id,
+                    'name'          => (string) $sample_seat['name'],
+                    'status'        => \Anchor\Events\Registrations::STATUS_CANCELLED,
+                    'intro_message' => $intro,
+                    'detail_rows'   => $detail_rows,
+                    'cta_label'     => '',
+                    'cta_url'       => '',
+                    'type'          => 'cancellation',
+                ];
+
+            case 'roster':
+                $summary   = $this->registrations ? $this->registrations->get_event_summary( $event_id ) : [];
+                $cap       = isset( $summary['capacity'] ) ? (int) $summary['capacity'] : 0;
+                $remaining = isset( $summary['remaining'] ) && (int) $summary['remaining'] >= 0
+                    ? (string) (int) $summary['remaining']
+                    : __( 'Unlimited', 'anchor-schema' );
+                $intro       = $this->expand_email_tokens( $settings['roster_intro'], $tokens );
+                $detail_rows = [
+                    [ 'label' => __( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ],
+                    [ 'label' => __( 'Venue', 'anchor-schema' ), 'value' => $tokens['venue'] ],
+                    [ 'label' => __( 'Capacity', 'anchor-schema' ), 'value' => $cap ? (string) $cap : __( 'Unlimited', 'anchor-schema' ) ],
+                    [ 'label' => __( 'Confirmed', 'anchor-schema' ), 'value' => (string) (int) ( $summary['confirmed'] ?? ( $seat ? 1 : 0 ) ) ],
+                    [ 'label' => __( 'Waitlist', 'anchor-schema' ), 'value' => (string) (int) ( $summary['waitlist'] ?? 0 ) ],
+                    [ 'label' => __( 'Remaining', 'anchor-schema' ), 'value' => $remaining ],
+                ];
+                $seat_list = [ $sample_seat['name'] . ' — ' . $sample_seat['email'] ];
+                return [
+                    'event_id'      => $event_id,
+                    'name'          => '',
+                    'status'        => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+                    'intro_message' => $intro,
+                    'detail_rows'   => $detail_rows,
+                    'seat_list'     => $seat_list,
+                    'cta_label'     => __( 'Open full roster', 'anchor-schema' ),
+                    'cta_url'       => ( $this->roster && \method_exists( $this->roster, 'roster_url' ) )
+                        ? $this->roster->roster_url( $event_id )
+                        : \get_permalink( $event_id ),
+                    'type'          => 'roster',
+                ];
+
+            default: // confirmation
+                $intro = $this->expand_email_tokens( (string) ( $settings['confirmation_message'] ?? '' ), $tokens );
+                return [
+                    'event_id'      => $event_id,
+                    'name'          => (string) $sample_seat['name'],
+                    'status'        => \Anchor\Events\Registrations::STATUS_CONFIRMED,
+                    'intro_message' => $intro,
+                    'guests'        => 0,
+                    'detail_rows'   => [],
+                    'seat_list'     => [],
+                    'cta_label'     => __( 'View event details', 'anchor-schema' ),
+                    'cta_url'       => $tokens['event_url'],
+                    'type'          => 'confirmation',
+                ];
+        }
+    }
+
+    /**
+     * Testable core of the "Preview with real data" AJAX endpoint (Task
+     * 3.2) — deliberately factored OUT of ajax_email_preview() so PHPUnit
+     * can exercise it directly without going through wp_send_json_success(),
+     * which only routes through the test suite's catchable wp_die() when
+     * wp_doing_ajax() is true; calling it outside a real admin-ajax.php
+     * request otherwise ends the whole PHP process in a bare `die;` (see
+     * wp_send_json()). Mirrors the same extraction Task 1.5 already used for
+     * handle_event_manager_save()/save_event_manager_fields().
+     *
+     * Renders the given (possibly unsaved) template HTML through
+     * build_registration_email_html() with a representative $ctx for this
+     * event+type, expanding real tokens. Never sends anything, never
+     * persists anything. $raw_template is run through the same email-safe
+     * wp_kses() allowlist as the real save path before it is substituted in
+     * — Task 3.1 already output-escapes every scalar token, so a malicious
+     * attendee name can't inject via this endpoint either, but the posted
+     * markup itself is still untrusted admin input.
+     *
+     * @param int    $event_id
+     * @param string $type         One of EMAIL_TEMPLATE_TYPES (falls back to 'confirmation').
+     * @param string $raw_template Unsanitized posted template HTML.
+     * @return string Rendered email HTML.
+     */
+    public function render_email_preview_html( $event_id, $type, $raw_template ) {
+        $type     = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
+        $template = $this->sanitize_email_template_html( (string) $raw_template );
+
+        $ctx = $this->build_preview_ctx( $event_id, $type );
+
+        $this->preview_template_override = [ 'type' => $type, 'html' => $template ];
+        try {
+            return $this->build_registration_email_html( $ctx );
+        } finally {
+            $this->preview_template_override = null;
+        }
+    }
+
+    /**
+     * AJAX: `wp_ajax_anchor_events_email_preview` — Task 3.2 "Preview with
+     * real data". Thin nonce+capability-gated wrapper around
+     * render_email_preview_html() (see that method's docblock for the
+     * rendering contract and why the two are split).
+     */
+    public function ajax_email_preview() {
+        \check_ajax_referer( 'anchor_events_email_preview', 'nonce' );
+
+        $event_id = isset( $_POST['event_id'] ) ? (int) $_POST['event_id'] : 0;
+        if ( ! \current_user_can( 'edit_post', $event_id ) ) {
+            \wp_send_json_error( 'forbidden', 403 );
+        }
+
+        $type         = isset( $_POST['type'] ) ? \sanitize_text_field( \wp_unslash( $_POST['type'] ) ) : 'confirmation';
+        $raw_template = isset( $_POST['template'] ) ? (string) \wp_unslash( $_POST['template'] ) : '';
+
+        \wp_send_json_success( [ 'html' => $this->render_email_preview_html( $event_id, $type, $raw_template ) ] );
+    }
+
     public function save_meta( $post_id ) {
         if ( ! isset( $_POST[ self::NONCE ] ) || ! \wp_verify_nonce( \sanitize_text_field( \wp_unslash( $_POST[ self::NONCE ] ) ), self::NONCE ) ) {
             return;
@@ -2176,6 +2577,12 @@ class Module {
         $this->persist_group_authoring( $post_id, $input['type'] );
 
         $this->maybe_append_registration_shortcode( $post_id, $input );
+
+        // Task 3.2 — per-event lifecycle-email template overrides. Deliberately
+        // NOT part of the generic $input allow-list above (see the property
+        // docblock on the meta keys' register_post_meta() call); this is the
+        // one dedicated, email-safe-kses-validated place they're written.
+        $this->save_email_templates( $post_id );
 
         $this->clear_caches();
     }
@@ -2642,6 +3049,29 @@ class Module {
         \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.4', true );
         // Ticket-tier repeatable table (spec §3.2).
         \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.0', true );
+
+        // Task 3.2 — Emails builder metabox (Monaco + token palette + preview),
+        // cloned from the anchor-blocks house pattern.
+        if ( \class_exists( 'Anchor_Preview_CSS' ) ) {
+            \Anchor_Preview_CSS::enqueue_for_admin();
+        }
+        \Anchor_Monaco::enqueue( self::CPT );
+        $edir = \plugin_dir_path( __FILE__ ) . 'assets/';
+        \wp_enqueue_style( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.css' ), [], (string) \filemtime( $edir . 'email-builder.css' ) );
+        \wp_enqueue_script( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview' ], (string) \filemtime( $edir . 'email-builder.js' ), true );
+
+        $post_id  = isset( $GLOBALS['post'] ) && $GLOBALS['post'] ? (int) $GLOBALS['post']->ID : 0;
+        $defaults = [];
+        foreach ( self::EMAIL_TEMPLATE_TYPES as $email_type ) {
+            $defaults[ $email_type ] = $this->resolve_email_template( $email_type, 0 );
+        }
+        \wp_localize_script( 'anchor-events-email-builder', 'AnchorEmailBuilder', [
+            'ajaxUrl'  => \admin_url( 'admin-ajax.php' ),
+            'nonce'    => \wp_create_nonce( 'anchor_events_email_preview' ),
+            'postId'   => $post_id,
+            'tokens'   => $this->documented_email_tokens(),
+            'defaults' => $defaults,
+        ] );
     }
 
     public function frontend_assets() {
@@ -6109,6 +6539,16 @@ ANCHOR_EVENTS_EMAIL_SHELL;
      */
     public function resolve_email_template( string $type, int $event_id ): string {
         $type = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
+
+        // Task 3.2 — "Preview with real data" substitution. Only ever set
+        // (and immediately unset in a finally block) inside
+        // ajax_email_preview(); every other caller — every real send,
+        // resolve_email_template( $type, 0 ) inside save_email_templates(),
+        // etc. — always sees this as null and this branch never runs.
+        if ( $this->preview_template_override !== null && $this->preview_template_override['type'] === $type ) {
+            return $this->preview_template_override['html'];
+        }
+
         if ( $event_id > 0 ) {
             $override = (string) \get_post_meta( $event_id, '_anchor_event_email_tpl_' . $type, true );
             if ( $override !== '' ) {

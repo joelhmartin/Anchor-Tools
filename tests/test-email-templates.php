@@ -437,6 +437,126 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 		}
 	}
 
+	/**
+	 * Organizer "seats released" notice — fired by WooCommerce::send_organizer_notice()
+	 * when $kind === 'released' (surplus active seats cancelled/refunded on
+	 * reconcile) — must resolve the 'cancellation' template type, mirroring
+	 * test_wc_confirmed_reconcile_uses_confirmation_type_for_both_notices above
+	 * but driving a refund transition instead of the initial 'processing' one.
+	 *
+	 * The attendee-facing cancellation/refund email (send_cancellation_email(),
+	 * queued on the live->refunded seat transition and flushed synchronously at
+	 * the end of reconcile_order(), see class-woocommerce.php ~line 1689) also
+	 * resolves 'cancellation', so every type captured during the refund pass is
+	 * expected to be 'cancellation' — same assertion shape as the confirmed test.
+	 */
+	public function test_wc_released_reconcile_uses_cancellation_type_for_organizer_notice() {
+		$this->require_wc();
+
+		$event_id = $this->make_event(
+			[ 'title' => 'WC Released Type Routing Event', 'capacity' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		$tiers        = $this->ticket_types()->get( $event_id );
+		$variation_id = $this->product_sync()->variation_for_tier( $event_id, $tiers[0]['id'] );
+		$variation    = wc_get_product( $variation_id );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( $variation );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'WC Released Attendee', 'email' => 'wc-released@example.test' ] ], true );
+
+		$order = new WC_Order();
+		$order->add_item( $item );
+		$order->set_billing_email( 'wc-released-buyer@example.test' );
+		$order->set_billing_first_name( 'Buyer' );
+		$order->calculate_totals( false );
+		$order->save();
+		$item_id = $item->get_id();
+
+		// Move to processing first — creates the confirmed seat via the normal
+		// 'confirmed' path (not under test here, so no capture needed yet).
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+
+		// Refund the single seat. Per the prior finding, WC's refund reconcile
+		// fires synchronously (wc_create_refund() -> 'woocommerce_order_refunded'
+		// -> on_order_refunded() -> reconcile_order() -> dispatch_emails() /
+		// flush_cancellation_emails()), so the capture filter must be attached
+		// BEFORE wc_create_refund() is called, not after.
+		$this->start_type_capture();
+		try {
+			$refund = wc_create_refund(
+				[
+					'order_id'   => $order->get_id(),
+					'amount'     => 10,
+					'line_items' => [
+						$item_id => [ 'qty' => 1, 'refund_total' => 10 ],
+					],
+				]
+			);
+			$this->assertNotWPError( $refund );
+			// Mirrors tests/test-reconcile.php's refund pattern: explicitly drive
+			// the refund reconcile rather than relying solely on the WC hook.
+			$this->woocommerce()->on_order_refunded( $order->get_id(), $refund->get_id() );
+		} finally {
+			$this->stop_type_capture();
+		}
+
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_REFUNDED ) );
+		$this->assertNotEmpty( $this->captured_types, 'Expected at least one lifecycle email to have been rendered for the released seat.' );
+		foreach ( $this->captured_types as $type ) {
+			$this->assertSame( 'cancellation', $type, 'The organizer seats-released notice (and any attendee refund notice) should resolve the cancellation template type.' );
+		}
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Task 3.1 hardening: scalar tokens in the token map used by
+	 * expand_email_tokens() inside build_registration_email_html() are
+	 * output-escaped so a custom (admin-authored) per-event/global template
+	 * cannot become a stored-injection vector via attendee/registration
+	 * input that is only sanitize_text_field()'d upstream (tags stripped,
+	 * but & and quotes left as literal characters).
+	 * ------------------------------------------------------------------- */
+
+	public function test_custom_template_scalar_tokens_are_output_escaped() {
+		$event_id = $this->make_event( [ 'title' => 'Escaping Test Event' ] );
+		update_post_meta(
+			$event_id,
+			'_anchor_event_email_tpl_confirmation',
+			'<div id="custom">Hi {attendee_name} <a href="{event_url}">link</a></div>'
+		);
+		try {
+			$malicious = '<b>x</b> & "q"';
+			$ctx       = [
+				'event_id'      => $event_id,
+				'name'          => $malicious,
+				'status'        => Registrations::STATUS_CONFIRMED,
+				'intro_message' => '',
+				'detail_rows'   => [],
+				'seat_list'     => [],
+				'cta_label'     => '',
+				'cta_url'       => '',
+				'type'          => 'confirmation',
+			];
+			$html = $this->module()->build_registration_email_html( $ctx );
+
+			// {attendee_name} must render entity-escaped, not as a live tag.
+			$this->assertStringNotContainsString( '<b>x</b>', $html );
+			$this->assertStringContainsString( esc_html( $malicious ), $html );
+
+			// {event_url} must be esc_url()'d.
+			$expected_url = esc_url( get_permalink( $event_id ) );
+			$this->assertStringContainsString( 'href="' . $expected_url . '"', $html );
+		} finally {
+			delete_post_meta( $event_id, '_anchor_event_email_tpl_confirmation' );
+		}
+	}
+
 	private function expected_confirmation() {
 		return <<<'EXPECTED_CONFIRMATION'
         <!DOCTYPE html>

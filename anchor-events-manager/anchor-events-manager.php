@@ -6029,9 +6029,16 @@ class Module {
      * via mechanical text surgery on the pre-refactor source) from the
      * original build_registration_email_html() ob_start() block. This is the
      * ultimate fallback for every type (resolve_email_template()). Scalar
-     * tokens: {event_title} {site_name} (both pre-escaped for HTML safety),
-     * {attendee_name} {status} {join_link} {event_date} {event_time}
-     * {venue} {event_url} {days_until} {event_id}. Block tokens (pre-rendered
+     * tokens: {event_title} {site_name} (both pre-escaped for HTML safety
+     * via esc_html() before this array is even built — see the $tokens map
+     * in build_registration_email_html()), {attendee_name} {status}
+     * {event_date} {event_time} {venue} {days_until} (esc_html()'d in that
+     * same map), {join_link} {event_url} (esc_url()'d), and {event_id}
+     * (numeric, safe as-is). Escaping happens there — Task 3.1 hardening —
+     * because $template can be an admin-authored custom override
+     * (resolve_email_template()) with these scalars placed directly in raw
+     * HTML, and attendee_name/venue trace back to sanitize_text_field()
+     * input (tags stripped, but not entity-escaped). Block tokens (pre-rendered
      * HTML fragments for the structured/conditional regions):
      * {header_image} {greeting} {intro} {guests_line} {waitlist_notice}
      * {detail_rows} {seat_list} {join_button} {cta_button}. There is no
@@ -6376,17 +6383,28 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             // computed locally rather than via email_tokens() so this method
             // never issues the extra get_event_summary() query that method's
             // 'remaining'/'seat_count' fallback would trigger on every send.
+            // Task 3.1 hardening (Medium finding): every scalar below is
+            // inserted via raw str_replace() into $template, which may be an
+            // admin-authored custom override (resolve_email_template()) with
+            // these tokens placed directly in HTML markup rather than inside
+            // one of the already-escaped block-token fragments. attendee_name
+            // and venue trace to user/registration input that is only
+            // sanitize_text_field()'d (tags stripped, but & and quotes are
+            // NOT entity-escaped) — output-escape every scalar here so no
+            // custom template can become a stored-injection vector. TEXT
+            // scalars use esc_html(); URL scalars use esc_url(). event_title/
+            // site_name were already pre-escaped above — not re-wrapped here.
             'event_id'      => (string) $event_id,
             'event_title'   => esc_html( $event_title ), // pre-escaped: used in <title>/<h1>.
             'site_name'     => esc_html( $site_name ),   // pre-escaped: used in the footer.
-            'attendee_name' => $name,
-            'status'        => $status,
-            'join_link'     => $join_url,
-            'event_url'     => $event_id ? \get_permalink( $event_id ) : \home_url(),
-            'event_date'    => $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts ) : '',
-            'event_time'    => ( $start_ts && empty( $event_meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts ) : '',
-            'venue'         => $venue,
-            'days_until'    => ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '',
+            'attendee_name' => esc_html( $name ),
+            'status'        => esc_html( $status ),
+            'join_link'     => esc_url( $join_url ),
+            'event_url'     => esc_url( $event_id ? \get_permalink( $event_id ) : \home_url() ),
+            'event_date'    => esc_html( $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts ) : '' ),
+            'event_time'    => esc_html( ( $start_ts && empty( $event_meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts ) : '' ),
+            'venue'         => esc_html( $venue ),
+            'days_until'    => esc_html( ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '' ),
 
             // Block tokens — pre-rendered HTML fragments for the structured/
             // conditional regions, built by the same code (byte-for-byte) that

@@ -100,3 +100,27 @@
 .anchor-event-gallery-clear{
   margin-left:8px;
 }
+
+.anchor-event-field-wide{
+  grid-column:1/-1;
+}
+
+.anchor-event-field textarea{
+  width:100%;
+}
+
+.anchor-event-sessions-table,
+.anchor-event-tickets-table{
+  margin-bottom:8px;
+}
+
+.anchor-event-sessions-table input[type="date"],
+.anchor-event-sessions-table input[type="time"],
+.anchor-event-sessions-table input[type="text"]{
+  width:100%;
+}
+
+.anchor-event-session-row td,
+.anchor-event-tickets-table td{
+  vertical-align:middle;
+}

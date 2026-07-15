@@ -72,6 +72,9 @@ class Roster {
         \add_action( 'admin_post_anchor_roster_add', [ $this, 'handle_add' ] );
         \add_action( 'admin_post_anchor_roster_edit', [ $this, 'handle_edit' ] );
         \add_action( 'admin_post_anchor_roster_cancel', [ $this, 'handle_cancel' ] );
+
+        // Organizer roster digest — manual trigger (Task 4).
+        \add_action( 'admin_post_anchor_events_send_roster', [ $this, 'handle_send_roster' ] );
     }
 
     /* ---------------------------------------------------------------------
@@ -218,6 +221,16 @@ class Roster {
         echo '<a class="button" href="' . \esc_url( $all ) . '">' . \esc_html__( 'Export CSV (all statuses)', 'anchor-schema' ) . '</a> ';
         echo '<a class="button" href="' . \esc_url( $act ) . '">' . \esc_html__( 'Export CSV (confirmed only)', 'anchor-schema' ) . '</a>';
         echo '</p>';
+
+        if ( self::current_user_can_manage() ) {
+            $send_url = \admin_url( 'admin-post.php' );
+            echo '<form method="post" action="' . \esc_url( $send_url ) . '" style="display:inline-block;margin-top:4px;">';
+            echo '<input type="hidden" name="action" value="anchor_events_send_roster" />';
+            echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
+            \wp_nonce_field( 'anchor_events_send_roster_' . $event_id );
+            \submit_button( \__( 'Send roster to organizer', 'anchor-schema' ), 'secondary', 'submit', false );
+            echo '</form>';
+        }
     }
 
     private function render_add_form( $event_id ) {
@@ -226,7 +239,7 @@ class Roster {
         echo '<p class="description">' . \esc_html__( 'Manually added seats honor capacity (waitlisted if full and the waitlist is enabled, otherwise blocked). Use “Allow over capacity” to deliberately exceed the event capacity and tier quota (recorded in the seat history).', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:24px;">';
         echo '<input type="hidden" name="action" value="anchor_roster_add" />';
-        echo '<input type="hidden" name="event_id" value="' . $event_id . '" />';
+        echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
         \wp_nonce_field( 'anchor_roster_add_' . $event_id );
         echo '<table class="form-table"><tbody>';
         $this->text_row( 'roster_name', \__( 'Name', 'anchor-schema' ), '', true );
@@ -256,11 +269,11 @@ class Roster {
         $is_woo = ( $source === 'woocommerce' );
 
         echo '<div class="anchor-roster-edit" style="margin:12px 0;padding:12px 16px;background:#fff;border:1px solid #2271b1;border-radius:3px;">';
-        echo '<h2 style="margin-top:0;">' . \esc_html__( 'Edit seat', 'anchor-schema' ) . ' #' . $seat_id . '</h2>';
+        echo '<h2 style="margin-top:0;">' . \esc_html__( 'Edit seat', 'anchor-schema' ) . ' #' . \esc_html( (string) $seat_id ) . '</h2>';
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '">';
         echo '<input type="hidden" name="action" value="anchor_roster_edit" />';
-        echo '<input type="hidden" name="event_id" value="' . $event_id . '" />';
-        echo '<input type="hidden" name="seat_id" value="' . $seat_id . '" />';
+        echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
+        echo '<input type="hidden" name="seat_id" value="' . \esc_attr( (string) $seat_id ) . '" />';
         \wp_nonce_field( 'anchor_roster_edit_' . $event_id );
         echo '<table class="form-table"><tbody>';
         $this->text_row( 'roster_name', \__( 'Name', 'anchor-schema' ), $name );
@@ -502,6 +515,24 @@ class Roster {
             $this->redirect( $event_id, 'success', \__( 'Seat cancelled.', 'anchor-schema' ) );
         }
         $this->redirect( $event_id, 'error', \__( 'Could not cancel this seat.', 'anchor-schema' ) );
+    }
+
+    /** Send the organizer roster digest for a specific event (Task 4). */
+    public function handle_send_roster() {
+        if ( ! self::current_user_can_manage() ) {
+            \wp_die( \esc_html__( 'You do not have permission to do this.', 'anchor-schema' ) );
+        }
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        \check_admin_referer( 'anchor_events_send_roster_' . $event_id );
+        if ( \get_post_type( $event_id ) !== Module::CPT ) {
+            \wp_die( \esc_html__( 'Invalid event.', 'anchor-schema' ) );
+        }
+        $ok = $this->module->send_roster_email( $event_id );
+        if ( $ok ) {
+            $this->redirect( $event_id, 'success', \__( 'Roster sent to organizer.', 'anchor-schema' ) );
+        } else {
+            $this->redirect( $event_id, 'error', \__( 'Roster could not be sent — check the error log.', 'anchor-schema' ) );
+        }
     }
 
     /** Capability + nonce gate shared by every manual action. */

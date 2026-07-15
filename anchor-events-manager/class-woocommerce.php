@@ -1682,6 +1682,11 @@ class WooCommerce {
             } finally {
                 $this->release_order_lock( $order_id, $have_lock );
             }
+            // v1.1: flush queued attendee cancellation/refund emails now that
+            // both the event-level seat lock and the order-level named lock have
+            // been released.  Shutdown still covers correctness; this call is
+            // best-effort promptness only.
+            $this->module->flush_cancellation_emails();
         } finally {
             unset( self::$in_flight[ $order_id ] );
         }
@@ -2815,18 +2820,7 @@ class WooCommerce {
      * @return string
      */
     private function organizer_recipient( $event_id, array $settings ) {
-        $meta  = $this->module->get_meta( (int) $event_id );
-        $email = '';
-        if ( ! empty( $meta['organizer_email'] ) ) {
-            $email = \sanitize_email( (string) $meta['organizer_email'] );
-        }
-        if ( $email === '' && ! empty( $settings['organizer_email'] ) ) {
-            $email = \sanitize_email( (string) $settings['organizer_email'] );
-        }
-        if ( $email === '' ) {
-            $email = \sanitize_email( (string) \get_option( 'admin_email' ) );
-        }
-        return (string) $email;
+        return $this->module->resolve_organizer_email( (int) $event_id, $settings );
     }
 
     /* ---------------------------------------------------------------------

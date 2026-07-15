@@ -3125,8 +3125,15 @@ class Module {
      *                                            BEFORE this save writes any meta — see
      *                                            sanitize_event_type_input().
      * @return array The sanitized meta values written (mainly useful to callers/tests).
+     *
+     * Deliberately non-public (Task 1.5 review fix): this writes post meta
+     * given only an int post ID with no capability/nonce re-check of its
+     * own — those guards live in the real public entry point,
+     * handle_event_manager_save(), which is the only caller. Making this
+     * `protected` keeps it unit-testable via ReflectionMethod::setAccessible()
+     * without exposing an unguarded direct meta-write on the public API.
      */
-    public function save_event_manager_fields( $saved_id, $start_date, $current_registration_mode ) {
+    protected function save_event_manager_fields( $saved_id, $start_date, $current_registration_mode ) {
         $input = [
             'start_date' => $start_date,
             'end_date' => $this->sanitize_date( $_POST['anchor_event_end_date'] ?? '' ),

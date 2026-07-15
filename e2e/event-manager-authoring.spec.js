@@ -1,4 +1,6 @@
 // @ts-check
+const fs = require('fs');
+const path = require('path');
 const { test, expect } = require('@playwright/test');
 
 /**
@@ -8,20 +10,32 @@ const { test, expect } = require('@playwright/test');
  * coverage in e2e/event-authoring.spec.js, but driven through the public
  * [event_manager] shortcode form instead of the block editor.
  *
- * PREREQUISITE (not created by this spec, matching this repo's e2e
- * convention of seeding fixtures out-of-band — see bin/e2e-seed.sh): a
- * published page at the slug below whose content is exactly the
- * `[event_manager]` shortcode. One-time setup on a fresh wp-env:
- *
- *   wp post create --post_type=page --post_status=publish \
- *     --post_title="Event Manager" --post_name=event-manager \
- *     --post_content='[event_manager]'
+ * FIXTURE: bin/e2e-seed.sh creates (or reuses) a published page at slug
+ * `event-manager` whose content is exactly the `[event_manager]` shortcode,
+ * and writes its permalink into e2e/.seed.json as `manager_page_url` — same
+ * pattern as the paid-event fixture e2e/purchase.spec.js consumes. Run the
+ * seed before this spec: `npm run env:seed`.
  *
  * Requires wp-env running (npm run wp-env start) and a logged-in user with
  * edit_others_posts (the wp-env default admin qualifies).
  */
 
-const MANAGER_PAGE_PATH = '/event-manager/';
+const SEED_PATH = path.join(__dirname, '.seed.json');
+
+/** @type {{ manager_page_id: number, manager_page_url: string }} */
+let seed;
+let MANAGER_PAGE_PATH;
+
+test.beforeAll(() => {
+  if (!fs.existsSync(SEED_PATH)) {
+    throw new Error(
+      `Missing ${SEED_PATH}. Run the seed first: npm run env:seed`
+    );
+  }
+  seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8'));
+  expect(seed.manager_page_url, 'seed manager_page_url').toBeTruthy();
+  MANAGER_PAGE_PATH = new URL(seed.manager_page_url).pathname;
+});
 
 /** Log into wp-admin using the wp-env default credentials (admin / password). */
 async function wpAdminLogin(page) {
@@ -40,11 +54,11 @@ async function wpAdminLogin(page) {
 test.beforeEach(async ({ page }) => {
   await wpAdminLogin(page);
   const resp = await page.goto(MANAGER_PAGE_PATH);
-  test.skip(
-    !resp || resp.status() === 404,
-    `PENDING-HUMAN: no page found at ${MANAGER_PAGE_PATH} — create one with content "[event_manager]" ` +
-      '(see file header for the exact wp-cli command), then re-run this spec.'
-  );
+  expect(
+    resp && resp.status() !== 404,
+    `Expected the seeded manager-form page at ${MANAGER_PAGE_PATH} to exist ` +
+      '(bin/e2e-seed.sh should have created it — re-run `npm run env:seed`).'
+  ).toBeTruthy();
 });
 
 test('front-end manager form: type/registration-mode choosers toggle the conditional sections', async ({ page }) => {

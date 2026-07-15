@@ -69,7 +69,15 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # ---------------------------------------------------------------------------
 # Fresh test site: set the whole option (no other keys to preserve). `patch
 # update modules` would fail because the nested key doesn't exist yet.
-wp option update anchor_schema_settings '{"modules":{"events_manager":true}}' --format=json --autoload=no >/dev/null
+#
+# Re-run guard: WP's update_option() returns false (a no-op, not a failure)
+# when the new value is identical to the stored one, and `wp option update`
+# treats that false as an error — breaking idempotency on a second `env:seed`
+# run against an already-seeded site. Skip the write when the value already
+# matches so the script stays idempotent.
+if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != '{"modules":{"events_manager":true}}' ]; then
+  wp option update anchor_schema_settings '{"modules":{"events_manager":true}}' --format=json --autoload=no >/dev/null
+fi
 log "Events module enabled."
 
 # ---------------------------------------------------------------------------
@@ -171,12 +179,36 @@ if [ "${PRODUCT_ID}" = "0" ] || [ -z "${PRODUCT_ID}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Create (or reuse) the published page hosting the front-end [event_manager]
+# shortcode form. e2e/event-manager-authoring.spec.js (Task 1.5) drives the
+# manager-form UI/save round-trip through this page; without it the spec has
+# no fixture to navigate to. Idempotent, same idiom as the event fixture above.
+# ---------------------------------------------------------------------------
+MANAGER_PAGE_SLUG="event-manager"
+MANAGER_PAGE_ID="$(wp post list --post_type=page --post_status=any --name="${MANAGER_PAGE_SLUG}" --field=ID --posts_per_page=1 2>/dev/null | head -n1 || true)"
+if [ -z "${MANAGER_PAGE_ID}" ]; then
+  MANAGER_PAGE_ID="$(wp post create \
+    --post_type=page \
+    --post_status=publish \
+    --post_title='Event Manager' \
+    --post_name="${MANAGER_PAGE_SLUG}" \
+    --post_content='[event_manager]' \
+    --porcelain)"
+  log "Created event-manager page #${MANAGER_PAGE_ID}."
+else
+  wp post update "${MANAGER_PAGE_ID}" --post_status=publish --post_content='[event_manager]' >/dev/null
+  log "Reusing event-manager page #${MANAGER_PAGE_ID}."
+fi
+
+# ---------------------------------------------------------------------------
 # Emit the fixture for the Playwright specs (written via WP so the path is
 # correct inside the container; the bind mount surfaces it on the host).
 # ---------------------------------------------------------------------------
 EVENT_URL="$(wp eval 'echo get_permalink('"${EVENT_ID}"');')"
+MANAGER_PAGE_URL="$(wp eval 'echo get_permalink('"${MANAGER_PAGE_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"'], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
+log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 log "Seed complete."

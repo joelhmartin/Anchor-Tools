@@ -25,6 +25,12 @@
  * by WP's test suite and thrown as a WPDieException — proving the nonce check
  * was not weakened by the Task 1.5 refactor.
  *
+ * save_event_manager_fields() is `protected` (Task 1.5 review fix — it writes
+ * meta given only an int with no capability/nonce re-check of its own, so it
+ * must not be a public entry point). These tests reach it via
+ * ReflectionMethod::setAccessible() rather than a direct call, since the real
+ * public entry point's success path ends in exit() and can't be driven here.
+ *
  * @package Anchor\Events\Tests
  */
 
@@ -47,6 +53,21 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 	public function tear_down() {
 		unset( $_POST );
 		parent::tear_down();
+	}
+
+	/**
+	 * Invoke the now-protected Module::save_event_manager_fields() via
+	 * Reflection. This is the front-end save path minus the exit()-terminated
+	 * request wrapper (nonce check, capability check, wp_insert_post()/
+	 * wp_update_post()) — see the class docblock.
+	 *
+	 * @return array The sanitized meta values written, same as the method's
+	 *               own return value.
+	 */
+	private function call_save_event_manager_fields( $saved_id, $start_date, $current_registration_mode ) {
+		$method = new ReflectionMethod( Module::class, 'save_event_manager_fields' );
+		$method->setAccessible( true );
+		return $method->invoke( $this->module(), $saved_id, $start_date, $current_registration_mode );
 	}
 
 	/**
@@ -79,7 +100,7 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 
 		$_POST = $this->post_payload();
 		$fallback = $this->module()->registration_mode( $event_id );
-		$this->module()->save_event_manager_fields( $event_id, '2026-08-01', $fallback );
+		$this->call_save_event_manager_fields( $event_id, '2026-08-01', $fallback );
 
 		$this->assertSame( 'multisession', get_post_meta( $event_id, '_anchor_event_type', true ) );
 		$this->assertSame( 'external', get_post_meta( $event_id, '_anchor_event_registration_mode', true ) );
@@ -93,7 +114,7 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 
 		$_POST = $this->post_payload();
 		$fallback = $this->module()->registration_mode( $event_id );
-		$this->module()->save_event_manager_fields( $event_id, '2026-08-01', $fallback );
+		$this->call_save_event_manager_fields( $event_id, '2026-08-01', $fallback );
 
 		$stored = get_post_meta( $event_id, '_anchor_event_sessions', true );
 
@@ -120,7 +141,7 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 
 		$_POST = $this->post_payload();
 		$fallback = $this->module()->registration_mode( $event_id );
-		$this->module()->save_event_manager_fields( $event_id, '2026-08-01', $fallback );
+		$this->call_save_event_manager_fields( $event_id, '2026-08-01', $fallback );
 
 		$stored = get_post_meta( $event_id, '_anchor_event_external_embed', true );
 
@@ -135,7 +156,7 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 
 		$_POST = $this->post_payload( [ 'anchor_event_type' => 'not-a-real-type' ] );
 		$fallback = $this->module()->registration_mode( $event_id );
-		$this->module()->save_event_manager_fields( $event_id, '2026-08-01', $fallback );
+		$this->call_save_event_manager_fields( $event_id, '2026-08-01', $fallback );
 
 		$this->assertSame( 'single', get_post_meta( $event_id, '_anchor_event_type', true ) );
 	}
@@ -151,7 +172,7 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 
 		$_POST = $this->post_payload( [ 'anchor_event_registration_mode' => 'not-a-real-mode' ] );
 		$fallback = $this->module()->registration_mode( $event_id );
-		$this->module()->save_event_manager_fields( $event_id, '2026-08-01', $fallback );
+		$this->call_save_event_manager_fields( $event_id, '2026-08-01', $fallback );
 
 		$this->assertSame( 'wc', get_post_meta( $event_id, '_anchor_event_registration_mode', true ) );
 	}

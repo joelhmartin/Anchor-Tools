@@ -1,0 +1,147 @@
+<?php
+/**
+ * Event-type / registration-mode data model tests (no WooCommerce required).
+ *
+ * Covers Task 1.1+1.2: the `type`, `sessions`, `registration_mode`,
+ * `external_url`, `external_embed`, `external_display_price` meta keys, the
+ * `event_type()` / `registration_mode()` / `get_sessions()` resolvers, and the
+ * one-time back-compat migration that derives `registration_mode` for
+ * pre-existing events.
+ *
+ * @package Anchor\Events\Tests
+ */
+
+/**
+ * @group event-model
+ */
+class Test_Event_Model extends Anchor_Events_TestCase {
+
+	/** event_type() falls back to 'single' when no type meta is stored. */
+	public function test_event_type_defaults_to_single() {
+		$event_id = $this->make_event();
+
+		$this->assertSame( 'single', $this->module()->event_type( $event_id ) );
+	}
+
+	/** event_type() returns the stored value when it's a valid enum member. */
+	public function test_event_type_returns_stored_valid_value() {
+		$event_id = $this->make_event( [ 'type' => 'multisession' ] );
+
+		$this->assertSame( 'multisession', $this->module()->event_type( $event_id ) );
+	}
+
+	/** event_type() falls back to 'single' for a garbage stored value. */
+	public function test_event_type_falls_back_on_garbage_value() {
+		$event_id = $this->make_event( [ 'type' => 'not-a-real-type' ] );
+
+		$this->assertSame( 'single', $this->module()->event_type( $event_id ) );
+	}
+
+	/** registration_mode(): an explicit stored mode wins over derivation. */
+	public function test_registration_mode_explicit_stored_value_wins() {
+		// Would derive to 'wc' via a paid active tier, but the stored mode wins.
+		$event_id = $this->make_event(
+			[ 'registration_mode' => 'external' ],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$this->assertSame( 'external', $this->module()->registration_mode( $event_id ) );
+	}
+
+	/** registration_mode(): legacy registration_type=external derives 'external'. */
+	public function test_registration_mode_derives_external_from_legacy_type() {
+		$event_id = $this->make_event( [ 'registration_type' => 'external' ] );
+
+		$this->assertSame( 'external', $this->module()->registration_mode( $event_id ) );
+	}
+
+	/** registration_mode(): a non-empty legacy registration_url also derives 'external'. */
+	public function test_registration_mode_derives_external_from_legacy_url() {
+		$event_id = $this->make_event( [ 'registration_url' => 'https://example.test/register' ] );
+
+		$this->assertSame( 'external', $this->module()->registration_mode( $event_id ) );
+	}
+
+	/** registration_mode(): an active paid tier derives 'wc'. */
+	public function test_registration_mode_derives_wc_from_paid_active_tier() {
+		$event_id = $this->make_event(
+			[],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$this->assertSame( 'wc', $this->module()->registration_mode( $event_id ) );
+	}
+
+	/** registration_mode(): a managed product also derives 'wc'. */
+	public function test_registration_mode_derives_wc_from_managed_product() {
+		$event_id = $this->make_event( [ 'managed_product' => 123 ] );
+
+		$this->assertSame( 'wc', $this->module()->registration_mode( $event_id ) );
+	}
+
+	/** registration_mode(): a plain event (no legacy signal, no paid tier) derives 'free'. */
+	public function test_registration_mode_derives_free_for_plain_event() {
+		$event_id = $this->make_event();
+
+		$this->assertSame( 'free', $this->module()->registration_mode( $event_id ) );
+	}
+
+	/** get_sessions() returns [] when no sessions meta is stored. */
+	public function test_get_sessions_empty_when_unset() {
+		$event_id = $this->make_event();
+
+		$this->assertSame( [], $this->module()->get_sessions( $event_id ) );
+	}
+
+	/** get_sessions() normalizes stored rows and drops rows with an empty date. */
+	public function test_get_sessions_normalizes_and_drops_empty_dates() {
+		$event_id = $this->make_event(
+			[
+				'sessions' => [
+					[ 'date' => '2026-08-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day 1' ],
+					[ 'date' => '', 'start_time' => '11:00', 'end_time' => '12:00', 'label' => 'Bad row' ],
+				],
+			]
+		);
+
+		$sessions = $this->module()->get_sessions( $event_id );
+
+		$this->assertCount( 1, $sessions );
+		$this->assertSame(
+			[
+				'date'       => '2026-08-01',
+				'start_time' => '09:00',
+				'end_time'   => '10:00',
+				'label'      => 'Day 1',
+			],
+			$sessions[0]
+		);
+	}
+
+	/** The one-time migration derives registration_mode for legacy events and is idempotent. */
+	public function test_migration_derives_registration_mode_for_legacy_events_and_is_idempotent() {
+		delete_option( 'anchor_events_regmode_migrated' );
+
+		$external_id = $this->make_event( [ 'registration_type' => 'external' ] );
+		$wc_id       = $this->make_event(
+			[],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		// Neither event has an explicit registration_mode yet.
+		$this->assertSame( '', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
+		$this->assertSame( '', get_post_meta( $wc_id, '_anchor_event_registration_mode', true ) );
+
+		$this->module()->migrate_registration_mode();
+
+		$this->assertSame( 'external', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
+		$this->assertSame( 'wc', get_post_meta( $wc_id, '_anchor_event_registration_mode', true ) );
+		$this->assertTrue( (bool) get_option( 'anchor_events_regmode_migrated' ) );
+
+		// Idempotency: hand-edit a migrated value, re-run, and confirm it's left untouched.
+		update_post_meta( $external_id, '_anchor_event_registration_mode', 'free' );
+		$this->module()->migrate_registration_mode();
+
+		$this->assertSame( 'free', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
+	}
+}

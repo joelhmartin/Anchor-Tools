@@ -828,6 +828,10 @@ class Module {
     }
 
     public function register_meta() {
+        // One-time back-compat migration (Task 1.1+1.2): derives registration_mode
+        // for events that predate the key. Flag-guarded, safe on every init.
+        $this->migrate_registration_mode();
+
         // Protected (underscore-prefixed) meta keys require an explicit auth_callback
         // for REST writes, otherwise Gutenberg's meta save path fails with
         // "not allowed to edit the _anchor_event_* custom field" on publish.
@@ -989,6 +993,26 @@ class Module {
             // Per-event activity roll-up: data-model reserved only; NOT written/surfaced
             // in MVP (activity log deferred — spec §2, §11.6).
             'activity' => [ 'type' => 'array', 'show_in_rest' => false ],
+            // Event-type / registration-mode data model (Task 1.1+1.2). No UI yet —
+            // metabox/form wiring lands in a later task; save_meta() does NOT write
+            // these keys yet.
+            'type' => [ 'type' => 'string' ],
+            'sessions' => [ 'type' => 'array', 'show_in_rest' => [ 'schema' => [
+                'type' => 'array',
+                'items' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'date' => [ 'type' => 'string' ],
+                        'start_time' => [ 'type' => 'string' ],
+                        'end_time' => [ 'type' => 'string' ],
+                        'label' => [ 'type' => 'string' ],
+                    ],
+                ],
+            ] ] ],
+            'registration_mode' => [ 'type' => 'string' ],
+            'external_url' => [ 'type' => 'string' ],
+            'external_embed' => [ 'type' => 'string' ],
+            'external_display_price' => [ 'type' => 'string' ],
         ];
     }
 
@@ -1035,6 +1059,12 @@ class Module {
             'reminder_offsets' => '',
             'roster_sent' => 0,
             'activity' => [],
+            'type' => 'single',
+            'sessions' => [],
+            'registration_mode' => 'free',
+            'external_url' => '',
+            'external_embed' => '',
+            'external_display_price' => '',
         ];
     }
 
@@ -3778,6 +3808,129 @@ class Module {
 
     public function meta_key( $key ) {
         return '_anchor_event_' . $key;
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       Event-type / registration-mode data model (Task 1.1+1.2).
+       Read-only resolvers + a one-time back-compat migration. No UI yet —
+       the metabox/form that writes these keys lands in a later task, so
+       save_meta() intentionally does NOT include them in its allow-list.
+       ══════════════════════════════════════════════════════════ */
+
+    /**
+     * The event's type, defaulting to 'single' when unset or invalid.
+     *
+     * @param int $event_id
+     * @return string One of single|multisession|offering|recurring.
+     */
+    public function event_type( $event_id ) {
+        $valid = [ 'single', 'multisession', 'offering', 'recurring' ];
+        $stored = (string) \get_post_meta( $event_id, $this->meta_key( 'type' ), true );
+        return in_array( $stored, $valid, true ) ? $stored : 'single';
+    }
+
+    /**
+     * The event's registration mode. An explicit stored value wins; otherwise
+     * it's derived from legacy signals for back-compat with pre-existing events
+     * (mirrors the logic in migrate_registration_mode()).
+     *
+     * @param int $event_id
+     * @return string One of wc|free|external.
+     */
+    public function registration_mode( $event_id ) {
+        $valid = [ 'wc', 'free', 'external' ];
+        $stored = (string) \get_post_meta( $event_id, $this->meta_key( 'registration_mode' ), true );
+        if ( in_array( $stored, $valid, true ) ) {
+            return $stored;
+        }
+        return $this->derive_registration_mode( $event_id );
+    }
+
+    /**
+     * Derive a registration mode for an event that has no explicit stored
+     * value, from legacy registration-type/url meta and ticket-tier/product
+     * signals. Shared by registration_mode() and migrate_registration_mode().
+     *
+     * @param int $event_id
+     * @return string One of wc|free|external.
+     */
+    private function derive_registration_mode( $event_id ) {
+        $legacy_type = \get_post_meta( $event_id, $this->meta_key( 'registration_type' ), true );
+        $legacy_url = \get_post_meta( $event_id, $this->meta_key( 'registration_url' ), true );
+        if ( $legacy_type === 'external' || ! empty( $legacy_url ) ) {
+            return 'external';
+        }
+
+        $managed_product = \get_post_meta( $event_id, '_anchor_event_managed_product', true );
+        if ( ! empty( $managed_product ) ) {
+            return 'wc';
+        }
+        foreach ( $this->ticket_types->get( $event_id ) as $tier ) {
+            if ( ! empty( $tier['active'] ) && (float) $tier['price'] > 0 ) {
+                return 'wc';
+            }
+        }
+
+        return 'free';
+    }
+
+    /**
+     * Normalized session rows for a multisession event.
+     *
+     * @param int $event_id
+     * @return array<int,array{date:string,start_time:string,end_time:string,label:string}>
+     */
+    public function get_sessions( $event_id ) {
+        $stored = \get_post_meta( $event_id, $this->meta_key( 'sessions' ), true );
+        if ( ! is_array( $stored ) ) {
+            return [];
+        }
+
+        $sessions = [];
+        foreach ( $stored as $row ) {
+            if ( ! is_array( $row ) ) {
+                continue;
+            }
+            $date = \sanitize_text_field( $row['date'] ?? '' );
+            if ( $date === '' ) {
+                continue;
+            }
+            $sessions[] = [
+                'date' => $date,
+                'start_time' => \sanitize_text_field( $row['start_time'] ?? '' ),
+                'end_time' => \sanitize_text_field( $row['end_time'] ?? '' ),
+                'label' => \sanitize_text_field( $row['label'] ?? '' ),
+            ];
+        }
+        return $sessions;
+    }
+
+    /**
+     * One-time back-compat migration: derives and persists registration_mode
+     * for events that predate the key. Idempotent — guarded by an option flag,
+     * so it's safe to call on every request.
+     */
+    public function migrate_registration_mode() {
+        if ( \get_option( 'anchor_events_regmode_migrated' ) ) {
+            return;
+        }
+
+        $query = new \WP_Query( [
+            'post_type' => self::CPT,
+            'post_status' => 'any',
+            'fields' => 'ids',
+            'posts_per_page' => -1,
+            'no_found_rows' => true,
+            'meta_query' => [
+                [ 'key' => $this->meta_key( 'registration_mode' ), 'compare' => 'NOT EXISTS' ],
+            ],
+        ] );
+
+        foreach ( $query->posts as $event_id ) {
+            \update_post_meta( $event_id, $this->meta_key( 'registration_mode' ), $this->derive_registration_mode( $event_id ) );
+        }
+
+        \update_option( 'anchor_events_regmode_migrated', true, false );
     }
 
     /**

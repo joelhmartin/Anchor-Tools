@@ -531,4 +531,99 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $result['total'] );
 		$this->assertSame( $seat_id, $result['items'][0]['id'] );
 	}
+
+	/* ------------------------------------------------------------------
+	 * Trashing the group PARENT retires its children (spec Phase 2, Task
+	 * 2.3 FIX 2). wp_trash_post() fires NO save_post hook, so without a
+	 * dedicated wp_trash_post handler a trashed parent's children would be
+	 * left live, published, and bookable while pointing at a trashed
+	 * parent. Module::retire_children_on_parent_trash() (hooked on the
+	 * generic `wp_trash_post` action) is exercised here via the real
+	 * wp_trash_post() call — not by invoking Occurrences::retire_all_children()
+	 * directly — so the hook wiring itself is under test, not just the
+	 * engine method.
+	 * ------------------------------------------------------------------ */
+
+	/** Trashing a group parent soft-closes a seated child (roster preserved) and trashes an unseated one. */
+	public function test_trashing_group_parent_retires_children_roster_safely() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		[ $seated, $unseated ] = $live;
+
+		$seat_id = $this->make_seat( $seated, [ 'name' => 'Jane Roe', 'email' => 'jane@example.test' ] );
+
+		wp_trash_post( $parent_id );
+
+		$this->assertSame( 'trash', get_post_status( $parent_id ) );
+
+		// Seated child: soft-closed, NOT trashed, roster still queryable.
+		$this->assertNotSame( 'trash', get_post_status( $seated ), 'A seated child must be soft-closed, not trashed, when its parent is trashed.' );
+		$this->assertTrue( (bool) get_post_meta( $seated, '_anchor_event_occurrence_closed', true ) );
+		$this->assertSame( 'cancelled', get_post_meta( $seated, '_anchor_event_status', true ) );
+		$this->assertFalse( (bool) get_post_meta( $seated, '_anchor_event_registration_enabled', true ) );
+		$result = $this->registrations()->query_seats( [ 'event_id' => $seated, 'status' => 'all' ] );
+		$this->assertSame( 1, $result['total'], 'The seat must still be queryable — roster preserved.' );
+		$this->assertSame( $seat_id, $result['items'][0]['id'] );
+
+		// Unseated child: trashed.
+		$this->assertSame( 'trash', get_post_status( $unseated ), 'An unseated child must be trashed when its parent is trashed.' );
+	}
+
+	/**
+	 * No infinite recursion: retire_all_children() trashes the unseated
+	 * child via wp_trash_post(), which re-fires the SAME `wp_trash_post`
+	 * action for that child post id. Proven by asserting the total event
+	 * post count is unchanged (trashing only flips post_status on EXISTING
+	 * posts, it never creates new ones) and that the handler completes
+	 * synchronously without hitting PHP's call-stack/time limits.
+	 */
+	public function test_trashing_group_parent_does_not_recurse() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$this->make_seat( $live[0] ); // one seated, one unseated child.
+
+		// NOTE: post_status='any' deliberately EXCLUDES 'trash' (core behavior),
+		// so both counts here explicitly include it — the point is proving no
+		// NEW posts appear, trashed or not.
+		$before = count( get_posts( [
+			'post_type'      => Module::CPT,
+			'post_status'    => [ 'publish', 'draft', 'pending', 'private', 'future', 'trash' ],
+			'posts_per_page' => -1,
+			'fields'         => 'ids',
+			'no_found_rows'  => true,
+		] ) );
+
+		wp_trash_post( $parent_id );
+
+		$after = get_posts( [
+			'post_type'      => Module::CPT,
+			'post_status'    => [ 'publish', 'draft', 'pending', 'private', 'future', 'trash' ],
+			'posts_per_page' => -1,
+			'fields'         => 'ids',
+			'no_found_rows'  => true,
+		] );
+
+		$this->assertCount( $before, $after, 'Trashing the parent must only change post_status on existing posts — a recursive retire would not create new posts either, but would loop/hang instead of completing.' );
+	}
+
+	/** Trashing an ordinary event that was never a group parent has nothing to retire (no-op, no error). */
+	public function test_trashing_ordinary_event_is_a_retirement_noop() {
+		$event_id = $this->make_event();
+
+		wp_trash_post( $event_id );
+
+		$this->assertSame( 'trash', get_post_status( $event_id ) );
+	}
+
+	/** Trashing a group CHILD directly (not its parent) must not touch any sibling. */
+	public function test_trashing_a_child_directly_does_not_retire_siblings() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		[ $child_a, $child_b ] = $live;
+
+		wp_trash_post( $child_a );
+
+		$this->assertSame( 'trash', get_post_status( $child_a ) );
+		$this->assertNotSame( 'trash', get_post_status( $child_b ), 'A child is never itself a group parent, so trashing it must not retire its sibling.' );
+	}
 }

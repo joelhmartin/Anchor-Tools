@@ -188,6 +188,31 @@ class Occurrences {
     }
 
     /**
+     * Retire EVERY existing child of a group parent (live + soft-closed),
+     * roster-safe: soft-close a child that has any seats (preserve roster),
+     * trash a child with none. Used when the parent itself is being trashed
+     * (spec Phase 2, Task 2.3 FIX 2) — wp_trash_post() does not fire
+     * save_post, so reconcile() never runs on its own in that case; see
+     * Module::retire_children_on_parent_trash(), which calls this. Reuses
+     * the exact same retire_child() roster-safety logic reconcile() already
+     * applies to a no-longer-desired occurrence rather than reimplementing
+     * it. Deliberately does NOT touch the parent's own meta
+     * (offering_dates/recurrence/group_role) or call set_group_role() — the
+     * parent is being trashed, not reconciled.
+     *
+     * @param int $parent_id
+     */
+    public function retire_all_children( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 ) {
+            return;
+        }
+        foreach ( $this->existing_children_map( $parent_id ) as $child_id ) {
+            $this->retire_child( (int) $child_id );
+        }
+    }
+
+    /**
      * Live (or all, incl. soft-closed) child post ids for a group parent.
      * Never includes trashed children.
      *

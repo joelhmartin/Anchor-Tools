@@ -54,6 +54,19 @@ class Module {
      */
     private static $reconciling = false;
 
+    /**
+     * Re-entrancy guard for retire_children_on_parent_trash() (Phase 2, Task
+     * 2.3 FIX 2). Occurrences::retire_all_children() may itself call
+     * wp_trash_post() on an unseated child, which re-fires the generic
+     * `wp_trash_post` action for that child post id. A child is never itself
+     * a group parent (is_group_parent() already guards on that), so the
+     * re-entrant call is a no-op regardless — this static flag is
+     * defense-in-depth, matching the self::$reconciling pattern above.
+     *
+     * @var bool
+     */
+    private static $retiring_children = false;
+
     public function __construct() {
         self::$instance = $this;
 
@@ -139,6 +152,13 @@ class Module {
 
         \add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'handle_settings_update' ], 10, 2 );
         \add_action( 'before_delete_post', [ $this, 'clear_caches_on_delete' ] );
+        // Group-parent trash retirement (Phase 2, Task 2.3 FIX 2). wp_trash_post()
+        // fires for every post type on this one generic action — never a
+        // CPT-specific save hook — so a group parent's children are never left
+        // orphaned whether the parent is trashed via the classic admin list,
+        // the front-end manager form's delete handler, or any other caller of
+        // wp_trash_post(). See retire_children_on_parent_trash()'s docblock.
+        \add_action( 'wp_trash_post', [ $this, 'retire_children_on_parent_trash' ] );
 
         // SEO: Add canonical URL for calendar month parameter pages
         \add_action( 'wp_head', [ $this, 'output_canonical_url' ], 1 );
@@ -1482,10 +1502,16 @@ class Module {
      * Recurring Schedule rule builder (data-when-type="recurring") shared by
      * the classic metabox and, offering-only, the front-end manager form
      * (Phase 2, Task 2.3). $include_recurrence is false for the front-end
-     * form — the recurrence builder is admin-only per spec; a front-end user
-     * who selects "Recurring schedule" simply gets no way to complete the
-     * rule, so persist_group_authoring()'s validation guard always blocks
-     * reconcile() for it there (documented, not a bug).
+     * form — the recurrence builder is admin-only per spec. The front-end
+     * form's own Event Type <select> (render_event_manager_form()) never
+     * offers "Recurring schedule" as a choosable option, so a front-end user
+     * can no longer land in the $include_recurrence===false /
+     * $event_type==='recurring' state via their own action; it's still
+     * reachable when an event that's ALREADY recurring (created/edited in the
+     * admin) is opened in the front-end form. In that case this renders a
+     * read-only note plus hidden inputs that round-trip the stored rule
+     * unchanged (Task 2.3 FIX 1) — never the interactive builder, and never a
+     * silently-blank state that would clobber the rule on save.
      *
      * @param int  $post_id
      * @param array $meta   get_meta()'s result for $post_id (or defaults for a new post).
@@ -1605,6 +1631,25 @@ class Module {
                 </div>
             </div>
             <p class="description anchor-event-recurrence-terminator-hint"><?php echo esc_html__( 'Required: set "End after" OR "...or end by date" (or both — whichever is hit first wins). Without one of these, saving will NOT generate any events.', 'anchor-schema' ); ?></p>
+        </div>
+        <?php elseif ( $event_type === 'recurring' ) : ?>
+        <div class="anchor-event-section anchor-event-conditional" data-when-type="recurring">
+            <h3><?php echo esc_html__( 'Recurring Schedule', 'anchor-schema' ); ?></h3>
+            <div class="notice notice-info inline anchor-event-recurrence-admin-only">
+                <p><?php echo esc_html__( 'Recurring events are managed in the admin. This event\'s recurrence rule is preserved and cannot be edited from this form.', 'anchor-schema' ); ?></p>
+            </div>
+            <?php
+            // Round-trip the stored rule unchanged via hidden inputs (never the
+            // interactive builder) so saving this form again does not
+            // overwrite it with a blank/incomplete rule — sanitize_recurrence_rule()
+            // reads these back into the exact same shape it was stored in.
+            foreach ( [ 'freq', 'interval', 'start_time', 'end_time', 'capacity', 'count', 'until' ] as $rk ) :
+            ?>
+                <input type="hidden" name="anchor_event_recurrence[<?php echo esc_attr( $rk ); ?>]" value="<?php echo esc_attr( $recurrence[ $rk ] ); ?>" />
+            <?php endforeach; ?>
+            <?php foreach ( (array) $recurrence['weekdays'] as $wd ) : ?>
+                <input type="hidden" name="anchor_event_recurrence[weekdays][]" value="<?php echo esc_attr( $wd ); ?>" />
+            <?php endforeach; ?>
         </div>
         <?php endif;
     }
@@ -2353,6 +2398,53 @@ class Module {
         } finally {
             \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
             self::$reconciling = false;
+        }
+    }
+
+    /**
+     * Hooked on the generic `wp_trash_post` action (spec Phase 2, Task 2.3
+     * FIX 2). Trashing a group PARENT event does NOT fire save_post — so
+     * persist_group_authoring()/reconcile() never run for it — which would
+     * otherwise leave its children live, published, and bookable while
+     * pointing at a trashed parent. When the trashed post IS a group parent,
+     * every existing child is retired via Occurrences::retire_all_children():
+     * roster-safe, reusing the SAME soft-close/trash logic reconcile()
+     * already applies to a no-longer-desired occurrence rather than
+     * reimplementing it — a seated child is soft-closed (roster preserved), an
+     * unseated one is trashed.
+     *
+     * RE-ENTRANCY: retire_all_children() may itself call wp_trash_post() on an
+     * unseated child, re-firing this action for that child post id. A child
+     * is never itself a group parent (is_group_parent() checks
+     * group_role === 'parent'; a child's group_role is 'child'), so that
+     * re-entrant call is already a no-op via the is_group_parent() guard
+     * below — self::$retiring_children is additional defense-in-depth,
+     * matching the self::$reconciling pattern used elsewhere in this class.
+     *
+     * SCOPE: trash only. untrash/restore of a group parent is NOT handled
+     * here — a previously soft-closed child stays soft-closed and a
+     * previously trashed child stays trashed. Flagged as a follow-up, not
+     * required by this fix.
+     *
+     * @param int $post_id
+     */
+    public function retire_children_on_parent_trash( $post_id ) {
+        if ( self::$retiring_children ) {
+            return;
+        }
+        $post_id = (int) $post_id;
+        if ( $post_id <= 0 || \get_post_type( $post_id ) !== self::CPT ) {
+            return;
+        }
+        if ( ! $this->occurrences->is_group_parent( $post_id ) ) {
+            return;
+        }
+
+        self::$retiring_children = true;
+        try {
+            $this->occurrences->retire_all_children( $post_id );
+        } finally {
+            self::$retiring_children = false;
         }
     }
 
@@ -3375,12 +3467,22 @@ class Module {
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_type"><?php echo esc_html__( 'Event Type', 'anchor-schema' ); ?></label>
-                        <select id="anchor_event_type" name="anchor_event_type">
-                            <option value="single" <?php selected( $event_type, 'single' ); ?>><?php echo esc_html__( 'Single event', 'anchor-schema' ); ?></option>
-                            <option value="multisession" <?php selected( $event_type, 'multisession' ); ?>><?php echo esc_html__( 'Multi-session series', 'anchor-schema' ); ?></option>
-                            <option value="offering" <?php selected( $event_type, 'offering' ); ?>><?php echo esc_html__( 'Pick-one offerings', 'anchor-schema' ); ?></option>
-                            <option value="recurring" <?php selected( $event_type, 'recurring' ); ?>><?php echo esc_html__( 'Recurring schedule', 'anchor-schema' ); ?></option>
-                        </select>
+                        <?php if ( $event_type === 'recurring' ) : ?>
+                            <?php /* Recurrence authoring is admin-only (Task 2.3 FIX 1): an event that's
+                                     already recurring is shown read-only here rather than offered in the
+                                     select — swapping the select to "single" and letting an unrelated save
+                                     silently downgrade the type would corrupt the event. */ ?>
+                            <p class="description anchor-event-type-locked">
+                                <strong><?php echo esc_html__( 'Recurring schedule', 'anchor-schema' ); ?></strong> — <?php echo esc_html__( 'Recurring events are managed in the admin and cannot be changed from this form.', 'anchor-schema' ); ?>
+                            </p>
+                            <input type="hidden" id="anchor_event_type" name="anchor_event_type" value="recurring" />
+                        <?php else : ?>
+                            <select id="anchor_event_type" name="anchor_event_type">
+                                <option value="single" <?php selected( $event_type, 'single' ); ?>><?php echo esc_html__( 'Single event', 'anchor-schema' ); ?></option>
+                                <option value="multisession" <?php selected( $event_type, 'multisession' ); ?>><?php echo esc_html__( 'Multi-session series', 'anchor-schema' ); ?></option>
+                                <option value="offering" <?php selected( $event_type, 'offering' ); ?>><?php echo esc_html__( 'Pick-one offerings', 'anchor-schema' ); ?></option>
+                            </select>
+                        <?php endif; ?>
                     </div>
                     <div class="anchor-event-field">
                         <label for="anchor_event_registration_mode"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></label>

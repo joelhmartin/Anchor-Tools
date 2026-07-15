@@ -371,4 +371,141 @@ class Test_Group_Authoring_Save extends Anchor_Events_TestCase {
 		$this->assertSame( '', get_post_meta( $event_id, '_anchor_event_group_role', true ) );
 		$this->assertCount( 0, $this->occurrences()->children( $event_id ) );
 	}
+
+	/* ------------------------------------------------------------------
+	 * Front-end form: "Recurring schedule" hidden as a type option (spec
+	 * Phase 2, Task 2.3 FIX 1). Recurrence authoring is admin-only;
+	 * previously the front-end form's type <select> DID offer "Recurring
+	 * schedule" even though render_group_authoring_sections() never rendered
+	 * the recurrence builder for it there — a silent dead-end. It also risked
+	 * clobbering an already-recurring event's type back to "single" if opened
+	 * front-end and re-saved, since no <option> would ever match its stored
+	 * type for `selected()`.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * Render the private front-end manager form via Reflection (there is no
+	 * other way to reach it — it's the classic front-end form, not the block
+	 * editor metabox — see Test_Event_Manager_Save's docblock for the same
+	 * pattern used on save_event_manager_fields()).
+	 */
+	private function render_front_end_form( $event_id ) {
+		$method = new ReflectionMethod( Module::class, 'render_event_manager_form' );
+		$method->setAccessible( true );
+		return $method->invoke( $this->module(), $event_id );
+	}
+
+	/** The front-end form's Event Type select must never offer "recurring" as a choosable option, for a new (type=single) event. */
+	public function test_front_end_form_new_event_type_select_omits_recurring_option() {
+		$html = $this->render_front_end_form( 0 );
+
+		$this->assertStringNotContainsString( '<option value="recurring"', $html );
+		$this->assertStringContainsString( '<option value="single"', $html );
+		$this->assertStringContainsString( '<option value="multisession"', $html );
+		$this->assertStringContainsString( '<option value="offering"', $html );
+	}
+
+	/** Same omission for an existing, ordinary (type=single) event opened front-end. */
+	public function test_front_end_form_existing_single_event_type_select_omits_recurring_option() {
+		$event_id = $this->make_event( [ 'type' => 'single' ] );
+
+		$html = $this->render_front_end_form( $event_id );
+
+		$this->assertStringNotContainsString( '<option value="recurring"', $html );
+	}
+
+	/** The admin metabox's Event Type select is UNCHANGED — it still offers all four types, including recurring. */
+	public function test_admin_metabox_type_select_still_includes_recurring_option() {
+		$event_id = $this->make_event( [ 'type' => 'single' ] );
+		$post = get_post( $event_id );
+
+		ob_start();
+		$this->module()->render_meta_box( $post );
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( '<option value="recurring"', $html, 'The admin metabox must keep offering all four event types.' );
+	}
+
+	/**
+	 * An existing event that is ALREADY type=recurring, opened in the
+	 * front-end form: rendered read-only (no interactive <select> and no
+	 * "recurring" <option> anywhere), with a hidden field preserving the
+	 * type so a save from this form can't silently downgrade it.
+	 */
+	public function test_front_end_form_existing_recurring_event_is_read_only_and_preserves_type() {
+		$event_id = $this->make_event( [
+			'type' => 'recurring',
+			'start_date' => '2027-03-01',
+		] );
+		update_post_meta( $event_id, '_anchor_event_recurrence', [
+			'freq' => 'weekly',
+			'interval' => 1,
+			'count' => 3,
+			'start_time' => '09:00',
+			'end_time' => '10:00',
+			'capacity' => 8,
+		] );
+
+		$html = $this->render_front_end_form( $event_id );
+
+		$this->assertStringNotContainsString( '<option value="recurring"', $html, 'Never rendered as a choosable option, even for an already-recurring event.' );
+		$this->assertStringContainsString( 'name="anchor_event_type" value="recurring"', $html, 'Hidden input must preserve the type so saving this form cannot silently downgrade it.' );
+		$this->assertStringContainsString( 'managed in the admin', $html, 'Must show a read-only explanatory note instead of a broken/empty state.' );
+
+		// The stored recurrence rule round-trips via hidden inputs, not the
+		// interactive builder (which is admin-only and not rendered here).
+		$this->assertStringContainsString( 'name="anchor_event_recurrence[count]" value="3"', $html );
+		$this->assertStringNotContainsString( 'id="anchor_event_recurrence_freq"', $html, 'The interactive recurrence builder select must not be rendered front-end.' );
+	}
+
+	/**
+	 * Saving the front-end form for an already-recurring event (submitting
+	 * exactly what render_front_end_form()'s hidden fields produce) must NOT
+	 * corrupt the event's type or its recurrence rule — this is the "silent
+	 * corruption" the front-end dead-end previously risked once the
+	 * "recurring" <option> stopped matching anything.
+	 */
+	public function test_front_end_save_of_existing_recurring_event_preserves_type_and_rule() {
+		$event_id = $this->make_event( [
+			'type' => 'recurring',
+			'start_date' => '2027-03-01',
+		] );
+		update_post_meta( $event_id, '_anchor_event_recurrence', [
+			'freq' => 'weekly',
+			'interval' => 1,
+			'count' => 3,
+			'start_time' => '09:00',
+			'end_time' => '10:00',
+			'capacity' => 8,
+		] );
+		$this->module()->occurrences->reconcile( $event_id );
+		$this->assertCount( 3, $this->occurrences()->children( $event_id ) );
+
+		// Exactly what the locked front-end form posts: the hidden type field
+		// plus the round-tripped recurrence hidden fields — no
+		// anchor_event_offering_dates, no interactive recurrence input.
+		$_POST = [
+			'anchor_event_type' => 'recurring',
+			'anchor_event_registration_mode' => 'free',
+			'anchor_event_recurrence' => [
+				'freq' => 'weekly',
+				'interval' => 1,
+				'start_time' => '09:00',
+				'end_time' => '10:00',
+				'capacity' => 8,
+				'count' => 3,
+				'until' => '',
+			],
+		];
+
+		$fallback = $this->module()->registration_mode( $event_id );
+		$method = new ReflectionMethod( Module::class, 'save_event_manager_fields' );
+		$method->setAccessible( true );
+		$method->invoke( $this->module(), $event_id, '2027-03-01', $fallback );
+
+		$this->assertSame( 'recurring', get_post_meta( $event_id, '_anchor_event_type', true ), 'The front-end save must never downgrade an existing recurring event\'s type.' );
+		$stored_rule = get_post_meta( $event_id, '_anchor_event_recurrence', true );
+		$this->assertSame( 3, $stored_rule['count'], 'The recurrence rule must round-trip unchanged, not be reset to an incomplete default.' );
+		$this->assertCount( 3, $this->occurrences()->children( $event_id ), 'Children must still be reconciled/preserved, not orphaned by the save.' );
+	}
 }

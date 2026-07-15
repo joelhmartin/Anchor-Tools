@@ -2703,6 +2703,7 @@ class WooCommerce {
             'seat_list'     => $seat_list,
             'cta_label'     => \__( 'View event details', 'anchor-schema' ),
             'cta_url'       => $primary_id ? \get_permalink( $primary_id ) : \home_url(),
+            'type'          => 'confirmation',
         ];
         $html = $this->module->build_registration_email_html( $ctx );
         return $this->module->send_html_email( $to, $subject, $html );
@@ -2806,6 +2807,9 @@ class WooCommerce {
             'seat_list'     => $seat_list,
             'cta_label'     => \__( 'View event', 'anchor-schema' ),
             'cta_url'       => \get_permalink( $event_id ),
+            // 'released' notices are about seats being cancelled/refunded — map
+            // to the cancellation email type; 'confirmed' notices map to confirmation.
+            'type'          => ( $kind === 'released' ) ? 'cancellation' : 'confirmation',
         ];
         $html = $this->module->build_registration_email_html( $ctx );
         return $this->module->send_html_email( $to, $subject, $html );

@@ -11,6 +11,17 @@ class Module {
     const NONCE = 'anchor_event_meta_nonce';
     const REG_NONCE = 'anchor_event_reg_nonce';
 
+    /**
+     * Task 3.1 — editable lifecycle-email types. Each has a global default
+     * option (`anchor_events_email_tpl_{type}`) and a per-event override meta
+     * key (`_anchor_event_email_tpl_{type}`). Orientation found that ALL FOUR
+     * currently render through the exact same shared shell in
+     * build_registration_email_html() — including the roster digest, which
+     * was hypothesized to differ but does not — so all four DEFAULT templates
+     * are (for now) identical text; Task 3.2's builder can diverge them later.
+     */
+    const EMAIL_TEMPLATE_TYPES = [ 'confirmation', 'reminder', 'cancellation', 'roster' ];
+
     private static $instance = null;
     private $assets_enqueued = false;
 
@@ -458,6 +469,7 @@ class Module {
             'detail_rows'   => $detail_rows,
             'cta_label'     => \__( 'View event details', 'anchor-schema' ),
             'cta_url'       => $tokens['event_url'],
+            'type'          => 'reminder',
         ];
         $html = $this->build_registration_email_html( $ctx );
         return $this->send_html_email( (string) $seat['email'], $subject, $html );
@@ -516,6 +528,7 @@ class Module {
             'cta_url'       => ( $this->roster && \method_exists( $this->roster, 'roster_url' ) )
                 ? $this->roster->roster_url( $event_id )
                 : \get_permalink( $event_id ),
+            'type'          => 'roster',
         ];
         $html = $this->build_registration_email_html( $ctx );
         return $this->send_html_email( $to, $subject, $html );
@@ -899,6 +912,18 @@ class Module {
             'show_in_rest'  => false,
             'auth_callback' => $event_auth_callback,
         ] );
+
+        // Task 3.1 — per-event email template overrides (Task 3.2 metabox writes
+        // these directly via update_post_meta; deliberately NOT added to
+        // get_meta_schema()/save_meta()'s allow-list and NOT exposed to REST).
+        foreach ( self::EMAIL_TEMPLATE_TYPES as $email_type ) {
+            \register_post_meta( self::CPT, '_anchor_event_email_tpl_' . $email_type, [
+                'type'          => 'string',
+                'single'        => true,
+                'show_in_rest'  => false,
+                'auth_callback' => $event_auth_callback,
+            ] );
+        }
 
         $reg_auth_callback = function ( $allowed, $meta_key, $post_id ) {
             return \current_user_can( 'edit_post', $post_id );
@@ -5910,6 +5935,7 @@ class Module {
             'detail_rows'   => $detail_rows,
             'cta_label'     => '',
             'cta_url'       => '',
+            'type'          => 'cancellation',
         ];
         $html = $this->build_registration_email_html( $ctx );
         $sent = $this->send_html_email( $email, $subject, $html );
@@ -5999,6 +6025,245 @@ class Module {
     }
 
     /**
+     * Task 3.1 — the shared shell markup, extracted verbatim (byte-for-byte,
+     * via mechanical text surgery on the pre-refactor source) from the
+     * original build_registration_email_html() ob_start() block. This is the
+     * ultimate fallback for every type (resolve_email_template()). Scalar
+     * tokens: {event_title} {site_name} (both pre-escaped for HTML safety),
+     * {attendee_name} {status} {join_link} {event_date} {event_time}
+     * {venue} {event_url} {days_until} {event_id}. Block tokens (pre-rendered
+     * HTML fragments for the structured/conditional regions):
+     * {header_image} {greeting} {intro} {guests_line} {waitlist_notice}
+     * {detail_rows} {seat_list} {join_button} {cta_button}. There is no
+     * separate {footer} block token — the footer region is static markup
+     * with only a scalar {site_name} substitution, so no block extraction
+     * was needed for it.
+     */
+    private static function default_email_shell() {
+        return <<<'ANCHOR_EVENTS_EMAIL_SHELL'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width,initial-scale=1" />
+            <title>{event_title}</title>
+        </head>
+        <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
+                <tr>
+                    <td align="center">
+                        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
+                            {header_image}                            <tr>
+                                <td style="padding:28px 32px 8px;">
+                                    <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">{event_title}</h1>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding:16px 32px 8px;">
+                                    {greeting}                                    {intro}                                    {guests_line}                                    {waitlist_notice}                                    {detail_rows}                                    {seat_list}                                </td>
+                            </tr>
+                            {join_button}                            {cta_button}                            <tr>
+                                <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
+                                    {site_name}                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        
+ANCHOR_EVENTS_EMAIL_SHELL;
+    }
+
+    /**
+     * Default template constant for $type — the ultimate fallback (Task 3.1
+     * orientation: all four share the same shell today). Public so the
+     * Task 3.2 builder UI can offer a "reset to default" preview.
+     */
+    public function default_email_template( $type ) {
+        return self::default_email_shell();
+    }
+
+    /** Global per-type default option, or empty string if unset. */
+    public function get_email_template_option( $type ) {
+        $type = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? (string) $type : 'confirmation';
+        $value = \get_option( 'anchor_events_email_tpl_' . $type, '' );
+        return \is_string( $value ) ? $value : '';
+    }
+
+    /**
+     * Resolve the effective template for $type on $event_id: per-event
+     * override meta -> global default option -> default constant.
+     *
+     * @param string $type     One of EMAIL_TEMPLATE_TYPES.
+     * @param int    $event_id 0 = no per-event override lookup.
+     * @return string
+     */
+    public function resolve_email_template( string $type, int $event_id ): string {
+        $type = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
+        if ( $event_id > 0 ) {
+            $override = (string) \get_post_meta( $event_id, '_anchor_event_email_tpl_' . $type, true );
+            if ( $override !== '' ) {
+                return $override;
+            }
+        }
+        $global = $this->get_email_template_option( $type );
+        if ( $global !== '' ) {
+            return $global;
+        }
+        return $this->default_email_template( $type );
+    }
+
+    /**
+     * Block-token renderer — verbatim byte-for-byte extraction of the
+     * original inline `header_image` conditional from build_registration_email_html().
+     * Returns '' when the condition is false, exactly as before.
+     */
+    private function tpl_block_header_image( $image_url, $event_title ) {
+        \ob_start();
+        ?><?php if ( $image_url ) : ?>
+                            <tr>
+                                <td style="padding:0;">
+                                    <img src="<?php echo esc_url( $image_url ); ?>" alt="<?php echo esc_attr( $event_title ); ?>" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" />
+                                </td>
+                            </tr>
+                            <?php endif; ?><?php
+        return \ob_get_clean();
+    }
+
+    /**
+     * Block-token renderer — verbatim byte-for-byte extraction of the
+     * original inline `greeting` conditional from build_registration_email_html().
+     * Returns '' when the condition is false, exactly as before.
+     */
+    private function tpl_block_greeting( $name ) {
+        \ob_start();
+        ?><?php if ( $name ) : ?>
+                                        <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">
+                                            <?php echo esc_html( sprintf( __( 'Hi %s,', 'anchor-schema' ), $name ) ); ?>
+                                        </p>
+                                    <?php endif; ?><?php
+        return \ob_get_clean();
+    }
+
+    /**
+     * Block-token renderer — verbatim byte-for-byte extraction of the
+     * original inline `guests_line` conditional from build_registration_email_html().
+     * Returns '' when the condition is false, exactly as before.
+     */
+    private function tpl_block_guests_line( $guests ) {
+        \ob_start();
+        ?><?php if ( $guests > 0 ) : ?>
+                                        <p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:#333;">
+                                            <?php
+                                            $party_size = 1 + (int) $guests;
+                                            echo esc_html( sprintf(
+                                                \_n( 'Your party of %d is confirmed (you + %d guest).', 'Your party of %d is confirmed (you + %d guests).', $guests, 'anchor-schema' ),
+                                                $party_size,
+                                                $guests
+                                            ) );
+                                            ?>
+                                        </p>
+                                    <?php endif; ?><?php
+        return \ob_get_clean();
+    }
+
+    /**
+     * Block-token renderer — verbatim byte-for-byte extraction of the
+     * original inline `waitlist_notice` conditional from build_registration_email_html().
+     * Returns '' when the condition is false, exactly as before.
+     */
+    private function tpl_block_waitlist_notice( $status ) {
+        \ob_start();
+        ?><?php if ( $status === 'waitlist' ) : ?>
+                                        <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:#666;">
+                                            <?php echo esc_html__( 'You are currently on the waitlist and will be notified if a spot opens up.', 'anchor-schema' ); ?>
+                                        </p>
+                                    <?php endif; ?><?php
+        return \ob_get_clean();
+    }
+
+    /**
+     * Block-token renderer — verbatim byte-for-byte extraction of the
+     * original inline `detail_rows` conditional from build_registration_email_html().
+     * Returns '' when the condition is false, exactly as before.
+     */
+    private function tpl_block_detail_rows( array $detail_rows ) {
+        \ob_start();
+        ?><?php if ( ! empty( $detail_rows ) ) : ?>
+                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
+                                            <?php foreach ( $detail_rows as $row ) :
+                                                $label = isset( $row['label'] ) ? (string) $row['label'] : '';
+                                                $value = isset( $row['value'] ) ? (string) $row['value'] : '';
+                                                if ( $label === '' && $value === '' ) { continue; } ?>
+                                                <tr>
+                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;"><?php echo esc_html( $label ); ?></td>
+                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;"><?php echo esc_html( $value ); ?></td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </table>
+                                    <?php endif; ?><?php
+        return \ob_get_clean();
+    }
+
+    /**
+     * Block-token renderer — verbatim byte-for-byte extraction of the
+     * original inline `seat_list` conditional from build_registration_email_html().
+     * Returns '' when the condition is false, exactly as before.
+     */
+    private function tpl_block_seat_list( array $seat_list ) {
+        \ob_start();
+        ?><?php if ( ! empty( $seat_list ) ) : ?>
+                                        <p style="margin:0 0 6px;font-size:14px;font-weight:600;color:#333;"><?php echo esc_html__( 'Attendees', 'anchor-schema' ); ?></p>
+                                        <ul style="margin:0 0 16px;padding:0 0 0 18px;font-size:14px;line-height:1.6;color:#333;">
+                                            <?php foreach ( $seat_list as $seat ) : ?>
+                                                <li><?php echo esc_html( (string) $seat ); ?></li>
+                                            <?php endforeach; ?>
+                                        </ul>
+                                    <?php endif; ?><?php
+        return \ob_get_clean();
+    }
+
+    /**
+     * Block-token renderer — verbatim byte-for-byte extraction of the
+     * original inline `join_button` conditional from build_registration_email_html().
+     * Returns '' when the condition is false, exactly as before.
+     */
+    private function tpl_block_join_button( $join_url ) {
+        \ob_start();
+        ?><?php if ( $join_url ) : ?>
+                            <tr>
+                                <td style="padding:8px 32px 0;">
+                                    <a href="<?php echo esc_url( $join_url ); ?>" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                        <?php echo esc_html__( 'Join the event', 'anchor-schema' ); ?>
+                                    </a>
+                                </td>
+                            </tr>
+                            <?php endif; ?><?php
+        return \ob_get_clean();
+    }
+
+    /**
+     * Block-token renderer — verbatim byte-for-byte extraction of the
+     * original inline `cta_button` conditional from build_registration_email_html().
+     * Returns '' when the condition is false, exactly as before.
+     */
+    private function tpl_block_cta_button( $cta_url, $cta_label ) {
+        \ob_start();
+        ?><?php if ( $cta_url && $cta_label ) : ?>
+                            <tr>
+                                <td style="padding:8px 32px 32px;">
+                                    <a href="<?php echo esc_url( $cta_url ); ?>" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                        <?php echo esc_html( $cta_label ); ?>
+                                    </a>
+                                </td>
+                            </tr>
+                            <?php endif; ?><?php
+        return \ob_get_clean();
+    }
+
+    /**
      * Build the registration confirmation email HTML.
      *
      * Phase 6: accepts a single `$ctx` array (keys: event_id, name, status,
@@ -6036,6 +6301,7 @@ class Module {
                 'seat_list'     => [],
                 'cta_label'     => __( 'View event details', 'anchor-schema' ),
                 'cta_url'       => \get_permalink( (int) $arg ),
+                'type'          => 'confirmation',
             ];
         }
 
@@ -6049,6 +6315,7 @@ class Module {
             'seat_list'     => [],
             'cta_label'     => __( 'View event details', 'anchor-schema' ),
             'cta_url'       => '',
+            'type'          => 'confirmation',
         ] );
 
         $event_id    = (int) $ctx['event_id'];
@@ -6063,14 +6330,19 @@ class Module {
         $message     = (string) $ctx['intro_message'];
         $detail_rows = \is_array( $ctx['detail_rows'] ) ? $ctx['detail_rows'] : [];
         $seat_list   = \is_array( $ctx['seat_list'] ) ? $ctx['seat_list'] : [];
+        $type        = \in_array( $ctx['type'], self::EMAIL_TEMPLATE_TYPES, true ) ? (string) $ctx['type'] : 'confirmation';
 
         // A2: confirmed registrants of a virtual event get the actual join link in
         // the email so guest/logged-out attendees (free or paid) gain access without
         // needing to be logged in on the gated event page. Allowlisted to confirmed
         // only — cancelled/refunded/waitlist statuses must never receive the link.
-        $join_url = '';
+        // Also doubles as the source event meta for the {event_date}/{event_time}/
+        // {venue} scalar tokens below (Task 3.1), so it is now fetched unconditionally
+        // — cheap, since get_the_title()/get_the_post_thumbnail_url() above have
+        // already primed WP's per-post meta cache for this same post id.
+        $event_meta = $event_id ? $this->get_meta( $event_id ) : [];
+        $join_url   = '';
         if ( $event_id && $status === 'confirmed' ) {
-            $event_meta = $this->get_meta( $event_id );
             if ( ! empty( $event_meta['virtual'] ) && ! empty( $event_meta['virtual_url'] ) ) {
                 $join_url = (string) $event_meta['virtual_url'];
             }
@@ -6087,111 +6359,50 @@ class Module {
                 . '</p>';
         }
 
-        ob_start();
-        ?>
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8" />
-            <meta name="viewport" content="width=device-width,initial-scale=1" />
-            <title><?php echo esc_html( $event_title ); ?></title>
-        </head>
-        <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
-                <tr>
-                    <td align="center">
-                        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
-                            <?php if ( $image_url ) : ?>
-                            <tr>
-                                <td style="padding:0;">
-                                    <img src="<?php echo esc_url( $image_url ); ?>" alt="<?php echo esc_attr( $event_title ); ?>" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" />
-                                </td>
-                            </tr>
-                            <?php endif; ?>
-                            <tr>
-                                <td style="padding:28px 32px 8px;">
-                                    <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;"><?php echo esc_html( $event_title ); ?></h1>
-                                </td>
-                            </tr>
-                            <tr>
-                                <td style="padding:16px 32px 8px;">
-                                    <?php if ( $name ) : ?>
-                                        <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">
-                                            <?php echo esc_html( sprintf( __( 'Hi %s,', 'anchor-schema' ), $name ) ); ?>
-                                        </p>
-                                    <?php endif; ?>
-                                    <?php echo $paragraphs; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — content is escaped above ?>
-                                    <?php if ( $guests > 0 ) : ?>
-                                        <p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:#333;">
-                                            <?php
-                                            $party_size = 1 + (int) $guests;
-                                            echo esc_html( sprintf(
-                                                \_n( 'Your party of %d is confirmed (you + %d guest).', 'Your party of %d is confirmed (you + %d guests).', $guests, 'anchor-schema' ),
-                                                $party_size,
-                                                $guests
-                                            ) );
-                                            ?>
-                                        </p>
-                                    <?php endif; ?>
-                                    <?php if ( $status === 'waitlist' ) : ?>
-                                        <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:#666;">
-                                            <?php echo esc_html__( 'You are currently on the waitlist and will be notified if a spot opens up.', 'anchor-schema' ); ?>
-                                        </p>
-                                    <?php endif; ?>
-                                    <?php if ( ! empty( $detail_rows ) ) : ?>
-                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
-                                            <?php foreach ( $detail_rows as $row ) :
-                                                $label = isset( $row['label'] ) ? (string) $row['label'] : '';
-                                                $value = isset( $row['value'] ) ? (string) $row['value'] : '';
-                                                if ( $label === '' && $value === '' ) { continue; } ?>
-                                                <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;"><?php echo esc_html( $label ); ?></td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;"><?php echo esc_html( $value ); ?></td>
-                                                </tr>
-                                            <?php endforeach; ?>
-                                        </table>
-                                    <?php endif; ?>
-                                    <?php if ( ! empty( $seat_list ) ) : ?>
-                                        <p style="margin:0 0 6px;font-size:14px;font-weight:600;color:#333;"><?php echo esc_html__( 'Attendees', 'anchor-schema' ); ?></p>
-                                        <ul style="margin:0 0 16px;padding:0 0 0 18px;font-size:14px;line-height:1.6;color:#333;">
-                                            <?php foreach ( $seat_list as $seat ) : ?>
-                                                <li><?php echo esc_html( (string) $seat ); ?></li>
-                                            <?php endforeach; ?>
-                                        </ul>
-                                    <?php endif; ?>
-                                </td>
-                            </tr>
-                            <?php if ( $join_url ) : ?>
-                            <tr>
-                                <td style="padding:8px 32px 0;">
-                                    <a href="<?php echo esc_url( $join_url ); ?>" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        <?php echo esc_html__( 'Join the event', 'anchor-schema' ); ?>
-                                    </a>
-                                </td>
-                            </tr>
-                            <?php endif; ?>
-                            <?php if ( $cta_url && $cta_label ) : ?>
-                            <tr>
-                                <td style="padding:8px 32px 32px;">
-                                    <a href="<?php echo esc_url( $cta_url ); ?>" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        <?php echo esc_html( $cta_label ); ?>
-                                    </a>
-                                </td>
-                            </tr>
-                            <?php endif; ?>
-                            <tr>
-                                <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
-                                    <?php echo esc_html( $site_name ); ?>
-                                </td>
-                            </tr>
-                        </table>
-                    </td>
-                </tr>
-            </table>
-        </body>
-        </html>
-        <?php
-        $html = ob_get_clean();
+        // Task 3.1 — resolve the template (per-event override -> global option ->
+        // default constant), then expand the same scalar+block token set into it.
+        $template = $this->resolve_email_template( $type, $event_id );
+
+        $start_ts = (int) ( $event_meta['start_ts'] ?? 0 );
+        $venue    = '';
+        if ( ! empty( $event_meta['virtual'] ) ) {
+            $venue = __( 'Online', 'anchor-schema' );
+        } elseif ( ! empty( $event_meta['venue'] ) ) {
+            $venue = (string) $event_meta['venue'];
+        }
+
+        $tokens = [
+            // Scalar tokens — the documented event-email token set (spec §9),
+            // computed locally rather than via email_tokens() so this method
+            // never issues the extra get_event_summary() query that method's
+            // 'remaining'/'seat_count' fallback would trigger on every send.
+            'event_id'      => (string) $event_id,
+            'event_title'   => esc_html( $event_title ), // pre-escaped: used in <title>/<h1>.
+            'site_name'     => esc_html( $site_name ),   // pre-escaped: used in the footer.
+            'attendee_name' => $name,
+            'status'        => $status,
+            'join_link'     => $join_url,
+            'event_url'     => $event_id ? \get_permalink( $event_id ) : \home_url(),
+            'event_date'    => $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts ) : '',
+            'event_time'    => ( $start_ts && empty( $event_meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts ) : '',
+            'venue'         => $venue,
+            'days_until'    => ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '',
+
+            // Block tokens — pre-rendered HTML fragments for the structured/
+            // conditional regions, built by the same code (byte-for-byte) that
+            // used to render them inline.
+            'intro'            => $paragraphs,
+            'header_image'     => $this->tpl_block_header_image( $image_url, $event_title ),
+            'greeting'         => $this->tpl_block_greeting( $name ),
+            'guests_line'      => $this->tpl_block_guests_line( $guests ),
+            'waitlist_notice'  => $this->tpl_block_waitlist_notice( $status ),
+            'detail_rows'      => $this->tpl_block_detail_rows( $detail_rows ),
+            'seat_list'        => $this->tpl_block_seat_list( $seat_list ),
+            'join_button'      => $this->tpl_block_join_button( $join_url ),
+            'cta_button'       => $this->tpl_block_cta_button( $cta_url, $cta_label ),
+        ];
+
+        $html = $this->expand_email_tokens( $template, $tokens );
 
         return \apply_filters( 'anchor_events_registration_email_html', $html, $ctx );
     }

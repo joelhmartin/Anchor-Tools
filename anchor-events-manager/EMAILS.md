@@ -6,6 +6,16 @@ The Events Manager module sends transactional and lifecycle emails to attendees 
 
 All emails use a consistent HTML shell and a unified, documented token/placeholder system that works identically on free (non-WooCommerce) and paid (WooCommerce) sites.
 
+There are two token systems, used in two different places (both driven by the same
+`Module::expand_email_tokens( $template, $tokens )` `{token}`-replace helper):
+
+1. **Subject/intro tokens** (`Module::email_tokens( $ctx )`) — expand the plain-text
+   Settings fields below (`reminder_subject`, `roster_intro`, etc). This is the token
+   table in this section.
+2. **Body-template tokens** (scalar + block) — expand the per-event/global **email
+   HTML body** templates edited in the Emails builder metabox. See "Editable Email
+   Templates" below for that (larger, overlapping) token set.
+
 ---
 
 ## Email Templates & Tokens
@@ -69,6 +79,133 @@ All settings below are registered in the Events tab of **Settings > Anchor Tools
 
 ---
 
+## Editable Email Templates
+
+Each of the four lifecycle email types (`confirmation`, `reminder`, `cancellation`,
+`roster` — `Module::EMAIL_TEMPLATE_TYPES`) has its own **editable HTML body**, in
+addition to the plain-text subject/intro Settings fields above. All four ship with
+the same default shell (`Module::default_email_shell()`) — a documented starting
+point, not a hard requirement that they stay identical.
+
+### Resolution order
+
+`Module::resolve_email_template( string $type, int $event_id ): string` resolves the
+effective template for a type on a given event, in order:
+
+1. **Per-event override** — post meta `_anchor_event_email_tpl_{type}` on the event
+   (registered via `register_post_meta()` for all four types), when non-empty.
+2. **Global default** — the site-wide option `anchor_events_email_tpl_{type}`
+   (`Module::get_email_template_option( $type )`), when non-empty.
+3. **Default constant** — `Module::default_email_template( $type )`, currently the
+   same shared shell for every type.
+
+`resolve_email_template( $type, 0 )` (no event id) skips step 1 and resolves the
+global-or-default fallback only — this is also what a per-event save compares against
+to decide whether to store an override at all (see below).
+
+### Per-event Emails builder metabox
+
+The event editor's **Emails** metabox (`Module::render_email_builder_metabox()`) has
+one tab per email type, each with:
+
+- A **Monaco HTML editor** (the same `Anchor_Monaco` wrapper used by `anchor-blocks`),
+  pre-filled via `resolve_email_template( $type, $post->ID )` — i.e. the per-event
+  override if one exists, else the effective global/default template.
+- A **token-insert palette** — buttons for the curated subset of body tokens
+  documented as safe/useful to hand-insert (`Module::documented_email_tokens()`; see
+  the token table below — the palette omits a few internal-only tokens like
+  `{event_id}`/`{status}`/`{greeting}`/`{waitlist_notice}`/`{join_button}` and offers
+  no `{footer}` token since the footer region only ever substitutes `{site_name}`).
+- A **live preview iframe** that shows the raw template with tokens literal until...
+- ...**"Preview with real data"** is clicked, which AJAX-renders the in-progress
+  (unsaved) editor content through the exact same `build_registration_email_html()`
+  renderer real sends use, substituting representative sample data — without writing
+  anything, via a transient, request-scoped override
+  (`Module::$preview_template_override`) consumed by `resolve_email_template()` and
+  cleared in a `finally` block.
+- A **"Reset to default"** button (writes the fallback text back into the editor).
+
+**Save path**: `Module::save_email_templates()` is a dedicated, validated path called
+from `save_meta()` — never the generic settings allow-list. Each submitted tab's HTML
+is run through an **email-safe `wp_kses()` allowlist**
+(`Module::get_email_template_allowed_html()` — filterable via
+`anchor_events_email_template_allowed_html`) covering the shell's structural/table
+tags plus common formatting tags with a restricted `style` attribute (further
+constrained to WordPress's safe-CSS property list); `<script>` and anything else off
+the allowlist is stripped entirely, open tag through close tag. Content that matches
+the event's override-less resolved default is stored as `''` instead of a redundant
+literal copy — same effect as clicking "Reset to default" and saving.
+
+### Body-template token set
+
+These are the tokens available inside an editable email **body** (distinct from —
+and a superset of — the subject/intro token table earlier in this document). Built
+in `Module::build_registration_email_html()`:
+
+**Scalar tokens** (HTML/URL-escaped before substitution — `event_title`/`site_name`
+are pre-escaped for `<title>`/`<h1>`/footer use, everything else is escaped inline so
+a custom template can't become a stored-injection vector):
+
+| Token | Source |
+|---|---|
+| `{event_id}` | Event post ID |
+| `{event_title}` | Event post title |
+| `{site_name}` | `get_bloginfo('name')` |
+| `{attendee_name}` | Registered attendee name |
+| `{status}` | Attendee registration status |
+| `{join_link}` | Virtual-event join URL (confirmed attendees of a virtual event only) |
+| `{event_url}` | Event permalink |
+| `{event_date}` | Localized date from `start_ts` |
+| `{event_time}` | Localized time from `start_ts` (empty for all-day events) |
+| `{venue}` | Venue name, or "Online" for virtual events |
+| `{days_until}` | Days remaining until start (empty for past events) |
+
+**Block tokens** (pre-rendered HTML fragments for structured/conditional regions):
+
+| Token | Renders |
+|---|---|
+| `{intro}` | The confirmation/reminder/cancellation intro message, as `<p>` paragraphs |
+| `{header_image}` | The event's featured image, when set |
+| `{greeting}` | "Hi {name}," style greeting block |
+| `{guests_line}` | Guest-count line, when guests > 0 |
+| `{waitlist_notice}` | Waitlist-specific notice, when status is `waitlist` |
+| `{detail_rows}` | A table of label/value detail rows |
+| `{seat_list}` | A list of named seats (multi-seat orders) |
+| `{join_button}` | A styled "Join" button linking `{join_link}`, when set |
+| `{cta_button}` | A styled call-to-action button (e.g. "View event details") |
+
+The **token-insert palette** in the Emails builder UI offers a curated subset of the
+above (`event_title`, `event_date`, `event_time`, `venue`, `attendee_name`,
+`join_link`, `event_url`, `site_name`, `intro`, `detail_rows`, `seat_list`,
+`cta_button`, `header_image`) — every other token above is still expanded if
+hand-typed into the editor, it's just not offered as a one-click button.
+
+---
+
+## Upcoming Sends Panel
+
+The event editor's **Upcoming Sends** metabox (side column;
+`Module::render_upcoming_sends_metabox()`) is a **read-only** schedule of this
+event's pending/sent reminder and roster-digest emails, computed on the fly by
+`Module::compute_email_schedule( int $event_id ): array` from the exact same inputs
+the hourly sweep itself uses (effective offsets, the settings flags, the per-seat
+`_anchor_event_reminders_sent` markers, and the per-event `roster_sent` marker) — no
+new storage, no send/reschedule side effects, just a report of what the sweep already
+has done or will do.
+
+Each row has a `type` (`reminder`|`roster`), a `scheduled_ts`, a recipient
+description, and a `state` (`sent` | `partial` — reminders sent to some but not all
+confirmed seats at that offset | `scheduled` | `past` — a scheduled_ts already gone by
+that was never sent).
+
+A **group parent** never shows a schedule of its own — parents don't take
+registrations, so the panel shows an explanatory notice pointing at each date's own
+event instead (each child computes its own schedule independently, exactly like a
+standalone event). Other notice states cover an invalid event id, reminders+roster
+both disabled site-wide, and no start date/time set yet.
+
+---
+
 ## Recipient Resolution
 
 **Reminder & cancellation emails** go to the attendee's registered email address (`_anchor_event_email` post meta).
@@ -111,8 +248,11 @@ All reminder, cancellation, and roster emails work identically on sites with or 
 
 ## Development Notes
 
-- **No new HTML shells:** All emails use the shared `Module::build_registration_email_html()` method, ensuring consistent branding and responsive rendering.
+- **One shared renderer:** All emails render through the single `Module::build_registration_email_html()` method — per-event/global template overrides (see "Editable Email Templates" above) change which HTML string that method expands tokens into, they never bypass it, so branding/responsive structure stays consistent even when a site fully customizes a type's body.
 - **No PII in logs:** Failure logs via `send_html_email()` log errors only, not recipient names or email addresses.
 - **Localization:** All user-facing strings use the text domain `anchor-schema`.
 - **Send outside locks:** Cancellation emails are deferred until after event locks release to avoid blocking seat operations on slow SMTP.
-- **Filter hook:** `apply_filters('anchor_events_should_send_reminder', $bool, $seat, $offset)` allows custom per-recipient reminder suppression (e.g., honor CRM opt-out).
+- **Filter hooks:**
+  - `apply_filters('anchor_events_should_send_reminder', $bool, $seat, $offset)` — per-recipient reminder suppression (e.g., honor CRM opt-out).
+  - `apply_filters('anchor_events_email_template_allowed_html', $default_allowed)` — extend the `wp_kses()` allowlist used to sanitize custom email template HTML on save and on the "Preview with real data" endpoint.
+  - `apply_filters('anchor_events_registration_email_html', $html, $ctx)` — final filter on the fully-rendered HTML of any registration/lifecycle email before send.

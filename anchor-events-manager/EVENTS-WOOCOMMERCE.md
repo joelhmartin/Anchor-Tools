@@ -3,6 +3,13 @@
 Event-first model: you author everything on the **event**, and the plugin manages the WooCommerce
 product behind the scenes. WooCommerce is optional — free events work without it.
 
+This document covers the WooCommerce-ticketed (`wc`) registration mode specifically. For the full
+picture — the other two registration modes (Free internal, External), the four event types (Single,
+Multi-session series, Pick-one offerings, Recurring schedule), and the occurrence/grouping engine that
+generates one full event post per date for Pick-one/Recurring events — see `EVENTS.md`. Everything below
+about ticket tiers, capacity, and managed products applies per-event, including to each generated child
+event of a Pick-one-offerings or Recurring-schedule parent (each gets its own managed product).
+
 ## Create a paid event
 
 1. **Events → Add New.** Set date/time, location (or mark virtual + add the join URL), and the event
@@ -39,15 +46,27 @@ managed event products/category. No separate coupon system in the plugin.
 
 ## Sessions (Series)
 
-Group "the same course on multiple dates" with the **Series** taxonomy on the event. Each session is its
-own event (own date, capacity, roster). The series archive (`/series/<slug>/`) lists all sessions with
-date, "from $X", and availability.
+Group "the same course on multiple dates" — each date its own event (own date, capacity, roster) — with
+the **`event_series`** taxonomy on the event; the series archive (`/series/<slug>/`) lists all sessions
+with date, "from $X", and availability. This taxonomy is populated two ways:
+
+- **Manually**, by tagging separate events with the same Series term yourself.
+- **Automatically**, for a **Pick-one offerings** or **Recurring schedule** parent event — the plugin
+  generates one child event per date/occurrence and tags parent + every live child with a shared,
+  engine-managed series term; the archive collapses that group into one "choose a date" row instead of
+  listing every child separately. See `EVENTS.md` for the full offering/recurring/grouping model.
+
+Don't confuse this with the **Multi-session series** event *type* (`multisession`): that's a single event
+post whose sessions are stored as rows on that one post (one signup covers every date) — no separate event
+posts, no Series taxonomy involved. Use the Series taxonomy (manual or offering/recurring) when each date
+needs its own capacity/roster/registration; use the `multisession` type when one registration covers all
+of them. See `EVENTS.md` for both.
 
 ## Roster & admin
 
 - **Events → Roster** (or the event's roster screen): view attendees, filter/search, export CSV
-  (includes the tier). Capability: `manage_woocommerce`/`edit_shop_orders` when WooCommerce is active,
-  else `edit_others_posts`.
+  (includes the tier). Capability: `manage_woocommerce` when WooCommerce is active, else
+  `edit_others_posts`.
 - **Add attendee** directly (comped, no order): pick a tier, optionally tick **Allow over capacity** to
   exceed the limit (recorded in the seat's history). Edit/cancel/mark-status are tier-aware.
 

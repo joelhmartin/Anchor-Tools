@@ -28,6 +28,7 @@ Copied from `CLAUDE.md` + spec. Every task's requirements implicitly include thi
 - **Meta discipline:** new user-editable meta goes in `get_meta_schema()`, `get_meta_defaults()`, the `save_meta()` allow-list, AND the front-end manager form + its save. Generator-owned (`group_id`, `group_role`) and marker meta stay OUT of the allow-list.
 - **Two authoring paths in lockstep:** every field/validation change lands in BOTH `render_meta_box`/`save_meta` and `render_event_manager_form`/its save.
 - **Release discipline:** merge to `main` first, then tag/release from `main`. Never tag from a feature branch.
+- **Vendor churn — never stage it.** `vendor/` is committed prod-only, but the local test env ran `composer install` (with dev), leaving `vendor/composer/autoload_*.php` dirty. These are needed on disk for `composer test` but MUST NOT be committed. Every task stages only its own changed paths (scoped `git add <path>`); NEVER `git add -A` / `git add .`. Before the Phase 5 merge to main, restore prod vendor (`composer install --no-dev` or `git checkout -- vendor/`).
 - **Version bump:** `Version:` header in `anchor-tools.php` on release only (Phase 5).
 
 ## Verification Loop (used by every task)
@@ -96,10 +97,12 @@ A subagent that cannot start Docker/wp-env marks E2E steps `PENDING-HUMAN` and t
   Expected: each appears at least once.
 
 - [ ] **Step 7: Commit the merge**
+  IMPORTANT: `vendor/composer/autoload_*.php` are dirty from a dev `composer install` and MUST NOT be staged (they'd ship dev-only test-dep autoload). Never `git add -A`. Stage only merge-relevant paths:
   ```bash
-  git add -A
+  git add anchor-events-manager/ anchor-tools.php
   git commit -m "merge(events): rescue lifecycle-email branch onto main-based events code"
   ```
+  After committing, confirm no vendor churn was included: `git show --stat HEAD | grep -c vendor` → expect `0`.
 
 ### Task 0.2: Verify the two semantic integration points
 
@@ -113,8 +116,9 @@ A subagent that cannot start Docker/wp-env marks E2E steps `PENDING-HUMAN` and t
   Expected: `class-woocommerce.php` delegates to `Module::resolve_organizer_email()` rather than a re-forked resolver. If main re-forked it, repoint WC to `resolve_organizer_email()`.
 
 - [ ] **Step 3: Commit any fixes**
+  Stage only the files you changed (NOT `vendor/`, NOT `-A`):
   ```bash
-  git add -A && git commit -m "fix(events): re-assert seat-status hook + centralized organizer recipient post-merge"
+  git add anchor-events-manager/ && git commit -m "fix(events): re-assert seat-status hook + centralized organizer recipient post-merge"
   ```
   (Skip if no changes were needed.)
 

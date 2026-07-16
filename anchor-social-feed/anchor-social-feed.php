@@ -245,25 +245,32 @@ class Anchor_Social_Feed_Module {
         ];
     }
 
+    /**
+     * Defs marked 'uploads_only' are ignored when a playlist is set — a playlist is
+     * already a curated list, so re-filtering it would drop videos the user chose.
+     */
     private function get_youtube_setting_defs() {
         return [
             'asf_yt_type' => [
                 'type' => 'select', 'label' => 'Video Type', 'default' => 'videos',
                 'options' => ['videos' => 'Videos', 'shorts' => 'Shorts', 'all' => 'All'],
+                'uploads_only' => true,
             ],
             'asf_yt_exclude_hashtags' => [
                 'type' => 'text', 'label' => 'Exclude Hashtags', 'default' => 'short,shorts,testimonial',
                 'description' => 'Comma-separated. Leave empty to disable.',
+                'uploads_only' => true,
             ],
             'asf_yt_include_hashtags' => [
                 'type' => 'text', 'label' => 'Include Hashtags', 'default' => '',
                 'description' => 'Only show videos matching these hashtags.',
+                'uploads_only' => true,
             ],
-            'asf_yt_min_seconds' => ['type' => 'number', 'label' => 'Min Duration (sec)', 'default' => '', 'min' => 0],
-            'asf_yt_max_seconds' => ['type' => 'number', 'label' => 'Max Duration (sec)', 'default' => '', 'min' => 0],
-            'asf_yt_since' => ['type' => 'text', 'label' => 'Since Date', 'default' => '', 'description' => 'YYYY-MM-DD'],
-            'asf_yt_until' => ['type' => 'text', 'label' => 'Until Date', 'default' => '', 'description' => 'YYYY-MM-DD'],
-            'asf_yt_max_age_days' => ['type' => 'number', 'label' => 'Max Age (days)', 'default' => '', 'min' => 0],
+            'asf_yt_min_seconds' => ['type' => 'number', 'label' => 'Min Duration (sec)', 'default' => '', 'min' => 0, 'uploads_only' => true],
+            'asf_yt_max_seconds' => ['type' => 'number', 'label' => 'Max Duration (sec)', 'default' => '', 'min' => 0, 'uploads_only' => true],
+            'asf_yt_since' => ['type' => 'text', 'label' => 'Since Date', 'default' => '', 'description' => 'YYYY-MM-DD', 'uploads_only' => true],
+            'asf_yt_until' => ['type' => 'text', 'label' => 'Until Date', 'default' => '', 'description' => 'YYYY-MM-DD', 'uploads_only' => true],
+            'asf_yt_max_age_days' => ['type' => 'number', 'label' => 'Max Age (days)', 'default' => '', 'min' => 0, 'uploads_only' => true],
             'asf_yt_fetch_pages' => ['type' => 'number', 'label' => 'Fetch Pages', 'default' => 10, 'min' => 1, 'max' => 20],
         ];
     }
@@ -302,7 +309,22 @@ class Anchor_Social_Feed_Module {
         // YouTube fields
         echo '<div class="asf-platform-fields" data-platform="youtube">';
         $this->render_meta_field($post->ID, 'asf_yt_channel_id', 'Channel ID / @handle / URL', 'text');
-        foreach ($this->get_youtube_setting_defs() as $key => $def) {
+        $this->render_meta_field($post->ID, 'asf_yt_playlist_id', 'Playlist ID or URL (optional)', 'text');
+        echo '<p class="description">' . esc_html__('Paste a playlist URL or ID to pull videos from that playlist, in playlist order, instead of the channel\'s recent uploads. The channel is still used for the profile header. Leave empty for recent uploads.', 'anchor-schema') . '</p>';
+
+        $defs = $this->get_youtube_setting_defs();
+        $uploads_only = array_filter($defs, function ($def) { return !empty($def['uploads_only']); });
+        $shared       = array_diff_key($defs, $uploads_only);
+
+        $has_playlist = get_post_meta($post->ID, 'asf_yt_playlist_id', true) !== '';
+        echo '<div class="asf-yt-uploads-only' . ($has_playlist ? ' is-disabled' : '') . '">';
+        echo '<p class="description asf-uploads-only-note">' . esc_html__('These filters are not used when a playlist is set.', 'anchor-schema') . '</p>';
+        foreach ($uploads_only as $key => $def) {
+            $this->render_meta_field_from_def($post->ID, $key, $def);
+        }
+        echo '</div>';
+
+        foreach ($shared as $key => $def) {
             $this->render_meta_field_from_def($post->ID, $key, $def);
         }
         echo '</div>';
@@ -432,7 +454,7 @@ class Anchor_Social_Feed_Module {
 
         // Platform-specific fields
         $text_fields = [
-            'asf_yt_channel_id', 'asf_yt_exclude_hashtags', 'asf_yt_include_hashtags',
+            'asf_yt_channel_id', 'asf_yt_playlist_id', 'asf_yt_exclude_hashtags', 'asf_yt_include_hashtags',
             'asf_yt_since', 'asf_yt_until',
             'asf_fb_page_id', 'asf_fb_page_url',
             'asf_ig_username', 'asf_tt_username', 'asf_tw_username', 'asf_sp_artist_id',
@@ -524,8 +546,8 @@ class Anchor_Social_Feed_Module {
         if (!in_array($hook, ['post.php', 'post-new.php'], true)) return;
         if (get_post_type() !== self::CPT) return;
 
-        wp_enqueue_style('asf-admin', Anchor_Asset_Loader::url('anchor-social-feed/assets/admin.css'), [], '1.0.0');
-        wp_enqueue_script('asf-admin', Anchor_Asset_Loader::url('anchor-social-feed/assets/admin.js'), ['jquery'], '1.0.0', true);
+        wp_enqueue_style('asf-admin', Anchor_Asset_Loader::url('anchor-social-feed/assets/admin.css'), [], '1.1.0');
+        wp_enqueue_script('asf-admin', Anchor_Asset_Loader::url('anchor-social-feed/assets/admin.js'), ['jquery'], '1.1.0', true);
         wp_localize_script('asf-admin', 'ASF', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce'   => wp_create_nonce('asf_ajax'),
@@ -607,6 +629,7 @@ class Anchor_Social_Feed_Module {
             'asf_layout', 'asf_item_limit', 'asf_yt_type', 'asf_yt_exclude_hashtags',
             'asf_yt_include_hashtags', 'asf_yt_min_seconds', 'asf_yt_max_seconds',
             'asf_yt_since', 'asf_yt_until', 'asf_yt_max_age_days', 'asf_yt_fetch_pages',
+            'asf_yt_playlist_id',
             'asf_theme', 'asf_gradient', 'asf_show_header', 'asf_columns_desktop',
             'asf_columns_tablet', 'asf_columns_mobile', 'asf_gap',
         ];
@@ -618,6 +641,7 @@ class Anchor_Social_Feed_Module {
             'layout'             => $s['asf_layout'] ?: 'grid',
             'youtube_api'        => 'auto',
             'youtube_limit'      => '',
+            'playlist_id'        => $s['asf_yt_playlist_id'] ?? '',
             'youtube_type'       => $s['asf_yt_type'] ?: 'videos',
             'exclude_hashtags'   => $s['asf_yt_exclude_hashtags'] !== '' ? $s['asf_yt_exclude_hashtags'] : 'short,shorts,testimonial',
             'include_hashtags'   => $s['asf_yt_include_hashtags'] ?? '',
@@ -664,6 +688,7 @@ class Anchor_Social_Feed_Module {
             'layout'             => '',
             'youtube_api'        => 'auto',
             'youtube_limit'      => '',
+            'playlist_id'        => '',
             'youtube_type'       => '',
             'exclude_hashtags'   => '',
             'include_hashtags'   => '',
@@ -868,6 +893,7 @@ class Anchor_Social_Feed_Module {
         // Fill defaults for legacy atts
         $defaults = [
             'youtube_api' => 'auto', 'youtube_limit' => '', 'youtube_type' => 'videos',
+            'playlist_id' => '',
             'exclude_hashtags' => 'short,shorts,testimonial', 'include_hashtags' => '',
             'min_seconds' => '', 'max_seconds' => '', 'since' => '', 'until' => '',
             'max_age_days' => '', 'youtube_fetch_pages' => 10,
@@ -1207,13 +1233,27 @@ class Anchor_Social_Feed_Module {
        ══════════════════════════════════════════════════════════ */
 
     private function render_youtube_api_feed($opts, $atts) {
-        $api_key    = trim($opts['youtube_api_key'] ?? '') ?: $this->get_google_api_key();
-        $channel_in = trim($opts['youtube_channel_id'] ?? '');
-        $mode       = strtolower($atts['youtube_api'] ?? 'auto');
-        $use_api    = ($mode === 'on') || ($mode === 'auto' && $api_key && $channel_in);
+        $api_key     = trim($opts['youtube_api_key'] ?? '') ?: $this->get_google_api_key();
+        $channel_in  = trim($opts['youtube_channel_id'] ?? '');
+        $playlist_in = trim($atts['playlist_id'] ?? '');
+        $mode        = strtolower($atts['youtube_api'] ?? 'auto');
+        $use_api     = ($mode === 'on') || ($mode === 'auto' && $api_key && ($channel_in || $playlist_in));
 
         if (!$use_api) return '<p class="ssfs-note">YouTube API is not enabled. Add a Google API key in Anchor Tools settings or pass youtube_api="on".</p>';
-        if (!$api_key || !$channel_in) return '<p class="ssfs-note">Missing YouTube API key or channel value.</p>';
+        if (!$api_key) return '<p class="ssfs-note">Missing YouTube API key.</p>';
+        if (!$channel_in && !$playlist_in) return '<p class="ssfs-note">Missing YouTube channel or playlist value.</p>';
+
+        $playlist_id = '';
+        if ($playlist_in !== '') {
+            $playlist_id = self::ytapi_parse_playlist_id($playlist_in);
+            if ($playlist_id === '') {
+                return '<p class="ssfs-note">That doesn\'t look like a YouTube playlist ID or URL.</p>';
+            }
+        }
+
+        if ($playlist_id !== '') {
+            return $this->render_youtube_playlist_feed($playlist_id, $api_key, $atts);
+        }
 
         $resolved = $this->ytapi_resolve_channel_id($channel_in, $api_key);
         if (is_wp_error($resolved)) return '<p class="ssfs-note">YouTube API error, ' . esc_html($resolved->get_error_message()) . '</p>';
@@ -1295,6 +1335,48 @@ class Anchor_Social_Feed_Module {
         if ($limit > 0 && count($kept) > $limit) $kept = array_slice($kept, 0, $limit);
         if (!$kept) return '<p>No videos match your filters.</p>';
 
+        return $this->render_youtube_items($kept, $atts);
+    }
+
+    /**
+     * Playlist mode. The playlist is already a curated list, so the content filters
+     * (type, hashtags, duration, dates) are deliberately skipped — only Item Limit
+     * and Fetch Pages apply. Videos render in playlist order, not by publish date.
+     */
+    private function render_youtube_playlist_feed($playlist_id, $api_key, $atts) {
+        $pages = max(1, min(20, intval($atts['youtube_fetch_pages'] ?? 10)));
+        $limit = (string)($atts['youtube_limit'] ?? '') === '' ? 0 : max(1, intval($atts['youtube_limit']));
+
+        $items = $this->ytapi_get_playlist_items($playlist_id, $api_key, $pages);
+        if (is_wp_error($items)) return '<p class="ssfs-note">' . esc_html($items->get_error_message()) . '</p>';
+        if (!$items) return '<p>No videos found in this playlist.</p>';
+
+        $ids = array_map(function($it){ return $it['videoId']; }, $items);
+        $details = $this->ytapi_get_videos_details($ids, $api_key);
+        $byId = [];
+        foreach ($details as $d) $byId[$d['id']] = $d;
+
+        $kept = [];
+        foreach ($items as $it) {
+            $vid = $it['videoId'];
+            // Private and deleted playlist entries have no details row — skip them.
+            if (!isset($byId[$vid])) continue;
+            $d = $byId[$vid];
+            $kept[] = [
+                'id'    => $vid,
+                'title' => $d['title'],
+                'date'  => $d['publishedAt'] ?: $it['publishedAt'],
+                'thumb' => $d['thumb'],
+            ];
+            if ($limit > 0 && count($kept) >= $limit) break;
+        }
+
+        if (!$kept) return '<p>No playable videos in this playlist.</p>';
+
+        return $this->render_youtube_items($kept, $atts);
+    }
+
+    private function render_youtube_items($kept, $atts) {
         $layout = in_array($atts['layout'] ?? 'grid', ['grid','stack','carousel','hover_overlay'], true) ? $atts['layout'] : 'grid';
 
         if ($layout === 'hover_overlay') {
@@ -1312,6 +1394,32 @@ class Anchor_Social_Feed_Module {
         }
 
         return $this->wrap_layout($items_html, $layout);
+    }
+
+    /**
+     * Accepts a raw playlist ID or any YouTube URL carrying a list= parameter
+     * (playlist page or watch URL). Returns '' when neither matches.
+     */
+    private static function ytapi_parse_playlist_id($input) {
+        $input = trim($input);
+        if ($input === '') return '';
+
+        // A bare ID; the charset excludes anything URL-shaped.
+        if (preg_match('~^[A-Za-z0-9_-]{12,}$~', $input)) {
+            return $input;
+        }
+
+        $query = wp_parse_url($input, PHP_URL_QUERY);
+        if ($query) {
+            $params = [];
+            wp_parse_str($query, $params);
+            $list = trim($params['list'] ?? '');
+            if ($list !== '' && preg_match('~^[A-Za-z0-9_-]{12,}$~', $list)) {
+                return $list;
+            }
+        }
+
+        return '';
     }
 
     private function ytapi_get_uploads($channel_id, $api_key, $pages = 10) {
@@ -1333,18 +1441,35 @@ class Anchor_Social_Feed_Module {
             set_transient($ckey, $uploads, DAY_IN_SECONDS);
         }
 
+        $items = $this->ytapi_get_playlist_items($uploads, $api_key, $pages);
+        if (is_wp_error($items)) return $items;
+
+        usort($items, function($a,$b){ return strcmp($b['publishedAt'], $a['publishedAt']); });
+        return $items;
+    }
+
+    /**
+     * Pages through playlistItems for any playlist. Returns items in API order,
+     * which for this endpoint is playlist position order.
+     */
+    private function ytapi_get_playlist_items($playlist_id, $api_key, $pages = 10) {
         $items = [];
         $pageToken = '';
         $scanned = 0;
         do {
-            $url = add_query_arg(['part' => 'snippet,contentDetails', 'playlistId' => $uploads, 'maxResults' => 50, 'pageToken' => $pageToken, 'key' => $api_key], 'https://www.googleapis.com/youtube/v3/playlistItems');
-            $cache_key = 'ssfs_yt_pitems_' . md5($uploads.$pageToken);
+            $url = add_query_arg(['part' => 'snippet,contentDetails', 'playlistId' => $playlist_id, 'maxResults' => 50, 'pageToken' => $pageToken, 'key' => $api_key], 'https://www.googleapis.com/youtube/v3/playlistItems');
+            $cache_key = 'ssfs_yt_pitems_' . md5($playlist_id.$pageToken);
             if (isset($_GET['ssfs_refresh']) && $_GET['ssfs_refresh'] == '1') delete_transient($cache_key);
             $page = get_transient($cache_key);
             if (!$page) {
                 $res = wp_remote_get($url, ['timeout' => 12]);
                 if (is_wp_error($res)) return $res;
+                $code = wp_remote_retrieve_response_code($res);
                 $page = json_decode(wp_remote_retrieve_body($res), true);
+                if ($code === 404 || (isset($page['error']) && !isset($page['items']))) {
+                    $msg = $page['error']['message'] ?? 'playlist not found or not public.';
+                    return new \WP_Error('ssfs_api', 'YouTube API error, ' . $msg);
+                }
                 set_transient($cache_key, $page, 10 * MINUTE_IN_SECONDS);
             }
             if (empty($page['items'])) break;
@@ -1359,7 +1484,6 @@ class Anchor_Social_Feed_Module {
             $scanned++;
         } while ($pageToken && $scanned < $pages);
 
-        usort($items, function($a,$b){ return strcmp($b['publishedAt'], $a['publishedAt']); });
         return $items;
     }
 

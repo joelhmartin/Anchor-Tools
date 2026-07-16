@@ -116,17 +116,22 @@ function wpEnvCli(cmd) {
 
 /**
  * Reset the shared offering-event fixture's `_anchor_event_offering_dates`
- * meta back to its canonical 2-row baseline and re-run
- * Occurrences::reconcile(), mirroring bin/e2e-seed.sh's offering-fixture
- * block exactly. Idempotent and robust to the fixture being in ANY prior
- * state (2 rows, 3 rows, or more) — it overwrites the meta wholesale rather
- * than diffing against whatever is currently stored.
+ * meta back to its canonical 2-row baseline. Idempotent and robust to the
+ * fixture being in ANY prior state (2 rows, 3 rows, or more) — it overwrites
+ * the meta wholesale rather than diffing against whatever is currently stored.
+ *
+ * Only the meta is reset here (via `wp post meta update`, which needs no
+ * plugin classes loaded, so it is robust regardless of wp-env's module-boot
+ * state in the wp-cli context). The starting `toHaveCount(2)` assertion reads
+ * this meta directly; the test's own edit→save then re-runs reconcile() through
+ * the real save path, so no separate reconcile eval is needed (and calling
+ * `\Anchor\Events\Module::instance()` from `wp eval` is fragile — it fatals
+ * when the events module isn't bootstrapped in that CLI invocation).
  *
  * The +60/+67-day offsets don't need to match the seed script's own
  * `gmdate()` values bit-for-bit (no assertion in this spec checks the exact
  * date strings, only the row/child COUNT), so reuse the existing
- * `futureDateString()` helper here instead of shelling out twice more for
- * `wp eval 'gmdate(...)'`.
+ * `futureDateString()` helper.
  */
 function resetOfferingFixture(offeringEventId) {
   const offeringDates = JSON.stringify([
@@ -135,9 +140,6 @@ function resetOfferingFixture(offeringEventId) {
   ]);
   wpEnvCli(
     `wp post meta update ${offeringEventId} _anchor_event_offering_dates '${offeringDates}' --format=json`
-  );
-  wpEnvCli(
-    `wp eval '$m = \\Anchor\\Events\\Module::instance(); echo ( $m && $m->occurrences ) ? count( $m->occurrences->reconcile( ${offeringEventId} ) ) : 0;'`
   );
 }
 

@@ -63,7 +63,14 @@ class Anchor_Schema_Helper {
     public static function minify_json($json){
         $decoded = json_decode($json, true);
         if ( json_last_error() !== JSON_ERROR_NONE ) { return ''; }
-        return wp_json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        // security: Deliberately no JSON_UNESCAPED_SLASHES: the default `/` -> `\/`
+        // escaping is what keeps a literal "</script>" in any stored value from
+        // breaking out of the <script type="application/ld+json"> tag this is
+        // echoed into (see Anchor_Schema_Render::output_active_schemas()).
+        // Escaped slashes decode back to plain "/" for any JSON consumer
+        // (browsers, Google, json_decode()) — this is purely a safe-HTML-
+        // embedding concern, it does not change the parsed JSON values.
+        return wp_json_encode($decoded, JSON_UNESCAPED_UNICODE);
     }
 
     public static function validate_schema_json( $content ){
@@ -114,9 +121,12 @@ class Anchor_Schema_Helper {
             return [ 'errors' => $errors, 'warnings' => $warnings, 'normalized_json' => '', 'primary_type' => $primary_type ];
         }
 
-        $normalized = wp_json_encode( $objects, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+        // security: no JSON_UNESCAPED_SLASHES — see comment in minify_json() above.
+        // Keeps a literal "</script>" in an uploaded schema value from breaking
+        // out of the inline <script type="application/ld+json"> tag on render.
+        $normalized = wp_json_encode( $objects, JSON_UNESCAPED_UNICODE );
         if ( is_array($decoded) && isset($decoded['@context']) ) {
-            $normalized = wp_json_encode( $objects[0], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+            $normalized = wp_json_encode( $objects[0], JSON_UNESCAPED_UNICODE );
         }
 
         return [ 'errors' => [], 'warnings' => $warnings, 'normalized_json' => $normalized, 'primary_type' => $primary_type ];

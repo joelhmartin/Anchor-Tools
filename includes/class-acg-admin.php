@@ -1073,7 +1073,10 @@ class ACG_Admin {
     private function minify_json($json){
         $decoded = json_decode($json, true);
         if ( json_last_error() !== JSON_ERROR_NONE ) { return ''; }
-        return wp_json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        // security: no JSON_UNESCAPED_SLASHES — see Anchor_Schema_Helper::minify_json().
+        // Dead code (ACG_* is never loaded) but fixed to prevent the same
+        // </script>-breakout XSS from being reintroduced if ever revived.
+        return wp_json_encode($decoded, JSON_UNESCAPED_UNICODE);
     }
 
     private function validate_schema_json( $content ){
@@ -1124,9 +1127,10 @@ class ACG_Admin {
             return [ 'errors' => $errors, 'warnings' => $warnings, 'normalized_json' => '', 'primary_type' => $primary_type ];
         }
 
-        $normalized = wp_json_encode( $objects, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+        // security: no JSON_UNESCAPED_SLASHES — see comment in minify_json() above.
+        $normalized = wp_json_encode( $objects, JSON_UNESCAPED_UNICODE );
         if ( is_array($decoded) && isset($decoded['@context']) ) {
-            $normalized = wp_json_encode( $objects[0], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+            $normalized = wp_json_encode( $objects[0], JSON_UNESCAPED_UNICODE );
         }
 
         return [ 'errors' => [], 'warnings' => $warnings, 'normalized_json' => $normalized, 'primary_type' => $primary_type ];

@@ -19,6 +19,10 @@ class Anchor_Schema_Render {
             $schema = isset($it['min_json']) ? $it['min_json'] : '';
             if ( ! $schema ) { $schema = $it['json'] ?? ''; }
             if ( ! $schema ) { continue; }
+            // security: final guard against a </script> breakout — the stored value
+            // should already be slash-escaped by Anchor_Schema_Helper, but this
+            // neutralizes any legacy/unescaped data that predates that fix.
+            $schema = str_replace( '</', '<\/', $schema );
             echo "\n<script type=\"application/ld+json\">" . $schema . "</script>\n";
             $printed++;
         }

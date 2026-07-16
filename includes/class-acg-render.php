@@ -19,6 +19,9 @@ class ACG_Render {
             $schema = isset($it['min_json']) ? $it['min_json'] : '';
             if ( ! $schema ) { $schema = $it['json'] ?? ''; }
             if ( ! $schema ) { continue; }
+            // security: final guard against a </script> breakout (dead code — see
+            // note in ACG_Admin::minify_json() — fixed defensively regardless).
+            $schema = str_replace( '</', '<\/', $schema );
             echo "\n<script type=\"application/ld+json\">" . $schema . "</script>\n";
             $printed++;
         }

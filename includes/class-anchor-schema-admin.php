@@ -445,6 +445,10 @@ class Anchor_Schema_Admin {
         $custom  = isset($_POST['custom']) ? sanitize_text_field($_POST['custom']) : '';
         $raw     = isset($_POST['raw']) ? wp_kses_post($_POST['raw']) : '';
 
+        // security: edit_posts alone doesn't confirm the user can edit THIS post;
+        // without this a Contributor could write schema onto any post_id.
+        if ( ! current_user_can( 'edit_post', $post_id ) ) { wp_send_json_error('no_cap'); }
+
         Anchor_Schema_Logger::log('ajax_generate:start', [ 'post_id' => $post_id, 'type' => $type, 'custom' => $custom, 'raw_len' => strlen($raw) ]);
 
         if ( empty($post_id) || empty($raw) ) { wp_send_json_error([ 'message' => 'Missing required fields' ]); }
@@ -501,6 +505,11 @@ class Anchor_Schema_Admin {
         $post_id = absint($_POST['post_id'] ?? 0);
         $id      = sanitize_text_field($_POST['id'] ?? '');
         $data    = wp_unslash($_POST['data'] ?? []);
+
+        // security: edit_posts alone doesn't confirm the user can edit THIS post;
+        // without this a Contributor could rewrite schema on any post_id.
+        if ( ! current_user_can( 'edit_post', $post_id ) ) { wp_send_json_error('no_cap'); }
+
         Anchor_Schema_Logger::log('ajax_update_item', [ 'post_id' => $post_id, 'id' => $id ]);
 
         if ( empty($post_id) || empty($id) ) { wp_send_json_error([ 'message' => 'Missing id' ]); }
@@ -541,6 +550,10 @@ class Anchor_Schema_Admin {
         $post_id  = isset($_POST['post_id']) ? absint($_POST['post_id']) : 0;
         $filename = isset($_POST['filename']) ? sanitize_file_name($_POST['filename']) : '';
         $content  = isset($_POST['content']) ? wp_unslash($_POST['content']) : '';
+
+        // security: edit_posts alone doesn't confirm the user can edit THIS post;
+        // without this a Contributor could upload schema onto any post_id.
+        if ( ! current_user_can( 'edit_post', $post_id ) ) { wp_send_json_error('no_cap'); }
 
         Anchor_Schema_Logger::log('ajax_upload:start', [ 'post_id' => $post_id, 'filename' => $filename, 'len' => strlen($content) ]);
 

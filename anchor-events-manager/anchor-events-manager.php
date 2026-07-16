@@ -2214,17 +2214,6 @@ class Module {
                         </label>
                     </div>
                     <div class="anchor-event-field anchor-event-registration-fields">
-                        <label for="anchor_event_registration_type"><?php echo esc_html__( 'Registration type', 'anchor-schema' ); ?></label>
-                        <select id="anchor_event_registration_type" name="anchor_event_registration_type">
-                            <option value="internal" <?php selected( $meta['registration_type'], 'internal' ); ?>><?php echo esc_html__( 'Internal', 'anchor-schema' ); ?></option>
-                            <option value="external" <?php selected( $meta['registration_type'], 'external' ); ?>><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></option>
-                        </select>
-                    </div>
-                    <div class="anchor-event-field anchor-event-registration-fields" id="anchor-event-registration-url">
-                        <label for="anchor_event_registration_url"><?php echo esc_html__( 'External Registration URL', 'anchor-schema' ); ?></label>
-                        <input type="url" id="anchor_event_registration_url" name="anchor_event_registration_url" value="<?php echo esc_attr( $meta['registration_url'] ); ?>" />
-                    </div>
-                    <div class="anchor-event-field anchor-event-registration-fields">
                         <label for="anchor_event_price"><?php echo esc_html__( 'Price (optional)', 'anchor-schema' ); ?></label>
                         <input type="text" id="anchor_event_price" name="anchor_event_price" value="<?php echo esc_attr( $meta['price'] ); ?>" />
                     </div>
@@ -2904,8 +2893,17 @@ class Module {
             'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
             'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
             'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
-            'registration_type' => sanitize_text_field( $_POST['anchor_event_registration_type'] ?? 'internal' ),
-            'registration_url' => esc_url_raw( $_POST['anchor_event_registration_url'] ?? '' ),
+            // Task BC: `registration_type`/`registration_url` are intentionally
+            // NOT in this allow-list — the metabox no longer renders those
+            // legacy fields (superseded by registration_mode/external_url
+            // below), and this save loop writes every key present here via
+            // update_post_meta() regardless of whether $_POST carries it. Had
+            // they stayed listed, their absence from $_POST would sanitize to
+            // 'internal'/'' and silently BLANK an old external event's real
+            // link on its next re-save. Leaving them out of $input means this
+            // save path never touches those two legacy keys at all — old
+            // events keep whatever they already have, and external_url()/
+            // get_meta() still read them as a fallback (see those methods).
             'price' => sanitize_text_field( $_POST['anchor_event_price'] ?? '' ),
             'hide_from_archive' => ! empty( $_POST['anchor_event_hide_from_archive'] ),
             'featured' => ! empty( $_POST['anchor_event_featured'] ),
@@ -4416,14 +4414,6 @@ class Module {
                     <div class="anchor-event-field anchor-event-registration-fields"><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_open"><?php echo esc_html__( 'Registration opens', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_open" name="anchor_event_registration_open" value="<?php echo esc_attr( $meta['registration_open'] ); ?>" /></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
-                    <div class="anchor-event-field anchor-event-registration-fields">
-                        <label for="anchor_event_registration_type"><?php echo esc_html__( 'Registration type', 'anchor-schema' ); ?></label>
-                        <select id="anchor_event_registration_type" name="anchor_event_registration_type">
-                            <option value="internal" <?php selected( $meta['registration_type'], 'internal' ); ?>>Internal</option>
-                            <option value="external" <?php selected( $meta['registration_type'], 'external' ); ?>>External URL</option>
-                        </select>
-                    </div>
-                    <div class="anchor-event-field anchor-event-registration-fields" id="anchor-event-registration-url"><label for="anchor_event_registration_url"><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></label><input type="url" id="anchor_event_registration_url" name="anchor_event_registration_url" value="<?php echo esc_attr( $meta['registration_url'] ); ?>" /></div>
                 </div>
             </div>
 
@@ -4621,8 +4611,11 @@ class Module {
             'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
             'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
             'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
-            'registration_type' => sanitize_text_field( $_POST['anchor_event_registration_type'] ?? 'internal' ),
-            'registration_url' => esc_url_raw( $_POST['anchor_event_registration_url'] ?? '' ),
+            // Task BC: see save_meta()'s matching comment — `registration_type`/
+            // `registration_url` are deliberately absent from this front-end
+            // form's $input too, for the identical reason (the legacy fields
+            // no longer render here either; leaving them listed would blank
+            // an old external event's real link on its next re-save).
             'hide_from_archive' => false,
             'featured' => false,
             'priority' => 0,
@@ -6124,6 +6117,19 @@ class Module {
             }
             $defaults[ $key ] = $stored;
         }
+
+        // BC fallback (Task BC): a pre-upgrade external event only ever wrote
+        // the legacy `registration_url` meta and never got a chance to write
+        // `external_url` — the loop above would otherwise return '' here even
+        // though the event plainly has a real registration link. Route every
+        // consumer of get_meta() (render_external_registration(),
+        // Event_Schema::build_external_offer(), and both authoring forms'
+        // pre-filled "External URL" field) through the single external_url()
+        // accessor so they all resolve the same way. See that method's
+        // docblock for why this is belt-and-suspenders with the
+        // registration_url -> external_url copy in migrate_registration_mode().
+        $defaults['external_url'] = $this->external_url( $post_id );
+
         return $defaults;
     }
 
@@ -6165,6 +6171,33 @@ class Module {
             return $stored;
         }
         return $this->derive_registration_mode( $event_id );
+    }
+
+    /**
+     * The event's external registration URL, for external-mode display
+     * (render_external_registration()) and JSON-LD (Event_Schema::
+     * build_external_offer()) — both read this via get_meta()['external_url'],
+     * which calls this method (Task BC).
+     *
+     * An explicit `_anchor_event_external_url` wins; otherwise falls back to
+     * the legacy `_anchor_event_registration_url` meta. This is the live-read
+     * half of the BC fix: a pre-upgrade external event only ever wrote the
+     * legacy key, and this fallback means its link resolves correctly even on
+     * a site where the one-time migrate_registration_mode() migration below
+     * has NOT run yet (first page load after upgrade). The migration's own
+     * registration_url -> external_url copy is the belt-and-suspenders half,
+     * for any OTHER code that might read `_anchor_event_external_url` meta
+     * directly via get_post_meta() instead of through this accessor/get_meta().
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function external_url( $event_id ) {
+        $explicit = (string) \get_post_meta( $event_id, $this->meta_key( 'external_url' ), true );
+        if ( $explicit !== '' ) {
+            return $explicit;
+        }
+        return (string) \get_post_meta( $event_id, $this->meta_key( 'registration_url' ), true );
     }
 
     /**
@@ -6230,6 +6263,14 @@ class Module {
      * One-time back-compat migration: derives and persists registration_mode
      * for events that predate the key. Idempotent — guarded by an option flag,
      * so it's safe to call on every request.
+     *
+     * Task BC extension: for an event this derives as `external`, also copies
+     * the legacy `registration_url` into the new `external_url` key (only
+     * when `external_url` is still empty) — the migration mapping half of the
+     * external-URL BC fix (see external_url()'s docblock for the live-read
+     * fallback half). The legacy `registration_url`/`registration_type` meta
+     * is intentionally left in place, never cleared — other code (and this
+     * migration itself, if ever re-run) still reads it.
      */
     public function migrate_registration_mode() {
         if ( \get_option( 'anchor_events_regmode_migrated' ) ) {
@@ -6248,7 +6289,18 @@ class Module {
         ] );
 
         foreach ( $query->posts as $event_id ) {
-            \update_post_meta( $event_id, $this->meta_key( 'registration_mode' ), $this->derive_registration_mode( $event_id ) );
+            $mode = $this->derive_registration_mode( $event_id );
+            \update_post_meta( $event_id, $this->meta_key( 'registration_mode' ), $mode );
+
+            if ( $mode === 'external' ) {
+                $existing_external_url = (string) \get_post_meta( $event_id, $this->meta_key( 'external_url' ), true );
+                if ( $existing_external_url === '' ) {
+                    $legacy_url = (string) \get_post_meta( $event_id, $this->meta_key( 'registration_url' ), true );
+                    if ( $legacy_url !== '' ) {
+                        \update_post_meta( $event_id, $this->meta_key( 'external_url' ), $legacy_url );
+                    }
+                }
+            }
         }
 
         \update_option( 'anchor_events_regmode_migrated', true, false );

@@ -534,6 +534,8 @@ class Anchor_Schema_Admin {
         check_ajax_referer('anchor_schema_ajax', 'nonce');
         if ( ! current_user_can('edit_posts') ) { wp_send_json_error('no_cap'); }
         $post_id = absint($_POST['post_id'] ?? 0);
+        // security: per-post ownership check — a user may only modify schema for posts they can edit.
+        if ( ! current_user_can('edit_post', $post_id) ) { wp_send_json_error('no_cap'); }
         $id      = sanitize_text_field($_POST['id'] ?? '');
         Anchor_Schema_Logger::log('ajax_delete_item', [ 'post_id' => $post_id, 'id' => $id ]);
         $items = get_post_meta($post_id, self::META_KEY, true);

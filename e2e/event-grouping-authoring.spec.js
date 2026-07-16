@@ -1,6 +1,7 @@
 // @ts-check
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const { test, expect } = require('@playwright/test');
 
 /**
@@ -31,6 +32,17 @@ const { test, expect } = require('@playwright/test');
  * validation message and generate ZERO children, and completing the rule
  * (setting count=3) must then reconcile it to 3 — proving the guard blocks
  * reconcile() exactly until the rule is complete, never before or after.
+ * Test 2 creates its OWN event via post-new.php every run, so it never reads
+ * or mutates the seeded `recurring_event_id` fixture and needs no reset.
+ *
+ * TEST ISOLATION: `offering_event_id` is a SHARED fixture — test 1 itself
+ * mutates it in place (2 dates -> 3 dates) as part of what it's testing, so
+ * a second full-suite run against the same wp-env DB (no reseed in between)
+ * would otherwise find 3+ rows instead of the 2 it asserts as a starting
+ * precondition. Test 1 resets the fixture back to its canonical 2-row
+ * baseline via wp-cli at its own start (see resetOfferingFixture() below),
+ * so its "starts at 2" precondition holds regardless of what any prior test
+ * run — this spec's own or another spec's — left behind.
  *
  * The event editor is Gutenberg (block editor): it saves via REST with NO
  * page redirect, so the classic add_query_arg()/admin_notices() notice
@@ -97,11 +109,50 @@ function futureDateString(daysFromNow) {
   return d.toISOString().slice(0, 10);
 }
 
+/** Run a wp-cli command inside the wp-env `cli` container (same helper pattern as event-upcoming-sends.spec.js). */
+function wpEnvCli(cmd) {
+  return execSync(`npx wp-env run cli ${cmd}`, { encoding: 'utf8' });
+}
+
+/**
+ * Reset the shared offering-event fixture's `_anchor_event_offering_dates`
+ * meta back to its canonical 2-row baseline and re-run
+ * Occurrences::reconcile(), mirroring bin/e2e-seed.sh's offering-fixture
+ * block exactly. Idempotent and robust to the fixture being in ANY prior
+ * state (2 rows, 3 rows, or more) — it overwrites the meta wholesale rather
+ * than diffing against whatever is currently stored.
+ *
+ * The +60/+67-day offsets don't need to match the seed script's own
+ * `gmdate()` values bit-for-bit (no assertion in this spec checks the exact
+ * date strings, only the row/child COUNT), so reuse the existing
+ * `futureDateString()` helper here instead of shelling out twice more for
+ * `wp eval 'gmdate(...)'`.
+ */
+function resetOfferingFixture(offeringEventId) {
+  const offeringDates = JSON.stringify([
+    { date: futureDateString(60), start_time: '09:00', end_time: '11:00', label: 'Session A', capacity: 10 },
+    { date: futureDateString(67), start_time: '09:00', end_time: '11:00', label: 'Session B', capacity: 10 },
+  ]);
+  wpEnvCli(
+    `wp post meta update ${offeringEventId} _anchor_event_offering_dates '${offeringDates}' --format=json`
+  );
+  wpEnvCli(
+    `wp eval '$m = \\Anchor\\Events\\Module::instance(); echo ( $m && $m->occurrences ) ? count( $m->occurrences->reconcile( ${offeringEventId} ) ) : 0;'`
+  );
+}
+
 test.beforeEach(async ({ page }) => {
   await wpAdminLogin(page);
 });
 
 test('offering repeater: editing the seeded 2-date event to 3 dates reconciles to 3 live children', async ({ page }) => {
+  // Isolation: this test itself edits the fixture from 2 -> 3 rows, so a
+  // second run in the same suite pass (no reseed in between) would
+  // otherwise inherit the 3-row state this test's LAST run left behind.
+  // Reset to the canonical 2-row baseline before asserting the starting
+  // count below, regardless of what state the fixture is currently in.
+  resetOfferingFixture(seed.offering_event_id);
+
   await page.goto(`/wp-admin/post.php?post=${seed.offering_event_id}&action=edit`);
   await page.waitForTimeout(1200);
   await dismissWelcomeGuide(page);

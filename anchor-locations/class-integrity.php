@@ -54,7 +54,20 @@ class Integrity {
 		\add_action( 'deleted_post', [ $this, 'on_deleted_post' ], 10, 1 );
 		\add_action( 'trashed_post', [ $this, 'on_deleted_post' ], 10, 1 );
 		\add_action( 'edited_term', [ $this, 'on_edited_term' ], 10, 3 );
+		\add_action( 'delete_term', [ $this, 'on_edited_term' ], 10, 3 );
 		\add_action( 'set_object_terms', [ $this, 'on_set_object_terms' ], 10, 4 );
+
+		// Bare meta writes (WP-CLI `wp post meta update`, direct import) don't fire
+		// save_post, so hook the meta CRUD actions and bump when an al_* key changes
+		// on one of our CPTs.
+		\add_action( 'added_post_meta', [ $this, 'on_changed_post_meta' ], 10, 4 );
+		\add_action( 'updated_post_meta', [ $this, 'on_changed_post_meta' ], 10, 4 );
+		\add_action( 'deleted_post_meta', [ $this, 'on_changed_post_meta' ], 10, 4 );
+
+		// The settings default marker icon is baked into cached map_data, so a
+		// settings change must invalidate too.
+		\add_action( 'update_option_' . Module::OPTION, [ __CLASS__, 'bump_cache_version' ] );
+		\add_action( 'add_option_' . Module::OPTION, [ __CLASS__, 'bump_cache_version' ] );
 	}
 
 	/* ---- A. Slug-uniqueness (pure) ---- */
@@ -220,7 +233,20 @@ class Integrity {
 		}
 	}
 
-	/** Bump when a `service` term is edited (rename/reparent changes URLs/labels). */
+	/**
+	 * Bump when an `al_*` post-meta value is added/updated/deleted on one of our
+	 * CPTs — covers WP-CLI/import writes that never trigger save_post. Cheap: two
+	 * string/type guards before the single option write.
+	 */
+	public function on_changed_post_meta( $meta_id, $post_id, $meta_key, $meta_value ) {
+		if ( \strpos( (string) $meta_key, 'al_' ) !== 0 ) { return; }
+		$type = \get_post_type( $post_id );
+		if ( $type === Module::CPT_LOCATION || $type === Module::CPT_SERVICE ) {
+			self::bump_cache_version();
+		}
+	}
+
+	/** Bump when a `service` term is edited or deleted (changes URLs/labels/slugs). */
 	public function on_edited_term( $term_id, $tt_id, $taxonomy ) {
 		if ( $taxonomy === Module::TAX_SERVICE ) { self::bump_cache_version(); }
 	}

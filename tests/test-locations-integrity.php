@@ -192,6 +192,63 @@ class LocationsIntegrityTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'RootCity', $out3 );
 	}
 
+	public function test_map_data_cache_invalidated_by_bare_meta_update() {
+		// Owner workflow: `wp post meta update <id> al_lat ...` — no save_post fires.
+		$loc = $this->make_location( [ 'post_title' => 'MetaCity' ], [ 'al_lat' => '40.1', 'al_lng' => '-79.1', 'al_type' => 'city' ] );
+		$r1  = $this->mod->map_data();
+		$this->assertSame( '40.1', (string) $this->lat_for( $r1, 'MetaCity' ) );
+
+		// Change the coordinate directly via update_post_meta (no post save).
+		update_post_meta( $loc, 'al_lat', '41.5' );
+
+		$r2 = $this->mod->map_data();
+		// Before Fix 1 the cache version does not move, so map_data() serves the
+		// stale 40.1 from the transient and this assertion FAILS. After Fix 1 the
+		// added/updated_post_meta hook bumps the version -> recompute -> 41.5.
+		$this->assertSame( '41.5', (string) $this->lat_for( $r2, 'MetaCity' ), 'Bare al_* meta update must invalidate the map cache.' );
+	}
+
+	public function test_directory_cache_invalidated_by_bare_meta_update() {
+		$loc = $this->make_location( [ 'post_title' => 'DirMetaCity', 'post_parent' => 0 ], [ 'al_lat' => '40.1', 'al_lng' => '-79.1' ] );
+		$this->mod->sc_directory( [] ); // populate cache at current version
+		set_transient( $this->mod->directory_cache_key( [] ), '<div class="al-directory">STALE_DIR</div>', HOUR_IN_SECONDS );
+
+		// A bare meta write on our CPT must bump the version -> new key -> recompute.
+		update_post_meta( $loc, 'al_type', 'city' );
+
+		$out = $this->mod->sc_directory( [] );
+		$this->assertStringNotContainsString( 'STALE_DIR', $out, 'Bare al_* meta update must invalidate the directory cache.' );
+		$this->assertStringContainsString( 'DirMetaCity', $out );
+	}
+
+	public function test_meta_update_on_foreign_post_type_does_not_bump() {
+		$page = self::factory()->post->create( [ 'post_type' => 'page' ] );
+		$before = \Anchor\Locations\Integrity::cache_version();
+		update_post_meta( $page, 'al_lat', '41.5' ); // al_* key but not our CPT
+		$this->assertSame( $before, \Anchor\Locations\Integrity::cache_version(), 'Foreign post types must not bump the cache.' );
+	}
+
+	public function test_non_al_meta_update_does_not_bump() {
+		$loc = $this->make_location();
+		$before = \Anchor\Locations\Integrity::cache_version();
+		update_post_meta( $loc, 'some_other_key', 'x' ); // our CPT but not al_*
+		$this->assertSame( $before, \Anchor\Locations\Integrity::cache_version(), 'Non-al_* meta must not bump the cache.' );
+	}
+
+	public function test_settings_update_bumps_cache_version() {
+		$before = \Anchor\Locations\Integrity::cache_version();
+		update_option( \Anchor\Locations\Module::OPTION, [ 'marker_icon' => 'https://example.com/pin.png' ], false );
+		$this->assertGreaterThan( $before, \Anchor\Locations\Integrity::cache_version(), 'Settings change must bump the cache version.' );
+	}
+
+	/** Pull the al_lat for a titled marker out of a map_data() result set. */
+	private function lat_for( array $markers, $title ) {
+		foreach ( $markers as $m ) {
+			if ( ( $m['title'] ?? '' ) === $title ) { return $m['lat'] ?? null; }
+		}
+		return null;
+	}
+
 	public function test_cache_bypassed_when_version_absent() {
 		// With the version option deleted, cache_version() is 0 and map_data() must
 		// compute uncached (no transient written) — the pre-Phase-8 behavior.

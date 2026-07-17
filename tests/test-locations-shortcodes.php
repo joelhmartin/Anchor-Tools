@@ -18,4 +18,22 @@ class LocationsShortcodesTest extends WP_UnitTestCase {
         $out = do_shortcode( '[anchor_page_content id="' . $id . '"]' );
         $this->assertStringContainsString( '<p>Body</p>', $out );
     }
+    public function test_child_locations_lists_only_published_children() {
+        $county = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Allegheny County' ] );
+        $city   = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pittsburgh', 'post_parent' => $county ] );
+        self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'draft', 'post_title' => 'Hidden', 'post_parent' => $county ] );
+        $out = do_shortcode( '[anchor_child_locations id="' . $county . '"]' );
+        $this->assertStringContainsString( 'Pittsburgh', $out );
+        $this->assertStringNotContainsString( 'Hidden', $out );
+    }
+    public function test_location_services_lists_service_pages_for_location() {
+        $loc  = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_name' => 'pittsburgh-pa' ] );
+        $term = wp_insert_term( 'Roofing', 'service' );
+        $sp   = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Roofing in Pittsburgh' ] );
+        wp_set_object_terms( $sp, [ (int) $term['term_id'] ], 'service' );
+        update_post_meta( $sp, 'al_location_id', $loc );
+        $out = do_shortcode( '[anchor_location_services id="' . $loc . '"]' );
+        $this->assertStringContainsString( 'Roofing in Pittsburgh', $out );
+        $this->assertStringContainsString( '/services/roofing/pittsburgh-pa/', $out );
+    }
 }

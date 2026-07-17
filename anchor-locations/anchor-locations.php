@@ -32,6 +32,14 @@ class Module {
 
         \add_filter( 'the_content', [ $this, 'the_content_render' ], 9 );
         \add_shortcode( 'anchor_page_content', [ $this, 'shortcode_page_content' ] );
+
+        \add_shortcode( 'anchor_breadcrumbs', [ $this, 'sc_breadcrumbs' ] );
+        \add_shortcode( 'anchor_child_locations', [ $this, 'sc_child_locations' ] );
+        \add_shortcode( 'anchor_location_parent', [ $this, 'sc_parent' ] );
+        \add_shortcode( 'anchor_nearby_locations', [ $this, 'sc_nearby' ] );
+        \add_shortcode( 'anchor_location_services', [ $this, 'sc_location_services' ] );
+        \add_shortcode( 'anchor_service_locations', [ $this, 'sc_service_locations' ] );
+        \add_shortcode( 'anchor_service_area_directory', [ $this, 'sc_directory' ] );
     }
 
     public function register_types() {
@@ -276,5 +284,101 @@ class Module {
         $id = (int) $atts['id'] ? (int) $atts['id'] : \get_the_ID();
         if ( ! $id ) { return ''; }
         return $this->render_body( $id );
+    }
+
+    /* ---- Frontend: internal-linking, directory & breadcrumb shortcodes ---- */
+
+    private function cur_id( $atts ) { $a = \shortcode_atts( [ 'id' => 0 ], $atts ); return (int) $a['id'] ? (int) $a['id'] : (int) \get_the_ID(); }
+
+    public function sc_child_locations( $atts ) {
+        $id = $this->cur_id( $atts );
+        $kids = \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => $id, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC' ] );
+        $html = '';
+        if ( $kids ) {
+            $html = '<ul class="al-child-locations">';
+            foreach ( $kids as $k ) { $html .= '<li><a href="' . \esc_url( \get_permalink( $k ) ) . '">' . \esc_html( \get_the_title( $k ) ) . '</a></li>'; }
+            $html .= '</ul>';
+        }
+        return \apply_filters( 'anchor_locations_child_locations_html', $html, $id );
+    }
+
+    public function sc_parent( $atts ) {
+        $id = $this->cur_id( $atts );
+        $p = (int) \get_post( $id )->post_parent;
+        $html = $p ? '<a class="al-parent" href="' . \esc_url( \get_permalink( $p ) ) . '">' . \esc_html( \get_the_title( $p ) ) . '</a>' : '';
+        return \apply_filters( 'anchor_locations_location_parent_html', $html, $id );
+    }
+
+    public function sc_nearby( $atts ) {
+        $id = $this->cur_id( $atts );
+        $parent = (int) \get_post( $id )->post_parent;
+        $sibs = $parent ? \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => $parent, 'exclude' => [ $id ], 'numberposts' => 12, 'orderby' => 'title', 'order' => 'ASC' ] ) : [];
+        $html = '';
+        if ( $sibs ) {
+            $html = '<ul class="al-nearby">';
+            foreach ( $sibs as $s ) { $html .= '<li><a href="' . \esc_url( \get_permalink( $s ) ) . '">' . \esc_html( \get_the_title( $s ) ) . '</a></li>'; }
+            $html .= '</ul>';
+        }
+        return \apply_filters( 'anchor_locations_nearby_locations_html', $html, $id );
+    }
+
+    public function sc_breadcrumbs( $atts ) {
+        $id = $this->cur_id( $atts );
+        $crumbs = [ '<a href="' . \esc_url( \home_url( '/' ) ) . '">' . \esc_html__( 'Home', 'anchor-schema' ) . '</a>' ];
+        $post = \get_post( $id );
+        if ( $post && $post->post_type === self::CPT_SERVICE ) {
+            $loc = (int) \get_post_meta( $id, 'al_location_id', true );
+            $anc = $loc ? \array_reverse( \get_post_ancestors( $loc ) ) : [];
+            foreach ( $anc as $aid ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( \get_the_title( $aid ) ) . '</a>'; }
+            if ( $loc ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $loc ) ) . '">' . \esc_html( \get_the_title( $loc ) ) . '</a>'; }
+            $crumbs[] = \esc_html( \get_the_title( $id ) );
+        } elseif ( $post ) {
+            foreach ( \array_reverse( \get_post_ancestors( $id ) ) as $aid ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( \get_the_title( $aid ) ) . '</a>'; }
+            $crumbs[] = \esc_html( \get_the_title( $id ) );
+        }
+        $html = '<nav class="al-breadcrumbs">' . \implode( ' <span class="sep">&rsaquo;</span> ', $crumbs ) . '</nav>';
+        return \apply_filters( 'anchor_locations_breadcrumbs_html', $html, $id );
+    }
+
+    public function sc_location_services( $atts ) {
+        $id = $this->cur_id( $atts );
+        $pages = \get_posts( [ 'post_type' => self::CPT_SERVICE, 'post_status' => 'publish', 'numberposts' => -1, 'meta_key' => 'al_location_id', 'meta_value' => $id ] );
+        $html = '';
+        if ( $pages ) {
+            $html = '<ul class="al-location-services">';
+            foreach ( $pages as $p ) { $html .= '<li><a href="' . \esc_url( $this->service_page_url( $p->ID ) ) . '">' . \esc_html( \get_the_title( $p ) ) . '</a></li>'; }
+            $html .= '</ul>';
+        }
+        return \apply_filters( 'anchor_locations_location_services_html', $html, $id );
+    }
+
+    public function sc_service_locations( $atts ) {
+        $id = $this->cur_id( $atts );
+        $terms = \wp_get_object_terms( $id, self::TAX_SERVICE, [ 'fields' => 'ids' ] );
+        $html = '';
+        if ( ! \is_wp_error( $terms ) && $terms ) {
+            $pages = \get_posts( [ 'post_type' => self::CPT_SERVICE, 'post_status' => 'publish', 'numberposts' => -1, 'exclude' => [ $id ], 'tax_query' => [ [ 'taxonomy' => self::TAX_SERVICE, 'field' => 'term_id', 'terms' => $terms ] ] ] );
+            if ( $pages ) {
+                $html = '<ul class="al-service-locations">';
+                foreach ( $pages as $p ) { $html .= '<li><a href="' . \esc_url( $this->service_page_url( $p->ID ) ) . '">' . \esc_html( \get_the_title( $p ) ) . '</a></li>'; }
+                $html .= '</ul>';
+            }
+        }
+        return \apply_filters( 'anchor_locations_service_locations_html', $html, $id );
+    }
+
+    public function sc_directory( $atts ) {
+        $roots = \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => 0, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC' ] );
+        $html = '<div class="al-directory">' . $this->directory_branch( $roots ) . '</div>';
+        return \apply_filters( 'anchor_locations_service_area_directory_html', $html, 0 );
+    }
+    private function directory_branch( $nodes ) {
+        if ( ! $nodes ) { return ''; }
+        $out = '<ul>';
+        foreach ( $nodes as $n ) {
+            $kids = \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => $n->ID, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC' ] );
+            $out .= '<li><a href="' . \esc_url( \get_permalink( $n ) ) . '">' . \esc_html( \get_the_title( $n ) ) . '</a>' . $this->directory_branch( $kids ) . '</li>';
+        }
+        return $out . '</ul>';
     }
 }

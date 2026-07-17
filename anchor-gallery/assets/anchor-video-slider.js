@@ -146,6 +146,38 @@
       if (e.target.hasAttribute('data-close')) closeLightbox();
     });
 
+    // Mirrors the carousel track's proven gesture handling (40px threshold,
+    // bail out when vertical movement dominates so page scroll still works).
+    (function initModalSwipe() {
+      var dialog = modal.querySelector('.avg-modal-dialog');
+      if (!dialog) return;
+      var startX = 0, startY = 0, deltaX = 0, swiping = false;
+      var threshold = 40;
+
+      dialog.addEventListener('touchstart', function(e) {
+        if (e.touches.length !== 1) { swiping = false; return; }
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        deltaX = 0;
+        swiping = true;
+      }, { passive: true });
+
+      dialog.addEventListener('touchmove', function(e) {
+        if (!swiping) return;
+        deltaX = e.touches[0].clientX - startX;
+        var deltaY = e.touches[0].clientY - startY;
+        if (Math.abs(deltaY) > Math.abs(deltaX)) swiping = false;
+      }, { passive: true });
+
+      dialog.addEventListener('touchend', function() {
+        if (!swiping) return;
+        swiping = false;
+        if (Math.abs(deltaX) > threshold) {
+          renderLightboxItem(lbState.index + (deltaX < 0 ? 1 : -1));
+        }
+      }, { passive: true });
+    })();
+
     return modal;
   }
 

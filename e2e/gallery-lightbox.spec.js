@@ -172,3 +172,57 @@ test('focus returns to the originating tile on close', async ({ page }) => {
   );
   expect(focusedIndex).toBe('1');
 });
+
+test.describe('touch', () => {
+  test.use({ hasTouch: true });
+
+  /** Dispatch a horizontal swipe across an element's centre. */
+  async function swipe(page, selector, distance) {
+    await page.evaluate(
+      ({ selector, distance }) => {
+        const el = document.querySelector(selector);
+        const box = el.getBoundingClientRect();
+        const y = box.top + box.height / 2;
+        const startX = box.left + box.width / 2;
+        const touch = (x) => [new Touch({ identifier: 1, target: el, clientX: x, clientY: y })];
+        const fire = (type, x) =>
+          el.dispatchEvent(
+            new TouchEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              touches: type === 'touchend' ? [] : touch(x),
+              changedTouches: touch(x),
+            })
+          );
+        fire('touchstart', startX);
+        fire('touchmove', startX + distance / 2);
+        fire('touchmove', startX + distance);
+        fire('touchend', startX + distance);
+      },
+      { selector, distance }
+    );
+  }
+
+  test('swiping left advances and swiping right goes back', async ({ page }) => {
+    await page.goto(seed.gallery_page_url);
+    await page.locator('.anchor-video-gallery .avg-tile').nth(0).click();
+
+    const counter = page.locator('.avg-modal-counter');
+    await expect(counter).toHaveText('1 / 6');
+
+    await swipe(page, '.avg-modal-dialog', -120);
+    await expect(counter).toHaveText('2 / 6');
+
+    await swipe(page, '.avg-modal-dialog', 120);
+    await expect(counter).toHaveText('1 / 6');
+  });
+
+  test('a short swipe below threshold does not navigate', async ({ page }) => {
+    await page.goto(seed.gallery_page_url);
+    await page.locator('.anchor-video-gallery .avg-tile').nth(0).click();
+
+    const counter = page.locator('.avg-modal-counter');
+    await swipe(page, '.avg-modal-dialog', -20);
+    await expect(counter).toHaveText('1 / 6');
+  });
+});

@@ -68,6 +68,12 @@ class Module {
         // navigation only — never generates, mutates, or bulk-creates content.
         require_once __DIR__ . '/class-dashboard.php';
         new Dashboard();
+
+        // Phase 6: JSON (full migration) + CSV (bulk edit) import/export. Upserts
+        // by slug from a user-supplied file — never fabricates combinations, never
+        // deletes. Registers the "Import / Export" admin submenu + handlers.
+        require_once __DIR__ . '/class-io.php';
+        new IO();
     }
 
     private $assets_enqueued = false;

@@ -81,6 +81,12 @@ class Module {
         // means is_configured() is false and NO HTTP is ever attempted.
         require_once __DIR__ . '/class-analytics.php';
         new Analytics();
+
+        // Phase 8: hardening — data-integrity nudges (slug collisions, orphan /
+        // duplicate / missing-coords notices + list marker) and a versioned cache
+        // invalidation scheme that map_data() + the directory shortcode key into.
+        require_once __DIR__ . '/class-integrity.php';
+        new Integrity();
     }
 
     private $assets_enqueued = false;

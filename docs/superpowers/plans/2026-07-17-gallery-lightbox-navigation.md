@@ -1271,7 +1271,27 @@ test('gallery layout: clicking featured opens at the active thumb', async ({ pag
   await expect(page.locator('.avg-modal')).toBeVisible();
   await expect(page.locator('.avg-modal-counter')).toHaveText('3 / 6');
 });
+
+test('gallery layout: lightbox shows the item caption', async ({ page }) => {
+  await page.goto(seed.gallery_featured_page_url);
+  // Thumb index 3 is the Blue image, caption "Caption blue".
+  await page.locator('.avg-gallery-thumb').nth(3).click();
+  await page.locator('.avg-gallery-featured').click();
+  await expect(page.locator('.avg-modal .avg-popup-caption')).toHaveText('Caption blue');
+});
 ```
+
+- [ ] **Step 2a: Fix the gallery-layout caption gap (carried from Task 3 review)**
+
+Task 3's review found that `render_gallery_layout()` never emits `data-caption`, so the lightbox caption is silently blank in gallery layout even when the admin set one. The standard grid emits it at `anchor-gallery.php:2233-2234`; the thumb strip does not. Add it to the `.avg-gallery-thumb` opening tag (currently `anchor-gallery.php:2577-2590` — locate by content, the `data-label`/`title` attributes on the thumb `<div>`), matching the grid's gating:
+
+```php
+                         <?php if ( ! empty( $video['caption'] ) ) : ?>data-caption="<?php echo esc_attr( wp_strip_all_tags( $video['caption'] ) ); ?>"<?php endif; ?>
+```
+
+Do the same for the `.avg-gallery-featured` tile opening tag (near `anchor-gallery.php:2534`) so opening straight from the featured pane also carries the caption.
+
+**Before writing the fixture and assertions, verify one thing against the real render path:** `render_gallery_layout()`'s thumb loop branches only image/video (`anchor-gallery.php:2574` — `$item_type = $video['provider'] === 'image' ? 'image' : 'video';`), with **no `html` branch**. The Task 1 fixture's item 4 is an `html` item. Confirm how it renders here — it will likely be treated as a video with an empty `data-video-id`. If that breaks the `3 / 6` count or the featured test, the gallery-layout fixture (`gallery_featured_page_url`, seeded in Step 1) should use an **image/video-only** item set (drop the html item) so the gallery fixture reflects what the layout actually supports. Adjust the seeded `avg_videos` for the featured gallery and the expected counter text to match reality. Report what you found and chose.
 
 - [ ] **Step 3: Re-seed and run**
 
@@ -1280,7 +1300,7 @@ npm run env:seed
 npx playwright test e2e/gallery-lightbox.spec.js --reporter=list
 ```
 
-Expected: PASS (all fourteen tests).
+Expected: PASS (all fifteen tests: thirteen prior + the two new gallery-layout tests, minus any the html-item adjustment folds together — report the final count).
 
 If the filter test fails on the selector, confirm the real filter-button class by inspecting `render_filterable_layout()` (`anchor-gallery.php:2391`) and update the selector to match — do not change the JS to suit the test.
 

@@ -56,6 +56,11 @@ class Module {
         // sitemap exclusion, [anchor_h1], full-width template wiring).
         require_once __DIR__ . '/class-seo.php';
         new SEO();
+
+        // Phase 5: read-only Coverage Matrix + SEO Quality Dashboard. Reporting +
+        // navigation only — never generates, mutates, or bulk-creates content.
+        require_once __DIR__ . '/class-dashboard.php';
+        new Dashboard();
     }
 
     private $assets_enqueued = false;
@@ -311,6 +316,12 @@ class Module {
     public function render_details_metabox( $post ) {
         if ( $post->post_type === self::CPT_SERVICE ) {
             $loc = (int) \get_post_meta( $post->ID, 'al_location_id', true );
+            // Phase 5: pre-fill from the Coverage matrix "Add" link on a brand-new
+            // (auto-draft) service page. Render-side default only — nothing is
+            // written until the human saves; validated as an int.
+            if ( $loc === 0 && $post->post_status === 'auto-draft' && isset( $_GET['al_prefill_location'] ) ) {
+                $loc = (int) $_GET['al_prefill_location'];
+            }
             echo '<p><label>' . \esc_html__( 'Linked Location (post ID)', 'anchor-schema' ) . '<br><input type="number" name="al_location_id" value="' . \esc_attr( $loc ) . '" class="widefat"></label></p>';
             echo '<p class="description">' . \esc_html__( 'Set the Service term via the Services box. Both are required for a live URL.', 'anchor-schema' ) . '</p>';
             return;

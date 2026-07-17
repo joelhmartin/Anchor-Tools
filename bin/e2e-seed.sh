@@ -65,7 +65,10 @@ fi
 log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 
 # ---------------------------------------------------------------------------
-# Enable the Anchor Events module (gate the events feature on).
+# Enable the Anchor Events + Anchor Gallery (video_slider) modules (gate the
+# features on). anchor_tools_is_module_enabled() treats an ABSENT key as
+# disabled (anchor-tools.php ~line 315), so every module a spec needs must be
+# listed here explicitly — it is not enough for the module to merely exist.
 # ---------------------------------------------------------------------------
 # Fresh test site: set the whole option (no other keys to preserve). `patch
 # update modules` would fail because the nested key doesn't exist yet.
@@ -75,10 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != '{"modules":{"events_manager":true}}' ]; then
-  wp option update anchor_schema_settings '{"modules":{"events_manager":true}}' --format=json --autoload=no >/dev/null
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true}}'
+if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
+  wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events module enabled."
+log "Events + Gallery modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.
@@ -381,6 +385,76 @@ RECURRING_LIVE_COUNT="$(wp eval '$m = \Anchor\Events\Module::instance(); echo ( 
 log "Recurring event #${RECURRING_EVENT_ID} reconciled -> ${RECURRING_LIVE_COUNT} live occurrence(s)."
 
 # ---------------------------------------------------------------------------
+# Gallery fixture (lightbox navigation E2E).
+# Six items in a known order: image, image, video, image, html, image.
+# Images are generated with GD so the seed needs no binary fixtures in git.
+# ---------------------------------------------------------------------------
+GALLERY_IDS="$(wp eval '
+  $ids = [];
+  foreach ( [ "red" => [220,60,60], "green" => [60,180,90], "blue" => [60,110,220], "amber" => [235,175,50] ] as $name => $rgb ) {
+      $existing = get_posts( [ "post_type" => "attachment", "name" => "avg-e2e-$name", "posts_per_page" => 1, "fields" => "ids" ] );
+      if ( $existing ) { $ids[] = (int) $existing[0]; continue; }
+      $tmp = wp_tempnam( "avg-e2e-$name.png" );
+      $im  = imagecreatetruecolor( 600, 400 );
+      imagefilledrectangle( $im, 0, 0, 600, 400, imagecolorallocate( $im, $rgb[0], $rgb[1], $rgb[2] ) );
+      imagepng( $im, $tmp );
+      imagedestroy( $im );
+      $upload = wp_upload_bits( "avg-e2e-$name.png", null, file_get_contents( $tmp ) );
+      @unlink( $tmp );
+      $att = wp_insert_attachment( [
+          "post_mime_type" => "image/png",
+          "post_title"     => "avg-e2e-$name",
+          "post_name"      => "avg-e2e-$name",
+          "post_status"    => "inherit",
+      ], $upload["file"] );
+      require_once ABSPATH . "wp-admin/includes/image.php";
+      wp_update_attachment_metadata( $att, wp_generate_attachment_metadata( $att, $upload["file"] ) );
+      $ids[] = (int) $att;
+  }
+  echo implode( ",", $ids );
+')"
+log "Gallery attachments: ${GALLERY_IDS}"
+
+GALLERY_ID="$(wp eval '
+  list( $a, $b, $c, $d ) = array_map( "intval", explode( ",", "'"${GALLERY_IDS}"'" ) );
+  $existing = get_posts( [ "post_type" => "anchor_video_gallery", "name" => "avg-e2e-lightbox", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "anchor_video_gallery",
+      "post_title"  => "AVG E2E Lightbox",
+      "post_name"   => "avg-e2e-lightbox",
+      "post_status" => "publish",
+  ] );
+  $items = [
+      [ "type" => "image", "attachment_id" => $a, "title" => "Red",   "alt" => "Red image",   "caption" => "Caption red",   "categories" => [ "warm" ] ],
+      [ "type" => "image", "attachment_id" => $b, "title" => "Green", "alt" => "Green image", "caption" => "Caption green", "categories" => [ "cool" ] ],
+      [ "type" => "video", "url" => "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "title" => "Vid", "caption" => "Caption vid", "categories" => [ "cool" ] ],
+      [ "type" => "image", "attachment_id" => $c, "title" => "Blue",  "alt" => "Blue image",  "caption" => "Caption blue",  "categories" => [ "cool" ] ],
+      [ "type" => "html",  "html" => "<p class=\"avg-e2e-html\">Hello HTML</p>", "title" => "Html", "categories" => [ "warm" ] ],
+      [ "type" => "image", "attachment_id" => $d, "title" => "Amber", "alt" => "Amber image", "caption" => "Caption amber", "categories" => [ "warm" ] ],
+  ];
+  update_post_meta( $id, "avg_videos", $items );
+  update_post_meta( $id, "avg_layout", "grid" );
+  update_post_meta( $id, "avg_popup_style", "lightbox" );
+  update_post_meta( $id, "avg_pagination_enabled", 0 );
+  update_post_meta( $id, "avg_title_position", "below" );
+  echo (int) $id;
+')"
+log "Gallery #${GALLERY_ID}"
+
+GALLERY_PAGE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "page", "name" => "avg-e2e-gallery", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "AVG E2E Gallery",
+      "post_name"   => "avg-e2e-gallery",
+      "post_status" => "publish",
+  ] );
+  wp_update_post( [ "ID" => $id, "post_content" => "[anchor_video_gallery id=\"'"${GALLERY_ID}"'\"]" ] );
+  echo (int) $id;
+')"
+log "Gallery page #${GALLERY_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
 # Emit the fixture for the Playwright specs (written via WP so the path is
 # correct inside the container; the bind mount surfaces it on the host).
 # ---------------------------------------------------------------------------
@@ -391,8 +465,9 @@ EXT_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EVENT_ID}"');')"
 EXT_EMBED_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EMBED_EVENT_ID}"');')"
 OFFERING_EVENT_URL="$(wp eval 'echo get_permalink('"${OFFERING_EVENT_ID}"');')"
 RECURRING_EVENT_URL="$(wp eval 'echo get_permalink('"${RECURRING_EVENT_ID}"');')"
+GALLERY_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_PAGE_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Multisession event URL: ${MULTI_EVENT_URL}"
@@ -400,5 +475,6 @@ log "External (link) event URL: ${EXT_EVENT_URL}"
 log "External (embed) event URL: ${EXT_EMBED_EVENT_URL}"
 log "Offering event URL: ${OFFERING_EVENT_URL}"
 log "Recurring event URL: ${RECURRING_EVENT_URL}"
+log "Gallery page URL: ${GALLERY_PAGE_URL}"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 log "Seed complete."

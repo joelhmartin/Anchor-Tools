@@ -36,4 +36,25 @@ class LocationsSchemaTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'areaServed', $json );
 		$this->assertStringNotContainsString( 'PostalAddress', $json );
 	}
+
+	public function test_breadcrumbs_exclude_unpublished_ancestor() {
+		$root = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pennsylvania' ] );
+		$draft_middle = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'draft', 'post_title' => 'SecretCounty', 'post_parent' => $root ] );
+		$leaf = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pittsburgh', 'post_parent' => $draft_middle ] );
+		update_post_meta( $leaf, 'al_type', 'city' );
+
+		$graph = ( new \Anchor\Locations\Module() )->build_schema( $leaf );
+		$breadcrumbs = null;
+		foreach ( $graph as $node ) {
+			if ( isset( $node['@type'] ) && $node['@type'] === 'BreadcrumbList' ) {
+				$breadcrumbs = $node;
+				break;
+			}
+		}
+		$this->assertNotNull( $breadcrumbs );
+		$names = array_column( $breadcrumbs['itemListElement'], 'name' );
+		$this->assertNotContains( 'SecretCounty', $names );
+		$this->assertContains( 'Pennsylvania', $names );
+		$this->assertContains( 'Pittsburgh', $names );
+	}
 }

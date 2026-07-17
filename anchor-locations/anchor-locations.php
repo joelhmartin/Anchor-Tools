@@ -473,13 +473,21 @@ class Module {
         $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => 'Home', 'item' => \home_url( '/' ) ];
         if ( $post->post_type === self::CPT_SERVICE ) {
             $loc = (int) \get_post_meta( $post_id, 'al_location_id', true );
-            $chain = $loc ? \array_merge( \array_reverse( \get_post_ancestors( $loc ) ), [ $loc ] ) : [];
-            foreach ( $chain as $aid ) { $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $aid ), 'item' => \get_permalink( $aid ) ]; }
-            $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $post_id ), 'item' => $this->service_page_url( $post_id ) ];
-        } else {
-            foreach ( \array_merge( \array_reverse( \get_post_ancestors( $post_id ) ), [ $post_id ] ) as $aid ) {
+            $chain = $loc ? \array_reverse( \get_post_ancestors( $loc ) ) : [];
+            foreach ( $chain as $aid ) {
+                if ( \get_post_status( $aid ) !== 'publish' ) { continue; }
                 $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $aid ), 'item' => \get_permalink( $aid ) ];
             }
+            if ( $loc && \get_post_status( $loc ) === 'publish' ) {
+                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $loc ), 'item' => \get_permalink( $loc ) ];
+            }
+            $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $post_id ), 'item' => $this->service_page_url( $post_id ) ];
+        } else {
+            foreach ( \array_reverse( \get_post_ancestors( $post_id ) ) as $aid ) {
+                if ( \get_post_status( $aid ) !== 'publish' ) { continue; }
+                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $aid ), 'item' => \get_permalink( $aid ) ];
+            }
+            $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $post_id ), 'item' => \get_permalink( $post_id ) ];
         }
         $graph[] = [ '@type' => 'BreadcrumbList', 'itemListElement' => $items ];
 

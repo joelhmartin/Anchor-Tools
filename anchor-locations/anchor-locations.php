@@ -74,6 +74,13 @@ class Module {
         // deletes. Registers the "Import / Export" admin submenu + handlers.
         require_once __DIR__ . '/class-io.php';
         new IO();
+
+        // Phase 7: Search Console + GA4 per-page reporting. Server-to-server auth
+        // via a pasted Google service-account key (RS256 JWT, no OAuth redirect,
+        // no heavy deps). Admin-only. Dormant until configured — no credentials
+        // means is_configured() is false and NO HTTP is ever attempted.
+        require_once __DIR__ . '/class-analytics.php';
+        new Analytics();
     }
 
     private $assets_enqueued = false;

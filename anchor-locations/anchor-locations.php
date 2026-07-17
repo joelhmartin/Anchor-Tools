@@ -14,7 +14,14 @@ class Module {
     const OPTION       = 'anchor_locations_settings';
     const NONCE        = 'anchor_locations_nonce';
 
+    /** The live Module instance (set in __construct); reused by Dashboard to avoid re-instantiating. */
+    private static $instance = null;
+
+    /** @return self|null The constructed Module instance, or null if none has been built yet. */
+    public static function instance() { return self::$instance; }
+
     public function __construct() {
+        self::$instance = $this;
         \add_action( 'init', [ $this, 'register_types' ] );
         \add_action( 'init', [ $this, 'add_rewrite_rules' ] );
         \add_filter( 'query_vars', [ $this, 'query_vars' ] );

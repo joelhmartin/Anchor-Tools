@@ -146,7 +146,10 @@ class Dashboard {
 
 	/** Front-end URL for a service page, or '' when it can't be resolved. */
 	private function view_url( int $post_id ): string {
-		$mod = new Module(); // service_page_url is a light meta/term read; no side effects.
+		// Reuse the already-constructed Module singleton — building a new Module
+		// here re-registers ~20 hooks (plus Libraries/SEO/Dashboard) per matrix cell.
+		$mod = Module::instance();
+		if ( ! $mod ) { return ''; }
 		$url = $mod->service_page_url( $post_id );
 		return ( $url && $url !== '#' ) ? $url : '';
 	}
@@ -180,7 +183,7 @@ class Dashboard {
 		$html = (string) \get_post_meta( $post_id, 'al_html', true );
 
 		$score = 0;
-		if ( \strlen( \trim( \wp_strip_all_tags( $html ) ) ) >= self::THIN_CHARS ) { $score += 20; }
+		if ( \mb_strlen( \trim( \wp_strip_all_tags( $html ) ) ) >= self::THIN_CHARS ) { $score += 20; }
 		if ( \trim( (string) \get_post_meta( $post_id, 'al_seo_title', true ) ) !== '' ) { $score += 15; }
 		if ( \trim( (string) \get_post_meta( $post_id, 'al_seo_desc', true ) ) !== '' ) { $score += 15; }
 		if ( $this->has_coords_for( $post_id, $type ) ) { $score += 15; }
@@ -236,7 +239,7 @@ class Dashboard {
 
 		foreach ( $all as $p ) {
 			$html = (string) \get_post_meta( $p->ID, 'al_html', true );
-			if ( \strlen( \trim( \wp_strip_all_tags( $html ) ) ) < self::THIN_CHARS ) { $thin[] = $this->post_ref( $p ); }
+			if ( \mb_strlen( \trim( \wp_strip_all_tags( $html ) ) ) < self::THIN_CHARS ) { $thin[] = $this->post_ref( $p ); }
 			if ( \trim( (string) \get_post_meta( $p->ID, 'al_seo_title', true ) ) === '' ) { $no_title[] = $this->post_ref( $p ); }
 			if ( \trim( (string) \get_post_meta( $p->ID, 'al_seo_desc', true ) ) === '' ) { $no_desc[] = $this->post_ref( $p ); }
 			if ( ! $this->has_h1( (int) $p->ID, $html ) ) { $no_h1[] = $this->post_ref( $p ); }

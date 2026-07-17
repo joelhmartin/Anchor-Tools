@@ -296,6 +296,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/anchor-translate.php',
                 'class'       => 'Anchor_Translate_Module',
             ],
+            'locations' => [
+                'label'       => __( 'Anchor Locations', 'anchor-schema' ),
+                'description' => __( 'Service-area & service-location pages with a linked Google map, hierarchy, and internal linking.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-locations/anchor-locations.php',
+                'class'       => '\\Anchor\\Locations\\Module',
+            ],
         ];
     }
 }

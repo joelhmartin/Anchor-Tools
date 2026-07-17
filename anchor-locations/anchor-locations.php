@@ -50,10 +50,18 @@ class Module {
     }
 
     private $assets_enqueued = false;
+    private $rendering       = []; // post_id => true (recursion guard for [anchor_page_content])
+    private static $map_seq  = 0;  // per-request counter for unique [anchor_location_map] container ids
 
     public function register_types() {
         \register_post_type( self::CPT_LOCATION, [
-            'labels'       => [ 'name' => 'Locations', 'singular_name' => 'Location', 'menu_name' => 'Anchor Locations', 'add_new_item' => 'Add New Location', 'edit_item' => 'Edit Location' ],
+            'labels'       => [
+                'name'          => \__( 'Locations', 'anchor-schema' ),
+                'singular_name' => \__( 'Location', 'anchor-schema' ),
+                'menu_name'     => \__( 'Anchor Locations', 'anchor-schema' ),
+                'add_new_item'  => \__( 'Add New Location', 'anchor-schema' ),
+                'edit_item'     => \__( 'Edit Location', 'anchor-schema' ),
+            ],
             'public'       => true,
             'hierarchical' => true,
             'show_in_menu' => \apply_filters( 'anchor_locations_parent_menu', true ),
@@ -64,7 +72,12 @@ class Module {
         ] );
 
         \register_post_type( self::CPT_SERVICE, [
-            'labels'       => [ 'name' => 'Service Pages', 'singular_name' => 'Service Page', 'add_new_item' => 'Add New Service Page', 'edit_item' => 'Edit Service Page' ],
+            'labels'       => [
+                'name'          => \__( 'Service Pages', 'anchor-schema' ),
+                'singular_name' => \__( 'Service Page', 'anchor-schema' ),
+                'add_new_item'  => \__( 'Add New Service Page', 'anchor-schema' ),
+                'edit_item'     => \__( 'Edit Service Page', 'anchor-schema' ),
+            ],
             'public'       => true,
             'hierarchical' => false,
             'show_in_menu' => 'edit.php?post_type=' . self::CPT_LOCATION,
@@ -74,7 +87,7 @@ class Module {
         ] );
 
         \register_taxonomy( self::TAX_SERVICE, self::CPT_SERVICE, [
-            'labels'       => [ 'name' => 'Services', 'singular_name' => 'Service' ],
+            'labels'       => [ 'name' => \__( 'Services', 'anchor-schema' ), 'singular_name' => \__( 'Service', 'anchor-schema' ) ],
             'public'       => false,
             'show_ui'      => true,
             'hierarchical' => true,
@@ -245,7 +258,7 @@ class Module {
             \esc_html__( 'Wraps every location/service page. Include %s where the page body goes. Leave blank to disable.', 'anchor-schema' ),
             '<code>{{content}}</code>'
         ) . '</p>';
-        echo '<div class="anchor-monaco" data-anchor-monaco="' . \esc_attr( $spec ) . '">';
+        echo '<div class="anchor-monaco" data-anchor-monaco=\'' . \esc_attr( $spec ) . '\'>';
         echo '<textarea id="al_wrapper_html" name="' . \esc_attr( $opt ) . '[wrapper_html]" style="display:none">' . \esc_textarea( $s['wrapper_html'] ?? '' ) . '</textarea>';
         echo '<textarea id="al_wrapper_css" name="' . \esc_attr( $opt ) . '[wrapper_css]" style="display:none">' . \esc_textarea( $s['wrapper_css'] ?? '' ) . '</textarea>';
         echo '<textarea id="al_wrapper_js" name="' . \esc_attr( $opt ) . '[wrapper_js]" style="display:none">' . \esc_textarea( $s['wrapper_js'] ?? '' ) . '</textarea>';
@@ -259,8 +272,8 @@ class Module {
 
     public function add_metaboxes() {
         foreach ( [ self::CPT_LOCATION, self::CPT_SERVICE ] as $cpt ) {
-            \add_meta_box( 'al_content', 'Content (HTML / CSS / JS)', [ $this, 'render_content_metabox' ], $cpt, 'normal', 'high' );
-            \add_meta_box( 'al_details', 'Details', [ $this, 'render_details_metabox' ], $cpt, 'side', 'default' );
+            \add_meta_box( 'al_content', \__( 'Content (HTML / CSS / JS)', 'anchor-schema' ), [ $this, 'render_content_metabox' ], $cpt, 'normal', 'high' );
+            \add_meta_box( 'al_details', \__( 'Details', 'anchor-schema' ), [ $this, 'render_details_metabox' ], $cpt, 'side', 'default' );
         }
     }
 
@@ -270,39 +283,39 @@ class Module {
         $css  = \get_post_meta( $post->ID, 'al_css', true );
         $js   = \get_post_meta( $post->ID, 'al_js', true );
         $spec = [
-            [ 'id' => 'al_html', 'label' => 'HTML', 'lang' => 'html' ],
-            [ 'id' => 'al_css',  'label' => 'CSS',  'lang' => 'css'  ],
-            [ 'id' => 'al_js',   'label' => 'JS',   'lang' => 'javascript' ],
+            [ 'id' => 'al_html', 'label' => \__( 'HTML', 'anchor-schema' ), 'lang' => 'html' ],
+            [ 'id' => 'al_css',  'label' => \__( 'CSS', 'anchor-schema' ),  'lang' => 'css'  ],
+            [ 'id' => 'al_js',   'label' => \__( 'JS', 'anchor-schema' ),   'lang' => 'javascript' ],
         ];
-        echo '<div class="anchor-monaco" data-anchor-monaco="' . \esc_attr( \wp_json_encode( $spec ) ) . '">';
+        echo '<div class="anchor-monaco" data-anchor-monaco=\'' . \esc_attr( \wp_json_encode( $spec ) ) . '\'>';
         echo '<textarea id="al_html" name="al_html" style="display:none">' . \esc_textarea( $html ) . '</textarea>';
         echo '<textarea id="al_css" name="al_css" style="display:none">' . \esc_textarea( $css ) . '</textarea>';
         echo '<textarea id="al_js" name="al_js" style="display:none">' . \esc_textarea( $js ) . '</textarea>';
         echo '</div>';
         $dis = \get_post_meta( $post->ID, 'al_disable_wrapper', true );
-        echo '<p><label><input type="checkbox" name="al_disable_wrapper" value="1" ' . \checked( $dis, '1', false ) . '> Disable global wrapper on this page (Divi/builder mode)</label></p>';
+        echo '<p><label><input type="checkbox" name="al_disable_wrapper" value="1" ' . \checked( $dis, '1', false ) . '> ' . \esc_html__( 'Disable global wrapper on this page (Divi/builder mode)', 'anchor-schema' ) . '</label></p>';
     }
 
     public function render_details_metabox( $post ) {
         if ( $post->post_type === self::CPT_SERVICE ) {
             $loc = (int) \get_post_meta( $post->ID, 'al_location_id', true );
-            echo '<p><label>Linked Location (post ID)<br><input type="number" name="al_location_id" value="' . \esc_attr( $loc ) . '" class="widefat"></label></p>';
-            echo '<p class="description">Set the Service term via the Services box. Both are required for a live URL.</p>';
+            echo '<p><label>' . \esc_html__( 'Linked Location (post ID)', 'anchor-schema' ) . '<br><input type="number" name="al_location_id" value="' . \esc_attr( $loc ) . '" class="widefat"></label></p>';
+            echo '<p class="description">' . \esc_html__( 'Set the Service term via the Services box. Both are required for a live URL.', 'anchor-schema' ) . '</p>';
             return;
         }
         $f = function( $k ) use ( $post ) { return \esc_attr( \get_post_meta( $post->ID, $k, true ) ); };
         $types = [ 'state','county','city','township','borough','neighborhood','region' ];
-        echo '<p><label>Type<br><select name="al_type" class="widefat">';
+        echo '<p><label>' . \esc_html__( 'Type', 'anchor-schema' ) . '<br><select name="al_type" class="widefat">';
         $cur = $f( 'al_type' );
         foreach ( $types as $t ) { echo '<option value="' . $t . '" ' . \selected( $cur, $t, false ) . '>' . \ucfirst( $t ) . '</option>'; }
         echo '</select></label></p>';
-        echo '<p><label>Latitude<br><input type="text" name="al_lat" value="' . $f('al_lat') . '" class="widefat"></label></p>';
-        echo '<p><label>Longitude<br><input type="text" name="al_lng" value="' . $f('al_lng') . '" class="widefat"></label></p>';
-        echo '<p><label>State abbr<br><input type="text" name="al_state_abbr" value="' . $f('al_state_abbr') . '" class="widefat"></label></p>';
-        echo '<p><label>Place ID<br><input type="text" name="al_place_id" value="' . $f('al_place_id') . '" class="widefat"></label></p>';
-        echo '<p><label>Postal codes<br><input type="text" name="al_postal_codes" value="' . $f('al_postal_codes') . '" class="widefat"></label></p>';
-        echo '<p><label>Marker icon URL<br><input type="text" name="al_marker_icon" value="' . $f('al_marker_icon') . '" class="widefat al-media"></label></p>';
-        echo '<p><label>Boundary GeoJSON<br><textarea name="al_boundary" class="widefat" rows="3">' . \esc_textarea( \get_post_meta( $post->ID, 'al_boundary', true ) ) . '</textarea></label></p>';
+        echo '<p><label>' . \esc_html__( 'Latitude', 'anchor-schema' ) . '<br><input type="text" name="al_lat" value="' . $f('al_lat') . '" class="widefat"></label></p>';
+        echo '<p><label>' . \esc_html__( 'Longitude', 'anchor-schema' ) . '<br><input type="text" name="al_lng" value="' . $f('al_lng') . '" class="widefat"></label></p>';
+        echo '<p><label>' . \esc_html__( 'State abbr', 'anchor-schema' ) . '<br><input type="text" name="al_state_abbr" value="' . $f('al_state_abbr') . '" class="widefat"></label></p>';
+        echo '<p><label>' . \esc_html__( 'Place ID', 'anchor-schema' ) . '<br><input type="text" name="al_place_id" value="' . $f('al_place_id') . '" class="widefat"></label></p>';
+        echo '<p><label>' . \esc_html__( 'Postal codes', 'anchor-schema' ) . '<br><input type="text" name="al_postal_codes" value="' . $f('al_postal_codes') . '" class="widefat"></label></p>';
+        echo '<p><label>' . \esc_html__( 'Marker icon URL', 'anchor-schema' ) . '<br><input type="text" name="al_marker_icon" value="' . $f('al_marker_icon') . '" class="widefat al-media"></label></p>';
+        echo '<p><label>' . \esc_html__( 'Boundary GeoJSON', 'anchor-schema' ) . '<br><textarea name="al_boundary" class="widefat" rows="3">' . \esc_textarea( \get_post_meta( $post->ID, 'al_boundary', true ) ) . '</textarea></label></p>';
     }
 
     public function save_meta( $post_id ) {
@@ -330,14 +343,14 @@ class Module {
         \wp_enqueue_script( 'anchor-locations-admin', \Anchor_Asset_Loader::url( 'anchor-locations/assets/admin.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview' ], (string) \filemtime( $dir . 'admin.js' ), true );
     }
 
-    public function location_columns( $c ) { $c['al_type'] = 'Type'; return $c; }
+    public function location_columns( $c ) { $c['al_type'] = \__( 'Type', 'anchor-schema' ); return $c; }
     public function location_column( $col, $post_id ) { if ( $col === 'al_type' ) { echo \esc_html( \ucfirst( (string) \get_post_meta( $post_id, 'al_type', true ) ) ); } }
-    public function service_columns( $c ) { $c['al_link'] = 'Service / Location'; return $c; }
+    public function service_columns( $c ) { $c['al_link'] = \__( 'Service / Location', 'anchor-schema' ); return $c; }
     public function service_column( $col, $post_id ) {
         if ( $col !== 'al_link' ) { return; }
         $terms = \wp_get_object_terms( $post_id, self::TAX_SERVICE, [ 'fields' => 'names' ] );
         $loc   = (int) \get_post_meta( $post_id, 'al_location_id', true );
-        if ( empty( $terms ) || ! $loc || ! \get_post( $loc ) ) { echo '⚠ incomplete'; return; }
+        if ( empty( $terms ) || ! $loc || ! \get_post( $loc ) ) { echo \esc_html__( '⚠ incomplete', 'anchor-schema' ); return; }
         echo \esc_html( $terms[0] . ' — ' . \get_the_title( $loc ) );
     }
 
@@ -345,6 +358,12 @@ class Module {
 
     /** Render a location/service page's Monaco HTML/CSS/JS, id-scoped so it's theme-agnostic. */
     public function render_body( $post_id ) {
+        // Recursion guard: an operator's al_html can contain [anchor_page_content]
+        // (no id, or an id resolving back to this same post), which would otherwise
+        // recurse forever via do_shortcode() -> shortcode_page_content() -> render_body().
+        if ( ! empty( $this->rendering[ $post_id ] ) ) { return ''; }
+        $this->rendering[ $post_id ] = true;
+
         $html = (string) \get_post_meta( $post_id, 'al_html', true );
         $css  = (string) \get_post_meta( $post_id, 'al_css', true );
         $js   = (string) \get_post_meta( $post_id, 'al_js', true );
@@ -357,6 +376,8 @@ class Module {
         $out .= \do_shortcode( $html );
         if ( $js !== '' ) { $out .= '<script>(function(){' . $js . '})();</script>'; }
         $out .= '</div>';
+
+        unset( $this->rendering[ $post_id ] );
         return $out;
     }
 
@@ -532,7 +553,7 @@ class Module {
             'center'  => $a['center'] !== '' ? $a['center'] : ( ( $s['map_center'] ?? '' ) ?: '' ),
         ];
         $this->enqueue_map_assets();
-        $uid = 'al-map-' . \wp_rand( 1000, 9999 );
+        $uid = 'al-map-' . ( ++self::$map_seq );
         $json = \esc_attr( \wp_json_encode( $cfg ) );
         return '<div id="' . $uid . '" class="al-map" style="height:' . (int) $a['height'] . 'px" data-al-map="' . $json . '"></div>';
     }

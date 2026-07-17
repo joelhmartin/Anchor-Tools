@@ -1,5 +1,13 @@
 (function () {
   'use strict';
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = (s == null ? '' : String(s));
+    return d.innerHTML;
+  }
+  function escUrl(s) {
+    return encodeURI(s == null ? '' : String(s)).replace(/"/g, '%22');
+  }
   function initOne(el) {
     var cfg;
     try { cfg = JSON.parse(el.getAttribute('data-al-map')); } catch (e) { return; }
@@ -19,10 +27,10 @@
       var marker = new google.maps.Marker(opts);
       bounds.extend(opts.position);
       marker.addListener('click', function () {
-        var html = '<div class="al-map-popup"><h3><a href="' + m.url + '">' + m.title + '</a></h3>';
+        var html = '<div class="al-map-popup"><h3><a href="' + escUrl(m.url) + '">' + esc(m.title) + '</a></h3>';
         if (m.services && m.services.length) {
           html += '<ul>';
-          m.services.forEach(function (s) { html += '<li><a href="' + s.url + '">' + s.title + '</a></li>'; });
+          m.services.forEach(function (s) { html += '<li><a href="' + escUrl(s.url) + '">' + esc(s.title) + '</a></li>'; });
           html += '</ul>';
         }
         html += '</div>';

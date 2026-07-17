@@ -78,7 +78,7 @@ Stored as the `anchor_locations_settings` option (array), sanitized by `Module::
 | `map_center` | Default `[anchor_location_map]` center as `lat,lng`, used when the shortcode doesn't pass `center` and there are no markers to derive a center from. |
 | `map_zoom` | Default zoom level (int), used when the shortcode doesn't pass `zoom`. |
 | `wrapper_html` / `wrapper_css` / `wrapper_js` | The global wrapper template (see §4). Leave `wrapper_html` blank to disable wrapping entirely. |
-| `fullwidth_template` | `'1'`/`''` — use the plugin's full-width single template when the active theme doesn't provide one. |
+| `fullwidth_template` | `'1'`/`''` — reserved for a full-width single template. Saved and sanitized, but **not currently consumed** by any `template_include` filter or other code path — toggling it has no effect yet. |
 
 **Any change to `services_base` or `service_areas_base` triggers a rewrite-rule reflush** on the next request: `sanitize_settings()` deletes the `anchor_locations_rw_sig` option on every save, and `maybe_flush()` (hooked on `init` at priority 99) re-adds the custom rewrite rule and calls `flush_rewrite_rules()` whenever the stored signature is missing or doesn't match the current bases.
 

@@ -43,6 +43,19 @@ class LocationsShortcodesTest extends WP_UnitTestCase {
         $this->assertStringNotContainsString( 'Hidden Parent', $out );
         $this->assertStringNotContainsString( '<a', $out );
     }
+    public function test_render_body_recursion_guard_prevents_infinite_loop() {
+        $id = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish' ] );
+        // al_html embeds [anchor_page_content] pointed at its own post — without a
+        // guard, render_body() -> do_shortcode() -> shortcode_page_content() ->
+        // render_body() recurses until the request dies.
+        update_post_meta( $id, 'al_html', '<p>Before</p>[anchor_page_content id="' . $id . '"]<p>After</p>' );
+        $mod = new \Anchor\Locations\Module();
+        $out = $mod->render_body( $id );
+        $this->assertStringContainsString( '<p>Before</p>', $out );
+        $this->assertStringContainsString( '<p>After</p>', $out );
+        // The nested self-reference must resolve to empty (guarded), not recurse.
+        $this->assertSame( 1, substr_count( $out, '<p>Before</p>' ) );
+    }
     public function test_breadcrumbs_skips_unpublished_ancestor() {
         $root   = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pennsylvania' ] );
         $middle = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'draft', 'post_title' => 'Hidden County', 'post_parent' => $root ] );

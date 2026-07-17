@@ -47,6 +47,10 @@ class Module {
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 65 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
         \add_action( 'anchor_settings_enqueue_locations', [ $this, 'settings_assets' ] );
+
+        // Phase 2: reusable content libraries (projects/testimonials/FAQs).
+        require_once __DIR__ . '/class-libraries.php';
+        new Libraries();
     }
 
     private $assets_enqueued = false;

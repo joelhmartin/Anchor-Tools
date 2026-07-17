@@ -183,3 +183,63 @@ done
 # Force a rewrite flush after bulk-creating content
 wp rewrite flush
 ```
+
+---
+
+## 6. Content libraries (Phase 2)
+
+Three reusable, non-public CPTs — created once, auto-surfaced on matching
+location / service pages by relevance. All live under the **Anchor Locations**
+menu and share the existing `service` taxonomy. Implemented in
+`class-libraries.php` (`\Anchor\Locations\Libraries`).
+
+| Post type | Fields (meta) |
+|---|---|
+| `anchor_project` | `al_image` (image URL; falls back to featured image), `al_description` (`wp_kses_post`) |
+| `anchor_testimonial` | `al_quote` (`wp_kses_post`), `al_author` (text), `al_rating` (int 1–5, 0 = none) |
+| `anchor_faq` | `al_question` (text; falls back to post title), `al_answer` (`wp_kses_post`) |
+
+### Assignment meta (all three)
+
+| Meta key | Type | Meaning |
+|---|---|---|
+| `al_location_ids` | array of int | Assigned `anchor_location` IDs. **Applies to that location and all its descendants** (a county item shows on its cities). |
+| `al_global` | `'1'` \| `''` | `'1'` = eligible on every page. |
+| `service` terms | taxonomy | Zero or more `service` terms (`wp post term set <id> service <slug>`). |
+
+### Specificity resolver
+
+`Libraries::match_items( string $cpt, int $location_id, int $service_term_id = 0, int $limit = 0 ): array`
+returns published item IDs, most relevant first. Score per item:
+**+8** both service term AND location · **+4** location (self or ancestor) ·
+**+2** service term · **+1** global. Score 0 ⇒ excluded. Tiebreak: `post_date` DESC.
+
+### Shortcodes
+
+| Shortcode | Attributes (defaults) |
+|---|---|
+| `[anchor_local_projects id="" service="" limit="6"]` | `id` (location override), `service` (term slug/id override), `limit` |
+| `[anchor_local_testimonials id="" service="" limit="3"]` | same |
+| `[anchor_local_faqs id="" service="" limit="10"]` | same |
+
+Context is auto-derived from the current page: on a service page, from its
+`al_location_id` + first `service` term; on a location page, from the post
+itself. `id`/`service` attrs override. Output is filterable via
+`anchor_locations_local_projects_html` / `_local_testimonials_html` /
+`_local_faqs_html`, each receiving `( $html, $ctx )` where `$ctx` is
+`[ 'location_id', 'service_term_id', 'ids' ]`.
+
+`[anchor_local_faqs]` additionally emits a single `FAQPage` JSON-LD block (its
+own `wp_head` hook, priority 21) when ≥1 FAQ renders on a singular page — using
+the same `</script>`-safe encoding as the Phase-1 schema.
+
+### WP-CLI example
+
+```bash
+wp post create --post_type=anchor_faq --post_status=publish \
+  --post_title="How much does roofing cost?" --porcelain   # -> $FAQ_ID
+wp post meta set $FAQ_ID al_answer 'Most roofs run $8k–$20k depending on size.'
+wp post meta set $FAQ_ID al_location_ids "[$COUNTY_ID]" --format=json  # county + all its cities
+wp post term set $FAQ_ID service roofing                              # or: wp post meta set $FAQ_ID al_global 1
+```
+

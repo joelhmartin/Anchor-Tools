@@ -126,3 +126,49 @@ test('closing the lightbox destroys the iframe', async ({ page }) => {
   await expect(modal).toBeHidden();
   await expect(modal.locator('iframe')).toHaveCount(0);
 });
+
+test('navigation wraps at both ends', async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  const modal = page.locator('.avg-modal');
+  const counter = modal.locator('.avg-modal-counter');
+
+  // Open on the last item (index 5) and go forward -> wraps to the first.
+  await page.locator('.anchor-video-gallery .avg-tile').nth(5).click();
+  await expect(counter).toHaveText('6 / 6');
+  await modal.locator('[data-next]').click();
+  await expect(counter).toHaveText('1 / 6');
+
+  // Back from the first -> wraps to the last.
+  await modal.locator('[data-prev]').click();
+  await expect(counter).toHaveText('6 / 6');
+});
+
+test('arrow keys navigate and escape closes', async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  await page.locator('.anchor-video-gallery .avg-tile').nth(0).click();
+
+  const modal = page.locator('.avg-modal');
+  const counter = modal.locator('.avg-modal-counter');
+  await expect(counter).toHaveText('1 / 6');
+
+  await page.keyboard.press('ArrowRight');
+  await expect(counter).toHaveText('2 / 6');
+  await page.keyboard.press('ArrowRight');
+  await expect(counter).toHaveText('3 / 6');
+  await page.keyboard.press('ArrowLeft');
+  await expect(counter).toHaveText('2 / 6');
+
+  await page.keyboard.press('Escape');
+  await expect(modal).toBeHidden();
+});
+
+test('focus returns to the originating tile on close', async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  await page.locator('.anchor-video-gallery .avg-tile').nth(1).click();
+  await page.keyboard.press('Escape');
+
+  const focusedIndex = await page.evaluate(() =>
+    document.activeElement.getAttribute('data-index')
+  );
+  expect(focusedIndex).toBe('1');
+});

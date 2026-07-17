@@ -483,6 +483,20 @@
   // ============================================================================
 
   window.addEventListener('keydown', function(e) {
+    // Arrow navigation only while the lightbox is actually open.
+    if (lightboxModal && !lightboxModal.hidden) {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        renderLightboxItem(lbState.index - 1);
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        renderLightboxItem(lbState.index + 1);
+        return;
+      }
+    }
+
     if (e.key === 'Escape') {
       closeLightbox();
       closeTheater();

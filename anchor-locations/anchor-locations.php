@@ -225,9 +225,12 @@ class Module {
         return $out;
     }
 
-    /** Enqueue the shared Monaco editor for the global wrapper HTML/CSS/JS fields. */
+    /** Enqueue the shared Monaco editor for the global wrapper HTML/CSS/JS fields, plus the media picker for the marker-icon field. */
     public function settings_assets( $hook ) {
         \Anchor_Monaco::enqueue( 'anchor_locations_settings' );
+        \wp_enqueue_media();
+        $dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-locations/assets/';
+        \wp_enqueue_script( 'anchor-locations-admin', \Anchor_Asset_Loader::url( 'anchor-locations/assets/admin.js' ), [ 'jquery' ], (string) \filemtime( $dir . 'admin.js' ), true );
     }
 
     /** Render the "Locations" settings tab content. */
@@ -329,7 +332,6 @@ class Module {
         if ( isset( $_POST['al_location_id'] ) ) { \update_post_meta( $post_id, 'al_location_id', (int) $_POST['al_location_id'] ); }
         if ( isset( $_POST['al_boundary'] ) ) { \update_post_meta( $post_id, 'al_boundary', \wp_unslash( $_POST['al_boundary'] ) ); }
         \update_post_meta( $post_id, 'al_disable_wrapper', isset( $_POST['al_disable_wrapper'] ) ? '1' : '' );
-        \delete_transient( 'anchor_locations_mapdata' );
     }
 
     public function admin_assets( $hook ) {
@@ -432,14 +434,18 @@ class Module {
 
     public function sc_parent( $atts ) {
         $id = $this->cur_id( $atts );
-        $p = (int) \get_post( $id )->post_parent;
+        $post = \get_post( $id );
+        if ( ! $post ) { return \apply_filters( 'anchor_locations_location_parent_html', '', $id ); }
+        $p = (int) $post->post_parent;
         $html = ( $p && \get_post_status( $p ) === 'publish' ) ? '<a class="al-parent" href="' . \esc_url( \get_permalink( $p ) ) . '">' . \esc_html( \get_the_title( $p ) ) . '</a>' : '';
         return \apply_filters( 'anchor_locations_location_parent_html', $html, $id );
     }
 
     public function sc_nearby( $atts ) {
         $id = $this->cur_id( $atts );
-        $parent = (int) \get_post( $id )->post_parent;
+        $post = \get_post( $id );
+        if ( ! $post ) { return \apply_filters( 'anchor_locations_nearby_locations_html', '', $id ); }
+        $parent = (int) $post->post_parent;
         $sibs = $parent ? \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => $parent, 'exclude' => [ $id ], 'numberposts' => 12, 'orderby' => 'title', 'order' => 'ASC' ] ) : [];
         $html = '';
         if ( $sibs ) {

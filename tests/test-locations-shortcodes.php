@@ -56,6 +56,16 @@ class LocationsShortcodesTest extends WP_UnitTestCase {
         // The nested self-reference must resolve to empty (guarded), not recurse.
         $this->assertSame( 1, substr_count( $out, '<p>Before</p>' ) );
     }
+    public function test_parent_shortcode_bogus_id_does_not_fatal() {
+        $out = do_shortcode( '[anchor_location_parent id="99999999"]' );
+        $this->assertIsString( $out );
+        $this->assertSame( '', $out );
+    }
+    public function test_nearby_shortcode_bogus_id_does_not_fatal() {
+        $out = do_shortcode( '[anchor_nearby_locations id="99999999"]' );
+        $this->assertIsString( $out );
+        $this->assertSame( '', $out );
+    }
     public function test_breadcrumbs_skips_unpublished_ancestor() {
         $root   = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pennsylvania' ] );
         $middle = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'draft', 'post_title' => 'Hidden County', 'post_parent' => $root ] );

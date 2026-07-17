@@ -10,10 +10,14 @@
   function escUrl(s) {
     return encodeURI(s == null ? '' : String(s)).replace(/"/g, '%22');
   }
-  // Only allow http(s)/relative URLs to reach location.href (block javascript: etc.).
+  // Only allow same-origin paths or absolute http(s) URLs to reach location.href.
+  // Reject protocol-relative "//host" (open-redirect), javascript:, data:, etc.
   function safeHref(s) {
     s = (s == null ? '' : String(s));
-    if (/^\s*(https?:)?\/\//i.test(s) || /^\s*\//.test(s)) { return s; }
+    // same-origin path: a single leading slash, but not protocol-relative "//host"
+    if (/^\/(?!\/)/.test(s)) { return s; }
+    // absolute http(s) URL only
+    if (/^https?:\/\//i.test(s)) { return s; }
     return '';
   }
 
@@ -80,7 +84,11 @@
 
     if (wants.indexOf('service') > -1) {
       groups.service = collect('service', function (m) {
-        return (m.services || []).map(function (s) { return s.service; }).filter(Boolean);
+        var out = [];
+        (m.services || []).forEach(function (s) {
+          (s.service_slugs || []).forEach(function (slug) { if (slug) { out.push(slug); } });
+        });
+        return out;
       });
     }
     if (wants.indexOf('type') > -1) {
@@ -131,7 +139,10 @@
     var typeKeys = Object.keys(checked.type);
     var okSvc = true, okType = true;
     if (svcKeys.length) {
-      var slugs = (rec.data.services || []).map(function (s) { return s.service; });
+      var slugs = [];
+      (rec.data.services || []).forEach(function (s) {
+        (s.service_slugs || []).forEach(function (slug) { slugs.push(slug); });
+      });
       okSvc = svcKeys.some(function (k) { return slugs.indexOf(k) > -1; });
     }
     if (typeKeys.length) {

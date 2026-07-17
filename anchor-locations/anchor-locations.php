@@ -560,7 +560,7 @@ class Module {
                 $slugs = \wp_get_object_terms( $sp->ID, self::TAX_SERVICE, [ 'fields' => 'slugs' ] );
                 if ( \is_wp_error( $slugs ) ) { $slugs = []; }
                 if ( $service_slug !== '' && \in_array( $service_slug, $slugs, true ) ) { $matches_service = true; }
-                $services[] = [ 'title' => \get_the_title( $sp ), 'url' => $this->service_page_url( $sp->ID ), 'service' => $slugs ? $slugs[0] : '' ];
+                $services[] = [ 'title' => \get_the_title( $sp ), 'url' => $this->service_page_url( $sp->ID ), 'service_slugs' => \array_values( $slugs ) ];
             }
             // Server-side service pre-filter: drop locations with no matching page.
             if ( $service_slug !== '' && ! $matches_service ) { continue; }

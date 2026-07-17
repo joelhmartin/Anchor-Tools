@@ -15,4 +15,16 @@ class LocationsSettingsTest extends WP_UnitTestCase {
         $this->assertNotContains( 'Allegheny', $titles );   // filtered by type
         $this->assertNotContains( 'NoCoords', $titles );     // no coords excluded
     }
+
+    public function test_sanitize_settings_persists_expected_keys() {
+        $mod = new \Anchor\Locations\Module();
+        $clean = $mod->sanitize_settings( [
+            'services_base' => 'Services', 'service_areas_base' => 'Service Areas',
+            'map_zoom' => '9', 'marker_icon' => 'https://x/i.svg', 'wrapper_html' => '<div>{{content}}</div>',
+        ] );
+        $this->assertSame( 'services', $clean['services_base'] );
+        $this->assertSame( 'service-areas', $clean['service_areas_base'] );
+        $this->assertSame( 9, $clean['map_zoom'] );
+        $this->assertStringContainsString( '{{content}}', $clean['wrapper_html'] );
+    }
 }

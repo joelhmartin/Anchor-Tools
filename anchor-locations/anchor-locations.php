@@ -43,6 +43,10 @@ class Module {
         \add_shortcode( 'anchor_location_map', [ $this, 'sc_map' ] );
 
         \add_action( 'wp_head', [ $this, 'print_schema' ], 20 );
+
+        \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 65 );
+        \add_action( 'admin_init', [ $this, 'register_settings' ] );
+        \add_action( 'anchor_settings_enqueue_locations', [ $this, 'settings_assets' ] );
     }
 
     private $assets_enqueued = false;
@@ -151,6 +155,89 @@ class Module {
     private function services_base() {
         $s = $this->settings();
         return ! empty( $s['services_base'] ) ? \sanitize_title( $s['services_base'] ) : 'services';
+    }
+
+    /* ---- Admin: Settings > Anchor Tools > Locations tab ---- */
+
+    /** Register the "Locations" tab on the shared Settings > Anchor Tools page. */
+    public function register_tab( $tabs ) {
+        $tabs['locations'] = [
+            'label'    => \__( 'Locations', 'anchor-schema' ),
+            'callback' => [ $this, 'render_tab' ],
+        ];
+        return $tabs;
+    }
+
+    /**
+     * Register the settings option with the WP Settings API so the tab can
+     * post to options.php, matching the working sibling pattern (ctm_forms,
+     * webinars) rather than a bespoke admin-post handler.
+     */
+    public function register_settings() {
+        \register_setting( 'anchor_locations_group', self::OPTION, [ $this, 'sanitize_settings' ] );
+    }
+
+    /**
+     * Sanitize + default the settings array. Also the single choke point where
+     * a base-slug change invalidates the cached rewrite signature so
+     * maybe_flush() reflushes rewrite rules on the next request.
+     */
+    public function sanitize_settings( $in ) {
+        $out = [];
+        $out['services_base']      = ! empty( $in['services_base'] ) ? \sanitize_title( $in['services_base'] ) : 'services';
+        $out['service_areas_base'] = ! empty( $in['service_areas_base'] ) ? \sanitize_title( $in['service_areas_base'] ) : 'service-areas';
+        $out['marker_icon']        = isset( $in['marker_icon'] ) ? \esc_url_raw( $in['marker_icon'] ) : '';
+        $out['map_center']         = isset( $in['map_center'] ) ? \sanitize_text_field( $in['map_center'] ) : '';
+        $out['map_zoom']           = isset( $in['map_zoom'] ) ? (int) $in['map_zoom'] : 8;
+        $out['wrapper_html']       = isset( $in['wrapper_html'] ) ? (string) $in['wrapper_html'] : '';
+        $out['wrapper_css']        = isset( $in['wrapper_css'] ) ? (string) $in['wrapper_css'] : '';
+        $out['wrapper_js']         = isset( $in['wrapper_js'] ) ? (string) $in['wrapper_js'] : '';
+        $out['fullwidth_template'] = ! empty( $in['fullwidth_template'] ) ? '1' : '';
+        \delete_option( 'anchor_locations_rw_sig' ); // force rewrite reflush on base change
+        return $out;
+    }
+
+    /** Enqueue the shared Monaco editor for the global wrapper HTML/CSS/JS fields. */
+    public function settings_assets( $hook ) {
+        \Anchor_Monaco::enqueue( 'anchor_locations_settings' );
+    }
+
+    /** Render the "Locations" settings tab content. */
+    public function render_tab() {
+        $s = $this->settings();
+        $g = function( $k, $d = '' ) use ( $s ) { return \esc_attr( $s[ $k ] ?? $d ); };
+        $opt = self::OPTION;
+        $spec = \wp_json_encode( [
+            [ 'id' => 'al_wrapper_html', 'label' => \__( 'Wrapper HTML', 'anchor-schema' ), 'lang' => 'html' ],
+            [ 'id' => 'al_wrapper_css',  'label' => \__( 'Wrapper CSS', 'anchor-schema' ),  'lang' => 'css' ],
+            [ 'id' => 'al_wrapper_js',   'label' => \__( 'Wrapper JS', 'anchor-schema' ),   'lang' => 'javascript' ],
+        ] );
+
+        echo '<form method="post" action="' . \esc_url( \admin_url( 'options.php' ) ) . '">';
+        \settings_fields( 'anchor_locations_group' );
+
+        echo '<h2>' . \esc_html__( 'Map & URLs', 'anchor-schema' ) . '</h2>';
+        echo '<p><label>' . \esc_html__( 'Default marker icon URL', 'anchor-schema' ) . ' <input type="text" class="regular-text al-media" name="' . \esc_attr( $opt ) . '[marker_icon]" value="' . $g( 'marker_icon' ) . '"></label></p>';
+        echo '<p><label>' . \esc_html__( 'Service-area base', 'anchor-schema' ) . ' <input type="text" name="' . \esc_attr( $opt ) . '[service_areas_base]" value="' . $g( 'service_areas_base', 'service-areas' ) . '"></label> ';
+        echo '<label>' . \esc_html__( 'Services base', 'anchor-schema' ) . ' <input type="text" name="' . \esc_attr( $opt ) . '[services_base]" value="' . $g( 'services_base', 'services' ) . '"></label></p>';
+        echo '<p><label>' . \esc_html__( 'Map center (lat,lng)', 'anchor-schema' ) . ' <input type="text" name="' . \esc_attr( $opt ) . '[map_center]" value="' . $g( 'map_center' ) . '"></label> ';
+        echo '<label>' . \esc_html__( 'Default zoom', 'anchor-schema' ) . ' <input type="number" name="' . \esc_attr( $opt ) . '[map_zoom]" value="' . $g( 'map_zoom', '8' ) . '"></label></p>';
+        echo '<p><label><input type="checkbox" name="' . \esc_attr( $opt ) . '[fullwidth_template]" value="1" ' . \checked( $s['fullwidth_template'] ?? '', '1', false ) . '> ' . \esc_html__( 'Use plugin full-width single template when the theme lacks one', 'anchor-schema' ) . '</label></p>';
+
+        echo '<h2>' . \esc_html__( 'Global Wrapper Template', 'anchor-schema' ) . '</h2>';
+        echo '<p class="description">' . \sprintf(
+            /* translators: %s is the literal `{{content}}` placeholder token used inside the wrapper HTML. */
+            \esc_html__( 'Wraps every location/service page. Include %s where the page body goes. Leave blank to disable.', 'anchor-schema' ),
+            '<code>{{content}}</code>'
+        ) . '</p>';
+        echo '<div class="anchor-monaco" data-anchor-monaco="' . \esc_attr( $spec ) . '">';
+        echo '<textarea id="al_wrapper_html" name="' . \esc_attr( $opt ) . '[wrapper_html]" style="display:none">' . \esc_textarea( $s['wrapper_html'] ?? '' ) . '</textarea>';
+        echo '<textarea id="al_wrapper_css" name="' . \esc_attr( $opt ) . '[wrapper_css]" style="display:none">' . \esc_textarea( $s['wrapper_css'] ?? '' ) . '</textarea>';
+        echo '<textarea id="al_wrapper_js" name="' . \esc_attr( $opt ) . '[wrapper_js]" style="display:none">' . \esc_textarea( $s['wrapper_js'] ?? '' ) . '</textarea>';
+        echo '</div>';
+
+        \submit_button();
+        echo '</form>';
     }
 
     /* ---- Admin: metaboxes, save, assets, columns ---- */

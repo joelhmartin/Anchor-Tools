@@ -41,6 +41,8 @@ class Module {
         \add_shortcode( 'anchor_service_locations', [ $this, 'sc_service_locations' ] );
         \add_shortcode( 'anchor_service_area_directory', [ $this, 'sc_directory' ] );
         \add_shortcode( 'anchor_location_map', [ $this, 'sc_map' ] );
+
+        \add_action( 'wp_head', [ $this, 'print_schema' ], 20 );
     }
 
     private $assets_enqueued = false;
@@ -446,5 +448,83 @@ class Module {
             $deps[] = 'anchor-locations-gmaps';
         }
         \wp_enqueue_script( 'anchor-locations-frontend', \Anchor_Asset_Loader::url( 'anchor-locations/assets/frontend.js' ), $deps, (string) \filemtime( $dir . 'frontend.js' ), true );
+    }
+
+    /** Map an al_type meta value to the schema.org Place subtype it should render as. */
+    private function place_type( $al_type ) {
+        switch ( $al_type ) {
+            case 'state': case 'county': return 'AdministrativeArea';
+            case 'city': case 'borough': case 'township': return 'City';
+            default: return 'Place';
+        }
+    }
+
+    /**
+     * Build the `@graph` array (BreadcrumbList + Service/Place|City|AdministrativeArea)
+     * for a location or service page. Public so it can be unit tested directly.
+     */
+    public function build_schema( $post_id ) {
+        $post = \get_post( $post_id );
+        if ( ! $post ) { return []; }
+        $graph = [];
+
+        // Breadcrumb
+        $items = []; $pos = 1;
+        $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => 'Home', 'item' => \home_url( '/' ) ];
+        if ( $post->post_type === self::CPT_SERVICE ) {
+            $loc = (int) \get_post_meta( $post_id, 'al_location_id', true );
+            $chain = $loc ? \array_merge( \array_reverse( \get_post_ancestors( $loc ) ), [ $loc ] ) : [];
+            foreach ( $chain as $aid ) { $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $aid ), 'item' => \get_permalink( $aid ) ]; }
+            $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $post_id ), 'item' => $this->service_page_url( $post_id ) ];
+        } else {
+            foreach ( \array_merge( \array_reverse( \get_post_ancestors( $post_id ) ), [ $post_id ] ) as $aid ) {
+                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $aid ), 'item' => \get_permalink( $aid ) ];
+            }
+        }
+        $graph[] = [ '@type' => 'BreadcrumbList', 'itemListElement' => $items ];
+
+        if ( $post->post_type === self::CPT_LOCATION ) {
+            $lat = \get_post_meta( $post_id, 'al_lat', true ); $lng = \get_post_meta( $post_id, 'al_lng', true );
+            $node = [ '@type' => $this->place_type( (string) \get_post_meta( $post_id, 'al_type', true ) ), 'name' => \get_the_title( $post_id ), 'url' => \get_permalink( $post_id ) ];
+            if ( $lat !== '' && $lng !== '' ) { $node['geo'] = [ '@type' => 'GeoCoordinates', 'latitude' => (float) $lat, 'longitude' => (float) $lng ]; }
+            $graph[] = $node;
+        } else {
+            $terms = \wp_get_object_terms( $post_id, self::TAX_SERVICE, [ 'fields' => 'names' ] );
+            $loc = (int) \get_post_meta( $post_id, 'al_location_id', true );
+            $node = [
+                '@type'       => 'Service',
+                'name'        => \get_the_title( $post_id ),
+                'serviceType' => ! \is_wp_error( $terms ) && $terms ? $terms[0] : '',
+                'url'         => $this->service_page_url( $post_id ),
+                'provider'    => [ '@type' => 'Organization', 'name' => \get_bloginfo( 'name' ), 'url' => \home_url( '/' ) ],
+            ];
+            if ( $loc ) {
+                // Deliberately no PostalAddress here: a service-area location is not
+                // a staffed office, so areaServed only ever carries type + name.
+                $node['areaServed'] = [ '@type' => $this->place_type( (string) \get_post_meta( $loc, 'al_type', true ) ), 'name' => \get_the_title( $loc ) ];
+            }
+            $graph[] = $node;
+        }
+        return $graph;
+    }
+
+    /** Echo the JSON-LD `<script>` block for location/service pages on wp_head. */
+    public function print_schema() {
+        if ( ! \is_singular( [ self::CPT_LOCATION, self::CPT_SERVICE ] ) ) { return; }
+        $graph = $this->build_schema( \get_the_ID() );
+        if ( ! $graph ) { return; }
+        $doc = [ '@context' => 'https://schema.org', '@graph' => $graph ];
+        // security: deliberately no JSON_UNESCAPED_SLASHES — see the fix in
+        // includes/class-anchor-schema-helper.php (commit 677b598) and the same
+        // pattern in anchor-events-manager.php. The default `/` -> `\/` escaping
+        // is what keeps a literal "</script>" in a post title / term name from
+        // breaking out of the inline <script type="application/ld+json"> tag
+        // this is echoed into; it decodes back to plain "/" for any JSON
+        // consumer, so it doesn't affect the parsed values.
+        $json = \wp_json_encode( $doc, JSON_UNESCAPED_UNICODE );
+        // Defensive final guard in case any future value source bypasses the
+        // slash-escaping above (matches Anchor_Schema_Render's belt-and-braces).
+        $json = \str_replace( '</', '<\/', $json );
+        echo "\n<script type=\"application/ld+json\">" . $json . "</script>\n";
     }
 }

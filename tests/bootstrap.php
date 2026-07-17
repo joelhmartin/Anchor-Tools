@@ -63,7 +63,7 @@ tests_add_filter(
 	function () {
 		update_option(
 			'anchor_schema_settings',
-			[ 'modules' => [ 'events_manager' => true ] ],
+			[ 'modules' => [ 'events_manager' => true, 'locations' => true ] ],
 			false
 		);
 	},

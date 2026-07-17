@@ -84,3 +84,45 @@ test('collectSequence returns all six visible items with the clicked start index
   expect(result.htmlContent).toContain('Hello HTML');
   expect(result.caption).toBe('Caption red');
 });
+
+test('clicking a tile opens the lightbox at that item with a counter', async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  await page.locator('.anchor-video-gallery .avg-tile').nth(1).click();
+
+  const modal = page.locator('.avg-modal');
+  await expect(modal).toBeVisible();
+  await expect(modal.locator('.avg-modal-counter')).toHaveText('2 / 6');
+  await expect(modal.locator('.avg-modal-frame img')).toHaveAttribute('alt', 'Green image');
+});
+
+test('next advances, prev goes back, and the video iframe is destroyed on navigate', async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  // Open on the video (index 2).
+  await page.locator('.anchor-video-gallery .avg-tile').nth(2).click();
+
+  const modal = page.locator('.avg-modal');
+  const frame = modal.locator('.avg-modal-frame');
+  await expect(frame.locator('iframe')).toHaveCount(1);
+  await expect(frame.locator('iframe')).toHaveAttribute('src', /youtube\.com\/embed\/dQw4w9WgXcQ/);
+
+  // Advance — the iframe must be GONE. This is the video-stop guarantee.
+  await modal.locator('[data-next]').click();
+  await expect(frame.locator('iframe')).toHaveCount(0);
+  await expect(modal.locator('.avg-modal-counter')).toHaveText('4 / 6');
+  await expect(frame.locator('img')).toHaveAttribute('alt', 'Blue image');
+
+  // Back to the video.
+  await modal.locator('[data-prev]').click();
+  await expect(modal.locator('.avg-modal-counter')).toHaveText('3 / 6');
+  await expect(frame.locator('iframe')).toHaveCount(1);
+});
+
+test('closing the lightbox destroys the iframe', async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  await page.locator('.anchor-video-gallery .avg-tile').nth(2).click();
+  const modal = page.locator('.avg-modal');
+  await expect(modal.locator('iframe')).toHaveCount(1);
+  await modal.locator('.avg-modal-close').click();
+  await expect(modal).toBeHidden();
+  await expect(modal.locator('iframe')).toHaveCount(0);
+});

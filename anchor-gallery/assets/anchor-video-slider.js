@@ -115,6 +115,7 @@
   // ============================================================================
 
   var lightboxModal = null;
+  var lbState = { items: [], index: 0, opts: {}, autoplay: false, origin: null };
 
   function getLightboxModal() {
     if (lightboxModal) return lightboxModal;
@@ -129,7 +130,10 @@
       '<div class="avg-modal-backdrop" data-close></div>',
       '<div class="avg-modal-dialog">',
       '  <button type="button" class="avg-modal-close" aria-label="Close" data-close>&times;</button>',
+      '  <button type="button" class="avg-modal-nav avg-modal-prev" aria-label="Previous item" data-prev>&#8249;</button>',
       '  <div class="avg-modal-frame" data-frame></div>',
+      '  <button type="button" class="avg-modal-nav avg-modal-next" aria-label="Next item" data-next>&#8250;</button>',
+      '  <div class="avg-modal-counter" aria-live="polite"></div>',
       '</div>'
     ].join('');
 
@@ -137,9 +141,9 @@
     lightboxModal = modal;
 
     modal.addEventListener('click', function(e) {
-      if (e.target.hasAttribute('data-close')) {
-        closeLightbox();
-      }
+      if (e.target.closest('[data-prev]')) { renderLightboxItem(lbState.index - 1); return; }
+      if (e.target.closest('[data-next]')) { renderLightboxItem(lbState.index + 1); return; }
+      if (e.target.hasAttribute('data-close')) closeLightbox();
     });
 
     return modal;
@@ -166,33 +170,78 @@
     }
   }
 
-  function openLightbox(provider, id, autoplay, opts) {
-    // Close any other open popups first (cross-module coordination)
-    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getLightboxModal() } }));
-
+  function updateLightboxNav() {
     var modal = getLightboxModal();
-    var dialog = modal.querySelector('.avg-modal-dialog');
-    var frame = modal.querySelector('[data-frame]');
-    var src = getVideoSrc(provider, id, autoplay);
-
-    frame.innerHTML = '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
-    applyPopupOptions(dialog, frame, opts);
-    modal.hidden = false;
-    document.body.style.overflow = 'hidden';
-
-    var closeBtn = modal.querySelector('.avg-modal-close');
-    if (closeBtn) closeBtn.focus();
+    var total = lbState.items.length;
+    var prev = modal.querySelector('[data-prev]');
+    var next = modal.querySelector('[data-next]');
+    var counter = modal.querySelector('.avg-modal-counter');
+    // A single-item gallery has nothing to navigate.
+    if (prev) prev.hidden = total < 2;
+    if (next) next.hidden = total < 2;
+    if (counter) {
+      counter.hidden = total < 2;
+      counter.textContent = (lbState.index + 1) + ' / ' + total;
+    }
   }
 
-  function openImageLightbox(fullUrl, alt) {
+  // The ONE render path. Every entry point — click, arrow, key, swipe — goes
+  // through here, and the first thing it does is destroy the current frame.
+  // Because playback is a raw autoplay iframe, that teardown IS the video stop.
+  function renderLightboxItem(index) {
+    var total = lbState.items.length;
+    if (!total) return;
+
+    var modal = getLightboxModal();
+    var dialog = modal.querySelector('.avg-modal-dialog');
+    var frame = modal.querySelector('[data-frame]');
+
+    // Wrap around at both ends.
+    index = ((index % total) + total) % total;
+    lbState.index = index;
+    var item = lbState.items[index];
+
+    frame.innerHTML = '';
+    dialog.classList.remove('avg-modal-image', 'avg-modal-html');
+
+    if (item.type === 'image') {
+      dialog.classList.add('avg-modal-image');
+      // Built via the DOM, not string concatenation — the URL and alt text are
+      // never interpolated into markup.
+      var img = document.createElement('img');
+      img.src = item.fullUrl;
+      img.alt = item.alt || '';
+      frame.appendChild(img);
+    } else if (item.type === 'html') {
+      dialog.classList.add('avg-modal-html');
+      // Server-side wp_kses_post output, cloned from the tile.
+      frame.innerHTML = item.html;
+    } else {
+      var src = getVideoSrc(item.provider, item.videoId, lbState.autoplay);
+      frame.innerHTML = '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+    }
+
+    applyPopupOptions(dialog, frame, {
+      maxWidth: lbState.opts.maxWidth,
+      aspect: item.type === 'video' ? lbState.opts.aspect : '',
+      caption: (lbState.opts.showCaption && item.caption) ? item.caption : ''
+    });
+
+    updateLightboxNav();
+  }
+
+  function openLightbox(sequence, startIndex, opts) {
+    // Close any other open popups first (cross-module coordination).
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getLightboxModal() } }));
 
     var modal = getLightboxModal();
-    var frame = modal.querySelector('[data-frame]');
-    var dialog = modal.querySelector('.avg-modal-dialog');
+    lbState.items = sequence || [];
+    lbState.opts = opts || {};
+    lbState.autoplay = !!(opts && opts.autoplay);
+    // The caller knows which tile was activated; don't infer it from focus.
+    lbState.origin = (opts && opts.origin) || document.activeElement;
 
-    dialog.classList.add('avg-modal-image');
-    frame.innerHTML = '<img src="' + fullUrl + '" alt="' + (alt || '') + '" style="width:100%;height:auto;display:block;" />';
+    renderLightboxItem(startIndex || 0);
     modal.hidden = false;
     document.body.style.overflow = 'hidden';
 
@@ -205,9 +254,16 @@
     var frame = lightboxModal.querySelector('[data-frame]');
     if (frame) frame.innerHTML = '';
     var dialog = lightboxModal.querySelector('.avg-modal-dialog');
-    if (dialog) dialog.classList.remove('avg-modal-image');
+    if (dialog) dialog.classList.remove('avg-modal-image', 'avg-modal-html');
     lightboxModal.hidden = true;
     document.body.style.overflow = '';
+
+    // Return focus to the tile that opened us.
+    if (lbState.origin && typeof lbState.origin.focus === 'function') {
+      lbState.origin.focus();
+    }
+    lbState.origin = null;
+    lbState.items = [];
   }
 
   // ============================================================================
@@ -485,38 +541,48 @@
       return;
     }
 
-    e.preventDefault();
-
     var itemType = tile.getAttribute('data-type') || 'video';
 
-    // Handle image tiles
-    if (itemType === 'image') {
-      var fullUrl = tile.getAttribute('data-full-url');
-      if (!fullUrl) return;
-      var titleEl = tile.querySelector('.avg-title');
-      var titleText = titleEl ? titleEl.textContent : '';
-      openImageLightbox(fullUrl, titleText);
+    // HTML tiles host arbitrary shortcode output — links, forms, embeds. Never
+    // intercept their clicks. They stay reachable via lightbox navigation, but
+    // clicking them does whatever their own markup says.
+    if (itemType === 'html') return;
+
+    e.preventDefault();
+
+    if (popupStyle === 'lightbox') {
+      var seq = collectSequence(gallery, tile);
+      if (!seq.items.length) return;
+      var showCaption = gallery.getAttribute('data-popup-caption');
+      if (showCaption === null) showCaption = '1';
+      openLightbox(seq.items, seq.startIndex, {
+        maxWidth: gallery.getAttribute('data-popup-max-width') || '',
+        aspect: gallery.getAttribute('data-popup-aspect') || '',
+        showCaption: showCaption === '1',
+        autoplay: gallery.getAttribute('data-autoplay') === '1',
+        origin: tile
+      });
       return;
     }
 
-    // Handle video tiles
+    // Theater / side panel / inline keep their existing single-item behavior.
+    if (itemType === 'image') return;
+
     var provider = tile.getAttribute('data-provider');
     var videoId = tile.getAttribute('data-video-id');
-    var url = tile.getAttribute('data-url');
     var autoplay = gallery.getAttribute('data-autoplay') === '1';
-    var title = tile.querySelector('.avg-title');
-    var titleText = title ? title.textContent : '';
+    var titleEl = tile.querySelector('.avg-title');
+    var titleText = titleEl ? titleEl.textContent : '';
 
     if (!provider || !videoId) return;
 
-    // Phase 5 — popup options driven by gallery data attrs + tile caption.
     var captionAttr = tile.getAttribute('data-caption') || '';
-    var showCaption = gallery.getAttribute('data-popup-caption');
-    if (showCaption === null) showCaption = '1';
+    var showCap = gallery.getAttribute('data-popup-caption');
+    if (showCap === null) showCap = '1';
     var popupOpts = {
       maxWidth: gallery.getAttribute('data-popup-max-width') || '',
       aspect: gallery.getAttribute('data-popup-aspect') || '',
-      caption: (showCaption === '1' && captionAttr) ? captionAttr : ''
+      caption: (showCap === '1' && captionAttr) ? captionAttr : ''
     };
 
     switch (popupStyle) {
@@ -528,10 +594,6 @@
         break;
       case 'side_panel':
         openSidePanel(provider, videoId, autoplay, titleText, popupOpts);
-        break;
-      case 'lightbox':
-      default:
-        openLightbox(provider, videoId, autoplay, popupOpts);
         break;
     }
   }

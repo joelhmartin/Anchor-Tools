@@ -81,6 +81,12 @@ class Module {
         // means is_configured() is false and NO HTTP is ever attempted.
         require_once __DIR__ . '/class-analytics.php';
         new Analytics();
+
+        // Phase 8: hardening — data-integrity nudges (slug collisions, orphan /
+        // duplicate / missing-coords notices + list marker) and a versioned cache
+        // invalidation scheme that map_data() + the directory shortcode key into.
+        require_once __DIR__ . '/class-integrity.php';
+        new Integrity();
     }
 
     private $assets_enqueued = false;
@@ -553,8 +559,12 @@ class Module {
     }
 
     public function sc_directory( $atts ) {
-        $roots = \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => 0, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC' ] );
-        $html = '<div class="al-directory">' . $this->directory_branch( $roots ) . '</div>';
+        // Cache only the expensive recursive tree build; the filter still runs on
+        // every call so dynamically-attached filters keep working uncached.
+        $html = $this->cached( 'al_dir_', (array) $atts, function () {
+            $roots = \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => 0, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC' ] );
+            return '<div class="al-directory">' . $this->directory_branch( $roots ) . '</div>';
+        } );
         return \apply_filters( 'anchor_locations_service_area_directory_html', $html, 0 );
     }
     private function directory_branch( $nodes ) {
@@ -575,7 +585,47 @@ class Module {
         return isset( $opts['google_api_key'] ) ? \sanitize_text_field( $opts['google_api_key'] ) : '';
     }
 
+    /* ---- Phase 8: versioned relationship-query caching ---- */
+
+    /** Short TTL backstop; correctness comes from the version-busted key, not expiry. */
+    const CACHE_TTL = 12 * HOUR_IN_SECONDS;
+
+    /** Build a versioned transient key from a base prefix + the call's args. */
+    private static function cache_key( $base, array $args ) {
+        $ver = \class_exists( '\\Anchor\\Locations\\Integrity' ) ? Integrity::cache_version() : 0;
+        return $base . $ver . '_' . \md5( (string) \wp_json_encode( $args ) );
+    }
+
+    /** Public seam so tests can assert a query cached/read under the current version. */
+    public function map_cache_key( array $args = [] ) { return self::cache_key( 'al_mapdata_', $args ); }
+    public function directory_cache_key( array $atts = [] ) { return self::cache_key( 'al_dir_', $atts ); }
+
+    /**
+     * Versioned transient wrapper. Bypasses the cache entirely when the version
+     * option is absent (version 0), so behavior is identical to pre-Phase-8 until
+     * the first relationship-graph write bumps the version. get_transient()'s
+     * false-miss sentinel is unambiguous here: callers only ever cache arrays
+     * (map_data) or strings (directory), never a literal false.
+     */
+    private function cached( $base, array $args, callable $compute ) {
+        $ver = \class_exists( '\\Anchor\\Locations\\Integrity' ) ? Integrity::cache_version() : 0;
+        if ( $ver <= 0 ) { return $compute(); }
+        $key = $base . $ver . '_' . \md5( (string) \wp_json_encode( $args ) );
+        $hit = \get_transient( $key );
+        if ( $hit !== false ) { return $hit; }
+        $val = $compute();
+        \set_transient( $key, $val, self::CACHE_TTL );
+        return $val;
+    }
+
     public function map_data( $args = [] ) {
+        return $this->cached( 'al_mapdata_', (array) $args, function () use ( $args ) {
+            return $this->compute_map_data( $args );
+        } );
+    }
+
+    /** Uncached body of map_data() — the expensive location×service graph walk. */
+    private function compute_map_data( $args = [] ) {
         $types  = isset( $args['types'] ) ? (array) $args['types'] : [];
         $parent = isset( $args['parent'] ) ? (int) $args['parent'] : 0;
 

@@ -531,6 +531,21 @@ class Module {
     public function map_data( $args = [] ) {
         $types  = isset( $args['types'] ) ? (array) $args['types'] : [];
         $parent = isset( $args['parent'] ) ? (int) $args['parent'] : 0;
+
+        // Resolve the optional service filter to a term slug. Accepts a slug or a
+        // numeric term id; anything that doesn't resolve leaves $service_slug empty
+        // (== no filter) rather than filtering everything out.
+        $service_slug = '';
+        if ( isset( $args['service'] ) && $args['service'] !== '' ) {
+            $raw = $args['service'];
+            if ( \is_numeric( $raw ) ) {
+                $term = \get_term( (int) $raw, self::TAX_SERVICE );
+                $service_slug = ( $term && ! \is_wp_error( $term ) ) ? $term->slug : '';
+            } else {
+                $service_slug = \sanitize_title( (string) $raw );
+            }
+        }
+
         $q = [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'numberposts' => -1, 'meta_query' => [ [ 'key' => 'al_lat', 'value' => '', 'compare' => '!=' ] ] ];
         if ( $parent ) { $q['post_parent'] = $parent; }
         $out = [];
@@ -540,37 +555,94 @@ class Module {
             $type = (string) \get_post_meta( $p->ID, 'al_type', true );
             if ( $types && ! \in_array( $type, $types, true ) ) { continue; }
             $services = [];
+            $matches_service = false;
             foreach ( \get_posts( [ 'post_type' => self::CPT_SERVICE, 'post_status' => 'publish', 'numberposts' => -1, 'meta_key' => 'al_location_id', 'meta_value' => $p->ID ] ) as $sp ) {
-                $services[] = [ 'title' => \get_the_title( $sp ), 'url' => $this->service_page_url( $sp->ID ) ];
+                $slugs = \wp_get_object_terms( $sp->ID, self::TAX_SERVICE, [ 'fields' => 'slugs' ] );
+                if ( \is_wp_error( $slugs ) ) { $slugs = []; }
+                if ( $service_slug !== '' && \in_array( $service_slug, $slugs, true ) ) { $matches_service = true; }
+                $services[] = [ 'title' => \get_the_title( $sp ), 'url' => $this->service_page_url( $sp->ID ), 'service_slugs' => \array_values( $slugs ) ];
             }
+            // Server-side service pre-filter: drop locations with no matching page.
+            if ( $service_slug !== '' && ! $matches_service ) { continue; }
+
             $icon = \get_post_meta( $p->ID, 'al_marker_icon', true );
             if ( ! $icon ) { $s = $this->settings(); $icon = $s['marker_icon'] ?? ''; }
-            $out[] = [ 'id' => $p->ID, 'title' => \get_the_title( $p ), 'url' => \get_permalink( $p ), 'lat' => (float) $lat, 'lng' => (float) $lng, 'icon' => $icon, 'services' => $services ];
+            $marker = [ 'id' => $p->ID, 'title' => \get_the_title( $p ), 'url' => \get_permalink( $p ), 'lat' => (float) $lat, 'lng' => (float) $lng, 'icon' => $icon, 'type' => $type, 'services' => $services ];
+
+            // Attach the saved boundary GeoJSON only when it parses to valid JSON;
+            // invalid strings are skipped so a bad paste never breaks the map.
+            $boundary_raw = \get_post_meta( $p->ID, 'al_boundary', true );
+            if ( \is_string( $boundary_raw ) && \trim( $boundary_raw ) !== '' ) {
+                $decoded = \json_decode( $boundary_raw, true );
+                if ( $decoded !== null && \json_last_error() === JSON_ERROR_NONE ) {
+                    $marker['boundary'] = $decoded;
+                }
+            }
+
+            $out[] = $marker;
         }
         return $out;
     }
 
+    // Pinned @googlemaps/markerclusterer UMD build (jsDelivr). Not vendored because
+    // *.min.js is gitignored; loaded from CDN only when a map opts into clustering.
+    const MARKERCLUSTERER_VER = '2.5.3';
+    const MARKERCLUSTERER_URL  = 'https://cdn.jsdelivr.net/npm/@googlemaps/markerclusterer@2.5.3/dist/index.min.js';
+
     public function sc_map( $atts ) {
-        $a = \shortcode_atts( [ 'types' => '', 'parent' => 0, 'zoom' => '', 'height' => '480', 'center' => '' ], $atts, 'anchor_location_map' );
+        $a = \shortcode_atts( [ 'types' => '', 'parent' => 0, 'zoom' => '', 'height' => '480', 'center' => '', 'cluster' => '', 'service' => '', 'filters' => '' ], $atts, 'anchor_location_map' );
         $args = [];
         if ( $a['types'] !== '' ) { $args['types'] = \array_map( 'trim', \explode( ',', $a['types'] ) ); }
         if ( (int) $a['parent'] ) { $args['parent'] = (int) $a['parent']; }
+        if ( $a['service'] !== '' ) { $args['service'] = $a['service']; }
         $markers = $this->map_data( $args );
         $s = $this->settings();
+
+        $cluster = \filter_var( $a['cluster'], FILTER_VALIDATE_BOOLEAN );
+        $filters = [];
+        if ( $a['filters'] !== '' ) {
+            foreach ( \array_map( 'trim', \explode( ',', $a['filters'] ) ) as $f ) {
+                if ( \in_array( $f, [ 'service', 'type' ], true ) ) { $filters[] = $f; }
+            }
+        }
+
         $cfg = [
             'markers' => $markers,
             'zoom'    => $a['zoom'] !== '' ? (int) $a['zoom'] : (int) ( $s['map_zoom'] ?? 8 ),
             'center'  => $a['center'] !== '' ? $a['center'] : ( ( $s['map_center'] ?? '' ) ?: '' ),
+            'cluster' => $cluster,
+            'filters' => $filters,
         ];
-        $this->enqueue_map_assets();
+        $this->enqueue_map_assets( $cluster );
         $uid = 'al-map-' . ( ++self::$map_seq );
         $json = \esc_attr( \wp_json_encode( $cfg ) );
         return '<div id="' . $uid . '" class="al-map" style="height:' . (int) $a['height'] . 'px" data-al-map="' . $json . '"></div>';
     }
 
-    /** Enqueue Maps + frontend JS directly (store-locator pattern). Shortcodes run before wp_footer. */
-    public function enqueue_map_assets() {
-        if ( $this->assets_enqueued ) { return; }
+    private $cluster_enqueued = false;
+
+    /**
+     * Enqueue Maps + frontend JS directly (store-locator pattern). Shortcodes run
+     * before wp_footer. When any map on the page requests clustering, the
+     * MarkerClusterer UMD is enqueued from the CDN as a dependency of frontend.js.
+     */
+    public function enqueue_map_assets( $cluster = false ) {
+        // The clustering library may need enqueuing even if base assets already
+        // were (an earlier non-cluster map on the same page), so guard it separately.
+        if ( $cluster && ! $this->cluster_enqueued ) {
+            $this->cluster_enqueued = true;
+            \wp_enqueue_script( 'anchor-locations-markerclusterer', self::MARKERCLUSTERER_URL, [], self::MARKERCLUSTERER_VER, true );
+        }
+        if ( $this->assets_enqueued ) {
+            if ( $cluster ) {
+                // Ensure the already-registered frontend script depends on the clusterer.
+                $frontend = \wp_scripts()->query( 'anchor-locations-frontend' );
+                if ( $frontend && ! \in_array( 'anchor-locations-markerclusterer', (array) $frontend->deps, true ) ) {
+                    $frontend->deps[] = 'anchor-locations-markerclusterer';
+                }
+            }
+            return;
+        }
         $this->assets_enqueued = true;
         $dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-locations/assets/';
         \wp_enqueue_style( 'anchor-locations', \Anchor_Asset_Loader::url( 'anchor-locations/assets/frontend.css' ), [], (string) \filemtime( $dir . 'frontend.css' ) );
@@ -580,6 +652,7 @@ class Module {
             \wp_enqueue_script( 'anchor-locations-gmaps', 'https://maps.googleapis.com/maps/api/js?key=' . \rawurlencode( $key ) . '&libraries=marker', [], null, true );
             $deps[] = 'anchor-locations-gmaps';
         }
+        if ( $cluster ) { $deps[] = 'anchor-locations-markerclusterer'; }
         \wp_enqueue_script( 'anchor-locations-frontend', \Anchor_Asset_Loader::url( 'anchor-locations/assets/frontend.js' ), $deps, (string) \filemtime( $dir . 'frontend.js' ), true );
     }
 

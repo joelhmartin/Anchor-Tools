@@ -1,4 +1,9 @@
 .al-map { width: 100%; min-height: 320px; background: #eef1f4; border-radius: 8px; }
+.al-map-filters { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0 0 12px; }
+.al-map-filter-group { border: 1px solid #d6dbe0; border-radius: 6px; padding: 6px 12px 10px; margin: 0; min-width: 0; }
+.al-map-filter-group legend { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; opacity: .7; padding: 0 4px; }
+.al-map-filter-group label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 12px 2px 0; font-size: 14px; cursor: pointer; }
+.al-map-filter-group input[type="checkbox"] { margin: 0; }
 .al-map-popup h3 { margin: 0 0 4px; font-size: 15px; }
 .al-map-popup ul { margin: 6px 0 0; padding-left: 16px; }
 .al-breadcrumbs { font-size: 13px; margin: 0 0 16px; }

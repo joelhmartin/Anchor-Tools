@@ -78,7 +78,7 @@ Stored as the `anchor_locations_settings` option (array), sanitized by `Module::
 | `map_center` | Default `[anchor_location_map]` center as `lat,lng`, used when the shortcode doesn't pass `center` and there are no markers to derive a center from. |
 | `map_zoom` | Default zoom level (int), used when the shortcode doesn't pass `zoom`. |
 | `wrapper_html` / `wrapper_css` / `wrapper_js` | The global wrapper template (see §4). Leave `wrapper_html` blank to disable wrapping entirely. |
-| `fullwidth_template` | `'1'`/`''` — reserved for a full-width single template. Saved and sanitized, but **not currently consumed** by any `template_include` filter or other code path — toggling it has no effect yet. |
+| `fullwidth_template` | `'1'`/`''` — when `'1'`, a `template_include` filter serves the plugin's minimal full-width single template (`templates/single-anchor-fullwidth.php`: theme header + `the_content` + footer, no sidebar) on singular location/service views when the theme lacks a suitable layout. Default off. |
 
 **Any change to `services_base` or `service_areas_base` triggers a rewrite-rule reflush** on the next request: `sanitize_settings()` deletes the `anchor_locations_rw_sig` option on every save, and `maybe_flush()` (hooked on `init` at priority 99) re-adds the custom rewrite rule and calls `flush_rewrite_rules()` whenever the stored signature is missing or doesn't match the current bases.
 
@@ -242,4 +242,57 @@ wp post meta set $FAQ_ID al_answer 'Most roofs run $8k–$20k depending on size.
 wp post meta set $FAQ_ID al_location_ids "[$COUNTY_ID]" --format=json  # county + all its cities
 wp post term set $FAQ_ID service roofing                              # or: wp post meta set $FAQ_ID al_global 1
 ```
+
+---
+
+## 7. SEO controls & schema (Phase 4)
+
+Per-page SEO for `anchor_location` and `anchor_service_page`, via a "SEO" metabox
+(implemented in `class-seo.php`, `\Anchor\Locations\SEO`). All keys use the `al_`
+prefix and are settable over WP-CLI.
+
+| Meta key | Type | Purpose |
+|---|---|---|
+| `al_seo_title` | text | Document `<title>` / SEO-plugin title. |
+| `al_seo_desc` | textarea | Meta description. |
+| `al_canonical` | url | Canonical URL override. |
+| `al_robots_noindex` | `'1'`\|`''` | Adds `noindex` (via core `wp_robots`). |
+| `al_robots_nofollow` | `'1'`\|`''` | Adds `nofollow` (via core `wp_robots`). |
+| `al_og_title` | text | Open Graph title. |
+| `al_og_desc` | textarea | Open Graph description. |
+| `al_og_image` | url | Open Graph image. |
+| `al_breadcrumb_title` | text | Crumb label used by `[anchor_breadcrumbs]` **and** the BreadcrumbList schema (falls back to the post title). |
+| `al_h1` | text | H1 text exposed by the `[anchor_h1]` shortcode (falls back to the post title). |
+| `al_sitemap_exclude` | `'1'`\|`''` | Excludes the post from core XML sitemaps (and Yoast's, best-effort). |
+
+### SEO-plugin integration
+
+Robots (`noindex`/`nofollow`) **always** go through the core `wp_robots` filter,
+so they work with or without an SEO plugin. For the rest, the module detects an
+active SEO plugin and never duplicates it:
+
+- **Yoast** (`WPSEO_VERSION`) — values fed via `wpseo_title`, `wpseo_metadesc`,
+  `wpseo_canonical`, `wpseo_opengraph_title`, `wpseo_opengraph_desc`,
+  `wpseo_opengraph_image` (only when our field is non-empty).
+- **Rank Math** (`RankMath`) — `rank_math/frontend/title` / `_description` / `_canonical`.
+- **AIOSEO** (`AIOSEO_VERSION`) — detected → our own tag output is suppressed (no
+  public value-injection filters wired; best-effort).
+- **No SEO plugin** — the module emits its own: document title via
+  `pre_get_document_title`, plus `<meta name="description">`, `<link rel="canonical">`,
+  and Open Graph tags on `wp_head` (each only when its field is set).
+
+### `[anchor_h1]`
+
+`[anchor_h1 id=""]` outputs `<h1 class="al-h1">` from `al_h1` (or the post title).
+Filterable via `anchor_locations_h1` (`( $html, $id )`).
+
+### Review / AggregateRating schema
+
+When `[anchor_local_testimonials]` renders ≥1 testimonial **with** a rating
+(`al_rating` 1–5) on a singular page, a Review + AggregateRating JSON-LD block is
+emitted on `wp_footer` (same footer-collector + `</script>`-safe encoding as the
+FAQ schema; lives in `class-libraries.php`). The reviewed entity is typed `Service`
+on a service page, else `Place`; `aggregateRating.ratingValue` is the average and
+`reviewCount` the count of rated testimonials shown. No rated testimonials shown ⇒
+no block (schema only when the content is visible).
 

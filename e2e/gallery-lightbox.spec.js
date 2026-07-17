@@ -45,3 +45,14 @@ test('gallery renders six tiles with the expected types', async ({ page }) => {
   await expect(tiles.nth(2)).toHaveAttribute('data-provider', 'youtube');
   await expect(tiles.nth(4)).toHaveAttribute('data-type', 'html');
 });
+
+test('tiles are keyboard focusable and expose a button role', async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  const first = page.locator('.anchor-video-gallery .avg-tile').first();
+  await expect(first).toHaveAttribute('role', 'button');
+  await expect(first).toHaveAttribute('tabindex', '0');
+
+  // HTML tiles host arbitrary shortcode markup — they must NOT be buttons.
+  const htmlTile = page.locator('.anchor-video-gallery .avg-tile-html');
+  await expect(htmlTile).not.toHaveAttribute('role', 'button');
+});

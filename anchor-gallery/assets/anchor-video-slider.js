@@ -474,6 +474,16 @@
 
   document.addEventListener('click', handleTileClick);
 
+  // role="button" tiles are <div>s — Enter/Space don't fire click natively.
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    if (!e.target || !e.target.closest) return;
+    var tile = e.target.closest('.avg-tile[role="button"]');
+    if (!tile) return;
+    e.preventDefault();
+    tile.click();
+  });
+
   // ============================================================================
   // Slider/Carousel Navigation
   // ============================================================================
@@ -1009,19 +1019,9 @@
 
       initSliderNavigation(gallery);
       initPagination(gallery);
-
-      // Make tiles keyboard accessible
-      gallery.querySelectorAll('.avg-tile').forEach(function(tile) {
-        tile.setAttribute('tabindex', '0');
-        tile.setAttribute('role', 'button');
-
-        tile.addEventListener('keydown', function(e) {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            tile.click();
-          }
-        });
-      });
+      // Tile tabindex/role are rendered server-side (anchor-gallery.php) based
+      // on popup_style + tile type; Enter/Space is handled by the delegated
+      // keydown listener above. No per-tile JS wiring needed here.
     });
   }
 
@@ -1046,18 +1046,9 @@
 
       initSliderNavigation(gallery);
       initPagination(gallery);
-
-      gallery.querySelectorAll('.avg-tile').forEach(function(tile) {
-        tile.setAttribute('tabindex', '0');
-        tile.setAttribute('role', 'button');
-
-        tile.addEventListener('keydown', function(e) {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            tile.click();
-          }
-        });
-      });
+      // Tile tabindex/role are rendered server-side (anchor-gallery.php) based
+      // on popup_style + tile type; Enter/Space is handled by the delegated
+      // keydown listener above. No per-tile JS wiring needed here.
     });
   }
 

@@ -2215,6 +2215,8 @@ class Anchor_Gallery_Module {
                     $item_link    = trim( (string) ( $video['link_url'] ?? '' ) );
                     $item_target  = (string) ( $video['link_target'] ?? '_self' );
                     $use_link     = ( $item_link !== '' && ( $settings['popup_style'] ?? '' ) === 'none' );
+                    // Tiles are only interactive when a popup will open.
+                    $is_interactive = ( ( $settings['popup_style'] ?? '' ) !== 'none' );
                 ?>
                 <?php if ( $is_html ) : ?>
                 <div class="avg-tile avg-tile-html<?php echo $hidden ? ' avg-hidden' : ''; ?>"
@@ -2244,6 +2246,7 @@ class Anchor_Gallery_Module {
                 <div class="avg-tile<?php echo $hidden ? ' avg-hidden' : ''; ?>"
                      data-index="<?php echo esc_attr($i); ?>"
                      data-type="<?php echo esc_attr($item_type); ?>"
+                     <?php if ( $is_interactive ) : ?>tabindex="0" role="button"<?php endif; ?>
                      <?php if ( $cat_slug_attr !== '' ): ?>data-category="<?php echo esc_attr( $cat_slug_attr ); ?>"<?php endif; ?><?php echo $caption_attr_html; ?>
                      <?php if (!$is_image): ?>
                      data-provider="<?php echo esc_attr($video['provider']); ?>"

@@ -17,6 +17,19 @@ class LocationsLibrariesTest extends WP_UnitTestCase {
 		$this->lib = new \Anchor\Locations\Libraries();
 	}
 
+	/**
+	 * Fire wp_footer and return what our callbacks printed. Detaches the core
+	 * block-theme skip-link callback first: it triggers an unrelated 6.4
+	 * deprecation notice that WP_UnitTestCase would otherwise fail on, and it
+	 * has nothing to do with the FAQ schema under test.
+	 */
+	private function capture_footer() {
+		remove_action( 'wp_footer', 'the_block_template_skip_link' );
+		ob_start();
+		do_action( 'wp_footer' );
+		return ob_get_clean();
+	}
+
 	/** Helper: create a published library item with assignment meta. */
 	private function make_item( $cpt, $args = [] ) {
 		$id = self::factory()->post->create( [
@@ -87,36 +100,65 @@ class LocationsLibrariesTest extends WP_UnitTestCase {
 		$this->assertCount( 2, $ids );
 	}
 
-	public function test_faqs_shortcode_renders_and_emits_faqpage_schema() {
+	/**
+	 * Exercises the REAL hook ordering: the body renders the shortcode (filling
+	 * the per-request collector), THEN wp_footer fires and prints the schema.
+	 * Because set_up() constructs a Libraries instance, its print_faq_schema is
+	 * attached to wp_footer — so this test would FAIL if the callback were still
+	 * hooked to wp_head (nothing would answer do_action('wp_footer')).
+	 */
+	public function test_faqpage_schema_emitted_on_wp_footer_after_body_renders() {
 		$loc  = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pittsburgh' ] );
 		$faq  = $this->make_item( 'anchor_faq', [ 'title' => 'How much does roofing cost?', 'locations' => [ $loc ] ] );
 		update_post_meta( $faq, 'al_question', 'How much does roofing cost?' );
 		update_post_meta( $faq, 'al_answer', '<p>It depends on the roof size.</p>' );
 
-		// Simulate viewing the location page.
+		// Singular location view: is_singular() must be true so print_faq_schema runs.
 		$this->go_to( get_permalink( $loc ) );
+		$this->assertTrue( is_singular(), 'Expected a singular location query.' );
 
+		// Body render fills the collector (this is what the_content does live).
 		$html = do_shortcode( '[anchor_local_faqs id="' . $loc . '"]' );
 		$this->assertStringContainsString( 'How much does roofing cost?', $html );
 		$this->assertStringContainsString( 'It depends on the roof size.', $html );
 
-		// FAQ schema is emitted by the Libraries wp_head callback.
-		ob_start();
-		$this->lib->print_faq_schema();
-		$schema = ob_get_clean();
+		// Now the footer fires — schema must be present via the real hook.
+		$schema = $this->capture_footer();
+
 		$this->assertStringContainsString( 'FAQPage', $schema );
+		$this->assertStringContainsString( 'Question', $schema );
 		$this->assertStringContainsString( 'How much does roofing cost?', $schema );
 		// Safe encoding: no raw </ breakout.
 		$this->assertStringNotContainsString( '</p>', $schema );
 	}
 
-	public function test_faq_schema_absent_when_no_faqs_rendered() {
+	/** A page without the FAQ shortcode must emit no FAQPage block on wp_footer. */
+	public function test_faqpage_schema_absent_without_shortcode() {
 		$loc = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish' ] );
 		$this->go_to( get_permalink( $loc ) );
-		ob_start();
-		$this->lib->print_faq_schema();
-		$schema = ob_get_clean();
-		$this->assertSame( '', $schema );
+
+		// No shortcode rendered -> collector stays empty.
+		$schema = $this->capture_footer();
+
+		$this->assertStringNotContainsString( 'FAQPage', $schema );
+	}
+
+	/** The same FAQ rendered by two shortcode calls yields a single Question entry. */
+	public function test_faqpage_schema_dedupes_repeated_shortcode() {
+		$loc = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pittsburgh' ] );
+		$faq = $this->make_item( 'anchor_faq', [ 'title' => 'Do you offer warranties?', 'locations' => [ $loc ] ] );
+		update_post_meta( $faq, 'al_question', 'Do you offer warranties?' );
+		update_post_meta( $faq, 'al_answer', 'Yes.' );
+
+		$this->go_to( get_permalink( $loc ) );
+
+		// Render the shortcode twice on the same page.
+		do_shortcode( '[anchor_local_faqs id="' . $loc . '"]' );
+		do_shortcode( '[anchor_local_faqs id="' . $loc . '"]' );
+
+		$schema = $this->capture_footer();
+
+		$this->assertSame( 1, substr_count( $schema, '"Question"' ), 'Duplicate FAQ should appear once.' );
 	}
 
 	public function test_save_handler_sanitizes_meta() {

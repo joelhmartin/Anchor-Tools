@@ -23,6 +23,9 @@ class Libraries {
 	/** Per-request FAQ collector: list of [ 'q' => string, 'a' => string ]. */
 	private $faq_items = [];
 
+	/** Post IDs already added to $faq_items this request (dedupe guard). */
+	private $faq_seen = [];
+
 	public function __construct() {
 		\add_action( 'init', [ $this, 'register_types' ] );
 
@@ -39,8 +42,11 @@ class Libraries {
 		\add_shortcode( 'anchor_local_testimonials', [ $this, 'sc_testimonials' ] );
 		\add_shortcode( 'anchor_local_faqs', [ $this, 'sc_faqs' ] );
 
-		// After Phase-1 print_schema() (priority 20) so ordering is stable.
-		\add_action( 'wp_head', [ $this, 'print_faq_schema' ], 21 );
+		// Emit on wp_footer, not wp_head: the FAQ collector is filled while the
+		// body renders (the_content), which happens AFTER wp_head. JSON-LD is
+		// valid anywhere in the document, and wp_footer fires after the loop so
+		// $faq_items is populated by the time we print.
+		\add_action( 'wp_footer', [ $this, 'print_faq_schema' ], 21 );
 	}
 
 	/** @return string[] The three library CPT slugs. */
@@ -286,8 +292,13 @@ class Libraries {
 				$html .= '<h3 class="al-faq-q">' . \esc_html( $q ) . '</h3>';
 				$html .= '<div class="al-faq-a">' . $a . '</div>';
 				$html .= '</div>';
-				// Feed the per-request FAQ-schema collector.
-				$this->faq_items[] = [ 'q' => $q, 'a' => \wp_strip_all_tags( $a ) ];
+				// Feed the per-request FAQ-schema collector, deduped by post ID so
+				// the same FAQ rendered by two shortcode calls on one page yields a
+				// single Question entry.
+				if ( ! \in_array( $id, $this->faq_seen, true ) ) {
+					$this->faq_seen[]  = $id;
+					$this->faq_items[] = [ 'q' => $q, 'a' => \wp_strip_all_tags( $a ) ];
+				}
 			}
 			$html .= '</div>';
 		}
@@ -382,8 +393,6 @@ class Libraries {
 		if ( ! isset( $_POST[ self::NONCE ] ) || ! \wp_verify_nonce( $_POST[ self::NONCE ], self::NONCE ) ) { return; }
 		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) { return; }
 		if ( ! \current_user_can( 'edit_post', $post_id ) ) { return; }
-
-		$post_type = \get_post_type( $post_id );
 
 		// Text fields.
 		if ( isset( $_POST['al_author'] ) )   { \update_post_meta( $post_id, 'al_author', \sanitize_text_field( \wp_unslash( $_POST['al_author'] ) ) ); }

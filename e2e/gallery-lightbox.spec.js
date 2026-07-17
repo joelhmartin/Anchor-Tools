@@ -56,3 +56,31 @@ test('tiles are keyboard focusable and expose a button role', async ({ page }) =
   const htmlTile = page.locator('.anchor-video-gallery .avg-tile-html');
   await expect(htmlTile).not.toHaveAttribute('role', 'button');
 });
+
+test('collectSequence returns all six visible items with the clicked start index', async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  const result = await page.evaluate(() => {
+    const gallery = document.querySelector('.anchor-video-gallery');
+    const tiles = gallery.querySelectorAll('.avg-tile');
+    const seq = window.AnchorVideoGallery.collectSequence(gallery, tiles[3]);
+    return {
+      types: seq.items.map((i) => i.type),
+      startIndex: seq.startIndex,
+      videoProvider: seq.items[2].provider,
+      videoId: seq.items[2].videoId,
+      imageHasUrl: !!seq.items[0].fullUrl,
+      imageAlt: seq.items[0].alt,
+      htmlContent: seq.items[4].html,
+      caption: seq.items[0].caption,
+    };
+  });
+
+  expect(result.types).toEqual(['image', 'image', 'video', 'image', 'html', 'image']);
+  expect(result.startIndex).toBe(3);
+  expect(result.videoProvider).toBe('youtube');
+  expect(result.videoId).toBe('dQw4w9WgXcQ');
+  expect(result.imageHasUrl).toBe(true);
+  expect(result.imageAlt).toBe('Red image');
+  expect(result.htmlContent).toContain('Hello HTML');
+  expect(result.caption).toBe('Caption red');
+});

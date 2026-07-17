@@ -47,6 +47,70 @@
   }
 
   // ============================================================================
+  // Lightbox Sequence Collection
+  // ============================================================================
+
+  // Filters hide via .is-hidden, pagination via .avg-hidden — two different
+  // classes that both resolve to display:none. offsetParent catches both
+  // without hardcoding either, and correctly does NOT treat carousel tiles as
+  // hidden, since those keep layout boxes and merely scroll out of view.
+  function isTileVisible(el) {
+    return !!(el && el.offsetParent !== null);
+  }
+
+  function readTile(tile) {
+    var type = tile.getAttribute('data-type') || 'video';
+    var item = {
+      type: type,
+      tile: tile,
+      caption: tile.getAttribute('data-caption') || ''
+    };
+
+    if (type === 'image') {
+      item.fullUrl = tile.getAttribute('data-full-url') || '';
+      var img = tile.querySelector('.avg-thumb-img');
+      item.alt = img ? (img.getAttribute('alt') || '') : '';
+    } else if (type === 'html') {
+      var content = tile.querySelector('.avg-html-content');
+      item.html = content ? content.innerHTML : '';
+    } else {
+      item.provider = tile.getAttribute('data-provider') || '';
+      item.videoId = tile.getAttribute('data-video-id') || '';
+      item.url = tile.getAttribute('data-url') || '';
+    }
+
+    return item;
+  }
+
+  function collectSequence(gallery, clicked) {
+    // render_gallery_layout() emits a thumb strip plus one featured tile. The
+    // strip is the real sequence; a click on the featured tile maps to the
+    // currently-active thumb.
+    var isGalleryLayout = !!gallery.querySelector('.avg-gallery-thumb');
+    var nodes, target = clicked;
+
+    if (isGalleryLayout) {
+      nodes = gallery.querySelectorAll('.avg-gallery-thumb');
+      if (clicked && clicked.classList.contains('avg-gallery-featured')) {
+        target = gallery.querySelector('.avg-gallery-thumb.active') || nodes[0];
+      }
+    } else {
+      // .avg-tile-linked is an <a> and only exists when popup_style is 'none',
+      // which never coexists with a lightbox — excluded defensively.
+      nodes = gallery.querySelectorAll('.avg-tile:not(.avg-tile-linked)');
+    }
+
+    var items = [];
+    var startIndex = 0;
+    for (var i = 0; i < nodes.length; i++) {
+      if (!isTileVisible(nodes[i])) continue;
+      if (nodes[i] === target) startIndex = items.length;
+      items.push(readTile(nodes[i]));
+    }
+    return { items: items, startIndex: startIndex };
+  }
+
+  // ============================================================================
   // Popup: Lightbox Modal
   // ============================================================================
 
@@ -1062,7 +1126,8 @@
       } else {
         initContainer(container);
       }
-    }
+    },
+    collectSequence: collectSequence
   };
 
   // ============================================================================

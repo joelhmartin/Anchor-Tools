@@ -24,4 +24,45 @@ class LocationsRewriteTest extends WP_UnitTestCase {
         $sp = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish' ] );
         $this->assertSame( '#', get_permalink( $sp ) );
     }
+
+    /**
+     * Regression test for the nested-location 404 bug: find_service_page() used
+     * get_page_by_path(), which for a hierarchical CPT only matches top-level
+     * posts (post_parent = 0). A city location nested under a county parent was
+     * never found by its bare slug, so /services/roofing/pittsburgh-pa/ 404'd
+     * even though service_page_url() happily generated that exact link.
+     */
+    public function test_inbound_request_resolves_nested_location_service_page() {
+        $this->set_permalink_structure( '/%postname%/' );
+        // The module's add_rewrite_rules() runs on init; flush so the custom
+        // al_service/al_loc rewrite rule is registered before we go_to() it.
+        flush_rewrite_rules();
+
+        $county = self::factory()->post->create( [
+            'post_type'   => 'anchor_location',
+            'post_name'   => 'allegheny-county-pa',
+            'post_status' => 'publish',
+            'post_parent' => 0,
+        ] );
+        $city = self::factory()->post->create( [
+            'post_type'   => 'anchor_location',
+            'post_name'   => 'pittsburgh-pa',
+            'post_status' => 'publish',
+            'post_parent' => $county,
+        ] );
+
+        $term = wp_insert_term( 'Roofing', 'service' );
+        $service_page = self::factory()->post->create( [
+            'post_type'   => 'anchor_service_page',
+            'post_name'   => 'roofing-pittsburgh-pa',
+            'post_status' => 'publish',
+        ] );
+        wp_set_object_terms( $service_page, [ (int) $term['term_id'] ], 'service' );
+        update_post_meta( $service_page, 'al_location_id', $city );
+
+        $this->go_to( home_url( '/services/roofing/pittsburgh-pa/' ) );
+
+        $this->assertTrue( is_singular( 'anchor_service_page' ), 'Inbound nested-location request should resolve to the service page, not 404.' );
+        $this->assertSame( $service_page, get_queried_object_id() );
+    }
 }

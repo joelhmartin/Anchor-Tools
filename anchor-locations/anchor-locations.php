@@ -102,8 +102,23 @@ class Module {
 
     /** Find a published service page by service term slug + linked location slug. */
     private function find_service_page( $service_slug, $loc_slug ) {
-        $loc = \get_page_by_path( $loc_slug, OBJECT, self::CPT_LOCATION );
-        if ( ! $loc ) { return 0; }
+        // Location slugs are globally unique (state-abbr suffix), so resolve by
+        // post_name directly. get_page_by_path() treats hierarchical CPT slugs as
+        // a full ancestor path and only matches top-level posts, which breaks
+        // lookup for nested locations (e.g. a city under a county). Resolving by
+        // post_name mirrors how service_page_url() builds the URL, keeping
+        // inbound routing and outbound link generation symmetric.
+        $loc_ids = \get_posts( [
+            'post_type'      => self::CPT_LOCATION,
+            'name'           => $loc_slug,
+            'post_status'    => 'publish',
+            'posts_per_page' => 1,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+        ] );
+        if ( empty( $loc_ids ) ) { return 0; }
+        $loc_id = (int) $loc_ids[0];
+
         $q = new \WP_Query( [
             'post_type'      => self::CPT_SERVICE,
             'post_status'    => 'publish',
@@ -111,7 +126,7 @@ class Module {
             'fields'         => 'ids',
             'no_found_rows'  => true,
             'tax_query'      => [ [ 'taxonomy' => self::TAX_SERVICE, 'field' => 'slug', 'terms' => $service_slug ] ],
-            'meta_query'     => [ [ 'key' => 'al_location_id', 'value' => $loc->ID ] ],
+            'meta_query'     => [ [ 'key' => 'al_location_id', 'value' => $loc_id ] ],
         ] );
         return $q->have_posts() ? (int) $q->posts[0] : 0;
     }

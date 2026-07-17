@@ -36,4 +36,20 @@ class LocationsShortcodesTest extends WP_UnitTestCase {
         $this->assertStringContainsString( 'Roofing in Pittsburgh', $out );
         $this->assertStringContainsString( '/services/roofing/pittsburgh-pa/', $out );
     }
+    public function test_parent_shortcode_hides_unpublished_parent() {
+        $parent = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'draft', 'post_title' => 'Hidden Parent' ] );
+        $child  = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Visible Child', 'post_parent' => $parent ] );
+        $out = do_shortcode( '[anchor_location_parent id="' . $child . '"]' );
+        $this->assertStringNotContainsString( 'Hidden Parent', $out );
+        $this->assertStringNotContainsString( '<a', $out );
+    }
+    public function test_breadcrumbs_skips_unpublished_ancestor() {
+        $root   = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pennsylvania' ] );
+        $middle = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'draft', 'post_title' => 'Hidden County', 'post_parent' => $root ] );
+        $grand  = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pittsburgh', 'post_parent' => $middle ] );
+        $out = do_shortcode( '[anchor_breadcrumbs id="' . $grand . '"]' );
+        $this->assertStringNotContainsString( 'Hidden County', $out );
+        $this->assertStringContainsString( 'Pennsylvania', $out );
+        $this->assertStringContainsString( 'Pittsburgh', $out );
+    }
 }

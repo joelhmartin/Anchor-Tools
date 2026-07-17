@@ -305,7 +305,7 @@ class Module {
     public function sc_parent( $atts ) {
         $id = $this->cur_id( $atts );
         $p = (int) \get_post( $id )->post_parent;
-        $html = $p ? '<a class="al-parent" href="' . \esc_url( \get_permalink( $p ) ) . '">' . \esc_html( \get_the_title( $p ) ) . '</a>' : '';
+        $html = ( $p && \get_post_status( $p ) === 'publish' ) ? '<a class="al-parent" href="' . \esc_url( \get_permalink( $p ) ) . '">' . \esc_html( \get_the_title( $p ) ) . '</a>' : '';
         return \apply_filters( 'anchor_locations_location_parent_html', $html, $id );
     }
 
@@ -329,11 +329,11 @@ class Module {
         if ( $post && $post->post_type === self::CPT_SERVICE ) {
             $loc = (int) \get_post_meta( $id, 'al_location_id', true );
             $anc = $loc ? \array_reverse( \get_post_ancestors( $loc ) ) : [];
-            foreach ( $anc as $aid ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( \get_the_title( $aid ) ) . '</a>'; }
-            if ( $loc ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $loc ) ) . '">' . \esc_html( \get_the_title( $loc ) ) . '</a>'; }
+            foreach ( $anc as $aid ) { if ( \get_post_status( $aid ) !== 'publish' ) { continue; } $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( \get_the_title( $aid ) ) . '</a>'; }
+            if ( $loc && \get_post_status( $loc ) === 'publish' ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $loc ) ) . '">' . \esc_html( \get_the_title( $loc ) ) . '</a>'; }
             $crumbs[] = \esc_html( \get_the_title( $id ) );
         } elseif ( $post ) {
-            foreach ( \array_reverse( \get_post_ancestors( $id ) ) as $aid ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( \get_the_title( $aid ) ) . '</a>'; }
+            foreach ( \array_reverse( \get_post_ancestors( $id ) ) as $aid ) { if ( \get_post_status( $aid ) !== 'publish' ) { continue; } $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( \get_the_title( $aid ) ) . '</a>'; }
             $crumbs[] = \esc_html( \get_the_title( $id ) );
         }
         $html = '<nav class="al-breadcrumbs">' . \implode( ' <span class="sep">&rsaquo;</span> ', $crumbs ) . '</nav>';

@@ -26,6 +26,12 @@ class Libraries {
 	/** Post IDs already added to $faq_items this request (dedupe guard). */
 	private $faq_seen = [];
 
+	/** Per-request Review collector: list of [ 'author', 'body', 'rating' ]. */
+	private $review_items = [];
+
+	/** Testimonial IDs already added to $review_items this request (dedupe guard). */
+	private $review_seen = [];
+
 	public function __construct() {
 		\add_action( 'init', [ $this, 'register_types' ] );
 
@@ -47,6 +53,11 @@ class Libraries {
 		// valid anywhere in the document, and wp_footer fires after the loop so
 		// $faq_items is populated by the time we print.
 		\add_action( 'wp_footer', [ $this, 'print_faq_schema' ], 21 );
+
+		// Phase 4: Review + AggregateRating schema from rated testimonials. Same
+		// footer-collector pattern as the FAQ schema (the collector is filled while
+		// the body renders [anchor_local_testimonials], which runs after wp_head).
+		\add_action( 'wp_footer', [ $this, 'print_review_schema' ], 21 );
 	}
 
 	/** @return string[] The three library CPT slugs. */
@@ -268,6 +279,17 @@ class Libraries {
 				if ( $quote !== '' ) { $html .= '<blockquote class="al-testimonial-quote">' . $quote . '</blockquote>'; }
 				if ( $author !== '' ) { $html .= '<figcaption class="al-testimonial-author">' . \esc_html( $author ) . '</figcaption>'; }
 				$html .= '</figure>';
+
+				// Feed the Review-schema collector — only rated testimonials count,
+				// deduped by post ID so two shortcode calls yield one Review node.
+				if ( $rating >= 1 && $rating <= 5 && ! \in_array( $id, $this->review_seen, true ) ) {
+					$this->review_seen[]  = $id;
+					$this->review_items[] = [
+						'author' => $author,
+						'body'   => \wp_strip_all_tags( $quote ),
+						'rating' => $rating,
+					];
+				}
 			}
 			$html .= '</div>';
 		}
@@ -331,6 +353,53 @@ class Libraries {
 		if ( ! $main ) { return; }
 
 		$doc  = [ '@context' => 'https://schema.org', '@type' => 'FAQPage', 'mainEntity' => $main ];
+		$json = \wp_json_encode( $doc, JSON_UNESCAPED_UNICODE );
+		$json = \str_replace( '</', '<\/', $json );
+		echo "\n<script type=\"application/ld+json\">" . $json . "</script>\n";
+	}
+
+	/**
+	 * Emit Review nodes + an AggregateRating for the rated testimonials rendered
+	 * on a singular page. Attached to a reviewed entity typed after the page
+	 * (Service on a service page, else Place) so the aggregate + reviews carry a
+	 * valid itemReviewed. Independent of Module::print_schema(); same safe
+	 * encoding (no JSON_UNESCAPED_SLASHES + `</` -> `<\/` guard) so a literal
+	 * "</script>" in a quote can't break out of the inline JSON-LD tag.
+	 */
+	public function print_review_schema() {
+		if ( empty( $this->review_items ) || ! \is_singular() ) { return; }
+
+		$reviews = [];
+		$sum     = 0;
+		$count   = 0;
+		foreach ( $this->review_items as $r ) {
+			$count++;
+			$sum += (int) $r['rating'];
+			$reviews[] = [
+				'@type'        => 'Review',
+				'author'       => [ '@type' => 'Person', 'name' => $r['author'] !== '' ? $r['author'] : \__( 'Anonymous', 'anchor-schema' ) ],
+				'reviewBody'   => $r['body'],
+				'reviewRating' => [ '@type' => 'Rating', 'ratingValue' => (int) $r['rating'], 'bestRating' => 5 ],
+			];
+		}
+		if ( ! $count ) { return; }
+
+		$post_id = (int) \get_queried_object_id();
+		$type    = ( \get_post_type( $post_id ) === Module::CPT_SERVICE ) ? 'Service' : 'Place';
+
+		$doc = [
+			'@context'        => 'https://schema.org',
+			'@type'           => $type,
+			'name'            => (string) \get_the_title( $post_id ),
+			'aggregateRating' => [
+				'@type'       => 'AggregateRating',
+				'ratingValue' => \round( $sum / $count, 1 ),
+				'reviewCount' => $count,
+				'bestRating'  => 5,
+			],
+			'review'          => $reviews,
+		];
+
 		$json = \wp_json_encode( $doc, JSON_UNESCAPED_UNICODE );
 		$json = \str_replace( '</', '<\/', $json );
 		echo "\n<script type=\"application/ld+json\">" . $json . "</script>\n";

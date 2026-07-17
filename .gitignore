@@ -14,3 +14,19 @@
 /playwright-report/
 /test-results/
 /e2e/.seed.json
+
+# PHPUnit run cache
+/.phpunit.result.cache
+
+# Composer DEV dependencies (installed by `composer install`, not shipped).
+# The repo intentionally tracks the PROD vendor deps; these dev-only packages
+# must never be committed. The release workflow runs `composer install --no-dev`.
+/vendor/bin/
+/vendor/doctrine/
+/vendor/myclabs/
+/vendor/nikic/
+/vendor/phar-io/
+/vendor/phpunit/
+/vendor/sebastian/
+/vendor/theseer/
+/vendor/yoast/

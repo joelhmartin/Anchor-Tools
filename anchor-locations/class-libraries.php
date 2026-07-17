@@ -360,11 +360,14 @@ class Libraries {
 
 	/**
 	 * Emit Review nodes + an AggregateRating for the rated testimonials rendered
-	 * on a singular page. Attached to a reviewed entity typed after the page
-	 * (Service on a service page, else Place) so the aggregate + reviews carry a
-	 * valid itemReviewed. Independent of Module::print_schema(); same safe
-	 * encoding (no JSON_UNESCAPED_SLASHES + `</` -> `<\/` guard) so a literal
-	 * "</script>" in a quote can't break out of the inline JSON-LD tag.
+	 * on a singular page. Rather than a second, fully-typed standalone entity,
+	 * this node reuses the SAME `@id` and `@type` as the page's main Place/Service
+	 * node (Module::build_schema(), wp_head) — see Module::entity_id() /
+	 * entity_type() — so consumers merge the aggregateRating + reviews INTO the
+	 * main entity instead of seeing two unlinked nodes for one page. Independent
+	 * of Module::print_schema(); same safe encoding (no JSON_UNESCAPED_SLASHES +
+	 * `</` -> `<\/` guard) so a literal "</script>" in a quote can't break out of
+	 * the inline JSON-LD tag.
 	 */
 	public function print_review_schema() {
 		if ( empty( $this->review_items ) || ! \is_singular() ) { return; }
@@ -385,12 +388,11 @@ class Libraries {
 		if ( ! $count ) { return; }
 
 		$post_id = (int) \get_queried_object_id();
-		$type    = ( \get_post_type( $post_id ) === Module::CPT_SERVICE ) ? 'Service' : 'Place';
 
 		$doc = [
 			'@context'        => 'https://schema.org',
-			'@type'           => $type,
-			'name'            => (string) \get_the_title( $post_id ),
+			'@type'           => Module::entity_type( $post_id ),
+			'@id'             => Module::entity_id( $post_id ),
 			'aggregateRating' => [
 				'@type'       => 'AggregateRating',
 				'ratingValue' => \round( $sum / $count, 1 ),

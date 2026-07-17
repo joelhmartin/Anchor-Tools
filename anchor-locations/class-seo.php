@@ -38,6 +38,13 @@ class SEO {
 		\add_filter( 'pre_get_document_title', [ $this, 'own_document_title' ], 20 );
 		\add_action( 'wp_head', [ $this, 'print_head_meta' ], 5 );
 
+		// Canonical: override core's own canonical (emitted by the default
+		// `rel_canonical` action on wp_head) via its filter, so exactly ONE
+		// canonical tag is produced. We deliberately do NOT print our own <link>
+		// in print_head_meta — that would duplicate core's tag. Guarded to no-op
+		// when an SEO plugin is active (those manage canonical via their own feeds).
+		\add_filter( 'get_canonical_url', [ $this, 'filter_canonical' ], 10, 2 );
+
 		// SEO-plugin feed filters — harmless when the plugin is inactive (never fired).
 		\add_filter( 'wpseo_title', [ $this, 'yoast_title' ] );
 		\add_filter( 'wpseo_metadesc', [ $this, 'yoast_metadesc' ] );
@@ -165,16 +172,16 @@ class SEO {
 		if ( ! $id ) { return; }
 
 		$desc      = (string) \get_post_meta( $id, 'al_seo_desc', true );
-		$canonical = (string) \get_post_meta( $id, 'al_canonical', true );
 		$og_title  = (string) \get_post_meta( $id, 'al_og_title', true );
 		$og_desc   = (string) \get_post_meta( $id, 'al_og_desc', true );
 		$og_image  = (string) \get_post_meta( $id, 'al_og_image', true );
 
+		// NOTE: canonical is intentionally NOT printed here. Core's default
+		// `rel_canonical` action already emits one canonical tag on wp_head; we
+		// override its href via the `get_canonical_url` filter (see
+		// filter_canonical) so there is exactly one canonical, never two.
 		if ( $desc !== '' ) {
 			echo '<meta name="description" content="' . \esc_attr( $desc ) . '">' . "\n";
-		}
-		if ( $canonical !== '' ) {
-			echo '<link rel="canonical" href="' . \esc_url( $canonical ) . '">' . "\n";
 		}
 		if ( $og_title !== '' ) {
 			echo '<meta property="og:title" content="' . \esc_attr( $og_title ) . '">' . "\n";
@@ -185,6 +192,25 @@ class SEO {
 		if ( $og_image !== '' ) {
 			echo '<meta property="og:image" content="' . \esc_url( $og_image ) . '">' . "\n";
 		}
+	}
+
+	/**
+	 * Override core's canonical URL for our singular CPTs when a per-page
+	 * `al_canonical` is set and NO SEO plugin is active. Core's default
+	 * `rel_canonical` action then emits our single, overridden tag instead of
+	 * the permalink — so we never end up with two conflicting canonicals. SEO
+	 * plugins are skipped here (they manage canonical via their own filters,
+	 * which we already feed via yoast_canonical / rankmath_canonical).
+	 *
+	 * @param string    $canonical The canonical URL core computed (the permalink).
+	 * @param \WP_Post  $post      The post the canonical is being generated for.
+	 * @return string
+	 */
+	public function filter_canonical( $canonical, $post ) {
+		if ( $this->active_seo_plugin() ) { return $canonical; }
+		if ( ! ( $post instanceof \WP_Post ) || ! \in_array( $post->post_type, $this->cpts(), true ) ) { return $canonical; }
+		$v = (string) \get_post_meta( $post->ID, 'al_canonical', true );
+		return $v !== '' ? $v : $canonical;
 	}
 
 	/* ---- SEO-plugin feed callbacks (override only when our field is non-empty) ---- */
@@ -208,9 +234,21 @@ class SEO {
 
 	/* ---- Sitemap exclusion ---- */
 
-	/** @return int[] Published CPT post IDs flagged al_sitemap_exclude. */
+	/** Per-request memoization for excluded_ids() (null = not yet computed). */
+	private $excluded_ids_cache = null;
+
+	/**
+	 * Published CPT post IDs flagged al_sitemap_exclude.
+	 *
+	 * Memoized per request (instance-scoped): a paginated sitemap fires this
+	 * filter once per page, and the flagged set doesn't change mid-request, so
+	 * the unbounded get_posts(-1) query runs at most once instead of per page.
+	 *
+	 * @return int[]
+	 */
 	private function excluded_ids() {
-		return \array_map( 'intval', \get_posts( [
+		if ( $this->excluded_ids_cache !== null ) { return $this->excluded_ids_cache; }
+		$this->excluded_ids_cache = \array_map( 'intval', \get_posts( [
 			'post_type'      => $this->cpts(),
 			'post_status'    => 'publish',
 			'posts_per_page' => -1,
@@ -218,6 +256,7 @@ class SEO {
 			'no_found_rows'  => true,
 			'meta_query'     => [ [ 'key' => 'al_sitemap_exclude', 'value' => '1' ] ],
 		] ) );
+		return $this->excluded_ids_cache;
 	}
 
 	public function filter_sitemap_query( $args, $post_type ) {

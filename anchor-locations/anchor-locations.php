@@ -673,12 +673,41 @@ class Module {
     }
 
     /** Map an al_type meta value to the schema.org Place subtype it should render as. */
-    private function place_type( $al_type ) {
+    private static function place_type( $al_type ) {
         switch ( $al_type ) {
             case 'state': case 'county': return 'AdministrativeArea';
             case 'city': case 'borough': case 'township': return 'City';
             default: return 'Place';
         }
+    }
+
+    /**
+     * Stable JSON-LD `@id` for a location/service page's main entity node.
+     *
+     * Shared by build_schema() (the main Place/Service node on wp_head) and
+     * Libraries::print_review_schema() (the aggregateRating + review[] node on
+     * wp_footer) so consumers merge the two nodes into a single entity instead
+     * of seeing two unlinked nodes for the same page.
+     *
+     * @param int $post_id Location or service-page post ID.
+     * @return string e.g. "https://site/foo/#service" or ".../#place".
+     */
+    public static function entity_id( int $post_id ): string {
+        $frag = ( \get_post_type( $post_id ) === self::CPT_SERVICE ) ? 'service' : 'place';
+        return \get_permalink( $post_id ) . '#' . $frag;
+    }
+
+    /**
+     * The schema.org `@type` of a page's main entity node — 'Service' for a
+     * service page, else the location's Place subtype. Kept in lockstep with
+     * build_schema() so the review node (which reuses this) shares the type.
+     *
+     * @param int $post_id Location or service-page post ID.
+     * @return string
+     */
+    public static function entity_type( int $post_id ): string {
+        if ( \get_post_type( $post_id ) === self::CPT_SERVICE ) { return 'Service'; }
+        return self::place_type( (string) \get_post_meta( $post_id, 'al_type', true ) );
     }
 
     /**
@@ -715,7 +744,7 @@ class Module {
 
         if ( $post->post_type === self::CPT_LOCATION ) {
             $lat = \get_post_meta( $post_id, 'al_lat', true ); $lng = \get_post_meta( $post_id, 'al_lng', true );
-            $node = [ '@type' => $this->place_type( (string) \get_post_meta( $post_id, 'al_type', true ) ), 'name' => \get_the_title( $post_id ), 'url' => \get_permalink( $post_id ) ];
+            $node = [ '@type' => self::place_type( (string) \get_post_meta( $post_id, 'al_type', true ) ), '@id' => self::entity_id( $post_id ), 'name' => \get_the_title( $post_id ), 'url' => \get_permalink( $post_id ) ];
             if ( $lat !== '' && $lng !== '' ) { $node['geo'] = [ '@type' => 'GeoCoordinates', 'latitude' => (float) $lat, 'longitude' => (float) $lng ]; }
             $graph[] = $node;
         } else {
@@ -723,6 +752,7 @@ class Module {
             $loc = (int) \get_post_meta( $post_id, 'al_location_id', true );
             $node = [
                 '@type'       => 'Service',
+                '@id'         => self::entity_id( $post_id ),
                 'name'        => \get_the_title( $post_id ),
                 'serviceType' => ! \is_wp_error( $terms ) && $terms ? $terms[0] : '',
                 'url'         => $this->service_page_url( $post_id ),
@@ -731,7 +761,7 @@ class Module {
             if ( $loc ) {
                 // Deliberately no PostalAddress here: a service-area location is not
                 // a staffed office, so areaServed only ever carries type + name.
-                $node['areaServed'] = [ '@type' => $this->place_type( (string) \get_post_meta( $loc, 'al_type', true ) ), 'name' => \get_the_title( $loc ) ];
+                $node['areaServed'] = [ '@type' => self::place_type( (string) \get_post_meta( $loc, 'al_type', true ) ), 'name' => \get_the_title( $loc ) ];
             }
             $graph[] = $node;
         }

@@ -121,7 +121,7 @@ class LocationsSeoTest extends WP_UnitTestCase {
 		$this->assertSame( 'Theme Default', $this->seo->own_document_title( 'Theme Default' ) );
 	}
 
-	public function test_print_head_meta_emits_canonical_description_og() {
+	public function test_print_head_meta_emits_description_og_not_canonical() {
 		$id = $this->make_location();
 		update_post_meta( $id, 'al_seo_desc', 'The meta description.' );
 		update_post_meta( $id, 'al_canonical', 'https://example.com/canon/' );
@@ -135,10 +135,40 @@ class LocationsSeoTest extends WP_UnitTestCase {
 
 		$this->assertStringContainsString( 'name="description"', $html );
 		$this->assertStringContainsString( 'The meta description.', $html );
-		$this->assertStringContainsString( 'rel="canonical"', $html );
-		$this->assertStringContainsString( 'https://example.com/canon/', $html );
 		$this->assertStringContainsString( 'og:title', $html );
 		$this->assertStringContainsString( 'og:image', $html );
+		// Canonical is NOT printed here anymore — it goes through core's
+		// rel_canonical via the get_canonical_url filter (single-tag guarantee).
+		$this->assertStringNotContainsString( 'rel="canonical"', $html );
+	}
+
+	/**
+	 * Regression: with al_canonical set and NO SEO plugin, rendering wp_head must
+	 * yield EXACTLY ONE canonical tag, and it must be the override URL (not the
+	 * permalink). Before the fix, print_head_meta printed its own canonical AND
+	 * core's rel_canonical emitted the permalink → two conflicting tags.
+	 */
+	public function test_single_canonical_override_no_seo_plugin() {
+		$id = $this->make_location();
+		update_post_meta( $id, 'al_canonical', 'https://example.com/override-canon/' );
+		$this->go_to( get_permalink( $id ) );
+		$this->assertTrue( is_singular() );
+
+		remove_action( 'wp_footer', 'the_block_template_skip_link' );
+		ob_start();
+		do_action( 'wp_head' );
+		$head = ob_get_clean();
+
+		$this->assertSame( 1, substr_count( $head, 'rel="canonical"' ), 'Expected exactly one canonical tag' );
+		$this->assertStringContainsString( 'https://example.com/override-canon/', $head );
+		$this->assertStringNotContainsString( get_permalink( $id ), $head );
+	}
+
+	public function test_filter_canonical_passthrough_when_unset() {
+		$id = $this->make_location();
+		$this->go_to( get_permalink( $id ) );
+		$post = get_post( $id );
+		$this->assertSame( 'orig-canon', $this->seo->filter_canonical( 'orig-canon', $post ) );
 	}
 
 	/* ---- B. SEO-plugin feed callbacks ---- */
@@ -236,6 +266,19 @@ class LocationsSeoTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Jane Doe', $schema );
 		$this->assertStringContainsString( '"reviewCount":2', $schema );
 		$this->assertStringContainsString( '"ratingValue":4.5', $schema );
+
+		// The aggregateRating/review node must carry the SAME @id (and @type) as
+		// the page's main entity node from Module::build_schema(), so consumers
+		// merge them into one entity instead of seeing two unlinked nodes.
+		$entity_id = \Anchor\Locations\Module::entity_id( $loc );
+		$this->assertStringContainsString( json_encode( $entity_id ), $schema );
+
+		$mod  = new \Anchor\Locations\Module();
+		$main = $mod->build_schema( $loc );
+		$place = null;
+		foreach ( $main as $n ) { if ( ( $n['@id'] ?? '' ) === $entity_id ) { $place = $n; } }
+		$this->assertNotNull( $place, 'Main entity node should carry the shared @id' );
+		$this->assertSame( \Anchor\Locations\Module::entity_type( $loc ), $place['@type'] );
 	}
 
 	public function test_review_schema_absent_without_ratings() {

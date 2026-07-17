@@ -29,6 +29,9 @@ class Module {
         \add_action( 'manage_' . self::CPT_LOCATION . '_posts_custom_column', [ $this, 'location_column' ], 10, 2 );
         \add_filter( 'manage_' . self::CPT_SERVICE . '_posts_columns', [ $this, 'service_columns' ] );
         \add_action( 'manage_' . self::CPT_SERVICE . '_posts_custom_column', [ $this, 'service_column' ], 10, 2 );
+
+        \add_filter( 'the_content', [ $this, 'the_content_render' ], 9 );
+        \add_shortcode( 'anchor_page_content', [ $this, 'shortcode_page_content' ] );
     }
 
     public function register_types() {
@@ -221,5 +224,57 @@ class Module {
         $loc   = (int) \get_post_meta( $post_id, 'al_location_id', true );
         if ( empty( $terms ) || ! $loc || ! \get_post( $loc ) ) { echo '⚠ incomplete'; return; }
         echo \esc_html( $terms[0] . ' — ' . \get_the_title( $loc ) );
+    }
+
+    /* ---- Frontend: body render, global wrapper, [anchor_page_content] ---- */
+
+    /** Render a location/service page's Monaco HTML/CSS/JS, id-scoped so it's theme-agnostic. */
+    public function render_body( $post_id ) {
+        $html = (string) \get_post_meta( $post_id, 'al_html', true );
+        $css  = (string) \get_post_meta( $post_id, 'al_css', true );
+        $js   = (string) \get_post_meta( $post_id, 'al_js', true );
+        $scope = 'al-page-' . (int) $post_id;
+        $out = '<div class="anchor-locations-page ' . \esc_attr( $scope ) . '">';
+        if ( $css !== '' ) {
+            $scoped = \preg_replace( '/(^|\})\s*([^@\}\{]+)\{/', '$1 .' . $scope . ' $2{', $css );
+            $out .= '<style>' . $scoped . '</style>';
+        }
+        $out .= \do_shortcode( $html );
+        if ( $js !== '' ) { $out .= '<script>(function(){' . $js . '})();</script>'; }
+        $out .= '</div>';
+        return $out;
+    }
+
+    /** Wrap a rendered body in the global settings-defined wrapper template, unless disabled per-page. */
+    public function apply_wrapper( $body, $post_id ) {
+        if ( \get_post_meta( $post_id, 'al_disable_wrapper', true ) === '1' ) { return $body; }
+        $s = $this->settings();
+        $tpl_html = $s['wrapper_html'] ?? '';
+        if ( \trim( $tpl_html ) === '' ) { return $body; }
+        $tpl_css = $s['wrapper_css'] ?? '';
+        $tpl_js  = $s['wrapper_js'] ?? '';
+        $out = '';
+        if ( \trim( $tpl_css ) !== '' ) { $out .= '<style>' . $tpl_css . '</style>'; }
+        $filled = \str_replace( '{{content}}', $body, $tpl_html );
+        $filled = \str_replace( '[anchor_page_content]', $body, $filled );
+        $out .= \do_shortcode( $filled );
+        if ( \trim( $tpl_js ) !== '' ) { $out .= '<script>(function(){' . $tpl_js . '})();</script>'; }
+        return $out;
+    }
+
+    /** Replace the_content on location/service singular views with our rendered body + wrapper. */
+    public function the_content_render( $content ) {
+        if ( ! \is_singular( [ self::CPT_LOCATION, self::CPT_SERVICE ] ) || ! \in_the_loop() || ! \is_main_query() ) { return $content; }
+        $post_id = \get_the_ID();
+        $body = $this->render_body( $post_id );
+        return $this->apply_wrapper( $body, $post_id );
+    }
+
+    /** [anchor_page_content id="N"] escape hatch for embedding a page's rendered body elsewhere (e.g. inside a wrapper template). */
+    public function shortcode_page_content( $atts ) {
+        $atts = \shortcode_atts( [ 'id' => 0 ], $atts, 'anchor_page_content' );
+        $id = (int) $atts['id'] ? (int) $atts['id'] : \get_the_ID();
+        if ( ! $id ) { return ''; }
+        return $this->render_body( $id );
     }
 }

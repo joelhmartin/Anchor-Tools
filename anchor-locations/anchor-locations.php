@@ -51,6 +51,11 @@ class Module {
         // Phase 2: reusable content libraries (projects/testimonials/FAQs).
         require_once __DIR__ . '/class-libraries.php';
         new Libraries();
+
+        // Phase 4: per-page SEO controls (metabox, robots, SEO-plugin integration,
+        // sitemap exclusion, [anchor_h1], full-width template wiring).
+        require_once __DIR__ . '/class-seo.php';
+        new SEO();
     }
 
     private $assets_enqueued = false;
@@ -424,6 +429,17 @@ class Module {
 
     private function cur_id( $atts ) { $a = \shortcode_atts( [ 'id' => 0 ], $atts ); return (int) $a['id'] ? (int) $a['id'] : (int) \get_the_ID(); }
 
+    /**
+     * Label to use for a post's breadcrumb crumb (and BreadcrumbList name): the
+     * per-page `al_breadcrumb_title` (Phase 4 SEO) when set, else the post title.
+     * Returns raw text — callers escape for their context (esc_html for HTML,
+     * wp_json_encode for JSON-LD).
+     */
+    public function crumb_label( $id ) {
+        $t = (string) \get_post_meta( $id, 'al_breadcrumb_title', true );
+        return $t !== '' ? $t : (string) \get_the_title( $id );
+    }
+
     public function sc_child_locations( $atts ) {
         $id = $this->cur_id( $atts );
         $kids = \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => $id, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC' ] );
@@ -467,12 +483,12 @@ class Module {
         if ( $post && $post->post_type === self::CPT_SERVICE ) {
             $loc = (int) \get_post_meta( $id, 'al_location_id', true );
             $anc = $loc ? \array_reverse( \get_post_ancestors( $loc ) ) : [];
-            foreach ( $anc as $aid ) { if ( \get_post_status( $aid ) !== 'publish' ) { continue; } $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( \get_the_title( $aid ) ) . '</a>'; }
-            if ( $loc && \get_post_status( $loc ) === 'publish' ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $loc ) ) . '">' . \esc_html( \get_the_title( $loc ) ) . '</a>'; }
-            $crumbs[] = \esc_html( \get_the_title( $id ) );
+            foreach ( $anc as $aid ) { if ( \get_post_status( $aid ) !== 'publish' ) { continue; } $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( $this->crumb_label( $aid ) ) . '</a>'; }
+            if ( $loc && \get_post_status( $loc ) === 'publish' ) { $crumbs[] = '<a href="' . \esc_url( \get_permalink( $loc ) ) . '">' . \esc_html( $this->crumb_label( $loc ) ) . '</a>'; }
+            $crumbs[] = \esc_html( $this->crumb_label( $id ) );
         } elseif ( $post ) {
-            foreach ( \array_reverse( \get_post_ancestors( $id ) ) as $aid ) { if ( \get_post_status( $aid ) !== 'publish' ) { continue; } $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( \get_the_title( $aid ) ) . '</a>'; }
-            $crumbs[] = \esc_html( \get_the_title( $id ) );
+            foreach ( \array_reverse( \get_post_ancestors( $id ) ) as $aid ) { if ( \get_post_status( $aid ) !== 'publish' ) { continue; } $crumbs[] = '<a href="' . \esc_url( \get_permalink( $aid ) ) . '">' . \esc_html( $this->crumb_label( $aid ) ) . '</a>'; }
+            $crumbs[] = \esc_html( $this->crumb_label( $id ) );
         }
         $html = '<nav class="al-breadcrumbs">' . \implode( ' <span class="sep">&rsaquo;</span> ', $crumbs ) . '</nav>';
         return \apply_filters( 'anchor_locations_breadcrumbs_html', $html, $id );
@@ -682,18 +698,18 @@ class Module {
             $chain = $loc ? \array_reverse( \get_post_ancestors( $loc ) ) : [];
             foreach ( $chain as $aid ) {
                 if ( \get_post_status( $aid ) !== 'publish' ) { continue; }
-                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $aid ), 'item' => \get_permalink( $aid ) ];
+                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => $this->crumb_label( $aid ), 'item' => \get_permalink( $aid ) ];
             }
             if ( $loc && \get_post_status( $loc ) === 'publish' ) {
-                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $loc ), 'item' => \get_permalink( $loc ) ];
+                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => $this->crumb_label( $loc ), 'item' => \get_permalink( $loc ) ];
             }
-            $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $post_id ), 'item' => $this->service_page_url( $post_id ) ];
+            $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => $this->crumb_label( $post_id ), 'item' => $this->service_page_url( $post_id ) ];
         } else {
             foreach ( \array_reverse( \get_post_ancestors( $post_id ) ) as $aid ) {
                 if ( \get_post_status( $aid ) !== 'publish' ) { continue; }
-                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $aid ), 'item' => \get_permalink( $aid ) ];
+                $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => $this->crumb_label( $aid ), 'item' => \get_permalink( $aid ) ];
             }
-            $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => \get_the_title( $post_id ), 'item' => \get_permalink( $post_id ) ];
+            $items[] = [ '@type' => 'ListItem', 'position' => $pos++, 'name' => $this->crumb_label( $post_id ), 'item' => \get_permalink( $post_id ) ];
         }
         $graph[] = [ '@type' => 'BreadcrumbList', 'itemListElement' => $items ];
 

@@ -40,7 +40,10 @@ class Module {
         \add_shortcode( 'anchor_location_services', [ $this, 'sc_location_services' ] );
         \add_shortcode( 'anchor_service_locations', [ $this, 'sc_service_locations' ] );
         \add_shortcode( 'anchor_service_area_directory', [ $this, 'sc_directory' ] );
+        \add_shortcode( 'anchor_location_map', [ $this, 'sc_map' ] );
     }
+
+    private $assets_enqueued = false;
 
     public function register_types() {
         \register_post_type( self::CPT_LOCATION, [
@@ -380,5 +383,68 @@ class Module {
             $out .= '<li><a href="' . \esc_url( \get_permalink( $n ) ) . '">' . \esc_html( \get_the_title( $n ) ) . '</a>' . $this->directory_branch( $kids ) . '</li>';
         }
         return $out . '</ul>';
+    }
+
+    /* ---- Frontend: Google map [anchor_location_map] ---- */
+
+    public function get_google_api_key() {
+        if ( ! \class_exists( '\\Anchor_Schema_Admin' ) ) { return ''; }
+        $opts = \get_option( \Anchor_Schema_Admin::OPTION_KEY, [] );
+        return isset( $opts['google_api_key'] ) ? \sanitize_text_field( $opts['google_api_key'] ) : '';
+    }
+
+    public function map_data( $args = [] ) {
+        $types  = isset( $args['types'] ) ? (array) $args['types'] : [];
+        $parent = isset( $args['parent'] ) ? (int) $args['parent'] : 0;
+        $q = [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'numberposts' => -1, 'meta_query' => [ [ 'key' => 'al_lat', 'value' => '', 'compare' => '!=' ] ] ];
+        if ( $parent ) { $q['post_parent'] = $parent; }
+        $out = [];
+        foreach ( \get_posts( $q ) as $p ) {
+            $lat = \get_post_meta( $p->ID, 'al_lat', true ); $lng = \get_post_meta( $p->ID, 'al_lng', true );
+            if ( $lat === '' || $lng === '' ) { continue; }
+            $type = (string) \get_post_meta( $p->ID, 'al_type', true );
+            if ( $types && ! \in_array( $type, $types, true ) ) { continue; }
+            $services = [];
+            foreach ( \get_posts( [ 'post_type' => self::CPT_SERVICE, 'post_status' => 'publish', 'numberposts' => -1, 'meta_key' => 'al_location_id', 'meta_value' => $p->ID ] ) as $sp ) {
+                $services[] = [ 'title' => \get_the_title( $sp ), 'url' => $this->service_page_url( $sp->ID ) ];
+            }
+            $icon = \get_post_meta( $p->ID, 'al_marker_icon', true );
+            if ( ! $icon ) { $s = $this->settings(); $icon = $s['marker_icon'] ?? ''; }
+            $out[] = [ 'id' => $p->ID, 'title' => \get_the_title( $p ), 'url' => \get_permalink( $p ), 'lat' => (float) $lat, 'lng' => (float) $lng, 'icon' => $icon, 'services' => $services ];
+        }
+        return $out;
+    }
+
+    public function sc_map( $atts ) {
+        $a = \shortcode_atts( [ 'types' => '', 'parent' => 0, 'zoom' => '', 'height' => '480', 'center' => '' ], $atts, 'anchor_location_map' );
+        $args = [];
+        if ( $a['types'] !== '' ) { $args['types'] = \array_map( 'trim', \explode( ',', $a['types'] ) ); }
+        if ( (int) $a['parent'] ) { $args['parent'] = (int) $a['parent']; }
+        $markers = $this->map_data( $args );
+        $s = $this->settings();
+        $cfg = [
+            'markers' => $markers,
+            'zoom'    => $a['zoom'] !== '' ? (int) $a['zoom'] : (int) ( $s['map_zoom'] ?? 8 ),
+            'center'  => $a['center'] !== '' ? $a['center'] : ( ( $s['map_center'] ?? '' ) ?: '' ),
+        ];
+        $this->enqueue_map_assets();
+        $uid = 'al-map-' . \wp_rand( 1000, 9999 );
+        $json = \esc_attr( \wp_json_encode( $cfg ) );
+        return '<div id="' . $uid . '" class="al-map" style="height:' . (int) $a['height'] . 'px" data-al-map="' . $json . '"></div>';
+    }
+
+    /** Enqueue Maps + frontend JS directly (store-locator pattern). Shortcodes run before wp_footer. */
+    public function enqueue_map_assets() {
+        if ( $this->assets_enqueued ) { return; }
+        $this->assets_enqueued = true;
+        $dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-locations/assets/';
+        \wp_enqueue_style( 'anchor-locations', \Anchor_Asset_Loader::url( 'anchor-locations/assets/frontend.css' ), [], (string) \filemtime( $dir . 'frontend.css' ) );
+        $deps = [];
+        $key = $this->get_google_api_key();
+        if ( $key ) {
+            \wp_enqueue_script( 'anchor-locations-gmaps', 'https://maps.googleapis.com/maps/api/js?key=' . \rawurlencode( $key ) . '&libraries=marker', [], null, true );
+            $deps[] = 'anchor-locations-gmaps';
+        }
+        \wp_enqueue_script( 'anchor-locations-frontend', \Anchor_Asset_Loader::url( 'anchor-locations/assets/frontend.js' ), $deps, (string) \filemtime( $dir . 'frontend.js' ), true );
     }
 }

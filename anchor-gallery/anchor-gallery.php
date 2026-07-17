@@ -2540,7 +2540,8 @@ class Anchor_Gallery_Module {
                  data-url="<?php echo esc_attr($first['raw_url'] ?? ''); ?>"
                  <?php else: ?>
                  data-full-url="<?php echo esc_url($first['full_url'] ?? $first['thumb']); ?>"
-                 <?php endif; ?>>
+                 <?php endif; ?>
+                 <?php if ( ! empty( $first['caption'] ) ) : ?>data-caption="<?php echo esc_attr( wp_strip_all_tags( $first['caption'] ) ); ?>"<?php endif; ?>>
                 <div class="avg-thumb">
                     <?php if (!empty($first['thumb'])): ?>
                     <img class="avg-thumb-img"
@@ -2587,6 +2588,7 @@ class Anchor_Gallery_Module {
                          data-thumb="<?php echo esc_url($video['thumb'] ?? ''); ?>"
                          data-label="<?php echo esc_attr($video['label'] ?? ''); ?>"
                          data-duration="<?php echo esc_attr($video['duration'] ?? ''); ?>"
+                         <?php if ( ! empty( $video['caption'] ) ) : ?>data-caption="<?php echo esc_attr( wp_strip_all_tags( $video['caption'] ) ); ?>"<?php endif; ?>
                          title="<?php echo esc_attr($video['label'] ?? ''); ?>">
                         <div class="avg-gallery-thumb-img">
                             <?php if (!empty($video['thumb'])): ?>

@@ -529,6 +529,31 @@
       }
     }
 
+    // Trap Tab focus inside the open lightbox so it can't wander to the page
+    // behind the backdrop.
+    if (e.key === 'Tab' && lightboxModal && !lightboxModal.hidden) {
+      var focusables = [];
+      var candidates = lightboxModal.querySelectorAll('button, [href], iframe, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      for (var i = 0; i < candidates.length; i++) {
+        if (!candidates[i].hidden && candidates[i].offsetParent !== null) {
+          focusables.push(candidates[i]);
+        }
+      }
+      if (!focusables.length) return;
+
+      var first = focusables[0];
+      var last = focusables[focusables.length - 1];
+
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+      return;
+    }
+
     if (e.key === 'Escape') {
       closeLightbox();
       closeTheater();

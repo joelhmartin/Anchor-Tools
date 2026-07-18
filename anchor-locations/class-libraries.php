@@ -339,7 +339,7 @@ class Libraries {
 	 * inline <script type="application/ld+json"> tag.
 	 */
 	public function print_faq_schema() {
-		if ( empty( $this->faq_items ) || ! \is_singular() ) { return; }
+		if ( empty( $this->faq_items ) || ! \is_singular( [ Module::CPT_LOCATION, Module::CPT_SERVICE ] ) ) { return; }
 
 		$main = [];
 		foreach ( $this->faq_items as $f ) {
@@ -370,7 +370,7 @@ class Libraries {
 	 * the inline JSON-LD tag.
 	 */
 	public function print_review_schema() {
-		if ( empty( $this->review_items ) || ! \is_singular() ) { return; }
+		if ( empty( $this->review_items ) || ! \is_singular( [ Module::CPT_LOCATION, Module::CPT_SERVICE ] ) ) { return; }
 
 		$reviews = [];
 		$sum     = 0;

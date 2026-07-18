@@ -161,6 +161,70 @@ class LocationsLibrariesTest extends WP_UnitTestCase {
 		$this->assertSame( 1, substr_count( $schema, '"Question"' ), 'Duplicate FAQ should appear once.' );
 	}
 
+	/**
+	 * Fix A (off-CPT schema gating): rendering [anchor_local_faqs] on a normal
+	 * WordPress Page fills the collector, but the FAQPage JSON-LD must NOT be
+	 * emitted — a standalone FAQPage keyed to a non-location/service page is
+	 * improper structured data. The visible HTML still renders anywhere.
+	 */
+	public function test_faqpage_schema_not_emitted_on_non_cpt_singular() {
+		$loc = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish' ] );
+		$faq = $this->make_item( 'anchor_faq', [ 'title' => 'Q on a page?', 'locations' => [ $loc ] ] );
+		update_post_meta( $faq, 'al_question', 'Q on a page?' );
+		update_post_meta( $faq, 'al_answer', 'An answer.' );
+
+		// A regular WordPress Page — singular, but NOT a location/service page.
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_status' => 'publish' ] );
+		$this->go_to( get_permalink( $page ) );
+		$this->assertTrue( is_singular(), 'Expected a singular page query.' );
+		$this->assertFalse( is_singular( [ 'anchor_location', 'anchor_service_page' ] ) );
+
+		// Shortcode renders (visible HTML + collector fills) ...
+		$html = do_shortcode( '[anchor_local_faqs id="' . $loc . '"]' );
+		$this->assertStringContainsString( 'Q on a page?', $html );
+
+		// ... but the footer must NOT print FAQPage JSON-LD off the module CPTs.
+		$schema = $this->capture_footer();
+		$this->assertStringNotContainsString( 'FAQPage', $schema );
+	}
+
+	/** Review + AggregateRating JSON-LD IS emitted on a location (module CPT) page. */
+	public function test_review_schema_emitted_on_cpt_page() {
+		$loc   = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pittsburgh' ] );
+		$testi = $this->make_item( 'anchor_testimonial', [ 'title' => 'Client', 'locations' => [ $loc ] ] );
+		update_post_meta( $testi, 'al_quote', 'Excellent service.' );
+		update_post_meta( $testi, 'al_author', 'Bob' );
+		update_post_meta( $testi, 'al_rating', 5 );
+
+		$this->go_to( get_permalink( $loc ) );
+		$this->assertTrue( is_singular( [ 'anchor_location', 'anchor_service_page' ] ) );
+
+		do_shortcode( '[anchor_local_testimonials id="' . $loc . '"]' );
+		$schema = $this->capture_footer();
+
+		$this->assertStringContainsString( 'AggregateRating', $schema );
+		$this->assertStringContainsString( '"Review"', $schema );
+		$this->assertStringContainsString( 'Excellent service.', $schema );
+	}
+
+	/** Fix A: the Review/AggregateRating block must NOT emit on a non-CPT Page. */
+	public function test_review_schema_not_emitted_on_non_cpt_singular() {
+		$loc   = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish' ] );
+		$testi = $this->make_item( 'anchor_testimonial', [ 'title' => 'Client', 'locations' => [ $loc ] ] );
+		update_post_meta( $testi, 'al_quote', 'Excellent service.' );
+		update_post_meta( $testi, 'al_author', 'Bob' );
+		update_post_meta( $testi, 'al_rating', 5 );
+
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_status' => 'publish' ] );
+		$this->go_to( get_permalink( $page ) );
+		$this->assertFalse( is_singular( [ 'anchor_location', 'anchor_service_page' ] ) );
+
+		do_shortcode( '[anchor_local_testimonials id="' . $loc . '"]' );
+		$schema = $this->capture_footer();
+
+		$this->assertStringNotContainsString( 'AggregateRating', $schema );
+	}
+
 	public function test_save_handler_sanitizes_meta() {
 		$user = self::factory()->user->create( [ 'role' => 'administrator' ] );
 		wp_set_current_user( $user );

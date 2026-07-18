@@ -40,6 +40,14 @@ class Integrity {
 	/** Monotonic cache-version option. Bumped on any relationship-graph write. */
 	const CACHE_VER_OPTION = 'anchor_locations_cache_ver';
 
+	/**
+	 * When true, the per-write bumps triggered by save_post / meta / term hooks
+	 * early-return. IO sets this for the duration of a REAL import (hundreds of
+	 * writes in one request) and force-bumps exactly ONCE at the end via
+	 * bump_now(), so the map/directory cache invalidates once instead of N times.
+	 */
+	public static $suspend_bumps = false;
+
 	public function __construct() {
 		// A/B — data-integrity nudges (admin only).
 		\add_action( 'admin_notices', [ $this, 'edit_screen_notices' ] );
@@ -218,8 +226,23 @@ class Integrity {
 		return ( $v === false ) ? 0 : (int) $v;
 	}
 
-	/** Increment the cache version (creating it at 1 on first bump). autoload=false. */
+	/**
+	 * Increment the cache version (creating it at 1 on first bump). autoload=false.
+	 * Honors the suspend flag so a bulk import can collapse its many hook-driven
+	 * bumps into a single explicit bump_now() at the end.
+	 */
 	public static function bump_cache_version() {
+		if ( self::$suspend_bumps ) { return; }
+		self::do_bump();
+	}
+
+	/** Force a bump regardless of the suspend flag (the one bump IO issues post-import). */
+	public static function bump_now() {
+		self::do_bump();
+	}
+
+	/** The actual monotonic increment; single option write, autoload=false. */
+	private static function do_bump() {
 		$v    = \get_option( self::CACHE_VER_OPTION );
 		$next = ( $v === false ? 0 : (int) $v ) + 1;
 		\update_option( self::CACHE_VER_OPTION, $next, false );

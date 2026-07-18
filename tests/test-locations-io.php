@@ -207,6 +207,49 @@ class LocationsIoTest extends WP_UnitTestCase {
 		$this->assertSame( 0, $this->by_slug( 'anchor_service_page', 'bad-sp' ), 'Bad row not created.' );
 	}
 
+	/* ---- 8. Cache-version single-bump (Fix B) ---- */
+
+	/**
+	 * A real import performs N posts × M meta writes, each of which would bump the
+	 * versioned map/directory cache on its own. With a live Integrity instance
+	 * (so those save_post / meta / term hooks are active), the whole import must
+	 * collapse to exactly ONE bump — invalidating the cache once, not N times.
+	 */
+	public function test_import_bumps_cache_version_once() {
+		$integrity = new \Anchor\Locations\Integrity();
+
+		$ids  = $this->seed_fixture();
+		$data = $this->io->export_json();
+		$this->wipe( $ids );
+
+		$before  = \Anchor\Locations\Integrity::cache_version();
+		$summary = $this->io->import_json( $data );
+		$after   = \Anchor\Locations\Integrity::cache_version();
+
+		$this->assertSame( [], $summary['errors'] );
+		$this->assertGreaterThan( 0, $summary['created'] );
+		$this->assertSame( $before + 1, $after, 'A real import must bump the cache version exactly once (not once per meta write).' );
+
+		unset( $integrity );
+	}
+
+	/** A dry run writes nothing, so it must not bump the cache version at all. */
+	public function test_dry_run_does_not_bump_cache_version() {
+		$integrity = new \Anchor\Locations\Integrity();
+
+		$ids  = $this->seed_fixture();
+		$data = $this->io->export_json();
+		$this->wipe( $ids );
+
+		$before = \Anchor\Locations\Integrity::cache_version();
+		$this->io->import_json( $data, [ 'dry_run' => true ] );
+		$after  = \Anchor\Locations\Integrity::cache_version();
+
+		$this->assertSame( $before, $after, 'Dry run writes nothing and must not bump the cache version.' );
+
+		unset( $integrity );
+	}
+
 	/* ---- 7. CSV scalar round-trip ---- */
 
 	public function test_csv_locations_round_trip() {

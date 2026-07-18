@@ -387,22 +387,35 @@ class IO {
 			return $summary;
 		}
 
-		// Settings (full replace of the option; never touches posts). Not counted.
-		if ( ! $dry && isset( $data['settings'] ) && \is_array( $data['settings'] ) ) {
-			$mod = Module::instance();
-			$clean = $mod ? $mod->sanitize_settings( $data['settings'] ) : $data['settings'];
-			\update_option( Module::OPTION, $clean, false );
+		// A real import performs hundreds of al_* meta writes across N posts, each
+		// of which would otherwise bump the cache version (an update_option). Suspend
+		// those per-write bumps and invalidate the map/directory cache with a single
+		// explicit bump in the finally below. Dry runs write nothing, so no suspend.
+		if ( ! $dry ) { Integrity::$suspend_bumps = true; }
+
+		try {
+			// Settings (full replace of the option; never touches posts). Not counted.
+			if ( ! $dry && isset( $data['settings'] ) && \is_array( $data['settings'] ) ) {
+				$mod = Module::instance();
+				$clean = $mod ? $mod->sanitize_settings( $data['settings'] ) : $data['settings'];
+				\update_option( Module::OPTION, $clean, false );
+			}
+
+			$term_map = $this->import_services( $data['services'] ?? [], $dry, $summary );
+			$loc_map  = $this->import_locations( $data['locations'] ?? [], $dry, $summary );
+			$this->import_service_pages( $data['service_pages'] ?? [], $loc_map, $term_map, $dry, $summary );
+
+			foreach ( [ 'projects' => Libraries::CPT_PROJECT, 'testimonials' => Libraries::CPT_TESTIMONIAL, 'faqs' => Libraries::CPT_FAQ ] as $key => $cpt ) {
+				$this->import_library( $cpt, $data[ $key ] ?? [], $loc_map, $term_map, $dry, $summary );
+			}
+
+			return $summary;
+		} finally {
+			if ( ! $dry ) {
+				Integrity::$suspend_bumps = false;
+				Integrity::bump_now(); // exactly one cache invalidation for the whole import
+			}
 		}
-
-		$term_map = $this->import_services( $data['services'] ?? [], $dry, $summary );
-		$loc_map  = $this->import_locations( $data['locations'] ?? [], $dry, $summary );
-		$this->import_service_pages( $data['service_pages'] ?? [], $loc_map, $term_map, $dry, $summary );
-
-		foreach ( [ 'projects' => Libraries::CPT_PROJECT, 'testimonials' => Libraries::CPT_TESTIMONIAL, 'faqs' => Libraries::CPT_FAQ ] as $key => $cpt ) {
-			$this->import_library( $cpt, $data[ $key ] ?? [], $loc_map, $term_map, $dry, $summary );
-		}
-
-		return $summary;
 	}
 
 	/**
@@ -640,6 +653,11 @@ class IO {
 		$is_service = \in_array( 'location_slug', $headers, true );
 		$is_location = ! $is_service && ( \in_array( 'parent_slug', $headers, true ) || \in_array( 'al_type', $headers, true ) );
 
+		// Same single-bump strategy as import_json: suspend per-write cache bumps
+		// during a real import and invalidate once at the end (dry runs write nothing).
+		if ( ! $dry ) { Integrity::$suspend_bumps = true; }
+
+		try {
 		if ( $is_service ) {
 			$term_map = $this->existing_term_map();
 			$loc_map  = $this->existing_location_map();
@@ -695,6 +713,12 @@ class IO {
 		}
 
 		return $summary;
+		} finally {
+			if ( ! $dry ) {
+				Integrity::$suspend_bumps = false;
+				Integrity::bump_now(); // exactly one cache invalidation for the whole import
+			}
+		}
 	}
 
 	private function existing_location_map() {

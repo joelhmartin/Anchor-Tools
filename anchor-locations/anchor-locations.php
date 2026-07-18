@@ -55,38 +55,30 @@ class Module {
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
         \add_action( 'anchor_settings_enqueue_locations', [ $this, 'settings_assets' ] );
 
-        // Phase 2: reusable content libraries (projects/testimonials/FAQs).
-        require_once __DIR__ . '/class-libraries.php';
-        new Libraries();
-
-        // Phase 4: per-page SEO controls (metabox, robots, SEO-plugin integration,
-        // sitemap exclusion, [anchor_h1], full-width template wiring).
-        require_once __DIR__ . '/class-seo.php';
-        new SEO();
-
-        // Phase 5: read-only Coverage Matrix + SEO Quality Dashboard. Reporting +
-        // navigation only — never generates, mutates, or bulk-creates content.
-        require_once __DIR__ . '/class-dashboard.php';
-        new Dashboard();
-
-        // Phase 6: JSON (full migration) + CSV (bulk edit) import/export. Upserts
-        // by slug from a user-supplied file — never fabricates combinations, never
-        // deletes. Registers the "Import / Export" admin submenu + handlers.
-        require_once __DIR__ . '/class-io.php';
-        new IO();
-
-        // Phase 7: Search Console + GA4 per-page reporting. Server-to-server auth
-        // via a pasted Google service-account key (RS256 JWT, no OAuth redirect,
-        // no heavy deps). Admin-only. Dormant until configured — no credentials
-        // means is_configured() is false and NO HTTP is ever attempted.
-        require_once __DIR__ . '/class-analytics.php';
-        new Analytics();
-
-        // Phase 8: hardening — data-integrity nudges (slug collisions, orphan /
-        // duplicate / missing-coords notices + list marker) and a versioned cache
-        // invalidation scheme that map_data() + the directory shortcode key into.
-        require_once __DIR__ . '/class-integrity.php';
-        new Integrity();
+        // Phase 2–8 sub-classes, each in its own file. Loaded defensively: a
+        // missing file degrades that ONE phase gracefully (it simply doesn't
+        // load) instead of fataling the whole plugin, and instantiation is
+        // gated on the class actually existing after the require.
+        //   Phase 2  Libraries — reusable content libraries (projects/testimonials/FAQs).
+        //   Phase 4  SEO        — per-page SEO controls, robots, SEO-plugin integration, [anchor_h1].
+        //   Phase 5  Dashboard  — read-only Coverage Matrix + SEO Reports (navigation only).
+        //   Phase 6  IO         — JSON/CSV import/export (upsert-by-slug, never deletes).
+        //   Phase 7  Analytics  — Search Console + GA4 reporting (dormant until a key is set).
+        //   Phase 8  Integrity  — data-integrity nudges + versioned cache invalidation.
+        $phases = [
+            'class-libraries.php' => __NAMESPACE__ . '\\Libraries',
+            'class-seo.php'       => __NAMESPACE__ . '\\SEO',
+            'class-dashboard.php' => __NAMESPACE__ . '\\Dashboard',
+            'class-io.php'        => __NAMESPACE__ . '\\IO',
+            'class-analytics.php' => __NAMESPACE__ . '\\Analytics',
+            'class-integrity.php' => __NAMESPACE__ . '\\Integrity',
+        ];
+        foreach ( $phases as $file => $class ) {
+            $path = __DIR__ . '/' . $file;
+            if ( ! \file_exists( $path ) ) { continue; }
+            require_once $path;
+            if ( \class_exists( $class ) ) { new $class(); }
+        }
     }
 
     private $assets_enqueued = false;

@@ -49,7 +49,7 @@ Defaults: `service-areas-base` = `service-areas`, `services-base` = `services`. 
 | `al_state_abbr` | string | Two-letter state abbreviation, free text. |
 | `al_county` | string | County name, free text. No admin UI field for this one — set it via WP-CLI. |
 | `al_postal_codes` | string | Free-text list of ZIP/postal codes (e.g. comma-separated), not currently parsed by code — informational/for future use. |
-| `al_boundary` | string (GeoJSON) | Free-text GeoJSON boundary. Stored and editable in the admin "Details" metabox, but **not currently drawn** on the map (`frontend.js` only plots point markers) — reserved for a future polygon-overlay feature. |
+| `al_boundary` | string (GeoJSON) | Free-text GeoJSON boundary, editable in the admin "Details" metabox. **Drawn on `[anchor_location_map]`** (P3): when the value parses as valid JSON it is attached to the marker and `frontend.js` renders it as a county/area boundary polygon via `google.maps.Data` (a `FeatureCollection`, `Feature`, or bare geometry are all accepted); an unparseable value is silently skipped so a bad paste never breaks the map. |
 | `al_marker_icon` | string (URL) | Per-location marker icon override. Falls back to the global `marker_icon` setting when empty. |
 | `al_html` / `al_css` / `al_js` | string | The page body, authored via the Monaco HTML/CSS/JS metabox. Rendered via `do_shortcode()` on HTML, CSS is auto id-scoped to `.al-page-{ID}`, JS is wrapped in an IIFE. |
 | `al_disable_wrapper` | `'1'` or `''` | When `'1'`, skips the global wrapper template (see §4) for this page — use for Divi/page-builder pages that already have their own header/footer chrome. |
@@ -106,7 +106,7 @@ No code changes were needed here — `maybe_flush()` (added in an earlier task) 
 | `[anchor_location_services]` | `id` (int, default: current post) | `<ul>` of all published service pages linked to this location (via `al_location_id`). |
 | `[anchor_service_locations]` | `id` (int, default: current post) | `<ul>` of other published service pages sharing this page's `service` term (other locations offering the same service). |
 | `[anchor_service_area_directory]` | none | Renders the full published location hierarchy as nested `<ul>`s, starting from top-level (parent-less) locations. |
-| `[anchor_location_map]` | `types` (comma-separated `al_type` values, default: all), `parent` (location post ID — restrict to its children, default: none), `zoom` (int, default: settings `map_zoom` / 8), `height` (px, default: `480`), `center` (`lat,lng`, default: settings `map_center` or first marker) | Renders a Google Map with a pin per matching location that has coordinates; each pin's info window links to the location and lists its linked service pages. Requires a Google Maps API key set in the main Anchor Tools settings (`Anchor_Schema_Admin::OPTION_KEY['google_api_key']`). |
+| `[anchor_location_map]` | `types` (comma-separated `al_type` values, default: all), `parent` (location post ID — restrict to its children, default: none), `zoom` (int, default: settings `map_zoom` / 8), `height` (px, default: `480`), `center` (`lat,lng`, default: settings `map_center` or first marker), `service` (service term slug or id — server-side pre-filter to locations that have a matching service page, default: none), `cluster` (`1`/`true` to group nearby pins via the MarkerClusterer library, loaded from CDN only when requested; default off), `filters` (comma-separated subset of `service,type` — renders front-end filter controls for those facets; default none) | Renders a Google Map with a pin per matching location that has coordinates; each pin's info window links to the location and lists its linked service pages, and any location with a valid `al_boundary` also draws its boundary polygon. Requires a Google Maps API key set in the main Anchor Tools settings (`Anchor_Schema_Admin::OPTION_KEY['google_api_key']`). |
 
 All the internal-linking shortcodes' output HTML is filterable:
 `anchor_locations_child_locations_html`, `anchor_locations_location_parent_html`, `anchor_locations_nearby_locations_html`, `anchor_locations_breadcrumbs_html`, `anchor_locations_location_services_html`, `anchor_locations_service_locations_html`, `anchor_locations_service_area_directory_html` — each filter receives `( $html, $id )`.
@@ -229,9 +229,14 @@ itself. `id`/`service` attrs override. Output is filterable via
 `_local_faqs_html`, each receiving `( $html, $ctx )` where `$ctx` is
 `[ 'location_id', 'service_term_id', 'ids' ]`.
 
-`[anchor_local_faqs]` additionally emits a single `FAQPage` JSON-LD block (its
-own `wp_head` hook, priority 21) when ≥1 FAQ renders on a singular page — using
-the same `</script>`-safe encoding as the Phase-1 schema.
+`[anchor_local_faqs]` additionally emits a single `FAQPage` JSON-LD block on
+**`wp_footer`** (priority 21) when ≥1 FAQ renders on a location/service page —
+using the same `</script>`-safe encoding as the Phase-1 schema. It fires on
+`wp_footer`, not `wp_head`, because the FAQ collector is filled while the body
+renders (`the_content`), which happens after `wp_head`. The block only emits on
+the module's own CPTs (`anchor_location` / `anchor_service_page`), never on a
+regular Page/Post that happens to host the shortcode — the visible FAQ HTML
+still renders anywhere.
 
 ### WP-CLI example
 
@@ -278,8 +283,11 @@ active SEO plugin and never duplicates it:
 - **AIOSEO** (`AIOSEO_VERSION`) — detected → our own tag output is suppressed (no
   public value-injection filters wired; best-effort).
 - **No SEO plugin** — the module emits its own: document title via
-  `pre_get_document_title`, plus `<meta name="description">`, `<link rel="canonical">`,
-  and Open Graph tags on `wp_head` (each only when its field is set).
+  `pre_get_document_title`, plus `<meta name="description">` and Open Graph tags
+  on `wp_head` (each only when its field is set). Canonical is **not** printed as
+  a separate `<link>`; instead the module overrides core's own canonical (the
+  default `rel_canonical` action already on `wp_head`) via the `get_canonical_url`
+  filter, so exactly one canonical tag is produced — never two.
 
 ### `[anchor_h1]`
 
@@ -289,10 +297,45 @@ Filterable via `anchor_locations_h1` (`( $html, $id )`).
 ### Review / AggregateRating schema
 
 When `[anchor_local_testimonials]` renders ≥1 testimonial **with** a rating
-(`al_rating` 1–5) on a singular page, a Review + AggregateRating JSON-LD block is
-emitted on `wp_footer` (same footer-collector + `</script>`-safe encoding as the
-FAQ schema; lives in `class-libraries.php`). The reviewed entity is typed `Service`
-on a service page, else `Place`; `aggregateRating.ratingValue` is the average and
-`reviewCount` the count of rated testimonials shown. No rated testimonials shown ⇒
-no block (schema only when the content is visible).
+(`al_rating` 1–5) on a location/service page, a Review + AggregateRating JSON-LD
+block is emitted on `wp_footer` (same footer-collector + `</script>`-safe encoding
+as the FAQ schema; lives in `class-libraries.php`). It reuses the same `@id`/`@type`
+as the page's main Place/Service node so consumers merge the reviews into that
+entity; `aggregateRating.ratingValue` is the average and `reviewCount` the count of
+rated testimonials shown. Like the FAQ schema, it emits only on the module's own
+CPTs (never on a regular Page/Post hosting the shortcode), and only when rated
+testimonials are actually visible.
+
+---
+
+## 8. Admin pages
+
+All of these live as submenus under the **Anchor Locations** menu
+(`edit.php?post_type=anchor_location`). They are reporting/operator tools — none
+of them generate or bulk-create page content.
+
+| Screen | Slug | Capability | What it does |
+|---|---|---|---|
+| **Coverage** (Coverage Matrix) | `anchor-locations-coverage` | `edit_posts` | Read-only P5 matrix of every `service` term × location. Each cell shows the page's state — Published / Noindex / Draft / **Missing** — with a quality score, and View/Edit links. A **Missing** cell links to the standard *Add New Service Page* screen with the service term + `al_location_id` pre-filled (via `?al_prefill_location=`); nothing is written until a human saves. Filterable by `al_type`. |
+| **SEO Reports** | `anchor-locations-seo-reports` | `edit_posts` | Read-only P5 audit grouping issues by severity: high (thin content <300 chars, missing coordinates, orphan service page, duplicate service+location combo), medium (missing SEO title / meta description / H1), low (coverage gaps, noindex pages, sitemap-excluded pages). Every row links to the offending post; nothing is mutated. |
+| **Import / Export** | `anchor-locations-io` | `manage_options` | P6 portability. **Export**: full JSON migration envelope (settings, `service` taxonomy, locations with hierarchy, service pages, and the three content libraries — all referenced by slug), or scalar CSV of locations / service pages (code fields + boundary GeoJSON are JSON-only). **Import**: upload a `.json` or `.csv` and upsert **by slug** — it never fabricates combinations and never deletes. A **Preview (dry run)** checkbox reports created/updated/skipped counts (and per-row errors) without writing. |
+| **Analytics** | `anchor-locations-analytics` | `manage_options` | P7 per-page Google **Search Console + GA4** reporting for the module's pages. Auth is server-to-server via a pasted Google **service-account** JSON key (RS256 JWT — no interactive OAuth redirect, no heavy deps). Dormant until configured: without a usable key **and** at least one target (a GSC site or GA4 property), `is_configured()` is false and **no HTTP is ever attempted**. The service-account key is stored `autoload=false`. |
+
+### Locations list — Health column & versioned caching (P8)
+
+- The **Locations** list table gains a **Health** column showing a ⚠ marker when a
+  published location's slug collides with another published location (both would
+  collapse to the same `/services/…/{slug}/` URL). The same data-integrity checks
+  (slug collision, missing coordinates, orphan / duplicate service page) surface as
+  dismissible `notice-warning`s on the edit screen. These are non-blocking **nudges**
+  only — they never rewrite a slug or mutate content.
+- The expensive `[anchor_location_map]` and `[anchor_service_area_directory]`
+  relationship queries are cached in transients keyed by a **monotonic cache
+  version** (the `anchor_locations_cache_ver` option, `autoload=false`). Any write
+  that could change the relationship graph — a location/service save, trash/delete,
+  `service` term edit, term assignment, or an `al_*` meta write (covers WP-CLI /
+  direct import) — bumps that version, invalidating every cached entry at once
+  without enumerating keys. When the option is absent the version reads 0 and callers
+  bypass the cache entirely (behaviour identical to pre-P8). A bulk JSON/CSV import
+  suspends the per-write bumps and invalidates **exactly once** at the end.
 

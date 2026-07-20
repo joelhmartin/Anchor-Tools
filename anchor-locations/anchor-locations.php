@@ -459,6 +459,34 @@ class Module {
     private function cur_id( $atts ) { $a = \shortcode_atts( [ 'id' => 0 ], $atts ); return (int) $a['id'] ? (int) $a['id'] : (int) \get_the_ID(); }
 
     /**
+     * Resolve the LOCATION a location-oriented shortcode should describe.
+     *
+     * An explicit `id` attribute always wins. Otherwise, when the shortcode runs
+     * on a service page (e.g. /services/roofing/pittsburgh-pa/), the subject is
+     * the location that page is linked to — not the service page itself — so we
+     * follow `al_location_id`. On a location page (or anywhere else) this is
+     * just the current post.
+     *
+     * Returns 0 when there is nothing sensible to resolve (e.g. a service page
+     * whose `al_location_id` is missing); callers must treat 0 as "no location"
+     * and return empty rather than querying for it.
+     */
+    private function resolve_location_id( $atts ) {
+        $a = \shortcode_atts( [ 'id' => 0 ], $atts );
+        if ( (int) $a['id'] ) { return (int) $a['id']; }
+        $id = (int) \get_the_ID();
+        if ( $id && \get_post_type( $id ) === self::CPT_SERVICE ) {
+            $loc = (int) \get_post_meta( $id, 'al_location_id', true );
+            // Guard against a dangling link: an id pointing at a deleted or
+            // non-location post must resolve to 0, not be queried for. A meta
+            // lookup on a stale id would otherwise match this very service page
+            // (its own al_location_id holds that value) and self-link it.
+            return ( $loc && \get_post_type( $loc ) === self::CPT_LOCATION ) ? $loc : 0;
+        }
+        return $id;
+    }
+
+    /**
      * Label to use for a post's breadcrumb crumb (and BreadcrumbList name): the
      * per-page `al_breadcrumb_title` (Phase 4 SEO) when set, else the post title.
      * Returns raw text — callers escape for their context (esc_html for HTML,
@@ -470,7 +498,8 @@ class Module {
     }
 
     public function sc_child_locations( $atts ) {
-        $id = $this->cur_id( $atts );
+        $id = $this->resolve_location_id( $atts );
+        if ( ! $id ) { return \apply_filters( 'anchor_locations_child_locations_html', '', $id ); }
         $kids = \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => $id, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC' ] );
         $html = '';
         if ( $kids ) {
@@ -482,8 +511,8 @@ class Module {
     }
 
     public function sc_parent( $atts ) {
-        $id = $this->cur_id( $atts );
-        $post = \get_post( $id );
+        $id = $this->resolve_location_id( $atts );
+        $post = $id ? \get_post( $id ) : null;
         if ( ! $post ) { return \apply_filters( 'anchor_locations_location_parent_html', '', $id ); }
         $p = (int) $post->post_parent;
         $html = ( $p && \get_post_status( $p ) === 'publish' ) ? '<a class="al-parent" href="' . \esc_url( \get_permalink( $p ) ) . '">' . \esc_html( \get_the_title( $p ) ) . '</a>' : '';
@@ -491,8 +520,8 @@ class Module {
     }
 
     public function sc_nearby( $atts ) {
-        $id = $this->cur_id( $atts );
-        $post = \get_post( $id );
+        $id = $this->resolve_location_id( $atts );
+        $post = $id ? \get_post( $id ) : null;
         if ( ! $post ) { return \apply_filters( 'anchor_locations_nearby_locations_html', '', $id ); }
         $parent = (int) $post->post_parent;
         $sibs = $parent ? \get_posts( [ 'post_type' => self::CPT_LOCATION, 'post_status' => 'publish', 'post_parent' => $parent, 'exclude' => [ $id ], 'numberposts' => 12, 'orderby' => 'title', 'order' => 'ASC' ] ) : [];
@@ -524,7 +553,8 @@ class Module {
     }
 
     public function sc_location_services( $atts ) {
-        $id = $this->cur_id( $atts );
+        $id = $this->resolve_location_id( $atts );
+        if ( ! $id ) { return \apply_filters( 'anchor_locations_location_services_html', '', $id ); }
         $pages = \get_posts( [ 'post_type' => self::CPT_SERVICE, 'post_status' => 'publish', 'numberposts' => -1, 'meta_key' => 'al_location_id', 'meta_value' => $id ] );
         $html = '';
         if ( $pages ) {

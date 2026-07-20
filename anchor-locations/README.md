@@ -100,13 +100,27 @@ No code changes were needed here — `maybe_flush()` (added in an earlier task) 
 |---|---|---|
 | `[anchor_page_content]` | `id` (int, default: current post) | Renders a location/service page's `al_html`/`al_css`/`al_js` body. Useful inside a wrapper template, or to embed one page's content on another. |
 | `[anchor_breadcrumbs]` | `id` (int, default: current post) | Home → ancestor chain → (for service pages) linked location chain → current title. Skips unpublished ancestors. |
-| `[anchor_child_locations]` | `id` (int, default: current post) | `<ul>` of the location's direct published children. |
-| `[anchor_location_parent]` | `id` (int, default: current post) | A link to the location's parent, if published; empty otherwise. |
-| `[anchor_nearby_locations]` | `id` (int, default: current post) | `<ul>` of up to 12 published sibling locations (same parent). |
-| `[anchor_location_services]` | `id` (int, default: current post) | `<ul>` of all published service pages linked to this location (via `al_location_id`). |
+| `[anchor_child_locations]` | `id` (int, default: [resolved location](#location-resolution)) | `<ul>` of the location's direct published children. |
+| `[anchor_location_parent]` | `id` (int, default: [resolved location](#location-resolution)) | A link to the location's parent, if published; empty otherwise. |
+| `[anchor_nearby_locations]` | `id` (int, default: [resolved location](#location-resolution)) | `<ul>` of up to 12 published sibling locations (same parent). |
+| `[anchor_location_services]` | `id` (int, default: [resolved location](#location-resolution)) | `<ul>` of all published service pages linked to this location (via `al_location_id`). |
 | `[anchor_service_locations]` | `id` (int, default: current post) | `<ul>` of other published service pages sharing this page's `service` term (other locations offering the same service). |
 | `[anchor_service_area_directory]` | none | Renders the full published location hierarchy as nested `<ul>`s, starting from top-level (parent-less) locations. |
 | `[anchor_location_map]` | `types` (comma-separated `al_type` values, default: all), `parent` (location post ID — restrict to its children, default: none), `zoom` (int, default: settings `map_zoom` / 8), `height` (px, default: `480`), `center` (`lat,lng`, default: settings `map_center` or first marker), `service` (service term slug or id — server-side pre-filter to locations that have a matching service page, default: none), `cluster` (`1`/`true` to group nearby pins via the MarkerClusterer library, loaded from CDN only when requested; default off), `filters` (comma-separated subset of `service,type` — renders front-end filter controls for those facets; default none) | Renders a Google Map with a pin per matching location that has coordinates; each pin's info window links to the location and lists its linked service pages, and any location with a valid `al_boundary` also draws its boundary polygon. Requires a Google Maps API key set in the main Anchor Tools settings (`Anchor_Schema_Admin::OPTION_KEY['google_api_key']`). |
+
+<a name="location-resolution"></a>
+
+### Location resolution on service pages
+
+The four shortcodes above are about a **location**, not the page they sit on. When no `id` attribute is given they resolve their subject as follows:
+
+1. An explicit `id` attribute always wins.
+2. Otherwise, if they are running on an **`anchor_service_page`**, they resolve to that page's linked location (`al_location_id`) — so `[anchor_location_services]` on `/services/roofing/pittsburgh-pa/` lists Pittsburgh's *other* services ("Other Services in Pittsburgh") rather than querying for the service page's own ID.
+3. Otherwise they use the current post (the normal location-page case).
+
+If a service page's `al_location_id` is missing, or points at a post that no longer exists or is not a location, these shortcodes render **empty** rather than emitting a broken self-link.
+
+Note that `[anchor_service_locations]` is deliberately excluded: it is about the *service*, so it correctly keys off the current service page. `[anchor_breadcrumbs]` handles the service-page branch itself, and `[anchor_service_area_directory]` is global.
 
 All the internal-linking shortcodes' output HTML is filterable:
 `anchor_locations_child_locations_html`, `anchor_locations_location_parent_html`, `anchor_locations_nearby_locations_html`, `anchor_locations_breadcrumbs_html`, `anchor_locations_location_services_html`, `anchor_locations_service_locations_html`, `anchor_locations_service_area_directory_html` — each filter receives `( $html, $id )`.

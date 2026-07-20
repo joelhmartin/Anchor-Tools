@@ -66,6 +66,110 @@ class LocationsShortcodesTest extends WP_UnitTestCase {
         $this->assertIsString( $out );
         $this->assertSame( '', $out );
     }
+    /**
+     * Helper: make $id the "current post" the way the loop would, so
+     * get_the_ID() inside a shortcode resolves to it.
+     */
+    private function with_current_post( $id, callable $fn ) {
+        global $post;
+        $prev = $post;
+        $post = get_post( $id );
+        setup_postdata( $post );
+        try { return $fn(); } finally { wp_reset_postdata(); $post = $prev; }
+    }
+
+    public function test_location_services_on_service_page_resolves_to_linked_location() {
+        $loc = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_name' => 'pittsburgh-pa' ] );
+        $t1  = wp_insert_term( 'Roofing', 'service' );
+        $t2  = wp_insert_term( 'Siding', 'service' );
+        $sp1 = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Roofing in Pittsburgh' ] );
+        $sp2 = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Siding in Pittsburgh' ] );
+        wp_set_object_terms( $sp1, [ (int) $t1['term_id'] ], 'service' );
+        wp_set_object_terms( $sp2, [ (int) $t2['term_id'] ], 'service' );
+        update_post_meta( $sp1, 'al_location_id', $loc );
+        update_post_meta( $sp2, 'al_location_id', $loc );
+
+        $out = $this->with_current_post( $sp1, function () {
+            return do_shortcode( '[anchor_location_services]' );
+        } );
+        $this->assertStringContainsString( 'Roofing in Pittsburgh', $out );
+        $this->assertStringContainsString( 'Siding in Pittsburgh', $out );
+    }
+
+    public function test_nearby_on_service_page_resolves_to_linked_location_siblings() {
+        $county = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Allegheny County' ] );
+        $loc    = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pittsburgh', 'post_parent' => $county ] );
+        self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Bethel Park', 'post_parent' => $county ] );
+        $sp = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Roofing in Pittsburgh' ] );
+        update_post_meta( $sp, 'al_location_id', $loc );
+
+        $out = $this->with_current_post( $sp, function () {
+            return do_shortcode( '[anchor_nearby_locations]' );
+        } );
+        $this->assertStringContainsString( 'Bethel Park', $out );
+        $this->assertStringNotContainsString( 'Pittsburgh', $out );
+    }
+
+    public function test_child_locations_and_parent_on_service_page_resolve_to_location() {
+        $county = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Allegheny County' ] );
+        $loc    = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pittsburgh', 'post_parent' => $county ] );
+        self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Squirrel Hill', 'post_parent' => $loc ] );
+        $sp = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Roofing in Pittsburgh' ] );
+        update_post_meta( $sp, 'al_location_id', $loc );
+
+        $kids = $this->with_current_post( $sp, function () { return do_shortcode( '[anchor_child_locations]' ); } );
+        $this->assertStringContainsString( 'Squirrel Hill', $kids );
+        $parent = $this->with_current_post( $sp, function () { return do_shortcode( '[anchor_location_parent]' ); } );
+        $this->assertStringContainsString( 'Allegheny County', $parent );
+    }
+
+    public function test_explicit_id_attribute_still_overrides_on_service_page() {
+        $locA = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_name' => 'pittsburgh-pa' ] );
+        $locB = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_name' => 'erie-pa' ] );
+        $term = wp_insert_term( 'Roofing', 'service' );
+        $spA  = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Roofing in Pittsburgh' ] );
+        $spB  = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Roofing in Erie' ] );
+        wp_set_object_terms( $spA, [ (int) $term['term_id'] ], 'service' );
+        wp_set_object_terms( $spB, [ (int) $term['term_id'] ], 'service' );
+        update_post_meta( $spA, 'al_location_id', $locA );
+        update_post_meta( $spB, 'al_location_id', $locB );
+
+        $out = $this->with_current_post( $spA, function () use ( $locB ) {
+            return do_shortcode( '[anchor_location_services id="' . $locB . '"]' );
+        } );
+        $this->assertStringContainsString( 'Roofing in Erie', $out );
+        $this->assertStringNotContainsString( 'Roofing in Pittsburgh', $out );
+    }
+
+    public function test_service_page_with_missing_location_meta_returns_empty_safely() {
+        $sp = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Orphan Service' ] );
+        $out = $this->with_current_post( $sp, function () { return do_shortcode( '[anchor_location_services]' ); } );
+        $this->assertIsString( $out );
+        $this->assertSame( '', $out );
+
+        update_post_meta( $sp, 'al_location_id', 99999999 );
+        $out2 = $this->with_current_post( $sp, function () {
+            return do_shortcode( '[anchor_location_services]' ) . do_shortcode( '[anchor_nearby_locations]' ) . do_shortcode( '[anchor_child_locations]' ) . do_shortcode( '[anchor_location_parent]' );
+        } );
+        $this->assertSame( '', $out2 );
+    }
+
+    public function test_service_locations_still_keys_off_current_service_page() {
+        $locA = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_name' => 'pittsburgh-pa' ] );
+        $locB = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_name' => 'erie-pa' ] );
+        $term = wp_insert_term( 'Roofing', 'service' );
+        $spA  = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Roofing in Pittsburgh' ] );
+        $spB  = self::factory()->post->create( [ 'post_type' => 'anchor_service_page', 'post_status' => 'publish', 'post_title' => 'Roofing in Erie' ] );
+        wp_set_object_terms( $spA, [ (int) $term['term_id'] ], 'service' );
+        wp_set_object_terms( $spB, [ (int) $term['term_id'] ], 'service' );
+        update_post_meta( $spA, 'al_location_id', $locA );
+        update_post_meta( $spB, 'al_location_id', $locB );
+
+        $out = $this->with_current_post( $spA, function () { return do_shortcode( '[anchor_service_locations]' ); } );
+        $this->assertStringContainsString( 'Roofing in Erie', $out );
+        $this->assertStringNotContainsString( 'Roofing in Pittsburgh', $out );
+    }
+
     public function test_breadcrumbs_skips_unpublished_ancestor() {
         $root   = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Pennsylvania' ] );
         $middle = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'draft', 'post_title' => 'Hidden County', 'post_parent' => $root ] );

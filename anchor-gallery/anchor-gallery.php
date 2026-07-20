@@ -2677,11 +2677,14 @@ class Anchor_Gallery_Module {
                         </div>
                         <?php endforeach; ?>
                     </div>
+                    <?php /* The seam copy. Never lazy: it is off-screen only because of the
+                             marquee transform, so a lazy loader may not fetch it until it has
+                             already scrolled into view, leaving blank tiles at the wrap point. */ ?>
                     <div class="avg-marquee-group" aria-hidden="true">
                         <?php foreach ($items as $item): ?>
                         <div class="avg-marquee-item">
                             <?php if (!empty($item['thumb'])): ?>
-                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="lazy" decoding="async" />
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="eager" decoding="async" />
                             <?php endif; ?>
                         </div>
                         <?php endforeach; ?>
@@ -2701,11 +2704,14 @@ class Anchor_Gallery_Module {
                         </div>
                         <?php endforeach; ?>
                     </div>
+                    <?php /* The seam copy. Never lazy: it is off-screen only because of the
+                             marquee transform, so a lazy loader may not fetch it until it has
+                             already scrolled into view, leaving blank tiles at the wrap point. */ ?>
                     <div class="avg-marquee-group" aria-hidden="true">
                         <?php foreach ($items as $item): ?>
                         <div class="avg-marquee-item">
                             <?php if (!empty($item['thumb'])): ?>
-                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="lazy" decoding="async" />
+                            <img src="<?php echo esc_url($item['thumb']); ?>" alt="" loading="eager" decoding="async" />
                             <?php endif; ?>
                         </div>
                         <?php endforeach; ?>

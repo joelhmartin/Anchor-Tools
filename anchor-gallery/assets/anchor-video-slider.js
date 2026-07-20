@@ -1199,6 +1199,79 @@
   }
 
   // ============================================================================
+  // Logo Carousel (Marquee)
+  // ============================================================================
+
+  // PHP renders two copies of the logo group, and the CSS shifts the track by
+  // one group width. That only looks continuous when a single group is already
+  // wider than the row -- otherwise the track runs out of logos mid-scroll and
+  // leaves dead space until the animation resets. CSS cannot compare content
+  // width to container width, so measure here and clone until the track covers
+  // the row twice over.
+  function layoutMarqueeRow(row) {
+    var track = row.querySelector('.avg-marquee');
+    if (!track) return;
+
+    var groups = track.querySelectorAll('.avg-marquee-group');
+    if (!groups.length) return;
+
+    // Item widths come from a fixed flex-basis, so the group measures correctly
+    // even before the logo images have decoded.
+    var groupWidth = groups[0].offsetWidth;
+    var rowWidth = row.offsetWidth;
+    if (!groupWidth || !rowWidth) return;
+
+    var copies = Math.max(2, Math.ceil((rowWidth * 2) / groupWidth));
+    if (copies === groups.length) return;
+
+    while (track.querySelectorAll('.avg-marquee-group').length > copies) {
+      track.removeChild(track.lastElementChild);
+    }
+
+    // Clone the second group: it is already aria-hidden, so screen readers
+    // still see the logo list exactly once.
+    var seam = groups[1] || groups[0];
+    while (track.querySelectorAll('.avg-marquee-group').length < copies) {
+      var clone = seam.cloneNode(true);
+      clone.setAttribute('aria-hidden', 'true');
+      clone.querySelectorAll('img').forEach(function(img) {
+        img.setAttribute('loading', 'eager');
+        img.setAttribute('alt', '');
+      });
+      track.appendChild(clone);
+    }
+
+    // Shift by exactly one group so the track lands on an identical arrangement.
+    track.style.setProperty('--avg-marquee-shift', (100 / copies) + '%');
+
+    // Custom properties inside @keyframes are resolved when the animation
+    // starts, so restart it to pick up the new shift distance. Touch only
+    // animation-name -- PHP sets animation-direction inline on this element,
+    // and clearing the shorthand would drop the Scroll Right / reverse-row
+    // setting along with it.
+    track.style.animationName = 'none';
+    void track.offsetWidth;
+    track.style.animationName = '';
+  }
+
+  function initLogoMarquee(gallery) {
+    var rows = gallery.querySelectorAll('.avg-marquee-row');
+    if (!rows.length) return;
+
+    var relayout = function() {
+      rows.forEach(layoutMarqueeRow);
+    };
+
+    requestAnimationFrame(relayout);
+
+    var resizeTimer = null;
+    window.addEventListener('resize', function() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(relayout, 150);
+    });
+  }
+
+  // ============================================================================
   // Initialize Galleries
   // ============================================================================
 
@@ -1206,8 +1279,7 @@
     var galleries = document.querySelectorAll('.anchor-video-gallery');
     galleries.forEach(function(gallery) {
       var layout = gallery.getAttribute('data-layout');
-      // Skip logo_carousel — pure CSS, no JS needed
-      if (layout === 'logo_carousel') return;
+      if (layout === 'logo_carousel') { initLogoMarquee(gallery); return; }
 
       if (layout === 'gallery') {
         initGalleryLayout(gallery);
@@ -1234,7 +1306,7 @@
     var galleries = container.querySelectorAll('.anchor-video-gallery');
     galleries.forEach(function(gallery) {
       var layout = gallery.getAttribute('data-layout');
-      if (layout === 'logo_carousel') return;
+      if (layout === 'logo_carousel') { initLogoMarquee(gallery); return; }
 
       if (layout === 'gallery') {
         initGalleryLayout(gallery);

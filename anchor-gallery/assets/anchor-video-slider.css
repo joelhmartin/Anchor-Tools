@@ -928,9 +928,14 @@
   }
 }
 
+/* The track shifts by exactly one group width, so it lands on an identical
+   arrangement and the loop is seamless. PHP renders two groups (shift = 50%),
+   which only fills the row when one group is already wider than the container.
+   initLogoMarquee() clones extra groups to cover the viewport and rewrites
+   --avg-marquee-shift to 100/copies% to match. */
 @keyframes avg-scroll-x {
   from { transform: translateX(0); }
-  to { transform: translateX(-50%); }
+  to { transform: translateX(calc(-1 * var(--avg-marquee-shift, 50%))); }
 }
 
 .avg-marquee-reverse .avg-marquee {

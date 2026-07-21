@@ -12,6 +12,7 @@ class Module {
 
     private static $instance = null;
     private $filling_content = false;
+    private $gate_rendered = false;
 
     public function __construct() {
         self::$instance = $this;
@@ -27,9 +28,11 @@ class Module {
         \add_action( 'quick_edit_custom_box', [ $this, 'render_inline_edit_box' ], 10, 2 );
         \add_action( 'bulk_edit_custom_box', [ $this, 'render_inline_edit_box' ], 10, 2 );
 
-        // Inline AJAX login for gated webinars.
+        // Inline AJAX login + registration for gated webinars.
         \add_action( 'wp_ajax_nopriv_anchor_webinar_login', [ $this, 'handle_login' ] );
         \add_action( 'wp_ajax_anchor_webinar_login', [ $this, 'handle_login' ] );
+        \add_action( 'wp_ajax_nopriv_anchor_webinar_register', [ $this, 'handle_register' ] );
+        \add_action( 'wp_ajax_anchor_webinar_register', [ $this, 'handle_register' ] );
 
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 50 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
@@ -274,10 +277,20 @@ class Module {
     }
 
     /**
-     * Replace a gated webinar's body with a locked notice anywhere the_content
-     * runs for an unauthorized user (archives, search, REST, feeds). On the
-     * single page the template already renders the gate and never calls
-     * the_content for blocked users, so this is a no-op there.
+     * Replace a gated webinar's body for an unauthorized visitor wherever
+     * the_content runs.
+     *
+     * On the webinar's OWN singular page we render the full interactive gate
+     * (login + register form) in place of the body. This is what makes the gate
+     * work no matter which template outputs the content: the plugin's own
+     * single-webinar.php normally calls render_access_gate() itself and never
+     * reaches this filter, but page builders (Divi Theme Builder), block
+     * themes, and other single-post layouts inject the post body through
+     * the_content() — bypassing that template — and would otherwise show only
+     * the passive notice with no way to sign in or register.
+     *
+     * Everywhere else (archives, search, REST content.rendered, feeds, and
+     * shortcode/block embeds on other pages) keeps the lightweight notice.
      */
     public function gate_the_content( $content ) {
         $post = \get_post();
@@ -287,6 +300,19 @@ class Module {
         if ( $this->can_user_access( $post->ID ) ) {
             return $content;
         }
+
+        // Only the main webinar on its own page gets the interactive gate.
+        if ( \is_singular( self::CPT ) && (int) $post->ID === (int) \get_queried_object_id() ) {
+            // Builders (e.g. Divi) run the_content more than once per request;
+            // render the gate on the first pass and blank the duplicates so the
+            // form appears exactly once.
+            if ( $this->gate_rendered ) {
+                return '';
+            }
+            $this->gate_rendered = true;
+            return $this->render_access_gate( $post->ID );
+        }
+
         return $this->locked_notice();
     }
 
@@ -435,6 +461,72 @@ class Module {
     }
 
     /**
+     * AJAX: create an account from the inline webinar register form, sign the
+     * new user in immediately, and let the JS reload the webinar so the content
+     * unlocks in place. Honours the site's "Anyone can register" setting.
+     */
+    public function handle_register() {
+        if ( ! \check_ajax_referer( 'anchor_webinar_login', 'nonce', false ) ) {
+            \wp_send_json_error( [ 'message' => \__( 'Security check failed. Please refresh the page and try again.', 'anchor-schema' ) ] );
+        }
+
+        if ( \is_user_logged_in() ) {
+            \wp_send_json_success(); // Already signed in — just reload.
+        }
+
+        if ( ! \get_option( 'users_can_register' ) ) {
+            \wp_send_json_error( [ 'message' => \__( 'Registration is currently disabled. Please contact us for access.', 'anchor-schema' ) ] );
+        }
+
+        $email = \sanitize_email( \wp_unslash( $_POST['email'] ?? '' ) );
+        $pass  = (string) ( $_POST['pwd'] ?? '' );
+        $name  = \sanitize_text_field( \wp_unslash( $_POST['name'] ?? '' ) );
+
+        if ( ! \is_email( $email ) ) {
+            \wp_send_json_error( [ 'message' => \__( 'Please enter a valid email address.', 'anchor-schema' ) ] );
+        }
+        if ( \strlen( $pass ) < 6 ) {
+            \wp_send_json_error( [ 'message' => \__( 'Please choose a password of at least 6 characters.', 'anchor-schema' ) ] );
+        }
+        if ( \email_exists( $email ) ) {
+            \wp_send_json_error( [ 'message' => \__( 'An account with that email already exists. Please sign in instead.', 'anchor-schema' ) ] );
+        }
+
+        // Derive a unique username from the email's local part.
+        $base = \sanitize_user( \current( \explode( '@', $email ) ), true );
+        if ( '' === $base ) {
+            $base = 'member';
+        }
+        $username = $base;
+        $suffix   = 1;
+        while ( \username_exists( $username ) ) {
+            $username = $base . $suffix;
+            $suffix++;
+        }
+
+        $user_id = \wp_insert_user( [
+            'user_login'   => $username,
+            'user_email'   => $email,
+            'user_pass'    => $pass,
+            'display_name' => $name !== '' ? $name : $username,
+            'first_name'   => $name,
+            'role'         => \get_option( 'default_role' ),
+        ] );
+
+        if ( \is_wp_error( $user_id ) ) {
+            \wp_send_json_error( [ 'message' => \__( 'We couldn’t create your account. Please try again.', 'anchor-schema' ) ] );
+        }
+
+        // Notify the site admin of the new registration (the visitor chose their
+        // own password and is being logged in, so no "set password" email).
+        \wp_new_user_notification( $user_id, null, 'admin' );
+
+        \wp_set_current_user( $user_id );
+        \wp_set_auth_cookie( $user_id, true, \is_ssl() );
+        \wp_send_json_success();
+    }
+
+    /**
      * Render the access gate (login form or "no access" notice) for the template.
      */
     public function render_access_gate( $post_id ) {
@@ -458,40 +550,73 @@ class Module {
     }
 
     private function render_login_form( $post_id ) {
-        $register_url = \get_option( 'users_can_register' ) ? \wp_registration_url() : '';
+        $can_register = (bool) \get_option( 'users_can_register' );
         $lost_url     = \wp_lostpassword_url( \get_permalink( $post_id ) );
+        $permalink    = \get_permalink( $post_id );
         \ob_start();
         ?>
         <div class="anchor-webinar-gate anchor-webinar-gate--login">
             <div class="anchor-webinar-login">
-                <h2 class="anchor-webinar-login__title"><?php echo \esc_html__( 'Sign in to watch', 'anchor-schema' ); ?></h2>
-                <p class="anchor-webinar-login__subtitle"><?php echo \esc_html__( 'This webinar is available to members. Please sign in to continue watching.', 'anchor-schema' ); ?></p>
+                <h2 class="anchor-webinar-login__title"><?php echo \esc_html__( 'Members-only webinar', 'anchor-schema' ); ?></h2>
+                <p class="anchor-webinar-login__subtitle">
+                    <?php echo $can_register
+                        ? \esc_html__( 'Sign in or create a free account to watch this webinar.', 'anchor-schema' )
+                        : \esc_html__( 'This webinar is available to members. Please sign in to continue watching.', 'anchor-schema' ); ?>
+                </p>
 
-                <form class="anchor-webinar-login__form" method="post" novalidate action="<?php echo \esc_url( \site_url( 'wp-login.php', 'login_post' ) ); ?>">
-                    <input type="hidden" name="redirect_to" value="<?php echo \esc_url( \get_permalink( $post_id ) ); ?>" />
-                    <div class="anchor-webinar-login__field">
-                        <label for="awl-user"><?php echo \esc_html__( 'Username or Email', 'anchor-schema' ); ?></label>
-                        <input type="text" id="awl-user" name="log" autocomplete="username" required />
+                <?php if ( $can_register ) : ?>
+                    <div class="anchor-webinar-gate__tabs" role="tablist">
+                        <button type="button" class="anchor-webinar-gate__tab is-active" data-awtab="login" role="tab" aria-selected="true"><?php echo \esc_html__( 'Sign In', 'anchor-schema' ); ?></button>
+                        <button type="button" class="anchor-webinar-gate__tab" data-awtab="register" role="tab" aria-selected="false"><?php echo \esc_html__( 'Register', 'anchor-schema' ); ?></button>
                     </div>
-                    <div class="anchor-webinar-login__field">
-                        <label for="awl-pass"><?php echo \esc_html__( 'Password', 'anchor-schema' ); ?></label>
-                        <input type="password" id="awl-pass" name="pwd" autocomplete="current-password" required />
+                <?php endif; ?>
+
+                <div class="anchor-webinar-gate__panel is-active" data-awpanel="login">
+                    <form class="anchor-webinar-login__form" method="post" novalidate action="<?php echo \esc_url( \site_url( 'wp-login.php', 'login_post' ) ); ?>">
+                        <input type="hidden" name="redirect_to" value="<?php echo \esc_url( $permalink ); ?>" />
+                        <div class="anchor-webinar-login__field">
+                            <label for="awl-user"><?php echo \esc_html__( 'Username or Email', 'anchor-schema' ); ?></label>
+                            <input type="text" id="awl-user" name="log" autocomplete="username" required />
+                        </div>
+                        <div class="anchor-webinar-login__field">
+                            <label for="awl-pass"><?php echo \esc_html__( 'Password', 'anchor-schema' ); ?></label>
+                            <input type="password" id="awl-pass" name="pwd" autocomplete="current-password" required />
+                        </div>
+                        <div class="anchor-webinar-login__row">
+                            <label class="anchor-webinar-login__remember">
+                                <input type="checkbox" name="rememberme" value="1" /> <?php echo \esc_html__( 'Remember me', 'anchor-schema' ); ?>
+                            </label>
+                            <a class="anchor-webinar-login__lost" href="<?php echo \esc_url( $lost_url ); ?>"><?php echo \esc_html__( 'Lost your password?', 'anchor-schema' ); ?></a>
+                        </div>
+                        <div class="anchor-webinar-login__error" role="alert" hidden></div>
+                        <button type="submit" class="anchor-webinar-login__submit"><?php echo \esc_html__( 'Sign In', 'anchor-schema' ); ?></button>
+                    </form>
+                </div>
+
+                <?php if ( $can_register ) : ?>
+                    <div class="anchor-webinar-gate__panel" data-awpanel="register">
+                        <form class="anchor-webinar-register__form" method="post" novalidate action="<?php echo \esc_url( \wp_registration_url() ); ?>">
+                            <div class="anchor-webinar-login__field">
+                                <label for="awr-name"><?php echo \esc_html__( 'Full Name', 'anchor-schema' ); ?></label>
+                                <input type="text" id="awr-name" name="name" autocomplete="name" />
+                            </div>
+                            <div class="anchor-webinar-login__field">
+                                <label for="awr-email"><?php echo \esc_html__( 'Email', 'anchor-schema' ); ?></label>
+                                <input type="email" id="awr-email" name="email" autocomplete="email" required />
+                            </div>
+                            <div class="anchor-webinar-login__field">
+                                <label for="awr-pass"><?php echo \esc_html__( 'Create a Password', 'anchor-schema' ); ?></label>
+                                <input type="password" id="awr-pass" name="pwd" autocomplete="new-password" required />
+                            </div>
+                            <div class="anchor-webinar-register__error" role="alert" hidden></div>
+                            <button type="submit" class="anchor-webinar-register__submit"><?php echo \esc_html__( 'Create Account &amp; Watch', 'anchor-schema' ); ?></button>
+                            <p class="anchor-webinar-login__register">
+                                <?php echo \esc_html__( 'Already have an account?', 'anchor-schema' ); ?>
+                                <a href="#" data-awtab-link="login"><?php echo \esc_html__( 'Sign in', 'anchor-schema' ); ?></a>
+                            </p>
+                        </form>
                     </div>
-                    <div class="anchor-webinar-login__row">
-                        <label class="anchor-webinar-login__remember">
-                            <input type="checkbox" name="rememberme" value="1" /> <?php echo \esc_html__( 'Remember me', 'anchor-schema' ); ?>
-                        </label>
-                        <a class="anchor-webinar-login__lost" href="<?php echo \esc_url( $lost_url ); ?>"><?php echo \esc_html__( 'Lost your password?', 'anchor-schema' ); ?></a>
-                    </div>
-                    <div class="anchor-webinar-login__error" role="alert" hidden></div>
-                    <button type="submit" class="anchor-webinar-login__submit"><?php echo \esc_html__( 'Sign In', 'anchor-schema' ); ?></button>
-                    <?php if ( $register_url ) : ?>
-                        <p class="anchor-webinar-login__register">
-                            <?php echo \esc_html__( 'Don’t have an account?', 'anchor-schema' ); ?>
-                            <a href="<?php echo \esc_url( $register_url ); ?>"><?php echo \esc_html__( 'Register', 'anchor-schema' ); ?></a>
-                        </p>
-                    <?php endif; ?>
-                </form>
+                <?php endif; ?>
             </div>
         </div>
         <?php
@@ -748,7 +873,7 @@ class Module {
 
     public function frontend_assets() {
         if ( \is_singular( self::CPT ) || \is_post_type_archive( self::CPT ) ) {
-            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.0.0' );
+            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.1.0' );
         }
 
         if ( ! \is_singular( self::CPT ) ) {
@@ -760,7 +885,7 @@ class Module {
         // Blocked visitors: load only what the gate needs, never the player/Vimeo ID.
         if ( ! $this->can_user_access( $post_id ) ) {
             if ( ! \is_user_logged_in() ) {
-                \wp_enqueue_script( 'anchor-webinar-login', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/login.js' ), [], '1.0.0', true );
+                \wp_enqueue_script( 'anchor-webinar-login', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/login.js' ), [], '1.1.0', true );
                 \wp_localize_script( 'anchor-webinar-login', 'ANCHOR_WEBINAR_LOGIN', [
                     'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
                     'nonce'   => \wp_create_nonce( 'anchor_webinar_login' ),
@@ -825,7 +950,7 @@ class Module {
             return '';
         }
 
-        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.0.0' );
+        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.1.0' );
 
         $embed_url = 'https://player.vimeo.com/video/' . \rawurlencode( $vimeo_id ) . '?dnt=1';
 

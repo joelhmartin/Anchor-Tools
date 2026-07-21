@@ -388,6 +388,21 @@
     cursor: default;
 }
 
+/* Turnstile widget spacing */
+.anchor-webinar-register__captcha {
+    margin: 0 0 1rem;
+}
+
+/* Honeypot: off-screen for humans (not display:none, so bots still fill it) */
+.anchor-webinar-hp {
+    position: absolute !important;
+    left: -9999px !important;
+    top: auto;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+}
+
 /* Locked placeholder shown in archives/search/feeds for gated webinars */
 .anchor-webinar-locked {
     margin: .5em 0;

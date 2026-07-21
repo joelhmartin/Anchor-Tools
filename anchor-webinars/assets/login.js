@@ -10,6 +10,38 @@
     var gate = document.querySelector('.anchor-webinar-gate--login');
     if (!gate) { return; }
 
+    // --- Cloudflare Turnstile (register form) ---
+    // Rendered explicitly rather than via the auto-render class, because the
+    // register panel starts hidden (display:none) and Turnstile's implicit
+    // render is unreliable inside hidden containers.
+    var captchaEl = gate.querySelector('.anchor-webinar-register__captcha');
+    var captchaId = null;
+
+    function renderCaptcha() {
+        if (!captchaEl || captchaId !== null || !window.turnstile) { return; }
+        try {
+            captchaId = window.turnstile.render(captchaEl, {
+                sitekey: captchaEl.getAttribute('data-sitekey')
+            });
+        } catch (e) { /* not ready yet */ }
+    }
+
+    function resetCaptcha() {
+        // A Turnstile token is single-use; reset the widget after a failure.
+        if (captchaId !== null && window.turnstile) {
+            try { window.turnstile.reset(captchaId); } catch (e) {}
+        }
+    }
+
+    if (captchaEl) {
+        renderCaptcha();
+        // api.js may still be loading; retry shortly and once more if needed.
+        if (captchaId === null) {
+            setTimeout(renderCaptcha, 400);
+            setTimeout(renderCaptcha, 1200);
+        }
+    }
+
     // --- Tab switching (Sign In / Register) ---
     var tabs = gate.querySelectorAll('[data-awtab]');
     var panels = gate.querySelectorAll('[data-awpanel]');
@@ -23,6 +55,7 @@
         Array.prototype.forEach.call(panels, function (p) {
             p.classList.toggle('is-active', p.getAttribute('data-awpanel') === name);
         });
+        if (name === 'register') { renderCaptcha(); }
     }
 
     Array.prototype.forEach.call(tabs, function (t) {
@@ -89,10 +122,12 @@
                         return;
                     }
                     setBusy(false);
+                    if (opts.resetCaptcha) { resetCaptcha(); }
                     showError((res && res.data && res.data.message) || opts.failMsg);
                 })
                 .catch(function () {
                     setBusy(false);
+                    if (opts.resetCaptcha) { resetCaptcha(); }
                     showError('Something went wrong. Please try again.');
                 });
         });
@@ -109,10 +144,11 @@
 
     wire(gate.querySelector('.anchor-webinar-register__form'), {
         action: 'anchor_webinar_register',
-        fields: ['name', 'email', 'pwd'],
+        fields: ['name', 'email', 'pwd', 'website', 'cf-turnstile-response'],
         errorSel: '.anchor-webinar-register__error',
         submitSel: '.anchor-webinar-register__submit',
         busyLabel: 'Creating account…',
-        failMsg: 'Registration failed. Please try again.'
+        failMsg: 'Registration failed. Please try again.',
+        resetCaptcha: true
     });
 })();

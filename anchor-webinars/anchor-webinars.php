@@ -297,22 +297,36 @@ class Module {
         if ( ! $post || $post->post_type !== self::CPT ) {
             return $content;
         }
+
+        // On the webinar's OWN page the interactive gate replaces the body, and
+        // the passive notice must NEVER appear here. Page builders (Divi) run
+        // the_content several times per request — sometimes for a secondary post
+        // context — so we key the decision off the QUERIED webinar and blank any
+        // pass that isn't the one gate render.
+        if ( \is_singular( self::CPT ) ) {
+            $queried_id = (int) \get_queried_object_id();
+
+            if ( $this->can_user_access( $queried_id ) ) {
+                // Authorized: only the queried webinar's own body passes through.
+                return ( (int) $post->ID === $queried_id ) ? $content : '';
+            }
+
+            if ( $this->gate_rendered ) {
+                return ''; // Gate already shown once — swallow duplicate passes.
+            }
+            $this->gate_rendered = true;
+
+            // Strip newlines: wpautop still runs on the_content under a page
+            // builder and would otherwise inject <p>/<br> into the form markup
+            // and wreck its layout. A single-line, block-level string is left
+            // untouched by wpautop.
+            return \str_replace( [ "\r", "\n" ], '', $this->render_access_gate( $queried_id ) );
+        }
+
+        // Archives, search, REST, feeds, embeds: lightweight notice only.
         if ( $this->can_user_access( $post->ID ) ) {
             return $content;
         }
-
-        // Only the main webinar on its own page gets the interactive gate.
-        if ( \is_singular( self::CPT ) && (int) $post->ID === (int) \get_queried_object_id() ) {
-            // Builders (e.g. Divi) run the_content more than once per request;
-            // render the gate on the first pass and blank the duplicates so the
-            // form appears exactly once.
-            if ( $this->gate_rendered ) {
-                return '';
-            }
-            $this->gate_rendered = true;
-            return $this->render_access_gate( $post->ID );
-        }
-
         return $this->locked_notice();
     }
 
@@ -577,13 +591,15 @@ class Module {
     }
 
     private function render_login_form( $post_id ) {
+        $opts          = $this->get_settings();
         $can_register  = $this->registration_enabled();
-        $turnstile_key = ( $can_register && $this->turnstile_configured() ) ? $this->get_settings()['turnstile_site_key'] : '';
+        $turnstile_key = ( $can_register && $this->turnstile_configured() ) ? $opts['turnstile_site_key'] : '';
         $lost_url      = \wp_lostpassword_url( \get_permalink( $post_id ) );
         $permalink     = \get_permalink( $post_id );
+        $style         = \sprintf( '--awg-accent:%s;--awg-accent-contrast:%s;', $opts['accent_color'], $opts['accent_text_color'] );
         \ob_start();
         ?>
-        <div class="anchor-webinar-gate anchor-webinar-gate--login">
+        <div class="anchor-webinar-gate anchor-webinar-gate--login" style="<?php echo \esc_attr( $style ); ?>">
             <div class="anchor-webinar-login">
                 <h2 class="anchor-webinar-login__title"><?php echo \esc_html__( 'Members-only webinar', 'anchor-schema' ); ?></h2>
                 <p class="anchor-webinar-login__subtitle">
@@ -827,6 +843,30 @@ class Module {
                 \esc_attr( $opts['turnstile_secret'] )
             );
         }, 'anchor_webinars_settings', 'anchor_webinars_registration' );
+
+        \add_settings_section( 'anchor_webinars_appearance', \__( 'Gate Appearance', 'anchor-schema' ), function() {
+            echo '<p>' . \esc_html__( 'Match the Sign In / Register gate to your brand. These colors apply to the buttons, active tab, links and focus states.', 'anchor-schema' ) . '</p>';
+        }, 'anchor_webinars_settings' );
+
+        \add_settings_field( 'accent_color', \__( 'Accent Color', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            printf(
+                '<input type="color" name="%1$s[accent_color]" value="%2$s" /> <code>%2$s</code><p class="description">%3$s</p>',
+                \esc_attr( self::OPTION_KEY ),
+                \esc_attr( $opts['accent_color'] ),
+                \esc_html__( 'Buttons, active tab, links and focus ring.', 'anchor-schema' )
+            );
+        }, 'anchor_webinars_settings', 'anchor_webinars_appearance' );
+
+        \add_settings_field( 'accent_text_color', \__( 'Button Text Color', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            printf(
+                '<input type="color" name="%1$s[accent_text_color]" value="%2$s" /> <code>%2$s</code><p class="description">%3$s</p>',
+                \esc_attr( self::OPTION_KEY ),
+                \esc_attr( $opts['accent_text_color'] ),
+                \esc_html__( 'Text/label color shown on top of the accent buttons.', 'anchor-schema' )
+            );
+        }, 'anchor_webinars_settings', 'anchor_webinars_appearance' );
     }
 
     public function sanitize_settings( $input ) {
@@ -835,7 +875,15 @@ class Module {
             'allow_registration' => empty( $input['allow_registration'] ) ? 0 : 1,
             'turnstile_site_key' => \sanitize_text_field( $input['turnstile_site_key'] ?? '' ),
             'turnstile_secret'   => \sanitize_text_field( $input['turnstile_secret'] ?? '' ),
+            'accent_color'       => $this->sanitize_hex( $input['accent_color'] ?? '', '#2563eb' ),
+            'accent_text_color'  => $this->sanitize_hex( $input['accent_text_color'] ?? '', '#ffffff' ),
         ];
+    }
+
+    /** Validate a hex color; fall back to $default when empty/invalid. */
+    private function sanitize_hex( $value, $default ) {
+        $clean = \sanitize_hex_color( $value );
+        return $clean ? $clean : $default;
     }
 
     public function render_tab_content() {
@@ -945,7 +993,7 @@ class Module {
 
     public function frontend_assets() {
         if ( \is_singular( self::CPT ) || \is_post_type_archive( self::CPT ) ) {
-            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.2.0' );
+            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.3.0' );
         }
 
         if ( ! \is_singular( self::CPT ) ) {
@@ -1028,7 +1076,7 @@ class Module {
             return '';
         }
 
-        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.2.0' );
+        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.3.0' );
 
         $embed_url = 'https://player.vimeo.com/video/' . \rawurlencode( $vimeo_id ) . '?dnt=1';
 
@@ -1194,6 +1242,8 @@ class Module {
             'allow_registration' => 1,
             'turnstile_site_key' => '',
             'turnstile_secret'   => '',
+            'accent_color'       => '#2563eb',
+            'accent_text_color'  => '#ffffff',
         ];
         $settings = \get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $settings ) ) {

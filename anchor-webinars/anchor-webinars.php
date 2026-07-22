@@ -510,9 +510,12 @@ class Module {
         if ( \strlen( $pass ) < 6 ) {
             \wp_send_json_error( [ 'message' => \__( 'Please choose a password of at least 6 characters.', 'anchor-schema' ) ] );
         }
-        if ( \email_exists( $email ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'An account with that email already exists. Please sign in instead.', 'anchor-schema' ) ] );
-        }
+
+        // Note: we deliberately do NOT check email_exists() up front and report
+        // it separately — that would let the form be used to probe which emails
+        // are registered. wp_insert_user() below rejects a duplicate email and
+        // we return the same neutral message as any other creation failure, so
+        // the response can't distinguish "already registered" from other errors.
 
         // Derive a unique username from the email's local part.
         $base = \sanitize_user( \current( \explode( '@', $email ) ), true );
@@ -536,7 +539,9 @@ class Module {
         ] );
 
         if ( \is_wp_error( $user_id ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'We couldn’t create your account. Please try again.', 'anchor-schema' ) ] );
+            // Neutral, non-enumerating message — covers a duplicate email as well
+            // as any other failure without revealing which occurred.
+            \wp_send_json_error( [ 'message' => \__( 'We couldn’t complete your registration. If you already have an account, please sign in instead.', 'anchor-schema' ) ] );
         }
 
         // Notify the site admin of the new registration (the visitor chose their

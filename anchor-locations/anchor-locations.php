@@ -347,7 +347,7 @@ class Module {
                 [ '[anchor_service_area_directory]', '—', \__( 'The full published location hierarchy as nested lists.', 'anchor-schema' ) ],
             ],
             \__( 'Map', 'anchor-schema' ) => [
-                [ '[anchor_location_map]', 'types, parent, zoom, height, center, service, cluster, filters', \__( 'A Google Map with a pin per located location (info windows link to the page and its services; draws boundary polygons where set). Requires the Google Maps API key in the main Anchor Tools settings.', 'anchor-schema' ) ],
+                [ '[anchor_location_map]', 'types, parent, zoom, height, center, service, cluster, filters, focus, iconsize', \__( 'A Google Map with a pin per located location (info windows link to the page and its services; draws boundary polygons where set). On a location/service page it frames the current area by default (override with focus="none" or focus="123"); iconsize caps custom pin images (px, default 40). Requires the Google Maps API key in the main Anchor Tools settings.', 'anchor-schema' ) ],
             ],
             \__( 'Content libraries', 'anchor-schema' ) => [
                 [ '[anchor_local_projects]', 'id, service, limit', \__( 'Most-relevant Projects for this location/service (default limit 6).', 'anchor-schema' ) ],
@@ -781,7 +781,7 @@ class Module {
     const MARKERCLUSTERER_URL  = 'https://cdn.jsdelivr.net/npm/@googlemaps/markerclusterer@2.5.3/dist/index.min.js';
 
     public function sc_map( $atts ) {
-        $a = \shortcode_atts( [ 'types' => '', 'parent' => 0, 'zoom' => '', 'height' => '480', 'center' => '', 'cluster' => '', 'service' => '', 'filters' => '' ], $atts, 'anchor_location_map' );
+        $a = \shortcode_atts( [ 'types' => '', 'parent' => 0, 'zoom' => '', 'height' => '480', 'center' => '', 'cluster' => '', 'service' => '', 'filters' => '', 'focus' => '', 'iconsize' => '' ], $atts, 'anchor_location_map' );
         $args = [];
         if ( $a['types'] !== '' ) { $args['types'] = \array_map( 'trim', \explode( ',', $a['types'] ) ); }
         if ( (int) $a['parent'] ) { $args['parent'] = (int) $a['parent']; }
@@ -798,16 +798,70 @@ class Module {
         }
 
         $cfg = [
-            'markers' => $markers,
-            'zoom'    => $a['zoom'] !== '' ? (int) $a['zoom'] : (int) ( $s['map_zoom'] ?? 8 ),
-            'center'  => $a['center'] !== '' ? $a['center'] : ( ( $s['map_center'] ?? '' ) ?: '' ),
-            'cluster' => $cluster,
-            'filters' => $filters,
+            'markers'   => $markers,
+            'zoom'      => $a['zoom'] !== '' ? (int) $a['zoom'] : (int) ( $s['map_zoom'] ?? 8 ),
+            'center'    => $a['center'] !== '' ? $a['center'] : ( ( $s['map_center'] ?? '' ) ?: '' ),
+            'cluster'   => $cluster,
+            'filters'   => $filters,
+            'focus'     => $this->resolve_map_focus( $a['focus'] ),
+            'icon_size' => $this->map_icon_size( $a['iconsize'] ),
         ];
         $this->enqueue_map_assets( $cluster );
         $uid = 'al-map-' . ( ++self::$map_seq );
         $json = \esc_attr( \wp_json_encode( $cfg ) );
         return '<div id="' . $uid . '" class="al-map" style="height:' . (int) $a['height'] . 'px" data-al-map="' . $json . '"></div>';
+    }
+
+    /**
+     * Resolve the viewport-focus location for a map — the area the map should
+     * frame. Returns [ lat, lng, zoom, boundary? ] or null for "frame all markers".
+     *
+     * Default (empty `focus` attr): on a singular location/service page, focus the
+     * current page's location (a service page follows its linked location via
+     * resolve_location_id()), so the map frames the area the page is about instead
+     * of the whole marker set. `focus="none"` opts out; `focus="123"` targets a
+     * specific location by ID (handy for a homepage/overview map).
+     *
+     * Zoom is derived from the location's type (a state frames wider than a city);
+     * when the location has a boundary polygon the client fits to that instead.
+     */
+    private function resolve_map_focus( $att ) {
+        $att = \trim( (string) $att );
+        $id  = 0;
+        if ( $att === '' ) {
+            if ( \is_singular( [ self::CPT_LOCATION, self::CPT_SERVICE ] ) ) { $id = $this->resolve_location_id( [] ); }
+        } elseif ( \is_numeric( $att ) ) {
+            $id = (int) $att;
+        } elseif ( \in_array( \strtolower( $att ), [ 'current', 'auto', '1', 'true', 'yes' ], true ) ) {
+            $id = $this->resolve_location_id( [] );
+        }
+        // 'none'/'0'/'false'/unrecognized => 0 (frame all markers).
+        if ( ! $id || \get_post_type( $id ) !== self::CPT_LOCATION ) { return null; }
+
+        $lat = \get_post_meta( $id, 'al_lat', true );
+        $lng = \get_post_meta( $id, 'al_lng', true );
+        if ( $lat === '' || $lng === '' ) { return null; }
+
+        $type  = (string) \get_post_meta( $id, 'al_type', true );
+        $zooms = [ 'state' => 7, 'region' => 9, 'county' => 9, 'city' => 11, 'township' => 11, 'borough' => 11, 'neighborhood' => 13 ];
+        $focus = [ 'lat' => (float) $lat, 'lng' => (float) $lng, 'zoom' => $zooms[ $type ] ?? 10 ];
+
+        $b = \get_post_meta( $id, 'al_boundary', true );
+        if ( \is_string( $b ) && \trim( $b ) !== '' ) {
+            $dec = \json_decode( $b, true );
+            if ( $dec !== null && \json_last_error() === JSON_ERROR_NONE ) { $focus['boundary'] = $dec; }
+        }
+        return $focus;
+    }
+
+    /**
+     * Clamp the marker-icon max dimension (px). Empty/out-of-range => 40, a sane
+     * default that keeps a brand pin from dominating the map (custom marker images
+     * are otherwise rendered at their full natural size).
+     */
+    private function map_icon_size( $att ) {
+        $n = (int) $att;
+        return ( $n >= 8 && $n <= 200 ) ? $n : 40;
     }
 
     private $cluster_enqueued = false;

@@ -21,6 +21,37 @@
     return '';
   }
 
+  // Scale a custom marker image down to a max dimension (px), preserving aspect
+  // ratio. A bare icon URL renders at the image's natural size — often huge and
+  // overlapping — so we set a scaledSize. The natural size is unknown until the
+  // image loads, so we start from a square guess and refine once it's available.
+  function fitIcon(marker, url, max) {
+    var img = new Image();
+    img.onload = function () {
+      var w = img.naturalWidth, h = img.naturalHeight;
+      if (!w || !h) { return; }
+      var scale = Math.min(1, max / Math.max(w, h));
+      var sw = Math.max(1, Math.round(w * scale)), sh = Math.max(1, Math.round(h * scale));
+      marker.setIcon({ url: url, scaledSize: new google.maps.Size(sw, sh), anchor: new google.maps.Point(sw / 2, sh / 2) });
+    };
+    img.src = url;
+  }
+
+  // Recursively visit every [lng, lat] pair in a GeoJSON coordinates array.
+  function walkCoords(c, cb) {
+    if (!Array.isArray(c)) { return; }
+    if (typeof c[0] === 'number' && typeof c[1] === 'number') { cb(c[0], c[1]); return; }
+    for (var i = 0; i < c.length; i++) { walkCoords(c[i], cb); }
+  }
+
+  // Extend a LatLngBounds to cover any GeoJSON geometry/feature/collection.
+  function extendBounds(bounds, geo) {
+    if (!geo) { return; }
+    if (geo.type === 'FeatureCollection') { (geo.features || []).forEach(function (f) { extendBounds(bounds, f); }); return; }
+    var coords = geo.type === 'Feature' ? (geo.geometry && geo.geometry.coordinates) : geo.coordinates;
+    walkCoords(coords, function (lng, lat) { if (isFinite(lat) && isFinite(lng)) { bounds.extend({ lat: lat, lng: lng }); } });
+  }
+
   // Normalize any GeoJSON value into a FeatureCollection google.maps.Data accepts,
   // carrying the location url so the click handler can navigate.
   function toFeatureCollection(boundary, url) {
@@ -159,22 +190,31 @@
     // A filter panel is inserted before the map element; give them a shared wrapper
     // so layout stays predictable regardless of theme.
     var mapCfg = cfg || {};
+    var focus = mapCfg.focus;
     var center = { lat: 39.5, lng: -98.35 };
     if (mapCfg.center && mapCfg.center.indexOf(',') > -1) {
       var c = mapCfg.center.split(','); center = { lat: parseFloat(c[0]), lng: parseFloat(c[1]) };
     } else if (mapCfg.markers && mapCfg.markers.length) {
       center = { lat: mapCfg.markers[0].lat, lng: mapCfg.markers[0].lng };
     }
+    // A focus location (the area the page is about) overrides both, so the map
+    // opens framed on it rather than on the whole marker set.
+    var hasFocus = focus && isFinite(focus.lat) && isFinite(focus.lng);
+    if (hasFocus) { center = { lat: focus.lat, lng: focus.lng }; }
 
-    var map = new google.maps.Map(el, { center: center, zoom: mapCfg.zoom || 8 });
+    var map = new google.maps.Map(el, { center: center, zoom: hasFocus ? (focus.zoom || mapCfg.zoom || 11) : (mapCfg.zoom || 8) });
     var info = new google.maps.InfoWindow();
     var bounds = new google.maps.LatLngBounds();
 
+    var iconMax = mapCfg.icon_size || 40;
     var records = []; // { marker, data }
     (mapCfg.markers || []).forEach(function (m) {
       var opts = { position: { lat: m.lat, lng: m.lng }, title: m.title };
-      if (m.icon) { opts.icon = m.icon; }
+      // Start from a square-capped icon (no giant flash before the image loads),
+      // then fitIcon() refines it to the true aspect ratio once dimensions are known.
+      if (m.icon) { opts.icon = { url: m.icon, scaledSize: new google.maps.Size(iconMax, iconMax), anchor: new google.maps.Point(iconMax / 2, iconMax / 2) }; }
       var marker = new google.maps.Marker(opts);
+      if (m.icon) { fitIcon(marker, m.icon, iconMax); }
       bounds.extend(opts.position);
       marker.addListener('click', function () {
         var html = '<div class="al-map-popup"><h3><a href="' + escUrl(m.url) + '">' + esc(m.title) + '</a></h3>';
@@ -220,7 +260,21 @@
       el.parentNode.insertBefore(built.el, el);
     }
 
-    if (records.length > 1) { map.fitBounds(bounds); }
+    // Framing: a focus location wins — fit its boundary polygon when it has one,
+    // else stay centered on it at the type-derived zoom. With no focus, fall back
+    // to framing every marker (the original global-map behavior).
+    if (hasFocus) {
+      var fb = new google.maps.LatLngBounds();
+      if (focus.boundary) { extendBounds(fb, focus.boundary); }
+      if (!fb.isEmpty()) {
+        map.fitBounds(fb);
+      } else {
+        map.setCenter({ lat: focus.lat, lng: focus.lng });
+        map.setZoom(focus.zoom || mapCfg.zoom || 11);
+      }
+    } else if (records.length > 1) {
+      map.fitBounds(bounds);
+    }
   }
 
   function init() { document.querySelectorAll('.al-map[data-al-map]').forEach(initOne); }

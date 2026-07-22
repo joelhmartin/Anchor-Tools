@@ -119,18 +119,8 @@ class IO {
 		switch ( $tier ) {
 			case 'code':
 				return (string) $value;
-			case 'textarea':
-				return \sanitize_textarea_field( (string) $value );
-			case 'url':
-				return \esc_url_raw( (string) $value );
 			case 'bool':
 				return ( (string) $value === '1' ) ? '1' : '';
-			case 'int':
-				$r = (int) $value;
-				if ( $key === 'al_rating' ) { return ( $r > 5 ) ? 5 : ( ( $r < 1 ) ? 0 : $r ); } // mirror editor clamp (>5 -> 5)
-				return $r;
-			case 'kses':
-				return \wp_kses_post( (string) $value );
 			case 'text':
 			default:
 				return \sanitize_text_field( (string) $value );

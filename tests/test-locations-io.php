@@ -2,10 +2,10 @@
 /**
  * Tests for anchor-locations Phase 6: Import / Export (\Anchor\Locations\IO).
  *
- * Covers the JSON round-trip (hierarchy + meta + service-term linkage +
- * al_location_ids reconstructed by slug), idempotency, dry-run writing nothing,
- * CSV formula-injection guard, the never-delete invariant, malformed-row
- * isolation, and CSV scalar round-trip.
+ * Covers the JSON round-trip (hierarchy + location/service meta incl. the
+ * content-section keys + service-term linkage), idempotency, dry-run writing
+ * nothing, CSV formula-injection guard, the never-delete invariant,
+ * upsert-by-slug, malformed-row isolation, and CSV scalar round-trip.
  *
  * @package Anchor\Tests
  */

@@ -135,7 +135,7 @@ class Dashboard {
 	/** Front-end URL for a service page, or '' when it can't be resolved. */
 	private function view_url( int $post_id ): string {
 		// Reuse the already-constructed Module singleton — building a new Module
-		// here re-registers ~20 hooks (plus Libraries/SEO/Dashboard) per matrix cell.
+		// here re-registers ~20 hooks per matrix cell.
 		$mod = Module::instance();
 		if ( ! $mod ) { return ''; }
 		$url = $mod->service_page_url( $post_id );

@@ -61,7 +61,7 @@ class Module {
         // load) instead of fataling the whole plugin, and instantiation is
         // gated on the class actually existing after the require.
         //   Phase 2  Sections   — free-form per-page Monaco HTML sections (FAQ/testimonials/projects).
-        //   Phase 5  Dashboard  — read-only Coverage Matrix + SEO Reports (navigation only).
+        //   Phase 5  Dashboard  — read-only Coverage Matrix (navigation only).
         //   Phase 6  IO         — JSON/CSV import/export (upsert-by-slug, never deletes).
         //   Phase 8  Integrity  — data-integrity nudges + versioned cache invalidation.
         $phases = [

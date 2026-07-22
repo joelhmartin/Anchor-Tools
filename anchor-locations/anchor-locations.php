@@ -63,13 +63,11 @@ class Module {
         //   Phase 2  Sections   — free-form per-page Monaco HTML sections (FAQ/testimonials/projects).
         //   Phase 5  Dashboard  — read-only Coverage Matrix + SEO Reports (navigation only).
         //   Phase 6  IO         — JSON/CSV import/export (upsert-by-slug, never deletes).
-        //   Phase 7  Analytics  — Search Console + GA4 reporting (dormant until a key is set).
         //   Phase 8  Integrity  — data-integrity nudges + versioned cache invalidation.
         $phases = [
             'class-sections.php'  => __NAMESPACE__ . '\\Sections',
             'class-dashboard.php' => __NAMESPACE__ . '\\Dashboard',
             'class-io.php'        => __NAMESPACE__ . '\\IO',
-            'class-analytics.php' => __NAMESPACE__ . '\\Analytics',
             'class-integrity.php' => __NAMESPACE__ . '\\Integrity',
         ];
         foreach ( $phases as $file => $class ) {

@@ -345,10 +345,10 @@ class Module {
             \__( 'Map', 'anchor-schema' ) => [
                 [ '[anchor_location_map]', 'types, parent, zoom, height, center, service, cluster, filters, focus, iconsize', \__( 'A Google Map with a pin per located location (info windows link to the page and its services; draws boundary polygons where set). On a location/service page it frames the current area by default (override with focus="none" or focus="123"); iconsize caps custom pin images (px, default 40). Requires the Google Maps API key in the main Anchor Tools settings.', 'anchor-schema' ) ],
             ],
-            \__( 'Content libraries', 'anchor-schema' ) => [
-                [ '[anchor_local_projects]', 'id, service, limit', \__( 'Most-relevant Projects for this location/service (default limit 6).', 'anchor-schema' ) ],
-                [ '[anchor_local_testimonials]', 'id, service, limit', \__( 'Most-relevant Testimonials (default limit 3); rated ones also emit Review schema.', 'anchor-schema' ) ],
-                [ '[anchor_local_faqs]', 'id, service, limit', \__( 'Most-relevant FAQs (default limit 10); also emit FAQPage schema.', 'anchor-schema' ) ],
+            \__( 'Page sections', 'anchor-schema' ) => [
+                [ '[anchor_local_faqs]', 'id', \__( 'Renders this page\'s FAQ section (the FAQ tab of Content Sections). id targets another page.', 'anchor-schema' ) ],
+                [ '[anchor_local_testimonials]', 'id', \__( 'Renders this page\'s Testimonials section. id targets another page.', 'anchor-schema' ) ],
+                [ '[anchor_local_projects]', 'id', \__( 'Renders this page\'s Projects section. id targets another page.', 'anchor-schema' ) ],
             ],
         ];
 

@@ -25,6 +25,7 @@ class Anchor_Universal_Popups_Module {
         add_action('save_post', [$this, 'save_meta']);
         add_action('admin_enqueue_scripts', [$this, 'admin_assets']);
         add_action('wp_enqueue_scripts', [$this, 'frontend_assets']);
+        add_filter('rocket_rucss_safelist', [$this, 'rucss_safelist']);
         add_shortcode('up_popup', [$this, 'shortcode_render']);
         add_shortcode('anchor_popup', [$this, 'shortcode_render']);
         add_filter('manage_' . self::CPT . '_posts_columns', [$this, 'admin_columns']);
@@ -1164,6 +1165,39 @@ class Anchor_Universal_Popups_Module {
             wp_enqueue_style('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.css'), [], (string) filemtime($adir . 'admin.css'));
             wp_enqueue_script('up-admin', Anchor_Asset_Loader::url('anchor-universal-popups/assets/admin.js'), ['jquery','anchor-monaco','anchor-preview'], (string) filemtime($adir . 'admin.js'), true);
         }
+    }
+
+    /**
+     * Protect the popup CSS from WP Rocket's "Remove Unused CSS" (RUCSS).
+     *
+     * The popup overlay (backdrop, dialog, content-wrap, fly-in/drawer/theater
+     * variants) is injected into the DOM by frontend.js at runtime, so it never
+     * appears in the page's static HTML. RUCSS scans that static HTML, concludes
+     * these selectors are "unused", and strips them from the page's optimized CSS
+     * — on a per-URL basis. When that happens the popup loses its variant styling
+     * and falls back to the base .up-modal rules (centered box + dark backdrop),
+     * i.e. it renders as a modal even when configured as a fly-in. That is why the
+     * fly-in "randomly" becomes a modal on some pages but not others.
+     *
+     * Safelisting these prefixes tells RUCSS to always keep them. Entries are
+     * substring-matched against selectors, so '.up-modal' covers .up-modal,
+     * .up-modal__*, and every .up-modal.up-style-* combination.
+     *
+     * @param array $safelist Existing RUCSS safelist.
+     * @return array
+     */
+    public function rucss_safelist($safelist){
+        $keep = [
+            '.up-modal',        // backdrop, dialog, close, frame + all .up-style-* combos
+            '.up-style-',        // theater / drawer / fly-in / fullscreen variant rules
+            '.up-content-wrap',  // HTML content container
+            '.up-content__inner',
+            '.up-video-after',   // content region under a video
+        ];
+        if (!is_array($safelist)) {
+            $safelist = [];
+        }
+        return array_values(array_unique(array_merge($safelist, $keep)));
     }
 
     public function frontend_assets(){

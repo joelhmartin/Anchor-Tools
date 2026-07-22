@@ -252,20 +252,30 @@
   max-height: 80vh;
   height: auto;
   margin: 0;
-  border-radius: 12px;
-  overflow: hidden;
-  background: #fff;
-  color: #111;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.08);
   transform: translateY(calc(100% + 40px));
   animation: up-flyin-up .35s cubic-bezier(.22, .61, .36, 1) forwards;
   pointer-events: auto;
 }
-/* Video dialog: keep dark bg for the player area */
+/* Video dialog keeps the card chrome (rounded, shadowed) + dark player bg */
 .up-modal.up-style-flyin-bottom .up-modal__dialog,
 .up-modal.up-style-flyin-bottom-left .up-modal__dialog,
 .up-modal.up-style-flyin-bottom-right .up-modal__dialog {
+  border-radius: 12px;
+  overflow: hidden;
   background: #000;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+/* HTML container: an empty, unstyled div — the content decides its own look.
+   No bg, no padding, no border-radius, no shadow. overflow visible so the
+   close button can hang off the corner. */
+.up-modal.up-style-flyin-bottom .up-content-wrap,
+.up-modal.up-style-flyin-bottom-left .up-content-wrap,
+.up-modal.up-style-flyin-bottom-right .up-content-wrap {
+  background: transparent;
+  color: inherit;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
 }
 
 /* ── Fly-in (bottom center) ── */
@@ -302,13 +312,30 @@
 .up-modal.up-style-flyin-bottom-left .up-content__inner,
 .up-modal.up-style-flyin-bottom-right .up-content__inner {
   max-height: calc(80vh - 48px);
+  padding: 0;
 }
 
-/* Fly-in close button: dark on content-wrap since bg is white */
+/* Fly-in close button: a circle that hangs on the top-right corner of the
+   content — absolutely positioned, nudged 50% out on both axes, locked to a
+   1:1 aspect ratio, fully rounded, with its own default background. */
 .up-modal.up-style-flyin-bottom .up-content-wrap .up-modal__close,
 .up-modal.up-style-flyin-bottom-left .up-content-wrap .up-modal__close,
 .up-modal.up-style-flyin-bottom-right .up-content-wrap .up-modal__close {
-  color: #333;
+  top: 0;
+  right: 0;
+  transform: translate(50%, -50%);
+  width: 30px;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  line-height: 1;
+  background: #111;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   text-shadow: none;
 }
 

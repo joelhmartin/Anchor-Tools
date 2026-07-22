@@ -15,7 +15,11 @@
   document.addEventListener('anchor-close-popups', function(e) {
     var except = e.detail && e.detail.except;
     allModals.forEach(function(m) {
-      if (m !== except && !m.hidden) {
+      // Fly-ins are non-exclusive: they have no backdrop and are designed to
+      // coexist with other popups, so they are never auto-closed just because
+      // another popup opened. Only close exclusive popups (modal/theater/
+      // drawer/fullscreen).
+      if (m !== except && !m.hidden && m._exclusive !== false) {
         closeModal(m);
       }
     });
@@ -481,6 +485,9 @@
     }
 
     var modal = buildModalShell(isVideo, popupStyle);
+    // Fly-ins coexist with other popups; every other style takes over the
+    // screen and is mutually exclusive. Drives the close-coordination above.
+    modal._exclusive = (popupStyle.indexOf('flyin') !== 0);
     if (popupStyle === 'modal' && sn.modal_max_width) {
       modal.style.setProperty('--up-modal-max-width', sn.modal_max_width);
     }
@@ -525,8 +532,9 @@
       // window boundary, and delay_ms timers / scroll observers fire long after attach().
       if(!withinSchedule(sn)) return;
 
-      // Close any other open popups first
-      closeAllPopups(modal);
+      // Exclusive popups take over the screen, so opening one closes the
+      // others. Fly-ins are non-exclusive and leave existing popups alone.
+      if (modal._exclusive) closeAllPopups(modal);
 
       // For "Click on class", treat the popup like an explicit user action and
       // avoid frequency gating that can make clicks appear "broken".

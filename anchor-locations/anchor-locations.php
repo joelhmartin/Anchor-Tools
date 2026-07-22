@@ -59,14 +59,14 @@ class Module {
         // missing file degrades that ONE phase gracefully (it simply doesn't
         // load) instead of fataling the whole plugin, and instantiation is
         // gated on the class actually existing after the require.
-        //   Phase 2  Libraries — reusable content libraries (projects/testimonials/FAQs).
+        //   Phase 2  Sections   — free-form per-page Monaco HTML sections (FAQ/testimonials/projects).
         //   Phase 4  SEO        — per-page SEO controls, robots, SEO-plugin integration, [anchor_h1].
         //   Phase 5  Dashboard  — read-only Coverage Matrix + SEO Reports (navigation only).
         //   Phase 6  IO         — JSON/CSV import/export (upsert-by-slug, never deletes).
         //   Phase 7  Analytics  — Search Console + GA4 reporting (dormant until a key is set).
         //   Phase 8  Integrity  — data-integrity nudges + versioned cache invalidation.
         $phases = [
-            'class-libraries.php' => __NAMESPACE__ . '\\Libraries',
+            'class-sections.php'  => __NAMESPACE__ . '\\Sections',
             'class-seo.php'       => __NAMESPACE__ . '\\SEO',
             'class-dashboard.php' => __NAMESPACE__ . '\\Dashboard',
             'class-io.php'        => __NAMESPACE__ . '\\IO',
@@ -913,10 +913,10 @@ class Module {
     /**
      * Stable JSON-LD `@id` for a location/service page's main entity node.
      *
-     * Shared by build_schema() (the main Place/Service node on wp_head) and
-     * Libraries::print_review_schema() (the aggregateRating + review[] node on
-     * wp_footer) so consumers merge the two nodes into a single entity instead
-     * of seeing two unlinked nodes for the same page.
+     * Used by build_schema() for the main Place/Service node on wp_head.
+     * (Formerly also shared with the now-removed content-library Review/
+     * AggregateRating node — that schema is no longer emitted here; the site's
+     * SEO plugin is responsible for review-schema output.)
      *
      * @param int $post_id Location or service-page post ID.
      * @return string e.g. "https://site/foo/#service" or ".../#place".

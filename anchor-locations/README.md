@@ -52,7 +52,7 @@ Defaults: `service-areas-base` = `service-areas`, `services-base` = `services`. 
 | `al_boundary` | string (GeoJSON) | Free-text GeoJSON boundary, editable in the admin "Details" metabox. **Drawn on `[anchor_location_map]`** (P3): when the value parses as valid JSON it is attached to the marker and `frontend.js` renders it as a county/area boundary polygon via `google.maps.Data` (a `FeatureCollection`, `Feature`, or bare geometry are all accepted); an unparseable value is silently skipped so a bad paste never breaks the map. |
 | `al_marker_icon` | string (URL) | Per-location marker icon override. Falls back to the global `marker_icon` setting when empty. |
 | `al_html` / `al_css` / `al_js` | string | The page body, authored via the Monaco HTML/CSS/JS metabox. Rendered via `do_shortcode()` on HTML, CSS is auto id-scoped to `.al-page-{ID}`, JS is wrapped in an IIFE. |
-| `al_disable_wrapper` | `'1'` or `''` | When `'1'`, skips the global wrapper template (see §4) for this page — use for Divi/page-builder pages that already have their own header/footer chrome. |
+| `al_disable_wrapper` | `'1'` or `''` | When `'1'`, skips the global wrapper template (see §4) for this page — use for page-builder pages that already have their own header/footer chrome. |
 
 ### `anchor_service_page` posts
 
@@ -128,6 +128,16 @@ All the internal-linking shortcodes' output HTML is filterable:
 ### Global wrapper template
 
 If `wrapper_html` is set (Settings > Anchor Tools > Locations) and a page hasn't set `al_disable_wrapper`, every location/service page's rendered body is substituted into the wrapper wherever `{{content}}` or a literal `[anchor_page_content]` appears, then the whole thing runs through `do_shortcode()`. `wrapper_css`/`wrapper_js` are emitted alongside it. This lets an operator define one global "hero + CTA + body + footer" shell without repeating it on every page.
+
+### Placing content anywhere (shortcodes)
+
+The wrapper is optional. Because the page body and every related element are exposed as shortcodes, they run anywhere WordPress processes shortcodes — a page-builder module, a widget, or a template — so the content can be injected wherever you want it:
+
+- `[anchor_page_content]` with no `id` renders the *current* page's `al_html`/`al_css`/`al_js` and **skips the global wrapper**, so the surrounding layout supplies the chrome. Drop it wherever the page body should go, and scatter the other shortcodes (`[anchor_breadcrumbs]`, `[anchor_location_map]`, `[anchor_local_faqs]`, …) wherever they belong.
+- Leave `wrapper_html` blank, or tick **al_disable_wrapper** ("Disable global wrapper on this page") per page, when the layout already provides the chrome.
+- **Don't render the body twice:** if the layout already outputs `the_content` (e.g. a "post content" element in a builder or theme template), that alone shows the body plus wrapper — adding `[anchor_page_content]` in the same layout renders it again. Use one or the other.
+
+The full shortcode reference is also printed on the **Settings > Anchor Tools > Locations** tab for in-admin access.
 
 ---
 

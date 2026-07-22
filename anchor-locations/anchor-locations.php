@@ -301,6 +301,78 @@ class Module {
 
         \submit_button();
         echo '</form>';
+
+        $this->render_shortcode_reference();
+    }
+
+    /**
+     * Print the on-page shortcode reference. Read-only docs so an operator can
+     * place the module's content anywhere shortcodes run — a page-builder module,
+     * a widget, a template — without leaving the settings screen.
+     */
+    private function render_shortcode_reference() {
+        $sv = $this->services_base();
+
+        echo '<hr style="margin:2em 0">';
+        echo '<h2>' . \esc_html__( 'Shortcodes: place the content anywhere', 'anchor-schema' ) . '</h2>';
+
+        echo '<p class="description" style="max-width:52em">' . \sprintf(
+            /* translators: 1: [anchor_page_content] shortcode, 2: the_content, 3: id */
+            \esc_html__( 'By default a Location or Service page swaps its %2$s for the body you author in the Content metabox, optionally wrapped in the Global Wrapper Template above. That path is optional: every piece below is also a shortcode, so it runs anywhere WordPress processes shortcodes — a page-builder module, a widget, or a template. The key one is %1$s — with no %3$s it renders the current page\'s own body and skips the wrapper entirely, so the surrounding layout provides the chrome.', 'anchor-schema' ),
+            '<code>[anchor_page_content]</code>',
+            '<code>the_content</code>',
+            '<code>id</code>'
+        ) . '</p>';
+
+        echo '<p class="description" style="max-width:52em"><strong>' . \esc_html__( 'Note:', 'anchor-schema' ) . '</strong> ' . \sprintf(
+            /* translators: 1: [anchor_page_content], 2: the_content */
+            \esc_html__( 'Don\'t render the page body twice. If the surrounding layout already outputs %2$s (e.g. a "post content" element in a builder or theme template), that alone shows the body plus wrapper — adding %1$s in the same layout renders it a second time. Use one or the other.', 'anchor-schema' ),
+            '<code>[anchor_page_content]</code>',
+            '<code>the_content</code>'
+        ) . '</p>';
+
+        // [ shortcode, attributes, description ] grouped by purpose.
+        $groups = [
+            \__( 'Page content', 'anchor-schema' ) => [
+                [ '[anchor_page_content]', 'id', \__( "Renders a page's authored HTML/CSS/JS body. Defaults to the current page; pass an id to embed another page's body.", 'anchor-schema' ) ],
+                [ '[anchor_h1]', 'id', \__( 'The page H1 (the SEO "H1 override", falling back to the title). Handy when the surrounding layout has no title element of its own.', 'anchor-schema' ) ],
+            ],
+            \__( 'Internal linking', 'anchor-schema' ) => [
+                [ '[anchor_breadcrumbs]', 'id', \__( 'Home → ancestors → (for service pages) location chain → current title.', 'anchor-schema' ) ],
+                [ '[anchor_child_locations]', 'id', \__( 'List of the location\'s direct published children.', 'anchor-schema' ) ],
+                [ '[anchor_location_parent]', 'id', \__( 'Link to the location\'s parent, if published.', 'anchor-schema' ) ],
+                [ '[anchor_nearby_locations]', 'id', \__( 'Up to 12 published sibling locations (same parent).', 'anchor-schema' ) ],
+                [ '[anchor_location_services]', 'id', \__( 'All published service pages linked to this location.', 'anchor-schema' ) ],
+                [ '[anchor_service_locations]', 'id', \__( 'Other locations offering this page\'s service (same service term).', 'anchor-schema' ) ],
+                [ '[anchor_service_area_directory]', '—', \__( 'The full published location hierarchy as nested lists.', 'anchor-schema' ) ],
+            ],
+            \__( 'Map', 'anchor-schema' ) => [
+                [ '[anchor_location_map]', 'types, parent, zoom, height, center, service, cluster, filters', \__( 'A Google Map with a pin per located location (info windows link to the page and its services; draws boundary polygons where set). Requires the Google Maps API key in the main Anchor Tools settings.', 'anchor-schema' ) ],
+            ],
+            \__( 'Content libraries', 'anchor-schema' ) => [
+                [ '[anchor_local_projects]', 'id, service, limit', \__( 'Most-relevant Projects for this location/service (default limit 6).', 'anchor-schema' ) ],
+                [ '[anchor_local_testimonials]', 'id, service, limit', \__( 'Most-relevant Testimonials (default limit 3); rated ones also emit Review schema.', 'anchor-schema' ) ],
+                [ '[anchor_local_faqs]', 'id, service, limit', \__( 'Most-relevant FAQs (default limit 10); also emit FAQPage schema.', 'anchor-schema' ) ],
+            ],
+        ];
+
+        echo '<h3>' . \esc_html__( 'Shortcode reference', 'anchor-schema' ) . '</h3>';
+        echo '<table class="widefat striped" style="max-width:60em">';
+        echo '<thead><tr><th style="width:16em">' . \esc_html__( 'Shortcode', 'anchor-schema' ) . '</th><th style="width:14em">' . \esc_html__( 'Attributes', 'anchor-schema' ) . '</th><th>' . \esc_html__( 'What it outputs', 'anchor-schema' ) . '</th></tr></thead><tbody>';
+        foreach ( $groups as $label => $rows ) {
+            echo '<tr><td colspan="3" style="background:#f0f0f1"><strong>' . \esc_html( $label ) . '</strong></td></tr>';
+            foreach ( $rows as $r ) {
+                echo '<tr><td><code>' . \esc_html( $r[0] ) . '</code></td><td>' . \esc_html( $r[1] ) . '</td><td>' . \esc_html( $r[2] ) . '</td></tr>';
+            }
+        }
+        echo '</tbody></table>';
+
+        echo '<p class="description" style="max-width:60em">' . \sprintf(
+            /* translators: 1: id attribute, 2: sample service-page URL */
+            \esc_html__( 'Every shortcode defaults to the current page, so one shared layout works for every location. The %1$s attribute lets you pin a shortcode to a specific location/service page from anywhere on the site (e.g. a homepage map or directory). On a service page such as %2$s, the location-oriented shortcodes automatically describe the linked location, not the service page itself.', 'anchor-schema' ),
+            '<code>id</code>',
+            '<code>/' . \esc_html( $sv ) . '/roofing/pittsburgh-pa/</code>'
+        ) . '</p>';
     }
 
     /* ---- Admin: metaboxes, save, assets, columns ---- */
@@ -328,7 +400,7 @@ class Module {
         echo '<textarea id="al_js" name="al_js" style="display:none">' . \esc_textarea( $js ) . '</textarea>';
         echo '</div>';
         $dis = \get_post_meta( $post->ID, 'al_disable_wrapper', true );
-        echo '<p><label><input type="checkbox" name="al_disable_wrapper" value="1" ' . \checked( $dis, '1', false ) . '> ' . \esc_html__( 'Disable global wrapper on this page (Divi/builder mode)', 'anchor-schema' ) . '</label></p>';
+        echo '<p><label><input type="checkbox" name="al_disable_wrapper" value="1" ' . \checked( $dis, '1', false ) . '> ' . \esc_html__( 'Disable global wrapper on this page (page-builder mode)', 'anchor-schema' ) . '</label></p>';
     }
 
     public function render_details_metabox( $post ) {

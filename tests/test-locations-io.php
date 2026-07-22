@@ -2,10 +2,10 @@
 /**
  * Tests for anchor-locations Phase 6: Import / Export (\Anchor\Locations\IO).
  *
- * Covers the JSON round-trip (hierarchy + meta + service-term linkage +
- * al_location_ids reconstructed by slug), idempotency, dry-run writing nothing,
- * CSV formula-injection guard, the never-delete invariant, malformed-row
- * isolation, and CSV scalar round-trip.
+ * Covers the JSON round-trip (hierarchy + location/service meta incl. the
+ * content-section keys + service-term linkage), idempotency, dry-run writing
+ * nothing, CSV formula-injection guard, the never-delete invariant,
+ * upsert-by-slug, malformed-row isolation, and CSV scalar round-trip.
  *
  * @package Anchor\Tests
  */
@@ -60,7 +60,7 @@ class LocationsIoTest extends WP_UnitTestCase {
 
 	private function count_all() {
 		$n = 0;
-		foreach ( [ 'anchor_location', 'anchor_service_page', 'anchor_project', 'anchor_testimonial', 'anchor_faq' ] as $t ) {
+		foreach ( [ 'anchor_location', 'anchor_service_page' ] as $t ) {
 			$n += array_sum( (array) wp_count_posts( $t ) );
 		}
 		return $n;
@@ -68,23 +68,17 @@ class LocationsIoTest extends WP_UnitTestCase {
 
 	/** Build the canonical fixture; return the created ids. */
 	private function seed_fixture() {
-		$county = $this->make_location( 'Allegheny County', 'allegheny-county-pa', [ 'al_type' => 'county', 'al_lat' => '40.44', 'al_lng' => '-79.99', 'al_seo_title' => 'Allegheny SEO' ] );
+		$county = $this->make_location( 'Allegheny County', 'allegheny-county-pa', [ 'al_type' => 'county', 'al_lat' => '40.44', 'al_lng' => '-79.99', 'al_faq_html' => '<div>Allegheny FAQ</div>' ] );
 		$city   = $this->make_location( 'Pittsburgh', 'pittsburgh-pa', [ 'al_type' => 'city', 'al_html' => str_repeat( 'Roofing content. ', 30 ) ], $county );
 		$term   = $this->make_service_term( 'Roofing', 'roofing' );
-		$sp     = $this->make_service_page( 'Roofing in Pittsburgh', 'roofing-pittsburgh-pa', $city, $term, [ 'al_seo_title' => 'Roofing PGH', 'al_seo_desc' => 'Best roofing.' ] );
-		$testi  = self::factory()->post->create( [ 'post_type' => 'anchor_testimonial', 'post_status' => 'publish', 'post_title' => 'Happy Client', 'post_name' => 'happy-client' ] );
-		update_post_meta( $testi, 'al_quote', 'Great work!' );
-		update_post_meta( $testi, 'al_author', 'Bob Smith' );
-		update_post_meta( $testi, 'al_rating', 5 );
-		update_post_meta( $testi, 'al_location_ids', [ $city ] );
-		return compact( 'county', 'city', 'term', 'sp', 'testi' );
+		$sp     = $this->make_service_page( 'Roofing in Pittsburgh', 'roofing-pittsburgh-pa', $city, $term, [ 'al_testimonials_html' => '<blockquote>Roofing PGH testimonial</blockquote>' ] );
+		return compact( 'county', 'city', 'term', 'sp' );
 	}
 
 	private function wipe( $ids ) {
 		wp_delete_post( $ids['sp'], true );
 		wp_delete_post( $ids['city'], true );
 		wp_delete_post( $ids['county'], true );
-		wp_delete_post( $ids['testi'], true );
 		wp_delete_term( $ids['term'], 'service' );
 	}
 
@@ -109,20 +103,14 @@ class LocationsIoTest extends WP_UnitTestCase {
 		$this->assertGreaterThan( 0, $city );
 		$this->assertSame( $county, (int) get_post( $city )->post_parent );
 		$this->assertSame( 'county', get_post_meta( $county, 'al_type', true ) );
-		$this->assertSame( 'Allegheny SEO', get_post_meta( $county, 'al_seo_title', true ) );
+		$this->assertSame( '<div>Allegheny FAQ</div>', get_post_meta( $county, 'al_faq_html', true ) );
 
 		$sp = $this->by_slug( 'anchor_service_page', 'roofing-pittsburgh-pa' );
 		$this->assertGreaterThan( 0, $sp );
 		$this->assertSame( $city, (int) get_post_meta( $sp, 'al_location_id', true ) );
 		$slugs = wp_get_object_terms( $sp, 'service', [ 'fields' => 'slugs' ] );
 		$this->assertContains( 'roofing', $slugs );
-		$this->assertSame( 'Roofing PGH', get_post_meta( $sp, 'al_seo_title', true ) );
-
-		$testi = $this->by_slug( 'anchor_testimonial', 'happy-client' );
-		$this->assertGreaterThan( 0, $testi );
-		$loc_ids = get_post_meta( $testi, 'al_location_ids', true );
-		$this->assertSame( [ $city ], array_map( 'intval', (array) $loc_ids ) );
-		$this->assertSame( 5, (int) get_post_meta( $testi, 'al_rating', true ) );
+		$this->assertSame( '<blockquote>Roofing PGH testimonial</blockquote>', get_post_meta( $sp, 'al_testimonials_html', true ) );
 	}
 
 	/* ---- 2. Idempotency ---- */
@@ -253,7 +241,7 @@ class LocationsIoTest extends WP_UnitTestCase {
 	/* ---- 7. CSV scalar round-trip ---- */
 
 	public function test_csv_locations_round_trip() {
-		$loc = $this->make_location( 'Butler', 'butler-pa', [ 'al_type' => 'county', 'al_state_abbr' => 'PA', 'al_seo_title' => 'Butler SEO' ] );
+		$loc = $this->make_location( 'Butler', 'butler-pa', [ 'al_type' => 'county', 'al_state_abbr' => 'PA' ] );
 		$csv = $this->io->export_locations_csv();
 		wp_delete_post( $loc, true );
 		$this->assertSame( 0, $this->by_slug( 'anchor_location', 'butler-pa' ) );
@@ -265,13 +253,12 @@ class LocationsIoTest extends WP_UnitTestCase {
 		$this->assertGreaterThan( 0, $id );
 		$this->assertSame( 'county', get_post_meta( $id, 'al_type', true ) );
 		$this->assertSame( 'PA', get_post_meta( $id, 'al_state_abbr', true ) );
-		$this->assertSame( 'Butler SEO', get_post_meta( $id, 'al_seo_title', true ) );
 	}
 
 	public function test_csv_service_pages_round_trip() {
 		$loc  = $this->make_location( 'Erie', 'erie-pa', [ 'al_type' => 'city' ] );
 		$term = $this->make_service_term( 'Gutters', 'gutters' );
-		$sp   = $this->make_service_page( 'Gutters in Erie', 'gutters-erie-pa', $loc, $term, [ 'al_seo_title' => 'Gutters Erie' ] );
+		$sp   = $this->make_service_page( 'Gutters in Erie', 'gutters-erie-pa', $loc, $term, [ 'al_disable_wrapper' => '1' ] );
 
 		$csv = $this->io->export_service_pages_csv();
 		wp_delete_post( $sp, true );
@@ -285,6 +272,40 @@ class LocationsIoTest extends WP_UnitTestCase {
 		$this->assertSame( $loc, (int) get_post_meta( $id, 'al_location_id', true ) );
 		$slugs = wp_get_object_terms( $id, 'service', [ 'fields' => 'slugs' ] );
 		$this->assertContains( 'gutters', $slugs );
-		$this->assertSame( 'Gutters Erie', get_post_meta( $id, 'al_seo_title', true ) );
+		$this->assertSame( '1', get_post_meta( $id, 'al_disable_wrapper', true ) );
+	}
+
+	/* ---- 9. Content-section keys round trip; SEO + library keys dropped ---- */
+
+	public function test_section_keys_round_trip_and_seo_keys_dropped() {
+		$io  = new \Anchor\Locations\IO();
+		$loc = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Greenville' ] );
+		update_post_meta( $loc, 'al_faq_html', '<div class="q">How much?</div>' );
+		update_post_meta( $loc, 'al_testimonials_html', '<blockquote>Great</blockquote>' );
+		update_post_meta( $loc, 'al_projects_html', '<div>Driveway</div>' );
+		update_post_meta( $loc, 'al_h1', 'legacy value' ); // must NOT export anymore
+
+		$data = $io->export_json();
+		$json = wp_json_encode( $data );
+		$this->assertStringContainsString( 'al_faq_html', $json );
+		$this->assertStringContainsString( 'al_testimonials_html', $json );
+		$this->assertStringContainsString( 'al_projects_html', $json );
+		$this->assertStringNotContainsString( 'al_h1', $json );
+		$this->assertStringNotContainsString( 'al_seo_title', $json );
+		$this->assertStringNotContainsString( '"projects"', $json );
+		$this->assertStringNotContainsString( '"faqs"', $json );
+
+		// Re-import into a fresh post via a second slug and confirm sections restore.
+		$data['locations'][0]['slug']  = 'greenville-2';
+		$data['locations'][0]['title'] = 'Greenville 2';
+		$summary = $io->import_json( $data );
+		$this->assertSame( [], $summary['errors'] );
+
+		$new_id = $this->by_slug( 'anchor_location', 'greenville-2' );
+		$this->assertGreaterThan( 0, $new_id );
+		$this->assertSame( '<div class="q">How much?</div>', get_post_meta( $new_id, 'al_faq_html', true ) );
+		$this->assertSame( '<blockquote>Great</blockquote>', get_post_meta( $new_id, 'al_testimonials_html', true ) );
+		$this->assertSame( '<div>Driveway</div>', get_post_meta( $new_id, 'al_projects_html', true ) );
+		$this->assertSame( '', get_post_meta( $new_id, 'al_h1', true ) );
 	}
 }

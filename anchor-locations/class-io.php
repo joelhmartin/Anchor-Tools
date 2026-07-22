@@ -7,12 +7,13 @@
  * CSV round-trip.
  *
  *   - JSON (full migration): a versioned envelope carrying settings, the service
- *     taxonomy, locations (hierarchy), service pages, and the three content
- *     libraries. Everything references by SLUG (post_name / term slug / parent
- *     slug), never numeric ID, so it is portable across sites.
+ *     taxonomy, locations (hierarchy), and service pages. Everything references
+ *     by SLUG (post_name / term slug / parent slug), never numeric ID, so it is
+ *     portable across sites.
  *   - CSV (bulk edit): separate scalar exports/imports for locations and service
- *     pages. Large code fields (al_html/al_css/al_js) and boundary GeoJSON are
- *     JSON-only and deliberately omitted from CSV.
+ *     pages. Large code fields (al_html/al_css/al_js, the al_*_html content
+ *     sections) and boundary GeoJSON are JSON-only and deliberately omitted
+ *     from CSV.
  *
  * This is portability, NOT the page generator the owner rejected: import only
  * creates/updates from a user-supplied file, never fabricates combinations, and
@@ -49,9 +50,9 @@ class IO {
 
 	/**
 	 * Sanitize tier per meta key. Unlisted keys default to 'text'. Mirrors the
-	 * tiers in Module::save_meta / SEO::save_seo_meta / Libraries::save_meta.
+	 * tiers in Module::save_meta.
 	 *
-	 * @return array<string,string> key => one of text|textarea|code|url|bool|int|kses.
+	 * @return array<string,string> key => one of text|code|bool.
 	 */
 	private static function tiers() {
 		return [
@@ -67,26 +68,10 @@ class IO {
 			'al_css'           => 'code',
 			'al_js'            => 'code',
 			'al_boundary'      => 'code',
-			'al_disable_wrapper'  => 'bool',
-			'al_robots_noindex'   => 'bool',
-			'al_robots_nofollow'  => 'bool',
-			'al_sitemap_exclude'  => 'bool',
-			'al_global'        => 'bool',
-			'al_seo_title'     => 'text',
-			'al_og_title'      => 'text',
-			'al_h1'            => 'text',
-			'al_breadcrumb_title' => 'text',
-			'al_seo_desc'      => 'textarea',
-			'al_og_desc'       => 'textarea',
-			'al_canonical'     => 'url',
-			'al_og_image'      => 'url',
-			'al_image'         => 'url',
-			'al_description'   => 'kses',
-			'al_quote'         => 'kses',
-			'al_answer'        => 'kses',
-			'al_author'        => 'text',
-			'al_question'      => 'text',
-			'al_rating'        => 'int',
+			'al_faq_html'          => 'code',
+			'al_testimonials_html' => 'code',
+			'al_projects_html'     => 'code',
+			'al_disable_wrapper'   => 'bool',
 		];
 	}
 
@@ -95,49 +80,31 @@ class IO {
 		return [
 			'al_type', 'al_lat', 'al_lng', 'al_place_id', 'al_state_abbr', 'al_county',
 			'al_postal_codes', 'al_marker_icon', 'al_html', 'al_css', 'al_js', 'al_boundary',
-			'al_disable_wrapper', 'al_seo_title', 'al_seo_desc', 'al_canonical',
-			'al_robots_noindex', 'al_robots_nofollow', 'al_og_title', 'al_og_desc',
-			'al_og_image', 'al_breadcrumb_title', 'al_h1', 'al_sitemap_exclude',
+			'al_faq_html', 'al_testimonials_html', 'al_projects_html', 'al_disable_wrapper',
 		];
 	}
 
 	/** Meta keys stored on a SERVICE PAGE (al_location_id is carried as location_slug). */
 	private static function service_meta_keys() {
 		return [
-			'al_html', 'al_css', 'al_js', 'al_disable_wrapper', 'al_seo_title', 'al_seo_desc',
-			'al_canonical', 'al_robots_noindex', 'al_robots_nofollow', 'al_og_title',
-			'al_og_desc', 'al_og_image', 'al_breadcrumb_title', 'al_h1', 'al_sitemap_exclude',
+			'al_html', 'al_css', 'al_js', 'al_faq_html', 'al_testimonials_html',
+			'al_projects_html', 'al_disable_wrapper',
 		];
 	}
 
-	/** Scalar location columns for CSV (code fields + boundary are JSON-only). */
+	/** Scalar location columns for CSV (code/section fields + boundary are JSON-only). */
 	private static function location_csv_keys() {
 		return [
 			'al_type', 'al_lat', 'al_lng', 'al_place_id', 'al_state_abbr', 'al_county',
-			'al_postal_codes', 'al_marker_icon', 'al_disable_wrapper', 'al_seo_title',
-			'al_seo_desc', 'al_canonical', 'al_robots_noindex', 'al_robots_nofollow',
-			'al_og_title', 'al_og_desc', 'al_og_image', 'al_breadcrumb_title', 'al_h1',
-			'al_sitemap_exclude',
+			'al_postal_codes', 'al_marker_icon', 'al_disable_wrapper',
 		];
 	}
 
-	/** Scalar service-page columns for CSV (code fields are JSON-only). */
+	/** Scalar service-page columns for CSV (code/section fields are JSON-only). */
 	private static function service_csv_keys() {
 		return [
-			'al_disable_wrapper', 'al_seo_title', 'al_seo_desc', 'al_canonical',
-			'al_robots_noindex', 'al_robots_nofollow', 'al_og_title', 'al_og_desc',
-			'al_og_image', 'al_breadcrumb_title', 'al_h1', 'al_sitemap_exclude',
+			'al_disable_wrapper',
 		];
-	}
-
-	/** Library CPT meta keys per type (al_location_ids handled separately as slugs). */
-	private static function library_meta_keys( $cpt ) {
-		switch ( $cpt ) {
-			case Libraries::CPT_PROJECT:     return [ 'al_image', 'al_description' ];
-			case Libraries::CPT_TESTIMONIAL: return [ 'al_quote', 'al_author', 'al_rating' ];
-			case Libraries::CPT_FAQ:         return [ 'al_question', 'al_answer' ];
-			default:                         return [];
-		}
 	}
 
 	/* ---- Sanitize (import side) ---- */
@@ -152,18 +119,8 @@ class IO {
 		switch ( $tier ) {
 			case 'code':
 				return (string) $value;
-			case 'textarea':
-				return \sanitize_textarea_field( (string) $value );
-			case 'url':
-				return \esc_url_raw( (string) $value );
 			case 'bool':
 				return ( (string) $value === '1' ) ? '1' : '';
-			case 'int':
-				$r = (int) $value;
-				if ( $key === 'al_rating' ) { return ( $r > 5 ) ? 5 : ( ( $r < 1 ) ? 0 : $r ); } // mirror editor clamp (>5 -> 5)
-				return $r;
-			case 'kses':
-				return \wp_kses_post( (string) $value );
 			case 'text':
 			default:
 				return \sanitize_text_field( (string) $value );
@@ -188,9 +145,6 @@ class IO {
 			'services'     => $this->export_services(),
 			'locations'    => $this->export_locations(),
 			'service_pages'=> $this->export_service_pages(),
-			'projects'     => $this->export_library( Libraries::CPT_PROJECT ),
-			'testimonials' => $this->export_library( Libraries::CPT_TESTIMONIAL ),
-			'faqs'         => $this->export_library( Libraries::CPT_FAQ ),
 		];
 	}
 
@@ -237,33 +191,6 @@ class IO {
 				'location_slug' => $loc_slug,
 				'service_slugs' => $this->term_slugs( $p->ID ),
 				'meta'          => $this->collect_meta( $p->ID, self::service_meta_keys() ),
-			];
-		}
-		return $out;
-	}
-
-	private function export_library( $cpt ) {
-		$posts = \get_posts( [ 'post_type' => $cpt, 'post_status' => 'any', 'posts_per_page' => -1, 'orderby' => 'ID', 'order' => 'ASC', 'no_found_rows' => true ] );
-		$out = [];
-		foreach ( $posts as $p ) {
-			$meta = $this->collect_meta( $p->ID, self::library_meta_keys( $cpt ) );
-			$meta['al_global'] = \get_post_meta( $p->ID, 'al_global', true ) === '1' ? '1' : '';
-			// al_location_ids: numeric ids -> location slugs for portability.
-			$loc_ids = \get_post_meta( $p->ID, 'al_location_ids', true );
-			$loc_slugs = [];
-			if ( \is_array( $loc_ids ) ) {
-				foreach ( $loc_ids as $lid ) {
-					$slug = (string) \get_post_field( 'post_name', (int) $lid );
-					if ( $slug !== '' ) { $loc_slugs[] = $slug; }
-				}
-			}
-			$meta['al_location_ids'] = $loc_slugs;
-			$out[] = [
-				'title'         => $p->post_title,
-				'slug'          => $p->post_name,
-				'status'        => $p->post_status,
-				'service_slugs' => $this->term_slugs( $p->ID ),
-				'meta'          => $meta,
 			];
 		}
 		return $out;
@@ -367,8 +294,8 @@ class IO {
 
 	/**
 	 * Import a full JSON envelope. Upsert-by-slug; never deletes. Ordered so
-	 * references resolve: settings -> service terms -> locations -> service pages
-	 * -> libraries. Each row is guarded so one bad row is skipped + recorded.
+	 * references resolve: settings -> service terms -> locations -> service
+	 * pages. Each row is guarded so one bad row is skipped + recorded.
 	 *
 	 * @param array $data JSON-decoded envelope.
 	 * @param array $opts { 'dry_run' => bool }
@@ -404,10 +331,6 @@ class IO {
 			$term_map = $this->import_services( $data['services'] ?? [], $dry, $summary );
 			$loc_map  = $this->import_locations( $data['locations'] ?? [], $dry, $summary );
 			$this->import_service_pages( $data['service_pages'] ?? [], $loc_map, $term_map, $dry, $summary );
-
-			foreach ( [ 'projects' => Libraries::CPT_PROJECT, 'testimonials' => Libraries::CPT_TESTIMONIAL, 'faqs' => Libraries::CPT_FAQ ] as $key => $cpt ) {
-				$this->import_library( $cpt, $data[ $key ] ?? [], $loc_map, $term_map, $dry, $summary );
-			}
 
 			return $summary;
 		} finally {
@@ -534,34 +457,6 @@ class IO {
 			} catch ( \Throwable $e ) {
 				$summary['skipped']++;
 				$summary['errors'][] = \sprintf( \__( 'Service page "%1$s": %2$s', 'anchor-schema' ), (string) ( $sp['slug'] ?? '?' ), $e->getMessage() );
-			}
-		}
-	}
-
-	private function import_library( $cpt, array $items, array $loc_map, array $term_map, $dry, array &$summary ) {
-		foreach ( $items as $item ) {
-			try {
-				$slug = \sanitize_title( $item['slug'] ?? '' );
-				if ( $slug === '' ) { throw new \Exception( 'library item missing slug' ); }
-				$id = $this->upsert_post( $cpt, $slug, $item, $dry, $summary );
-				if ( $dry || $id <= 0 ) { continue; }
-
-				$meta = (array) ( $item['meta'] ?? [] );
-				$this->write_meta( $id, $meta, self::library_meta_keys( $cpt ) );
-				\update_post_meta( $id, 'al_global', ( ( $meta['al_global'] ?? '' ) === '1' ) ? '1' : '' );
-
-				// al_location_ids: slugs -> ids (drop unknowns).
-				$loc_ids = [];
-				foreach ( (array) ( $meta['al_location_ids'] ?? [] ) as $ls ) {
-					$ls = \sanitize_title( (string) $ls );
-					if ( $ls !== '' && isset( $loc_map[ $ls ] ) && $loc_map[ $ls ] > 0 ) { $loc_ids[] = (int) $loc_map[ $ls ]; }
-				}
-				\update_post_meta( $id, 'al_location_ids', $loc_ids );
-
-				$this->assign_terms( $id, (array) ( $item['service_slugs'] ?? [] ), $term_map, $slug, $summary );
-			} catch ( \Throwable $e ) {
-				$summary['skipped']++;
-				$summary['errors'][] = \sprintf( \__( '%1$s item "%2$s": %3$s', 'anchor-schema' ), $cpt, (string) ( $item['slug'] ?? '?' ), $e->getMessage() );
 			}
 		}
 	}
@@ -805,7 +700,7 @@ class IO {
 
 		// Export.
 		echo '<h2>' . \esc_html__( 'Export', 'anchor-schema' ) . '</h2>';
-		echo '<p class="description">' . \esc_html__( 'JSON is a full, portable migration (all locations, service pages, services, libraries, and settings — referenced by slug). CSV is for bulk-editing scalar fields; HTML/CSS/JS and boundary GeoJSON are omitted from CSV and stay JSON-only.', 'anchor-schema' ) . '</p>';
+		echo '<p class="description">' . \esc_html__( 'JSON is a full, portable migration (all locations, service pages, services, and settings — referenced by slug). CSV is for bulk-editing scalar fields; HTML/CSS/JS and boundary GeoJSON are omitted from CSV and stay JSON-only.', 'anchor-schema' ) . '</p>';
 		foreach ( [
 			'json'          => \__( 'Export full JSON', 'anchor-schema' ),
 			'locations'     => \__( 'Export locations CSV', 'anchor-schema' ),

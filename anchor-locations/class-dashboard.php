@@ -1,6 +1,6 @@
 <?php
 /**
- * Anchor Locations — Phase 5: Coverage Matrix + SEO Quality Dashboard.
+ * Anchor Locations — Coverage Matrix Dashboard.
  *
  * A strictly READ-ONLY reporting + navigation surface. The plugin owner populates
  * pages via external connections / WP-CLI, so this phase NEVER creates, mutates,
@@ -30,7 +30,7 @@ class Dashboard {
 		'anchor_location_services', 'anchor_nearby_locations', 'anchor_breadcrumbs',
 		'anchor_service_locations', 'anchor_child_locations', 'anchor_location_parent',
 		'anchor_location_map', 'anchor_service_area_directory', 'anchor_local_projects',
-		'anchor_local_testimonials', 'anchor_local_faqs', 'anchor_h1',
+		'anchor_local_testimonials', 'anchor_local_faqs',
 	];
 
 	public function __construct() {
@@ -47,7 +47,6 @@ class Dashboard {
 	public function register_pages() {
 		$parent = 'edit.php?post_type=' . Module::CPT_LOCATION;
 		\add_submenu_page( $parent, \__( 'Coverage Matrix', 'anchor-schema' ), \__( 'Coverage', 'anchor-schema' ), 'edit_posts', 'anchor-locations-coverage', [ $this, 'render_coverage_page' ] );
-		\add_submenu_page( $parent, \__( 'SEO Reports', 'anchor-schema' ), \__( 'SEO Reports', 'anchor-schema' ), 'edit_posts', 'anchor-locations-seo-reports', [ $this, 'render_seo_page' ] );
 	}
 
 	/* ---- URL helpers (admin_url-based so builders are testable headless) ---- */
@@ -68,7 +67,7 @@ class Dashboard {
 	 * @param array $args { Optional. 'type' => location al_type to filter rows by. }
 	 * @return array<int,array<int,array{status:string,page_id:int,edit:string,view:string,add:string,score:int}>>
 	 *   [ location_id => [ term_id => cell ] ]. Status precedence: published >
-	 *   noindex > draft > missing.
+	 *   draft > missing.
 	 */
 	public function coverage_matrix( array $args = [] ): array {
 		$locations = $this->query_locations( isset( $args['type'] ) ? (string) $args['type'] : '' );
@@ -83,18 +82,16 @@ class Dashboard {
 			'no_found_rows'  => true,
 		] );
 
-		$index = []; // [loc][term] => list of ['id','status','noindex']
+		$index = []; // [loc][term] => list of ['id','status']
 		foreach ( $pages as $p ) {
 			$loc_id  = (int) \get_post_meta( $p->ID, 'al_location_id', true );
 			if ( $loc_id <= 0 ) { continue; }
 			$term_ids = \wp_get_object_terms( $p->ID, Module::TAX_SERVICE, [ 'fields' => 'ids' ] );
 			if ( \is_wp_error( $term_ids ) ) { continue; }
-			$noindex = \get_post_meta( $p->ID, 'al_robots_noindex', true ) === '1';
 			foreach ( $term_ids as $tid ) {
 				$index[ $loc_id ][ (int) $tid ][] = [
-					'id'      => (int) $p->ID,
-					'status'  => $p->post_status,
-					'noindex' => $noindex,
+					'id'     => (int) $p->ID,
+					'status' => $p->post_status,
 				];
 			}
 		}
@@ -114,28 +111,19 @@ class Dashboard {
 	/**
 	 * Resolve one matrix cell from the candidate pages for a location×term.
 	 *
-	 * @param array $cands List of ['id','status','noindex'].
+	 * @param array $cands List of ['id','status'].
 	 */
 	private function resolve_cell( int $loc_id, int $term_id, array $cands ): array {
-		$published = null; // first published, non-noindex
-		$noindex   = null; // first published, noindex
-		$draft     = null;
+		$published = null; // first published
+		$draft     = null; // first draft
 		foreach ( $cands as $c ) {
-			if ( $c['status'] === 'publish' ) {
-				if ( $c['noindex'] ) { $noindex = $noindex ?? $c; }
-				else { $published = $published ?? $c; }
-			} elseif ( $c['status'] === 'draft' ) {
-				$draft = $draft ?? $c;
-			}
+			if ( $c['status'] === 'publish' ) { $published = $published ?? $c; }
+			elseif ( $c['status'] === 'draft' ) { $draft = $draft ?? $c; }
 		}
 
 		if ( $published ) {
 			$pid = $published['id'];
 			return [ 'status' => 'published', 'page_id' => $pid, 'edit' => $this->edit_url( $pid ), 'view' => $this->view_url( $pid ), 'add' => '', 'score' => $this->quality_score( $pid ) ];
-		}
-		if ( $noindex ) {
-			$pid = $noindex['id'];
-			return [ 'status' => 'noindex', 'page_id' => $pid, 'edit' => $this->edit_url( $pid ), 'view' => $this->view_url( $pid ), 'add' => '', 'score' => $this->quality_score( $pid ) ];
 		}
 		if ( $draft ) {
 			$pid = $draft['id'];
@@ -147,7 +135,7 @@ class Dashboard {
 	/** Front-end URL for a service page, or '' when it can't be resolved. */
 	private function view_url( int $post_id ): string {
 		// Reuse the already-constructed Module singleton — building a new Module
-		// here re-registers ~20 hooks (plus Libraries/SEO/Dashboard) per matrix cell.
+		// here re-registers ~20 hooks per matrix cell.
 		$mod = Module::instance();
 		if ( ! $mod ) { return ''; }
 		$url = $mod->service_page_url( $post_id );
@@ -174,8 +162,7 @@ class Dashboard {
 
 	/**
 	 * Additive 0–100 content-quality score for a location or service page.
-	 * Weights: body>=300 (20), al_seo_title (15), al_seo_desc (15), coords (15),
-	 * internal-linking shortcode (15), not noindex (10), has H1 (10).
+	 * Weights: body>=300 (40), coords (30), internal-linking shortcode (30).
 	 */
 	public function quality_score( int $post_id ): int {
 		if ( $post_id <= 0 || ! \get_post( $post_id ) ) { return 0; }
@@ -183,13 +170,9 @@ class Dashboard {
 		$html = (string) \get_post_meta( $post_id, 'al_html', true );
 
 		$score = 0;
-		if ( \mb_strlen( \trim( \wp_strip_all_tags( $html ) ) ) >= self::THIN_CHARS ) { $score += 20; }
-		if ( \trim( (string) \get_post_meta( $post_id, 'al_seo_title', true ) ) !== '' ) { $score += 15; }
-		if ( \trim( (string) \get_post_meta( $post_id, 'al_seo_desc', true ) ) !== '' ) { $score += 15; }
-		if ( $this->has_coords_for( $post_id, $type ) ) { $score += 15; }
-		if ( $this->has_link_shortcode( $html ) ) { $score += 15; }
-		if ( \get_post_meta( $post_id, 'al_robots_noindex', true ) !== '1' ) { $score += 10; }
-		if ( $this->has_h1( $post_id, $html ) ) { $score += 10; }
+		if ( \mb_strlen( \trim( \wp_strip_all_tags( $html ) ) ) >= self::THIN_CHARS ) { $score += 40; }
+		if ( $this->has_coords_for( $post_id, $type ) ) { $score += 30; }
+		if ( $this->has_link_shortcode( $html ) ) { $score += 30; }
 		return $score;
 	}
 
@@ -210,108 +193,6 @@ class Dashboard {
 			if ( \strpos( $html, '[' . $sc ) !== false ) { return true; }
 		}
 		return false;
-	}
-
-	private function has_h1( int $post_id, string $html ): bool {
-		if ( \trim( (string) \get_post_meta( $post_id, 'al_h1', true ) ) !== '' ) { return true; }
-		return \stripos( $html, '<h1' ) !== false;
-	}
-
-	/* ---- C. SEO issues (pure builder) ---- */
-
-	/**
-	 * All detected SEO issues grouped by severity.
-	 *
-	 * @return array{high:array,medium:array,low:array} Each bucket is a list of
-	 *   ['type'=>slug,'label'=>string,'posts'=>[['id','title','edit'?,'add'?],...]].
-	 *   Only issue types with >=1 affected item are emitted.
-	 */
-	public function seo_issues(): array {
-		$high = [];
-		$med  = [];
-		$low  = [];
-
-		$locations = \get_posts( [ 'post_type' => Module::CPT_LOCATION, 'post_status' => 'publish', 'posts_per_page' => -1, 'no_found_rows' => true ] );
-		$services  = \get_posts( [ 'post_type' => Module::CPT_SERVICE, 'post_status' => 'publish', 'posts_per_page' => -1, 'no_found_rows' => true ] );
-		$all       = \array_merge( $locations, $services );
-
-		$thin = $no_title = $no_desc = $no_h1 = $noindex = $sitemap = $missing_coords = $orphans = [];
-
-		foreach ( $all as $p ) {
-			$html = (string) \get_post_meta( $p->ID, 'al_html', true );
-			if ( \mb_strlen( \trim( \wp_strip_all_tags( $html ) ) ) < self::THIN_CHARS ) { $thin[] = $this->post_ref( $p ); }
-			if ( \trim( (string) \get_post_meta( $p->ID, 'al_seo_title', true ) ) === '' ) { $no_title[] = $this->post_ref( $p ); }
-			if ( \trim( (string) \get_post_meta( $p->ID, 'al_seo_desc', true ) ) === '' ) { $no_desc[] = $this->post_ref( $p ); }
-			if ( ! $this->has_h1( (int) $p->ID, $html ) ) { $no_h1[] = $this->post_ref( $p ); }
-			if ( \get_post_meta( $p->ID, 'al_robots_noindex', true ) === '1' ) { $noindex[] = $this->post_ref( $p ); }
-			if ( \get_post_meta( $p->ID, 'al_sitemap_exclude', true ) === '1' ) { $sitemap[] = $this->post_ref( $p ); }
-		}
-
-		// Locations missing coordinates.
-		foreach ( $locations as $p ) {
-			$lat = \trim( (string) \get_post_meta( $p->ID, 'al_lat', true ) );
-			$lng = \trim( (string) \get_post_meta( $p->ID, 'al_lng', true ) );
-			if ( $lat === '' || $lng === '' ) { $missing_coords[] = $this->post_ref( $p ); }
-		}
-
-		// Orphan + duplicate service pages.
-		$combo = []; // "loc:term" => [ post_ref, ... ]
-		foreach ( $services as $p ) {
-			$loc_id = (int) \get_post_meta( $p->ID, 'al_location_id', true );
-			$loc    = $loc_id > 0 ? \get_post( $loc_id ) : null;
-			if ( ! $loc || $loc->post_type !== Module::CPT_LOCATION || $loc->post_status !== 'publish' ) {
-				$orphans[] = $this->post_ref( $p );
-			}
-			$tids = \wp_get_object_terms( $p->ID, Module::TAX_SERVICE, [ 'fields' => 'ids' ] );
-			if ( \is_wp_error( $tids ) ) { $tids = []; }
-			foreach ( $tids as $tid ) {
-				if ( $loc_id > 0 ) { $combo[ $loc_id . ':' . (int) $tid ][] = $this->post_ref( $p ); }
-			}
-		}
-		$duplicates = [];
-		foreach ( $combo as $refs ) {
-			if ( \count( $refs ) > 1 ) { $duplicates = \array_merge( $duplicates, $refs ); }
-		}
-
-		// Coverage gaps (informational, from the matrix).
-		$gaps = [];
-		foreach ( $this->coverage_matrix() as $loc_id => $cells ) {
-			foreach ( $cells as $tid => $cell ) {
-				if ( $cell['status'] === 'missing' ) {
-					$term = \get_term( (int) $tid, Module::TAX_SERVICE );
-					$name = ( $term && ! \is_wp_error( $term ) ) ? $term->name : (string) $tid;
-					$gaps[] = [
-						'id'    => 0,
-						'title' => \sprintf( \__( '%1$s in %2$s', 'anchor-schema' ), $name, \get_the_title( (int) $loc_id ) ),
-						'add'   => $cell['add'],
-					];
-				}
-			}
-		}
-
-		$push = function ( array &$bucket, string $type, string $label, array $posts ) {
-			if ( $posts ) { $bucket[] = [ 'type' => $type, 'label' => $label, 'posts' => $posts ]; }
-		};
-
-		$push( $high, 'thin_content',   \__( 'Thin content (under 300 characters)', 'anchor-schema' ), $thin );
-		$push( $high, 'missing_coords', \__( 'Location missing coordinates', 'anchor-schema' ), $missing_coords );
-		$push( $high, 'orphan_service', \__( 'Orphan service page (no valid linked location)', 'anchor-schema' ), $orphans );
-		$push( $high, 'duplicate_combo',\__( 'Duplicate service + location combination', 'anchor-schema' ), $duplicates );
-
-		$push( $med, 'missing_seo_title', \__( 'Missing SEO title', 'anchor-schema' ), $no_title );
-		$push( $med, 'missing_seo_desc',  \__( 'Missing meta description', 'anchor-schema' ), $no_desc );
-		$push( $med, 'missing_h1',        \__( 'Missing H1', 'anchor-schema' ), $no_h1 );
-
-		$push( $low, 'coverage_gap',     \__( 'Coverage gaps (missing service + location pages)', 'anchor-schema' ), $gaps );
-		$push( $low, 'noindex_pages',    \__( 'Noindex pages', 'anchor-schema' ), $noindex );
-		$push( $low, 'sitemap_excluded', \__( 'Sitemap-excluded pages', 'anchor-schema' ), $sitemap );
-
-		return [ 'high' => $high, 'medium' => $med, 'low' => $low ];
-	}
-
-	/** @return array{id:int,title:string,edit:string} A post reference with an edit link. */
-	private function post_ref( $post ): array {
-		return [ 'id' => (int) $post->ID, 'title' => (string) \get_the_title( $post ), 'edit' => $this->edit_url( (int) $post->ID ) ];
 	}
 
 	/* ---- B. Pre-fill support (render-side only, no writes) ---- */
@@ -392,11 +273,10 @@ class Dashboard {
 		$status = $cell['status'];
 		$labels = [
 			'published' => \__( 'Published', 'anchor-schema' ),
-			'noindex'   => \__( 'Noindex', 'anchor-schema' ),
 			'draft'     => \__( 'Draft', 'anchor-schema' ),
 			'missing'   => \__( 'Missing', 'anchor-schema' ),
 		];
-		$colors = [ 'published' => '#e6f4ea', 'noindex' => '#fff4e5', 'draft' => '#fef7e0', 'missing' => '#fce8e6' ];
+		$colors = [ 'published' => '#e6f4ea', 'draft' => '#fef7e0', 'missing' => '#fce8e6' ];
 		$label  = $labels[ $status ] ?? $status;
 		$bg     = $colors[ $status ] ?? '#fff';
 
@@ -419,53 +299,8 @@ class Dashboard {
 		echo '<p class="description" style="margin-top:10px;">';
 		echo \esc_html__( 'Legend:', 'anchor-schema' ) . ' ';
 		echo '<span style="background:#e6f4ea;padding:2px 6px;">' . \esc_html__( 'Published', 'anchor-schema' ) . '</span> ';
-		echo '<span style="background:#fff4e5;padding:2px 6px;">' . \esc_html__( 'Noindex', 'anchor-schema' ) . '</span> ';
 		echo '<span style="background:#fef7e0;padding:2px 6px;">' . \esc_html__( 'Draft', 'anchor-schema' ) . '</span> ';
 		echo '<span style="background:#fce8e6;padding:2px 6px;">' . \esc_html__( 'Missing', 'anchor-schema' ) . '</span>';
 		echo '</p>';
-	}
-
-	public function render_seo_page() {
-		if ( ! \current_user_can( 'edit_posts' ) ) { \wp_die( \esc_html__( 'You do not have permission to view this page.', 'anchor-schema' ) ); }
-
-		$issues = $this->seo_issues();
-		$sev    = [
-			'high'   => [ \__( 'High priority', 'anchor-schema' ), '#fce8e6' ],
-			'medium' => [ \__( 'Medium priority', 'anchor-schema' ), '#fef7e0' ],
-			'low'    => [ \__( 'Low / informational', 'anchor-schema' ), '#e8f0fe' ],
-		];
-
-		echo '<div class="wrap anchor-locations-seo-reports">';
-		echo '<h1>' . \esc_html__( 'SEO Reports', 'anchor-schema' ) . '</h1>';
-		echo '<p class="description">' . \esc_html__( 'Read-only quality audit of your location and service pages.', 'anchor-schema' ) . '</p>';
-
-		$total = 0;
-		foreach ( $issues as $bucket ) { foreach ( $bucket as $i ) { $total += \count( $i['posts'] ); } }
-		if ( $total === 0 ) {
-			echo '<p>' . \esc_html__( 'No issues detected. ', 'anchor-schema' ) . '</p></div>';
-			return;
-		}
-
-		foreach ( [ 'high', 'medium', 'low' ] as $level ) {
-			if ( empty( $issues[ $level ] ) ) { continue; }
-			list( $heading, $bg ) = $sev[ $level ];
-			echo '<h2 style="border-left:6px solid ' . \esc_attr( $bg ) . ';padding-left:8px;">' . \esc_html( $heading ) . '</h2>';
-			foreach ( $issues[ $level ] as $issue ) {
-				echo '<h3>' . \esc_html( $issue['label'] ) . ' <span class="count">(' . (int) \count( $issue['posts'] ) . ')</span></h3>';
-				echo '<ul style="list-style:disc;margin-left:22px;">';
-				foreach ( $issue['posts'] as $ref ) {
-					$title = $ref['title'] !== '' ? $ref['title'] : \__( '(untitled)', 'anchor-schema' );
-					if ( ! empty( $ref['edit'] ) ) {
-						echo '<li><a href="' . \esc_url( $ref['edit'] ) . '">' . \esc_html( $title ) . '</a></li>';
-					} elseif ( ! empty( $ref['add'] ) ) {
-						echo '<li>' . \esc_html( $title ) . ' — <a href="' . \esc_url( $ref['add'] ) . '">' . \esc_html__( '+ Add', 'anchor-schema' ) . '</a></li>';
-					} else {
-						echo '<li>' . \esc_html( $title ) . '</li>';
-					}
-				}
-				echo '</ul>';
-			}
-		}
-		echo '</div>';
 	}
 }

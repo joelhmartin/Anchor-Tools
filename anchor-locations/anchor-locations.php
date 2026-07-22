@@ -50,6 +50,7 @@ class Module {
         \add_shortcode( 'anchor_location_map', [ $this, 'sc_map' ] );
 
         \add_action( 'wp_head', [ $this, 'print_schema' ], 20 );
+        \add_filter( 'template_include', [ $this, 'fullwidth_template' ] );
 
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 65 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
@@ -59,18 +60,14 @@ class Module {
         // missing file degrades that ONE phase gracefully (it simply doesn't
         // load) instead of fataling the whole plugin, and instantiation is
         // gated on the class actually existing after the require.
-        //   Phase 2  Libraries — reusable content libraries (projects/testimonials/FAQs).
-        //   Phase 4  SEO        — per-page SEO controls, robots, SEO-plugin integration, [anchor_h1].
-        //   Phase 5  Dashboard  — read-only Coverage Matrix + SEO Reports (navigation only).
+        //   Phase 2  Sections   — free-form per-page Monaco HTML sections (FAQ/testimonials/projects).
+        //   Phase 5  Dashboard  — read-only Coverage Matrix (navigation only).
         //   Phase 6  IO         — JSON/CSV import/export (upsert-by-slug, never deletes).
-        //   Phase 7  Analytics  — Search Console + GA4 reporting (dormant until a key is set).
         //   Phase 8  Integrity  — data-integrity nudges + versioned cache invalidation.
         $phases = [
-            'class-libraries.php' => __NAMESPACE__ . '\\Libraries',
-            'class-seo.php'       => __NAMESPACE__ . '\\SEO',
+            'class-sections.php'  => __NAMESPACE__ . '\\Sections',
             'class-dashboard.php' => __NAMESPACE__ . '\\Dashboard',
             'class-io.php'        => __NAMESPACE__ . '\\IO',
-            'class-analytics.php' => __NAMESPACE__ . '\\Analytics',
             'class-integrity.php' => __NAMESPACE__ . '\\Integrity',
         ];
         foreach ( $phases as $file => $class ) {
@@ -335,7 +332,6 @@ class Module {
         $groups = [
             \__( 'Page content', 'anchor-schema' ) => [
                 [ '[anchor_page_content]', 'id', \__( "Renders a page's authored HTML/CSS/JS body. Defaults to the current page; pass an id to embed another page's body.", 'anchor-schema' ) ],
-                [ '[anchor_h1]', 'id', \__( 'The page H1 (the SEO "H1 override", falling back to the title). Handy when the surrounding layout has no title element of its own.', 'anchor-schema' ) ],
             ],
             \__( 'Internal linking', 'anchor-schema' ) => [
                 [ '[anchor_breadcrumbs]', 'id', \__( 'Home → ancestors → (for service pages) location chain → current title.', 'anchor-schema' ) ],
@@ -349,10 +345,10 @@ class Module {
             \__( 'Map', 'anchor-schema' ) => [
                 [ '[anchor_location_map]', 'types, parent, zoom, height, center, service, cluster, filters, focus, iconsize', \__( 'A Google Map with a pin per located location (info windows link to the page and its services; draws boundary polygons where set). On a location/service page it frames the current area by default (override with focus="none" or focus="123"); iconsize caps custom pin images (px, default 40). Requires the Google Maps API key in the main Anchor Tools settings.', 'anchor-schema' ) ],
             ],
-            \__( 'Content libraries', 'anchor-schema' ) => [
-                [ '[anchor_local_projects]', 'id, service, limit', \__( 'Most-relevant Projects for this location/service (default limit 6).', 'anchor-schema' ) ],
-                [ '[anchor_local_testimonials]', 'id, service, limit', \__( 'Most-relevant Testimonials (default limit 3); rated ones also emit Review schema.', 'anchor-schema' ) ],
-                [ '[anchor_local_faqs]', 'id, service, limit', \__( 'Most-relevant FAQs (default limit 10); also emit FAQPage schema.', 'anchor-schema' ) ],
+            \__( 'Page sections', 'anchor-schema' ) => [
+                [ '[anchor_local_faqs]', 'id', \__( 'Renders this page\'s FAQ section (the FAQ tab of Content Sections). id targets another page.', 'anchor-schema' ) ],
+                [ '[anchor_local_testimonials]', 'id', \__( 'Renders this page\'s Testimonials section. id targets another page.', 'anchor-schema' ) ],
+                [ '[anchor_local_projects]', 'id', \__( 'Renders this page\'s Projects section. id targets another page.', 'anchor-schema' ) ],
             ],
         ];
 
@@ -559,14 +555,11 @@ class Module {
     }
 
     /**
-     * Label to use for a post's breadcrumb crumb (and BreadcrumbList name): the
-     * per-page `al_breadcrumb_title` (Phase 4 SEO) when set, else the post title.
-     * Returns raw text — callers escape for their context (esc_html for HTML,
-     * wp_json_encode for JSON-LD).
+     * Label for a post's breadcrumb crumb and BreadcrumbList name: the post title.
+     * Returns raw text — callers escape for their context.
      */
     public function crumb_label( $id ) {
-        $t = (string) \get_post_meta( $id, 'al_breadcrumb_title', true );
-        return $t !== '' ? $t : (string) \get_the_title( $id );
+        return (string) \get_the_title( $id );
     }
 
     public function sc_child_locations( $atts ) {
@@ -913,10 +906,10 @@ class Module {
     /**
      * Stable JSON-LD `@id` for a location/service page's main entity node.
      *
-     * Shared by build_schema() (the main Place/Service node on wp_head) and
-     * Libraries::print_review_schema() (the aggregateRating + review[] node on
-     * wp_footer) so consumers merge the two nodes into a single entity instead
-     * of seeing two unlinked nodes for the same page.
+     * Used by build_schema() for the main Place/Service node on wp_head.
+     * (Formerly also shared with the now-removed content-library Review/
+     * AggregateRating node — that schema is no longer emitted here; the site's
+     * SEO plugin is responsible for review-schema output.)
      *
      * @param int $post_id Location or service-page post ID.
      * @return string e.g. "https://site/foo/#service" or ".../#place".
@@ -1015,5 +1008,18 @@ class Module {
         // slash-escaping above (matches Anchor_Schema_Render's belt-and-braces).
         $json = \str_replace( '</', '<\/', $json );
         echo "\n<script type=\"application/ld+json\">" . $json . "</script>\n";
+    }
+
+    /**
+     * Serve the plugin's full-width single template for location/service pages when
+     * the `fullwidth_template` setting is on (relocated from the removed SEO class —
+     * it is layout, not SEO). Falls through to the theme's template otherwise.
+     */
+    public function fullwidth_template( $template ) {
+        $s = $this->settings();
+        if ( empty( $s['fullwidth_template'] ) ) { return $template; }
+        if ( ! \is_singular( [ self::CPT_LOCATION, self::CPT_SERVICE ] ) ) { return $template; }
+        $tpl = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-locations/templates/single-anchor-fullwidth.php';
+        return \file_exists( $tpl ) ? $tpl : $template;
     }
 }

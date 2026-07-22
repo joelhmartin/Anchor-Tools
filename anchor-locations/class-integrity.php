@@ -129,8 +129,8 @@ class Integrity {
 
 	/**
 	 * The ID of another PUBLISHED service page covering the same (service term +
-	 * location) as $post_id, or 0. Mirrors Dashboard::seo_issues()'s duplicate
-	 * detection but scoped to a single post for the per-page edit-screen notice.
+	 * location) as $post_id, or 0. Scoped to a single post for the per-page
+	 * edit-screen notice.
 	 */
 	public function service_duplicate_combo( int $post_id ): int {
 		$loc_id = (int) \get_post_meta( $post_id, 'al_location_id', true );

@@ -77,6 +77,7 @@ Stored as the `anchor_locations_settings` option (array), sanitized by `Module::
 | `services_base` | Slug base for service-page URLs. Default `services`. |
 | `service_areas_base` | Slug base (CPT rewrite slug) for location-hub URLs. Default `service-areas`. |
 | `marker_icon` | Global default marker icon URL, used when a location has no `al_marker_icon` of its own. |
+| `marker_size` | Default max dimension (px, 8–200; default 40) for custom marker-pin images on `[anchor_location_map]`, aspect-preserving. Overridden per-map by the shortcode's `iconsize` attribute. |
 | `map_center` | Default `[anchor_location_map]` center as `lat,lng`, used when the shortcode doesn't pass `center` and there are no markers to derive a center from. |
 | `map_zoom` | Default zoom level (int), used when the shortcode doesn't pass `zoom`. |
 | `wrapper_html` / `wrapper_css` / `wrapper_js` | The global wrapper template (see §4). Leave `wrapper_html` blank to disable wrapping entirely. |

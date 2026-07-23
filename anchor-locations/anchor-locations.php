@@ -246,6 +246,7 @@ class Module {
         $out['marker_icon']        = isset( $in['marker_icon'] ) ? \esc_url_raw( $in['marker_icon'] ) : '';
         $out['map_center']         = isset( $in['map_center'] ) ? \sanitize_text_field( $in['map_center'] ) : '';
         $out['map_zoom']           = isset( $in['map_zoom'] ) ? (int) $in['map_zoom'] : 8;
+        $out['marker_size']        = ( isset( $in['marker_size'] ) && (int) $in['marker_size'] >= 8 && (int) $in['marker_size'] <= 200 ) ? (int) $in['marker_size'] : 40;
         $out['wrapper_html']       = isset( $in['wrapper_html'] ) ? (string) $in['wrapper_html'] : '';
         $out['wrapper_css']        = isset( $in['wrapper_css'] ) ? (string) $in['wrapper_css'] : '';
         $out['wrapper_js']         = isset( $in['wrapper_js'] ) ? (string) $in['wrapper_js'] : '';
@@ -278,6 +279,7 @@ class Module {
 
         echo '<h2>' . \esc_html__( 'Map & URLs', 'anchor-schema' ) . '</h2>';
         echo '<p><label>' . \esc_html__( 'Default marker icon URL', 'anchor-schema' ) . ' <input type="text" class="regular-text al-media" name="' . \esc_attr( $opt ) . '[marker_icon]" value="' . $g( 'marker_icon' ) . '"></label></p>';
+        echo '<p><label>' . \esc_html__( 'Default marker icon size (px)', 'anchor-schema' ) . ' <input type="number" min="8" max="200" name="' . \esc_attr( $opt ) . '[marker_size]" value="' . $g( 'marker_size', '40' ) . '"></label> <span class="description">' . \esc_html__( 'Caps custom pin images (aspect-preserving). Override per-map with iconsize="…" on the shortcode.', 'anchor-schema' ) . '</span></p>';
         echo '<p><label>' . \esc_html__( 'Service-area base', 'anchor-schema' ) . ' <input type="text" name="' . \esc_attr( $opt ) . '[service_areas_base]" value="' . $g( 'service_areas_base', 'service-areas' ) . '"></label> ';
         echo '<label>' . \esc_html__( 'Services base', 'anchor-schema' ) . ' <input type="text" name="' . \esc_attr( $opt ) . '[services_base]" value="' . $g( 'services_base', 'services' ) . '"></label></p>';
         echo '<p><label>' . \esc_html__( 'Map center (lat,lng)', 'anchor-schema' ) . ' <input type="text" name="' . \esc_attr( $opt ) . '[map_center]" value="' . $g( 'map_center' ) . '"></label> ';
@@ -343,7 +345,7 @@ class Module {
                 [ '[anchor_service_area_directory]', '—', \__( 'The full published location hierarchy as nested lists.', 'anchor-schema' ) ],
             ],
             \__( 'Map', 'anchor-schema' ) => [
-                [ '[anchor_location_map]', 'types, parent, zoom, height, center, service, cluster, filters, focus, iconsize', \__( 'A Google Map with a pin per located location (info windows link to the page and its services; draws boundary polygons where set). On a location/service page it frames the current area by default (override with focus="none" or focus="123"); iconsize caps custom pin images (px, default 40). Requires the Google Maps API key in the main Anchor Tools settings.', 'anchor-schema' ) ],
+                [ '[anchor_location_map]', 'types, parent, zoom, height, center, service, cluster, filters, focus, iconsize', \__( 'A Google Map with a pin per located location (info windows link to the page and its services; draws boundary polygons where set). On a location/service page it frames the current area by default (override with focus="none" or focus="123"); iconsize caps custom pin images (px) — overrides the global "Default marker icon size" setting (default 40). Requires the Google Maps API key in the main Anchor Tools settings.', 'anchor-schema' ) ],
             ],
             \__( 'Page sections', 'anchor-schema' ) => [
                 [ '[anchor_local_faqs]', 'id', \__( 'Renders this page\'s FAQ section (the FAQ tab of Content Sections). id targets another page.', 'anchor-schema' ) ],
@@ -848,13 +850,17 @@ class Module {
     }
 
     /**
-     * Clamp the marker-icon max dimension (px). Empty/out-of-range => 40, a sane
-     * default that keeps a brand pin from dominating the map (custom marker images
-     * are otherwise rendered at their full natural size).
+     * Resolve the marker-icon max dimension (px). An explicit, in-range shortcode
+     * `iconsize` wins; otherwise fall back to the global "Default marker icon size"
+     * setting; otherwise 40 — a sane default that keeps a brand pin from dominating
+     * the map (custom marker images are otherwise rendered at full natural size).
      */
     private function map_icon_size( $att ) {
         $n = (int) $att;
-        return ( $n >= 8 && $n <= 200 ) ? $n : 40;
+        if ( $n >= 8 && $n <= 200 ) { return $n; }
+        $s = $this->settings();
+        $d = isset( $s['marker_size'] ) ? (int) $s['marker_size'] : 0;
+        return ( $d >= 8 && $d <= 200 ) ? $d : 40;
     }
 
     private $cluster_enqueued = false;

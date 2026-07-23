@@ -102,6 +102,7 @@ No code changes were needed here — `maybe_flush()` (added in an earlier task) 
 | Shortcode | Attributes | Notes |
 |---|---|---|
 | `[anchor_page_content]` | `id` (int, default: current post) | Renders a location/service page's `al_html`/`al_css`/`al_js` body. Useful inside a wrapper template, or to embed one page's content on another. |
+| `[anchor_h1]` | `id` (int, default: current post) | Outputs `<h1 class="al-h1">` with the `al_h1` meta override if set, else the post title. A content-render helper for page bodies that print their own heading. Filterable via `anchor_locations_h1`. |
 | `[anchor_breadcrumbs]` | `id` (int, default: current post) | Home → ancestor chain → (for service pages) linked location chain → current title. Skips unpublished ancestors. |
 | `[anchor_child_locations]` | `id` (int, default: [resolved location](#location-resolution)) | `<ul>` of the location's direct published children. |
 | `[anchor_location_parent]` | `id` (int, default: [resolved location](#location-resolution)) | A link to the location's parent, if published; empty otherwise. |

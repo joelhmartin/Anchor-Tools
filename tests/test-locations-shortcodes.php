@@ -12,6 +12,18 @@ class LocationsShortcodesTest extends WP_UnitTestCase {
         $this->assertStringContainsString( 'color:red', $out );
         $this->assertStringContainsString( 'console.log(1)', $out );
     }
+    public function test_h1_shortcode_uses_title_and_meta_override() {
+        // Regression: [anchor_h1] must stay registered — page bodies embed it to
+        // print their heading; if unregistered it prints literally on the page.
+        $id = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish', 'post_title' => 'Greenville' ] );
+        $out = do_shortcode( '[anchor_h1 id="' . $id . '"]' );
+        $this->assertStringContainsString( '<h1 class="al-h1">Greenville</h1>', $out );
+        $this->assertStringNotContainsString( '[anchor_h1', $out ); // did not render literally
+
+        update_post_meta( $id, 'al_h1', 'Custom Heading' );
+        $out2 = do_shortcode( '[anchor_h1 id="' . $id . '"]' );
+        $this->assertStringContainsString( 'Custom Heading', $out2 );
+    }
     public function test_page_content_shortcode_by_id() {
         $id = self::factory()->post->create( [ 'post_type' => 'anchor_location', 'post_status' => 'publish' ] );
         update_post_meta( $id, 'al_html', '<p>Body</p>' );

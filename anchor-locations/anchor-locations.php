@@ -39,6 +39,7 @@ class Module {
 
         \add_filter( 'the_content', [ $this, 'the_content_render' ], 9 );
         \add_shortcode( 'anchor_page_content', [ $this, 'shortcode_page_content' ] );
+        \add_shortcode( 'anchor_h1', [ $this, 'sc_h1' ] );
 
         \add_shortcode( 'anchor_breadcrumbs', [ $this, 'sc_breadcrumbs' ] );
         \add_shortcode( 'anchor_child_locations', [ $this, 'sc_child_locations' ] );
@@ -334,6 +335,7 @@ class Module {
         $groups = [
             \__( 'Page content', 'anchor-schema' ) => [
                 [ '[anchor_page_content]', 'id', \__( "Renders a page's authored HTML/CSS/JS body. Defaults to the current page; pass an id to embed another page's body.", 'anchor-schema' ) ],
+                [ '[anchor_h1]', 'id', \__( 'Outputs the page H1 (the al_h1 override if set, else the post title). Defaults to the current page.', 'anchor-schema' ) ],
             ],
             \__( 'Internal linking', 'anchor-schema' ) => [
                 [ '[anchor_breadcrumbs]', 'id', \__( 'Home → ancestors → (for service pages) location chain → current title.', 'anchor-schema' ) ],
@@ -522,6 +524,24 @@ class Module {
         $id = (int) $atts['id'] ? (int) $atts['id'] : \get_the_ID();
         if ( ! $id ) { return ''; }
         return $this->render_body( $id );
+    }
+
+    /**
+     * [anchor_h1 id="N"] — outputs the page H1. Reads the `al_h1` meta override
+     * when present (e.g. set via WP-CLI/import), else the post title.
+     *
+     * A content-render helper, NOT part of the removed SEO chrome: page bodies
+     * authored against earlier versions embed this shortcode to print their
+     * heading, so it must keep resolving. Filterable via `anchor_locations_h1`.
+     */
+    public function sc_h1( $atts ) {
+        $a  = \shortcode_atts( [ 'id' => 0 ], $atts, 'anchor_h1' );
+        $id = (int) $a['id'] ? (int) $a['id'] : (int) \get_the_ID();
+        if ( ! $id ) { return ''; }
+        $h1 = (string) \get_post_meta( $id, 'al_h1', true );
+        if ( $h1 === '' ) { $h1 = (string) \get_the_title( $id ); }
+        $html = '<h1 class="al-h1">' . \esc_html( $h1 ) . '</h1>';
+        return \apply_filters( 'anchor_locations_h1', $html, $id );
     }
 
     /* ---- Frontend: internal-linking, directory & breadcrumb shortcodes ---- */

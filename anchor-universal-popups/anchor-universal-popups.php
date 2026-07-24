@@ -251,6 +251,11 @@ class Anchor_Universal_Popups_Module {
             'frequency_mode' => 'session',  // session or cooldown
             'cooldown_minutes' => 1440,     // used when frequency_mode=cooldown, 1440 = 24h
 
+            // scope (where this popup's code is shipped — the include side)
+            'scope_mode' => 'all',          // all (site-wide), include (specific URLs), post_types
+            'include_urls' => '',           // comma separated list, full or relative (scope_mode=include)
+            'scope_post_types' => '',       // comma separated post type slugs (scope_mode=post_types)
+
             // exclusions
             'exclude_urls' => '',           // comma separated list, full or relative
             'exclude_cats' => '',           // comma separated list of slugs or IDs
@@ -846,6 +851,45 @@ class Anchor_Universal_Popups_Module {
             <p class="description">If the singular post has any of these categories, the popup will not load.</p>
           </div>
           </div><!-- /[data-up-hide-when-style="fullscreen"] -->
+
+          <div>
+            <hr/>
+            <h4 style="margin:6px 0;">Display scope</h4>
+            <label>Where to load this popup</label>
+            <select name="up_scope_mode" id="up_scope_mode">
+              <option value="all" <?php selected($m['scope_mode'],'all'); ?>>All pages (site-wide)</option>
+              <option value="include" <?php selected($m['scope_mode'],'include'); ?>>Specific pages (by URL)</option>
+              <option value="post_types" <?php selected($m['scope_mode'],'post_types'); ?>>Specific post types</option>
+            </select>
+            <p class="description">Controls which pages ship this popup's code. Scope it to the pages that actually use it so it isn't loaded site-wide.</p>
+
+            <div data-up-show-when-scope="include">
+              <label>Load only on URLs (comma separated)</label>
+              <textarea name="up_include_urls" placeholder="/, /services/whitening, https://example.com/testimonials"><?php
+                  echo esc_textarea($m['include_urls']);
+              ?></textarea>
+              <p class="description">Full URLs or relative paths. Prefix match is allowed. The popup loads only on these pages.</p>
+            </div>
+
+            <div data-up-show-when-scope="post_types">
+              <label>Load only on post types</label>
+              <?php
+                $up_public_types   = get_post_types(['public' => true], 'objects');
+                $up_selected_types = $this->parse_list($m['scope_post_types']);
+                foreach ($up_public_types as $up_pt) {
+                    if ($up_pt->name === 'attachment') continue;
+                    $up_label = isset($up_pt->labels->singular_name) ? $up_pt->labels->singular_name : $up_pt->name;
+                    ?>
+                    <label style="display:block;font-weight:normal;margin:2px 0;">
+                      <input type="checkbox" name="up_scope_post_types[]" value="<?php echo esc_attr($up_pt->name); ?>" <?php checked(in_array($up_pt->name, $up_selected_types, true)); ?> />
+                      <?php echo esc_html($up_label); ?> <code><?php echo esc_html($up_pt->name); ?></code>
+                    </label>
+                    <?php
+                }
+              ?>
+              <p class="description">The popup loads only on singular views of the selected post types.</p>
+            </div>
+          </div>
         </div>
         <?php
     }
@@ -907,6 +951,7 @@ class Anchor_Universal_Popups_Module {
             'trigger_type','trigger_value','delay_ms',
             'scroll_mode','scroll_percent','scroll_target',
             'frequency_mode','cooldown_minutes',
+            'scope_mode','include_urls',
             'exclude_urls','exclude_cats',
             'schedule_start','schedule_end'
         ];
@@ -923,6 +968,13 @@ class Anchor_Universal_Popups_Module {
                 update_post_meta($post_id, $key, sanitize_text_field($val));
             }
         }
+
+        // Post-type scope is a checkbox group → store as a comma list of slugs.
+        // Handled outside the loop above because the generic loop expects scalars.
+        $scope_pts = ( isset($_POST['up_scope_post_types']) && is_array($_POST['up_scope_post_types']) )
+            ? array_map('sanitize_key', wp_unslash($_POST['up_scope_post_types']))
+            : [];
+        update_post_meta($post_id, 'up_scope_post_types', implode(',', array_filter($scope_pts)));
 
         // When mode is video, derive video_id from URL for backward compatibility
         $mode = isset($_POST['up_mode']) ? sanitize_text_field($_POST['up_mode']) : '';
@@ -1009,6 +1061,29 @@ class Anchor_Universal_Popups_Module {
     }
 
     /**
+     * Include-side scoping: does this popup belong on the current request?
+     * 'all' ships everywhere (default, backward compatible). 'include' ships only
+     * on the listed URLs (prefix match, mirrors the exclusion URL logic).
+     * 'post_types' ships only on singular views of the selected post types.
+     * Runs during wp_enqueue_scripts, so is_singular()/the main query are ready.
+     */
+    private function matches_scope(array $meta){
+        $mode = isset($meta['scope_mode']) ? $meta['scope_mode'] : 'all';
+
+        if ($mode === 'include') {
+            return $this->request_url_matches_any($this->parse_list($meta['include_urls']));
+        }
+
+        if ($mode === 'post_types') {
+            $types = $this->parse_list($meta['scope_post_types']);
+            if (empty($types)) return false; // scoped to post types but none chosen → nowhere
+            return is_singular($types);
+        }
+
+        return true; // 'all' (or any unknown value) → site-wide
+    }
+
+    /**
      * Resolve a popup's schedule bounds to absolute UTC epochs, plus the
      * cache-envelope grace. Returns [ ?int $start, ?int $end, int $grace ].
      */
@@ -1038,6 +1113,13 @@ class Anchor_Universal_Popups_Module {
             // closes their window on pages served from the full-page cache.
             list($sched_start, $sched_end, $sched_grace) = $this->schedule_bounds($m);
             if (!Anchor_UP_Schedule::should_ship($sched_start, $sched_end, time(), $sched_grace)) continue;
+
+            // Scope: only ship this popup's JSON on the pages it's actually used on.
+            // Default 'all' preserves the historical site-wide behavior; 'include'
+            // and 'post_types' let an author stop localizing every popup into every
+            // page. Gating here (not in the JS payload) keeps the scope config off
+            // the wire and out of page HTML.
+            if (!$this->matches_scope($m)) continue;
 
             // For shortcode mode, process the shortcode content server-side
             $rendered_shortcode = '';

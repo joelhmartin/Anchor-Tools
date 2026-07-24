@@ -57,6 +57,17 @@
     });
   }
 
+  function toggleScopeFields(){
+    var scope = $('select[name="up_scope_mode"]').val() || 'all';
+    $('[data-up-show-when-scope]').each(function(){
+      var allowed = String($(this).attr('data-up-show-when-scope') || '')
+        .split(',')
+        .map(function(s){ return $.trim(s); })
+        .filter(Boolean);
+      $(this).toggle(allowed.indexOf(scope) !== -1);
+    });
+  }
+
   function toggleCinematic(){
     var tileStyle = $('#up_tile_style').val() || 'card';
     var $ratio = $('#up_aspect_ratio');
@@ -115,10 +126,12 @@
     toggleScrollFields();
     toggleModeFields();
     togglePopupStyleFields();
+    toggleScopeFields();
     toggleCinematic();
     $(document).on('change', 'select[name="up_trigger_type"]', toggleTriggerFields);
     $(document).on('change', 'select[name="up_scroll_mode"]', toggleScrollFields);
     $(document).on('change', 'select[name="up_popup_style"]', togglePopupStyleFields);
+    $(document).on('change', 'select[name="up_scope_mode"]', toggleScopeFields);
     $(document).on('change', 'select[name="up_mode"]', function(){
       toggleModeFields();
       applyPreview();

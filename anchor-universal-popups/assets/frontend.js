@@ -4,9 +4,6 @@
   // Modal registry for global close coordination
   var allModals = [];
 
-  // Video popups queued to preload silently in the background (click-triggered only)
-  var preloadQueue = [];
-
   // Global close event - closes all popups except the specified one
   function closeAllPopups(exceptModal) {
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: exceptModal } }));
@@ -146,7 +143,10 @@
     if(opts.muted){
       p.set('mute', '1');
     }
-    return 'https://www.youtube.com/embed/' + encodeURIComponent(id) + '?' + p.toString();
+    // youtube-nocookie.com defers YouTube's tracking cookies (YSC, VISITOR_INFO1_LIVE,
+    // __Secure-YNID, __Secure-ROLLOUT_TOKEN) so a page with a popup player doesn't fail
+    // the third-party-cookies audit or populate inspector issues on load.
+    return 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(id) + '?' + p.toString();
   }
   function buildVimeoSrc(id, opts){
     opts = opts || {};
@@ -185,23 +185,6 @@
 
   function videoIframe(src){
     return '<iframe src="'+src+'" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
-  }
-
-  /**
-   * Silently load the player into a hidden modal so it's ready before the user
-   * clicks. Built WITHOUT autoplay so it buffers the player chrome/poster only.
-   * Runs at idle time, so it never competes with page render or load.
-   */
-  function preloadVideo(modal, provider, id, muted){
-    var frameWrap = modal.querySelector('[data-frame]');
-    if(!frameWrap || modal._preloaded) return;
-    // Takeovers preload muted so their scroll-driven (gesture-less) play is
-    // allowed — Vimeo in particular only autoplays programmatically when muted.
-    var opts = { autoplay: false, muted: !!muted };
-    var src = provider === 'youtube' ? buildYouTubeSrc(id, opts) : buildVimeoSrc(id, opts);
-    modal._preloadSrc = src;
-    frameWrap.innerHTML = videoIframe(src);
-    modal._preloaded = true;
   }
 
   /**
@@ -474,6 +457,16 @@
   }
 
   function attach(sn){
+    // Class-triggered popups whose trigger element isn't on this page have
+    // nothing to bind to — skip them so we never build a modal (and, for video,
+    // never load a player) for a trigger that can't fire here. Every trigger is
+    // server-rendered, so a DOMContentLoaded-time check can't false-negative.
+    // Scoped to class only: delay/scroll/id/page_load triggers are untouched.
+    if(sn.trigger && sn.trigger.type === 'class'){
+      var _trigSel = classTriggerSelector(sn.trigger.value);
+      if(!_trigSel || !queryFirst(_trigSel)) return;
+    }
+
     var isVideo = (sn.mode === 'youtube' || sn.mode === 'vimeo' || sn.mode === 'video');
     var popupStyle = normalizePopupStyle(sn.popup_style);
 
@@ -512,20 +505,10 @@
       if(closeBtn) closeBtn.style.color = sn.close_color;
     }
 
-    // Queue for silent background preload: video popups that open *later*
-    // (class/id click, or scroll). page_load popups open immediately, so
-    // preloading is moot. Skip ones gated out this session so we never load
-    // the unseen. (Fullscreen takeover handles its own preload separately.)
-    if(isVideo && sn.video_id && (provider === 'youtube' || provider === 'vimeo')){
-      var ptrig = sn.trigger || {};
-      var deferredTrigger = (ptrig.type === 'class' || ptrig.type === 'id' || ptrig.type === 'scroll');
-      // 'class' bypasses frequency gating on open, so always preload it.
-      var willShow = (ptrig.type === 'class') ||
-        shouldShow(sn.id, sn.frequency.mode, sn.frequency.cooldownMinutes);
-      if(deferredTrigger && willShow){
-        preloadQueue.push({ modal: modal, provider: provider, id: sn.video_id });
-      }
-    }
+    // No preloading: the video iframe is built on demand in the open handler
+    // (openVideo / expandTakeover). Click-to-load is normal YouTube behavior and
+    // the delay is imperceptible, whereas preloading a player per popup on every
+    // page is the dominant page-weight and Total-Blocking-Time cost.
 
     function triggerOpen(){
       // Re-check at fire time, not just at bind time: a page may sit open across a
@@ -672,8 +655,8 @@
       if(cb) cb.style.color = sn.close_color;
     }
 
-    // Warm it first (muted, so scroll-driven play is allowed) — instant on expand.
-    preloadQueue.unshift({ modal: modal, provider: provider, id: sn.video_id, muted: true });
+    // The player is built on expand (expandTakeover), muted so the scroll-driven,
+    // gesture-less play is allowed — no eager preload.
 
     // Clicking the thumbnail expands from that card too (handled in click listener).
     sn._fsExpand = function(anchor){ if(!withinSchedule(sn)) return; expandTakeover(modal, provider, sn.video_id, anchor || anchors[0]); };
@@ -748,30 +731,10 @@
     card.click();
   });
 
-  // Drain the preload queue during browser idle time, one video at a time with
-  // a gap between each, so a burst of iframe loads never competes with the
-  // page's own content or hurts load metrics.
-  function processPreloadQueue(){
-    if(!preloadQueue.length) return;
-    var i = 0;
-    function next(){
-      if(i >= preloadQueue.length) return;
-      var item = preloadQueue[i++];
-      try{ preloadVideo(item.modal, item.provider, item.id, item.muted); }catch(e){}
-      setTimeout(next, 300);
-    }
-    if('requestIdleCallback' in window){
-      requestIdleCallback(next, { timeout: 3000 });
-    } else {
-      setTimeout(next, 1200);
-    }
-  }
-
   document.addEventListener('DOMContentLoaded', function(){
     UP_SNIPPETS.forEach(function(sn){
       if (!withinSchedule(sn)) return;
       try{ attach(sn); }catch(e){}
     });
-    processPreloadQueue();
   });
 })();

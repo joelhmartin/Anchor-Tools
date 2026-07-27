@@ -142,12 +142,17 @@ test('buy a paid ticket and land on the roster', async ({ page }) => {
     `/wp-admin/edit.php?post_type=event&page=anchor-event-roster&event_id=${seed.event_id}`
   );
 
+  // .first(): the attendee may legitimately appear in more than one roster
+  // row — a Playwright retry that got past checkout places a second order,
+  // and a persistent local wp-env keeps rows from earlier runs. The test
+  // cares that the attendee shows up at all, so any match satisfies it
+  // (strict-mode would otherwise fail on 2+ matches).
   await expect(
-    page.getByText(ATTENDEE.name, { exact: false }),
+    page.getByText(ATTENDEE.name, { exact: false }).first(),
     'attendee name appears on the roster'
   ).toBeVisible();
   await expect(
-    page.getByText(ATTENDEE.email, { exact: false }),
+    page.getByText(ATTENDEE.email, { exact: false }).first(),
     'attendee email appears on the roster'
   ).toBeVisible();
 });

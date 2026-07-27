@@ -96,7 +96,12 @@ wp option update woocommerce_calc_taxes     "no"                     >/dev/null
 wp option update woocommerce_enable_guest_checkout "yes"             >/dev/null
 wp option update woocommerce_enable_signup_and_login_from_checkout "no" >/dev/null
 wp option update woocommerce_onboarding_profile '{"completed":true,"skipped":true}' --format=json >/dev/null
-log "WooCommerce store basics set, onboarding skipped."
+# WooCommerce 9.1+ ships "coming soon" mode ON by default (store pages only),
+# which serves guests a "launching soon" page at /cart/ and /checkout/ instead
+# of the store — the guest purchase spec then never finds the checkout form.
+# Launch the store explicitly so guest checkout is reachable.
+wp option update woocommerce_coming_soon "no" >/dev/null
+log "WooCommerce store basics set, onboarding skipped, store launched (coming-soon off)."
 
 # Create the default WC pages (cart / checkout / shop / my-account).
 wp wc --user=1 tool run install_pages >/dev/null 2>&1 \

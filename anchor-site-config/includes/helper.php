@@ -15,9 +15,10 @@ if ( ! function_exists( 'anchor_site_config' ) ) {
         if ( null === $cache ) {
             if ( class_exists( 'Anchor_Site_Config_Module' ) ) {
                 // Reuse the module's layered resolution so the helper sees the same
-                // defaults → legacy → stored chain as everything else.
-                $module = new Anchor_Site_Config_Module();
-                $cache  = $module->get_options();
+                // defaults → legacy → stored chain as everything else. Must be the
+                // booted instance — constructing a new module here re-registers all
+                // of its hooks and doubled the wp_head font/CSS-var output.
+                $cache = Anchor_Site_Config_Module::instance()->get_options();
             } else {
                 // Module disabled or not loaded — return empty so theme code
                 // doesn't fatal.

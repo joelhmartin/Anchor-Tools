@@ -13,6 +13,14 @@ class Anchor_Site_Config_Output {
     }
 
     public function render_css_vars() {
+        // Guard against double output if two Output instances ever get hooked
+        // (defense-in-depth alongside the Module::instance() fix).
+        static $done = false;
+        if ( $done ) {
+            return;
+        }
+        $done = true;
+
         $opts   = $this->module->get_options();
         $colors = $opts['colors'];
         $fonts  = $opts['fonts'];
@@ -35,6 +43,12 @@ class Anchor_Site_Config_Output {
     }
 
     public function render_google_fonts() {
+        static $done = false;
+        if ( $done ) {
+            return;
+        }
+        $done = true;
+
         $opts     = $this->module->get_options();
         $families = [];
         foreach ( $opts['fonts'] as $role => $f ) {
@@ -53,8 +67,14 @@ class Anchor_Site_Config_Output {
         }
         $url = 'https://fonts.googleapis.com/css2?' . implode( '&', $parts ) . '&display=swap';
 
+        // Non-blocking load: the fonts CSS was the single largest render-blocking
+        // resource on client sites (~900ms on throttled mobile). display=swap is
+        // already in the URL, so text renders in fallback fonts immediately and
+        // swaps when the woff2 arrives; the noscript link covers no-JS visitors.
         echo '<link rel="preconnect" href="https://fonts.googleapis.com">' . "\n";
         echo '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' . "\n";
-        echo '<link href="' . esc_url( $url ) . '" rel="stylesheet">' . "\n";
+        echo '<link rel="preload" as="style" href="' . esc_url( $url ) . '">' . "\n";
+        echo '<link rel="stylesheet" href="' . esc_url( $url ) . '" media="print" onload="this.media=\'all\';this.onload=null;">' . "\n";
+        echo '<noscript><link rel="stylesheet" href="' . esc_url( $url ) . '"></noscript>' . "\n";
     }
 }

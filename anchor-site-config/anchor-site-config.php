@@ -18,11 +18,31 @@ class Anchor_Site_Config_Module {
     private $shortcodes;
     private $output;
 
+    /** @var self|null First-constructed instance (the one whose hooks are live). */
+    private static $instance = null;
+
+    /**
+     * The booted module instance. Constructing a second module duplicates every
+     * admin/shortcode/wp_head hook (the anchor_site_config() helper used to do
+     * exactly that, emitting the Google Fonts and CSS-vars blocks twice per
+     * page) — reuse the first instance instead.
+     */
+    public static function instance() {
+        if ( null === self::$instance ) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
     public function __construct() {
         require_once ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-site-config/includes/class-anchor-site-config-admin.php';
         require_once ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-site-config/includes/class-anchor-site-config-shortcodes.php';
         require_once ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-site-config/includes/class-anchor-site-config-output.php';
         require_once ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-site-config/includes/helper.php';
+
+        if ( null === self::$instance ) {
+            self::$instance = $this;
+        }
 
         $this->admin      = new Anchor_Site_Config_Admin( $this );
         $this->shortcodes = new Anchor_Site_Config_Shortcodes( $this );

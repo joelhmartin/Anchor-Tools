@@ -1244,9 +1244,21 @@
         applyAll();
     }
 
+    // Defer init to idle time: building the widget DOM and toggling body-level
+    // classes forces a full-page style/layout pass (~50ms on throttled mobile),
+    // so it must not run inside the critical first-paint window. The timeout
+    // still guarantees the widget appears promptly even on busy pages.
+    function scheduleInit() {
+        if (window.requestIdleCallback) {
+            window.requestIdleCallback(init, { timeout: 3000 });
+        } else {
+            setTimeout(init, 1500);
+        }
+    }
+
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
+        document.addEventListener('DOMContentLoaded', scheduleInit);
     } else {
-        init();
+        scheduleInit();
     }
 })();

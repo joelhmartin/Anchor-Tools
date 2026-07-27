@@ -560,8 +560,11 @@ class Anchor_Social_Feed_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function frontend_enqueue() {
-        wp_enqueue_style('asf-front', Anchor_Asset_Loader::url('anchor-social-feed/assets/anchor-social-feed.css'), [], '1.1.0');
-        wp_enqueue_script('asf-front', Anchor_Asset_Loader::url('anchor-social-feed/assets/anchor-social-feed.js'), [], '1.0.0', true);
+        // Register only — enqueued from shortcode_handler() when a feed actually
+        // renders, so pages without a feed don't pay for the assets. Late-enqueued
+        // styles print in the footer, which also keeps them off the critical path.
+        wp_register_style('asf-front', Anchor_Asset_Loader::url('anchor-social-feed/assets/anchor-social-feed.css'), [], '1.1.0');
+        wp_register_script('asf-front', Anchor_Asset_Loader::url('anchor-social-feed/assets/anchor-social-feed.js'), [], '1.0.0', true);
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -680,6 +683,10 @@ class Anchor_Social_Feed_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function shortcode_handler($atts = [], $content = null) {
+        $this->frontend_enqueue(); // idempotent registration, in case the shortcode runs before wp_enqueue_scripts
+        wp_enqueue_style('asf-front');
+        wp_enqueue_script('asf-front');
+
         $atts = shortcode_atts([
             'id'                 => '',
             'slug'               => '',

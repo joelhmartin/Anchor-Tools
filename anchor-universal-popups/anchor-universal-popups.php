@@ -25,6 +25,7 @@ class Anchor_Universal_Popups_Module {
         add_action('save_post', [$this, 'save_meta']);
         add_action('admin_enqueue_scripts', [$this, 'admin_assets']);
         add_action('wp_enqueue_scripts', [$this, 'frontend_assets']);
+        add_filter('style_loader_tag', [$this, 'async_style_tag'], 10, 4);
         add_filter('rocket_rucss_safelist', [$this, 'rucss_safelist']);
         add_shortcode('up_popup', [$this, 'shortcode_render']);
         add_shortcode('anchor_popup', [$this, 'shortcode_render']);
@@ -1280,6 +1281,21 @@ class Anchor_Universal_Popups_Module {
             $safelist = [];
         }
         return array_values(array_unique(array_merge($safelist, $keep)));
+    }
+
+    /**
+     * Load the popup stylesheet without blocking first paint. Popups are
+     * hidden until a trigger fires (click / scroll / timer), so their CSS is
+     * never needed for the initial render; the async swap pulls it off the
+     * critical path. <noscript> fallback covers no-JS visitors (popups are
+     * JS-driven anyway, but shortcode-rendered content should stay styled).
+     */
+    public function async_style_tag($tag, $handle, $href, $media){
+        if ('up-frontend' !== $handle || is_admin()) {
+            return $tag;
+        }
+        return '<link rel="stylesheet" id="' . esc_attr($handle) . '-css" href="' . esc_url($href) . '" media="print" onload="this.media=\'all\';this.onload=null;">'
+            . '<noscript><link rel="stylesheet" href="' . esc_url($href) . '"></noscript>' . "\n";
     }
 
     public function frontend_assets(){

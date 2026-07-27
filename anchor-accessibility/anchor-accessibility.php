@@ -72,10 +72,26 @@ class Anchor_Accessibility_Module {
         add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 95 );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_frontend' ] );
+        add_filter( 'style_loader_tag', [ $this, 'async_style_tag' ], 10, 4 );
         add_action( 'wp_footer', [ $this, 'render_widget' ] );
 
         // Purge page caches when settings change so inline styles update immediately.
         add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'purge_page_caches' ] );
+    }
+
+    /**
+     * Load the widget stylesheet without blocking first paint. The widget DOM
+     * is injected by JS during idle time, so nothing styled by this sheet
+     * exists at parse time — a render-blocking <link> here only delays LCP.
+     * media="print" + onload swap is the standard async-CSS pattern; the
+     * <noscript> fallback keeps it working without JS.
+     */
+    public function async_style_tag( $tag, $handle, $href, $media ) {
+        if ( 'anchor-accessibility' !== $handle || is_admin() ) {
+            return $tag;
+        }
+        return '<link rel="stylesheet" id="' . esc_attr( $handle ) . '-css" href="' . esc_url( $href ) . '" media="print" onload="this.media=\'all\';this.onload=null;">'
+            . '<noscript><link rel="stylesheet" href="' . esc_url( $href ) . '"></noscript>' . "\n";
     }
 
     /** Flush known page caches so the new inline styles are served. */

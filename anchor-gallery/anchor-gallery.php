@@ -1421,15 +1421,18 @@ class Anchor_Gallery_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function enqueue_assets() {
+        // Register only — enqueued from render_gallery() when a gallery actually
+        // renders. Previously these (plus the popups CSS) loaded render-blocking
+        // on every front-end page, even with no gallery present.
         $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-gallery/assets/';
 
         $up_css_path = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-universal-popups/assets/frontend.css';
         if (file_exists($up_css_path)) {
-            wp_enqueue_style('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.css'), [], filemtime($up_css_path));
+            wp_register_style('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.css'), [], filemtime($up_css_path));
         }
 
-        wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
-        wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
+        wp_register_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
+        wp_register_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -1533,6 +1536,11 @@ class Anchor_Gallery_Module {
        ══════════════════════════════════════════════════════════ */
 
     public function render_gallery($atts) {
+        $this->enqueue_assets(); // idempotent registration, in case the shortcode runs before wp_enqueue_scripts
+        wp_enqueue_style('up-frontend');
+        wp_enqueue_style('anchor-video-gallery');
+        wp_enqueue_script('anchor-video-gallery');
+
         $atts = shortcode_atts([
             'id'                 => '',
             'videos'             => '',

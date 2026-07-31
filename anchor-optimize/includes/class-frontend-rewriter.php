@@ -47,6 +47,29 @@ class Anchor_Optimize_Frontend_Rewriter {
 
         // Output buffer for anything we miss (Divi builder output, widgets, etc.).
         add_action( 'template_redirect', [ $this, 'start_output_buffer' ], 1 );
+
+        // Keep the wrapper we inject out of the layout.
+        add_action( 'wp_head', [ $this, 'print_wrapper_reset' ], 1 );
+    }
+
+    /**
+     * Neutralise the injected <picture> wrapper for layout purposes.
+     *
+     * Wrapping changes the box tree: markup authored as parent + <img> becomes
+     * parent + <picture> + <img>. Under a flex or grid parent the wrapper — not
+     * the image — becomes the item, so flex/grid properties set on the image are
+     * ignored; and because the blockified wrapper is content-sized, percentage
+     * heights on the image lose their definite containing block and silently
+     * resolve to none. Neither shows up in a plugin's admin preview, since this
+     * rewriter skips admin and AJAX.
+     *
+     * display: contents removes the wrapper from the box tree while leaving the
+     * DOM (and therefore <source> selection) untouched, so pages lay out exactly
+     * as they did before the rewrite. Scoped to our own class so <picture>
+     * elements authored by a theme keep their boxes.
+     */
+    public function print_wrapper_reset() {
+        echo '<style id="anchor-optimize-picture-reset">picture.ao-picture{display:contents}</style>' . "\n";
     }
 
     /**
@@ -199,7 +222,9 @@ class Anchor_Optimize_Frontend_Rewriter {
         // Mark the img so the output buffer doesn't double-wrap it.
         $img_html = str_replace( '<img ', '<img data-ao-skip="1" ', $img_html );
 
-        return '<picture>' . implode( '', $sources ) . $img_html . '</picture>';
+        // The class is what print_wrapper_reset() targets — see that method for
+        // why the wrapper must stay out of the layout.
+        return '<picture class="ao-picture">' . implode( '', $sources ) . $img_html . '</picture>';
     }
 
     /**

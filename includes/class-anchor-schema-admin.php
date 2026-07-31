@@ -293,7 +293,7 @@ class Anchor_Schema_Admin {
         echo '<p><code>[anchor_reviews]</code> ' . esc_html__( 'Uses the saved Place ID from this settings page.', 'anchor-schema' ) . '</p>';
         echo '<p><code>[anchor_reviews place_id="YOUR_PLACE_ID"]</code> ' . esc_html__( 'Overrides the Place ID for a single embed.', 'anchor-schema' ) . '</p>';
         echo '<p><code>[anchor_reviews_google]</code> ' . esc_html__( 'Alias for [anchor_reviews] with the Google source.', 'anchor-schema' ) . '</p>';
-        echo '<p><code>[anchor_reviews_widget]</code> ' . esc_html__( 'Compact badge showing your business name, rating, and review count.', 'anchor-schema' ) . '</p>';
+        echo '<p><code>[anchor_reviews_widget]</code> ' . esc_html__( 'Compact badge showing your business name, rating, and review count. Optional style attribute accepts stackable variants, e.g. style="minimal, light" — minimal drops the business name and card chrome (background, border, radius, padding); light switches to light text for dark backgrounds.', 'anchor-schema' ) . '</p>';
         if ( isset( $_GET['anchor_reviews_refresh'] ) ) {
             $status = sanitize_text_field( $_GET['anchor_reviews_refresh'] );
             if ( $status === 'success' ) {

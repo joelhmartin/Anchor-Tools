@@ -278,9 +278,14 @@ class Anchor_Reviews_Manager {
         $atts = shortcode_atts(
             [
                 'place_id' => '',
+                'style'    => '',
             ],
             $atts
         );
+
+        $variants = array_filter( array_map( 'sanitize_key', preg_split( '/[\s,]+/', (string) $atts['style'] ) ) );
+        $minimal  = in_array( 'minimal', $variants, true );
+        $light    = in_array( 'light', $variants, true );
 
         $place_id = $this->get_place_id();
         if ( ! $place_id ) {
@@ -307,18 +312,32 @@ class Anchor_Reviews_Manager {
         $count_display  = number_format_i18n( $count );
         $stars_html     = self::render_stars_svg( $rating );
 
-        $html  = '<div class="anchor-reviews-widget" style="display:inline-flex;align-items:center;gap:16px;background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:1rem 1.25rem;pointer-events:auto">';
+        $text_color    = $light ? '#fff' : '#1a1a1a';
+        $muted_color   = $light ? 'rgba(255,255,255,0.75)' : '#666';
+        $divider_color = $light ? 'rgba(255,255,255,0.35)' : '#e0e0e0';
+
+        $container_style = 'display:inline-flex;align-items:center;gap:16px;pointer-events:auto';
+        if ( ! $minimal ) {
+            $container_style .= ';background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:1rem 1.25rem';
+        }
+
+        $classes = 'anchor-reviews-widget';
+        foreach ( $variants as $variant ) {
+            $classes .= ' anchor-reviews-widget--' . $variant;
+        }
+
+        $html  = '<div class="' . esc_attr( $classes ) . '" style="' . esc_attr( $container_style ) . '">';
         $html .= '<svg width="36" height="36" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.1 0 5.8 1.1 8 2.8l6-6C34.3 3.3 29.5 1 24 1 14.8 1 6.9 6.6 3.3 14.6l7 5.4C12.2 13.7 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h12.7c-.6 3-2.3 5.5-4.9 7.2l7.5 5.8C43.7 37.1 46.5 31.3 46.5 24.5z"/><path fill="#FBBC04" d="M10.3 28.6c-.5-1.5-.8-3.1-.8-4.6s.3-3.1.8-4.6l-7-5.4C1.8 17.1 1 20.5 1 24s.8 6.9 2.3 9.9l7-5.3z"/><path fill="#34A853" d="M24 47c5.5 0 10.1-1.8 13.4-4.9l-7.5-5.8c-1.9 1.3-4.3 2-5.9 2-6.4 0-11.8-4.3-13.7-10.1l-7 5.4C6.9 41.4 14.8 47 24 47z"/></svg>';
-        $html .= '<div style="width:1px;height:48px;background:#e0e0e0;flex-shrink:0"></div>';
+        $html .= '<div style="width:1px;height:48px;background:' . esc_attr( $divider_color ) . ';flex-shrink:0"></div>';
         $html .= '<div style="display:flex;flex-direction:column;gap:4px">';
-        if ( $name ) {
-            $html .= '<div style="font-size:13px;font-weight:600;color:#1a1a1a;line-height:1;">' . esc_html( $name ) . '</div>';
+        if ( $name && ! $minimal ) {
+            $html .= '<div style="font-size:13px;font-weight:600;color:' . esc_attr( $text_color ) . ';line-height:1;">' . esc_html( $name ) . '</div>';
         }
         $html .= '<div style="display:flex;align-items:center;gap:6px">';
-        $html .= '<span style="font-size:18px;font-weight:600;color:#1a1a1a;line-height:1;">' . esc_html( $rating_display ) . '</span>';
+        $html .= '<span style="font-size:18px;font-weight:600;color:' . esc_attr( $text_color ) . ';line-height:1;">' . esc_html( $rating_display ) . '</span>';
         $html .= '<div style="display:flex;gap:2px">' . $stars_html . '</div>';
         $html .= '</div>';
-        $html .= '<div style="font-size:12px;color:#666;line-height:1;">' . esc_html( $count_display ) . ' Google reviews</div>';
+        $html .= '<div style="font-size:12px;color:' . esc_attr( $muted_color ) . ';line-height:1;">' . esc_html( $count_display ) . ' Google reviews</div>';
         $html .= '</div>';
         $html .= '</div>';
 

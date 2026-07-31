@@ -42,26 +42,38 @@ const IMG =
   ).toString('base64');
 
 /**
- * The two shapes the wrapper breaks, in plain CSS — no module styles involved,
- * so this covers every module rather than the ones we happened to audit.
+ * The three shapes that actually break, measured rather than assumed — plain
+ * CSS, no module styles, so this covers every module rather than the ones we
+ * happened to audit. Notably a plain block parent, and a flex parent left on
+ * the default align-items: stretch, are NOT affected; the damage needs the
+ * wrapper to become an item whose own size the image then depends on.
  */
 const HARNESS = `
   <style>
     ${RESET_CSS}
+    /* 1. non-stretch flex parent: wrapper is content-sized, so the image's
+          percentage cap loses its basis. This is the logo-reel bug. */
     .flex-parent { display: flex; align-items: center; height: 60px; width: 300px; }
     .flex-parent img { max-height: 100%; width: auto; }
+    /* 2. grid placement on the image: the wrapper becomes the grid item. */
     .grid-parent { display: grid; grid-template-columns: 1fr 1fr; width: 300px; }
     .grid-parent img { grid-column: 1 / -1; width: 100%; }
+    /* 3. flex sizing on the image: likewise, the wrapper becomes the item. */
+    .flex-grow { display: flex; width: 300px; height: 60px; }
+    .flex-grow img { flex: 1; min-width: 0; }
   </style>
   <div class="flex-parent">__FLEX__</div>
-  <div class="grid-parent"><div></div>__GRID__</div>`;
+  <div class="grid-parent"><div></div>__GRID__</div>
+  <div class="flex-grow">__GROW__</div>`;
 
 /** @param {boolean} wrapped */
 function markup(wrapped) {
   const img = `<img src="${IMG}" alt="">`;
   const wrap = (i) =>
     wrapped ? `<picture class="ao-picture"><source srcset="${IMG}">${i}</picture>` : i;
-  return HARNESS.replace('__FLEX__', wrap(img)).replace('__GRID__', wrap(img));
+  return HARNESS.replace('__FLEX__', wrap(img))
+    .replace('__GRID__', wrap(img))
+    .replace('__GROW__', wrap(img));
 }
 
 /** @param {import('@playwright/test').Page} page */
@@ -72,7 +84,11 @@ async function measure(page, wrapped) {
       const r = document.querySelector(sel).getBoundingClientRect();
       return { w: Math.round(r.width), h: Math.round(r.height) };
     };
-    return { flexImg: box('.flex-parent img'), gridImg: box('.grid-parent img') };
+    return {
+      flexImg: box('.flex-parent img'),
+      gridImg: box('.grid-parent img'),
+      growImg: box('.flex-grow img'),
+    };
   });
 }
 

@@ -27,6 +27,16 @@
   padding: var(--avg-wrapper-padding, 0);
 }
 
+/* WebP/AVIF delivery rewrites front-end <img> into <picture><img>, which the
+   admin preview never sees (the rewriter skips admin and AJAX). The wrapper is
+   content-sized, so any sizing this stylesheet hangs on the tile — percentage
+   heights, absolute positioning, flex alignment — lands on the wrapper instead
+   of the image. display: contents takes it back out of the box tree so the img
+   lays out as the direct child it is written as. */
+.anchor-video-gallery picture {
+  display: contents;
+}
+
 /* Theme: Light */
 .avg-theme-light {
   --avg-bg: #ffffff;
@@ -897,7 +907,12 @@
 
 .avg-marquee-item img {
   max-width: 100%;
-  max-height: 100%;
+  /* Not max-height: 100% — a percentage needs a definite containing block, and
+     WebP delivery (Anchor Optimize, and third-party optimizers) wraps front-end
+     images in a content-sized <picture>, which leaves the percentage with no
+     basis and drops the cap. The variable is inherited, so it holds regardless
+     of what a rewriter puts between the item and the img. */
+  max-height: var(--avg-marquee-item-height, 80px);
   width: auto;
   height: auto;
   object-fit: var(--avg-object-fit, contain);
@@ -918,13 +933,18 @@
   opacity: 1;
 }
 
-/* Mobile overrides for logo carousel */
+/* Mobile overrides for logo carousel.
+   !important is load-bearing, not defensive: the renderer writes the desktop
+   values into the style attribute, and an inline declaration outranks any
+   selector here, so without it these swaps never apply and mobile silently
+   keeps the desktop sizing. Per-gallery Custom CSS needs !important to win
+   back at this breakpoint. */
 @media (max-width: 640px) {
   .avg-layout-logo-carousel {
-    --avg-marquee-item-width: var(--avg-marquee-item-width-mobile);
-    --avg-marquee-item-height: var(--avg-marquee-item-height-mobile);
-    --avg-marquee-gap: var(--avg-marquee-gap-mobile);
-    --avg-marquee-speed: var(--avg-marquee-speed-mobile);
+    --avg-marquee-item-width: var(--avg-marquee-item-width-mobile) !important;
+    --avg-marquee-item-height: var(--avg-marquee-item-height-mobile) !important;
+    --avg-marquee-gap: var(--avg-marquee-gap-mobile) !important;
+    --avg-marquee-speed: var(--avg-marquee-speed-mobile) !important;
   }
 }
 

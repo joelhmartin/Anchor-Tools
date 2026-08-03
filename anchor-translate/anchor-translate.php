@@ -181,6 +181,15 @@ class Anchor_Translate_Module {
             delete_option( self::REWRITE_OPTION );
         }
 
+        if ( ! $was_enabled && $is_enabled ) {
+            // Switching translation on means an entire site is about to be
+            // translated for the first time, which the daily cap is deliberately
+            // too small to absorb. Grant the one-time warm pool here so standing
+            // up a new site just works, instead of spending its first week
+            // redirecting to English while someone works out why.
+            Anchor_Translate_Budget::grant_warm_allowance();
+        }
+
         // Existing translations cached under the old language/option set are now stale.
         $this->delete_render_transients();
         $this->purge_page_caches();
@@ -497,16 +506,31 @@ class Anchor_Translate_Module {
         // runaway cache miss ran for two months before the cloud bill showed it.
         $spent = Anchor_Translate_Budget::spent_today();
         $limit = Anchor_Translate_Budget::limit();
+        $warm  = Anchor_Translate_Budget::warm_remaining();
+
         printf(
             '<p><strong>%s</strong> %s</p>',
             esc_html__( 'Characters translated today:', 'anchor-schema' ),
             esc_html( sprintf( '%s / %s (%s)', number_format_i18n( $spent ), number_format_i18n( $limit ),
                 Anchor_Translate_Budget::exceeded()
-                    ? __( 'daily cap reached — translated URLs redirect to the default language until midnight UTC', 'anchor-schema' )
+                    ? __( 'cap reached — translated URLs redirect to the default language until midnight UTC', 'anchor-schema' )
                     : sprintf( __( '%s remaining', 'anchor-schema' ), number_format_i18n( Anchor_Translate_Budget::remaining() ) )
             ) )
         );
-        echo '<p class="description">' . esc_html__( 'Google Cloud Translation bills per character. A correctly cached site translates each phrase once, so a healthy steady state is close to zero per day — a number that climbs every day means pages are missing cache.', 'anchor-schema' ) . '</p>';
+
+        if ( $warm > 0 ) {
+            printf(
+                '<p><strong>%s</strong> %s</p>',
+                esc_html__( 'First-run allowance remaining:', 'anchor-schema' ),
+                esc_html( sprintf(
+                    /* translators: %s: character count */
+                    __( '%s characters — a one-time pool for translating this site for the first time. It is used only after the daily cap is spent, and is refilled if you switch translation off and on again.', 'anchor-schema' ),
+                    number_format_i18n( $warm )
+                ) )
+            );
+        }
+
+        echo '<p class="description">' . esc_html__( 'Google Cloud Translation bills per character, with the first 500,000 per month free across your whole billing account. A correctly cached site translates each phrase once — an edit re-bills only the sentences that changed — so a healthy steady state is close to zero per day. A number that climbs every day means pages are missing cache.', 'anchor-schema' ) . '</p>';
     }
 
     public function sanitize_options( $input ) {

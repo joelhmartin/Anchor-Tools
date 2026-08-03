@@ -17,8 +17,28 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Anchor_Translate_Budget {
 
-    const OPTION_KEY    = 'anchor_translate_budget';
-    const DEFAULT_LIMIT = 150000; // characters/day
+    const OPTION_KEY = 'anchor_translate_budget';
+
+    /**
+     * Steady-state ceiling. Sized against what a cached site actually spends,
+     * not against what a cold one costs: an edit re-bills only the sentences
+     * that changed (~200 characters, measured), and a new page 2k–12k. 20k/day
+     * is ~100 edits or a couple of new pages, and keeps a month inside Google's
+     * 500k free tier — so a correctly cached site never pays at all.
+     */
+    const DEFAULT_LIMIT = 20000;
+
+    /**
+     * One-time pool for first translating an entire site, which the daily cap
+     * cannot absorb — a full 72-URL warm measured 145,377 characters. Granted
+     * when translation is switched on, drawn down only once the daily cap is
+     * already spent, and never refilled until translation is toggled again.
+     *
+     * This is the difference between a spend guard and an obstacle: without it
+     * every new site would spend its first week serving redirects instead of
+     * Spanish, which reads as a broken feature rather than a working cap.
+     */
+    const WARM_ALLOWANCE = 300000;
 
     /**
      * Characters already spent today. Rolls over automatically at UTC midnight.
@@ -36,8 +56,32 @@ class Anchor_Translate_Budget {
         return $limit > 0 ? $limit : self::DEFAULT_LIMIT;
     }
 
+    /** Characters left in the one-time initial-warm pool. */
+    public static function warm_remaining() {
+        $state = get_option( self::OPTION_KEY, [] );
+        if ( ! is_array( $state ) || ! isset( $state['warm'] ) ) {
+            return 0;
+        }
+        return max( 0, (int) $state['warm'] );
+    }
+
+    /**
+     * Refill the one-time warm pool. Called when translation is switched on, so
+     * standing up a new site works without anyone having to know a cap exists.
+     */
+    public static function grant_warm_allowance() {
+        $state = get_option( self::OPTION_KEY, [] );
+        if ( ! is_array( $state ) ) {
+            $state = [];
+        }
+        $state['date'] = $state['date'] ?? self::today();
+        $state['warm'] = (int) apply_filters( 'anchor_translate_warm_allowance', self::WARM_ALLOWANCE );
+        update_option( self::OPTION_KEY, $state, false );
+    }
+
+    /** Today's daily headroom, plus whatever is left of the warm pool. */
     public static function remaining() {
-        return max( 0, self::limit() - self::spent_today() );
+        return max( 0, self::limit() - self::spent_today() ) + self::warm_remaining();
     }
 
     public static function exceeded() {
@@ -57,21 +101,39 @@ class Anchor_Translate_Budget {
 
         $today = self::today();
         $state = get_option( self::OPTION_KEY, [] );
+        if ( ! is_array( $state ) ) {
+            $state = [];
+        }
 
-        if ( ! is_array( $state ) || ( $state['date'] ?? '' ) !== $today ) {
+        // The warm pool is one-time, so it must survive the daily rollover that
+        // resets $chars — otherwise a warm spanning midnight would silently
+        // refill itself and stop being a ceiling at all.
+        $warm = max( 0, (int) ( $state['warm'] ?? 0 ) );
+
+        if ( ( $state['date'] ?? '' ) !== $today ) {
             $state = [ 'date' => $today, 'chars' => 0 ];
         }
 
-        $state['chars'] = (int) ( $state['chars'] ?? 0 ) + $characters;
+        // Spend the daily allowance first; only what overflows draws down the
+        // one-time pool, so ordinary days never erode it.
+        $limit    = self::limit();
+        $chars    = (int) ( $state['chars'] ?? 0 );
+        $headroom = max( 0, $limit - $chars );
+        $overflow = max( 0, $characters - $headroom );
+
+        $state['date']  = $today;
+        $state['chars'] = $chars + min( $characters, $headroom );
+        $state['warm']  = max( 0, $warm - $overflow );
 
         // autoload=false: this is written on translation misses only and is
         // never needed on the hot path of an untranslated pageview.
         update_option( self::OPTION_KEY, $state, false );
 
-        if ( $state['chars'] >= self::limit() && class_exists( 'Anchor_Schema_Logger' ) ) {
+        if ( self::exceeded() && class_exists( 'Anchor_Schema_Logger' ) ) {
             Anchor_Schema_Logger::log( 'translate:budget-exceeded', [
                 'spent' => $state['chars'],
-                'limit' => self::limit(),
+                'limit' => $limit,
+                'warm'  => $state['warm'],
             ] );
         }
     }

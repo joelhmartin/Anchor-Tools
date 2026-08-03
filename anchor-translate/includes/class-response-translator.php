@@ -8,7 +8,19 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 class Anchor_Translate_Response_Translator {
 
     const CACHE_PREFIX = 'anchor_translate_render_';
-    const CACHE_VERSION = '3';
+
+    /**
+     * v4 changed both the key shape (identity, not content hash) and the stored
+     * value shape (array payload, not a bare string). Old v3 string entries are
+     * ignored by the is_array() check on read and expire on their own.
+     */
+    const CACHE_VERSION = '4';
+
+    /** Safe to keep for a long time: the stored source hash gates staleness. */
+    const RENDER_TTL = MONTH_IN_SECONDS;
+
+    /** Shorter, so a fix to a genuinely broken page recovers without a purge. */
+    const FAILURE_TTL = HOUR_IN_SECONDS * 6;
     const RAW_BLOCK_TOKEN = 'ANCHOR_TRANSLATE_RAW_BLOCK_';
     const EXCLUDED_BLOCK_TOKEN = 'ANCHOR_TRANSLATE_EXCLUDED_BLOCK_';
 
@@ -31,18 +43,43 @@ class Anchor_Translate_Response_Translator {
         $preserved = $this->preserve_excluded_blocks( $raw['html'] );
         $working_html = $preserved['html'];
 
+        // The key is the page's IDENTITY (url + language + settings) — never a
+        // hash of the fetched markup. Keying on content meant one entry per
+        // byte-variant of the page: 851 transients for 75 pages on the first
+        // site audited, 209MB of wp_options, and a fresh paid translation for
+        // every variant. The content hash is now a stored VALIDATOR instead, so
+        // an edit still forces a re-render but does not fragment the keyspace.
         $cache_key = self::CACHE_PREFIX . md5( wp_json_encode( [
             'version'   => self::CACHE_VERSION,
             'lang'      => $target_lang,
-            'source'    => $source_url,
-            'content'   => md5( $html ),
+            // canonical_url(), not the denylist: anyone can append ?foo=1, and
+            // keying on that would let junk params refragment the keyspace the
+            // way the content hash originally did. Content-selecting args
+            // (page/paged/s) survive, so paginated views stay cache-distinct.
+            // If some unlisted arg really does alter the markup, the stored
+            // source hash catches it and re-renders — which is now nearly free,
+            // because every phrase is already cached.
+            'source'    => Anchor_Translate_Language::canonical_url( $source_url ),
             'phrases'   => $this->options['preserve_phrases'] ?? '',
             'exclusion' => $this->options['exclude_selectors'] ?? '',
         ] ) );
 
-        $cached = get_transient( $cache_key );
-        if ( is_string( $cached ) && $cached !== '' ) {
-            return $cached;
+        $source_hash = md5( $html );
+        $cached      = get_transient( $cache_key );
+
+        if ( is_array( $cached ) && ( $cached['src'] ?? '' ) === $source_hash ) {
+            // A previous attempt on this exact markup failed unrecoverably.
+            // Remember that instead of re-buying the translation on every hit.
+            if ( ! empty( $cached['failed'] ) ) {
+                return false;
+            }
+            if ( is_string( $cached['html'] ?? null ) && $cached['html'] !== '' ) {
+                return $cached['html'];
+            }
+        }
+
+        if ( Anchor_Translate_Budget::exceeded() ) {
+            return false;
         }
 
         $dom = new DOMDocument( '1.0', 'UTF-8' );
@@ -71,16 +108,17 @@ class Anchor_Translate_Response_Translator {
         $translated = $this->restore_preserved_blocks( $translated, $preserved['blocks'] );
         $translated = $this->restore_preserved_blocks( $translated, $raw['blocks'] );
 
-        if ( $this->has_unrestored_placeholders( $translated ) ) {
+        // Both remaining failure modes are deterministic for this exact markup:
+        // retrying cannot produce a different outcome, but WOULD re-bill the
+        // whole page. Record the failure against the source hash so it costs
+        // once, then re-evaluates for free as soon as the page is edited.
+        if ( $this->has_unrestored_placeholders( $translated ) || ! is_string( $translated ) || $translated === '' ) {
+            set_transient( $cache_key, [ 'src' => $source_hash, 'failed' => true ], self::FAILURE_TTL );
             return false;
         }
 
-        if ( is_string( $translated ) && $translated !== '' ) {
-            set_transient( $cache_key, $translated, WEEK_IN_SECONDS );
-            return $translated;
-        }
-
-        return false;
+        set_transient( $cache_key, [ 'src' => $source_hash, 'html' => $translated ], self::RENDER_TTL );
+        return $translated;
     }
 
     private function translate_document( DOMXPath $xpath, $target_lang ) {
@@ -159,14 +197,13 @@ class Anchor_Translate_Response_Translator {
             $meta[ $index ] = $tokenized['replacements'];
         }
 
-        $chunks = array_chunk( $payload, 40 );
-        $translated = [];
-        foreach ( $chunks as $chunk ) {
-            $result = $this->provider->translate_texts( $chunk, $target_lang, $this->language->get_default() );
-            if ( is_wp_error( $result ) ) {
-                return false;
-            }
-            $translated = array_merge( $translated, $result );
+        // Hand the whole page over in one call. The provider caches per phrase
+        // and batches the misses itself, so pre-chunking here only prevented it
+        // from collapsing strings that repeat across the page (nav, footer,
+        // aria-labels) into a single billed unit.
+        $translated = $this->provider->translate_texts( $payload, $target_lang, $this->language->get_default() );
+        if ( is_wp_error( $translated ) ) {
+            return false;
         }
 
         foreach ( $items as $index => $item ) {
@@ -219,23 +256,29 @@ class Anchor_Translate_Response_Translator {
             }
         }
 
+        // Canonical and hreflang must address the CLEAN url. Emitting them with
+        // the inbound query string made every ?utm_*/?gclid variant a distinct
+        // self-canonicalising indexable page, so ad traffic manufactured
+        // unlimited duplicate /es/ URLs and pointed hreflang at all of them.
+        $clean_source = Anchor_Translate_Language::canonical_url( $source_url );
+
         $canonical = $dom->createElement( 'link' );
         $canonical->setAttribute( 'rel', 'canonical' );
-        $canonical->setAttribute( 'href', $this->language->localize_url( $source_url, $target_lang ) );
+        $canonical->setAttribute( 'href', $this->language->localize_url( $clean_source, $target_lang ) );
         $head->appendChild( $canonical );
 
         foreach ( $this->language->get_enabled() as $code => $label ) {
             $alt = $dom->createElement( 'link' );
             $alt->setAttribute( 'rel', 'alternate' );
             $alt->setAttribute( 'hreflang', $code );
-            $alt->setAttribute( 'href', $this->language->localize_url( $source_url, $code ) );
+            $alt->setAttribute( 'href', $this->language->localize_url( $clean_source, $code ) );
             $head->appendChild( $alt );
         }
 
         $xdefault = $dom->createElement( 'link' );
         $xdefault->setAttribute( 'rel', 'alternate' );
         $xdefault->setAttribute( 'hreflang', 'x-default' );
-        $xdefault->setAttribute( 'href', $this->language->localize_url( $source_url, $this->language->get_default() ) );
+        $xdefault->setAttribute( 'href', $this->language->localize_url( $clean_source, $this->language->get_default() ) );
         $head->appendChild( $xdefault );
     }
 

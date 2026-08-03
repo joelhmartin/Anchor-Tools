@@ -54,6 +54,10 @@ class Anchor_Translate_Module {
         add_action( 'admin_post_anchor_translate_deactivate_cleanup', [ $this, 'handle_deactivate_cleanup' ] );
         add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'on_options_updated' ], 10, 2 );
 
+        add_action( 'save_post', [ $this, 'purge_translations_for_post' ], 20, 2 );
+        add_action( 'trashed_post', [ $this, 'purge_translations_for_post' ], 20 );
+        add_action( 'deleted_post', [ $this, 'purge_translations_for_post' ], 20 );
+
         add_action( 'init', [ $this, 'register_rewrite_rules' ] );
         add_action( 'init', [ $this, 'maybe_flush_rewrite_rules' ], 20 );
         add_filter( 'query_vars', [ $this, 'register_query_vars' ] );
@@ -68,6 +72,7 @@ class Anchor_Translate_Module {
 
     private function load_includes() {
         $dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/includes/';
+        require_once $dir . 'class-budget.php';
         require_once $dir . 'class-google-provider.php';
         require_once $dir . 'class-language.php';
         require_once $dir . 'class-shortcode.php';
@@ -80,6 +85,46 @@ class Anchor_Translate_Module {
 
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_frontend' ] );
         add_action( 'template_redirect', [ $this, 'handle_translated_request' ], 0 );
+        add_action( 'wp_head', [ $this, 'emit_default_language_hreflang' ], 1 );
+    }
+
+    /**
+     * Emit the hreflang cluster on DEFAULT-language (untranslated) pages.
+     *
+     * hreflang annotation must be reciprocal — if /es/ points at / but / does
+     * not point back at /es/, Google discards the pairing and the translated
+     * set earns no international-targeting benefit at all. Translated responses
+     * get their cluster injected into the DOM by the response translator; this
+     * is the other half, and without it the whole feature was SEO-inert.
+     */
+    public function emit_default_language_hreflang() {
+        if ( ! $this->is_activated() || ! $this->language->is_default() ) {
+            return;
+        }
+        // Only annotate real, indexable destinations.
+        if ( is_404() || is_search() || is_feed() || is_preview() ) {
+            return;
+        }
+        if ( count( $this->language->get_enabled() ) < 2 ) {
+            return;
+        }
+
+        $source = Anchor_Translate_Language::canonical_url(
+            $this->language->get_source_url_for_current_request()
+        );
+
+        foreach ( $this->language->get_enabled() as $code => $label ) {
+            printf(
+                '<link rel="alternate" hreflang="%s" href="%s" />' . "\n",
+                esc_attr( $code ),
+                esc_url( $this->language->localize_url( $source, $code ) )
+            );
+        }
+
+        printf(
+            '<link rel="alternate" hreflang="x-default" href="%s" />' . "\n",
+            esc_url( $this->language->localize_url( $source, $this->language->get_default() ) )
+        );
     }
 
     public function enqueue_frontend() {
@@ -141,6 +186,51 @@ class Anchor_Translate_Module {
         $this->purge_page_caches();
     }
 
+    /**
+     * Invalidate translated copies of a post when its source copy changes.
+     *
+     * Host page caches purge by post URL, and they have no idea that
+     * /es/<slug>/ is a view of the same post — verified on Kinsta, where after
+     * an edit the English URL refreshed within 15s while the translated URL
+     * kept serving the old copy indefinitely. The translation layer itself was
+     * correct throughout (its stored source hash detects the edit and
+     * re-renders, re-billing only the changed phrases); the stale copy was
+     * being served by the CDN before PHP ever ran.
+     *
+     * Hosts expose only a site-wide purge, so that is what we trigger. It is
+     * the same purge a settings change already performs, and it runs only on an
+     * actual content edit.
+     */
+    public function purge_translations_for_post( $post_id, $post = null ) {
+        if ( ! $this->is_activated() ) {
+            return;
+        }
+        if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+            return;
+        }
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+
+        $post = $post ?: get_post( $post_id );
+        if ( $post && ! in_array( get_post_status( $post ), [ 'publish', 'trash', 'private' ], true ) ) {
+            return; // drafts have no translated URL to invalidate
+        }
+
+        // Once per request, however many posts a bulk edit touches.
+        static $done = false;
+        if ( $done ) {
+            return;
+        }
+        $done = true;
+
+        // Deliberately NOT dropping render transients here. The stored source
+        // hash already detects the edit and re-renders that one page by itself,
+        // whereas clearing them would force all ~70 pages to re-render for a
+        // one-page change. Only the host cache needs telling.
+        $this->purge_page_caches();
+    }
+
     public function purge_page_caches() {
         if ( function_exists( 'wp_cache_flush' ) ) {
             wp_cache_flush();
@@ -149,7 +239,17 @@ class Anchor_Translate_Module {
         if ( class_exists( 'Developer_Tools_Settings' ) && function_exists( 'developer_tools_clear_cache' ) ) {
             developer_tools_clear_cache();
         }
-        if ( class_exists( '\Jeedo\KinstaMUPlugins\Cache\CachePurge' ) ) {
+        // Kinsta. The guard used to test for \Jeedo\KinstaMUPlugins\Cache\CachePurge,
+        // a namespace current kinsta-mu-plugins does not ship — verified MISSING on
+        // a live Kinsta host whose actual API is Kinsta\Cache_Purge, reached through
+        // the global $kinsta_cache. The guard therefore never matched and the purge
+        // silently never ran, which is why translated URLs kept serving pre-edit
+        // copy from the host cache. Prefer the real object; keep the URL trigger as
+        // a fallback for hosts that still expose the old shape.
+        global $kinsta_cache;
+        if ( isset( $kinsta_cache->kinsta_cache_purge ) && method_exists( $kinsta_cache->kinsta_cache_purge, 'purge_complete_caches' ) ) {
+            $kinsta_cache->kinsta_cache_purge->purge_complete_caches();
+        } elseif ( class_exists( '\Jeedo\KinstaMUPlugins\Cache\CachePurge' ) || defined( 'KINSTAMU_VERSION' ) ) {
             wp_remote_get( home_url( '/?kinsta-clear-cache-all' ), [ 'blocking' => false ] );
         }
 
@@ -236,6 +336,15 @@ class Anchor_Translate_Module {
         }
 
         $translated = $this->translator->translate_html( $body, $this->language->get_current(), $source_url );
+
+        if ( $translated === false && Anchor_Translate_Budget::exceeded() ) {
+            // Spend guard tripped. Send visitors to the English page for the rest
+            // of the day: they still get content, and a temporary redirect adds
+            // no duplicate URL to the index and — unlike a 404 — gives Google no
+            // reason to drop the translated set while the cap is in force.
+            wp_safe_redirect( $this->language->localize_url( $source_url, $this->language->get_default() ), 302 );
+            exit;
+        }
 
         if ( $translated === false ) {
             // Translation failed (no API key, API error, parse failure). Serve a 404
@@ -383,6 +492,21 @@ class Anchor_Translate_Module {
         }
 
         echo '<p class="description">' . esc_html__( 'The API key must allow server-side requests and have Cloud Translation API enabled in Google Cloud.', 'anchor-schema' ) . '</p>';
+
+        // Spend is metered but was previously invisible here, which is how a
+        // runaway cache miss ran for two months before the cloud bill showed it.
+        $spent = Anchor_Translate_Budget::spent_today();
+        $limit = Anchor_Translate_Budget::limit();
+        printf(
+            '<p><strong>%s</strong> %s</p>',
+            esc_html__( 'Characters translated today:', 'anchor-schema' ),
+            esc_html( sprintf( '%s / %s (%s)', number_format_i18n( $spent ), number_format_i18n( $limit ),
+                Anchor_Translate_Budget::exceeded()
+                    ? __( 'daily cap reached — translated URLs redirect to the default language until midnight UTC', 'anchor-schema' )
+                    : sprintf( __( '%s remaining', 'anchor-schema' ), number_format_i18n( Anchor_Translate_Budget::remaining() ) )
+            ) )
+        );
+        echo '<p class="description">' . esc_html__( 'Google Cloud Translation bills per character. A correctly cached site translates each phrase once, so a healthy steady state is close to zero per day — a number that climbs every day means pages are missing cache.', 'anchor-schema' ) . '</p>';
     }
 
     public function sanitize_options( $input ) {
@@ -476,6 +600,15 @@ class Anchor_Translate_Module {
         exit;
     }
 
+    /**
+     * Drop cached translated PAGES, keeping the per-phrase cache.
+     *
+     * This is the right scope for a settings change: exclusions and preserved
+     * phrases alter how a page is assembled, but the Spanish rendering of an
+     * individual sentence is unaffected — so re-rendering is free rather than
+     * re-billed. Use delete_phrase_transients() for the rare cases that must
+     * also discard bought translations.
+     */
     private function delete_render_transients() {
         global $wpdb;
         $like_value   = '_transient_' . self::TRANSIENT_PREFIX . '%';
@@ -485,6 +618,24 @@ class Anchor_Translate_Module {
                 "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s",
                 $like_value,
                 $like_timeout
+            )
+        );
+    }
+
+    /**
+     * Drop the per-phrase translation cache. Every phrase discarded here has to
+     * be bought again, so this is deliberately NOT called on a settings save —
+     * only on full deactivation cleanup, where leaving thousands of orphaned
+     * rows behind in wp_options would be the worse outcome.
+     */
+    private function delete_phrase_transients() {
+        global $wpdb;
+        $prefix = Anchor_Translate_Google_Provider::CACHE_PREFIX;
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s",
+                '_transient_' . $prefix . '%',
+                '_transient_timeout_' . $prefix . '%'
             )
         );
     }
@@ -502,6 +653,8 @@ class Anchor_Translate_Module {
         delete_option( self::REWRITE_OPTION );
         flush_rewrite_rules( false );
         $this->delete_render_transients();
+        $this->delete_phrase_transients();
+        delete_option( Anchor_Translate_Budget::OPTION_KEY );
         $this->purge_page_caches();
 
         $url = add_query_arg(

@@ -105,7 +105,7 @@ class Anchor_Translate_Module {
             return;
         }
 
-        $source = Anchor_Translate_Language::strip_tracking_params(
+        $source = Anchor_Translate_Language::canonical_url(
             $this->language->get_source_url_for_current_request()
         );
 

@@ -178,6 +178,46 @@ class Anchor_Translate_Language {
         return empty( $params ) ? '' : http_build_query( $params );
     }
 
+    /**
+     * The ONLY query args allowed to survive into a canonical or hreflang.
+     *
+     * Canonicals use an allowlist, not the tracking denylist, because anything
+     * can be appended to a URL: a scraper hitting /es/?foo=1 must not mint a
+     * self-canonicalising duplicate just because "foo" wasn't a known tracking
+     * param. These are the args that genuinely select different content, so a
+     * distinct canonical is correct for them.
+     */
+    public static function canonical_query_allowlist() {
+        return (array) apply_filters(
+            'anchor_translate_canonical_query_allowlist',
+            [ 'page', 'paged', 's' ]
+        );
+    }
+
+    /**
+     * Reduce a URL to its indexable identity: path plus only content-selecting
+     * query args, no fragment.
+     */
+    public static function canonical_url( $url ) {
+        $url   = (string) $url;
+        $base  = strtok( $url, '?' );
+        $parts = wp_parse_url( $url );
+
+        if ( empty( $parts['query'] ) ) {
+            return $base;
+        }
+
+        parse_str( $parts['query'], $params );
+        $keep = [];
+        foreach ( self::canonical_query_allowlist() as $allowed ) {
+            if ( isset( $params[ $allowed ] ) && $params[ $allowed ] !== '' ) {
+                $keep[ $allowed ] = $params[ $allowed ];
+            }
+        }
+
+        return empty( $keep ) ? $base : $base . '?' . http_build_query( $keep );
+    }
+
     public function get_current_url( $lang = null ) {
         return $this->localize_url( $this->get_source_url_for_current_request(), $lang ?: $this->get_current() );
     }

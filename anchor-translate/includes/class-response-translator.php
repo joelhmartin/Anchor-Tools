@@ -52,7 +52,14 @@ class Anchor_Translate_Response_Translator {
         $cache_key = self::CACHE_PREFIX . md5( wp_json_encode( [
             'version'   => self::CACHE_VERSION,
             'lang'      => $target_lang,
-            'source'    => Anchor_Translate_Language::strip_tracking_params( $source_url ),
+            // canonical_url(), not the denylist: anyone can append ?foo=1, and
+            // keying on that would let junk params refragment the keyspace the
+            // way the content hash originally did. Content-selecting args
+            // (page/paged/s) survive, so paginated views stay cache-distinct.
+            // If some unlisted arg really does alter the markup, the stored
+            // source hash catches it and re-renders — which is now nearly free,
+            // because every phrase is already cached.
+            'source'    => Anchor_Translate_Language::canonical_url( $source_url ),
             'phrases'   => $this->options['preserve_phrases'] ?? '',
             'exclusion' => $this->options['exclude_selectors'] ?? '',
         ] ) );
@@ -253,7 +260,7 @@ class Anchor_Translate_Response_Translator {
         // the inbound query string made every ?utm_*/?gclid variant a distinct
         // self-canonicalising indexable page, so ad traffic manufactured
         // unlimited duplicate /es/ URLs and pointed hreflang at all of them.
-        $clean_source = Anchor_Translate_Language::strip_tracking_params( $source_url );
+        $clean_source = Anchor_Translate_Language::canonical_url( $source_url );
 
         $canonical = $dom->createElement( 'link' );
         $canonical->setAttribute( 'rel', 'canonical' );

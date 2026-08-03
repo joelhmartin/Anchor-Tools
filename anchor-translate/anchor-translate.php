@@ -433,6 +433,21 @@ class Anchor_Translate_Module {
         }
 
         echo '<p class="description">' . esc_html__( 'The API key must allow server-side requests and have Cloud Translation API enabled in Google Cloud.', 'anchor-schema' ) . '</p>';
+
+        // Spend is metered but was previously invisible here, which is how a
+        // runaway cache miss ran for two months before the cloud bill showed it.
+        $spent = Anchor_Translate_Budget::spent_today();
+        $limit = Anchor_Translate_Budget::limit();
+        printf(
+            '<p><strong>%s</strong> %s</p>',
+            esc_html__( 'Characters translated today:', 'anchor-schema' ),
+            esc_html( sprintf( '%s / %s (%s)', number_format_i18n( $spent ), number_format_i18n( $limit ),
+                Anchor_Translate_Budget::exceeded()
+                    ? __( 'daily cap reached — translated URLs redirect to the default language until midnight UTC', 'anchor-schema' )
+                    : sprintf( __( '%s remaining', 'anchor-schema' ), number_format_i18n( Anchor_Translate_Budget::remaining() ) )
+            ) )
+        );
+        echo '<p class="description">' . esc_html__( 'Google Cloud Translation bills per character. A correctly cached site translates each phrase once, so a healthy steady state is close to zero per day — a number that climbs every day means pages are missing cache.', 'anchor-schema' ) . '</p>';
     }
 
     public function sanitize_options( $input ) {
@@ -526,6 +541,15 @@ class Anchor_Translate_Module {
         exit;
     }
 
+    /**
+     * Drop cached translated PAGES, keeping the per-phrase cache.
+     *
+     * This is the right scope for a settings change: exclusions and preserved
+     * phrases alter how a page is assembled, but the Spanish rendering of an
+     * individual sentence is unaffected — so re-rendering is free rather than
+     * re-billed. Use delete_phrase_transients() for the rare cases that must
+     * also discard bought translations.
+     */
     private function delete_render_transients() {
         global $wpdb;
         $like_value   = '_transient_' . self::TRANSIENT_PREFIX . '%';
@@ -535,6 +559,24 @@ class Anchor_Translate_Module {
                 "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s",
                 $like_value,
                 $like_timeout
+            )
+        );
+    }
+
+    /**
+     * Drop the per-phrase translation cache. Every phrase discarded here has to
+     * be bought again, so this is deliberately NOT called on a settings save —
+     * only on full deactivation cleanup, where leaving thousands of orphaned
+     * rows behind in wp_options would be the worse outcome.
+     */
+    private function delete_phrase_transients() {
+        global $wpdb;
+        $prefix = Anchor_Translate_Google_Provider::CACHE_PREFIX;
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s",
+                '_transient_' . $prefix . '%',
+                '_transient_timeout_' . $prefix . '%'
             )
         );
     }
@@ -552,6 +594,8 @@ class Anchor_Translate_Module {
         delete_option( self::REWRITE_OPTION );
         flush_rewrite_rules( false );
         $this->delete_render_transients();
+        $this->delete_phrase_transients();
+        delete_option( Anchor_Translate_Budget::OPTION_KEY );
         $this->purge_page_caches();
 
         $url = add_query_arg(

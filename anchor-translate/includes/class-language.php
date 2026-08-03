@@ -10,8 +10,60 @@ class Anchor_Translate_Language {
     const QUERY_VAR_LANG = 'anchor_translate_lang';
     const QUERY_VAR_PATH = 'anchor_translate_path';
 
+    /**
+     * Query parameters that carry attribution only and never change what the
+     * page renders. These are stripped from the fetched source URL, the render
+     * cache key, the canonical, the hreflang set and rewritten internal links.
+     *
+     * Why this matters: every distinct permutation used to mint its own render
+     * cache entry AND its own self-canonicalising indexable URL. A single ad
+     * campaign could therefore bill hundreds of full-page translations of one
+     * unchanged page and spray duplicate /es/?utm_* URLs into the index.
+     * Params NOT on this list (s, p, page, paged, filters…) are preserved,
+     * because those do change the rendered output and must stay cache-distinct.
+     */
+    const TRACKING_PARAMS = [
+        'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+        'utm_id', 'utm_source_platform', 'utm_creative_format', 'utm_marketing_tactic',
+        'gclid', 'gclsrc', 'gbraid', 'wbraid', 'dclid', 'gad_source',
+        'fbclid', 'msclkid', 'ttclid', 'twclid', 'li_fat_id', 'igshid', 'epik',
+        'mc_cid', 'mc_eid', 'yclid', '_ga', '_gl', 'vero_id', 'oly_enc_id', 'oly_anon_id',
+        'hsa_acc', 'hsa_cam', 'hsa_grp', 'hsa_ad', 'hsa_src', 'hsa_tgt',
+        'hsa_kw', 'hsa_mt', 'hsa_net', 'hsa_ver',
+    ];
+
     private $options;
     private $languages;
+
+    /**
+     * Remove attribution-only parameters from a URL, preserving every other
+     * query arg (and their order) plus any fragment.
+     */
+    public static function strip_tracking_params( $url ) {
+        $url = (string) $url;
+        if ( $url === '' || strpos( $url, '?' ) === false ) {
+            return $url;
+        }
+
+        $parts = wp_parse_url( $url );
+        if ( empty( $parts['query'] ) ) {
+            return $url;
+        }
+
+        parse_str( $parts['query'], $params );
+        foreach ( self::TRACKING_PARAMS as $drop ) {
+            unset( $params[ $drop ] );
+        }
+
+        $base = strtok( $url, '?' );
+        $clean = empty( $params ) ? $base : $base . '?' . http_build_query( $params );
+
+        if ( ! empty( $parts['fragment'] ) ) {
+            $clean .= '#' . $parts['fragment'];
+        }
+
+        return $clean;
+    }
 
     public function __construct( array $options ) {
         $this->options = $options;
@@ -96,12 +148,34 @@ class Anchor_Translate_Language {
         if ( $qs ) {
             parse_str( $qs, $params );
             unset( $params[ self::QUERY_VAR_LANG ], $params[ self::QUERY_VAR_PATH ] );
+            foreach ( self::TRACKING_PARAMS as $drop ) {
+                unset( $params[ $drop ] );
+            }
             if ( ! empty( $params ) ) {
                 $url = add_query_arg( $params, $url );
             }
         }
 
         return $url;
+    }
+
+    /**
+     * Drop attribution-only args from a raw query string, returning '' when
+     * nothing survives (so callers can omit the '?' entirely).
+     */
+    public static function filter_query_string( $query ) {
+        $query = (string) $query;
+        if ( $query === '' ) {
+            return '';
+        }
+
+        parse_str( $query, $params );
+        foreach ( self::TRACKING_PARAMS as $drop ) {
+            unset( $params[ $drop ] );
+        }
+        unset( $params[ self::QUERY_VAR_LANG ], $params[ self::QUERY_VAR_PATH ] );
+
+        return empty( $params ) ? '' : http_build_query( $params );
     }
 
     public function get_current_url( $lang = null ) {
@@ -125,8 +199,9 @@ class Anchor_Translate_Language {
                 : trailingslashit( $home . $lang );
 
             $parts = wp_parse_url( $url );
-            if ( ! empty( $parts['query'] ) ) {
-                $localized .= '?' . $parts['query'];
+            $query = self::filter_query_string( $parts['query'] ?? '' );
+            if ( $query !== '' ) {
+                $localized .= '?' . $query;
             }
             if ( ! empty( $parts['fragment'] ) ) {
                 $localized .= '#' . $parts['fragment'];

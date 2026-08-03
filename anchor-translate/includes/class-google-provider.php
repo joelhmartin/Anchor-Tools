@@ -9,6 +9,22 @@ class Anchor_Translate_Google_Provider {
 
     const CACHE_PREFIX = 'anchor_translate_api_';
 
+    /**
+     * Per-phrase cache lifetime. A source sentence's Spanish rendering does not
+     * expire — only an edit to that sentence invalidates it, and an edit mints a
+     * different key anyway. The old DAY_IN_SECONDS TTL was the single largest
+     * cost driver: it guaranteed a full re-translation of every page every 24h
+     * no matter how static the site was, which is exactly the flat ~700k
+     * characters/day the billing showed.
+     */
+    const PHRASE_TTL = MONTH_IN_SECONDS * 6;
+
+    /** Bump to invalidate every cached phrase (e.g. if decoding changes). */
+    const PHRASE_VERSION = '1';
+
+    /** Strings per HTTP request. Google's v2 limit is 128 segments. */
+    const BATCH_SIZE = 100;
+
     public function get_api_key() {
         if ( ! class_exists( 'Anchor_Schema_Admin' ) ) {
             return '';
@@ -22,11 +38,26 @@ class Anchor_Translate_Google_Provider {
         return $this->get_api_key() !== '';
     }
 
+    /**
+     * Translate a batch, caching EACH PHRASE independently.
+     *
+     * The previous implementation hashed the whole ordered batch into a single
+     * transient. That meant one changed sentence — or merely a shifted chunk
+     * boundary caused by inserting a node earlier in the page — invalidated all
+     * 40 strings and re-billed every one of them. Caching per phrase means an
+     * edit only ever costs the phrases that actually changed, and identical
+     * boilerplate (nav, footer, CTAs) is paid for once site-wide instead of
+     * once per page.
+     *
+     * Returns translations index-aligned with $texts. Entries that normalise to
+     * empty are passed through untouched rather than dropped — the old code
+     * filtered + reindexed them away, which silently shifted every later
+     * translation onto the wrong DOM node.
+     */
     public function translate_texts( array $texts, $target, $source = '' ) {
         $api_key = $this->get_api_key();
         $target  = sanitize_text_field( (string) $target );
         $source  = sanitize_text_field( (string) $source );
-        $texts   = array_values( array_filter( array_map( [ $this, 'normalize_text' ], $texts ), 'strlen' ) );
 
         if ( ! $api_key ) {
             return new WP_Error( 'anchor_translate_missing_key', 'Google Cloud API key is missing.' );
@@ -38,19 +69,75 @@ class Anchor_Translate_Google_Provider {
             return [];
         }
 
-        $cache_key = self::CACHE_PREFIX . md5( wp_json_encode( [ $texts, $target, $source ] ) );
-        $cached    = get_transient( $cache_key );
-        if ( is_array( $cached ) ) {
-            return $cached;
+        $out     = [];
+        $pending = [];
+
+        foreach ( $texts as $index => $text ) {
+            $text = (string) $text;
+            $out[ $index ] = $text;
+
+            if ( $this->normalize_text( $text ) === '' ) {
+                continue; // nothing translatable — keep the original in place.
+            }
+
+            $cached = get_transient( $this->phrase_key( $text, $target, $source ) );
+            if ( is_string( $cached ) ) {
+                $out[ $index ] = $cached;
+                continue;
+            }
+
+            $pending[ $index ] = $text;
         }
 
+        if ( empty( $pending ) ) {
+            return $out;
+        }
+
+        // Only unique strings need to cross the wire; duplicates on the page
+        // (repeated CTAs, aria-labels) collapse to one billed unit.
+        $unique = array_values( array_unique( $pending ) );
+
+        foreach ( array_chunk( $unique, self::BATCH_SIZE ) as $chunk ) {
+            $rows = $this->request_translations( $chunk, $target, $source, $api_key );
+            if ( is_wp_error( $rows ) ) {
+                return $rows;
+            }
+
+            foreach ( $chunk as $offset => $original ) {
+                if ( ! isset( $rows[ $offset ] ) ) {
+                    return new WP_Error( 'anchor_translate_parse', 'Unexpected response from Google Translation API.' );
+                }
+                set_transient( $this->phrase_key( $original, $target, $source ), $rows[ $offset ], self::PHRASE_TTL );
+            }
+        }
+
+        // Re-read through the cache so every pending index picks up its result.
+        foreach ( $pending as $index => $text ) {
+            $cached = get_transient( $this->phrase_key( $text, $target, $source ) );
+            if ( is_string( $cached ) ) {
+                $out[ $index ] = $cached;
+            }
+        }
+
+        return $out;
+    }
+
+    private function phrase_key( $text, $target, $source ) {
+        return self::CACHE_PREFIX . md5( self::PHRASE_VERSION . '|' . $target . '|' . $source . '|' . $text );
+    }
+
+    /**
+     * One HTTP round trip. Returns a list of decoded strings positionally
+     * matching $texts, or WP_Error.
+     */
+    private function request_translations( array $texts, $target, $source, $api_key ) {
         $endpoint = add_query_arg(
             [ 'key' => $api_key ],
             'https://translation.googleapis.com/language/translate/v2'
         );
 
         $body = [
-            'q'      => $texts,
+            'q'      => array_values( $texts ),
             'target' => $target,
             'format' => 'text',
         ];
@@ -64,8 +151,11 @@ class Anchor_Translate_Google_Provider {
                 'target'     => $target,
                 'source'     => $source,
                 'text_count' => count( $texts ),
+                'characters' => array_sum( array_map( 'mb_strlen', $texts ) ),
             ] );
         }
+
+        Anchor_Translate_Budget::record( array_sum( array_map( 'mb_strlen', $texts ) ) );
 
         $response = wp_remote_post( $endpoint, [
             'timeout' => 25,
@@ -98,7 +188,6 @@ class Anchor_Translate_Google_Provider {
             $translated[] = html_entity_decode( (string) ( $row['translatedText'] ?? '' ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
         }
 
-        set_transient( $cache_key, $translated, DAY_IN_SECONDS );
         return $translated;
     }
 

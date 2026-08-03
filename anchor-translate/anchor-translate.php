@@ -68,6 +68,7 @@ class Anchor_Translate_Module {
 
     private function load_includes() {
         $dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-translate/includes/';
+        require_once $dir . 'class-budget.php';
         require_once $dir . 'class-google-provider.php';
         require_once $dir . 'class-language.php';
         require_once $dir . 'class-shortcode.php';
@@ -80,6 +81,46 @@ class Anchor_Translate_Module {
 
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_frontend' ] );
         add_action( 'template_redirect', [ $this, 'handle_translated_request' ], 0 );
+        add_action( 'wp_head', [ $this, 'emit_default_language_hreflang' ], 1 );
+    }
+
+    /**
+     * Emit the hreflang cluster on DEFAULT-language (untranslated) pages.
+     *
+     * hreflang annotation must be reciprocal — if /es/ points at / but / does
+     * not point back at /es/, Google discards the pairing and the translated
+     * set earns no international-targeting benefit at all. Translated responses
+     * get their cluster injected into the DOM by the response translator; this
+     * is the other half, and without it the whole feature was SEO-inert.
+     */
+    public function emit_default_language_hreflang() {
+        if ( ! $this->is_activated() || ! $this->language->is_default() ) {
+            return;
+        }
+        // Only annotate real, indexable destinations.
+        if ( is_404() || is_search() || is_feed() || is_preview() ) {
+            return;
+        }
+        if ( count( $this->language->get_enabled() ) < 2 ) {
+            return;
+        }
+
+        $source = Anchor_Translate_Language::strip_tracking_params(
+            $this->language->get_source_url_for_current_request()
+        );
+
+        foreach ( $this->language->get_enabled() as $code => $label ) {
+            printf(
+                '<link rel="alternate" hreflang="%s" href="%s" />' . "\n",
+                esc_attr( $code ),
+                esc_url( $this->language->localize_url( $source, $code ) )
+            );
+        }
+
+        printf(
+            '<link rel="alternate" hreflang="x-default" href="%s" />' . "\n",
+            esc_url( $this->language->localize_url( $source, $this->language->get_default() ) )
+        );
     }
 
     public function enqueue_frontend() {
@@ -236,6 +277,15 @@ class Anchor_Translate_Module {
         }
 
         $translated = $this->translator->translate_html( $body, $this->language->get_current(), $source_url );
+
+        if ( $translated === false && Anchor_Translate_Budget::exceeded() ) {
+            // Spend guard tripped. Send visitors to the English page for the rest
+            // of the day: they still get content, and a temporary redirect adds
+            // no duplicate URL to the index and — unlike a 404 — gives Google no
+            // reason to drop the translated set while the cap is in force.
+            wp_safe_redirect( $this->language->localize_url( $source_url, $this->language->get_default() ), 302 );
+            exit;
+        }
 
         if ( $translated === false ) {
             // Translation failed (no API key, API error, parse failure). Serve a 404

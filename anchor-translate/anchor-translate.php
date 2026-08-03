@@ -54,6 +54,10 @@ class Anchor_Translate_Module {
         add_action( 'admin_post_anchor_translate_deactivate_cleanup', [ $this, 'handle_deactivate_cleanup' ] );
         add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'on_options_updated' ], 10, 2 );
 
+        add_action( 'save_post', [ $this, 'purge_translations_for_post' ], 20, 2 );
+        add_action( 'trashed_post', [ $this, 'purge_translations_for_post' ], 20 );
+        add_action( 'deleted_post', [ $this, 'purge_translations_for_post' ], 20 );
+
         add_action( 'init', [ $this, 'register_rewrite_rules' ] );
         add_action( 'init', [ $this, 'maybe_flush_rewrite_rules' ], 20 );
         add_filter( 'query_vars', [ $this, 'register_query_vars' ] );
@@ -182,6 +186,51 @@ class Anchor_Translate_Module {
         $this->purge_page_caches();
     }
 
+    /**
+     * Invalidate translated copies of a post when its source copy changes.
+     *
+     * Host page caches purge by post URL, and they have no idea that
+     * /es/<slug>/ is a view of the same post — verified on Kinsta, where after
+     * an edit the English URL refreshed within 15s while the translated URL
+     * kept serving the old copy indefinitely. The translation layer itself was
+     * correct throughout (its stored source hash detects the edit and
+     * re-renders, re-billing only the changed phrases); the stale copy was
+     * being served by the CDN before PHP ever ran.
+     *
+     * Hosts expose only a site-wide purge, so that is what we trigger. It is
+     * the same purge a settings change already performs, and it runs only on an
+     * actual content edit.
+     */
+    public function purge_translations_for_post( $post_id, $post = null ) {
+        if ( ! $this->is_activated() ) {
+            return;
+        }
+        if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+            return;
+        }
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+
+        $post = $post ?: get_post( $post_id );
+        if ( $post && ! in_array( get_post_status( $post ), [ 'publish', 'trash', 'private' ], true ) ) {
+            return; // drafts have no translated URL to invalidate
+        }
+
+        // Once per request, however many posts a bulk edit touches.
+        static $done = false;
+        if ( $done ) {
+            return;
+        }
+        $done = true;
+
+        // Deliberately NOT dropping render transients here. The stored source
+        // hash already detects the edit and re-renders that one page by itself,
+        // whereas clearing them would force all ~70 pages to re-render for a
+        // one-page change. Only the host cache needs telling.
+        $this->purge_page_caches();
+    }
+
     public function purge_page_caches() {
         if ( function_exists( 'wp_cache_flush' ) ) {
             wp_cache_flush();
@@ -190,7 +239,17 @@ class Anchor_Translate_Module {
         if ( class_exists( 'Developer_Tools_Settings' ) && function_exists( 'developer_tools_clear_cache' ) ) {
             developer_tools_clear_cache();
         }
-        if ( class_exists( '\Jeedo\KinstaMUPlugins\Cache\CachePurge' ) ) {
+        // Kinsta. The guard used to test for \Jeedo\KinstaMUPlugins\Cache\CachePurge,
+        // a namespace current kinsta-mu-plugins does not ship — verified MISSING on
+        // a live Kinsta host whose actual API is Kinsta\Cache_Purge, reached through
+        // the global $kinsta_cache. The guard therefore never matched and the purge
+        // silently never ran, which is why translated URLs kept serving pre-edit
+        // copy from the host cache. Prefer the real object; keep the URL trigger as
+        // a fallback for hosts that still expose the old shape.
+        global $kinsta_cache;
+        if ( isset( $kinsta_cache->kinsta_cache_purge ) && method_exists( $kinsta_cache->kinsta_cache_purge, 'purge_complete_caches' ) ) {
+            $kinsta_cache->kinsta_cache_purge->purge_complete_caches();
+        } elseif ( class_exists( '\Jeedo\KinstaMUPlugins\Cache\CachePurge' ) || defined( 'KINSTAMU_VERSION' ) ) {
             wp_remote_get( home_url( '/?kinsta-clear-cache-all' ), [ 'blocking' => false ] );
         }
 

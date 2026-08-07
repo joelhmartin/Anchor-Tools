@@ -99,7 +99,7 @@ class Anchor_Compliance_Consent_State {
 		if ( empty( $opts['advanced']['honor_gpc'] ) ) {
 			return false;
 		}
-		return isset( $_SERVER['HTTP_SEC_GPC'] ) && '1' === (string) $_SERVER['HTTP_SEC_GPC'];
+		return isset( $_SERVER['HTTP_SEC_GPC'] ) && '1' === (string) wp_unslash( $_SERVER['HTTP_SEC_GPC'] );
 	}
 
 	/**

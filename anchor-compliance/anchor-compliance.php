@@ -25,6 +25,9 @@ class Anchor_Compliance_Module {
 	/** @var Anchor_Compliance_Consent_State */
 	public $state;
 
+	/** @var Anchor_Compliance_Geo */
+	public $geo;
+
 	/**
 	 * The booted module instance. Constructing a second module would duplicate
 	 * every hook (the banner would render twice), so collaborators must reach
@@ -44,11 +47,13 @@ class Anchor_Compliance_Module {
 
 		$this->settings = new Anchor_Compliance_Settings();
 		$this->state    = new Anchor_Compliance_Consent_State();
+		$this->geo      = new Anchor_Compliance_Geo();
 	}
 
 	private function load_includes() {
 		$dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-compliance/includes/';
 		require_once $dir . 'class-settings.php';
 		require_once $dir . 'class-consent-state.php';
+		require_once $dir . 'class-geo.php';
 	}
 }

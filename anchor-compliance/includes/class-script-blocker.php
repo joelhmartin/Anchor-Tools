@@ -5,6 +5,14 @@
  * Regex, not DOMDocument: DOMDocument reformats and repairs partial or
  * non-conforming HTML, which corrupts real-world theme output. We only need to
  * rewrite two attributes on two tag types, which regex does safely.
+ *
+ * Safety contract: every regex pass below is treated as fallible. PCRE can
+ * return NULL (backtrack/recursion limit, bad UTF-8) on pathological input —
+ * an unclosed <script on a large page is enough. When that happens this class
+ * must fail OPEN: return the original, unmodified markup rather than an
+ * empty or partially-rewritten page. An unblocked tracker is a compliance
+ * problem; a blanked page is an outage, and outages are worse. See
+ * pcre_ok() / fail_open().
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
@@ -15,6 +23,9 @@ class Anchor_Compliance_Script_Blocker {
 	private $state;
 	private $geo;
 	private $blocked = 0;
+
+	/** MIME/type values that mean "this script executes as JavaScript." Anything else (application/ld+json, text/template, ...) is inert markup, not code, and must never be touched. */
+	const EXECUTABLE_TYPES = [ 'text/javascript', 'application/javascript', 'module' ];
 
 	public function __construct( $registry, $state, $geo ) {
 		$this->registry = $registry;
@@ -40,16 +51,32 @@ class Anchor_Compliance_Script_Blocker {
 		if ( is_admin() || wp_doing_ajax() || wp_doing_cron() ) {
 			return false;
 		}
-		if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+		// Filtered rather than a bare `defined() && CONST` check so tests can
+		// exercise this branch safely. REST_REQUEST and WP_CLI are PHP
+		// constants: once define()'d they can never be unset for the rest of
+		// the process, which would silently flip this same check for every
+		// OTHER test that runs afterward in the same PHPUnit process —
+		// including anchor-optimize's and anchor-translate's own unrelated
+		// `defined('REST_REQUEST')` guards. Filters are cleaned up
+		// automatically by WP_UnitTestCase's per-test hook backup/restore;
+		// constants are not. Default value is the real, unfiltered check, so
+		// production behavior is unchanged.
+		if ( apply_filters( 'anchor_compliance_is_rest_request', defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
 			return false;
 		}
-		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+		if ( apply_filters( 'anchor_compliance_is_wp_cli', defined( 'WP_CLI' ) && WP_CLI ) ) {
 			return false;
 		}
 		if ( is_feed() || is_embed() || is_preview() || is_customize_preview() ) {
 			return false;
 		}
-		if ( ! empty( $_GET['sitemap'] ) || ! empty( $_GET['wp-sitemap'] ) ) {
+		// WP core XML sitemaps register 'sitemap' as a public query var (see
+		// WP_Sitemaps::register_query_vars()), so it is populated from the
+		// query string regardless of permalink structure — checking $_GET
+		// directly missed the pretty-permalink case entirely (the value
+		// never appears in $_GET there; it only exists after WP's rewrite
+		// parsing populates the query var).
+		if ( '' !== (string) get_query_var( 'sitemap', '' ) ) {
 			return false;
 		}
 		return true;
@@ -70,10 +97,20 @@ class Anchor_Compliance_Script_Blocker {
 	/**
 	 * The output-buffer callback.
 	 *
+	 * Re-entrancy: ob_start() callbacks can be invoked more than once per
+	 * request if something upstream (a theme, a minifier, PHP's own chunked
+	 * output) flushes the buffer mid-render. This method is idempotent
+	 * against its own prior output: a tag it has already neutralized never
+	 * matches these patterns again (see the per-pass docblocks below for
+	 * why), so re-entry can at worst miss a tag split across a flush
+	 * boundary — it can never re-block or double-wrap one.
+	 *
 	 * @param string $html
 	 * @return string
 	 */
 	public function rewrite( $html ) {
+		$this->blocked = 0; // Reset unconditionally so blocked_count() is never stale after an early exit.
+
 		$opts = Anchor_Compliance_Settings::get();
 		if ( empty( $opts['general']['enabled'] ) || empty( $opts['advanced']['buffer_enabled'] ) ) {
 			return $html;
@@ -104,17 +141,90 @@ class Anchor_Compliance_Script_Blocker {
 			return $html;
 		}
 
-		$this->blocked = 0;
+		$original = $html;
 
-		$html = $this->rewrite_src_tags( $html, 'script', $rules, $allowed );
-		$html = $this->rewrite_inline_scripts( $html, $rules, $allowed );
-		$html = $this->rewrite_src_tags( $html, 'iframe', $rules, $allowed );
+		// Hide the body of non-executable <script> blocks (JSON-LD, HTML
+		// templates, ...) from the src/iframe passes below, so a URL that
+		// merely APPEARS inside inert text/markup (a JSON string value, a
+		// client-side template fragment) is never mistaken for a live tag.
+		// See mask_inert_scripts() for why this exists and what it does and
+		// does not touch.
+		$masked = [];
+		if ( false !== stripos( $original, '<script' ) && preg_match( '#<script\b[^>]*\btype\s*=#i', $original ) ) {
+			$stage = $this->mask_inert_scripts( $original, $masked );
+			if ( ! $this->pcre_ok( $stage ) ) {
+				return $this->fail_open( $original, 'mask_inert_scripts' );
+			}
+			$html = $stage;
+		}
+
+		$stage = $this->rewrite_src_tags( $html, 'script', $rules, $allowed );
+		if ( ! $this->pcre_ok( $stage ) ) {
+			return $this->fail_open( $original, 'rewrite_src_tags(script)' );
+		}
+		$html = $stage;
+
+		$stage = $this->rewrite_inline_scripts( $html, $rules, $allowed );
+		if ( ! $this->pcre_ok( $stage ) ) {
+			return $this->fail_open( $original, 'rewrite_inline_scripts' );
+		}
+		$html = $stage;
+
+		$stage = $this->rewrite_src_tags( $html, 'iframe', $rules, $allowed );
+		if ( ! $this->pcre_ok( $stage ) ) {
+			return $this->fail_open( $original, 'rewrite_src_tags(iframe)' );
+		}
+		$html = $stage;
+
+		if ( $masked ) {
+			$html = strtr( $html, $masked );
+		}
 
 		if ( ! empty( $opts['advanced']['debug'] ) && $this->blocked > 0 && class_exists( 'Anchor_Schema_Logger' ) ) {
 			Anchor_Schema_Logger::log( sprintf( '[compliance] blocked %d tag(s) on %s', $this->blocked, esc_url_raw( home_url( add_query_arg( [] ) ) ) ) );
 		}
 
 		return $html;
+	}
+
+	/**
+	 * True when a preg_replace_callback() result is trustworthy. PCRE
+	 * returns NULL (with preg_last_error() set) on a backtrack-limit,
+	 * recursion-limit, or malformed-UTF-8 failure — silently, with no
+	 * exception or warning by default. Callers MUST check this before using
+	 * a stage's output; the alternative (not checking) is a NULL flowing
+	 * into the next preg_* call, which PHP 8 coerces to '', so a single
+	 * failed pass on a large or malformed page silently blanks the entire
+	 * response.
+	 */
+	private function pcre_ok( $result ) {
+		return null !== $result && PREG_NO_ERROR === preg_last_error();
+	}
+
+	/** Fail open: serve the pristine, pre-rewrite markup and log why. */
+	private function fail_open( $original, $stage ) {
+		$this->blocked = 0;
+		if ( class_exists( 'Anchor_Schema_Logger' ) ) {
+			Anchor_Schema_Logger::log( sprintf(
+				'[compliance] PCRE failure in %s (%s) — serving original markup unmodified.',
+				$stage,
+				$this->pcre_error_name()
+			) );
+		}
+		return $original;
+	}
+
+	private function pcre_error_name() {
+		$names = [
+			PREG_NO_ERROR              => 'PREG_NO_ERROR',
+			PREG_INTERNAL_ERROR        => 'PREG_INTERNAL_ERROR',
+			PREG_BACKTRACK_LIMIT_ERROR => 'PREG_BACKTRACK_LIMIT_ERROR',
+			PREG_RECURSION_LIMIT_ERROR => 'PREG_RECURSION_LIMIT_ERROR',
+			PREG_BAD_UTF8_ERROR        => 'PREG_BAD_UTF8_ERROR',
+			PREG_BAD_UTF8_OFFSET_ERROR => 'PREG_BAD_UTF8_OFFSET_ERROR',
+		];
+		$code = preg_last_error();
+		return $names[ $code ] ?? ( 'PCRE error code ' . $code );
 	}
 
 	/**
@@ -144,46 +254,179 @@ class Anchor_Compliance_Script_Blocker {
 	}
 
 	/**
+	 * Hide the body of <script> blocks that do not execute as JavaScript
+	 * (application/ld+json, text/template, and similar) behind an opaque
+	 * token before the src/iframe passes run, then restore them verbatim
+	 * afterward (rewrite() does the restore via strtr()).
+	 *
+	 * Why this exists: rewrite_src_tags('iframe', ...) and
+	 * rewrite_src_tags('script', ...) scan the WHOLE document as flat text —
+	 * they have no notion of "this text is sitting inside another script's
+	 * inert body." Anchor Tools' own flagship feature emits
+	 * <script type="application/ld+json"> JSON-LD on nearly every page
+	 * (class-anchor-schema-render.php, the events/locations modules, ...);
+	 * a LocalBusiness record's URL fields can trivially contain a substring
+	 * that matches a site's own custom_rules pattern. A client-side
+	 * templating library's <script type="text/template"> can likewise
+	 * contain a literal, inert "<iframe src=...>" string that was never
+	 * meant to render as-is. Without this pass, either would get "blocked"
+	 * — corrupting JSON-LD structured data for zero compliance benefit, or
+	 * wrapping template markup in a live placeholder it was never meant to
+	 * have.
+	 *
+	 * A <script> with a genuine src is left alone here (untouched, not
+	 * masked) — the src-tag pass needs to see its opening tag intact. A
+	 * <script> with no type attribute, or an executable one (see
+	 * EXECUTABLE_TYPES), is also left alone — its body is real code that
+	 * rewrite_inline_scripts() still needs to inspect for e.g. an inline
+	 * fbq() bootstrap.
+	 *
+	 * Pattern: identical shape to rewrite_inline_scripts()'s own tag match
+	 * (`<script\b([^>]*)>(.*?)</script>`, flags i s) — deliberately not
+	 * reusing that method, because this one runs BEFORE the src/iframe
+	 * passes and must mask before they ever see the document, not filter
+	 * per-match the way rewrite_inline_scripts() does for itself.
+	 */
+	private function mask_inert_scripts( $html, array &$masked ) {
+		$masked = [];
+		$i      = 0;
+
+		return preg_replace_callback(
+			'#<script\b([^>]*)>(.*?)</script>#is',
+			function ( $m ) use ( &$masked, &$i ) {
+				$attrs = $m[1];
+
+				if ( preg_match( '#(?<![\w:.-])src\s*=#i', $attrs ) ) {
+					return $m[0]; // has a real src — the src-tag pass needs this intact.
+				}
+				if ( $this->is_executable_type( $this->type_value( $attrs ) ) ) {
+					return $m[0]; // real, src-less JS — rewrite_inline_scripts() still needs it.
+				}
+
+				$token             = "\x01ANCHOR_CMP_MASK_{$i}\x01";
+				$masked[ $token ]  = $m[0];
+				$i++;
+				return $token;
+			},
+			$html
+		);
+	}
+
+	/**
+	 * Extract a <script>'s type="" value, quoted or unquoted. Returns null
+	 * when there is no type attribute at all (which HTML treats identically
+	 * to type="text/javascript" — absent means "this is JavaScript").
+	 */
+	private function type_value( $attrs ) {
+		if ( preg_match( '#\btype\s*=\s*(["\'])((?:(?!\1)[^>])*)\1#is', $attrs, $m ) ) {
+			return trim( $m[2] );
+		}
+		if ( preg_match( '#\btype\s*=\s*([^\s>]+)#i', $attrs, $m ) ) {
+			return trim( $m[1] );
+		}
+		return null;
+	}
+
+	/**
+	 * @param string|null $type As returned by type_value().
+	 * @return bool True when the browser would execute this script as JS.
+	 */
+	private function is_executable_type( $type ) {
+		if ( null === $type || '' === $type ) {
+			return true; // absent/empty type attribute defaults to JavaScript.
+		}
+		// Strip a MIME parameter, e.g. "text/javascript;charset=utf-8".
+		$type = strtolower( trim( strtok( trim( $type ), ';' ) ) );
+		return in_array( $type, self::EXECUTABLE_TYPES, true );
+	}
+
+	/**
 	 * Rewrite <script src="..."> / <iframe src="..."> whose URL matches a
 	 * denied rule.
 	 *
-	 * Pattern walkthrough:
-	 *   <TAG\b            — the opening tag name, e.g. "<script" or "<iframe".
-	 *   ([^>]*?)          — (1) any attributes before src, lazy so it stops at
-	 *                       the first real match instead of swallowing the tag.
-	 *   (?<![\w-])src     — the literal attribute name "src", guarded by a
-	 *                       negative lookbehind so it does NOT match inside
-	 *                       "data-src" or "data-anchor-src" (a plain \b would:
-	 *                       "-" is a non-word character, so \b sits right
-	 *                       between the "-" and the "s" of "...-src"). Without
-	 *                       this guard, a lazy-loaded iframe written as
-	 *                       <iframe data-src="https://youtube..." src="about:blank">
-	 *                       would have its harmless placeholder src="about:blank"
-	 *                       left live while "data-src" got mistaken for the
-	 *                       real attribute, and would leave a dangling,
-	 *                       malformed "data-" fragment in the rebuilt tag.
-	 *   \s*=\s*(["\'])    — (2) the opening quote, single or double.
-	 *   (.*?)\2           — (3) the URL, lazy up to the matching quote.
-	 *   ([^>]*)           — (4) any attributes after src (id, width, etc.),
-	 *                       preserved verbatim so they survive on the page.
-	 *   >                 — end of the opening tag.
-	 * Flags: i = case-insensitive tag/attr names, s = "." also matches
-	 * newlines (attributes can legally wrap lines in minified/prettified
-	 * markup).
+	 * Pattern:
+	 *   #<TAG\b([^>]*?)(?<![\w:.-])src\s*=\s*(?:(["\'])((?:(?!\2)[^>])*)\2|([^\s>]+))([^>]*)>#is
 	 *
-	 * Deliberately does NOT match: the tag's closing "</script>" (irrelevant
-	 * here — only the opening tag is rewritten), or any tag whose src-like
-	 * attribute is a "*-src" variant rather than a bare "src".
+	 * Walkthrough:
+	 *   <TAG\b               — the opening tag name, e.g. "<script" or
+	 *                          "<iframe". Flag i makes this (and everything
+	 *                          below) case-insensitive, so <SCRIPT SRC=...>
+	 *                          matches too.
+	 *   ([^>]*?)             — (1) any attributes before src, lazy so it
+	 *                          stops at the first qualifying match rather
+	 *                          than swallowing the tag.
+	 *   (?<![\w:.-])src      — the literal attribute name "src", guarded by
+	 *                          a negative lookbehind excluding a preceding
+	 *                          word character, ":", ".", or "-". Without
+	 *                          this a plain \b would ALSO match "src" inside
+	 *                          "data-src", "data-anchor-src", "x-bind:src",
+	 *                          or ":src" (Vue/Alpine bindings), because "-"
+	 *                          and ":" are non-word characters and \b sits
+	 *                          right at that boundary. A lazy-loaded iframe
+	 *                          written as
+	 *                            <iframe data-src="https://youtube..." src="about:blank">
+	 *                          would otherwise have the tracker URL pulled
+	 *                          out of "data-src" while the real, harmless
+	 *                          src="about:blank" was left live and
+	 *                          unblocked on the page — a silent compliance
+	 *                          miss, not a crash.
+	 *   \s*=\s*              — "=" with optional whitespace either side
+	 *                          (handles "src = "x"" as well as "src="x"").
+	 *   (?:                  — one of two ways the value can be written:
+	 *     (["\'])            —   (2) a quote character, single or double;
+	 *     ((?:(?!\2)[^>])*)  —   (3) the URL: any character that is not ">"
+	 *                            AND does not start the matching close
+	 *                            quote, repeated. Bounded on BOTH sides —
+	 *                            it can never cross a real ">" even if the
+	 *                            quote never closes. The original brief's
+	 *                            (.*?)\2 had no such bound: with the s flag,
+	 *                            "." also matches newlines, so an
+	 *                            unterminated quote (a truncated embed, a
+	 *                            template fatal mid-<script>) let the lazy
+	 *                            match run across every following tag
+	 *                            looking for a closing quote that never
+	 *                            comes, silently absorbing the rest of the
+	 *                            page's markup into one "URL" and deleting
+	 *                            it from the response.
+	 *     \2                 —   the matching closing quote;
+	 *   |                    — or:
+	 *     ([^\s>]+)          —   (4) an UNQUOTED value: any run of
+	 *                            non-whitespace, non-">" characters. HTML
+	 *                            permits src=https://example.com/x.js with
+	 *                            no quotes at all, and this buffer sits as
+	 *                            the OUTERMOST ob_start (template_redirect
+	 *                            priority 1), so it can see the OUTPUT of a
+	 *                            later-attaching HTML minifier that strips
+	 *                            attribute quoting. Without this branch
+	 *                            such a page would go completely unblocked
+	 *                            with no error or warning.
+	 *   )
+	 *   ([^>]*)              — (5) any attributes after src (id, width,
+	 *                          etc.) plus a possible trailing self-closing
+	 *                          "/", preserved and then cleaned in code (see
+	 *                          strip_self_closing_slash()) so it survives
+	 *                          on the page without a stray "/" landing
+	 *                          mid-attribute-list.
+	 *   >                    — end of the opening tag.
+	 * Flags: i (case-insensitive), s ("." matches newlines — attributes can
+	 * legally wrap lines in prettified/minified markup; this is now safe
+	 * because of the bound above).
+	 *
+	 * Deliberately does NOT match: the tag's closing "</script>" (only the
+	 * opening tag needs rewriting); any "src"-like attribute prefixed with a
+	 * word character, "-", ":", or "." (data-src, data-anchor-src, :src,
+	 * x-bind:src — never real src attributes); anything beyond the tag's own
+	 * ">" no matter how the quote or value is malformed.
 	 */
 	private function rewrite_src_tags( $html, $tag, array $rules, array $allowed ) {
-		$pattern = '#<' . $tag . '\b([^>]*?)(?<![\w-])src\s*=\s*(["\'])(.*?)\2([^>]*)>#is';
+		$pattern = '#<' . $tag . '\b([^>]*?)(?<![\w:.-])src\s*=\s*(?:(["\'])((?:(?!\2)[^>])*)\2|([^\s>]+))([^>]*)>#is';
 
 		return preg_replace_callback(
 			$pattern,
 			function ( $m ) use ( $rules, $allowed, $tag ) {
 				$before = $m[1];
-				$url    = $m[3];
-				$after  = $m[4];
+				$url    = ( '' !== $m[2] ) ? $m[3] : $m[4];
+				$after  = $this->strip_self_closing_slash( $m[5] );
 
 				$category = $this->category_for( $url, $rules );
 				if ( null === $category || ! empty( $allowed[ $category ] ) ) {
@@ -194,25 +437,46 @@ class Anchor_Compliance_Script_Blocker {
 
 				$attrs = $this->strip_type_attribute( $before . $after );
 
+				// The captured value came straight out of an HTML attribute,
+				// so it may carry entities (a query string's "&" is almost
+				// always written "&amp;"). esc_attr() re-encodes for safe
+				// re-embedding, so encoding it a second time on top of the
+				// original entity would double-escape: "&amp;" becomes
+				// "&amp;amp;", and after "Accept & Load" the browser
+				// requests a query string with a literal "amp;" glued onto
+				// the next parameter name (?rel=0&amp;autoplay=1 restores
+				// as ?rel=0&amp;amp;autoplay=1, i.e. a parameter named
+				// "amp;autoplay"). Decoding first, then encoding once, round-trips
+				// correctly.
+				$clean_url = html_entity_decode( $url, ENT_QUOTES, 'UTF-8' );
+
 				if ( 'script' === $tag ) {
 					return sprintf(
 						'<script%s type="text/plain" data-anchor-consent="%s" data-anchor-src="%s">',
 						$attrs,
 						esc_attr( $category ),
-						esc_attr( $url )
+						esc_attr( $clean_url )
 					);
 				}
 
-				// An iframe leaves a visible, actionable placeholder rather than a hole.
+				// An iframe leaves a visible, actionable placeholder rather
+				// than a hole. Built from <span> (a phrasing-content
+				// element), not <div>/<p>: iframes are legal inside a <p>
+				// (e.g. "<p>Watch: <iframe>...</iframe></p>"), but a <div>
+				// or nested <p> is not — the HTML parser would close the
+				// surrounding <p> early and orphan its closing tag. A span
+				// with display:block renders identically to a div while
+				// staying valid in both flow and phrasing contexts.
 				return sprintf(
-					'<div class="anchor-cmp-placeholder" data-anchor-consent="%1$s"><p class="anchor-cmp-placeholder__text">%2$s</p>'
-					. '<button type="button" class="anchor-cmp-placeholder__btn" data-anchor-accept="%1$s">%3$s</button></div>'
+					'<span class="anchor-cmp-placeholder" style="display:block" data-anchor-consent="%1$s">'
+					. '<span class="anchor-cmp-placeholder__text" style="display:block">%2$s</span>'
+					. '<button type="button" class="anchor-cmp-placeholder__btn" data-anchor-accept="%1$s">%3$s</button></span>'
 					. '<iframe%4$s data-anchor-consent="%1$s" data-anchor-src="%5$s" style="display:none">',
 					esc_attr( $category ),
 					esc_html__( 'This content is blocked until you accept the related cookies.', 'anchor-schema' ),
 					esc_html__( 'Accept & Load', 'anchor-schema' ),
 					$attrs,
-					esc_attr( $url )
+					esc_attr( $clean_url )
 				);
 			},
 			$html
@@ -223,34 +487,52 @@ class Anchor_Compliance_Script_Blocker {
 	 * Inline scripts have no src, so match their body against the same
 	 * patterns — this is how an inline fbq() or hj() bootstrap gets caught.
 	 *
-	 * Pattern walkthrough:
-	 *   <script\b                    — opening tag.
-	 *   (?![^>]*(?<![\w-])src\s*=)   — negative lookahead: bail out of this
-	 *                                  branch entirely when the tag has a real
-	 *                                  "src" attribute — that case is already
-	 *                                  handled by rewrite_src_tags(), which
-	 *                                  runs first. The same (?<![\w-]) guard as
-	 *                                  above keeps a "data-src"/"data-anchor-
-	 *                                  src" attribute from tripping this check
-	 *                                  and wrongly skipping a genuinely inline
-	 *                                  (src-less) script.
-	 *   ([^>]*)                      — (1) the tag's attributes, kept verbatim.
-	 *   >                            — end of the opening tag.
-	 *   (.*?)                        — (2) the script body, lazy.
-	 *   </script>                    — the closing tag.
+	 * Pattern:
+	 *   #<script\b(?![^>]*(?<![\w:.-])src\s*=)([^>]*)>(.*?)</script>#is
+	 *
+	 * Walkthrough:
+	 *   <script\b                       — opening tag.
+	 *   (?![^>]*(?<![\w:.-])src\s*=)    — negative lookahead: bail out of
+	 *                                     this branch entirely when the tag
+	 *                                     has a real "src" attribute — that
+	 *                                     case is already handled by
+	 *                                     rewrite_src_tags(), which runs
+	 *                                     first. Uses the same
+	 *                                     (?<![\w:.-]) guard as above so a
+	 *                                     "data-src"/"data-anchor-src"/":src"
+	 *                                     attribute does not wrongly trip
+	 *                                     this check and cause a genuinely
+	 *                                     inline (src-less) script to be
+	 *                                     skipped by BOTH rewriters.
+	 *   ([^>]*)                         — (1) the tag's attributes, kept
+	 *                                     verbatim.
+	 *   >                                — end of the opening tag.
+	 *   (.*?)                           — (2) the script body, lazy.
+	 *   </script>                       — the closing tag (required — this
+	 *                                     is the one place the closing tag
+	 *                                     participates, since the whole body
+	 *                                     needs replacing).
 	 * Flags: i, s (see rewrite_src_tags for why).
 	 *
-	 * Deliberately does NOT match: any <script> that already carries
-	 * data-anchor-consent (checked separately below) — Task 12's Code
-	 * Snippets bridge will have already handled those explicitly, and
-	 * re-processing them here would be redundant at best.
+	 * Deliberately does NOT match: any <script> whose type is not absent,
+	 * empty, or one of EXECUTABLE_TYPES (checked in the callback, not the
+	 * pattern — application/ld+json and text/template are inert data/markup,
+	 * never code, so gating them would destroy structured data or template
+	 * markup for zero compliance benefit); any <script> that already
+	 * carries data-anchor-consent (Task 12's Code Snippets bridge will have
+	 * already handled those explicitly — this is also what keeps a second
+	 * application of this method a no-op on its own prior output).
 	 */
 	private function rewrite_inline_scripts( $html, array $rules, array $allowed ) {
 		return preg_replace_callback(
-			'#<script\b(?![^>]*(?<![\w-])src\s*=)([^>]*)>(.*?)</script>#is',
+			'#<script\b(?![^>]*(?<![\w:.-])src\s*=)([^>]*)>(.*?)</script>#is',
 			function ( $m ) use ( $rules, $allowed ) {
 				$attrs = $m[1];
 				$body  = $m[2];
+
+				if ( ! $this->is_executable_type( $this->type_value( $attrs ) ) ) {
+					return $m[0]; // JSON-LD, a client-side template, etc. — not code, never gated.
+				}
 
 				if ( false !== stripos( $attrs, 'data-anchor-consent' ) ) {
 					return $m[0]; // already handled (e.g. by the snippets bridge)
@@ -276,6 +558,19 @@ class Anchor_Compliance_Script_Blocker {
 
 	/** Remove any existing type="" so ours is unambiguous. */
 	private function strip_type_attribute( $attrs ) {
-		return preg_replace( '#\stype\s*=\s*(["\']).*?\1#i', '', $attrs );
+		return preg_replace( '#\stype\s*=\s*(["\'])((?:(?!\1)[^>])*)\1#i', '', $attrs );
+	}
+
+	/**
+	 * A self-closing "<script src="x" />" leaves its "/" inside the
+	 * "attributes after src" capture. Left in place it lands mid-tag in the
+	 * rebuilt output (e.g. "...src.js" / type="text/plain" ...">"). Strip a
+	 * trailing "/" (with any surrounding whitespace) from the END of the
+	 * captured tail only — this cannot touch a "/" that is part of an
+	 * attribute value earlier in the string, because it is anchored to the
+	 * end of this specific, already-isolated capture.
+	 */
+	private function strip_self_closing_slash( $after ) {
+		return preg_replace( '#/\s*$#', '', $after );
 	}
 }

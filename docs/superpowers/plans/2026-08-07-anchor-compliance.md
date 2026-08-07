@@ -1229,6 +1229,34 @@ class Test_Compliance_Registry extends WP_UnitTestCase {
 		$this->assertNull( $r->category_for_url( 'https://example.com/theme/app.js' ) );
 	}
 
+	public function test_consent_mode_services_are_excluded_from_blocking_rules() {
+		// Google tags must load with denied consent, not be hard-blocked, or
+		// conversion modeling and Ads audiences break.
+		$keys = wp_list_pluck( $this->reg()->active_rules(), 'key' );
+		$this->assertNotContains( 'google_tag_manager', $keys );
+		$this->assertNotContains( 'google_analytics', $keys );
+		$this->assertNotContains( 'google_ads', $keys );
+		$this->assertContains( 'meta_pixel', $keys, 'Non-Google services are still blocked.' );
+
+		$this->assertNull(
+			$this->reg()->category_for_url( 'https://www.googletagmanager.com/gtm.js?id=GTM-X' ),
+			'GTM must not resolve to a blocking category while Consent Mode is on.'
+		);
+	}
+
+	public function test_disabling_consent_mode_falls_back_to_blocking_google() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'advanced' => [ 'consent_mode_enabled' => false ],
+		], false );
+
+		$keys = wp_list_pluck( $this->reg()->active_rules(), 'key' );
+		$this->assertContains(
+			'google_tag_manager',
+			$keys,
+			'With Consent Mode off, nothing else would gate Google tags, so they must be blocked.'
+		);
+	}
+
 	public function test_custom_rules_are_matched_and_win_over_builtins() {
 		update_option( Anchor_Compliance_Module::OPTION_KEY, [
 			'custom_rules' => [
@@ -1292,6 +1320,7 @@ class Anchor_Compliance_Service_Registry {
 		return [
 			'google_tag_manager' => [
 				'name' => 'Google Tag Manager', 'provider' => 'Google', 'category' => 'analytics',
+				'consent_mode' => true,
 				'patterns' => [ 'googletagmanager.com/gtm.js', 'googletagmanager.com/gtag/js' ],
 				'cookies' => [
 					[ 'name' => '_ga', 'purpose' => 'Distinguishes visitors.', 'duration' => '2 years' ],
@@ -1299,6 +1328,7 @@ class Anchor_Compliance_Service_Registry {
 			],
 			'google_analytics' => [
 				'name' => 'Google Analytics 4', 'provider' => 'Google', 'category' => 'analytics',
+				'consent_mode' => true,
 				'patterns' => [ 'google-analytics.com', 'analytics.google.com' ],
 				'cookies' => [
 					[ 'name' => '_ga', 'purpose' => 'Distinguishes visitors.', 'duration' => '2 years' ],
@@ -1309,6 +1339,7 @@ class Anchor_Compliance_Service_Registry {
 			],
 			'google_ads' => [
 				'name' => 'Google Ads', 'provider' => 'Google', 'category' => 'marketing',
+				'consent_mode' => true,
 				'patterns' => [ 'googleadservices.com', 'googlesyndication.com', 'doubleclick.net' ],
 				'cookies' => [
 					[ 'name' => '_gcl_*', 'purpose' => 'Conversion attribution for Google Ads.', 'duration' => '90 days' ],
@@ -1506,12 +1537,22 @@ class Anchor_Compliance_Service_Registry {
 			];
 		}
 
+		$consent_mode_on = ! empty( Anchor_Compliance_Settings::get()['advanced']['consent_mode_enabled'] );
+
 		foreach ( $this->all() as $key => $svc ) {
 			if ( empty( $svc['enabled'] ) ) {
 				continue;
 			}
 			// Necessary services are never gated, so they need no rule.
 			if ( 'necessary' === $svc['category'] ) {
+				continue;
+			}
+			// Services governed by Consent Mode must NOT be hard-blocked — Google
+			// requires its tags to load with denied consent so conversion modeling
+			// and Ads audiences survive. Blocking them defeats the whole mechanism.
+			// If the site has turned Consent Mode off, nothing else would gate
+			// them, so they fall back to hard blocking.
+			if ( $consent_mode_on && ! empty( $svc['consent_mode'] ) ) {
 				continue;
 			}
 			foreach ( (array) $svc['patterns'] as $pattern ) {

@@ -45,41 +45,40 @@ class Anchor_Compliance_Script_Blocker {
 	 */
 	public function should_run() {
 		$opts = Anchor_Compliance_Settings::get();
+		$run  = true;
+
 		if ( empty( $opts['general']['enabled'] ) || empty( $opts['advanced']['buffer_enabled'] ) ) {
-			return false;
+			$run = false;
+		} elseif ( is_admin() || wp_doing_ajax() || wp_doing_cron() ) {
+			$run = false;
+		} elseif ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+			$run = false;
+		} elseif ( defined( 'WP_CLI' ) && WP_CLI ) {
+			$run = false;
+		} elseif ( is_feed() || is_embed() || is_preview() || is_customize_preview() ) {
+			$run = false;
+		} elseif ( '' !== (string) get_query_var( 'sitemap', '' ) ) {
+			// WP core XML sitemaps register 'sitemap' as a public query var
+			// (see WP_Sitemaps::register_query_vars()), so it is populated
+			// from the query string regardless of permalink structure —
+			// checking $_GET directly missed the pretty-permalink case
+			// entirely (the value never appears in $_GET there; it only
+			// exists after WP's rewrite parsing populates the query var).
+			$run = false;
 		}
-		if ( is_admin() || wp_doing_ajax() || wp_doing_cron() ) {
-			return false;
-		}
-		// Filtered rather than a bare `defined() && CONST` check so tests can
-		// exercise this branch safely. REST_REQUEST and WP_CLI are PHP
-		// constants: once define()'d they can never be unset for the rest of
-		// the process, which would silently flip this same check for every
-		// OTHER test that runs afterward in the same PHPUnit process —
-		// including anchor-optimize's and anchor-translate's own unrelated
-		// `defined('REST_REQUEST')` guards. Filters are cleaned up
-		// automatically by WP_UnitTestCase's per-test hook backup/restore;
-		// constants are not. Default value is the real, unfiltered check, so
-		// production behavior is unchanged.
-		if ( apply_filters( 'anchor_compliance_is_rest_request', defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
-			return false;
-		}
-		if ( apply_filters( 'anchor_compliance_is_wp_cli', defined( 'WP_CLI' ) && WP_CLI ) ) {
-			return false;
-		}
-		if ( is_feed() || is_embed() || is_preview() || is_customize_preview() ) {
-			return false;
-		}
-		// WP core XML sitemaps register 'sitemap' as a public query var (see
-		// WP_Sitemaps::register_query_vars()), so it is populated from the
-		// query string regardless of permalink structure — checking $_GET
-		// directly missed the pretty-permalink case entirely (the value
-		// never appears in $_GET there; it only exists after WP's rewrite
-		// parsing populates the query var).
-		if ( '' !== (string) get_query_var( 'sitemap', '' ) ) {
-			return false;
-		}
-		return true;
+
+		/**
+		 * Final override for whether the buffer should start, applied to the
+		 * fully-resolved decision rather than exposed as one filter per
+		 * internal condition. A filter promising to answer "is this a REST
+		 * request?" that actually just disables blocking would be
+		 * misleading; this is the single, honestly-named place to override
+		 * should_run() for any reason — including from a test (safely, with
+		 * no process-global constant involved) or from a site that wants
+		 * blocking suspended for some case this class doesn't otherwise
+		 * know about (e.g. during a Customizer preview).
+		 */
+		return (bool) apply_filters( 'anchor_compliance_should_run', $run );
 	}
 
 	public function maybe_start_buffer() {
@@ -286,14 +285,41 @@ class Anchor_Compliance_Script_Blocker {
 	 * reusing that method, because this one runs BEFORE the src/iframe
 	 * passes and must mask before they ever see the document, not filter
 	 * per-match the way rewrite_inline_scripts() does for itself.
+	 *
+	 * A note on what this does NOT protect against: the pattern above
+	 * requires a literal closing "</script>". A genuinely unclosed
+	 * <script type="text/template"> (malformed markup — a truncated
+	 * response, a template fatal) is therefore never masked at all, and its
+	 * body IS still visible, as flat text, to the src/iframe passes that
+	 * follow — those passes can and will "block" a URL or an
+	 * "<iframe src=...>" string that happens to sit inside it. That is a
+	 * real content-corruption case for malformed input, not a harmless miss;
+	 * it is not claimed to be safe anywhere in this class.
+	 *
+	 * The restore token embeds a fresh, unpredictable per-call nonce
+	 * (`random_bytes()`), not just a fixed literal plus a restarting
+	 * counter. Restoration is strtr(), which replaces EVERY occurrence of a
+	 * token string in the document — including one that this method never
+	 * produced. 0x01 is valid UTF-8 and passes esc_attr()/esc_html()/
+	 * sanitize_text_field() untouched, so with a predictable token (e.g. a
+	 * bare "ANCHOR_CMP_MASK_0" counter) an attacker who can get arbitrary
+	 * text reflected onto the page (a search query, a comment, any echoed
+	 * input) could plant the exact token bytes themselves. Since this plugin
+	 * always emits JSON-LD, the masking path is always live, and strtr()
+	 * would then splice a real, unrelated masked script into the attacker's
+	 * chosen spot — including breaking out of an attribute value, e.g. a
+	 * `<script type="application/ld+json">` ending up inside
+	 * `value="..."`. The nonce makes the token unpredictable per request, so
+	 * it cannot be pre-planted.
 	 */
 	private function mask_inert_scripts( $html, array &$masked ) {
 		$masked = [];
 		$i      = 0;
+		$nonce  = bin2hex( random_bytes( 8 ) );
 
 		return preg_replace_callback(
 			'#<script\b([^>]*)>(.*?)</script>#is',
-			function ( $m ) use ( &$masked, &$i ) {
+			function ( $m ) use ( &$masked, &$i, $nonce ) {
 				$attrs = $m[1];
 
 				if ( preg_match( '#(?<![\w:.-])src\s*=#i', $attrs ) ) {
@@ -303,7 +329,11 @@ class Anchor_Compliance_Script_Blocker {
 					return $m[0]; // real, src-less JS — rewrite_inline_scripts() still needs it.
 				}
 
-				$token             = "\x01ANCHOR_CMP_MASK_{$i}\x01";
+				// Trailing \x01 delimiter (not just a leading one) matters:
+				// without it, strtr()'s longest-match-first behavior across
+				// multiple tokens in the SAME nonce could see "..._1" as a
+				// prefix collide with "..._10" when both exist in $masked.
+				$token             = "\x01ANCHOR_CMP_MASK_{$nonce}_{$i}\x01";
 				$masked[ $token ]  = $m[0];
 				$i++;
 				return $token;
@@ -556,9 +586,22 @@ class Anchor_Compliance_Script_Blocker {
 		);
 	}
 
-	/** Remove any existing type="" so ours is unambiguous. */
+	/**
+	 * Remove any existing type="" so ours is unambiguous. Two passes: quoted
+	 * first, then unquoted (type=text/javascript with no quotes at all — the
+	 * same minifier behavior that motivated the unquoted src branch in
+	 * rewrite_src_tags() applies here too). Without the second pass, a
+	 * minifier-unquoted <script type=text/javascript> would keep its
+	 * original type sitting in front of our freshly-appended
+	 * type="text/plain" as a duplicate attribute; per the HTML tokenizer the
+	 * FIRST occurrence of a duplicate attribute wins, so the tag would keep
+	 * executing as text/javascript — the "text/plain" marker present in the
+	 * markup but never actually taking effect in the browser.
+	 */
 	private function strip_type_attribute( $attrs ) {
-		return preg_replace( '#\stype\s*=\s*(["\'])((?:(?!\1)[^>])*)\1#i', '', $attrs );
+		$attrs = preg_replace( '#\stype\s*=\s*(["\'])((?:(?!\1)[^>])*)\1#i', '', $attrs );
+		$attrs = preg_replace( '#\stype\s*=\s*[^\s>]+#i', '', $attrs );
+		return $attrs;
 	}
 
 	/**

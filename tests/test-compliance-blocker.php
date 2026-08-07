@@ -223,53 +223,126 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 		$this->assertSame( 0, $b->blocked_count(), 'blocked_count() must reset even when rewrite() exits early.' );
 	}
 
+	// --- Round 2 of the adversarial review: NEW-1, NEW-2 ---
+
 	/**
-	 * REST_REQUEST and WP_CLI are intentionally NOT exercised via the real
-	 * PHP constants here. Both are define()-once-per-process; defining
-	 * either would permanently flip should_run()'s check for every other
-	 * test that runs afterward in this same PHPUnit process, including
-	 * anchor-optimize's and anchor-translate's own unrelated
-	 * `defined('REST_REQUEST')` guards (see class-script-blocker.php's
-	 * should_run() for the full reasoning, and tests/test-email-builder.php
-	 * for a prior, independently-discovered instance of the same hazard with
-	 * DOING_AJAX). should_run() now checks these through the
-	 * 'anchor_compliance_is_rest_request' / 'anchor_compliance_is_wp_cli'
-	 * filters instead — defaulting to the real constant check in production,
-	 * but safely overridable here, with WP_UnitTestCase automatically
-	 * undoing the add_filter() between tests.
+	 * NEW-1 (High). Before the fix, mask_inert_scripts() built its token
+	 * from a fixed literal plus a counter that restarts at 0 on every call:
+	 * "\x01ANCHOR_CMP_MASK_0\x01". Restoration used strtr(), which replaces
+	 * EVERY occurrence of a token string in the document — including one
+	 * that mask_inert_scripts() never produced. 0x01 is valid UTF-8 and
+	 * survives esc_attr()/esc_html()/sanitize_text_field() untouched, so an
+	 * attacker who can get arbitrary text reflected onto the page (e.g. a
+	 * search query echoed back) could plant the literal token bytes
+	 * themselves; strtr() would then splice a real, unrelated masked script
+	 * into their chosen spot — including breaking out of an attribute
+	 * value. Anchor Tools always emits JSON-LD, so the masking path is
+	 * always live on every page.
 	 *
-	 * is_customize_preview() is also not exercised: WP_Customize_Manager is
-	 * declared `final`, so it cannot be stubbed/subclassed, and constructing
-	 * a real instance runs a heavy constructor with admin-context
-	 * dependencies and side effects (registers panels/sections/controls)
-	 * that are unsafe to invoke inside this suite. should_run() calling
-	 * is_customize_preview() is a straight pass-through to that WP core
-	 * conditional tag, not module-specific logic.
+	 * This test plants a forged, predictable-format token (as the old code
+	 * would have generated it) both in ordinary body text and inside an
+	 * attribute value, alongside a real inert script that masking WILL
+	 * process, and asserts the forged text passes through completely
+	 * unchanged — proving the real (randomly-nonced) tokens never collide
+	 * with attacker-controlled text.
 	 */
-	public function test_should_not_run_for_rest_wp_cli_cron_embed_or_preview() {
+	public function test_forged_mask_token_is_not_exploitable() {
+		$forged = "\x01ANCHOR_CMP_MASK_0\x01";
+		$html   = '<h1>Search results for: ' . $forged . '</h1>'
+			. '<input type="search" value="' . $forged . '">'
+			. '<script type="application/ld+json">{"@type":"WebSite","name":"Example"}</script>';
+
+		$out = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( '<h1>Search results for: ' . $forged . '</h1>', $out, 'A forged token in ordinary body text must survive byte-for-byte.' );
+		$this->assertStringContainsString( 'value="' . $forged . '"', $out, 'A forged token inside an attribute value must not be replaced — doing so would break out of the attribute.' );
+		$this->assertStringNotContainsString( 'value="' . $forged . '<script', $out, 'The forged token must never be replaced by an injected script, which would break out of the value="" attribute.' );
+	}
+
+	/**
+	 * NEW-2 (Medium). strip_type_attribute() only stripped a QUOTED
+	 * type="...". The unquoted src branch was added on the rationale that
+	 * an HTML minifier can strip attribute quoting — but a minifier that
+	 * unquotes src unquotes type too, and the old strip_type_attribute()
+	 * left an unquoted type=text/javascript in place while ALSO appending
+	 * type="text/plain", producing a duplicate attribute. Per the HTML
+	 * tokenizer the FIRST occurrence of a duplicate attribute wins, so the
+	 * tag kept its original type and the browser still executed the body —
+	 * the "blocked" marker present in the markup but not actually in
+	 * effect.
+	 */
+	public function test_unquoted_type_attribute_is_fully_stripped_before_blocking() {
+		$html = '<script type=text/javascript>fbq("init","1");</script>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertSame( 1, substr_count( $out, 'type=' ), 'An unquoted type= must be fully removed, not left duplicated alongside the new type="text/plain".' );
+		$this->assertStringNotContainsString( 'type=text/javascript', $out, 'The original unquoted executable type must not survive — it would win over the appended type="text/plain" as the first duplicate attribute.' );
+		$this->assertStringContainsString( 'type="text/plain"', $out );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out );
+	}
+
+	// --- should_run(): single 'anchor_compliance_should_run' filter (Round 2 API cleanup) ---
+
+	/**
+	 * wp_doing_cron() and is_embed()/is_preview() are exercised at the
+	 * branch level because they are safely fakeable without any
+	 * process-global side effect: wp_doing_cron() is filterable in WP core
+	 * (like wp_doing_ajax(), already used above), and is_embed()/
+	 * is_preview() just read mutable properties on the $wp_query global,
+	 * which this test sets and restores within itself. go_to() a plain URL
+	 * first so the starting state is a known, neutral query rather than
+	 * whatever a previous test in this file left behind.
+	 */
+	public function test_should_not_run_for_cron_embed_or_preview() {
+		$this->go_to( home_url( '/' ) );
 		$b = $this->blocker();
-
-		add_filter( 'anchor_compliance_is_rest_request', '__return_true' );
-		$this->assertFalse( $b->should_run(), 'A REST request must never be rewritten.' );
-		remove_filter( 'anchor_compliance_is_rest_request', '__return_true' );
-
-		add_filter( 'anchor_compliance_is_wp_cli', '__return_true' );
-		$this->assertFalse( $b->should_run(), 'A WP-CLI run must never be rewritten.' );
-		remove_filter( 'anchor_compliance_is_wp_cli', '__return_true' );
 
 		add_filter( 'wp_doing_cron', '__return_true' );
 		$this->assertFalse( $b->should_run(), 'A cron run must never be rewritten.' );
 		remove_filter( 'wp_doing_cron', '__return_true' );
 
 		global $wp_query;
-		$prev_embed             = $wp_query->is_embed;
-		$wp_query->is_embed     = true;
+		$prev_embed          = $wp_query->is_embed;
+		$wp_query->is_embed  = true;
 		$this->assertFalse( $b->should_run(), 'An oEmbed response must never be rewritten.' );
 		$wp_query->is_embed = $prev_embed;
 
-		$prev_preview            = $wp_query->is_preview;
-		$wp_query->is_preview    = true;
+		$prev_preview           = $wp_query->is_preview;
+		$wp_query->is_preview   = true;
 		$this->assertFalse( $b->should_run(), 'A draft/revision preview must never be rewritten.' );
 		$wp_query->is_preview = $prev_preview;
+	}
+
+	/**
+	 * should_run()'s decision funnels through a single
+	 * 'anchor_compliance_should_run' filter applied to the FINAL boolean,
+	 * rather than one filter per internal WP conditional — a filter
+	 * promising to answer "is this a REST request?" that actually just
+	 * disables blocking would be misleading. This is the one, honestly-named
+	 * override point, and it is what a test (or a site) uses to force
+	 * should_run() false for any reason, including REST, WP-CLI, or a
+	 * Customizer preview, without touching a process-global PHP constant.
+	 *
+	 * is_customize_preview() is not exercised at the branch level:
+	 * WP_Customize_Manager is declared `final` in WP core, so it cannot be
+	 * stubbed/subclassed to satisfy the instanceof check that function
+	 * performs. should_run()'s call to it is a straight pass-through to that
+	 * core conditional tag, not module-specific logic, so it is not
+	 * independently worth covering — this filter test already proves
+	 * should_run() honors an external override for any reason, which is the
+	 * mechanism a site would actually use to suspend blocking during a
+	 * Customizer preview.
+	 */
+	public function test_should_run_filter_overrides_the_final_decision() {
+		$this->go_to( home_url( '/' ) );
+		$b = $this->blocker();
+
+		$this->assertTrue( $b->should_run(), 'Sanity check: should_run() is true with no overrides in play.' );
+
+		add_filter( 'anchor_compliance_should_run', '__return_false' );
+		$this->assertFalse( $b->should_run(), 'anchor_compliance_should_run must be able to veto the decision for any reason.' );
+		remove_filter( 'anchor_compliance_should_run', '__return_false' );
+
+		$this->assertTrue( $b->should_run(), 'Removing the filter must restore the default decision.' );
 	}
 }

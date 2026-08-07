@@ -605,44 +605,57 @@ class Anchor_Compliance_Script_Blocker {
 	}
 
 	/**
-	 * Remove any existing type="" so ours is unambiguous. Two passes: quoted
-	 * first, then unquoted (type=text/javascript with no quotes at all — the
-	 * same minifier behavior that motivated the unquoted src branch in
-	 * rewrite_src_tags() applies here too). Without the second pass, a
-	 * minifier-unquoted <script type=text/javascript> would keep its
-	 * original type sitting in front of our freshly-appended
-	 * type="text/plain" as a duplicate attribute; per the HTML tokenizer the
-	 * FIRST occurrence of a duplicate attribute wins, so the tag would keep
-	 * executing as text/javascript — the "text/plain" marker present in the
-	 * markup but never actually taking effect in the browser.
+	 * Remove any existing type= so ours is unambiguous. Without this, a tag
+	 * that already carries type=text/javascript would keep it sitting in
+	 * front of our freshly-appended type="text/plain" as a DUPLICATE
+	 * attribute; per the HTML tokenizer the FIRST occurrence of a duplicate
+	 * attribute wins, so the tag would keep executing as text/javascript —
+	 * the "text/plain" marker present in the markup but never actually
+	 * taking effect in the browser. All three attribute-value forms must be
+	 * removed: type="x", type='x', and bare type=x (an HTML minifier that
+	 * unquotes src — the case that motivated the unquoted branch in
+	 * rewrite_src_tags() — unquotes type too).
 	 *
-	 * The unquoted pass is quote-AWARE, not a bare `\stype\s*=\s*[^\s>]+`.
+	 * This is ONE quote-aware pass, not a quoted pass followed by an
+	 * unquoted one. A quoted-only pattern looks safe but is not: it has no
+	 * notion of quote CONTEXT, so a `type="..."` sitting inside some other
+	 * attribute's value gets deleted along with the text around it.
 	 * strip_type_attribute() runs on the surviving attributes of every
 	 * blocked tag — including a blocked iframe's `title`, which for a
 	 * YouTube embed is the video's own title: arbitrary text the site owner
-	 * does not control and cannot be trusted not to contain the literal
-	 * substring "type=" (e.g. title="Battery type=AA"). A naive unquoted
-	 * pattern has no notion of quote context: it would match that embedded
-	 * "type=AA" as if it were a real attribute, and if the match's value
-	 * class didn't exclude quote characters it could consume straight
-	 * through the value's own closing `"`, leaving the rebuilt tag with an
-	 * unbalanced quote — which then swallows every attribute after it
-	 * (including the freshly-appended data-anchor-consent/data-anchor-src),
-	 * so Task 10's `[data-anchor-consent]` selector would never find the
-	 * tag it just neutered and a consented-to embed could never restore.
+	 * does not control. `title="Battery type='AA' cells"` would silently
+	 * become `title="Battery cells"`, and `data-x='a type="b" c'` would
+	 * become `data-x='a c'`. Quote parity survives (a matched pair is
+	 * removed), so it is not structural breakage — but it is silent
+	 * destruction of page content the visitor is supposed to read.
 	 *
-	 * The fix walks the attribute string left to right via alternation: a
-	 * complete quoted span (either quote style) is matched and passed
-	 * through UNCHANGED as a single atomic unit, so nothing inside it —
-	 * including a coincidental "type=" substring — is ever independently
-	 * visible to the actual strip branch. Only a "type=value" that is not
-	 * inside any quotes reaches the capturing group and gets removed.
+	 * The pattern walks the attribute string left to right via a single
+	 * alternation. A complete quoted span (either quote style) is matched
+	 * FIRST and passed through UNCHANGED as one atomic unit, so nothing
+	 * inside it — including a coincidental `type=` in any of the three
+	 * forms — is ever independently visible to the strip branch. Only a
+	 * `type=value` that is not inside any quoted span reaches the capturing
+	 * group and gets removed. The strip branch's own value alternation
+	 * accepts all three forms, so one pass covers what two used to.
+	 *
+	 * ACCEPTED FAIL-OPEN — unbalanced quotes. When the attribute string has
+	 * an odd number of quote characters (e.g. ` title="27" monitor"
+	 * type=text/javascript alt="x"`), the quoted-span branches pair across
+	 * the real `type=`, consuming it atomically, and it is NOT stripped —
+	 * the tag keeps an executable type and the tracker can still run. This
+	 * is deliberate and must not be "fixed". On malformed markup the only
+	 * way to reach that `type=` is to abandon quote awareness at exactly
+	 * the position where quote awareness is the thing protecting the
+	 * surrounding content, which trades a missed tracker for corrupted
+	 * output on every well-formed tag that merely LOOKS malformed to a
+	 * dumber pattern. Missing a tracker on broken HTML is the cheaper
+	 * failure; an earlier round that did strip it here still left the tag's
+	 * quotes broken, so it bought nothing. Pinned by
+	 * test_unbalanced_quotes_decline_to_strip_type_rather_than_corrupt().
 	 */
 	private function strip_type_attribute( $attrs ) {
-		$attrs = preg_replace( '#\stype\s*=\s*(["\'])((?:(?!\1)[^>])*)\1#i', '', $attrs );
-
 		return preg_replace_callback(
-			'#"[^"]*"|\'[^\']*\'|(\stype\s*=\s*[^\s>"\']+)#i',
+			'#"[^"]*"|\'[^\']*\'|(\stype\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>"\']+))#i',
 			static function ( $m ) {
 				// Group 1 only participates on the "strip this" branch; the
 				// two quoted-span alternatives leave it unset, so $m[0] (the

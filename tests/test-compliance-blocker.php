@@ -328,6 +328,66 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'type="text/plain"', $out );
 	}
 
+	// --- Round 4: the QUOTED type= strip pass was not quote-aware either ---
+
+	/**
+	 * Round 3 made the UNQUOTED strip pass quote-aware but left the quoted
+	 * pass (`#\stype\s*=\s*(["\'])...\1#i`) running ahead of it with no
+	 * notion of quote context. A quoted `type="..."` sitting INSIDE another
+	 * attribute's value was therefore deleted outright, taking the text
+	 * around it with it. Quote parity survives (a matched pair is removed),
+	 * so this was silent text corruption rather than structural breakage —
+	 * and it is reachable with content the site owner does not control: a
+	 * blocked YouTube embed's `title` is the video's own title.
+	 */
+	public function test_quoted_type_inside_another_attributes_value_is_never_deleted() {
+		$html = '<iframe src="https://www.youtube.com/embed/a" title="Battery type=\'AA\' cells"></iframe>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'title="Battery type=\'AA\' cells"', $out, 'A title containing a quoted type= must survive byte-for-byte — the old quoted pass deleted it, silently producing title="Battery cells".' );
+		$this->assertStringNotContainsString( 'Battery cells', $out, 'The corrupted form must not appear at all.' );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out, 'The tag must still be blocked and discoverable.' );
+	}
+
+	/** Same defect with the quote styles swapped: a double-quoted type= inside a single-quoted value. */
+	public function test_quoted_type_inside_a_single_quoted_attributes_value_is_never_deleted() {
+		$html = '<iframe src="https://www.youtube.com/embed/a" data-x=\'a type="b" c\'></iframe>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'data-x=\'a type="b" c\'', $out, 'A single-quoted value containing a double-quoted type= must survive byte-for-byte — the old quoted pass reduced it to \'a c\'.' );
+		$this->assertStringNotContainsString( "data-x='a c'", $out, 'The corrupted form must not appear at all.' );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out, 'The tag must still be blocked and discoverable.' );
+	}
+
+	/**
+	 * PINS AN ACCEPTED FAIL-OPEN — DO NOT "FIX" THIS INTO A STRIP.
+	 *
+	 * When a tag's attribute string has unbalanced quotes, the quote-aware
+	 * alternation in strip_type_attribute() pairs a quoted span straight
+	 * across the real `type=`, consuming it atomically, so the executable
+	 * type is NOT removed and the tracker can still run. That is the
+	 * deliberate trade: on malformed markup, the only way to reach that
+	 * `type=` is to abandon quote awareness at exactly the position where
+	 * quote awareness is what protects the surrounding content, which
+	 * corrupts well-formed tags that merely look malformed to a dumber
+	 * pattern. A missed tracker on broken HTML is the cheaper failure — and
+	 * an earlier round that did strip it here still left the tag's quotes
+	 * broken, so it bought nothing. This test exists so a future round
+	 * cannot silently turn that trade back into content corruption.
+	 */
+	public function test_unbalanced_quotes_decline_to_strip_type_rather_than_corrupt() {
+		// Attributes reaching strip_type_attribute() here are the tag's
+		// surviving ones with src removed: ` title="27" monitor"
+		// type=text/javascript alt="x"` — an odd number of quote characters,
+		// so a quoted span pairs from the stray `"` after `monitor` across
+		// the real `type=` and on to `alt="`.
+		$html = '<script title="27" monitor" type=text/javascript src="https://connect.facebook.net/en_US/fbevents.js" alt="x"></script>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'title="27" monitor"', $out, 'The malformed attribute text must be passed through untouched, not rewritten or partially deleted.' );
+		$this->assertStringContainsString( 'type=text/javascript', $out, 'ACCEPTED FAIL-OPEN: with unbalanced quotes the real type= is deliberately left in place. Do not change this to a strip — doing so means giving up quote awareness and corrupting well-formed content.' );
+	}
+
 	// --- should_run(): single 'anchor_compliance_should_run' filter (Round 2 API cleanup) ---
 
 	/**

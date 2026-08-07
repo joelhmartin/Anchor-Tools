@@ -22,30 +22,33 @@ class Anchor_Compliance_Module {
 	/** @var Anchor_Compliance_Settings */
 	public $settings;
 
+	/** @var Anchor_Compliance_Consent_State */
+	public $state;
+
 	/**
 	 * The booted module instance. Constructing a second module would duplicate
 	 * every hook (the banner would render twice), so collaborators must reach
-	 * the module through here rather than instantiating it.
+	 * the module through here rather than instantiating it. This is a passive
+	 * getter — anchor-tools.php always constructs the module directly via
+	 * `new $module['class']()`, so instance() must never construct one itself
+	 * or an early call could silently build a second, orphaned module.
 	 */
 	public static function instance() {
-		if ( null === self::$instance ) {
-			self::$instance = new self();
-		}
 		return self::$instance;
 	}
 
 	public function __construct() {
 		$this->load_includes();
 
-		if ( null === self::$instance ) {
-			self::$instance = $this;
-		}
+		self::$instance = $this;
 
 		$this->settings = new Anchor_Compliance_Settings();
+		$this->state    = new Anchor_Compliance_Consent_State();
 	}
 
 	private function load_includes() {
 		$dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-compliance/includes/';
 		require_once $dir . 'class-settings.php';
+		require_once $dir . 'class-consent-state.php';
 	}
 }

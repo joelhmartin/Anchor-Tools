@@ -73,7 +73,13 @@ class Anchor_Compliance_Service_Registry {
 			],
 			'meta_pixel' => [
 				'name' => 'Meta Pixel', 'provider' => 'Meta', 'category' => 'marketing',
-				'patterns' => [ 'connect.facebook.net', 'facebook.com/tr' ],
+				// 'fbq(' is not a URL — it is the inline bootstrap call
+				// (`!function(f,b){...}fbq('init',...)`) that WordPress themes
+				// commonly paste inline rather than load from a src. The script
+				// blocker matches patterns against both <script src> URLs and
+				// inline script bodies via the same substring check, so this
+				// entry is what lets an inline Pixel snippet get caught at all.
+				'patterns' => [ 'connect.facebook.net', 'facebook.com/tr', 'fbq(' ],
 				'cookies' => [
 					[ 'name' => '_fbp', 'purpose' => 'Ad delivery and measurement.', 'duration' => '90 days' ],
 					[ 'name' => '_fbc', 'purpose' => 'Stores the last ad click.', 'duration' => '90 days' ],

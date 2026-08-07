@@ -315,7 +315,21 @@ class Anchor_Compliance_Script_Blocker {
 	private function mask_inert_scripts( $html, array &$masked ) {
 		$masked = [];
 		$i      = 0;
-		$nonce  = bin2hex( random_bytes( 8 ) );
+
+		// random_bytes() can throw (Exception on PHP 8.1, \Random\RandomException
+		// on 8.2+ — both are \Throwable) if the platform's CSPRNG is
+		// unavailable. This runs inside an ob_start() callback: an uncaught
+		// throw here would discard the entire buffered page rather than
+		// just this one pass, which is exactly the outage this class's
+		// fail-open contract exists to prevent (see the class docblock).
+		// wp_generate_password() is WP-native, always available, and — since
+		// its only job here is to keep the token unpredictable, not to be a
+		// cryptographic secret — a perfectly adequate fallback.
+		try {
+			$nonce = bin2hex( random_bytes( 8 ) );
+		} catch ( \Throwable $e ) {
+			$nonce = wp_generate_password( 16, false, false );
+		}
 
 		return preg_replace_callback(
 			'#<script\b([^>]*)>(.*?)</script>#is',
@@ -329,10 +343,14 @@ class Anchor_Compliance_Script_Blocker {
 					return $m[0]; // real, src-less JS — rewrite_inline_scripts() still needs it.
 				}
 
-				// Trailing \x01 delimiter (not just a leading one) matters:
-				// without it, strtr()'s longest-match-first behavior across
-				// multiple tokens in the SAME nonce could see "..._1" as a
-				// prefix collide with "..._10" when both exist in $masked.
+				// Trailing \x01 delimiter (not just a leading one): strtr()
+				// already matches longest-key-first, so a bare "..._1" vs
+				// "..._10" ambiguity does not actually arise in practice —
+				// this is not a workaround for a real strtr() bug. It is
+				// kept anyway so token boundaries are self-delimiting and
+				// unambiguous by construction, rather than correctness
+				// resting on a documented-but-unenforced PHP implementation
+				// detail of one specific function.
 				$token             = "\x01ANCHOR_CMP_MASK_{$nonce}_{$i}\x01";
 				$masked[ $token ]  = $m[0];
 				$i++;
@@ -597,11 +615,42 @@ class Anchor_Compliance_Script_Blocker {
 	 * FIRST occurrence of a duplicate attribute wins, so the tag would keep
 	 * executing as text/javascript — the "text/plain" marker present in the
 	 * markup but never actually taking effect in the browser.
+	 *
+	 * The unquoted pass is quote-AWARE, not a bare `\stype\s*=\s*[^\s>]+`.
+	 * strip_type_attribute() runs on the surviving attributes of every
+	 * blocked tag — including a blocked iframe's `title`, which for a
+	 * YouTube embed is the video's own title: arbitrary text the site owner
+	 * does not control and cannot be trusted not to contain the literal
+	 * substring "type=" (e.g. title="Battery type=AA"). A naive unquoted
+	 * pattern has no notion of quote context: it would match that embedded
+	 * "type=AA" as if it were a real attribute, and if the match's value
+	 * class didn't exclude quote characters it could consume straight
+	 * through the value's own closing `"`, leaving the rebuilt tag with an
+	 * unbalanced quote — which then swallows every attribute after it
+	 * (including the freshly-appended data-anchor-consent/data-anchor-src),
+	 * so Task 10's `[data-anchor-consent]` selector would never find the
+	 * tag it just neutered and a consented-to embed could never restore.
+	 *
+	 * The fix walks the attribute string left to right via alternation: a
+	 * complete quoted span (either quote style) is matched and passed
+	 * through UNCHANGED as a single atomic unit, so nothing inside it —
+	 * including a coincidental "type=" substring — is ever independently
+	 * visible to the actual strip branch. Only a "type=value" that is not
+	 * inside any quotes reaches the capturing group and gets removed.
 	 */
 	private function strip_type_attribute( $attrs ) {
 		$attrs = preg_replace( '#\stype\s*=\s*(["\'])((?:(?!\1)[^>])*)\1#i', '', $attrs );
-		$attrs = preg_replace( '#\stype\s*=\s*[^\s>]+#i', '', $attrs );
-		return $attrs;
+
+		return preg_replace_callback(
+			'#"[^"]*"|\'[^\']*\'|(\stype\s*=\s*[^\s>"\']+)#i',
+			static function ( $m ) {
+				// Group 1 only participates on the "strip this" branch; the
+				// two quoted-span alternatives leave it unset, so $m[0] (the
+				// whole quoted span) is returned untouched.
+				return ( '' !== ( $m[1] ?? '' ) ) ? '' : $m[0];
+			},
+			$attrs
+		);
 	}
 
 	/**

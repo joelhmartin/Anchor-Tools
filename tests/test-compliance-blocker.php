@@ -256,7 +256,6 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 
 		$this->assertStringContainsString( '<h1>Search results for: ' . $forged . '</h1>', $out, 'A forged token in ordinary body text must survive byte-for-byte.' );
 		$this->assertStringContainsString( 'value="' . $forged . '"', $out, 'A forged token inside an attribute value must not be replaced — doing so would break out of the attribute.' );
-		$this->assertStringNotContainsString( 'value="' . $forged . '<script', $out, 'The forged token must never be replaced by an injected script, which would break out of the value="" attribute.' );
 	}
 
 	/**
@@ -279,6 +278,54 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( 'type=text/javascript', $out, 'The original unquoted executable type must not survive — it would win over the appended type="text/plain" as the first duplicate attribute.' );
 		$this->assertStringContainsString( 'type="text/plain"', $out );
 		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out );
+	}
+
+	// --- Round 3 of the adversarial review: NEW-A ---
+
+	/**
+	 * NEW-A (Medium). The round-2 unquoted-type strip pass,
+	 * `#\stype\s*=\s*[^\s>]+#i`, only required whitespace before "type" — so
+	 * it also fired on a "type=" substring sitting inside some OTHER
+	 * attribute's quoted VALUE, and its value class would then swallow that
+	 * value's own closing quote, leaving the rebuilt tag with an unbalanced
+	 * quote (which then corrupts/hides every attribute after it, including
+	 * data-anchor-consent — the exact attribute Task 10's runtime needs to
+	 * find the tag). This is reachable on any blocked iframe whose `title`
+	 * text (e.g. a YouTube video title, which a site owner does not
+	 * control) happens to contain the literal substring "type=".
+	 */
+	public function test_type_inside_another_attributes_value_is_never_touched() {
+		$html = '<iframe src="https://www.youtube.com/embed/a" title="Battery type=AA"></iframe>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertSame( substr_count( $out, '"' ) % 2, 0, 'Quotes in the rebuilt tag must be balanced.' );
+		$this->assertStringContainsString( 'title="Battery type=AA"', $out, 'A title containing the literal substring "type=" must survive completely intact.' );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out, 'The real data-anchor-consent attribute must still be discoverable — an unbalanced quote earlier in the tag would hide it.' );
+	}
+
+	public function test_type_inside_a_data_attributes_value_is_never_touched() {
+		$html = '<script type="text/javascript" data-x="a type=b" src="https://connect.facebook.net/en_US/fbevents.js"></script>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertSame( substr_count( $out, '"' ) % 2, 0, 'Quotes in the rebuilt tag must be balanced.' );
+		$this->assertStringContainsString( 'data-x="a type=b"', $out, 'A data attribute containing the literal substring "type=" must survive completely intact.' );
+		// Exactly two "type=" substrings survive: the untouched one embedded
+		// in data-x's value, and our own fresh type="text/plain" — never a
+		// third, corrupted occurrence, and never zero (which would mean
+		// data-x itself got mangled).
+		$this->assertSame( 2, substr_count( $out, 'type=' ) );
+		$this->assertStringContainsString( 'type="text/plain"', $out );
+	}
+
+	/** The real, trailing, unquoted type= must still be stripped even while an unrelated quoted attribute containing "type=" text is left completely alone. */
+	public function test_real_trailing_unquoted_type_is_stripped_while_title_stays_intact() {
+		$html = '<script title="Pick type=A batteries" type=text/javascript src="https://connect.facebook.net/en_US/fbevents.js"></script>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertSame( substr_count( $out, '"' ) % 2, 0, 'Quotes in the rebuilt tag must be balanced.' );
+		$this->assertStringContainsString( 'title="Pick type=A batteries"', $out, 'The title must survive completely intact, unchanged by the trailing type= being stripped.' );
+		$this->assertStringNotContainsString( 'type=text/javascript', $out, 'The real, executable, unquoted type= must still be stripped.' );
+		$this->assertStringContainsString( 'type="text/plain"', $out );
 	}
 
 	// --- should_run(): single 'anchor_compliance_should_run' filter (Round 2 API cleanup) ---

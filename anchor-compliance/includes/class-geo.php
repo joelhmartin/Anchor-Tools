@@ -51,7 +51,7 @@ class Anchor_Compliance_Geo {
 			if ( empty( $_SERVER[ $header ] ) ) {
 				continue;
 			}
-			$code = $this->normalize( $_SERVER[ $header ] );
+			$code = $this->normalize( wp_unslash( $_SERVER[ $header ] ) );
 			if ( null !== $code ) {
 				$this->country = $code;
 				$this->source  = $label;
@@ -147,14 +147,31 @@ class Anchor_Compliance_Geo {
 		return '';
 	}
 
-	/** Cache key granularity: the /24 (v4) or /64 (v6) block, never the full IP. */
+	/**
+	 * Cache key granularity: the /24 (v4) or /64 (v6) block, never the full IP.
+	 *
+	 * IPv6 truncation goes through the binary form rather than exploding on
+	 * ':' — most real-world IPv6 addresses are written in compressed form
+	 * (e.g. "2001:db8::1"), where the elided run collapses to a single empty
+	 * token. String-splitting on ':' then grabs far fewer than 4 real
+	 * hextets and bakes the host's interface identifier straight into the
+	 * "block" key, defeating the truncation silently (no PHP warning).
+	 */
 	private function ip_block( $ip ) {
 		if ( filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ) {
 			$parts = explode( '.', $ip );
 			return "{$parts[0]}.{$parts[1]}.{$parts[2]}.0";
 		}
-		$parts = explode( ':', $ip );
-		return implode( ':', array_slice( $parts, 0, 4 ) ) . '::';
+		$bin = inet_pton( $ip );
+		if ( false === $bin || 16 !== strlen( $bin ) ) {
+			// Should not happen — $ip is already FILTER_VALIDATE_IP'd by the
+			// caller — but never let a malformed address fall through to an
+			// unsafe cache key.
+			return $ip;
+		}
+		// Zero the low 8 bytes (the /64 host identifier), keep the network prefix.
+		$network = substr( $bin, 0, 8 ) . str_repeat( "\0", 8 );
+		return inet_ntop( $network );
 	}
 
 	/** @return string 'strict' | 'optout' */

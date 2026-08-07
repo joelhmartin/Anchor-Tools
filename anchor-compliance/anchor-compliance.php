@@ -31,6 +31,9 @@ class Anchor_Compliance_Module {
 	/** @var Anchor_Compliance_Service_Registry */
 	public $registry;
 
+	/** @var Anchor_Compliance_Consent_Mode */
+	public $consent_mode;
+
 	/**
 	 * The booted module instance. Constructing a second module would duplicate
 	 * every hook (the banner would render twice), so collaborators must reach
@@ -52,6 +55,12 @@ class Anchor_Compliance_Module {
 		$this->state    = new Anchor_Compliance_Consent_State();
 		$this->geo      = new Anchor_Compliance_Geo();
 		$this->registry = new Anchor_Compliance_Service_Registry();
+
+		$this->consent_mode = new Anchor_Compliance_Consent_Mode( $this->state, $this->geo );
+
+		if ( ! is_admin() ) {
+			add_action( 'wp_head', [ $this->consent_mode, 'emit_defaults' ], 1 );
+		}
 	}
 
 	private function load_includes() {
@@ -60,5 +69,6 @@ class Anchor_Compliance_Module {
 		require_once $dir . 'class-consent-state.php';
 		require_once $dir . 'class-geo.php';
 		require_once $dir . 'class-service-registry.php';
+		require_once $dir . 'class-consent-mode.php';
 	}
 }

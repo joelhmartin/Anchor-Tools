@@ -52,6 +52,9 @@ class Anchor_Compliance_Module {
 	/** @var Anchor_Compliance_Cookie_Policy */
 	public $cookie_policy;
 
+	/** @var Anchor_Compliance_Dsar */
+	public $dsar;
+
 	/**
 	 * The booted module instance. Constructing a second module would duplicate
 	 * every hook (the banner would render twice), so collaborators must reach
@@ -81,9 +84,11 @@ class Anchor_Compliance_Module {
 		$this->banner        = new Anchor_Compliance_Banner( $this->state, $this->geo, $this->registry, $this->consent_mode );
 		$this->snippets      = new Anchor_Compliance_Snippets_Bridge( $this->state, $this->geo );
 		$this->cookie_policy = new Anchor_Compliance_Cookie_Policy();
+		$this->dsar          = new Anchor_Compliance_Dsar();
 
 		add_action( 'rest_api_init', [ $this->rest, 'register_routes' ] );
 		add_action( 'admin_init', [ 'Anchor_Compliance_Consent_Log', 'maybe_install' ] );
+		add_action( 'admin_init', [ 'Anchor_Compliance_Dsar', 'maybe_install' ] );
 		add_action( Anchor_Compliance_Consent_Log::CRON_HOOK, [ $this->log, 'purge' ] );
 
 		add_action( 'add_meta_boxes', [ $this->snippets, 'add_metabox' ] );
@@ -98,6 +103,11 @@ class Anchor_Compliance_Module {
 		add_shortcode( 'anchor_consent_link', [ $this->banner, 'shortcode_consent_link' ] );
 		add_shortcode( 'anchor_do_not_sell', [ $this->banner, 'shortcode_do_not_sell' ] );
 		add_shortcode( 'anchor_cookie_policy', [ $this->cookie_policy, 'render' ] );
+		add_shortcode( 'anchor_privacy_request', [ $this->dsar, 'shortcode' ] );
+
+		add_action( 'admin_post_nopriv_anchor_compliance_dsar', [ $this->dsar, 'handle_submit' ] );
+		add_action( 'admin_post_anchor_compliance_dsar', [ $this->dsar, 'handle_submit' ] );
+		add_action( 'admin_menu', [ $this->dsar, 'register_menu' ] );
 
 		if ( ! is_admin() ) {
 			add_action( 'wp_head', [ $this->consent_mode, 'emit_defaults' ], 1 );
@@ -120,5 +130,6 @@ class Anchor_Compliance_Module {
 		require_once $dir . 'class-banner.php';
 		require_once $dir . 'class-snippets-bridge.php';
 		require_once $dir . 'class-cookie-policy.php';
+		require_once $dir . 'class-dsar.php';
 	}
 }

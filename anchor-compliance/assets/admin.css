@@ -1,0 +1,92 @@
+/**
+ * Anchor Compliance — settings screen.
+ * Enqueued only on the Compliance tab (anchor_settings_enqueue_compliance).
+ */
+
+.anchor-cmp-geo-readout {
+	margin: 12px 0 16px;
+	padding: 12px 16px;
+}
+
+.anchor-cmp-geo-readout p {
+	margin: 0.5em 0;
+}
+
+.anchor-cmp-geo-readout p.description {
+	color: #646970;
+}
+
+.anchor-cmp-country-select {
+	min-width: 220px;
+	vertical-align: top;
+}
+
+.anchor-cmp-services-table th,
+.anchor-cmp-services-table td {
+	vertical-align: middle;
+}
+
+.anchor-cmp-services-table td:last-child {
+	text-align: center;
+}
+
+.anchor-cmp-logo-preview {
+	display: inline-block;
+	vertical-align: middle;
+	margin-right: 8px;
+}
+
+.anchor-cmp-logo-preview img {
+	max-height: 60px;
+	max-width: 160px;
+	display: block;
+	border: 1px solid #dcdcde;
+	border-radius: 4px;
+	padding: 2px;
+	background: #fff;
+}
+
+#anchor-cmp-custom-rules {
+	margin-bottom: 8px;
+}
+
+.anchor-cmp-rule-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	padding: 10px;
+	margin-bottom: 8px;
+	background: #fff;
+	border: 1px solid #dcdcde;
+	border-radius: 4px;
+}
+
+.anchor-cmp-rule-row input[type="text"] {
+	flex: 1 1 200px;
+	min-width: 150px;
+}
+
+.anchor-cmp-rule-row select {
+	flex: 0 0 auto;
+}
+
+.anchor-cmp-rule-row .anchor-cmp-rule-remove {
+	flex: 0 0 auto;
+}
+
+#anchor-cmp-rule-template {
+	display: none;
+}
+
+.anchor-cmp-log-filter-form,
+.anchor-cmp-log-export-form {
+	display: inline-block;
+	margin: 0 12px 12px 0;
+	vertical-align: top;
+}
+
+.anchor-cmp-log-filter-form select,
+.anchor-cmp-log-filter-form input {
+	margin-right: 6px;
+}

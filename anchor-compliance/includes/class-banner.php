@@ -240,7 +240,7 @@ class Anchor_Compliance_Banner {
 		printf(
 			'<div id="anchor-cmp-banner" class="anchor-cmp-banner" role="dialog" aria-modal="true" aria-labelledby="anchor-cmp-heading">'
 		);
-		printf( '<h2 id="anchor-cmp-heading" class="anchor-cmp-heading">%s</h2>', esc_html( $content['heading'] ) );
+		printf( '<h2 id="anchor-cmp-heading" class="anchor-cmp-heading">%s</h2>', wp_kses_post( $content['heading'] ) );
 		printf( '<div class="anchor-cmp-body">%s</div>', wp_kses_post( $body_copy ) );
 
 		if ( $this->state->is_gpc() ) {
@@ -253,15 +253,15 @@ class Anchor_Compliance_Banner {
 		echo '<div class="anchor-cmp-actions">';
 		printf(
 			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--reject" data-anchor-action="reject-all">%s</button>',
-			esc_html( $reject_label )
+			wp_kses_post( $reject_label )
 		);
 		printf(
 			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--customize" data-anchor-action="customize" aria-controls="anchor-cmp-prefs">%s</button>',
-			esc_html( $content['customize_label'] )
+			wp_kses_post( $content['customize_label'] )
 		);
 		printf(
 			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--accept" data-anchor-action="accept-all">%s</button>',
-			esc_html( $content['accept_label'] )
+			wp_kses_post( $content['accept_label'] )
 		);
 		echo '</div>'; // .anchor-cmp-actions
 		echo '</div>'; // #anchor-cmp-banner
@@ -360,15 +360,15 @@ class Anchor_Compliance_Banner {
 		echo '<div class="anchor-cmp-prefs-actions">';
 		printf(
 			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--reject" data-anchor-action="reject-all">%s</button>',
-			esc_html( $reject_label )
+			wp_kses_post( $reject_label )
 		);
 		printf(
 			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--save" data-anchor-action="save-preferences">%s</button>',
-			esc_html( $content['save_label'] )
+			wp_kses_post( $content['save_label'] )
 		);
 		printf(
 			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--accept" data-anchor-action="accept-all">%s</button>',
-			esc_html( $content['accept_label'] )
+			wp_kses_post( $content['accept_label'] )
 		);
 		echo '</div>'; // .anchor-cmp-prefs-actions
 
@@ -393,6 +393,10 @@ class Anchor_Compliance_Banner {
 	 * for placement in a footer menu or a page.
 	 */
 	public function shortcode_consent_link( $atts ) {
+		if ( empty( $this->opts()['general']['enabled'] ) ) {
+			return '';
+		}
+
 		$atts = shortcode_atts(
 			[ 'text' => __( 'Cookie Preferences', 'anchor-schema' ) ],
 			(array) $atts,
@@ -412,6 +416,10 @@ class Anchor_Compliance_Banner {
 	 */
 	public function shortcode_do_not_sell( $atts ) {
 		$opts = $this->opts();
+		if ( empty( $opts['general']['enabled'] ) ) {
+			return '';
+		}
+
 		$atts = shortcode_atts(
 			[ 'text' => $opts['content']['dns_label'] ],
 			(array) $atts,

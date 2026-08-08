@@ -111,4 +111,86 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'data-anchor-action="do-not-sell"', $out );
 		$this->assertStringContainsString( 'Do Not Sell', $out );
 	}
+
+	public function test_brand_colors_use_module_defaults_when_site_config_is_absent() {
+		// anchor_site_config_options was never saved — get_option() returns false.
+		$this->assertFalse( get_option( 'anchor_site_config_options' ) );
+
+		$defaults = Anchor_Compliance_Settings::defaults()['appearance'];
+		$colors   = $this->banner()->brand_colors();
+
+		$this->assertSame( $defaults['color_accent'], $colors['accent'] );
+		$this->assertSame( $defaults['color_surface'], $colors['surface'] );
+		$this->assertSame( $defaults['color_text'], $colors['text'] );
+	}
+
+	public function test_brand_colors_partial_site_config_fills_gaps_from_module_settings() {
+		update_option( 'anchor_site_config_options', [ 'colors' => [ 'primary' => '#123456' ] ], false );
+
+		$defaults = Anchor_Compliance_Settings::defaults()['appearance'];
+		$colors   = $this->banner()->brand_colors();
+
+		$this->assertSame( '#123456', $colors['accent'], 'Set key inherits from Site Config.' );
+		$this->assertSame( $defaults['color_surface'], $colors['surface'], 'Missing key falls back to module default.' );
+		$this->assertSame( $defaults['color_text'], $colors['text'], 'Missing key falls back to module default.' );
+	}
+
+	public function test_render_emits_white_ink_for_a_dark_accent() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'appearance' => [ 'inherit_brand' => false, 'color_accent' => '#000000' ],
+		], false );
+
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( '--acmp-accent-ink:#ffffff', $html );
+	}
+
+	public function test_render_emits_black_ink_for_a_light_accent() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'appearance' => [ 'inherit_brand' => false, 'color_accent' => '#ffffff' ],
+		], false );
+
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( '--acmp-accent-ink:#000000', $html );
+	}
+
+	public function test_enqueue_registers_source_assets_with_inline_payload_before_position() {
+		wp_deregister_script( 'anchor-compliance' );
+		wp_deregister_style( 'anchor-compliance' );
+
+		$this->banner()->enqueue();
+
+		$this->assertTrue( wp_script_is( 'anchor-compliance', 'registered' ) );
+		$this->assertTrue( wp_style_is( 'anchor-compliance', 'registered' ) );
+
+		$script_src = wp_scripts()->registered['anchor-compliance']->src;
+		$style_src  = wp_styles()->registered['anchor-compliance']->src;
+		$this->assertStringNotContainsString( '.min.', $script_src, 'Never enqueue a gitignored, CI-generated .min. asset.' );
+		$this->assertStringNotContainsString( '.min.', $style_src, 'Never enqueue a gitignored, CI-generated .min. asset.' );
+
+		$before = wp_scripts()->get_data( 'anchor-compliance', 'before' );
+		$this->assertNotEmpty( $before, 'Payload must be attached as an inline script in the "before" position.' );
+		$this->assertStringContainsString( 'AnchorComplianceData', implode( '', (array) $before ) );
+
+		wp_dequeue_script( 'anchor-compliance' );
+		wp_deregister_script( 'anchor-compliance' );
+		wp_dequeue_style( 'anchor-compliance' );
+		wp_deregister_style( 'anchor-compliance' );
+	}
+
+	public function test_enqueue_no_ops_when_module_disabled() {
+		wp_deregister_script( 'anchor-compliance' );
+		wp_deregister_style( 'anchor-compliance' );
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'general' => [ 'enabled' => false ] ], false );
+
+		$this->banner()->enqueue();
+
+		$this->assertFalse( wp_script_is( 'anchor-compliance', 'registered' ) );
+		$this->assertFalse( wp_style_is( 'anchor-compliance', 'registered' ) );
+	}
 }

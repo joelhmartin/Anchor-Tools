@@ -33,6 +33,77 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( ' src="https://connect.facebook.net', $out, 'The live src must be removed.' );
 	}
 
+	/**
+	 * The placeholder copy must come from the admin's settings, not from a
+	 * hardcoded English literal. This matters beyond the server: the JS
+	 * runtime prefers placeholder copy already present on the page when it
+	 * synthesizes one for a CLIENT-built embed, so a hardcoded string here
+	 * would silently override the configured value for those too.
+	 */
+	public function test_placeholder_copy_comes_from_settings() {
+		$opts = Anchor_Compliance_Settings::get();
+		$opts['content']['placeholder_text']   = 'Custom blocked notice';
+		$opts['content']['placeholder_button'] = 'Load it';
+		update_option( Anchor_Compliance_Module::OPTION_KEY, $opts, false );
+
+		$out = $this->blocker()->rewrite( '<iframe src="https://www.youtube.com/embed/abc123"></iframe>' );
+
+		$this->assertStringContainsString( 'Custom blocked notice', $out );
+		$this->assertStringContainsString( '>Load it</button>', $out );
+		$this->assertStringNotContainsString( 'This content is blocked until you accept', $out );
+	}
+
+	/**
+	 * wp_kses_post() entity-encodes the "&" in the "Accept & Load" default the
+	 * first time the settings form posts that field. The blocker must decode
+	 * once before esc_html() re-encodes, or the visitor sees a literal
+	 * "&amp;amp;" rendered as "&amp;" on screen.
+	 */
+	public function test_placeholder_copy_is_not_double_encoded() {
+		$opts = Anchor_Compliance_Settings::get();
+		$opts['content']['placeholder_button'] = 'Accept &amp; Load'; // as wp_kses_post stores it
+		update_option( Anchor_Compliance_Module::OPTION_KEY, $opts, false );
+
+		$out = $this->blocker()->rewrite( '<iframe src="https://www.youtube.com/embed/abc123"></iframe>' );
+
+		$this->assertStringContainsString( '>Accept &amp; Load</button>', $out );
+		$this->assertStringNotContainsString( '&amp;amp;', $out, 'Decode once, escape once — never double-encode.' );
+	}
+
+	/**
+	 * PINS FIX B. A bare `vimeo.com/video` pattern also matched
+	 * api.vimeo.com/videoS/ and vimeo.com/videoSCHOOL. Because patterns are
+	 * matched against inline SCRIPT BODIES too, that neutralized any inline
+	 * script merely mentioning the Vimeo REST API — a URL
+	 * anchor-webinars/anchor-webinars.php:171 constructs verbatim.
+	 */
+	public function test_vimeo_pattern_does_not_match_the_rest_api_or_videoschool() {
+		$api = '<body><script>fetch("https://api.vimeo.com/videos/123");</script></body>';
+		$this->assertSame(
+			$api,
+			$this->blocker()->rewrite( $api ),
+			'An inline script referencing the Vimeo REST API must not be gated.'
+		);
+
+		$out = $this->blocker()->rewrite( '<body><iframe src="https://api.vimeo.com/videos/123"></iframe></body>' );
+		$this->assertStringNotContainsString( 'data-anchor-consent', $out, 'api.vimeo.com/videos/ is not an embed.' );
+
+		$out = $this->blocker()->rewrite( '<body><iframe src="https://vimeo.com/videoschool"></iframe></body>' );
+		$this->assertStringNotContainsString( 'data-anchor-consent', $out, 'vimeo.com/videoschool is a content page.' );
+
+		$out = $this->blocker()->rewrite( '<body><iframe src="https://vimeo.com/video/123"></iframe></body>' );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out, 'A real Vimeo embed must still be gated.' );
+	}
+
+	/** PINS FIX C. youtube.com/watch must be gated by the server too. */
+	public function test_youtube_watch_and_short_links_are_gated() {
+		$out = $this->blocker()->rewrite( '<body><iframe src="https://www.youtube.com/watch?v=abc"></iframe></body>' );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out );
+
+		$out = $this->blocker()->rewrite( '<body><iframe src="https://youtu.be/abc"></iframe></body>' );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out );
+	}
+
 	public function test_leaves_unmatched_scripts_alone() {
 		$html = '<script src="https://example.com/theme/app.js"></script>';
 		$this->assertSame( $html, $this->blocker()->rewrite( $html ) );

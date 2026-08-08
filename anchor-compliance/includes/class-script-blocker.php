@@ -24,6 +24,9 @@ class Anchor_Compliance_Script_Blocker {
 	private $geo;
 	private $blocked = 0;
 
+	/** @var array|null Memoized placeholder copy; see placeholder_copy(). */
+	private $placeholder_copy_cache = null;
+
 	/** MIME/type values that mean "this script executes as JavaScript." Anything else (application/ld+json, text/template, ...) is inert markup, not code, and must never be touched. */
 	const EXECUTABLE_TYPES = [ 'text/javascript', 'application/javascript', 'module' ];
 
@@ -469,9 +472,13 @@ class Anchor_Compliance_Script_Blocker {
 	private function rewrite_src_tags( $html, $tag, array $rules, array $allowed ) {
 		$pattern = '#<' . $tag . '\b([^>]*?)(?<![\w:.-])src\s*=\s*(?:(["\'])((?:(?!\2)[^>])*)\2|([^\s>]+))([^>]*)>#is';
 
+		// Resolved once per call, not per matched tag — a page can carry many
+		// blocked embeds and Anchor_Compliance_Settings::get() is not free.
+		$copy = $this->placeholder_copy();
+
 		return preg_replace_callback(
 			$pattern,
-			function ( $m ) use ( $rules, $allowed, $tag ) {
+			function ( $m ) use ( $rules, $allowed, $tag, $copy ) {
 				$before = $m[1];
 				$url    = ( '' !== $m[2] ) ? $m[3] : $m[4];
 				$after  = $this->strip_self_closing_slash( $m[5] );
@@ -521,14 +528,56 @@ class Anchor_Compliance_Script_Blocker {
 					. '<button type="button" class="anchor-cmp-placeholder__btn" data-anchor-accept="%1$s">%3$s</button></span>'
 					. '<iframe%4$s data-anchor-consent="%1$s" data-anchor-src="%5$s" style="display:none">',
 					esc_attr( $category ),
-					esc_html__( 'This content is blocked until you accept the related cookies.', 'anchor-schema' ),
-					esc_html__( 'Accept & Load', 'anchor-schema' ),
+					esc_html( $copy['text'] ),
+					esc_html( $copy['button'] ),
 					$attrs,
 					esc_attr( $clean_url )
 				);
 			},
 			$html
 		);
+	}
+
+	/**
+	 * The visitor-facing copy for a blocked-iframe placeholder.
+	 *
+	 * Reads the admin's configured `content.placeholder_text` /
+	 * `content.placeholder_button` rather than hardcoding English. These are
+	 * the same two keys the JS runtime falls back to when it synthesizes a
+	 * placeholder for a CLIENT-built embed — and because the runtime prefers
+	 * copy already present on the page, a hardcoded string here would silently
+	 * override the admin's setting for those embeds too.
+	 *
+	 * Values are entity-DECODED before being returned: they were stored
+	 * through wp_kses_post(), so "Accept & Load" comes back as
+	 * "Accept &amp; Load", and esc_html() at the call site would double-encode
+	 * it into a literal "&amp;" on screen. Decode once, escape once.
+	 *
+	 * @return array{text:string,button:string}
+	 */
+	private function placeholder_copy() {
+		if ( null !== $this->placeholder_copy_cache ) {
+			return $this->placeholder_copy_cache;
+		}
+
+		$content = Anchor_Compliance_Settings::get()['content'];
+
+		$text = isset( $content['placeholder_text'] ) ? (string) $content['placeholder_text'] : '';
+		$btn  = isset( $content['placeholder_button'] ) ? (string) $content['placeholder_button'] : '';
+
+		if ( '' === trim( $text ) ) {
+			$text = __( 'This content is blocked until you accept the related cookies.', 'anchor-schema' );
+		}
+		if ( '' === trim( $btn ) ) {
+			$btn = __( 'Accept & Load', 'anchor-schema' );
+		}
+
+		$this->placeholder_copy_cache = [
+			'text'   => html_entity_decode( $text, ENT_QUOTES, 'UTF-8' ),
+			'button' => html_entity_decode( $btn, ENT_QUOTES, 'UTF-8' ),
+		];
+
+		return $this->placeholder_copy_cache;
 	}
 
 	/**

@@ -168,6 +168,44 @@
 		return null;
 	}
 
+	/**
+	 * Decode HTML entities in a string destined for `textContent`.
+	 *
+	 * Every `content.*` setting is stored through `wp_kses_post()`, which
+	 * entity-encodes bare specials — the `placeholder_button` default
+	 * "Accept & Load" comes back as "Accept &amp; Load" the first time the
+	 * settings form posts that field. Strings we inject as trusted markup
+	 * (notice_body, dns_label, via innerHTML) are decoded by the HTML parser
+	 * for free; strings we assign to `textContent` are NOT, so "&amp;" would
+	 * render literally to the visitor.
+	 *
+	 * A detached <textarea> is the decoder because its content model is
+	 * RCDATA: markup inside is parsed as text, so no element is ever
+	 * constructed and no handler can fire. Assigning the same string to a
+	 * <div>'s innerHTML would be an XSS primitive; this is not.
+	 */
+	var entityDecoder = null;
+	function decodeEntities(str) {
+		var s = String(str);
+		if (s.indexOf('&') === -1) { return s; }
+		try {
+			if (!entityDecoder) { entityDecoder = document.createElement('textarea'); }
+			entityDecoder.innerHTML = s;
+			return entityDecoder.value;
+		} catch (e) {
+			// Explicit fallback for the five specials wp_kses_post produces.
+			return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+				.replace(/&quot;/g, '"').replace(/&#0?39;/g, "'")
+				.replace(/&amp;/g, '&');
+		}
+	}
+
+	/** A `content.*` string, entity-decoded, ready for textContent. */
+	function i18nText(key, fallback) {
+		var raw = (I18N && I18N[key]) ? String(I18N[key]) : '';
+		return raw ? decodeEntities(raw) : fallback;
+	}
+
 	function setHidden(el, hidden) {
 		if (!el) { return; }
 		if (hidden) {
@@ -1079,6 +1117,19 @@
 		var key = method + ':' + chosen.join(',');
 		var now = (new Date()).getTime();
 		if (key === lastConsentKey && (now - lastConsentAt) < CONSENT_DEBOUNCE_MS) {
+			// The DECISION is a duplicate; the CLICK is not. `accept-all` and
+			// `reject-all` exist in BOTH the banner and the preference panel
+			// under the same `method`, so the key collides across them and a
+			// visitor can legitimately trigger the identical decision from a
+			// second, still-open dialog.
+			//
+			// Suppress the RECORD, never the UI response. Returning before the
+			// epilogue leaves the panel open with focus still trapped inside
+			// it and nothing visibly happening — a dead click.
+			if (!opts.keepOpen) {
+				closePanels();
+				releaseFocus();
+			}
 			return;
 		}
 		lastConsentKey = key;
@@ -1115,7 +1166,7 @@
 			releaseFocus();
 		}
 		if (!opts.silent) {
-			announce(I18N.saved_message || 'Your privacy preferences have been saved.');
+			announce(i18nText('saved_message', 'Your privacy preferences have been saved.'));
 		}
 	}
 
@@ -1191,10 +1242,17 @@
 		{ pattern: 'youtube.com/embed', category: 'marketing' },
 		{ pattern: 'youtube-nocookie.com/embed', category: 'marketing' },
 		{ pattern: 'youtube.com/iframe_api', category: 'marketing' },
+		{ pattern: 'youtube.com/watch', category: 'marketing' },
 		{ pattern: 'youtu.be/', category: 'marketing' },
 		{ pattern: 'player.vimeo.com', category: 'marketing' },
 		{ pattern: 'vimeo.com/api', category: 'marketing' },
-		{ pattern: 'vimeo.com/video', category: 'marketing' }
+		// Trailing slash is load-bearing: bare `vimeo.com/video` also matches
+		// api.vimeo.com/videoS/ and vimeo.com/videoSCHOOL, and the same
+		// patterns are matched against inline SCRIPT BODIES by the server-side
+		// blocker — so the bare form neutralized any inline script that merely
+		// mentioned the Vimeo REST API (anchor-webinars builds exactly such a
+		// URL). Mirrors Anchor_Compliance_Service_Registry; keep them in step.
+		{ pattern: 'vimeo.com/video/', category: 'marketing' }
 	];
 
 	function isArray(v) {
@@ -1275,8 +1333,11 @@
 		var text = qs('.anchor-cmp-placeholder__text');
 		var btn = qs('.anchor-cmp-placeholder__btn');
 		return {
-			text: (text && text.textContent) ? text.textContent : (I18N.placeholder_text || 'This content is blocked until you accept the related cookies.'),
-			button: (btn && btn.textContent) ? btn.textContent : (I18N.placeholder_button || 'Accept & Load')
+			// A server-rendered placeholder already on the page wins: its text
+			// went through the PHP translation layer for this exact request.
+			// Its textContent is already entity-decoded by the HTML parser.
+			text: (text && text.textContent) ? text.textContent : i18nText('placeholder_text', 'This content is blocked until you accept the related cookies.'),
+			button: (btn && btn.textContent) ? btn.textContent : i18nText('placeholder_button', 'Accept & Load')
 		};
 	}
 
@@ -1384,7 +1445,9 @@
 			var next = grantedList();
 			if (!inArray(accept, next)) { next.push(accept); }
 			setConsent(next, 'preference_center', { silent: true });
-			announce(I18N.saved_message || 'Content unblocked.');
+			// Its own string, not saved_message: this action unblocks one
+			// embed, it does not save a set of preferences.
+			announce(i18nText('unblocked_message', 'Content unblocked.'));
 			return;
 		}
 
@@ -1416,7 +1479,7 @@
 				// A CCPA/CPRA sale-or-share opt-out: analytics and marketing
 				// off, functional left alone — the same shape GPC produces.
 				setConsent(['necessary', 'functional'], 'preference_center', { silent: true });
-				announce(I18N.dns_confirmation || 'You have opted out of the sale or sharing of your personal information.');
+				announce(i18nText('dns_confirmation', 'You have opted out of the sale or sharing of your personal information.'));
 				break;
 
 			case 'close':
@@ -1659,19 +1722,19 @@
 				var keep = ['necessary'];
 				if (state.functional) { keep.push('functional'); }
 				setConsent(keep, 'gpc', { silent: true });
-				announce(I18N.gpc_message || 'Your Global Privacy Control signal has been honored.');
+				announce(i18nText('gpc_message', 'Your Global Privacy Control signal has been honored.'));
 			} else if ('optout' === posture && !hasChoice) {
 				// A definitive opt-out for this visitor. Recording it stops
 				// the notice reappearing on every page.
 				setConsent(['necessary', 'functional'], 'gpc', { silent: true });
-				announce(I18N.gpc_message || 'Your Global Privacy Control signal has been honored.');
+				announce(i18nText('gpc_message', 'Your Global Privacy Control signal has been honored.'));
 			} else {
 				// Strict posture with nothing stored: analytics and marketing
 				// are already denied by default, so there is nothing to
 				// change and nothing worth logging once per pageview. The
 				// banner still shows, because functional consent is still an
 				// open question.
-				announce(I18N.gpc_message || 'Your Global Privacy Control signal has been honored.');
+				announce(i18nText('gpc_message', 'Your Global Privacy Control signal has been honored.'));
 			}
 		}
 
@@ -1724,7 +1787,7 @@
 		notice.className = 'anchor-cmp-gpc-notice';
 		// textContent, mirroring the server's esc_html() — this string is a
 		// status message, never markup.
-		notice.textContent = I18N.gpc_message || 'Your Global Privacy Control signal has been honored.';
+		notice.textContent = i18nText('gpc_message', 'Your Global Privacy Control signal has been honored.');
 
 		// Same slot the server uses: after the body copy, before the actions.
 		var body = qs('.anchor-cmp-body', banner);

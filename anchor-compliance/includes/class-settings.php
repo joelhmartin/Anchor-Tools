@@ -63,6 +63,7 @@ class Anchor_Compliance_Settings {
 				// section verbatim, so they must live here to be translatable
 				// and editable rather than hardcoded in frontend.js.
 				'saved_message'     => __( 'Your privacy preferences have been saved.', 'anchor-schema' ),
+				'unblocked_message' => __( 'Content unblocked.', 'anchor-schema' ),
 				'gpc_message'       => __( 'Your Global Privacy Control signal has been honored.', 'anchor-schema' ),
 				'dns_confirmation'  => __( 'You have opted out of the sale or sharing of your personal information.', 'anchor-schema' ),
 				'placeholder_text'  => __( 'This content is blocked until you accept the related cookies.', 'anchor-schema' ),

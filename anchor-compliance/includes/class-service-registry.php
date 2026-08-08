@@ -58,7 +58,7 @@ class Anchor_Compliance_Service_Registry {
 			],
 			'youtube' => [
 				'name' => 'YouTube', 'provider' => 'Google', 'category' => 'marketing',
-				'patterns' => [ 'youtube.com/embed', 'youtube-nocookie.com/embed', 'youtube.com/iframe_api', 'youtu.be/' ],
+				'patterns' => [ 'youtube.com/embed', 'youtube-nocookie.com/embed', 'youtube.com/iframe_api', 'youtube.com/watch', 'youtu.be/' ],
 				'cookies' => [
 					[ 'name' => 'VISITOR_INFO1_LIVE', 'purpose' => 'Estimates bandwidth and player preferences.', 'duration' => '6 months' ],
 					[ 'name' => 'YSC', 'purpose' => 'Tracks views of embedded videos.', 'duration' => 'Session' ],
@@ -66,7 +66,7 @@ class Anchor_Compliance_Service_Registry {
 			],
 			'vimeo' => [
 				'name' => 'Vimeo', 'provider' => 'Vimeo', 'category' => 'marketing',
-				'patterns' => [ 'player.vimeo.com', 'vimeo.com/api', 'vimeo.com/video' ],
+				'patterns' => [ 'player.vimeo.com', 'vimeo.com/api', 'vimeo.com/video/' ],
 				'cookies' => [
 					[ 'name' => 'vuid', 'purpose' => 'Player analytics.', 'duration' => '2 years' ],
 				],

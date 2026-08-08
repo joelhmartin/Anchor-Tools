@@ -49,6 +49,9 @@ class Anchor_Compliance_Module {
 	/** @var Anchor_Compliance_Snippets_Bridge */
 	public $snippets;
 
+	/** @var Anchor_Compliance_Cookie_Policy */
+	public $cookie_policy;
+
 	/**
 	 * The booted module instance. Constructing a second module would duplicate
 	 * every hook (the banner would render twice), so collaborators must reach
@@ -71,12 +74,13 @@ class Anchor_Compliance_Module {
 		$this->geo      = new Anchor_Compliance_Geo();
 		$this->registry = new Anchor_Compliance_Service_Registry();
 
-		$this->consent_mode = new Anchor_Compliance_Consent_Mode( $this->state, $this->geo );
-		$this->blocker      = new Anchor_Compliance_Script_Blocker( $this->registry, $this->state, $this->geo );
-		$this->log          = new Anchor_Compliance_Consent_Log();
-		$this->rest         = new Anchor_Compliance_Rest( $this->log, $this->geo );
-		$this->banner       = new Anchor_Compliance_Banner( $this->state, $this->geo, $this->registry, $this->consent_mode );
-		$this->snippets     = new Anchor_Compliance_Snippets_Bridge( $this->state, $this->geo );
+		$this->consent_mode  = new Anchor_Compliance_Consent_Mode( $this->state, $this->geo );
+		$this->blocker       = new Anchor_Compliance_Script_Blocker( $this->registry, $this->state, $this->geo );
+		$this->log           = new Anchor_Compliance_Consent_Log();
+		$this->rest          = new Anchor_Compliance_Rest( $this->log, $this->geo );
+		$this->banner        = new Anchor_Compliance_Banner( $this->state, $this->geo, $this->registry, $this->consent_mode );
+		$this->snippets      = new Anchor_Compliance_Snippets_Bridge( $this->state, $this->geo );
+		$this->cookie_policy = new Anchor_Compliance_Cookie_Policy();
 
 		add_action( 'rest_api_init', [ $this->rest, 'register_routes' ] );
 		add_action( 'admin_init', [ 'Anchor_Compliance_Consent_Log', 'maybe_install' ] );
@@ -93,6 +97,7 @@ class Anchor_Compliance_Module {
 
 		add_shortcode( 'anchor_consent_link', [ $this->banner, 'shortcode_consent_link' ] );
 		add_shortcode( 'anchor_do_not_sell', [ $this->banner, 'shortcode_do_not_sell' ] );
+		add_shortcode( 'anchor_cookie_policy', [ $this->cookie_policy, 'render' ] );
 
 		if ( ! is_admin() ) {
 			add_action( 'wp_head', [ $this->consent_mode, 'emit_defaults' ], 1 );
@@ -114,5 +119,6 @@ class Anchor_Compliance_Module {
 		require_once $dir . 'class-rest.php';
 		require_once $dir . 'class-banner.php';
 		require_once $dir . 'class-snippets-bridge.php';
+		require_once $dir . 'class-cookie-policy.php';
 	}
 }

@@ -93,7 +93,7 @@ class Anchor_Compliance_Snippets_Bridge {
 		if ( ! isset( $_POST[ self::NONCE ] ) || ! wp_verify_nonce( wp_unslash( $_POST[ self::NONCE ] ), self::ACTION ) ) {
 			return;
 		}
-		if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+		if ( $this->is_autosave() ) {
 			return;
 		}
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
@@ -108,22 +108,71 @@ class Anchor_Compliance_Snippets_Bridge {
 	}
 
 	/**
+	 * Isolated as its own (protected, overridable) method rather than an
+	 * inline `defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE` check: DOING_AUTOSAVE
+	 * is a raw PHP constant with no WP-core filter wrapper (unlike
+	 * wp_doing_ajax()/wp_doing_cron()), and once define()'d it can never be
+	 * unset for the rest of the PHPUnit process — permanently flipping this
+	 * branch for every other save_post-hooked test that runs afterward in the
+	 * same run, not just this class's own tests. A test subclass overrides
+	 * this method instead, which pins the bail behavior with zero process-wide
+	 * side effects.
+	 */
+	protected function is_autosave() {
+		return defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE;
+	}
+
+	/** Max offenders queried/listed per render — this is a small admin-notice affordance, not a report; a big number is never useful here and defeats the point of bounding the query. */
+	const ADMIN_NOTICE_LIMIT = 5;
+
+	/**
+	 * True only on the screens where this notice is actionable: the snippet
+	 * list table and the snippet editor. Every other wp-admin screen skips the
+	 * query entirely — this used to run unconditionally on every admin page
+	 * load for every user who can edit_posts, which is the exact class of
+	 * defect this project has been bitten by before (an unbounded/unscoped
+	 * admin-wide query).
+	 */
+	private function on_relevant_screen() {
+		if ( ! function_exists( 'get_current_screen' ) ) {
+			return false;
+		}
+		$screen = get_current_screen();
+		if ( ! $screen ) {
+			return false;
+		}
+		$cpt = $this->cpt();
+		return in_array( $screen->id, [ $cpt, 'edit-' . $cpt ], true );
+	}
+
+	/**
 	 * Lists any mu-plugin snippet that nonetheless has a non-necessary
 	 * category stored (e.g. set before the snippet was moved to mu-plugin, or
 	 * written directly to post meta), so a mis-set snippet is visible rather
 	 * than silently ungated — the mu-plugin file will never honor it.
+	 *
+	 * Bounded to ADMIN_NOTICE_LIMIT rows (with a "+N more" affordance rather
+	 * than posts_per_page => -1) and gated to on_relevant_screen(), so this
+	 * never runs an unbounded query on every admin page load.
 	 */
 	public function admin_notices() {
 		if ( ! current_user_can( 'edit_posts' ) ) {
 			return;
 		}
+		if ( ! $this->on_relevant_screen() ) {
+			return;
+		}
 
+		// Fetch one extra row so we can tell whether there are more offenders
+		// than ADMIN_NOTICE_LIMIT without a second, COUNT-style query.
 		$ids = get_posts( [
-			'post_type'      => $this->cpt(),
-			'post_status'    => 'any',
-			'posts_per_page' => -1,
-			'fields'         => 'ids',
-			'meta_query'     => [
+			'post_type'              => $this->cpt(),
+			'post_status'            => 'any',
+			'posts_per_page'         => self::ADMIN_NOTICE_LIMIT + 1,
+			'fields'                 => 'ids',
+			'no_found_rows'          => true,
+			'update_post_term_cache' => false,
+			'meta_query'             => [
 				[
 					'key'   => 'acs_location',
 					'value' => 'mu_plugin',
@@ -150,6 +199,9 @@ class Anchor_Compliance_Snippets_Bridge {
 			return;
 		}
 
+		$more      = count( $offenders ) > self::ADMIN_NOTICE_LIMIT;
+		$offenders = array_slice( $offenders, 0, self::ADMIN_NOTICE_LIMIT );
+
 		echo '<div class="notice notice-warning"><p>' . esc_html__( 'Anchor Compliance: the following code snippets have a non-necessary consent category set but run from an mu-plugin file, which loads before the consent module and cannot be gated. Move them to Header, Body, or Footer, or set their category to Necessary.', 'anchor-schema' ) . '</p><ul style="list-style:disc;margin-left:1.5em;">';
 		foreach ( $offenders as $id ) {
 			printf(
@@ -157,6 +209,9 @@ class Anchor_Compliance_Snippets_Bridge {
 				esc_url( (string) get_edit_post_link( $id, 'raw' ) ),
 				esc_html( get_the_title( $id ) )
 			);
+		}
+		if ( $more ) {
+			echo '<li>' . esc_html__( '&hellip;and more.', 'anchor-schema' ) . '</li>';
 		}
 		echo '</ul></div>';
 	}
@@ -204,13 +259,23 @@ class Anchor_Compliance_Snippets_Bridge {
 	/**
 	 * Rewrite every <script src="..."> and inline <script> in $html to the
 	 * SAME neutralized shape Anchor_Compliance_Script_Blocker produces
-	 * (rewrite_src_tags() / rewrite_inline_scripts() / strip_type_attribute()
-	 * in class-script-blocker.php), so the shared front-end runtime can
-	 * activate these tags identically to any other blocked embed: src moves to
-	 * data-anchor-src, any existing type is replaced with type="text/plain",
-	 * and data-anchor-consent carries the category. Non-script markup in the
-	 * snippet (HTML, a <style> block, plain text) is left untouched — neither
-	 * pattern matches anything but a <script> tag.
+	 * (rewrite_src_tags() / rewrite_inline_scripts() in class-script-blocker.php),
+	 * so the shared front-end runtime can activate these tags identically to
+	 * any other blocked embed: src moves to data-anchor-src, any existing type
+	 * is replaced with type="text/plain", and data-anchor-consent carries the
+	 * category. Non-script markup in the snippet (HTML, a <style> block, plain
+	 * text) is left untouched — neither pattern matches anything but a
+	 * <script> tag.
+	 *
+	 * The actual attribute rewriting reuses Anchor_Compliance_Script_Blocker's
+	 * own public-static helpers (type_value(), is_executable_type(),
+	 * strip_type_attribute(), strip_self_closing_slash()) rather than keeping
+	 * a second copy of that logic here — a prior version of this method DID
+	 * duplicate it, and the duplicate silently lacked the is_executable_type()
+	 * guard, so a gated snippet's <script type="application/ld+json"> got its
+	 * type rewritten to text/plain even though the blocker itself would never
+	 * touch it. Calling the shared statics means the two classes cannot drift
+	 * apart on this again.
 	 */
 	private function neutralize( $html, $category ) {
 		$html = $this->neutralize_src_tags( $html, $category );
@@ -227,9 +292,9 @@ class Anchor_Compliance_Snippets_Bridge {
 			function ( $m ) use ( $category ) {
 				$before = $m[1];
 				$url    = ( '' !== $m[2] ) ? $m[3] : $m[4];
-				$after  = $this->strip_self_closing_slash( $m[5] );
+				$after  = Anchor_Compliance_Script_Blocker::strip_self_closing_slash( $m[5] );
 
-				$attrs = $this->strip_type_attribute( $before . $after );
+				$attrs = Anchor_Compliance_Script_Blocker::strip_type_attribute( $before . $after );
 
 				// Decode once, encode once — see the identical comment in
 				// Script_Blocker::rewrite_src_tags() for why (avoids
@@ -248,7 +313,15 @@ class Anchor_Compliance_Snippets_Bridge {
 		);
 	}
 
-	/** Mirrors Anchor_Compliance_Script_Blocker::rewrite_inline_scripts() — see that method for the full pattern walkthrough. */
+	/**
+	 * Mirrors Anchor_Compliance_Script_Blocker::rewrite_inline_scripts() —
+	 * see that method for the full pattern walkthrough. Crucially includes
+	 * the SAME is_executable_type( type_value( $attrs ) ) guard: a <script
+	 * type="application/ld+json"> or type="text/template"> is inert
+	 * data/markup, never code, and gating it would destroy structured data
+	 * (this plugin's flagship feature, emitted by five other modules) or
+	 * template markup for zero compliance benefit.
+	 */
 	private function neutralize_inline_scripts( $html, $category ) {
 		return preg_replace_callback(
 			'#<script\b(?![^>]*(?<![\w:.-])src\s*=)([^>]*)>(.*?)</script>#is',
@@ -256,34 +329,22 @@ class Anchor_Compliance_Snippets_Bridge {
 				$attrs = $m[1];
 				$body  = $m[2];
 
+				if ( ! Anchor_Compliance_Script_Blocker::is_executable_type( Anchor_Compliance_Script_Blocker::type_value( $attrs ) ) ) {
+					return $m[0]; // JSON-LD, a client-side template, etc. — not code, never gated.
+				}
+
 				if ( false !== stripos( $attrs, 'data-anchor-consent' ) ) {
 					return $m[0]; // already handled — keeps this idempotent on its own prior output.
 				}
 
 				return sprintf(
 					'<script%s type="text/plain" data-anchor-consent="%s">%s</script>',
-					$this->strip_type_attribute( $attrs ),
+					Anchor_Compliance_Script_Blocker::strip_type_attribute( $attrs ),
 					esc_attr( $category ),
 					$body
 				);
 			},
 			$html
 		);
-	}
-
-	/** Identical to Anchor_Compliance_Script_Blocker::strip_type_attribute() — see that method's docblock for why this must be quote-aware. */
-	private function strip_type_attribute( $attrs ) {
-		return preg_replace_callback(
-			'#"[^"]*"|\'[^\']*\'|(\stype\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>"\']+))#i',
-			static function ( $m ) {
-				return ( '' !== ( $m[1] ?? '' ) ) ? '' : $m[0];
-			},
-			$attrs
-		);
-	}
-
-	/** Identical to Anchor_Compliance_Script_Blocker::strip_self_closing_slash(). */
-	private function strip_self_closing_slash( $after ) {
-		return preg_replace( '#/\s*$#', '', $after );
 	}
 }

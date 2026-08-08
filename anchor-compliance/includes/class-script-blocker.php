@@ -367,8 +367,16 @@ class Anchor_Compliance_Script_Blocker {
 	 * Extract a <script>'s type="" value, quoted or unquoted. Returns null
 	 * when there is no type attribute at all (which HTML treats identically
 	 * to type="text/javascript" — absent means "this is JavaScript").
+	 *
+	 * Public static: this and the three helpers below it (is_executable_type(),
+	 * strip_type_attribute(), strip_self_closing_slash()) are pure functions
+	 * with no dependency on instance state. Anchor_Compliance_Snippets_Bridge
+	 * (Task 12) reuses them directly rather than duplicating the logic, so the
+	 * two classes' notion of "which script types are inert" cannot drift apart
+	 * — an earlier review found the JSON-LD guard was needed here specifically
+	 * because a duplicate copy of it (in the bridge) had gone stale.
 	 */
-	private function type_value( $attrs ) {
+	public static function type_value( $attrs ) {
 		if ( preg_match( '#\btype\s*=\s*(["\'])((?:(?!\1)[^>])*)\1#is', $attrs, $m ) ) {
 			return trim( $m[2] );
 		}
@@ -382,7 +390,7 @@ class Anchor_Compliance_Script_Blocker {
 	 * @param string|null $type As returned by type_value().
 	 * @return bool True when the browser would execute this script as JS.
 	 */
-	private function is_executable_type( $type ) {
+	public static function is_executable_type( $type ) {
 		if ( null === $type || '' === $type ) {
 			return true; // absent/empty type attribute defaults to JavaScript.
 		}
@@ -702,7 +710,7 @@ class Anchor_Compliance_Script_Blocker {
 	 * quotes broken, so it bought nothing. Pinned by
 	 * test_unbalanced_quotes_decline_to_strip_type_rather_than_corrupt().
 	 */
-	private function strip_type_attribute( $attrs ) {
+	public static function strip_type_attribute( $attrs ) {
 		return preg_replace_callback(
 			'#"[^"]*"|\'[^\']*\'|(\stype\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>"\']+))#i',
 			static function ( $m ) {
@@ -724,7 +732,7 @@ class Anchor_Compliance_Script_Blocker {
 	 * attribute value earlier in the string, because it is anchored to the
 	 * end of this specific, already-isolated capture.
 	 */
-	private function strip_self_closing_slash( $after ) {
+	public static function strip_self_closing_slash( $after ) {
 		return preg_replace( '#/\s*$#', '', $after );
 	}
 }

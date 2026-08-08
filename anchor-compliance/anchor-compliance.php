@@ -46,6 +46,9 @@ class Anchor_Compliance_Module {
 	/** @var Anchor_Compliance_Banner */
 	public $banner;
 
+	/** @var Anchor_Compliance_Snippets_Bridge */
+	public $snippets;
+
 	/**
 	 * The booted module instance. Constructing a second module would duplicate
 	 * every hook (the banner would render twice), so collaborators must reach
@@ -73,10 +76,16 @@ class Anchor_Compliance_Module {
 		$this->log          = new Anchor_Compliance_Consent_Log();
 		$this->rest         = new Anchor_Compliance_Rest( $this->log, $this->geo );
 		$this->banner       = new Anchor_Compliance_Banner( $this->state, $this->geo, $this->registry, $this->consent_mode );
+		$this->snippets     = new Anchor_Compliance_Snippets_Bridge( $this->state, $this->geo );
 
 		add_action( 'rest_api_init', [ $this->rest, 'register_routes' ] );
 		add_action( 'admin_init', [ 'Anchor_Compliance_Consent_Log', 'maybe_install' ] );
 		add_action( Anchor_Compliance_Consent_Log::CRON_HOOK, [ $this->log, 'purge' ] );
+
+		add_action( 'add_meta_boxes', [ $this->snippets, 'add_metabox' ] );
+		add_action( 'save_post', [ $this->snippets, 'save' ] );
+		add_action( 'admin_notices', [ $this->snippets, 'admin_notices' ] );
+		add_filter( 'anchor_code_snippet_output', [ $this->snippets, 'filter_snippet_output' ], 10, 2 );
 
 		if ( ! wp_next_scheduled( Anchor_Compliance_Consent_Log::CRON_HOOK ) ) {
 			wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', Anchor_Compliance_Consent_Log::CRON_HOOK );
@@ -104,5 +113,6 @@ class Anchor_Compliance_Module {
 		require_once $dir . 'class-consent-log.php';
 		require_once $dir . 'class-rest.php';
 		require_once $dir . 'class-banner.php';
+		require_once $dir . 'class-snippets-bridge.php';
 	}
 }

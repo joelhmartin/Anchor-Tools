@@ -43,6 +43,9 @@ class Anchor_Compliance_Module {
 	/** @var Anchor_Compliance_Rest */
 	public $rest;
 
+	/** @var Anchor_Compliance_Banner */
+	public $banner;
+
 	/**
 	 * The booted module instance. Constructing a second module would duplicate
 	 * every hook (the banner would render twice), so collaborators must reach
@@ -69,6 +72,7 @@ class Anchor_Compliance_Module {
 		$this->blocker      = new Anchor_Compliance_Script_Blocker( $this->registry, $this->state, $this->geo );
 		$this->log          = new Anchor_Compliance_Consent_Log();
 		$this->rest         = new Anchor_Compliance_Rest( $this->log, $this->geo );
+		$this->banner       = new Anchor_Compliance_Banner( $this->state, $this->geo, $this->registry, $this->consent_mode );
 
 		add_action( 'rest_api_init', [ $this->rest, 'register_routes' ] );
 		add_action( 'admin_init', [ 'Anchor_Compliance_Consent_Log', 'maybe_install' ] );
@@ -78,9 +82,14 @@ class Anchor_Compliance_Module {
 			wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', Anchor_Compliance_Consent_Log::CRON_HOOK );
 		}
 
+		add_shortcode( 'anchor_consent_link', [ $this->banner, 'shortcode_consent_link' ] );
+		add_shortcode( 'anchor_do_not_sell', [ $this->banner, 'shortcode_do_not_sell' ] );
+
 		if ( ! is_admin() ) {
 			add_action( 'wp_head', [ $this->consent_mode, 'emit_defaults' ], 1 );
 			add_action( 'template_redirect', [ $this->blocker, 'maybe_start_buffer' ], 1 );
+			add_action( 'wp_enqueue_scripts', [ $this->banner, 'enqueue' ] );
+			add_action( 'wp_footer', [ $this->banner, 'render' ], 5 );
 		}
 	}
 
@@ -94,5 +103,6 @@ class Anchor_Compliance_Module {
 		require_once $dir . 'class-script-blocker.php';
 		require_once $dir . 'class-consent-log.php';
 		require_once $dir . 'class-rest.php';
+		require_once $dir . 'class-banner.php';
 	}
 }

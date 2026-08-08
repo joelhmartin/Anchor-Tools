@@ -127,11 +127,23 @@ class Anchor_Compliance_Dsar {
 			return new WP_Error( 'invalid_email', __( 'Please enter a valid email address.', 'anchor-schema' ) );
 		}
 
-		// Rate limit: a transient keyed by a one-way hash of email+IP, never the
+		// Rate limit: a transient keyed by a salted hash of email+IP, never the
 		// raw address itself. The key only ever lives in wp_options for the
 		// 15-minute window and is never associated with the stored request row.
+		//
+		// The email is lowercased (sanitize_email() trims but does NOT lowercase)
+		// so "a@b.com" and "A@B.com" collide on the same key rather than letting
+		// a public, unauthenticated requester bypass the limiter — and therefore
+		// double the wp_mail() sends below — just by varying case.
+		//
+		// The hash is salted with wp_salt('auth') like every other hash in this
+		// module: without a salt this would be an unsalted hash of two often-
+		// guessable values (email, coarse IP), so anyone able to read wp_options
+		// (e.g. no persistent object cache, so the transient lands there as
+		// `_transient_anchor_cmp_dsar_rl_<hash>`) could confirm a *guessed*
+		// email+IP pairing was rate-limited within the window.
 		$raw_ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) wp_unslash( $_SERVER['REMOTE_ADDR'] ) : '';
-		$rl_key  = 'anchor_cmp_dsar_rl_' . md5( $email . '|' . $raw_ip );
+		$rl_key  = 'anchor_cmp_dsar_rl_' . hash( 'sha256', strtolower( $email ) . '|' . $raw_ip . wp_salt( 'auth' ) );
 		if ( false !== get_transient( $rl_key ) ) {
 			return new WP_Error( 'rate_limited', __( 'A request from this email was already submitted recently. Please wait a few minutes and try again.', 'anchor-schema' ) );
 		}
@@ -217,8 +229,25 @@ class Anchor_Compliance_Dsar {
 		return $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . self::table() . ' WHERE id = %d', (int) $id ) );
 	}
 
+	/**
+	 * Returns the WHERE fragment and its unsubstituted placeholders — NOT a
+	 * pre-prepared fragment. class-consent-log.php's where() calls
+	 * $wpdb->prepare() internally and hands back an already-substituted
+	 * string, which is safe there because every caller only ever feeds it
+	 * admin-selected values (a method/region dropdown). This class's query()
+	 * is also reached from privacy_export(), whose $args['email'] originates
+	 * as public, unauthenticated form input — and is_email() permits '%' in
+	 * the local part (RFC 5322 atext; e.g. "test%40x@example.com" is a valid
+	 * address). Feeding an already-prepared fragment containing a literal '%'
+	 * back into a second $wpdb->prepare() call as part of its format string
+	 * makes that '%' a stray conversion specifier, which WordPress 6.2+
+	 * treats as a fatal format error. Returning the raw SQL + args instead and
+	 * doing exactly one prepare() (in query()) avoids the double-substitution
+	 * entirely.
+	 *
+	 * @return array{0:string,1:array} [ $sql, $prepare_args ]
+	 */
 	private function where( array $args ) {
-		global $wpdb;
 		$where = [ '1=1' ];
 		$prep  = [];
 
@@ -231,23 +260,20 @@ class Anchor_Compliance_Dsar {
 			$prep[]  = sanitize_email( $args['email'] );
 		}
 
-		$sql = implode( ' AND ', $where );
-		// prepare() with an empty args array triggers a PHP notice on some WP
-		// versions, so only call it when there are actual parameters.
-		return $prep ? $wpdb->prepare( $sql, $prep ) : $sql;
+		return [ implode( ' AND ', $where ), $prep ];
 	}
 
 	public function query( array $args = [] ) {
 		global $wpdb;
 		$limit  = min( 500, max( 1, (int) ( $args['limit'] ?? 50 ) ) );
 		$offset = max( 0, (int) ( $args['offset'] ?? 0 ) );
-		$where  = $this->where( $args );
+
+		list( $where_sql, $where_prep ) = $this->where( $args );
 
 		return $wpdb->get_results(
 			$wpdb->prepare(
-				'SELECT * FROM ' . self::table() . " WHERE {$where} ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d",
-				$limit,
-				$offset
+				'SELECT * FROM ' . self::table() . " WHERE {$where_sql} ORDER BY created_at DESC, id DESC LIMIT %d OFFSET %d",
+				array_merge( $where_prep, [ $limit, $offset ] )
 			)
 		);
 	}
@@ -344,34 +370,51 @@ class Anchor_Compliance_Dsar {
 	}
 
 	/**
+	 * Nonce check, honeypot check, and create() — everything handle_submit()
+	 * needs to decide 'ok' vs 'error', minus the wp_safe_redirect()+exit that
+	 * makes the real entry point unreachable from PHPUnit (see e.g.
+	 * tests/test-event-manager-save.php for the same constraint elsewhere in
+	 * this plugin: a raw exit() terminates the test process). Pulled out so
+	 * the honeypot path — which must be provably indistinguishable from a
+	 * real success and must provably create no row — can be exercised
+	 * directly.
+	 *
+	 * @param array $post Superglobal-shaped, already wp_unslash()'d.
+	 * @return string 'ok' or 'error'.
+	 */
+	public function process_submission( array $post ) {
+		if ( ! isset( $post[ self::NONCE_FIELD ] ) || ! wp_verify_nonce( $post[ self::NONCE_FIELD ], self::ACTION ) ) {
+			return 'error';
+		}
+
+		// Honeypot tripped: a human never sees or fills this field, so treat it
+		// as a bot and report exactly the same outcome as a real success —
+		// create() is never called, so no row, no emails. Anything else here
+		// (an error, a different code path) would teach the bot it was caught.
+		if ( ! empty( $post[ self::HONEYPOT ] ) ) {
+			return 'ok';
+		}
+
+		$result = $this->create( [
+			'type'    => $post['anchor_cmp_type'] ?? '',
+			'email'   => $post['anchor_cmp_email'] ?? '',
+			'name'    => $post['anchor_cmp_name'] ?? '',
+			'details' => $post['anchor_cmp_details'] ?? '',
+		] );
+
+		return is_wp_error( $result ) ? 'error' : 'ok';
+	}
+
+	/**
 	 * `admin_post_anchor_compliance_dsar` / `admin_post_nopriv_anchor_compliance_dsar`.
 	 */
 	public function handle_submit() {
 		$referer = wp_get_referer();
 		$back_to = $referer ? $referer : home_url( '/' );
 
-		if ( ! isset( $_POST[ self::NONCE_FIELD ] ) || ! wp_verify_nonce( wp_unslash( $_POST[ self::NONCE_FIELD ] ), self::ACTION ) ) {
-			wp_safe_redirect( add_query_arg( 'anchor_cmp', 'error', $back_to ) );
-			exit;
-		}
+		$status = $this->process_submission( wp_unslash( $_POST ) );
 
-		// Honeypot tripped: a human never sees or fills this field, so treat it
-		// as a bot and redirect exactly like a real success. Anything else here
-		// (an error, a different redirect target) would teach the bot that it
-		// was caught.
-		if ( ! empty( $_POST[ self::HONEYPOT ] ) ) {
-			wp_safe_redirect( add_query_arg( 'anchor_cmp', 'ok', $back_to ) );
-			exit;
-		}
-
-		$result = $this->create( [
-			'type'    => isset( $_POST['anchor_cmp_type'] ) ? wp_unslash( $_POST['anchor_cmp_type'] ) : '',
-			'email'   => isset( $_POST['anchor_cmp_email'] ) ? wp_unslash( $_POST['anchor_cmp_email'] ) : '',
-			'name'    => isset( $_POST['anchor_cmp_name'] ) ? wp_unslash( $_POST['anchor_cmp_name'] ) : '',
-			'details' => isset( $_POST['anchor_cmp_details'] ) ? wp_unslash( $_POST['anchor_cmp_details'] ) : '',
-		] );
-
-		wp_safe_redirect( add_query_arg( 'anchor_cmp', is_wp_error( $result ) ? 'error' : 'ok', $back_to ) );
+		wp_safe_redirect( add_query_arg( 'anchor_cmp', $status, $back_to ) );
 		exit;
 	}
 

@@ -86,6 +86,36 @@ class Anchor_Compliance_Banner {
 		$services = $this->registry->all();
 		$ctm      = isset( $services['calltrackingmetrics'] ) ? $services['calltrackingmetrics'] : null;
 
+		// Gating rules for the runtime's client-side iframe guard. Three
+		// sibling modules build YouTube/Vimeo iframes in the browser, which
+		// never pass through the output-buffer blocker, so the runtime has to
+		// recognise them itself. Emitting the registry's own rules here keeps
+		// that list from drifting away from the server's — a hardcoded JS copy
+		// would silently stop matching the moment an admin adds a custom rule
+		// or re-categorises a service.
+		//
+		// Only pattern + category are exposed: the runtime has no use for the
+		// service key or label, and a smaller payload is on every page.
+		// Duplicates are collapsed because several services legitimately share
+		// a pattern once categories are overridden.
+		$iframe_rules = [];
+		$seen_rules   = [];
+		foreach ( (array) $this->registry->active_rules() as $rule ) {
+			$pattern = isset( $rule['pattern'] ) ? (string) $rule['pattern'] : '';
+			if ( '' === $pattern ) {
+				continue;
+			}
+			$key = $pattern . '|' . $rule['category'];
+			if ( isset( $seen_rules[ $key ] ) ) {
+				continue;
+			}
+			$seen_rules[ $key ] = true;
+			$iframe_rules[]     = [
+				'pattern'  => $pattern,
+				'category' => $rule['category'],
+			];
+		}
+
 		return [
 			'posture'          => $this->geo->posture(),
 			'gpc'              => $this->state->is_gpc(),
@@ -100,6 +130,7 @@ class Anchor_Compliance_Banner {
 			'consentMode'      => ! empty( $opts['advanced']['consent_mode_enabled'] ),
 			'signalMap'        => Anchor_Compliance_Consent_Mode::signal_map(),
 			'cookiePatterns'   => $cookie_patterns,
+			'iframeRules'      => $iframe_rules,
 			'ctm'              => [
 				'enabled'  => $ctm ? (bool) $ctm['enabled'] : false,
 				'category' => $ctm ? $ctm['category'] : 'marketing',

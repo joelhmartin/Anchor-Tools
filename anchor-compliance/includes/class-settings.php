@@ -57,6 +57,16 @@ class Anchor_Compliance_Settings {
 				'save_label'      => __( 'Save Preferences', 'anchor-schema' ),
 				'notice_body'     => __( 'We use cookies and similar technologies. You may opt out of the sale or sharing of your personal information.', 'anchor-schema' ),
 				'dns_label'       => __( 'Do Not Sell or Share My Personal Information', 'anchor-schema' ),
+
+				// Read by the front-end runtime only (never server-rendered).
+				// They reach it through payload()['i18n'], which is this whole
+				// section verbatim, so they must live here to be translatable
+				// and editable rather than hardcoded in frontend.js.
+				'saved_message'     => __( 'Your privacy preferences have been saved.', 'anchor-schema' ),
+				'gpc_message'       => __( 'Your Global Privacy Control signal has been honored.', 'anchor-schema' ),
+				'dns_confirmation'  => __( 'You have opted out of the sale or sharing of your personal information.', 'anchor-schema' ),
+				'placeholder_text'  => __( 'This content is blocked until you accept the related cookies.', 'anchor-schema' ),
+				'placeholder_button' => __( 'Accept & Load', 'anchor-schema' ),
 			],
 			'services'     => [], // service_key => [ 'enabled' => bool, 'category' => string ]
 			'custom_rules' => [], // [ [ 'label','url_pattern','category','cookie_patterns' ], ... ]

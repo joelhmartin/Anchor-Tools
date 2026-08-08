@@ -273,11 +273,22 @@
 			return null;
 		}
 
-		var age = Math.floor(Date.now() / 1000) - parseInt(data.ts, 10);
+		// A missing or non-numeric `ts` is INVALID, not "ageless". PHP casts it
+		// with (int), so an absent timestamp becomes 0 and the record is always
+		// older than the lifetime — i.e. the server rejects it. Skipping the
+		// expiry check on NaN would have the client honor a cookie the server
+		// throws away, which shows as a visitor whose banner never reappears
+		// while every server-side decision treats them as unconsented.
+		var ts = parseInt(data.ts, 10);
+		if (isNaN(ts)) {
+			return null;
+		}
+
+		var age = Math.floor(Date.now() / 1000) - ts;
 		// Mirrors PHP: only a POSITIVE age beyond the lifetime expires the
 		// record. A negative age means clock skew, not expiry — treating it
 		// as expired would silently re-prompt visitors whose clock is fast.
-		if (!isNaN(age) && age > LIFETIME_DAYS * 86400) {
+		if (age > LIFETIME_DAYS * 86400) {
 			return null;
 		}
 
@@ -923,8 +934,33 @@
 	}
 
 	function handleKeydown(e) {
-		if (!openDialog) { return; }
 		var key = e.key || '';
+		var isEscape = (key === 'Escape' || key === 'Esc' || e.keyCode === 27);
+
+		/**
+		 * Opt-out posture, no focus trap active.
+		 *
+		 * This case has to be handled AHEAD of the `!openDialog` guard. In
+		 * opt-out posture the banner is a notice, not a gate, so boot()
+		 * deliberately does not call openWithFocus() — stealing the caret on
+		 * every landing page would be worse for accessibility than leaving it
+		 * alone. That means `openDialog` is null on a fresh load, and the
+		 * trap-scoped Escape handling below is unreachable. Since the notice
+		 * has no close button either, an opt-out visitor would have no way to
+		 * dismiss it short of making a choice they were never required to make.
+		 *
+		 * Dismissing here writes NO cookie, fires NO REST call, and changes NO
+		 * category — it only hides the notice for this pageview. It returns on
+		 * the next load, exactly as an un-actioned notice should.
+		 */
+		if (isEscape && !openDialog && 'optout' === posture &&
+			banner && !banner.hasAttribute('hidden')) {
+			e.preventDefault();
+			closePanels();
+			return;
+		}
+
+		if (!openDialog) { return; }
 
 		if (key === 'Tab' || e.keyCode === 9) {
 			var items = focusableWithin(openDialog);
@@ -951,7 +987,7 @@
 			return;
 		}
 
-		if (key === 'Escape' || key === 'Esc' || e.keyCode === 27) {
+		if (isEscape) {
 			/**
 			 * ESCAPE MUST NEVER GRANT CONSENT. This is deliberate, and it is
 			 * the single easiest thing for a future maintainer to "fix" into
@@ -1016,9 +1052,38 @@
 	 * @param {string}        method     banner|preference_center|gpc|api.
 	 * @param {object}        opts       {silent:bool, keepOpen:bool, cookie:bool}
 	 */
+	/**
+	 * Re-entrancy guard. A double-click on Accept All used to run setConsent()
+	 * twice, minting two distinct UUIDs and writing two rows to the consent
+	 * log — Task 8's dedupe keys on `consent_id`, so it cannot collapse them.
+	 * The window is deliberately time-based rather than a plain boolean that a
+	 * later call clears: setConsent() is fully synchronous apart from the
+	 * fire-and-forget POST, so a flag toggled at the end would be clear again
+	 * before the second click of a double-click ever arrives.
+	 *
+	 * 700 ms comfortably covers a double-click (and an over-eager listener
+	 * bound twice) without blocking a visitor who genuinely reopens the
+	 * preference centre and saves a different choice.
+	 */
+	var lastConsentAt = 0;
+	var lastConsentKey = '';
+	var CONSENT_DEBOUNCE_MS = 700;
+
 	function setConsent(categories, method, opts) {
 		opts = opts || {};
 		var chosen = normalizeCategories(categories);
+
+		// Identical decision, same instant: collapse it to a single record.
+		// A DIFFERENT decision inside the window is always honored — a visitor
+		// who rejects and immediately accepts must get both applied.
+		var key = method + ':' + chosen.join(',');
+		var now = (new Date()).getTime();
+		if (key === lastConsentKey && (now - lastConsentAt) < CONSENT_DEBOUNCE_MS) {
+			return;
+		}
+		lastConsentKey = key;
+		lastConsentAt = now;
+
 		var consentId = uuidv4();
 
 		// The cookie records what the visitor CHOSE; the live state is that
@@ -1115,36 +1180,71 @@
 	 * scans of the src.
 	 * =================================================================== */
 
+	/**
+	 * FALLBACK ONLY — used when `D.iframeRules` is absent (a payload from an
+	 * older build). The live list comes from the server registry; see
+	 * iframeRules() below. Do not extend this array to add a service: add it
+	 * to Anchor_Compliance_Service_Registry so the blocker and the observer
+	 * stay in agreement.
+	 */
 	var DEFAULT_IFRAME_RULES = [
 		{ pattern: 'youtube.com/embed', category: 'marketing' },
 		{ pattern: 'youtube-nocookie.com/embed', category: 'marketing' },
-		{ pattern: 'youtube.com/watch', category: 'marketing' },
+		{ pattern: 'youtube.com/iframe_api', category: 'marketing' },
 		{ pattern: 'youtu.be/', category: 'marketing' },
 		{ pattern: 'player.vimeo.com', category: 'marketing' },
+		{ pattern: 'vimeo.com/api', category: 'marketing' },
 		{ pattern: 'vimeo.com/video', category: 'marketing' }
 	];
 
+	function isArray(v) {
+		return Object.prototype.toString.call(v) === '[object Array]';
+	}
+
+	/**
+	 * The gating rules the observer matches an iframe src against.
+	 *
+	 * `D.iframeRules` is authoritative: it is the server's own
+	 * Anchor_Compliance_Service_Registry::active_rules(), reduced to
+	 * pattern+category, so it already reflects every admin override, custom
+	 * rule and re-categorisation. When it is present the built-in list is not
+	 * consulted at all — a second, hardcoded copy of the same knowledge is
+	 * exactly the drift this key exists to remove.
+	 *
+	 * DEFAULT_IFRAME_RULES survives only as a fallback for a payload built by
+	 * an older Anchor_Compliance_Banner that predates the key. An EMPTY array
+	 * from the server is honored as "nothing is gated", not treated as absent
+	 * — that is a legitimate configuration (every service disabled, or all of
+	 * them governed by Consent Mode).
+	 *
+	 * `window.AnchorComplianceIframeRules` is always appended on top, so a
+	 * theme or sibling module can register an embed host the registry does not
+	 * know about without waiting on a plugin release.
+	 */
 	function iframeRules() {
 		var rules = [];
-		var extra = [];
+		var i, r;
 
-		if (Object.prototype.toString.call(D.iframeRules) === '[object Array]') {
-			// A future payload key wins outright, so the registry can own
-			// this list without a JS change.
-			extra = D.iframeRules;
+		if (isArray(D.iframeRules)) {
+			for (i = 0; i < D.iframeRules.length; i++) {
+				r = D.iframeRules[i];
+				if (r && r.pattern && inArray(r.category, ALL_CATEGORIES)) {
+					rules.push({ pattern: String(r.pattern), category: r.category });
+				}
+			}
 		} else {
 			rules = DEFAULT_IFRAME_RULES.slice();
-			if (Object.prototype.toString.call(window.AnchorComplianceIframeRules) === '[object Array]') {
-				extra = window.AnchorComplianceIframeRules;
+		}
+
+		if (isArray(window.AnchorComplianceIframeRules)) {
+			for (i = 0; i < window.AnchorComplianceIframeRules.length; i++) {
+				r = window.AnchorComplianceIframeRules[i];
+				if (r && r.pattern && inArray(r.category, ALL_CATEGORIES)) {
+					rules.push({ pattern: String(r.pattern), category: r.category });
+				}
 			}
 		}
 
-		for (var i = 0; i < extra.length; i++) {
-			var r = extra[i];
-			if (r && r.pattern && inArray(r.category, ALL_CATEGORIES)) {
-				rules.push({ pattern: String(r.pattern), category: r.category });
-			}
-		}
 		return rules;
 	}
 
@@ -1544,8 +1644,7 @@
 
 		/* --- GPC, client-side only ----------------------------------- */
 		if (gpcClientOnly) {
-			var gpcNotice = qs('.anchor-cmp-gpc-notice', root);
-			if (gpcNotice) { setHidden(gpcNotice, false); }
+			showGpcNotice();
 
 			var revoking = hasChoice && storedGrantedTracking();
 			if (revoking) {
@@ -1595,6 +1694,48 @@
 		// Opt-out posture deliberately does NOT steal focus. The notice is
 		// informational; hijacking the caret on every landing page would be
 		// worse for accessibility than leaving it where the visitor put it.
+	}
+
+	/**
+	 * Reveal — or, when the server never emitted one, BUILD — the honored-GPC
+	 * notice inside the banner.
+	 *
+	 * The server renders `<p class="anchor-cmp-gpc-notice">` only when it saw
+	 * a `Sec-GPC` header on that request. That is precisely the condition
+	 * under which `gpcClientOnly` is FALSE, so on the client-only path (a
+	 * cached page, or a browser signalling GPC on a request the origin never
+	 * saw) the element does not exist and a lookup finds nothing. Without this
+	 * the visitor gets a screen-reader announcement and no visible notice.
+	 *
+	 * It is built here rather than always rendered server-side on purpose:
+	 * the server's markup should keep asserting only what the server actually
+	 * detected. Creating it client-side keeps the two honest and independent.
+	 */
+	function showGpcNotice() {
+		if (!banner) { return; }
+
+		var notice = qs('.anchor-cmp-gpc-notice', root);
+		if (notice) {
+			setHidden(notice, false);
+			return;
+		}
+
+		notice = document.createElement('p');
+		notice.className = 'anchor-cmp-gpc-notice';
+		// textContent, mirroring the server's esc_html() — this string is a
+		// status message, never markup.
+		notice.textContent = I18N.gpc_message || 'Your Global Privacy Control signal has been honored.';
+
+		// Same slot the server uses: after the body copy, before the actions.
+		var body = qs('.anchor-cmp-body', banner);
+		var actions = qs('.anchor-cmp-actions', banner);
+		if (body && body.parentNode) {
+			body.parentNode.insertBefore(notice, body.nextSibling);
+		} else if (actions && actions.parentNode) {
+			actions.parentNode.insertBefore(notice, actions);
+		} else {
+			banner.appendChild(notice);
+		}
 	}
 
 	/** Did the stored choice grant anything GPC revokes? */

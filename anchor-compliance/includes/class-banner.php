@@ -205,6 +205,24 @@ class Anchor_Compliance_Banner {
 	}
 
 	/**
+	 * Re-validates a value as a CSS hex color, independent of whatever
+	 * validation (if any) it already passed on the way in. `brand_colors()`
+	 * can return a value pulled straight from Anchor Site Config's
+	 * `anchor_site_config_options` option, which this module never sanitizes
+	 * on write — so it must be treated as untrusted here, at the point it is
+	 * interpolated into a CSS declaration, not assumed safe because it once
+	 * passed through `sanitize_hex_color()` elsewhere.
+	 *
+	 * @param mixed  $value    Candidate color.
+	 * @param string $fallback Known-safe hex to use when $value is not one.
+	 * @return string A value `sanitize_hex_color()` accepts as-is.
+	 */
+	private function safe_hex( $value, $fallback ) {
+		$clean = sanitize_hex_color( (string) $value );
+		return $clean ? $clean : $fallback;
+	}
+
+	/**
 	 * Registers (does not print) the front-end assets and attaches the
 	 * runtime payload. Hooked to wp_enqueue_scripts.
 	 */
@@ -224,6 +242,31 @@ class Anchor_Compliance_Banner {
 			'window.AnchorComplianceData=' . wp_json_encode( $this->payload() ) . ';',
 			'before'
 		);
+
+		// The same brand tokens `render()` prints as an inline style on
+		// #anchor-cmp, also registered at :root scope so contexts that render
+		// outside that element (the blocked-iframe placeholder, the cookie
+		// policy shortcode table, [anchor_consent_link]/[anchor_do_not_sell])
+		// can resolve them instead of always falling back to currentColor.
+		// The inline attribute on #anchor-cmp stays put and, being more
+		// specific, still overrides this for anything inside it.
+		//
+		// Built defensively rather than interpolated directly: every value is
+		// re-validated at the point of use (sanitize_hex_color()/int cast) so
+		// a malformed stored value can't break out of the declaration.
+		$colors     = $this->brand_colors();
+		$accent_ink = $this->contrast_ink( $colors['accent'] );
+
+		$root_vars = sprintf(
+			':root{--acmp-accent:%s;--acmp-surface:%s;--acmp-text:%s;--acmp-radius:%dpx;--acmp-accent-ink:%s;}',
+			$this->safe_hex( $colors['accent'], '#bf8f43' ),
+			$this->safe_hex( $colors['surface'], '#ffffff' ),
+			$this->safe_hex( $colors['text'], '#1a1a1a' ),
+			(int) $opts['appearance']['radius'],
+			$this->safe_hex( $accent_ink, '#000000' )
+		);
+
+		wp_add_inline_style( 'anchor-compliance', $root_vars );
 	}
 
 	/**
@@ -408,8 +451,9 @@ class Anchor_Compliance_Banner {
 		// ── Floating re-entry pill ────────────────────────────────────
 		if ( ! empty( $appearance['show_pill'] ) ) {
 			printf(
-				'<button type="button" class="anchor-cmp-pill" data-anchor-action="open-preferences" aria-label="%1$s"><span class="anchor-cmp-sr-only">%1$s</span></button>',
-				esc_attr__( 'Cookie Settings', 'anchor-schema' )
+				'<button type="button" class="anchor-cmp-pill anchor-cmp-pill--%2$s" data-anchor-action="open-preferences" aria-label="%1$s"><span class="anchor-cmp-sr-only">%1$s</span></button>',
+				esc_attr__( 'Cookie Settings', 'anchor-schema' ),
+				esc_attr( $appearance['pill_position'] )
 			);
 		}
 

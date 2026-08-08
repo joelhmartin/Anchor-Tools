@@ -944,10 +944,12 @@
 	transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease;
 }
 
-/* The pill's own `pill_position` setting never reaches the DOM (see the report
- * for the one-line PHP fix), so it follows the banner's corner, which is the
- * corner the visitor last saw it in. */
-#anchor-cmp.anchor-cmp--bottom-right .anchor-cmp-pill {
+/* The pill's own `appearance.pill_position` setting (bottom-left default,
+ * bottom-right) is independent of the banner's own corner — a site can run
+ * the banner as a top bar and still want the persistent re-entry pill parked
+ * bottom-right. class-banner.php emits the matching modifier class on the
+ * button itself, so this keys off that class, not the root's position class. */
+#anchor-cmp .anchor-cmp-pill--bottom-right {
 	left: auto;
 	right: 1.25em;
 }
@@ -978,13 +980,16 @@
  * 11. THINGS THAT RENDER OUTSIDE #anchor-cmp
  *
  * The shortcode link, the blocked-embed placeholder and the cookie-policy
- * tables are not descendants of #anchor-cmp, so the brand custom properties —
- * which live in an inline style on that element — are out of reach. Rather
- * than guess at a brand color and get it wrong, these are built entirely from
- * `currentColor`, which means they inherit the host page's own text color and
- * therefore look native in any theme, light or dark, with no configuration.
- * var(--acmp-*, fallback) is still used where a token would be an improvement,
- * so they upgrade for free if the tokens are ever exposed globally.
+ * tables are not descendants of #anchor-cmp, so the inline style class-banner
+ * .php prints on that element (the primary source for the brand tokens) is
+ * out of reach. class-banner.php's enqueue() also registers the same tokens
+ * at :root via wp_add_inline_style(), so var(--acmp-*, fallback) here does
+ * resolve — but these rules still lead with `currentColor`, not the token,
+ * because the goal in this section is to inherit the host page's own text
+ * color and look native in any theme, not to project the brand accent into
+ * page content. var(--acmp-*, fallback) stays as the fallback layer for the
+ * one property, --acmp-radius, where matching the banner's own corner
+ * rounding is a genuine improvement rather than a branding intrusion.
  * ======================================================================== */
 
 /* ---- [anchor_consent_link] / [anchor_do_not_sell] ---- */

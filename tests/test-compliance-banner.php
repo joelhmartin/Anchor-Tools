@@ -183,6 +183,48 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 		wp_deregister_style( 'anchor-compliance' );
 	}
 
+	public function test_render_pill_carries_position_modifier_class() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'appearance' => [ 'show_pill' => true, 'pill_position' => 'bottom-left' ],
+		], false );
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+		$this->assertStringContainsString( 'anchor-cmp-pill--bottom-left', $html );
+		$this->assertStringNotContainsString( 'anchor-cmp-pill--bottom-right', $html );
+
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'appearance' => [ 'show_pill' => true, 'pill_position' => 'bottom-right' ],
+		], false );
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+		$this->assertStringContainsString( 'anchor-cmp-pill--bottom-right', $html );
+	}
+
+	public function test_enqueue_registers_brand_tokens_at_root_scope() {
+		wp_deregister_script( 'anchor-compliance' );
+		wp_deregister_style( 'anchor-compliance' );
+
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'appearance' => [ 'inherit_brand' => false, 'color_accent' => '#123456' ],
+		], false );
+
+		$this->banner()->enqueue();
+
+		$after = wp_styles()->get_data( 'anchor-compliance', 'after' );
+		$this->assertNotEmpty( $after, 'Brand tokens must be attached as inline CSS.' );
+		$css = implode( '', (array) $after );
+		$this->assertStringContainsString( ':root{', $css );
+		$this->assertStringContainsString( '--acmp-accent:#123456', $css );
+		$this->assertStringContainsString( '--acmp-radius:', $css );
+
+		wp_dequeue_script( 'anchor-compliance' );
+		wp_deregister_script( 'anchor-compliance' );
+		wp_dequeue_style( 'anchor-compliance' );
+		wp_deregister_style( 'anchor-compliance' );
+	}
+
 	public function test_enqueue_no_ops_when_module_disabled() {
 		wp_deregister_script( 'anchor-compliance' );
 		wp_deregister_style( 'anchor-compliance' );

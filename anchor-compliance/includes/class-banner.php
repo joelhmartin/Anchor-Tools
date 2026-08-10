@@ -86,35 +86,26 @@ class Anchor_Compliance_Banner {
 		$services = $this->registry->all();
 		$ctm      = isset( $services['calltrackingmetrics'] ) ? $services['calltrackingmetrics'] : null;
 
-		// Gating rules for the runtime's client-side iframe guard. Three
-		// sibling modules build YouTube/Vimeo iframes in the browser, which
-		// never pass through the output-buffer blocker, so the runtime has to
-		// recognise them itself. Emitting the registry's own rules here keeps
-		// that list from drifting away from the server's — a hardcoded JS copy
-		// would silently stop matching the moment an admin adds a custom rule
-		// or re-categorises a service.
+		// Gating rules for the runtime's client-side guards. Three sibling
+		// modules build YouTube/Vimeo iframes in the browser, which never pass
+		// through the output-buffer blocker, so the runtime has to recognise
+		// them itself. Emitting the registry's own rules here keeps that list
+		// from drifting away from the server's — a hardcoded JS copy would
+		// silently stop matching the moment an admin adds a custom rule or
+		// re-categorises a service.
+		//
+		// Two context-scoped sets, not one raw dump of active_rules():
+		// iframeRules carries only patterns that can appear in an <iframe src>
+		// and scriptRules only patterns that can appear in a <script src>, so
+		// an inline-body-only pattern like 'fbq(' — which no URL can ever
+		// contain — never ships to a consumer that only sees URLs.
 		//
 		// Only pattern + category are exposed: the runtime has no use for the
 		// service key or label, and a smaller payload is on every page.
 		// Duplicates are collapsed because several services legitimately share
 		// a pattern once categories are overridden.
-		$iframe_rules = [];
-		$seen_rules   = [];
-		foreach ( (array) $this->registry->active_rules() as $rule ) {
-			$pattern = isset( $rule['pattern'] ) ? (string) $rule['pattern'] : '';
-			if ( '' === $pattern ) {
-				continue;
-			}
-			$key = $pattern . '|' . $rule['category'];
-			if ( isset( $seen_rules[ $key ] ) ) {
-				continue;
-			}
-			$seen_rules[ $key ] = true;
-			$iframe_rules[]     = [
-				'pattern'  => $pattern,
-				'category' => $rule['category'],
-			];
-		}
+		$iframe_rules = $this->rules_payload_for_context( 'iframe' );
+		$script_rules = $this->rules_payload_for_context( 'src' );
 
 		return [
 			'posture'          => $this->geo->posture(),
@@ -131,6 +122,7 @@ class Anchor_Compliance_Banner {
 			'signalMap'        => Anchor_Compliance_Consent_Mode::signal_map(),
 			'cookiePatterns'   => $cookie_patterns,
 			'iframeRules'      => $iframe_rules,
+			'scriptRules'      => $script_rules,
 			'ctm'              => [
 				'enabled'  => $ctm ? (bool) $ctm['enabled'] : false,
 				'category' => $ctm ? $ctm['category'] : 'marketing',
@@ -150,9 +142,44 @@ class Anchor_Compliance_Banner {
 					'dns_confirmation',
 					'placeholder_text',
 					'placeholder_button',
+					// Read by the runtime's cookie-write verification (F010):
+					// shown when the consent cookie provably failed to persist
+					// (cookies blocked). Inert until class-settings.php ships a
+					// content default under this key — array_intersect_key()
+					// simply drops it meanwhile and the runtime falls back to
+					// its built-in English string.
+					'save_error',
 				] )
 			),
 		];
+	}
+
+	/**
+	 * One context's rules from the registry, reduced to pattern + category
+	 * and de-duplicated, ready for the runtime payload.
+	 *
+	 * @param string $context 'iframe' or 'src' (see Service_Registry::RULE_CONTEXTS).
+	 * @return array[]
+	 */
+	private function rules_payload_for_context( $context ) {
+		$out  = [];
+		$seen = [];
+		foreach ( (array) $this->registry->rules_for_context( $context ) as $rule ) {
+			$pattern = isset( $rule['pattern'] ) ? (string) $rule['pattern'] : '';
+			if ( '' === $pattern ) {
+				continue;
+			}
+			$key = $pattern . '|' . $rule['category'];
+			if ( isset( $seen[ $key ] ) ) {
+				continue;
+			}
+			$seen[ $key ] = true;
+			$out[]        = [
+				'pattern'  => $pattern,
+				'category' => $rule['category'],
+			];
+		}
+		return $out;
 	}
 
 	/**

@@ -28,6 +28,22 @@
 	'use strict';
 
 	/* ===================================================================
+	 * SECTION -1 — Re-execution guard.
+	 *
+	 * A concatenating optimizer, a double enqueue, or a page builder that
+	 * prints the footer twice can run this IIFE a second time. Without a
+	 * guard the second run rebinds the document-level click/keydown
+	 * listeners (every action fires twice), replaces window.AnchorConsent
+	 * (dropping every subscriber the first instance collected), and spins
+	 * up a second MutationObserver. The version check means a FUTURE build
+	 * with a different API shape is still allowed to take over from a
+	 * stale copy; an identical build never runs twice.
+	 * =================================================================== */
+	if (window.AnchorConsent && window.AnchorConsent.version === 1) {
+		return;
+	}
+
+	/* ===================================================================
 	 * SECTION 0 — First-touch attribution capture.
 	 *
 	 * This MUST be the very first statement that runs. `document.referrer`
@@ -82,7 +98,11 @@
 	}
 
 	var ALL_CATEGORIES = ['necessary', 'functional', 'analytics', 'marketing'];
-	var VALID_METHODS = ['banner', 'preference_center', 'gpc', 'api'];
+	// Mirrors Anchor_Compliance_Consent_Log::VALID_METHODS. 'do_not_sell'
+	// records the [anchor_do_not_sell] opt-out and 'placeholder' the
+	// per-embed "Accept & Load" button, so the audit log can distinguish
+	// them from a full preference-center save.
+	var VALID_METHODS = ['banner', 'preference_center', 'gpc', 'api', 'do_not_sell', 'placeholder'];
 
 	// Normalize the numeric payload fields once; they arrive as ints but a
 	// hand-edited filter could hand us strings.
@@ -356,6 +376,23 @@
 		return true;
 	}
 
+	/**
+	 * Did the write actually stick? A document.cookie assignment is not an
+	 * API with a return value — with cookies blocked (browser setting, an
+	 * extension, some embedded webviews) the assignment is silently
+	 * discarded. Without this readback the UI would announce "saved", and
+	 * the banner would quietly return on the next page. The id comparison
+	 * (not mere presence) also catches a stale earlier record surviving a
+	 * write that was dropped.
+	 *
+	 * @param {string} id The consent_id just written.
+	 * @return {boolean}
+	 */
+	function consentCookiePersisted(id) {
+		var stored = readStoredConsent();
+		return !!(stored && stored.id === id);
+	}
+
 	/* ===================================================================
 	 * SECTION 4 — Cookie deletion on withdrawal.
 	 * =================================================================== */
@@ -383,6 +420,17 @@
 	 * subdomains. Deleting only on `location.hostname` leaves the parent-scoped
 	 * copy alive and the visitor stays tracked after withdrawing consent —
 	 * which is the exact failure a regulator would look for.
+	 *
+	 * RESIDUAL LIMITATION (accepted, not fixable from here): expiring a
+	 * cookie requires reproducing its exact Domain AND Path attributes, and
+	 * document.cookie exposes neither. The sweep covers every domain scope
+	 * above plus path=/ and every ancestor segment of the CURRENT pathname
+	 * (see deletionPaths()). A cookie written host-only on a sibling
+	 * subdomain, or with a Path outside the page the visitor withdrew on
+	 * (e.g. Path=/shop while withdrawing on /about), survives until the
+	 * visitor next loads a page under that scope — at which point the sweep
+	 * on that page reaps it. Mainstream trackers (every registry entry) set
+	 * Path=/, so in practice this only affects hand-rolled cookies.
 	 */
 	function deletionDomains() {
 		var host = location.hostname;
@@ -395,6 +443,26 @@
 			domains.push('.' + parts.slice(-2).join('.'));
 		}
 		return domains;
+	}
+
+	/**
+	 * Every Path attribute a cookie reachable from THIS page could carry:
+	 * the root, plus each ancestor segment of the current pathname, with and
+	 * without a trailing slash (both spellings are seen in the wild and Path
+	 * matching in an expiry must be byte-exact). For /blog/post/ that is
+	 * ['/', '/blog', '/blog/', '/blog/post', '/blog/post/'].
+	 */
+	function deletionPaths() {
+		var paths = ['/'];
+		var segments = (location.pathname || '/').split('/');
+		var acc = '';
+		for (var i = 0; i < segments.length; i++) {
+			if (!segments[i]) { continue; }
+			acc += '/' + segments[i];
+			paths.push(acc);
+			paths.push(acc + '/');
+		}
+		return paths;
 	}
 
 	/**
@@ -426,6 +494,7 @@
 		if (!denied.length) { return 0; }
 
 		var domains = deletionDomains();
+		var paths = deletionPaths();
 		var removed = 0;
 		var raw = document.cookie ? document.cookie.split(';') : [];
 
@@ -438,12 +507,14 @@
 			// A pattern shared by a still-granted category must survive.
 			if (matchesAny(name, granted)) { continue; }
 
-			for (var d = 0; d < domains.length; d++) {
-				document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=' + domains[d];
+			for (var p = 0; p < paths.length; p++) {
+				for (var d = 0; d < domains.length; d++) {
+					document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=' + paths[p] + '; domain=' + domains[d];
+				}
+				// Host-only cookies carry no Domain attribute at all and are
+				// only matched by an expiry that likewise omits it.
+				document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=' + paths[p];
 			}
-			// Host-only cookies carry no Domain attribute at all and are only
-			// matched by an expiry that likewise omits it.
-			document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
 			removed++;
 		}
 
@@ -525,6 +596,28 @@
 		return map;
 	}
 
+	/**
+	 * THE one sale/share opt-out grant set, shared by every opt-out-shaped
+	 * entry point: the [anchor_do_not_sell] link and both GPC branches.
+	 *
+	 * An opt-out REVOKES analytics and marketing; it never GRANTS anything.
+	 * Whatever the visitor decided about `functional` is carried through
+	 * untouched — a visitor who rejected functional and then clicks "Do Not
+	 * Sell" must not come out of it with functional granted (that would turn
+	 * a withdrawal signal into a grant the visitor never gave), and a
+	 * visitor who granted it must not lose it.
+	 *
+	 * Deliberately NOT used by the banner's reject-all: "Essential Only" is
+	 * a REJECT (keep necessary, drop everything else), not a sale/share
+	 * opt-out — collapsing the two would silently re-grant functional to a
+	 * visitor who pressed a button that promised essential only.
+	 */
+	function dnsGrantSet() {
+		var keep = ['necessary'];
+		if (state.functional) { keep.push('functional'); }
+		return keep;
+	}
+
 	/* ===================================================================
 	 * SECTION 7 — The relax tier (tier 3 of the geo ladder).
 	 *
@@ -536,7 +629,106 @@
 	 * =================================================================== */
 
 	/**
-	 * @return {boolean|null} true = might be in a strict region,
+	 * IANA time zone -> ISO 3166-1 alpha-2 country, for the zones we are
+	 * willing to make a relaxation decision about.
+	 *
+	 * Keyed by country and space-joined (rather than one flat tz->cc object
+	 * literal) purely to keep the table reviewable; buildTzCountryMap()
+	 * inverts it once, lazily. Legacy aliases browsers still return
+	 * (Asia/Calcutta, Asia/Saigon, Europe/Kiev, America/Montreal) are listed
+	 * alongside their modern names.
+	 *
+	 * EU-law-applies territories deliberately resolve to their member state
+	 * (America/Martinique -> FR, Africa/Ceuta -> ES, Atlantic/Canary -> ES,
+	 * Europe/Jersey -> GB) so the strictCountries membership test below
+	 * gates them exactly like the mainland. Where a territory's status is
+	 * murkier (Curaçao, Faroe, French Pacific) it also maps to the parent
+	 * state: the only cost of that conservatism is a notice instead of a
+	 * default grant.
+	 *
+	 * A zone that is NOT in this table resolves to null, and null NEVER
+	 * relaxes — coverage gaps fail toward the strict wall, not toward
+	 * tracking.
+	 */
+	var TZ_COUNTRY_GROUPS = {
+		US: 'America/New_York America/Detroit America/Chicago America/Denver America/Phoenix America/Boise America/Los_Angeles America/Anchorage America/Juneau America/Sitka America/Metlakatla America/Yakutat America/Nome America/Adak America/Menominee Pacific/Honolulu Pacific/Guam Pacific/Saipan Pacific/Pago_Pago',
+		CA: 'America/St_Johns America/Halifax America/Glace_Bay America/Moncton America/Goose_Bay America/Toronto America/Montreal America/Nipigon America/Thunder_Bay America/Iqaluit America/Pangnirtung America/Winnipeg America/Rainy_River America/Resolute America/Rankin_Inlet America/Regina America/Swift_Current America/Edmonton America/Cambridge_Bay America/Yellowknife America/Inuvik America/Whitehorse America/Dawson America/Vancouver America/Fort_Nelson America/Creston America/Dawson_Creek America/Blanc-Sablon America/Atikokan',
+		MX: 'America/Mexico_City America/Cancun America/Merida America/Monterrey America/Matamoros America/Mazatlan America/Chihuahua America/Ojinaga America/Hermosillo America/Tijuana America/Bahia_Banderas',
+		BR: 'America/Sao_Paulo America/Noronha America/Belem America/Fortaleza America/Recife America/Araguaina America/Maceio America/Bahia America/Campo_Grande America/Cuiaba America/Santarem America/Porto_Velho America/Boa_Vista America/Manaus America/Eirunepe America/Rio_Branco',
+		CO: 'America/Bogota', PE: 'America/Lima', CL: 'America/Santiago America/Punta_Arenas Pacific/Easter',
+		VE: 'America/Caracas', EC: 'America/Guayaquil Pacific/Galapagos', BO: 'America/La_Paz',
+		PY: 'America/Asuncion', UY: 'America/Montevideo', PA: 'America/Panama', CR: 'America/Costa_Rica',
+		GT: 'America/Guatemala', SV: 'America/El_Salvador', HN: 'America/Tegucigalpa', NI: 'America/Managua',
+		BZ: 'America/Belize', JM: 'America/Jamaica', CU: 'America/Havana', DO: 'America/Santo_Domingo',
+		PR: 'America/Puerto_Rico', HT: 'America/Port-au-Prince', BS: 'America/Nassau', BB: 'America/Barbados',
+		TT: 'America/Port_of_Spain', GY: 'America/Guyana', SR: 'America/Paramaribo',
+		FR: 'Europe/Paris America/Martinique America/Guadeloupe America/Cayenne America/Miquelon Indian/Reunion Indian/Mayotte Pacific/Noumea Pacific/Tahiti Pacific/Marquesas Pacific/Gambier Pacific/Wallis',
+		NL: 'Europe/Amsterdam America/Curacao America/Aruba America/Kralendijk America/Lower_Princes',
+		GB: 'Europe/London Europe/Gibraltar Europe/Isle_of_Man Europe/Jersey Europe/Guernsey Atlantic/Bermuda Atlantic/Stanley Atlantic/St_Helena',
+		IE: 'Europe/Dublin', PT: 'Europe/Lisbon Atlantic/Madeira Atlantic/Azores',
+		ES: 'Europe/Madrid Atlantic/Canary Africa/Ceuta', BE: 'Europe/Brussels', LU: 'Europe/Luxembourg',
+		DE: 'Europe/Berlin Europe/Busingen', CH: 'Europe/Zurich', AT: 'Europe/Vienna',
+		IT: 'Europe/Rome', MT: 'Europe/Malta', DK: 'Europe/Copenhagen Atlantic/Faroe',
+		NO: 'Europe/Oslo Arctic/Longyearbyen', SE: 'Europe/Stockholm', FI: 'Europe/Helsinki',
+		IS: 'Atlantic/Reykjavik', PL: 'Europe/Warsaw', CZ: 'Europe/Prague', SK: 'Europe/Bratislava',
+		HU: 'Europe/Budapest', SI: 'Europe/Ljubljana', HR: 'Europe/Zagreb', GR: 'Europe/Athens',
+		BG: 'Europe/Sofia', RO: 'Europe/Bucharest', EE: 'Europe/Tallinn', LV: 'Europe/Riga',
+		LT: 'Europe/Vilnius', CY: 'Asia/Nicosia Asia/Famagusta', LI: 'Europe/Vaduz',
+		AD: 'Europe/Andorra', MC: 'Europe/Monaco', SM: 'Europe/San_Marino', VA: 'Europe/Vatican',
+		RS: 'Europe/Belgrade', BA: 'Europe/Sarajevo', MK: 'Europe/Skopje', ME: 'Europe/Podgorica',
+		AL: 'Europe/Tirane', MD: 'Europe/Chisinau', UA: 'Europe/Kiev Europe/Kyiv Europe/Uzhgorod Europe/Zaporozhye Europe/Simferopol',
+		BY: 'Europe/Minsk', TR: 'Europe/Istanbul Asia/Istanbul',
+		RU: 'Europe/Moscow Europe/Kaliningrad Europe/Samara Europe/Volgograd Europe/Saratov Europe/Kirov Europe/Astrakhan Europe/Ulyanovsk Asia/Yekaterinburg Asia/Omsk Asia/Novosibirsk Asia/Barnaul Asia/Tomsk Asia/Novokuznetsk Asia/Krasnoyarsk Asia/Irkutsk Asia/Chita Asia/Yakutsk Asia/Khandyga Asia/Vladivostok Asia/Ust-Nera Asia/Magadan Asia/Sakhalin Asia/Srednekolymsk Asia/Kamchatka Asia/Anadyr',
+		JP: 'Asia/Tokyo', KR: 'Asia/Seoul', CN: 'Asia/Shanghai Asia/Urumqi', HK: 'Asia/Hong_Kong',
+		MO: 'Asia/Macau', TW: 'Asia/Taipei', SG: 'Asia/Singapore', MY: 'Asia/Kuala_Lumpur Asia/Kuching',
+		TH: 'Asia/Bangkok', ID: 'Asia/Jakarta Asia/Pontianak Asia/Makassar Asia/Jayapura',
+		PH: 'Asia/Manila', VN: 'Asia/Ho_Chi_Minh Asia/Saigon', KH: 'Asia/Phnom_Penh', LA: 'Asia/Vientiane',
+		MM: 'Asia/Yangon Asia/Rangoon', IN: 'Asia/Kolkata Asia/Calcutta', LK: 'Asia/Colombo',
+		BD: 'Asia/Dhaka', NP: 'Asia/Kathmandu', PK: 'Asia/Karachi', AF: 'Asia/Kabul',
+		UZ: 'Asia/Tashkent Asia/Samarkand', KZ: 'Asia/Almaty Asia/Qostanay Asia/Aqtobe Asia/Aqtau Asia/Atyrau Asia/Oral Asia/Qyzylorda',
+		AE: 'Asia/Dubai', SA: 'Asia/Riyadh', KW: 'Asia/Kuwait', QA: 'Asia/Qatar', BH: 'Asia/Bahrain',
+		OM: 'Asia/Muscat', IR: 'Asia/Tehran', IQ: 'Asia/Baghdad', JO: 'Asia/Amman', LB: 'Asia/Beirut',
+		SY: 'Asia/Damascus', IL: 'Asia/Jerusalem Asia/Tel_Aviv', GE: 'Asia/Tbilisi', AM: 'Asia/Yerevan',
+		AZ: 'Asia/Baku',
+		EG: 'Africa/Cairo', NG: 'Africa/Lagos', ZA: 'Africa/Johannesburg', KE: 'Africa/Nairobi',
+		MA: 'Africa/Casablanca Africa/El_Aaiun', DZ: 'Africa/Algiers', TN: 'Africa/Tunis',
+		LY: 'Africa/Tripoli', GH: 'Africa/Accra', CI: 'Africa/Abidjan', SN: 'Africa/Dakar',
+		ET: 'Africa/Addis_Ababa', SD: 'Africa/Khartoum', UG: 'Africa/Kampala', TZ: 'Africa/Dar_es_Salaam',
+		ZM: 'Africa/Lusaka', ZW: 'Africa/Harare', MZ: 'Africa/Maputo', NA: 'Africa/Windhoek',
+		BW: 'Africa/Gaborone', CD: 'Africa/Kinshasa Africa/Lubumbashi', AO: 'Africa/Luanda',
+		CM: 'Africa/Douala', ML: 'Africa/Bamako',
+		MU: 'Indian/Mauritius', MV: 'Indian/Maldives', MG: 'Indian/Antananarivo',
+		NZ: 'Pacific/Auckland Pacific/Chatham', FJ: 'Pacific/Fiji', PG: 'Pacific/Port_Moresby',
+		AQ: 'Antarctica/'
+	};
+
+	var tzCountryMap = null;
+
+	/** @return {string|null} ISO country code, or null when unresolvable. */
+	function tzCountry(tz) {
+		// Multi-zone subtrees first; every zone under them shares a country.
+		if (tz.indexOf('America/Argentina/') === 0) { return 'AR'; }
+		if (tz.indexOf('America/Indiana/') === 0) { return 'US'; }
+		if (tz.indexOf('America/Kentucky/') === 0) { return 'US'; }
+		if (tz.indexOf('America/North_Dakota/') === 0) { return 'US'; }
+		if (tz.indexOf('Australia/') === 0) { return 'AU'; }
+		if (tz.indexOf('Antarctica/') === 0) { return 'AQ'; }
+
+		if (!tzCountryMap) {
+			tzCountryMap = {};
+			for (var cc in TZ_COUNTRY_GROUPS) {
+				if (!hasOwn(TZ_COUNTRY_GROUPS, cc)) { continue; }
+				var zones = TZ_COUNTRY_GROUPS[cc].split(' ');
+				for (var i = 0; i < zones.length; i++) {
+					tzCountryMap[zones[i]] = cc;
+				}
+			}
+		}
+		return hasOwn(tzCountryMap, tz) ? tzCountryMap[tz] : null;
+	}
+
+	/**
+	 * @return {boolean|null} true = in (or possibly in) the strict set,
 	 *                        false = conclusively outside the strict set,
 	 *                        null  = unknown, make no inference.
 	 */
@@ -551,10 +743,22 @@
 		}
 		if (!tz) { return null; }
 
-		var region = tz.split('/')[0];
+		// The server's CONFIGURED strict list is the authority — the payload
+		// key exists precisely so this tier tracks admin edits (adding JP,
+		// removing BR, ...) instead of a hardcoded snapshot of the default.
+		// The time zone is only the heuristic that resolves a candidate
+		// country to test for membership; when it cannot resolve one, the
+		// answer is unknown and unknown never relaxes.
+		if (isArray(D.strictCountries)) {
+			var cc = tzCountry(tz);
+			if (null === cc) { return null; }
+			return inArray(cc, D.strictCountries);
+		}
 
-		// Only these zones can contain a strict-region visitor. Anything else
-		// is conclusively outside the strict set, so we may relax.
+		// Legacy heuristic — payload predates the strictCountries key, so the
+		// built-in default list is the best knowledge available. Coarse
+		// continent buckets, biased strict.
+		var region = tz.split('/')[0];
 		if (region === 'Europe' || region === 'Atlantic' || tz === 'America/Sao_Paulo' ||
 			tz.indexOf('America/Argentina') === 0 || region === 'Arctic') {
 			return true;
@@ -641,6 +845,37 @@
 			el.src = src;
 			el.style.display = '';
 			el.removeAttribute('aria-hidden');
+		});
+
+		// Blocked tracking pixels: the server strips src into data-anchor-src
+		// (no placeholder — a 1x1 pixel has nothing to stand in for).
+		// Restoring src fires the request, which is the point of consent.
+		each(qsa('img[data-anchor-consent]'), function (el) {
+			if (!inArray(el.getAttribute('data-anchor-consent'), categories)) { return; }
+
+			var src = el.getAttribute('data-anchor-src');
+			// Same second-pass guard as iframes: once restored the deferred
+			// attribute is gone.
+			if (!src) { return; }
+
+			el.removeAttribute('data-anchor-src');
+			el.src = src;
+		});
+
+		// Blocked resource hints (<link rel="preconnect|dns-prefetch|preload">
+		// pointing at a gated host): href was moved to data-anchor-href.
+		// Restoring href makes the browser act on the hint — best-effort by
+		// nature, since a hint this late in the page's life saves less than
+		// one present at parse time, but the tag the hint was FOR is being
+		// activated in this same pass, so the connection is still useful.
+		each(qsa('link[data-anchor-consent]'), function (el) {
+			if (!inArray(el.getAttribute('data-anchor-consent'), categories)) { return; }
+
+			var href = el.getAttribute('data-anchor-href');
+			if (!href) { return; }
+
+			el.removeAttribute('data-anchor-href');
+			el.href = href;
 		});
 
 		// Placeholders are matched by class, not tag name — Task 6 already
@@ -776,7 +1011,13 @@
 			body = JSON.stringify({
 				consent_id: consentId,
 				categories: categories,
-				method: method
+				method: method,
+				// The policy version this choice was made against (payload
+				// `policyVersion`, normalized in Section 1). On a full-page-
+				// cached site the server cannot infer it from the request, and
+				// an audit row without it cannot prove WHICH policy text the
+				// visitor saw.
+				policy_version: POLICY_VERSION
 			});
 		} catch (e) {
 			return;
@@ -894,8 +1135,30 @@
 	 * pill's own parent, otherwise an empty full-viewport container could sit
 	 * over the page swallowing clicks.
 	 */
+	/**
+	 * F008 — make strict-posture modality REAL for every preset. The strict
+	 * banner claims aria-modal and traps Tab; without a scrim and a scroll
+	 * lock, bar/floating/corner presets left the page fully
+	 * pointer-interactive underneath — a hard wall for keyboard and
+	 * screen-reader users that mouse users could simply ignore. The gate
+	 * class drives the scrim (frontend.css section 3, same token-driven
+	 * scrim the modal preset already uses); the html-level class carries the
+	 * scroll lock. Both are torn down by closePanels(), which in strict
+	 * posture is only reachable once a decision exists.
+	 */
+	function setStrictGate(on) {
+		if (root && root.classList) {
+			root.classList[on ? 'add' : 'remove']('anchor-cmp--gate');
+		}
+		var docEl = document.documentElement;
+		if (docEl && docEl.classList) {
+			docEl.classList[on ? 'add' : 'remove']('anchor-cmp-scroll-lock');
+		}
+	}
+
 	function closePanels() {
 		if (!root) { return; }
+		setStrictGate(false);
 		setHidden(banner, true);
 		setHidden(prefs, true);
 		if (pill) { setHidden(pill, false); }
@@ -1130,7 +1393,7 @@
 				closePanels();
 				releaseFocus();
 			}
-			return;
+			return true;
 		}
 		lastConsentKey = key;
 		lastConsentAt = now;
@@ -1143,8 +1406,15 @@
 		// force-denies analytics/marketing when GPC is present.
 		state = applyGpc(mapFromList(chosen, false));
 
+		var persisted = true;
 		if (false !== opts.cookie) {
-			hasChoice = writeConsentCookie(consentId, chosen) || hasChoice;
+			writeConsentCookie(consentId, chosen);
+			// Verify, don't assume — see consentCookiePersisted(). hasChoice
+			// only flips on a PROVEN write: with cookies blocked the banner
+			// WILL return next page, so pretending a choice exists for this
+			// one would just make the UI lie about it.
+			persisted = consentCookiePersisted(consentId);
+			hasChoice = persisted || hasChoice;
 		}
 
 		// Persist first-touch BEFORE activating, so the CTM tag finds the
@@ -1161,12 +1431,81 @@
 		refreshCheckboxes();
 		syncObserver();
 
+		if (!persisted) {
+			// The choice took full effect for THIS pageview (activation,
+			// sweep, Consent Mode, audit record all ran above) — what failed
+			// is only persistence. So: no "saved" announcement, and any open
+			// panel stays open with an honest inline notice instead of
+			// closing as if the save succeeded and letting the banner
+			// silently reappear on the next page.
+			showSaveWarning();
+			return false;
+		}
+
 		if (!opts.keepOpen) {
 			closePanels();
 			releaseFocus();
 		}
 		if (!opts.silent) {
 			announce(i18nText('saved_message', 'Your privacy preferences have been saved.'));
+		}
+		return true;
+	}
+
+	function saveErrorText() {
+		// 'save_error' rides in payload i18n once class-settings.php ships a
+		// content default for it; until then this built-in string serves.
+		return i18nText('save_error', 'Your choice was applied to this page, but could not be saved — your browser appears to be blocking cookies, so you may be asked again.');
+	}
+
+	/**
+	 * F010 — the honest failure surface for a consent cookie that provably
+	 * did not persist. Announces for screen readers and, when a panel is on
+	 * screen, shows a visible inline notice in it (banner: the GPC notice's
+	 * slot after the body copy; prefs: just above the action row). With no
+	 * panel open (e.g. the [anchor_do_not_sell] footer link) the live-region
+	 * announcement is the only sensible surface — unhiding the whole banner
+	 * to deliver an error would punish the visitor for our storage failing.
+	 */
+	function showSaveWarning() {
+		announce(saveErrorText());
+
+		var panel = null;
+		if (prefs && !prefs.hasAttribute('hidden')) {
+			panel = prefs;
+		} else if (banner && !banner.hasAttribute('hidden')) {
+			panel = banner;
+		}
+		if (!panel) { return; }
+
+		var existing = qs('.anchor-cmp-save-warning', panel);
+		if (existing) {
+			setHidden(existing, false);
+			return;
+		}
+
+		var notice = document.createElement('p');
+		notice.className = 'anchor-cmp-save-warning';
+		// textContent — a status message, never markup.
+		notice.textContent = saveErrorText();
+
+		if (panel === banner) {
+			var body = qs('.anchor-cmp-body', banner);
+			var actions = qs('.anchor-cmp-actions', banner);
+			if (body && body.parentNode) {
+				body.parentNode.insertBefore(notice, body.nextSibling);
+			} else if (actions && actions.parentNode) {
+				actions.parentNode.insertBefore(notice, actions);
+			} else {
+				banner.appendChild(notice);
+			}
+		} else {
+			var prefsActions = qs('.anchor-cmp-prefs-actions', prefs);
+			if (prefsActions && prefsActions.parentNode) {
+				prefsActions.parentNode.insertBefore(notice, prefsActions);
+			} else {
+				panel.appendChild(notice);
+			}
 		}
 	}
 
@@ -1252,7 +1591,12 @@
 		// blocker — so the bare form neutralized any inline script that merely
 		// mentioned the Vimeo REST API (anchor-webinars builds exactly such a
 		// URL). Mirrors Anchor_Compliance_Service_Registry; keep them in step.
-		{ pattern: 'vimeo.com/video/', category: 'marketing' }
+		{ pattern: 'vimeo.com/video/', category: 'marketing' },
+		// The registry gates Google Maps under `functional`; a fallback that
+		// omitted it left client-built map embeds unguarded on older payloads
+		// while every other layer blocked them.
+		{ pattern: 'maps.googleapis.com', category: 'functional' },
+		{ pattern: 'maps.google.com/maps/embed', category: 'functional' }
 	];
 
 	function isArray(v) {
@@ -1306,26 +1650,61 @@
 		return rules;
 	}
 
-	var RULES = [];
+	/**
+	 * The gating rules for client-injected <script src> tags — the server's
+	 * rules_for_context('src') set, shipped as `D.scriptRules`. Same
+	 * authority model as iframeRules(): the payload wins when present; the
+	 * built-in list (whose patterns are all URL-shaped, so they are valid in
+	 * this context too) survives only for a payload from an older build. An
+	 * empty array from the server means "no script is gated" and is honored.
+	 */
+	function scriptRulesList() {
+		var rules = [];
+		var i, r;
+
+		if (isArray(D.scriptRules)) {
+			for (i = 0; i < D.scriptRules.length; i++) {
+				r = D.scriptRules[i];
+				if (r && r.pattern && inArray(r.category, ALL_CATEGORIES)) {
+					rules.push({ pattern: String(r.pattern), category: r.category });
+				}
+			}
+			return rules;
+		}
+		return DEFAULT_IFRAME_RULES.slice();
+	}
+
+	var RULES = [];        // iframe-context rules
+	var SCRIPT_RULES = []; // script-src-context rules
+
 	var observer = null;
 
 	function gatedCategories() {
 		var out = [];
-		for (var i = 0; i < RULES.length; i++) {
-			if (!state[RULES[i].category] && !inArray(RULES[i].category, out)) {
-				out.push(RULES[i].category);
+		var all = RULES.concat(SCRIPT_RULES);
+		for (var i = 0; i < all.length; i++) {
+			if (!state[all[i].category] && !inArray(all[i].category, out)) {
+				out.push(all[i].category);
 			}
 		}
 		return out;
 	}
 
-	function ruleForSrc(src) {
+	function ruleIn(rules, src) {
 		if (!src) { return null; }
 		var lower = src.toLowerCase();
-		for (var i = 0; i < RULES.length; i++) {
-			if (lower.indexOf(RULES[i].pattern.toLowerCase()) !== -1) { return RULES[i]; }
+		for (var i = 0; i < rules.length; i++) {
+			if (lower.indexOf(rules[i].pattern.toLowerCase()) !== -1) { return rules[i]; }
 		}
 		return null;
+	}
+
+	function ruleForSrc(src) {
+		return ruleIn(RULES, src);
+	}
+
+	function scriptRuleForSrc(src) {
+		return ruleIn(SCRIPT_RULES, src);
 	}
 
 	/** Reuse the server's own translated placeholder copy when it is on the page. */
@@ -1381,6 +1760,56 @@
 		frame.parentNode.insertBefore(wrap, frame);
 	}
 
+	/**
+	 * Neutralize one client-injected <script src> into Task 6's exact
+	 * blocked shape, so the standard activate() path restores it on consent.
+	 *
+	 * BEST-EFFORT, AND HONESTLY SO. A dynamically-inserted script starts its
+	 * fetch the moment it enters the document; this observer runs as a
+	 * microtask after that same tick. In practice the network round-trip is
+	 * far slower than the microtask queue, so replacing the element before
+	 * its response arrives prevents execution (a non-parser-inserted script
+	 * that has been replaced/removed does not run its load handler against
+	 * the document) — but the REQUEST itself may already be in flight, and
+	 * on a primed HTTP cache a very fast response could execute before we
+	 * run. Same residual window as the iframe guard's KNOWN LIMITATION
+	 * above; only the sibling modules calling AnchorConsent.has() first
+	 * closes it completely.
+	 *
+	 * Inline scripts (no src) are deliberately not handled: a dynamically
+	 * inserted inline script has already executed, synchronously, before any
+	 * observer callback can run — neutralizing its corpse would only make
+	 * activate() run it a SECOND time later.
+	 */
+	function neutralizeScript(el) {
+		if (!el || el.getAttribute('data-anchor-consent')) { return; }
+		if (!el.parentNode) { return; }
+
+		var src = el.getAttribute('src');
+		if (!src) { return; }
+
+		var rule = scriptRuleForSrc(src);
+		if (!rule || state[rule.category]) { return; }
+
+		// A fresh neutralized element, not an in-place mutation: the
+		// "already started" flag lives on the element, so activate()'s
+		// replace-with-fresh dance needs a node that never started.
+		var blocked = document.createElement('script');
+		blocked.type = 'text/plain';
+		blocked.setAttribute('data-anchor-consent', rule.category);
+		blocked.setAttribute('data-anchor-src', src);
+		for (var i = 0; i < el.attributes.length; i++) {
+			var a = el.attributes[i];
+			var n = a.name.toLowerCase();
+			if (n === 'src' || n === 'type' || n === 'data-anchor-consent' || n === 'data-anchor-src') { continue; }
+			try {
+				blocked.setAttribute(a.name, a.value);
+			} catch (e) { /* an invalid attribute name must not abort the rest */ }
+		}
+
+		el.parentNode.replaceChild(blocked, el);
+	}
+
 	function scanForIframes(node) {
 		if (!node || node.nodeType !== 1) { return; }
 		if (node.tagName && 'IFRAME' === node.tagName.toUpperCase()) {
@@ -1396,12 +1825,54 @@
 		}
 	}
 
+	/**
+	 * Script twin of scanForIframes — but ONLY ever fed mutation-delivered
+	 * nodes, never the one-time boot sweep. A script already sitting in the
+	 * DOM un-neutralized at boot has already executed; wrapping it would
+	 * make a later activate() execute it a second time. Freshly-added nodes
+	 * are the only ones whose execution can still be prevented.
+	 */
+	function scanForScripts(node) {
+		if (!node || node.nodeType !== 1) { return; }
+		if (node.tagName && 'SCRIPT' === node.tagName.toUpperCase()) {
+			neutralizeScript(node);
+			return;
+		}
+		if (!node.getElementsByTagName) { return; }
+		var scripts = node.getElementsByTagName('script');
+		for (var i = scripts.length - 1; i >= 0; i--) {
+			neutralizeScript(scripts[i]);
+		}
+	}
+
 	function onMutations(records) {
 		for (var i = 0; i < records.length; i++) {
-			var added = records[i].addedNodes;
+			var record = records[i];
+
+			// An element appended src-less and given its src later (a common
+			// lazy-embed pattern) is invisible to childList; the attribute
+			// pass catches the assignment itself.
+			if ('attributes' === record.type) {
+				var target = record.target;
+				if (target && target.tagName) {
+					var tag = target.tagName.toUpperCase();
+					if ('IFRAME' === tag) {
+						neutralizeIframe(target);
+					} else if ('SCRIPT' === tag) {
+						// Setting src on an already-inserted script starts a
+						// fetch for the new URL; same best-effort window as
+						// neutralizeScript() documents.
+						neutralizeScript(target);
+					}
+				}
+				continue;
+			}
+
+			var added = record.addedNodes;
 			if (!added || !added.length) { continue; }
 			for (var j = 0; j < added.length; j++) {
 				scanForIframes(added[j]);
+				scanForScripts(added[j]);
 			}
 		}
 	}
@@ -1420,9 +1891,18 @@
 		if (observer || !window.MutationObserver || !document.body) { return; }
 
 		observer = new window.MutationObserver(onMutations);
-		observer.observe(document.body, { childList: true, subtree: true });
+		// attributeFilter keeps the attribute stream to src assignments only
+		// — class toggles, style writes and data-* churn produce no records.
+		observer.observe(document.body, {
+			childList: true,
+			subtree: true,
+			attributes: true,
+			attributeFilter: ['src']
+		});
 
 		// One-time sweep for anything a faster script already inserted.
+		// Iframes only — see scanForScripts() for why scripts must not be
+		// swept retroactively.
 		scanForIframes(document.body);
 	}
 
@@ -1441,13 +1921,17 @@
 			e.preventDefault();
 			if (!inArray(accept, ALL_CATEGORIES)) { return; }
 			// Grant only the category this embed needs; every other choice
-			// the visitor already made is carried through unchanged.
+			// the visitor already made is carried through unchanged. Recorded
+			// as method 'placeholder' (the server whitelists it) so the audit
+			// log shows a per-embed unblock, not a preference-center save.
 			var next = grantedList();
 			if (!inArray(accept, next)) { next.push(accept); }
-			setConsent(next, 'preference_center', { silent: true });
-			// Its own string, not saved_message: this action unblocks one
-			// embed, it does not save a set of preferences.
-			announce(i18nText('unblocked_message', 'Content unblocked.'));
+			if (setConsent(next, 'placeholder', { silent: true })) {
+				// Its own string, not saved_message: this action unblocks one
+				// embed, it does not save a set of preferences. Suppressed on
+				// persistence failure — setConsent already announced that.
+				announce(i18nText('unblocked_message', 'Content unblocked.'));
+			}
 			return;
 		}
 
@@ -1461,6 +1945,10 @@
 				break;
 
 			case 'reject-all':
+				// A REJECT, not a sale/share opt-out: "Essential Only" keeps
+				// necessary and drops everything else, including functional.
+				// Deliberately NOT dnsGrantSet() — see that helper's doc for
+				// why the two vocabularies must not be merged.
 				setConsent(['necessary'], 'banner');
 				break;
 
@@ -1477,9 +1965,13 @@
 
 			case 'do-not-sell':
 				// A CCPA/CPRA sale-or-share opt-out: analytics and marketing
-				// off, functional left alone — the same shape GPC produces.
-				setConsent(['necessary', 'functional'], 'preference_center', { silent: true });
-				announce(i18nText('dns_confirmation', 'You have opted out of the sale or sharing of your personal information.'));
+				// off, the visitor's existing functional choice preserved —
+				// the exact grant set GPC produces, via the same helper.
+				// Recorded as its own method so the log can prove the opt-out
+				// link was honored, distinct from a preference-center save.
+				if (setConsent(dnsGrantSet(), 'do_not_sell', { silent: true })) {
+					announce(i18nText('dns_confirmation', 'You have opted out of the sale or sharing of your personal information.'));
+				}
 				break;
 
 			case 'close':
@@ -1663,6 +2155,7 @@
 	 */
 	function earlyBoot() {
 		RULES = iframeRules();
+		SCRIPT_RULES = scriptRulesList();
 
 		if (ctmGranted() || 'optout' === posture) {
 			// Opt-out posture (including a relaxed one): storage is lawful on
@@ -1718,15 +2211,17 @@
 				// GPC revokes ONLY analytics and marketing. Whatever the
 				// visitor decided about `functional` is carried through
 				// untouched — force-granting it here would turn a withdrawal
-				// signal into a grant the visitor never gave.
-				var keep = ['necessary'];
-				if (state.functional) { keep.push('functional'); }
-				setConsent(keep, 'gpc', { silent: true });
+				// signal into a grant the visitor never gave. dnsGrantSet()
+				// is exactly that shape, shared with the do-not-sell link.
+				setConsent(dnsGrantSet(), 'gpc', { silent: true });
 				announce(i18nText('gpc_message', 'Your Global Privacy Control signal has been honored.'));
 			} else if ('optout' === posture && !hasChoice) {
 				// A definitive opt-out for this visitor. Recording it stops
-				// the notice reappearing on every page.
-				setConsent(['necessary', 'functional'], 'gpc', { silent: true });
+				// the notice reappearing on every page. Same shared grant
+				// set: functional is default-granted in this posture, so
+				// dnsGrantSet() preserves it — and would equally preserve a
+				// denial if one somehow existed in state.
+				setConsent(dnsGrantSet(), 'gpc', { silent: true });
 				announce(i18nText('gpc_message', 'Your Global Privacy Control signal has been honored.'));
 			} else {
 				// Strict posture with nothing stored: analytics and marketing
@@ -1743,7 +2238,14 @@
 			return;
 		}
 
-		if (relaxed) {
+		if ('optout' === posture) {
+			// Notice semantics for EVERY opt-out pageview, not only the
+			// relaxed path. On a server-rendered opt-out page the copy swap
+			// inside is a no-op (the server already printed notice_body /
+			// dns_label and omits aria-modal there), but the
+			// .anchor-cmp--notice class and the explicit aria-modal="false"
+			// must still land — and on a CACHED strict page relaxed
+			// client-side they are the entire fixup.
 			applyNoticeCopy();
 		}
 
@@ -1751,8 +2253,14 @@
 
 		if ('strict' === posture) {
 			// A consent-required region: the banner is a genuine modal, so
-			// focus moves into it and Tab is trapped.
+			// focus moves into it, Tab is trapped, and — for EVERY preset,
+			// not just the modal one — the page behind it is scrimmed and
+			// scroll-locked (see setStrictGate). aria-modal="true" plus a
+			// Tab trap while mouse users browse freely underneath would be
+			// modality for keyboard/screen-reader users only, which is both
+			// a WCAG 2.1.2 inequity and simply untrue markup.
 			openWithFocus(banner, 'anchor-cmp-heading');
+			setStrictGate(true);
 		}
 		// Opt-out posture deliberately does NOT steal focus. The notice is
 		// informational; hijacking the caret on every landing page would be

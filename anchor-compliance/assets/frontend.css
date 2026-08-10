@@ -339,16 +339,22 @@
 	pointer-events: auto;
 }
 
-/* One scrim, on the root, for two situations: the modal preset, and the
- * preference center open over any preset. The root never animates, so putting
- * the scrim here (rather than on the panel) avoids the transform-creates-a-
- * stacking-context flash that would paint it over the panel mid-entrance.
+/* One scrim, on the root, for three situations: the modal preset, the
+ * preference center open over any preset, and — .anchor-cmp--gate, set by the
+ * runtime — STRICT posture on any preset. In a consent-required region the
+ * banner claims aria-modal and traps Tab, so the page behind it must be
+ * genuinely inert-looking for pointer users too; a bar or corner card whose
+ * page stays bright and clickable would make the modality a keyboard-only
+ * fiction (WCAG 2.1.2). The root never animates, so putting the scrim here
+ * (rather than on the panel) avoids the transform-creates-a-stacking-context
+ * flash that would paint it over the panel mid-entrance.
  *
  * :has() is how the second case is detected — the runtime signals an open
  * preference center only by removing `hidden`. Where :has() is unsupported the
  * preference center simply appears without a scrim: a degraded look, never a
  * broken one. */
 #anchor-cmp.anchor-cmp--modal:not(.anchor-cmp--pill-only):not(.anchor-cmp--notice)::before,
+#anchor-cmp.anchor-cmp--gate:not(.anchor-cmp--pill-only)::before,
 #anchor-cmp:has(#anchor-cmp-prefs:not([hidden]))::before {
 	content: "";
 	position: fixed;
@@ -359,6 +365,17 @@
 	backdrop-filter: blur(6px);
 	pointer-events: auto;
 	animation: acmp-fade .34s ease both;
+}
+
+/* The scroll-lock half of the strict gate. Set on <html> by the runtime
+ * alongside .anchor-cmp--gate and removed with it the moment a decision
+ * exists. !important because theme resets routinely put `overflow-x: hidden;
+ * overflow-y: scroll` (or plain `overflow: visible`) on html/body with high
+ * specificity, and a scroll lock that loses that fight silently is worse
+ * than none — the scrim would then dim a page that still scrolls. */
+html.anchor-cmp-scroll-lock,
+html.anchor-cmp-scroll-lock body {
+	overflow: hidden !important;
 }
 
 /* ===========================================================================
@@ -411,6 +428,18 @@
 	row-gap: .5em;
 }
 
+/* Optional brand logo (appearance.logo_id). Decorative — alt="" and
+ * aria-hidden server-side — so it gets a hard height cap: a client uploading
+ * their full-size header logo must not turn the consent banner into a
+ * billboard. width:auto guards against theme-level `img { width: 100% }`. */
+#anchor-cmp .anchor-cmp-logo {
+	display: block;
+	max-height: 40px;
+	width: auto;
+	max-width: 100%;
+	margin: 0 0 8px;
+}
+
 #anchor-cmp .anchor-cmp-heading {
 	font-size: 1.15em;
 	font-weight: 600;
@@ -453,6 +482,29 @@
 	border-radius: 0 var(--acmp-radius-sm) var(--acmp-radius-sm) 0;
 	padding: .625em .875em;
 	margin-block-start: .25em;
+}
+
+/* The could-not-save notice (F010): same quiet ledger-note shape as the GPC
+ * notice, but its rule is the strong neutral, NOT the accent — the accent's
+ * four slots are affirmations, and this is a failure report. Rendered by the
+ * runtime inside the banner (after the body) or the preference center (above
+ * the actions) when the consent cookie provably failed to persist. */
+#anchor-cmp .anchor-cmp-save-warning {
+	font-size: .8125em;
+	line-height: 1.5;
+	font-weight: 600;
+	color: var(--acmp-ink);
+	background: var(--acmp-wash-2);
+	border-inline-start: 2px solid var(--acmp-line-strong);
+	border-radius: 0 var(--acmp-radius-sm) var(--acmp-radius-sm) 0;
+	padding: .625em .875em;
+	margin-block-start: .25em;
+}
+
+/* Inside the preference center it sits between the scroll region and the
+ * sticky action bar, so it needs the panel's own horizontal padding. */
+#anchor-cmp-prefs .anchor-cmp-save-warning {
+	margin: .75em var(--acmp-pad) 0;
 }
 
 /* Mobile: stacked, full width. Section 12 turns this back into a row. */
@@ -1197,6 +1249,172 @@
 	.anchor-cmp-policy__scroll.anchor-cmp-policy__scroll,
 	.anchor-cmp-policy__table.anchor-cmp-policy__table th,
 	.anchor-cmp-policy__table.anchor-cmp-policy__table td {
+		border-color: currentColor;
+	}
+}
+
+/* ---- [anchor_privacy_request] DSAR form (class-dsar.php) ----
+ * Same guest posture as the placeholder and the policy tables: it renders
+ * inside post content, inherits the theme's typography and text color, and
+ * derives every surface from currentColor so it reads natively on light AND
+ * dark themes without a scheme hook. The brand tokens registered at :root by
+ * enqueue() supply only the radius (and the accent for focus, via the
+ * armor-level focus rule pattern); no brand color is projected into page
+ * content. */
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form {
+	display: block;
+	max-width: 34em;
+	margin-block: 1.5em;
+	color: inherit;
+	font: inherit;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form p {
+	margin: 0 0 1em;
+	padding: 0;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form label {
+	font-size: .875em;
+	font-weight: 600;
+	line-height: 1.4;
+	color: inherit;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="email"],
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="text"],
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form textarea {
+	box-sizing: border-box;
+	display: block;
+	width: 100%;
+	margin-block-start: .35em;
+	padding: .6em .75em;
+	font: inherit;
+	font-size: .9375em;
+	line-height: 1.4;
+	color: inherit;
+	background: color-mix(in srgb, currentColor 4%, transparent);
+	border: 1px solid color-mix(in srgb, currentColor 32%, transparent);
+	border-radius: calc(var(--acmp-radius, 12px) * .5);
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form textarea {
+	resize: vertical;
+	min-height: 6em;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form input:focus-visible,
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form textarea:focus-visible,
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form button:focus-visible {
+	outline: 2px solid var(--acmp-accent-deep, currentColor);
+	outline-offset: 2px;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form fieldset {
+	margin: 0 0 1em;
+	padding: .875em 1em 1em;
+	border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+	border-radius: var(--acmp-radius, 12px);
+	min-width: 0;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form legend {
+	padding: 0 .5em;
+	margin-inline-start: -.5em;
+	font-size: .875em;
+	font-weight: 600;
+	color: inherit;
+}
+
+/* The radio rows: the label wraps the input, so give the pair a touch-sized
+ * line and keep the radio's native rendering (a hand-drawn radio buys nothing
+ * here and costs forced-colors support). */
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form fieldset label {
+	display: inline-flex;
+	align-items: center;
+	gap: .5em;
+	min-height: 1.9em;
+	font-weight: 400;
+	font-size: .9375em;
+	cursor: pointer;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="radio"] {
+	margin: 0;
+	flex: none;
+	accent-color: var(--acmp-accent, currentColor);
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form button[type="submit"] {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: auto;
+	min-height: 44px;
+	margin: 0;
+	padding: .7em 1.5em;
+	font: inherit;
+	font-size: .9375em;
+	font-weight: 600;
+	line-height: 1.3;
+	text-transform: none !important;
+	text-decoration: none;
+	color: inherit;
+	background: color-mix(in srgb, currentColor 7%, transparent);
+	border: 1.5px solid color-mix(in srgb, currentColor 55%, transparent);
+	border-radius: calc(var(--acmp-radius, 12px) * .5);
+	box-shadow: none;
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+	touch-action: manipulation;
+	transition: background-color .15s ease, border-color .15s ease;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form button[type="submit"]:hover {
+	border-color: currentColor;
+	background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* Outcome notices printed above the form (and the module-disabled stub).
+ * Status is carried by the border hue only — text stays the theme's own
+ * color, so contrast never depends on an unmeasured pairing; the two hues
+ * read as border accents on light and dark grounds alike. */
+.anchor-cmp-dsar-notice.anchor-cmp-dsar-notice,
+.anchor-cmp-dsar-disabled.anchor-cmp-dsar-disabled {
+	display: block;
+	max-width: 34em;
+	margin-block: 1em;
+	padding: .7em 1em;
+	font-size: .9375em;
+	line-height: 1.5;
+	color: inherit;
+	background: color-mix(in srgb, currentColor 5%, transparent);
+	border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+	border-inline-start-width: 3px;
+	border-radius: calc(var(--acmp-radius, 12px) * .5);
+}
+
+.anchor-cmp-dsar-success.anchor-cmp-dsar-success {
+	border-inline-start-color: #2e7d32;
+}
+
+.anchor-cmp-dsar-error.anchor-cmp-dsar-error {
+	border-inline-start-color: #c0392b;
+}
+
+@supports not (color: color-mix(in srgb, #000 50%, #fff)) {
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="email"],
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="text"],
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form textarea,
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form fieldset,
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form button[type="submit"],
+	.anchor-cmp-dsar-notice.anchor-cmp-dsar-notice,
+	.anchor-cmp-dsar-disabled.anchor-cmp-dsar-disabled {
+		background: none;
 		border-color: currentColor;
 	}
 }

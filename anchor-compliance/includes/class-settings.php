@@ -9,6 +9,10 @@ class Anchor_Compliance_Settings {
 
 	const OPTION_GROUP = 'anchor_compliance_group';
 
+	/** Rolling audit trail of consent-log CSV exports (D028). */
+	const EXPORT_AUDIT_OPTION = 'anchor_compliance_export_audit';
+	const EXPORT_AUDIT_MAX    = 20;
+
 	public function __construct() {
 		add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 15 );
 		add_action( 'admin_init', [ $this, 'register_settings' ] );
@@ -33,6 +37,10 @@ class Anchor_Compliance_Settings {
 			'regions' => [
 				'strict_countries'  => self::default_strict_countries(),
 				'unknown_fallback'  => 'strict', // strict | optout
+				// Which proxy's geo/IP headers to believe: none | cloudflare | other.
+				// 'none' (default) trusts only REMOTE_ADDR and server-side GeoIP —
+				// every HTTP geo/IP header is client-forgeable otherwise.
+				'trusted_proxy'     => 'none',
 				'ip_api_provider'   => '',       // '' | ipinfo | ipapi
 				'ip_api_token'      => '',
 				'allow_client_relax' => true,
@@ -69,6 +77,7 @@ class Anchor_Compliance_Settings {
 				'gpc_message'       => __( 'Your Global Privacy Control signal has been honored.', 'anchor-schema' ),
 				'dns_confirmation'  => __( 'You have opted out of the sale or sharing of your personal information.', 'anchor-schema' ),
 				'placeholder_text'  => __( 'This content is blocked until you accept the related cookies.', 'anchor-schema' ),
+				'save_error'        => __( 'Your choice was applied to this page, but could not be saved — your browser appears to be blocking cookies, so you may be asked again.', 'anchor-schema' ),
 				'placeholder_button' => __( 'Accept & Load', 'anchor-schema' ),
 			],
 			'services'     => [], // service_key => [ 'enabled' => bool, 'category' => string ]
@@ -162,7 +171,18 @@ class Anchor_Compliance_Settings {
 
 		// --- regions ---
 		$r = isset( $input['regions'] ) ? (array) $input['regions'] : [];
-		$countries = (array) ( $r['strict_countries'] ?? $d['regions']['strict_countries'] );
+		// D008: a multi-select with nothing selected submits no strict_countries
+		// key at all. The hidden strict_countries_present sentinel (rendered
+		// beside the select) distinguishes "admin deselected everything" (an
+		// intentionally empty list) from "regions section absent" (programmatic
+		// partial write — keep the defaults).
+		if ( isset( $r['strict_countries'] ) ) {
+			$countries = (array) $r['strict_countries'];
+		} elseif ( ! empty( $r['strict_countries_present'] ) ) {
+			$countries = [];
+		} else {
+			$countries = $d['regions']['strict_countries'];
+		}
 		$out['regions']['strict_countries'] = array_values( array_unique( array_filter( array_map(
 			static function ( $c ) {
 				$c = strtoupper( sanitize_text_field( (string) $c ) );
@@ -172,6 +192,8 @@ class Anchor_Compliance_Settings {
 		) ) ) );
 		$unknown_fallback = $r['unknown_fallback'] ?? '';
 		$out['regions']['unknown_fallback']   = in_array( $unknown_fallback, [ 'strict', 'optout' ], true ) ? $unknown_fallback : 'strict';
+		$trusted_proxy = $r['trusted_proxy'] ?? 'none';
+		$out['regions']['trusted_proxy']      = in_array( $trusted_proxy, [ 'none', 'cloudflare', 'other' ], true ) ? $trusted_proxy : 'none';
 		$ip_api_provider = $r['ip_api_provider'] ?? '';
 		$out['regions']['ip_api_provider']    = in_array( $ip_api_provider, [ '', 'ipinfo', 'ipapi' ], true ) ? $ip_api_provider : '';
 		$out['regions']['ip_api_token']       = sanitize_text_field( (string) ( $r['ip_api_token'] ?? '' ) );
@@ -209,10 +231,18 @@ class Anchor_Compliance_Settings {
 			'placeholder_text',
 			'placeholder_button',
 		];
+		// D024: blank is a value. A field the admin deliberately emptied stays
+		// empty (renders nothing); only a key that never arrived at all — a
+		// programmatic partial write — falls back to the shipped default. The
+		// "Reset to default" affordance in the UI is how defaults come back.
 		foreach ( $d['content'] as $k => $default ) {
-			$val = isset( $c[ $k ] ) ? (string) $c[ $k ] : '';
-			if ( '' === trim( $val ) ) {
+			if ( ! isset( $c[ $k ] ) ) {
 				$out['content'][ $k ] = $default;
+				continue;
+			}
+			$val = (string) $c[ $k ];
+			if ( '' === trim( $val ) ) {
+				$out['content'][ $k ] = '';
 				continue;
 			}
 			$out['content'][ $k ] = in_array( $k, $plain_text_content_keys, true )
@@ -244,6 +274,10 @@ class Anchor_Compliance_Settings {
 					'sanitize_text_field',
 					preg_split( '/[\s,]+/', (string) ( $rule['cookie_patterns'] ?? '' ) ) ?: []
 				) ) ),
+				// B009: optional disclosure copy for the [anchor_cookie_policy]
+				// table; blank falls back to an em dash there.
+				'purpose'         => sanitize_text_field( (string) ( $rule['purpose'] ?? '' ) ),
+				'duration'        => sanitize_text_field( (string) ( $rule['duration'] ?? '' ) ),
 			];
 		}
 
@@ -286,16 +320,43 @@ class Anchor_Compliance_Settings {
 
 	/**
 	 * Enqueue admin assets. Loaded only on this tab, via the
-	 * anchor_settings_enqueue_compliance action.
+	 * anchor_settings_enqueue_compliance action (fired by
+	 * Anchor_Settings_Page::maybe_enqueue_tab_assets for the active tab only).
+	 *
+	 * Asset URLs go through Anchor_Asset_Loader (matching the banner's
+	 * front-end enqueue) so a release ZIP serves the CI-built .min variants
+	 * while a git checkout falls back to the committed sources.
 	 */
 	public function enqueue_assets() {
 		wp_enqueue_style( 'wp-color-picker' );
 		wp_enqueue_media();
 
-		$base = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-compliance/assets/';
+		$css = 'anchor-compliance/assets/admin.css';
+		$js  = 'anchor-compliance/assets/admin.js';
 
-		wp_enqueue_style( 'anchor-compliance-admin', $base . 'admin.css', [ 'wp-color-picker' ], Anchor_Compliance_Module::VERSION );
-		wp_enqueue_script( 'anchor-compliance-admin', $base . 'admin.js', [ 'jquery', 'wp-color-picker' ], Anchor_Compliance_Module::VERSION, true );
+		wp_enqueue_style( 'anchor-compliance-admin', Anchor_Asset_Loader::url( $css ), [ 'wp-color-picker' ], $this->asset_version( $css ) );
+		wp_enqueue_script( 'anchor-compliance-admin', Anchor_Asset_Loader::url( $js ), [ 'jquery', 'wp-color-picker' ], $this->asset_version( $js ), true );
+
+		// D025: the media-frame strings admin.js needs, translated like every
+		// other string instead of hardcoded English in the JS.
+		wp_localize_script( 'anchor-compliance-admin', 'AnchorCmpAdminL10n', [
+			'selectLogo' => __( 'Select Logo', 'anchor-schema' ),
+			'useLogo'    => __( 'Use this logo', 'anchor-schema' ),
+		] );
+	}
+
+	/**
+	 * Cache-busting version for an asset: the mtime of the variant the Asset
+	 * Loader will actually serve — same mechanism as the banner's front-end
+	 * enqueue. Falls back to the module VERSION when the file can't be stat'd.
+	 *
+	 * @param string $relative Plugin-relative asset path.
+	 * @return string
+	 */
+	private function asset_version( $relative ) {
+		$path  = Anchor_Asset_Loader::path( $relative );
+		$mtime = file_exists( $path ) ? filemtime( $path ) : false;
+		return $mtime ? (string) $mtime : Anchor_Compliance_Module::VERSION;
 	}
 
 	/**
@@ -308,7 +369,39 @@ class Anchor_Compliance_Settings {
 			wp_die( esc_html__( 'You do not have permission to export the consent log.', 'anchor-schema' ) );
 		}
 		check_admin_referer( 'anchor_cmp_export_log' );
-		( new Anchor_Compliance_Consent_Log() )->export_csv();
+
+		$log = new Anchor_Compliance_Consent_Log();
+		// D028: bulk PII egress leaves a trace. Recorded before streaming
+		// because export_csv() exits.
+		$this->record_export_audit( $log->count() );
+		$log->export_csv();
+	}
+
+	/**
+	 * D028: one audit entry per consent-log export — who, when, how many rows —
+	 * kept as a rolling option (last EXPORT_AUDIT_MAX exports, autoload off).
+	 * Anchor_Schema_Logger only writes when its debug flag is on, so it is a
+	 * best-effort echo, not the record.
+	 *
+	 * @param int $row_count Rows in the log at export time.
+	 */
+	public function record_export_audit( $row_count ) {
+		$user  = wp_get_current_user();
+		$audit = (array) get_option( self::EXPORT_AUDIT_OPTION, [] );
+
+		$audit[] = [
+			'user_id'    => (int) $user->ID,
+			'user_login' => (string) $user->user_login,
+			'time'       => time(),
+			'rows'       => (int) $row_count,
+		];
+		$audit = array_slice( $audit, - self::EXPORT_AUDIT_MAX );
+
+		update_option( self::EXPORT_AUDIT_OPTION, $audit, false );
+
+		if ( class_exists( 'Anchor_Schema_Logger' ) ) {
+			Anchor_Schema_Logger::log( 'compliance_consent_log_export', [ 'rows' => (int) $row_count ] );
+		}
 	}
 
 	/* ---------------------------------------------------------------------
@@ -335,6 +428,14 @@ class Anchor_Compliance_Settings {
 
 		$opt = Anchor_Compliance_Module::OPTION_KEY;
 		$s   = self::get();
+
+		// F011: with the pill off, a visitor who has already decided has no
+		// built-in way back into the preference center — keep reminding until
+		// either the pill returns or the shortcode is placed. Never blocks
+		// saving.
+		if ( empty( $s['appearance']['show_pill'] ) ) {
+			echo $this->pill_disabled_warning(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- pre-escaped markup.
+		}
 
 		echo '<form method="post" action="' . esc_url( admin_url( 'options.php' ) ) . '">';
 		settings_fields( self::OPTION_GROUP );
@@ -449,6 +550,11 @@ class Anchor_Compliance_Settings {
 					<strong><?php esc_html_e( 'No geo header detected', 'anchor-schema' ); ?></strong>
 					&#8212; <?php esc_html_e( 'falling back to your Unknown-region setting; the client-side timezone check will still relax for non-EU visitors.', 'anchor-schema' ); ?>
 				</p>
+				<?php if ( $this->has_untrusted_geo_header( $r ) ) : ?>
+					<p class="description">
+						<?php esc_html_e( 'A geo header IS present on this request, but it is being ignored because it does not come from your configured Trusted proxy below — select the proxy actually in front of this site to start honoring it.', 'anchor-schema' ); ?>
+					</p>
+				<?php endif; ?>
 				<p class="description">
 					<?php esc_html_e( 'This usually means your host or CDN is not sending a geo header. On Kinsta, Cloudflare\'s CF-IPCountry header is only added by a "managed transform" that lives in Kinsta\'s own Cloudflare account, not your site\'s wp-admin — ask Kinsta support to enable it if you want automatic region detection.', 'anchor-schema' ); ?>
 				</p>
@@ -468,11 +574,42 @@ class Anchor_Compliance_Settings {
 
 		<table class="form-table" role="presentation">
 			<tr>
+				<th scope="row"><label for="anchor_cmp_trusted_proxy"><?php esc_html_e( 'Trusted proxy', 'anchor-schema' ); ?></label></th>
+				<td>
+					<select id="anchor_cmp_trusted_proxy" name="<?php echo esc_attr( $opt ); ?>[regions][trusted_proxy]">
+						<?php
+						foreach ( [
+							'none'       => __( 'None — no proxy in front of this site (ignore all geo/IP headers)', 'anchor-schema' ),
+							'cloudflare' => __( 'Cloudflare — trust CF-IPCountry and CF-Connecting-IP', 'anchor-schema' ),
+							'other'      => __( 'Other reverse proxy / CDN — trust X-Real-IP, X-Forwarded-For, and CloudFront / Vercel / X-Geo-Country headers', 'anchor-schema' ),
+						] as $value => $label ) :
+							?>
+							<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $r['trusted_proxy'], $value ); ?>><?php echo esc_html( $label ); ?></option>
+						<?php endforeach; ?>
+					</select>
+					<p class="description"><?php esc_html_e( 'Geo and visitor-IP headers can be forged by any visitor unless a proxy you control overwrites them in transit. Select the proxy actually in front of this site; headers from any other source are ignored. Server-side GeoIP (GEOIP_COUNTRY_CODE) is always trusted — it is set by your own server, not the client.', 'anchor-schema' ); ?></p>
+				</td>
+			</tr>
+			<tr>
 				<th scope="row"><?php esc_html_e( 'Strict-consent countries', 'anchor-schema' ); ?></th>
 				<td>
+					<?php
+					// D008: lets sanitize() distinguish "deselected everything"
+					// (empty submitted list) from "regions section never sent".
+					?>
+					<input type="hidden" name="<?php echo esc_attr( $opt ); ?>[regions][strict_countries_present]" value="1" />
 					<select multiple="multiple" size="10" class="anchor-cmp-country-select" name="<?php echo esc_attr( $opt ); ?>[regions][strict_countries][]">
-						<?php foreach ( self::default_strict_countries() as $code ) : ?>
-							<option value="<?php echo esc_attr( $code ); ?>" <?php echo in_array( $code, (array) $r['strict_countries'], true ) ? 'selected="selected"' : ''; ?>><?php echo esc_html( $code ); ?></option>
+						<?php
+						// D007: render the union of the shipped defaults and
+						// whatever is currently stored, so a code added via
+						// code/filter (or a former default) renders selected
+						// instead of silently dropping on the next save.
+						$stored_codes = (array) $r['strict_countries'];
+						$extra_codes  = array_diff( $stored_codes, self::default_strict_countries() );
+						sort( $extra_codes );
+						foreach ( array_merge( self::default_strict_countries(), $extra_codes ) as $code ) :
+							?>
+							<option value="<?php echo esc_attr( $code ); ?>" <?php echo in_array( $code, $stored_codes, true ) ? 'selected="selected"' : ''; ?>><?php echo esc_html( $code ); ?></option>
 						<?php endforeach; ?>
 					</select>
 					<p class="description"><?php esc_html_e( 'Visitors from a selected country must opt in before non-essential cookies load.', 'anchor-schema' ); ?></p>
@@ -503,7 +640,7 @@ class Anchor_Compliance_Settings {
 						<?php endforeach; ?>
 					</select>
 					<input type="text" class="regular-text" name="<?php echo esc_attr( $opt ); ?>[regions][ip_api_token]" value="<?php echo esc_attr( $r['ip_api_token'] ); ?>" placeholder="<?php esc_attr_e( 'API token', 'anchor-schema' ); ?>" />
-					<p class="description"><?php esc_html_e( 'Optional Tier-2 lookup, used only when no geo header is present. Cached per /24 (or /64) block.', 'anchor-schema' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Optional Tier-2 lookup, used only when no geo header is present. Cached per /24 (or /64) block. Note: this sends the visitor\'s IP address to the selected provider before any consent is given — that is itself a disclosure of personal data to a third-party processor, and your privacy policy must cover it.', 'anchor-schema' ); ?></p>
 				</td>
 			</tr>
 			<tr>
@@ -517,6 +654,25 @@ class Anchor_Compliance_Settings {
 			</tr>
 		</table>
 		<?php
+	}
+
+	/**
+	 * Whether this request carries a geo header that the current
+	 * regions.trusted_proxy mode refuses to honor — surfaced in the geo
+	 * readout so an admin on e.g. Cloudflare understands why "no geo header
+	 * detected" appears until they declare the proxy trusted.
+	 *
+	 * @param array $r The regions settings section.
+	 * @return bool
+	 */
+	private function has_untrusted_geo_header( array $r ) {
+		$trusted = Anchor_Compliance_Geo::trusted_labels( (string) ( $r['trusted_proxy'] ?? 'none' ) );
+		foreach ( Anchor_Compliance_Geo::HEADERS as $header => $label ) {
+			if ( ! empty( $_SERVER[ $header ] ) && ! in_array( $label, $trusted, true ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** @return string Human-readable name for a Anchor_Compliance_Geo::source() value. */
@@ -629,10 +785,29 @@ class Anchor_Compliance_Settings {
 							<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $a['pill_position'], $value ); ?>><?php echo esc_html( ucwords( str_replace( '-', ' ', $value ) ) ); ?></option>
 						<?php endforeach; ?>
 					</select>
+					<?php if ( empty( $a['show_pill'] ) ) : ?>
+						<?php echo $this->pill_disabled_warning(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- pre-escaped markup. ?>
+					<?php endif; ?>
 				</td>
 			</tr>
 		</table>
 		<?php
+	}
+
+	/**
+	 * F011: the warning shown (at the top of the tab and next to the pill
+	 * toggle) whenever the consent pill is disabled — without the pill, a
+	 * decided visitor's only re-entry into the preference center is the
+	 * [anchor_consent_link] shortcode, which the admin must place manually.
+	 *
+	 * @return string Pre-escaped markup.
+	 */
+	private function pill_disabled_warning() {
+		return '<div class="notice notice-warning inline anchor-cmp-pill-warning"><p>' . sprintf(
+			/* translators: %s: the [anchor_consent_link] shortcode. */
+			esc_html__( 'The consent pill is disabled. Visitors who have already made a choice will have NO way to reopen the preference center unless you place the %s shortcode somewhere every visitor can reach (for example the footer or your privacy policy page). Saving is not blocked — but do not leave the site without one of the two.', 'anchor-schema' ),
+			'<code>[anchor_consent_link]</code>'
+		) . '</p></div>';
 	}
 
 	/* --- Content ---------------------------------------------------------- */
@@ -643,6 +818,7 @@ class Anchor_Compliance_Settings {
 		$textarea_keys = [ 'body', 'notice_body' ];
 		?>
 		<h2><?php esc_html_e( 'Content', 'anchor-schema' ); ?></h2>
+		<p class="description"><?php esc_html_e( 'Blank is a value: a field you empty renders nothing. The grey placeholder shows the shipped default; "Reset to default" copies it back into the field.', 'anchor-schema' ); ?></p>
 		<table class="form-table" role="presentation">
 			<?php foreach ( $d as $key => $default ) : ?>
 				<?php
@@ -658,6 +834,7 @@ class Anchor_Compliance_Settings {
 						<?php else : ?>
 							<input type="text" id="<?php echo esc_attr( $field_id ); ?>" class="regular-text" name="<?php echo esc_attr( $opt ); ?>[content][<?php echo esc_attr( $key ); ?>]" value="<?php echo esc_attr( $value ); ?>" placeholder="<?php echo esc_attr( $default ); ?>" />
 						<?php endif; ?>
+						<button type="button" class="button-link anchor-cmp-content-reset" data-target="<?php echo esc_attr( $field_id ); ?>"><?php esc_html_e( 'Reset to default', 'anchor-schema' ); ?></button>
 					</td>
 				</tr>
 			<?php endforeach; ?>
@@ -729,7 +906,7 @@ class Anchor_Compliance_Settings {
 	 * @return string Pre-escaped row markup.
 	 */
 	private function custom_rule_row_markup( $opt, $index, array $rule ) {
-		$rule = array_merge( [ 'label' => '', 'url_pattern' => '', 'category' => 'marketing', 'cookie_patterns' => [] ], $rule );
+		$rule = array_merge( [ 'label' => '', 'url_pattern' => '', 'category' => 'marketing', 'cookie_patterns' => [], 'purpose' => '', 'duration' => '' ], $rule );
 		$name = esc_attr( $opt ) . '[custom_rules][' . esc_attr( $index ) . ']';
 
 		ob_start();
@@ -743,6 +920,8 @@ class Anchor_Compliance_Settings {
 				<?php endforeach; ?>
 			</select>
 			<input type="text" class="regular-text" name="<?php echo $name; ?>[cookie_patterns]" value="<?php echo esc_attr( implode( ', ', (array) $rule['cookie_patterns'] ) ); ?>" placeholder="<?php esc_attr_e( 'Cookie name patterns, comma separated', 'anchor-schema' ); ?>" />
+			<input type="text" class="regular-text" name="<?php echo $name; ?>[purpose]" value="<?php echo esc_attr( $rule['purpose'] ); ?>" placeholder="<?php esc_attr_e( 'Purpose (shown in the cookie policy table)', 'anchor-schema' ); ?>" />
+			<input type="text" class="regular-text" name="<?php echo $name; ?>[duration]" value="<?php echo esc_attr( $rule['duration'] ); ?>" placeholder="<?php esc_attr_e( 'Duration, e.g. 1 year', 'anchor-schema' ); ?>" />
 			<button type="button" class="button anchor-cmp-rule-remove"><?php esc_html_e( 'Remove', 'anchor-schema' ); ?></button>
 		</div>
 		<?php

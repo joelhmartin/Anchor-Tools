@@ -40,6 +40,8 @@ class Test_Compliance_Consent_Mode extends WP_UnitTestCase {
 	}
 
 	public function test_optout_region_grants_by_default() {
+		// D009 (Wave B): geo headers are only honored under a declared trusted proxy.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ], false );
 		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
 		$payload = $this->mode()->defaults_payload();
 		$this->assertSame( 'granted', $payload['ad_storage'] );
@@ -47,6 +49,8 @@ class Test_Compliance_Consent_Mode extends WP_UnitTestCase {
 	}
 
 	public function test_gpc_denies_ads_and_analytics_even_in_us() {
+		// D009 (Wave B): geo headers are only honored under a declared trusted proxy.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ], false );
 		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
 		$_SERVER['HTTP_SEC_GPC']      = '1';
 		$payload = $this->mode()->defaults_payload();

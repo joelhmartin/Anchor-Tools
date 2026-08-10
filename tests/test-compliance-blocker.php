@@ -149,6 +149,8 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 	}
 
 	public function test_optout_region_blocks_nothing_by_default() {
+		// D009 (Wave B): geo headers are only honored under a declared trusted proxy.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ], false );
 		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
 		$html = '<script src="https://connect.facebook.net/en_US/fbevents.js"></script>';
 		$this->assertSame( $html, $this->blocker()->rewrite( $html ) );

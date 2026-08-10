@@ -416,10 +416,13 @@ class Anchor_Compliance_Service_Registry {
 		// on withdrawal, so leaving them out here made [anchor_cookie_policy]
 		// under-disclose exactly the site-specific trackers the admin
 		// bothered to register — what the module deletes it must also
-		// disclose. The repeater stores only a label and cookie names, so
-		// provider is the rule's label and purpose/duration are an em dash.
+		// disclose. Provider is the rule's label; the repeater's optional
+		// purpose/duration fields flow through when filled, an em dash when
+		// blank (or for rules saved before the fields existed).
 		foreach ( (array) Anchor_Compliance_Settings::get()['custom_rules'] as $rule ) {
 			$category = Anchor_Compliance_Settings::sanitize_category( $rule['category'] ?? 'marketing' );
+			$purpose  = trim( (string) ( $rule['purpose'] ?? '' ) );
+			$duration = trim( (string) ( $rule['duration'] ?? '' ) );
 			foreach ( (array) ( $rule['cookie_patterns'] ?? [] ) as $name ) {
 				$name = trim( (string) $name );
 				if ( '' === $name ) {
@@ -428,8 +431,8 @@ class Anchor_Compliance_Service_Registry {
 				$out[ $category ][] = [
 					'name'     => $name,
 					'provider' => (string) ( $rule['label'] ?? '' ),
-					'purpose'  => '—',
-					'duration' => '—',
+					'purpose'  => '' !== $purpose ? $purpose : '—',
+					'duration' => '' !== $duration ? $duration : '—',
 				];
 			}
 		}

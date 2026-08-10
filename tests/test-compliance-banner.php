@@ -32,6 +32,8 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 	}
 
 	public function test_payload_reports_optout_posture_for_us() {
+		// D009 (Wave B): geo headers are only honored under a declared trusted proxy.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ], false );
 		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
 		$p = $this->banner()->payload();
 		$this->assertSame( 'optout', $p['posture'] );
@@ -251,6 +253,8 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 	 * the banner is a passive notice, only the prefs dialog stays modal (1).
 	 */
 	public function test_banner_aria_modal_only_in_strict_posture() {
+		// D009 (Wave B): geo headers are only honored under a declared trusted proxy.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ], false );
 		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'DE';
 		ob_start();
 		$this->banner()->render();
@@ -332,6 +336,7 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 			[
 				'notice_body', 'dns_label', 'saved_message', 'unblocked_message',
 				'gpc_message', 'dns_confirmation', 'placeholder_text', 'placeholder_button',
+				'save_error',
 			],
 			array_keys( $p['i18n'] )
 		);
@@ -361,6 +366,8 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 	 * strict posture — but a consented opt-out visitor stays cacheable.
 	 */
 	public function test_no_store_decision_matrix() {
+		// D009 (Wave B): geo headers are only honored under a declared trusted proxy.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ], false );
 		$cookie = Anchor_Compliance_Consent_State::encode( [
 			'id' => 'c0ffee00-0000-4000-8000-000000000000', 'ts' => time(), 'v' => 1, 'cats' => [ 'analytics' ],
 		] );
@@ -398,5 +405,84 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 
 		$this->assertFalse( wp_script_is( 'anchor-compliance', 'registered' ) );
 		$this->assertFalse( wp_style_is( 'anchor-compliance', 'registered' ) );
+	}
+
+	/* -----------------------------------------------------------------
+	 * Wave B additions (Fix-6). [C014] + [F017].
+	 * ----------------------------------------------------------------- */
+
+	/** [C014] Mirror of the [anchor_do_not_sell] coverage above. */
+	public function test_consent_link_shortcode_renders_a_button() {
+		$out = do_shortcode( '[anchor_consent_link]' );
+		$this->assertStringContainsString( 'data-anchor-action="open-preferences"', $out );
+		$this->assertStringContainsString( 'anchor-cmp-link', $out );
+		$this->assertStringContainsString( 'Cookie Preferences', $out );
+		$this->assertStringContainsString( '<button type="button"', $out, 'Must be a button, not a dead <a> — it opens a panel, it does not navigate.' );
+	}
+
+	/** [C014] The text attribute overrides the default label (escaped). */
+	public function test_consent_link_shortcode_accepts_custom_text() {
+		$out = do_shortcode( '[anchor_consent_link text="Manage <b>cookies</b>"]' );
+		$this->assertStringContainsString( 'Manage', $out );
+		$this->assertStringNotContainsString( '<b>', $out, 'Custom text must be esc_html()d.' );
+	}
+
+	/** [C014] Like every other public surface, it vanishes with the module off. */
+	public function test_consent_link_shortcode_is_empty_when_module_disabled() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'general' => [ 'enabled' => false ] ], false );
+		$this->assertSame( '', do_shortcode( '[anchor_consent_link]' ) );
+	}
+
+	/** [F017] The honored-GPC notice renders only when the signal was seen. */
+	public function test_render_shows_gpc_notice_when_signal_present() {
+		$_SERVER['HTTP_SEC_GPC'] = '1';
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( 'anchor-cmp-gpc-notice', $html );
+		$this->assertStringContainsString( 'Global Privacy Control signal has been honored', $html );
+	}
+
+	public function test_render_has_no_gpc_notice_without_the_signal() {
+		ob_start();
+		$this->banner()->render();
+		$this->assertStringNotContainsString( 'anchor-cmp-gpc-notice', ob_get_clean() );
+	}
+
+	/** [F017] Footer links render only for configured URLs, with their labels. */
+	public function test_render_footer_links_only_for_configured_urls() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'general' => [
+				'privacy_policy_url' => 'https://example.test/privacy/',
+				'cookie_policy_url'  => 'https://example.test/cookies/',
+				'terms_url'          => '',
+			],
+		], false );
+
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( 'anchor-cmp-footer-links', $html );
+		$this->assertStringContainsString( 'href="https://example.test/privacy/"', $html );
+		$this->assertStringContainsString( '>Privacy Policy</a>', $html );
+		$this->assertStringContainsString( 'href="https://example.test/cookies/"', $html );
+		$this->assertStringContainsString( '>Cookie Policy</a>', $html );
+		$this->assertStringNotContainsString( '>Terms</a>', $html, 'An empty URL must not render a dead link.' );
+	}
+
+	public function test_render_omits_footer_links_block_when_no_urls_configured() {
+		ob_start();
+		$this->banner()->render();
+		$this->assertStringNotContainsString( 'anchor-cmp-footer-links', ob_get_clean() );
+	}
+
+	/** [F017] show_pill=false must suppress the re-entry pill entirely. */
+	public function test_render_omits_pill_when_show_pill_disabled() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'appearance' => [ 'show_pill' => false ] ], false );
+		ob_start();
+		$this->banner()->render();
+		$this->assertStringNotContainsString( 'anchor-cmp-pill', ob_get_clean() );
 	}
 }

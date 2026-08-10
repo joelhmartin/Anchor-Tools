@@ -199,6 +199,43 @@ class Test_Compliance_Registry extends WP_UnitTestCase {
 		$this->assertCount( 1, array_keys( $names, '_acme*', true ), 'Exactly one row per custom cookie pattern.' );
 	}
 
+	/**
+	 * B009 follow-up (Wave B): the repeater now stores optional purpose and
+	 * duration fields; when present they must reach the disclosure table —
+	 * the em dash (pinned above) remains only the blank fallback.
+	 */
+	public function test_custom_rule_purpose_and_duration_flow_into_the_disclosure_rows() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'custom_rules' => [
+				[
+					'label'           => 'Acme',
+					'url_pattern'     => 'acme-tracker.com',
+					'category'        => 'analytics',
+					'cookie_patterns' => [ '_acme*' ],
+					'purpose'         => 'Session heatmaps.',
+					'duration'        => '1 year',
+				],
+				[
+					'label'           => 'Beta',
+					'url_pattern'     => 'beta-tracker.com',
+					'category'        => 'analytics',
+					'cookie_patterns' => [ '_beta*' ],
+					'purpose'         => '   ', // whitespace-only stays an em dash
+				],
+			],
+		], false );
+
+		$rows  = [];
+		foreach ( $this->reg()->cookies_by_category()['analytics'] as $row ) {
+			$rows[ $row['name'] ] = $row;
+		}
+
+		$this->assertSame( 'Session heatmaps.', $rows['_acme*']['purpose'] );
+		$this->assertSame( '1 year', $rows['_acme*']['duration'] );
+		$this->assertSame( '—', $rows['_beta*']['purpose'], 'Blank/whitespace purpose keeps the em-dash fallback.' );
+		$this->assertSame( '—', $rows['_beta*']['duration'], 'A rule saved before the field existed keeps the em-dash fallback.' );
+	}
+
 	/** Every consumer indexes four fixed keys per row; pin the shape directly (B017). */
 	public function test_cookies_by_category_shape() {
 		$out = $this->reg()->cookies_by_category();

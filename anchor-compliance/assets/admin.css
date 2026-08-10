@@ -79,6 +79,15 @@
 	display: none;
 }
 
+.anchor-cmp-pill-warning {
+	margin: 8px 0;
+}
+
+.anchor-cmp-content-reset {
+	margin-left: 8px;
+	vertical-align: middle;
+}
+
 .anchor-cmp-log-filter-form,
 .anchor-cmp-log-export-form {
 	display: inline-block;

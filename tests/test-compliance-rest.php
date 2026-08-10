@@ -47,6 +47,8 @@ class Test_Compliance_Rest extends WP_UnitTestCase {
 	}
 
 	public function test_valid_post_records_consent() {
+		// D009 (Wave B): geo headers are only honored under a declared trusted proxy.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ], false );
 		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
 		$res = $this->post( [
 			'consent_id' => '11111111-0000-4000-8000-000000000000',

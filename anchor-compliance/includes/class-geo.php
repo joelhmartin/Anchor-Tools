@@ -2,7 +2,9 @@
 /**
  * Anchor Compliance — geo ladder.
  *
- * Tier 1 (here): edge headers, free and instant.
+ * Tier 1 (here): edge headers, free and instant — but only the headers the
+ *        configured regions.trusted_proxy actually produces (see TRUST_MODES);
+ *        anything else is client-forgeable and ignored.
  * Tier 2 (here): an optional IP API, cached per /24 block.
  * Tier 3 (assets/frontend.js): client-side timezone, which may only relax
  *        strict -> optout, never the reverse.
@@ -29,6 +31,32 @@ class Anchor_Compliance_Geo {
 		'HTTP_X_GEO_COUNTRY'               => 'xgeo',
 	];
 
+	/**
+	 * Which geo-header sources each regions.trusted_proxy mode honors.
+	 *
+	 * Any HTTP_* entry in HEADERS is client-forgeable unless a proxy the site
+	 * owner controls overwrites it in transit, so a header is only consulted
+	 * when the admin has declared the proxy that produces it (D009).
+	 *
+	 * 'geoip' (GEOIP_COUNTRY_CODE) is not an HTTP header at all — it is a
+	 * server environment variable set by mod_geoip / ngx_http_geoip on the
+	 * host itself. PHP maps client-sent headers into $_SERVER under an HTTP_
+	 * prefix, so a visitor cannot inject it; it is trusted in every mode.
+	 */
+	const TRUST_MODES = [
+		'none'       => [ 'geoip' ],
+		'cloudflare' => [ 'cf', 'geoip' ],
+		'other'      => [ 'cloudfront', 'vercel', 'geoip', 'xgeo' ],
+	];
+
+	/**
+	 * @param string $mode A regions.trusted_proxy value.
+	 * @return string[] The HEADERS labels honored under that mode.
+	 */
+	public static function trusted_labels( $mode ) {
+		return isset( self::TRUST_MODES[ $mode ] ) ? self::TRUST_MODES[ $mode ] : self::TRUST_MODES['none'];
+	}
+
 	/** Placeholders that are syntactically valid but mean "unknown". */
 	const NON_COUNTRIES = [ 'XX', 'T1', 'ZZ', 'A1', 'A2', 'EU', 'AP' ];
 
@@ -37,6 +65,13 @@ class Anchor_Compliance_Geo {
 
 	private function opts() {
 		return Anchor_Compliance_Settings::get();
+	}
+
+	/** @return string 'none' | 'cloudflare' | 'other' */
+	private function trusted_proxy() {
+		$regions = $this->opts()['regions'];
+		$mode    = isset( $regions['trusted_proxy'] ) ? (string) $regions['trusted_proxy'] : 'none';
+		return isset( self::TRUST_MODES[ $mode ] ) ? $mode : 'none';
 	}
 
 	/**
@@ -57,7 +92,14 @@ class Anchor_Compliance_Geo {
 
 		$this->country = null;
 
+		$trusted = self::trusted_labels( $this->trusted_proxy() );
+
 		foreach ( self::HEADERS as $header => $label ) {
+			// A geo header is only believed when the configured trusted proxy
+			// is the thing that sets it — anything else is client-forgeable.
+			if ( ! in_array( $label, $trusted, true ) ) {
+				continue;
+			}
 			if ( empty( $_SERVER[ $header ] ) ) {
 				continue;
 			}
@@ -140,7 +182,20 @@ class Anchor_Compliance_Geo {
 	}
 
 	private function client_ip() {
-		foreach ( [ 'HTTP_CF_CONNECTING_IP', 'HTTP_X_REAL_IP', 'REMOTE_ADDR' ] as $key ) {
+		$mode = $this->trusted_proxy();
+
+		// Client-IP headers are only honored when the proxy that sets them is
+		// the one the admin declared trusted (D010) — a spoofed
+		// CF-Connecting-IP / X-Real-IP must never drive metered Tier-2
+		// lookups or mint fresh per-/24 cache entries.
+		$candidates = [ 'REMOTE_ADDR' ];
+		if ( 'cloudflare' === $mode ) {
+			$candidates = [ 'HTTP_CF_CONNECTING_IP', 'REMOTE_ADDR' ];
+		} elseif ( 'other' === $mode ) {
+			$candidates = [ 'HTTP_X_REAL_IP', 'REMOTE_ADDR' ];
+		}
+
+		foreach ( $candidates as $key ) {
 			if ( empty( $_SERVER[ $key ] ) ) {
 				continue;
 			}
@@ -149,8 +204,9 @@ class Anchor_Compliance_Geo {
 				return $ip;
 			}
 		}
-		// X-Forwarded-For may be a list; take the first valid entry.
-		if ( ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
+		// X-Forwarded-For may be a list; take the first valid entry. Only a
+		// declared reverse proxy makes this header meaningful.
+		if ( 'other' === $mode && ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
 			foreach ( explode( ',', (string) wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) as $candidate ) {
 				$candidate = trim( $candidate );
 				if ( filter_var( $candidate, FILTER_VALIDATE_IP ) ) {

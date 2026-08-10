@@ -192,9 +192,13 @@ class Test_Compliance_Snippets_Bridge extends WP_UnitTestCase {
 	}
 
 	public function test_inline_output_matches_the_script_blocker_byte_for_byte() {
+		// The pattern is function-call-shaped ('...Marker(') so B011's
+		// contexts axis files it as an inline rule — a plain 'parityTestMarker'
+		// would now (correctly) be a URL rule the blocker never matches
+		// against inline bodies.
 		update_option( Anchor_Compliance_Module::OPTION_KEY, [
 			'custom_rules' => [
-				[ 'label' => 'Parity Inline', 'url_pattern' => 'parityTestMarker', 'category' => 'marketing', 'cookie_patterns' => [] ],
+				[ 'label' => 'Parity Inline', 'url_pattern' => 'parityTestMarker(', 'category' => 'marketing', 'cookie_patterns' => [] ],
 			],
 		], false );
 
@@ -206,6 +210,92 @@ class Test_Compliance_Snippets_Bridge extends WP_UnitTestCase {
 			$this->bridge()->filter_snippet_output( $html, $id ),
 			'An inline <script> must be neutralized identically by the blocker and the bridge.'
 		);
+	}
+
+	/* ─── B006: the rewrite patterns are the blocker's constants, not transcriptions ─── */
+
+	/**
+	 * PINS FIX B006. The behavioral parity tests above catch OUTPUT drift;
+	 * this pins the MECHANISM: the bridge must reference
+	 * Anchor_Compliance_Script_Blocker's pattern constants rather than carry
+	 * its own transcription of them (the helpers were centralized after a
+	 * drift bug — the patterns are the likeliest thing to be tuned next).
+	 */
+	public function test_bridge_source_references_the_blocker_pattern_constants() {
+		$src = file_get_contents( dirname( __DIR__ ) . '/anchor-compliance/includes/class-snippets-bridge.php' );
+
+		$this->assertStringContainsString( 'Anchor_Compliance_Script_Blocker::SRC_TAG_PATTERN_TEMPLATE', $src );
+		$this->assertStringContainsString( 'Anchor_Compliance_Script_Blocker::INLINE_SCRIPT_PATTERN', $src );
+		$this->assertStringNotContainsString( '(?<![\w:.-])src', $src, 'No transcribed copy of the src pattern may survive in the bridge.' );
+	}
+
+	/** The constants themselves must compose into working patterns. */
+	public function test_blocker_pattern_constants_are_valid_pcre() {
+		$this->assertSame( 1, preg_match( sprintf( Anchor_Compliance_Script_Blocker::SRC_TAG_PATTERN_TEMPLATE, 'script' ), '<script src="https://x.example/a.js">' ) );
+		$this->assertSame( 1, preg_match( sprintf( Anchor_Compliance_Script_Blocker::SRC_TAG_PATTERN_TEMPLATE, 'iframe' ), '<iframe src="https://x.example/e">' ) );
+		$this->assertSame( 1, preg_match( Anchor_Compliance_Script_Blocker::INLINE_SCRIPT_PATTERN, '<script>x();</script>' ) );
+	}
+
+	/* ─── B007: the DECLARED category gates everything the snippet outputs ─── */
+
+	/**
+	 * PINS FIX B007. The bridge used to rewrite <script> tags only, so a
+	 * marketing-declared snippet containing an iframe or img beacon from a
+	 * host the services registry does not know ran live pre-consent — the
+	 * page buffer only rescues embeds whose host it happens to recognize.
+	 */
+	public function test_unknown_host_iframe_in_a_gated_snippet_is_neutralized() {
+		$id  = $this->snippet( 'marketing' );
+		$out = $this->bridge()->filter_snippet_output( '<iframe src="https://unknown-vendor.example/widget" width="300"></iframe>', $id );
+
+		$this->assertStringNotContainsString( ' src="https://unknown-vendor.example/widget"', $out, 'The embed must not load pre-consent.' );
+		$this->assertStringContainsString( 'data-anchor-src="https://unknown-vendor.example/widget"', $out );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out );
+		$this->assertStringContainsString( 'anchor-cmp-placeholder', $out, 'A blocked iframe leaves a visible, actionable placeholder — same as the page buffer.' );
+		$this->assertStringContainsString( 'width="300"', $out, 'Other attributes must survive.' );
+	}
+
+	public function test_unknown_host_img_beacon_in_a_gated_snippet_is_neutralized() {
+		$id  = $this->snippet( 'marketing' );
+		$out = $this->bridge()->filter_snippet_output( '<img src="https://unknown-vendor.example/beacon.gif" height="1" width="1">', $id );
+
+		$this->assertStringNotContainsString( ' src="https://unknown-vendor.example/beacon.gif"', $out );
+		$this->assertStringContainsString( 'data-anchor-src="https://unknown-vendor.example/beacon.gif"', $out );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out );
+		$this->assertStringNotContainsString( 'anchor-cmp-placeholder', $out, 'A blocked img is placeholder-free.' );
+	}
+
+	/** The bridge's iframe output must be byte-identical to the page buffer's, like its script output already is. */
+	public function test_iframe_output_matches_the_script_blocker_byte_for_byte() {
+		$html = '<iframe src="https://www.youtube.com/embed/parity" width="560" style="width:100%"></iframe>';
+		$id   = $this->snippet( 'marketing' );
+
+		$this->assertSame(
+			$this->blocker()->rewrite( $html ),
+			$this->bridge()->filter_snippet_output( $html, $id ),
+			'An <iframe> must be neutralized identically by the blocker and the bridge.'
+		);
+	}
+
+	/** Inert script bodies get the blocker's own masking, so markup INSIDE them is never mistaken for a live tag. */
+	public function test_iframe_markup_inside_json_ld_is_not_neutralized() {
+		$id   = $this->snippet( 'marketing' );
+		$html = '<script type="application/ld+json">{"embedHtml":"<iframe src=\"https://x.example/e\"></iframe>"}</script>';
+
+		$this->assertSame(
+			$html,
+			$this->bridge()->filter_snippet_output( $html, $id ),
+			'A literal iframe string inside an inert script body is data, not a live tag.'
+		);
+	}
+
+	/** data:/about: URLs make no network request — gating them buys nothing and about:blank is the JS runtime's own skip. */
+	public function test_requestless_iframe_and_img_urls_are_left_alone() {
+		$id   = $this->snippet( 'marketing' );
+		$html = '<iframe src="about:blank" data-src="https://late.example/e"></iframe>'
+			. '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">';
+
+		$this->assertSame( $html, $this->bridge()->filter_snippet_output( $html, $id ) );
 	}
 
 	/* ─── save(): nonce / autosave / capability / sanitize_category routing ─── */
@@ -294,5 +384,41 @@ class Test_Compliance_Snippets_Bridge extends WP_UnitTestCase {
 			get_post_meta( $id, 'anchor_consent_category', true ),
 			'An unrecognized category must fall back to sanitize_category()\'s default (marketing), never store the raw value.'
 		);
+	}
+
+	/* ─── B013: save() must verify it is saving its own post type ─── */
+
+	/**
+	 * PINS FIX B013. save_post fires for EVERY post type; with the metabox
+	 * fields still in $_POST, saving any other post while they lingered
+	 * wrote the category meta onto that post too.
+	 */
+	public function test_save_bails_for_a_foreign_post_type() {
+		$this->admin();
+		$post_id = self::factory()->post->create( [ 'post_type' => 'post' ] );
+
+		$_POST[ Anchor_Compliance_Snippets_Bridge::NONCE ]    = wp_create_nonce( Anchor_Compliance_Snippets_Bridge::ACTION );
+		$_POST[ Anchor_Compliance_Snippets_Bridge::META_KEY ] = 'marketing';
+
+		$this->bridge()->save( $post_id );
+
+		$this->assertSame( '', get_post_meta( $post_id, 'anchor_consent_category', true ), 'save() must never write the category onto a non-snippet post.' );
+	}
+
+	/** A revision's post type is 'revision', so the same check covers wp_is_post_revision(). */
+	public function test_save_bails_for_a_revision() {
+		$this->admin();
+		$id = $this->snippet( 'necessary' );
+
+		wp_update_post( [ 'ID' => $id, 'post_title' => 'Updated title' ] );
+		$rev_id = _wp_put_post_revision( get_post( $id ) );
+		$this->assertNotWPError( $rev_id );
+
+		$_POST[ Anchor_Compliance_Snippets_Bridge::NONCE ]    = wp_create_nonce( Anchor_Compliance_Snippets_Bridge::ACTION );
+		$_POST[ Anchor_Compliance_Snippets_Bridge::META_KEY ] = 'marketing';
+
+		$this->bridge()->save( $rev_id );
+
+		$this->assertSame( '', get_post_meta( $rev_id, 'anchor_consent_category', true ), 'The category meta must never land on a revision id.' );
 	}
 }

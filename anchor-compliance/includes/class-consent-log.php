@@ -15,6 +15,19 @@ class Anchor_Compliance_Consent_Log {
 	const DB_VERSION        = '1';
 	const CRON_HOOK         = 'anchor_compliance_purge_log';
 
+	/**
+	 * The shared consent-method vocabulary. The REST endpoint's enum and this
+	 * class's own normalization both read from here so the two layers can
+	 * never disagree about what a recordable method is.
+	 *
+	 * - banner / preference_center: the surface the choice was saved from.
+	 * - gpc: an automatic Global Privacy Control opt-out record.
+	 * - api: a programmatic call through window.AnchorConsent.
+	 * - do_not_sell: the [anchor_do_not_sell] CPRA opt-out control.
+	 * - placeholder: a blocked-embed "Accept & Load" single-category grant.
+	 */
+	const VALID_METHODS = [ 'banner', 'preference_center', 'gpc', 'api', 'do_not_sell', 'placeholder' ];
+
 	public static function table() {
 		global $wpdb;
 		return $wpdb->prefix . 'anchor_consent_log';
@@ -57,7 +70,9 @@ class Anchor_Compliance_Consent_Log {
 	}
 
 	/**
-	 * @param array $args consent_id, categories (string[]), region, posture, method
+	 * @param array $args consent_id, categories (string[]), region, posture, method,
+	 *                    policy_version (optional — the version from the client's
+	 *                    payload; falls back to current settings when absent).
 	 * @return int|false Insert ID, or false when logging is off or the insert failed.
 	 */
 	public function record( array $args ) {
@@ -66,6 +81,31 @@ class Anchor_Compliance_Consent_Log {
 		$opts = Anchor_Compliance_Settings::get();
 		if ( empty( $opts['log']['enabled'] ) ) {
 			return false;
+		}
+
+		// The table is otherwise installed only on admin_init; on a site whose
+		// first traffic is a frontend consent POST (migrated/WP-CLI-provisioned,
+		// never visited wp-admin), the insert below would fail silently and the
+		// consent proof would be lost. maybe_install() is a single autoloaded
+		// option compare on the happy path, so it is cheap enough to run per
+		// write.
+		self::maybe_install();
+
+		// Stamp the policy version the visitor actually consented under (from
+		// their payload), not whatever the settings say at write time — an
+		// admin bumping the version between page render and the visitor's
+		// click must not produce an audit row claiming consent to text the
+		// visitor never saw. Settings remain the fallback for callers that
+		// don't know the client-side version (e.g. server-minted records).
+		$policy_version = isset( $args['policy_version'] ) && (int) $args['policy_version'] > 0
+			? (string) (int) $args['policy_version']
+			: (string) $opts['general']['policy_version'];
+
+		// Normalize against the shared vocabulary; an unknown method collapses
+		// to 'banner' rather than persisting arbitrary caller-supplied strings.
+		$method = sanitize_key( (string) ( $args['method'] ?? 'banner' ) );
+		if ( ! in_array( $method, self::VALID_METHODS, true ) ) {
+			$method = 'banner';
 		}
 
 		$ok = $wpdb->insert(
@@ -77,8 +117,8 @@ class Anchor_Compliance_Consent_Log {
 				'region'         => substr( (string) ( $args['region'] ?? '' ), 0, 8 ),
 				'posture'        => substr( (string) ( $args['posture'] ?? '' ), 0, 16 ),
 				'categories'     => wp_json_encode( array_values( (array) ( $args['categories'] ?? [] ) ) ),
-				'policy_version' => (string) $opts['general']['policy_version'],
-				'method'         => substr( sanitize_key( (string) ( $args['method'] ?? 'banner' ) ), 0, 32 ),
+				'policy_version' => substr( $policy_version, 0, 16 ),
+				'method'         => $method,
 				'ua_hash'        => self::hash_ua(),
 			],
 			[ '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ]
@@ -143,8 +183,15 @@ class Anchor_Compliance_Consent_Log {
 			$prep[]  = strtoupper( sanitize_text_field( $args['region'] ) );
 		}
 		if ( ! empty( $args['since'] ) ) {
-			$where[] = 'created_at >= %s';
-			$prep[]  = gmdate( 'Y-m-d H:i:s', strtotime( $args['since'] ) );
+			// strtotime() on garbage returns false; coerced through gmdate()
+			// that becomes '1970-01-01 00:00:00' — a clause that silently
+			// matches everything while appearing applied. An unparseable
+			// 'since' is dropped instead of being applied wrong.
+			$since_ts = strtotime( (string) $args['since'] );
+			if ( false !== $since_ts ) {
+				$where[] = 'created_at >= %s';
+				$prep[]  = gmdate( 'Y-m-d H:i:s', $since_ts );
+			}
 		}
 
 		$sql = implode( ' AND ', $where );

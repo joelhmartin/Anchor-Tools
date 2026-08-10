@@ -225,6 +225,170 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 		wp_deregister_style( 'anchor-compliance' );
 	}
 
+	/**
+	 * Regression (C005): render() interpolates brand colors into a style
+	 * attribute; a malicious value in the never-sanitized
+	 * anchor_site_config_options option must be replaced by the safe
+	 * fallback, exactly as enqueue() already does.
+	 */
+	public function test_render_sanitizes_malicious_site_config_colors() {
+		update_option( 'anchor_site_config_options', [
+			'colors' => [ 'primary' => 'red;background:url(//evil.example/beacon)' ],
+		], false );
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'appearance' => [ 'inherit_brand' => true ] ], false );
+
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertStringNotContainsString( 'evil.example', $html );
+		$this->assertStringContainsString( '--acmp-accent:#bf8f43', $html, 'Invalid color falls back to the known-safe default.' );
+	}
+
+	/**
+	 * Regression (C011): aria-modal belongs only to postures where a real
+	 * focus trap exists. Strict: banner + prefs are both modal (2). Opt-out:
+	 * the banner is a passive notice, only the prefs dialog stays modal (1).
+	 */
+	public function test_banner_aria_modal_only_in_strict_posture() {
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'DE';
+		ob_start();
+		$this->banner()->render();
+		$strict_html = ob_get_clean();
+		$this->assertSame( 2, substr_count( $strict_html, 'aria-modal="true"' ) );
+
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
+		ob_start();
+		$this->banner()->render();
+		$optout_html = ob_get_clean();
+		$this->assertSame( 1, substr_count( $optout_html, 'aria-modal="true"' ) );
+		$this->assertDoesNotMatchRegularExpression(
+			'/id="anchor-cmp-banner"[^>]*aria-modal/',
+			$optout_html,
+			'The opt-out banner is a notice, not a modal.'
+		);
+	}
+
+	/** Regression (F005): the dark_mode setting must reach the [data-acmp-scheme] hook frontend.css implements. */
+	public function test_render_emits_scheme_attribute_when_dark_mode_forced() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'appearance' => [ 'dark_mode' => 'dark' ] ], false );
+		ob_start();
+		$this->banner()->render();
+		$this->assertStringContainsString( 'data-acmp-scheme="dark"', ob_get_clean() );
+	}
+
+	public function test_render_omits_scheme_attribute_on_auto() {
+		ob_start();
+		$this->banner()->render();
+		$this->assertStringNotContainsString( 'data-acmp-scheme', ob_get_clean() );
+	}
+
+	/** Regression (F006): a configured logo_id must actually render. */
+	public function test_render_shows_logo_when_configured() {
+		$attachment_id = self::factory()->attachment->create_object(
+			'cmp-logo.png',
+			0,
+			[ 'post_mime_type' => 'image/png', 'post_type' => 'attachment' ]
+		);
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'appearance' => [ 'logo_id' => $attachment_id ] ], false );
+
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( 'anchor-cmp-logo', $html );
+		$this->assertStringContainsString( 'cmp-logo.png', $html );
+	}
+
+	public function test_render_has_no_logo_markup_by_default() {
+		ob_start();
+		$this->banner()->render();
+		$this->assertStringNotContainsString( 'anchor-cmp-logo', ob_get_clean() );
+	}
+
+	/**
+	 * Regression (C010): a compliance module's own 365-day cookie belongs in
+	 * its own disclosure tables. The entry arrives via the
+	 * anchor_compliance_services filter registered by the module bootstrap.
+	 */
+	public function test_own_consent_cookie_is_disclosed_in_preference_center() {
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( 'anchor_consent', $html, 'The module must disclose its own cookie.' );
+		$this->assertStringContainsString( '365 days', $html, 'Disclosed duration mirrors the configured consent lifetime.' );
+	}
+
+	/**
+	 * Regression (F020): the payload ships only the strings the runtime
+	 * reads; server-rendered copy (heading, body, button labels) stays out.
+	 * strictCountries stays — the relax tier consumes it.
+	 */
+	public function test_payload_i18n_ships_only_runtime_keys() {
+		$p = $this->banner()->payload();
+
+		$this->assertEqualsCanonicalizing(
+			[
+				'notice_body', 'dns_label', 'saved_message', 'unblocked_message',
+				'gpc_message', 'dns_confirmation', 'placeholder_text', 'placeholder_button',
+			],
+			array_keys( $p['i18n'] )
+		);
+		$this->assertArrayHasKey( 'strictCountries', $p );
+	}
+
+	/** Regression (F012): the asset version must move when the asset changes (mtime), not stay frozen at a constant. */
+	public function test_enqueue_versions_assets_by_file_mtime() {
+		wp_deregister_script( 'anchor-compliance' );
+		wp_deregister_style( 'anchor-compliance' );
+
+		$this->banner()->enqueue();
+
+		$expected = (string) filemtime( Anchor_Asset_Loader::path( 'anchor-compliance/assets/frontend.js' ) );
+		$this->assertSame( $expected, (string) wp_scripts()->registered['anchor-compliance']->ver );
+
+		wp_dequeue_script( 'anchor-compliance' );
+		wp_deregister_script( 'anchor-compliance' );
+		wp_dequeue_style( 'anchor-compliance' );
+		wp_deregister_style( 'anchor-compliance' );
+	}
+
+	/**
+	 * Regression (C003): consent posture and GCM defaults are baked into the
+	 * HTML, so consent-variant responses must opt out of shared page caches:
+	 * always while the visitor has no valid consent cookie, always under
+	 * strict posture — but a consented opt-out visitor stays cacheable.
+	 */
+	public function test_no_store_decision_matrix() {
+		$cookie = Anchor_Compliance_Consent_State::encode( [
+			'id' => 'c0ffee00-0000-4000-8000-000000000000', 'ts' => time(), 'v' => 1, 'cats' => [ 'analytics' ],
+		] );
+
+		// No consent cookie, opt-out region: undecided visitor => no-store.
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
+		$this->assertTrue( $this->banner()->should_send_no_store() );
+
+		// Valid cookie, opt-out region: stable per-visitor page => cacheable.
+		$_COOKIE[ Anchor_Compliance_Consent_State::COOKIE ] = $cookie;
+		$this->assertFalse( $this->banner()->should_send_no_store() );
+
+		// Valid cookie, strict region: posture-variant HTML => no-store.
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'DE';
+		$this->assertTrue( $this->banner()->should_send_no_store() );
+	}
+
+	public function test_no_store_respects_the_opt_out_filter_and_disabled_module() {
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'DE';
+
+		add_filter( 'anchor_compliance_no_cache', '__return_false' );
+		$this->assertFalse( $this->banner()->should_send_no_store(), 'Hosts that exclude the anchor_consent cookie from their cache can opt out.' );
+		remove_filter( 'anchor_compliance_no_cache', '__return_false' );
+
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'general' => [ 'enabled' => false ] ], false );
+		$this->assertFalse( $this->banner()->should_send_no_store() );
+	}
+
 	public function test_enqueue_no_ops_when_module_disabled() {
 		wp_deregister_script( 'anchor-compliance' );
 		wp_deregister_style( 'anchor-compliance' );

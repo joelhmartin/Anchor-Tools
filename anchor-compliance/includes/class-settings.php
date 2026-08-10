@@ -80,7 +80,11 @@ class Anchor_Compliance_Settings {
 			'dsar' => [
 				'enabled'          => true,
 				'notify_email'     => '',
-				'response_days'    => 45,
+				// 30 satisfies GDPR Art. 12(3) (one month); 45 is CCPA-only.
+				'response_days'    => 30,
+				// Closed (completed/rejected) requests older than this are
+				// purged daily; 0 keeps them forever.
+				'retention_days'   => 365,
 			],
 			'advanced' => [
 				'buffer_enabled'       => true,
@@ -250,9 +254,10 @@ class Anchor_Compliance_Settings {
 
 		// --- dsar ---
 		$s = isset( $input['dsar'] ) ? (array) $input['dsar'] : [];
-		$out['dsar']['enabled']       = ! empty( $s['enabled'] );
-		$out['dsar']['notify_email']  = sanitize_email( (string) ( $s['notify_email'] ?? '' ) );
-		$out['dsar']['response_days'] = min( 90, max( 1, (int) ( $s['response_days'] ?? 45 ) ) );
+		$out['dsar']['enabled']        = ! empty( $s['enabled'] );
+		$out['dsar']['notify_email']   = sanitize_email( (string) ( $s['notify_email'] ?? '' ) );
+		$out['dsar']['response_days']  = min( 90, max( 1, (int) ( $s['response_days'] ?? 30 ) ) );
+		$out['dsar']['retention_days'] = min( 3650, max( 0, (int) ( $s['retention_days'] ?? 365 ) ) );
 
 		// --- advanced ---
 		$v = isset( $input['advanced'] ) ? (array) $input['advanced'] : [];
@@ -895,7 +900,17 @@ class Anchor_Compliance_Settings {
 			</tr>
 			<tr>
 				<th scope="row"><label for="anchor_cmp_dsar_response_days"><?php esc_html_e( 'Response deadline (days)', 'anchor-schema' ); ?></label></th>
-				<td><input type="number" min="1" max="90" id="anchor_cmp_dsar_response_days" name="<?php echo esc_attr( $opt ); ?>[dsar][response_days]" value="<?php echo esc_attr( $dsar['response_days'] ); ?>" class="small-text" /></td>
+				<td>
+					<input type="number" min="1" max="90" id="anchor_cmp_dsar_response_days" name="<?php echo esc_attr( $opt ); ?>[dsar][response_days]" value="<?php echo esc_attr( $dsar['response_days'] ); ?>" class="small-text" />
+					<p class="description"><?php esc_html_e( 'GDPR requires a response within one month — keep this at 30 for any site with EEA/UK visitors. 45 is appropriate only for CCPA-only (US) sites.', 'anchor-schema' ); ?></p>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="anchor_cmp_dsar_retention_days"><?php esc_html_e( 'Retention for closed requests (days)', 'anchor-schema' ); ?></label></th>
+				<td>
+					<input type="number" min="0" max="3650" id="anchor_cmp_dsar_retention_days" name="<?php echo esc_attr( $opt ); ?>[dsar][retention_days]" value="<?php echo esc_attr( $dsar['retention_days'] ); ?>" class="small-text" />
+					<p class="description"><?php esc_html_e( 'Completed and rejected requests older than this are deleted automatically each day — the request records themselves contain personal data and must not be kept forever. Set 0 to keep them indefinitely.', 'anchor-schema' ); ?></p>
+				</td>
 			</tr>
 		</table>
 		<?php

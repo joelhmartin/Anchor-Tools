@@ -15,7 +15,15 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 
 	public function tear_down() {
 		delete_option( Anchor_Compliance_Module::OPTION_KEY );
+		unset( $_GET['anchor_cmp'], $_GET['status_filter'], $_GET['orderby'], $_GET['order'], $_GET['paged'] );
 		parent::tear_down();
+	}
+
+	/** @return int A logged-in administrator's user ID. */
+	private function as_admin() {
+		$id = self::factory()->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $id );
+		return $id;
 	}
 
 	public function test_table_is_created() {
@@ -34,6 +42,35 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 		$this->assertContains( 'ip_hash', $columns );
 		$this->assertContains( 'deadline', $columns );
 		$this->assertContains( 'status', $columns );
+		$this->assertContains( 'verified_at', $columns );
+		$this->assertContains( 'verify_key', $columns );
+	}
+
+	/**
+	 * D022: dbDelta's documented contract requires exactly two spaces between
+	 * "PRIMARY KEY" and the column list — a single space parses today but can
+	 * emit a duplicate-key ALTER on the next DB_VERSION bump. Pinned at the
+	 * source level because dbDelta's misbehavior only appears on re-runs.
+	 */
+	public function test_schema_uses_dbdelta_two_space_primary_key() {
+		$src = file_get_contents( ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-compliance/includes/class-dsar.php' );
+		$this->assertStringContainsString( 'PRIMARY KEY  (id)', $src );
+		$this->assertStringNotContainsString( 'PRIMARY KEY (id)', $src );
+	}
+
+	/**
+	 * D005: install used to hook only admin_init while intake is
+	 * admin_post_nopriv — on a fresh deploy every public submission failed
+	 * until someone loaded wp-admin. create() must self-heal via the cheap
+	 * schema-version gate.
+	 */
+	public function test_create_installs_schema_when_version_option_is_missing() {
+		delete_option( Anchor_Compliance_Dsar::DB_VERSION_OPTION );
+
+		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'fresh-deploy@example.com' ] );
+
+		$this->assertIsInt( $id );
+		$this->assertSame( Anchor_Compliance_Dsar::DB_VERSION, get_option( Anchor_Compliance_Dsar::DB_VERSION_OPTION ) );
 	}
 
 	public function test_create_stores_a_request_with_a_deadline() {
@@ -54,6 +91,70 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 		);
 	}
 
+	/**
+	 * D012: GDPR Art. 12(3) requires a response within one month and this
+	 * module's default posture treats the EEA/UK as strict — the shipped
+	 * response_days default must be 30 (45 is CCPA-only), and closed requests
+	 * must have a retention default so they age out (D001).
+	 */
+	public function test_dsar_defaults_are_gdpr_correct() {
+		$d = Anchor_Compliance_Settings::defaults()['dsar'];
+		$this->assertSame( 30, $d['response_days'] );
+		$this->assertSame( 365, $d['retention_days'] );
+
+		$clean = Anchor_Compliance_Settings::sanitize( [] );
+		$this->assertSame( 30, $clean['dsar']['response_days'] );
+		$this->assertSame( 365, $clean['dsar']['retention_days'] );
+
+		$clean = Anchor_Compliance_Settings::sanitize( [ 'dsar' => [ 'retention_days' => -5 ] ] );
+		$this->assertSame( 0, $clean['dsar']['retention_days'], 'retention_days 0 (keep forever) must be representable.' );
+
+		$clean = Anchor_Compliance_Settings::sanitize( [ 'dsar' => [ 'retention_days' => 99999 ] ] );
+		$this->assertSame( 3650, $clean['dsar']['retention_days'] );
+	}
+
+	/**
+	 * D001: a table that exists to service privacy law must itself obey
+	 * retention limits — closed (completed/rejected) requests age out after
+	 * dsar.retention_days; open requests are never purged regardless of age.
+	 */
+	public function test_purge_expired_deletes_only_closed_rows_past_retention() {
+		global $wpdb;
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'retention_days' => 365 ] ], false );
+
+		$old_closed    = $this->dsar->create( [ 'type' => 'access', 'email' => 'old-closed@test.com' ] );
+		$recent_closed = $this->dsar->create( [ 'type' => 'access', 'email' => 'recent-closed@test.com' ] );
+		$old_open      = $this->dsar->create( [ 'type' => 'access', 'email' => 'old-open@test.com' ] );
+
+		$this->dsar->set_status( $old_closed, 'completed' );
+		$this->dsar->set_status( $recent_closed, 'rejected' );
+
+		$backdate = gmdate( 'Y-m-d H:i:s', time() - 400 * DAY_IN_SECONDS );
+		$wpdb->update( Anchor_Compliance_Dsar::table(), [ 'created_at' => $backdate ], [ 'id' => $old_closed ] );
+		$wpdb->update( Anchor_Compliance_Dsar::table(), [ 'created_at' => $backdate ], [ 'id' => $old_open ] );
+
+		$this->assertSame( 1, Anchor_Compliance_Dsar::purge_expired() );
+		$this->assertNull( $this->dsar->get( $old_closed ), 'Closed rows past retention must be deleted.' );
+		$this->assertNotNull( $this->dsar->get( $recent_closed ), 'Closed rows inside the window must be kept.' );
+		$this->assertNotNull( $this->dsar->get( $old_open ), 'Open rows must never be purged, however old.' );
+	}
+
+	public function test_purge_expired_keeps_everything_when_retention_is_zero() {
+		global $wpdb;
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'retention_days' => 0 ] ], false );
+
+		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'keep-forever@test.com' ] );
+		$this->dsar->set_status( $id, 'completed' );
+		$wpdb->update(
+			Anchor_Compliance_Dsar::table(),
+			[ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 4000 * DAY_IN_SECONDS ) ],
+			[ 'id' => $id ]
+		);
+
+		$this->assertSame( 0, Anchor_Compliance_Dsar::purge_expired() );
+		$this->assertNotNull( $this->dsar->get( $id ) );
+	}
+
 	public function test_invalid_type_is_rejected() {
 		$res = $this->dsar->create( [ 'type' => 'nonsense', 'email' => 'a@b.com' ] );
 		$this->assertInstanceOf( WP_Error::class, $res );
@@ -71,11 +172,63 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'hi', $row->details );
 	}
 
+	/** D004: a hand-rolled POST can send the TEXT column's full 64KB — cap it server-side. */
+	public function test_details_are_truncated_to_max_length() {
+		$long = str_repeat( 'a', Anchor_Compliance_Dsar::DETAILS_MAX_LENGTH + 500 );
+		$id   = $this->dsar->create( [ 'type' => 'access', 'email' => 'long-details@test.com', 'details' => $long ] );
+		$this->assertSame( Anchor_Compliance_Dsar::DETAILS_MAX_LENGTH, strlen( $this->dsar->get( $id )->details ) );
+	}
+
 	public function test_rate_limit_blocks_a_rapid_second_request() {
 		$this->dsar->create( [ 'type' => 'access', 'email' => 'a@b.com' ] );
 		$res = $this->dsar->create( [ 'type' => 'access', 'email' => 'a@b.com' ] );
 		$this->assertInstanceOf( WP_Error::class, $res );
 		$this->assertSame( 'rate_limited', $res->get_error_code() );
+	}
+
+	/**
+	 * D004: the pair (email+IP) key is trivially reset by varying the email
+	 * (plus-addressing, throwaway local parts) — an IP-only hourly tier must
+	 * catch that.
+	 */
+	public function test_ip_only_rate_limit_blocks_distinct_emails_from_one_ip() {
+		add_filter( 'anchor_compliance_dsar_ip_hourly_limit', function () {
+			return 2;
+		} );
+
+		$original_ip            = $_SERVER['REMOTE_ADDR'] ?? null;
+		$_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+
+		$first  = $this->dsar->create( [ 'type' => 'access', 'email' => 'ip-tier-1@test.com' ] );
+		$second = $this->dsar->create( [ 'type' => 'access', 'email' => 'ip-tier-2@test.com' ] );
+		$third  = $this->dsar->create( [ 'type' => 'access', 'email' => 'ip-tier-3@test.com' ] );
+
+		if ( null === $original_ip ) {
+			unset( $_SERVER['REMOTE_ADDR'] );
+		} else {
+			$_SERVER['REMOTE_ADDR'] = $original_ip;
+		}
+
+		$this->assertIsInt( $first );
+		$this->assertIsInt( $second );
+		$this->assertInstanceOf( WP_Error::class, $third );
+		$this->assertSame( 'rate_limited', $third->get_error_code() );
+	}
+
+	/** D004: IP rotation defeats both keyed tiers — the global hourly cap must not. */
+	public function test_global_rate_limit_caps_total_submissions() {
+		add_filter( 'anchor_compliance_dsar_global_hourly_limit', function () {
+			return 2;
+		} );
+
+		$first  = $this->dsar->create( [ 'type' => 'access', 'email' => 'global-1@test.com' ] );
+		$second = $this->dsar->create( [ 'type' => 'access', 'email' => 'global-2@test.com' ] );
+		$third  = $this->dsar->create( [ 'type' => 'access', 'email' => 'global-3@test.com' ] );
+
+		$this->assertIsInt( $first );
+		$this->assertIsInt( $second );
+		$this->assertInstanceOf( WP_Error::class, $third );
+		$this->assertSame( 'rate_limited', $third->get_error_code() );
 	}
 
 	public function test_shortcode_renders_the_form_with_a_nonce_and_honeypot() {
@@ -88,16 +241,61 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 		}
 	}
 
+	/** D004: the details textarea must declare the same cap the server enforces. */
+	public function test_shortcode_details_field_declares_maxlength() {
+		$this->assertStringContainsString(
+			'maxlength="' . Anchor_Compliance_Dsar::DETAILS_MAX_LENGTH . '"',
+			do_shortcode( '[anchor_privacy_request]' )
+		);
+	}
+
 	public function test_shortcode_reports_when_disabled() {
 		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'enabled' => false ] ], false );
 		$this->assertStringNotContainsString( '<form', do_shortcode( '[anchor_privacy_request]' ) );
 	}
 
+	/**
+	 * D023: the enabled toggle must gate the endpoint, not just the form's
+	 * visibility — a nonce harvested while intake was on stays valid for up
+	 * to ~24h after it's turned off.
+	 */
+	public function test_disabled_setting_gates_process_submission() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'enabled' => false ] ], false );
+		$nonce = wp_create_nonce( Anchor_Compliance_Dsar::ACTION );
+
+		$status = $this->dsar->process_submission( [
+			'_wpnonce'         => $nonce,
+			'anchor_cmp_hp'    => '',
+			'anchor_cmp_type'  => 'access',
+			'anchor_cmp_email' => 'while-off@test.com',
+		] );
+
+		$this->assertSame( 'disabled', $status );
+		$this->assertCount( 0, $this->dsar->query( [ 'email' => 'while-off@test.com' ] ) );
+	}
+
+	/**
+	 * D016: $wpdb->update() returning 0 rows used to map to "Status updated."
+	 * — the return value must distinguish a real change from a no-op, a
+	 * missing row, and an invalid status.
+	 */
 	public function test_status_update_is_validated() {
 		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'a@b.com' ] );
-		$this->assertTrue( $this->dsar->set_status( $id, 'completed' ) );
+		$this->assertSame( 'updated', $this->dsar->set_status( $id, 'completed' ) );
 		$this->assertSame( 'completed', $this->dsar->get( $id )->status );
-		$this->assertFalse( $this->dsar->set_status( $id, 'bogus' ) );
+		$this->assertSame( 'unchanged', $this->dsar->set_status( $id, 'completed' ), 'Re-applying the same status is a no-op, not a success.' );
+		$this->assertSame( 'not_found', $this->dsar->set_status( 999999, 'completed' ) );
+		$this->assertSame( 'invalid', $this->dsar->set_status( $id, 'bogus' ) );
+	}
+
+	/** D019: the notes column must have a real writer and reader. */
+	public function test_set_notes_round_trip() {
+		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'notes@test.com' ] );
+		$this->assertTrue( $this->dsar->set_notes( $id, "Called requester back.\n<script>x</script>" ) );
+
+		$row = $this->dsar->get( $id );
+		$this->assertStringContainsString( 'Called requester back.', $row->notes );
+		$this->assertStringNotContainsString( '<script>', $row->notes );
 	}
 
 	/**
@@ -139,6 +337,79 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 	}
 
 	/**
+	 * D003: a DSAR intake must verify the requester controls the email. Each
+	 * new request stores verified_at NULL plus only the salted hash of a
+	 * single-use token; the raw token exists solely in the confirmation email.
+	 */
+	public function test_create_stores_unverified_with_hashed_token() {
+		$id  = $this->dsar->create( [ 'type' => 'access', 'email' => 'unverified@test.com' ] );
+		$row = $this->dsar->get( $id );
+
+		$this->assertNull( $row->verified_at );
+		$this->assertSame( 64, strlen( (string) $row->verify_key ), 'verify_key must be a sha256 hash, never the raw token.' );
+	}
+
+	/** D003: clicking the emailed link flips verified_at; the token is single-use. */
+	public function test_verify_flow_flips_verified_at_and_is_single_use() {
+		$captured = [];
+		add_filter( 'wp_mail', function ( $atts ) use ( &$captured ) {
+			$captured[] = $atts;
+			return $atts;
+		} );
+
+		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'verify-me@test.com' ] );
+		$this->assertIsInt( $id );
+
+		$token = '';
+		foreach ( $captured as $mail ) {
+			if ( 'verify-me@test.com' === $mail['to'] && preg_match( '/token=([A-Za-z0-9]+)/', $mail['message'], $m ) ) {
+				$token = $m[1];
+			}
+		}
+		$this->assertNotSame( '', $token, 'The requester confirmation email must carry the verification link.' );
+
+		$this->assertSame( 'invalid', $this->dsar->verify( $id, 'wrong-token' ) );
+		$this->assertNull( $this->dsar->get( $id )->verified_at, 'A wrong token must not verify.' );
+
+		$this->assertSame( 'verified', $this->dsar->verify( $id, $token ) );
+		$row = $this->dsar->get( $id );
+		$this->assertNotEmpty( $row->verified_at );
+		$this->assertSame( '', $row->verify_key, 'The token hash must be consumed on success (single-use).' );
+
+		$this->assertSame( 'already', $this->dsar->verify( $id, $token ) );
+	}
+
+	/** D003: the verification link expires; a stale link must not verify. */
+	public function test_verify_rejects_an_expired_link() {
+		global $wpdb;
+
+		$captured = [];
+		add_filter( 'wp_mail', function ( $atts ) use ( &$captured ) {
+			$captured[] = $atts;
+			return $atts;
+		} );
+
+		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'stale-link@test.com' ] );
+
+		$token = '';
+		foreach ( $captured as $mail ) {
+			if ( 'stale-link@test.com' === $mail['to'] && preg_match( '/token=([A-Za-z0-9]+)/', $mail['message'], $m ) ) {
+				$token = $m[1];
+			}
+		}
+		$this->assertNotSame( '', $token );
+
+		$wpdb->update(
+			Anchor_Compliance_Dsar::table(),
+			[ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - ( Anchor_Compliance_Dsar::VERIFY_TTL_DAYS + 3 ) * DAY_IN_SECONDS ) ],
+			[ 'id' => $id ]
+		);
+
+		$this->assertSame( 'expired', $this->dsar->verify( $id, $token ) );
+		$this->assertNull( $this->dsar->get( $id )->verified_at );
+	}
+
+	/**
 	 * Review fix 4: process_submission() is handle_submit() minus the
 	 * wp_safe_redirect()+exit that makes the real admin-post entry point
 	 * unreachable from PHPUnit (same constraint documented in
@@ -174,6 +445,11 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 		$this->assertCount( 1, $this->dsar->query( [ 'email' => 'real@example.com' ] ) );
 	}
 
+	/**
+	 * D015: on any full-page-cached site the embedded nonce goes stale, after
+	 * which every submission used to return the generic 'error' forever —
+	 * nonce failure must carry its own code so the form can say "reload".
+	 */
 	public function test_process_submission_rejects_a_bad_nonce() {
 		$status = $this->dsar->process_submission( [
 			'_wpnonce'         => 'not-a-real-nonce',
@@ -181,8 +457,56 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 			'anchor_cmp_email' => 'nope@example.com',
 		] );
 
-		$this->assertSame( 'error', $status );
+		$this->assertSame( 'expired', $status );
 		$this->assertCount( 0, $this->dsar->query( [ 'email' => 'nope@example.com' ] ) );
+	}
+
+	/**
+	 * D013: create()'s four distinct WP_Errors used to collapse to a binary
+	 * 'error' — the specific code must survive to the redirect.
+	 */
+	public function test_process_submission_reports_specific_error_codes() {
+		$nonce = wp_create_nonce( Anchor_Compliance_Dsar::ACTION );
+
+		$this->assertSame( 'invalid_email', $this->dsar->process_submission( [
+			'_wpnonce'         => $nonce,
+			'anchor_cmp_hp'    => '',
+			'anchor_cmp_type'  => 'access',
+			'anchor_cmp_email' => 'not-an-email',
+		] ) );
+
+		$ok = $this->dsar->process_submission( [
+			'_wpnonce'         => $nonce,
+			'anchor_cmp_hp'    => '',
+			'anchor_cmp_type'  => 'access',
+			'anchor_cmp_email' => 'codes@example.com',
+		] );
+		$this->assertSame( 'ok', $ok );
+
+		$this->assertSame( 'rate_limited', $this->dsar->process_submission( [
+			'_wpnonce'         => $nonce,
+			'anchor_cmp_hp'    => '',
+			'anchor_cmp_type'  => 'access',
+			'anchor_cmp_email' => 'codes@example.com',
+		] ) );
+	}
+
+	/** D013/D015: the shortcode maps each code to its own honest message. */
+	public function test_shortcode_renders_the_message_for_a_specific_error_code() {
+		$messages = Anchor_Compliance_Dsar::notice_messages();
+
+		$_GET['anchor_cmp'] = 'rate_limited';
+		$this->assertStringContainsString( esc_html( $messages['rate_limited'] ), do_shortcode( '[anchor_privacy_request]' ) );
+
+		$_GET['anchor_cmp'] = 'expired';
+		$out = do_shortcode( '[anchor_privacy_request]' );
+		$this->assertStringContainsString( esc_html( $messages['expired'] ), $out );
+		$this->assertStringContainsString( 'reload', $out );
+
+		$_GET['anchor_cmp'] = 'unknowncode';
+		$this->assertStringContainsString( esc_html( $messages['error'] ), do_shortcode( '[anchor_privacy_request]' ) );
+
+		unset( $_GET['anchor_cmp'] );
 	}
 
 	/**
@@ -222,10 +546,44 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Review fix 4: a wp_mail() outage must never lose an already-persisted
-	 * DSAR record. pre_wp_mail short-circuits wp_mail() to return false
-	 * without actually sending, standing in for a mail-transport failure.
+	 * D017: erasure must not destroy the evidence of an honored opt-out.
+	 * Opt-out rows are anonymized in place (all PII blanked) rather than
+	 * deleted, with items_retained=true and an explanatory message.
 	 */
+	public function test_erase_anonymizes_optout_rows_and_reports_retention() {
+		$original_ip = $_SERVER['REMOTE_ADDR'] ?? null;
+
+		// Distinct IPs so the email+IP pair limiter doesn't block the second
+		// request for the same address.
+		$_SERVER['REMOTE_ADDR'] = '203.0.113.1';
+		$optout_id = $this->dsar->create( [ 'type' => 'optout', 'email' => 'carol@test.com', 'name' => 'Carol', 'details' => 'do not sell' ] );
+		$_SERVER['REMOTE_ADDR'] = '203.0.113.2';
+		$access_id = $this->dsar->create( [ 'type' => 'access', 'email' => 'carol@test.com', 'name' => 'Carol', 'details' => 'send me my data' ] );
+
+		if ( null === $original_ip ) {
+			unset( $_SERVER['REMOTE_ADDR'] );
+		} else {
+			$_SERVER['REMOTE_ADDR'] = $original_ip;
+		}
+
+		$erase = $this->dsar->privacy_erase( 'carol@test.com' );
+
+		$this->assertTrue( $erase['items_removed'] );
+		$this->assertTrue( $erase['items_retained'], 'An anonymized opt-out row is retained data and must be reported as such.' );
+		$this->assertNotEmpty( $erase['messages'] );
+		$this->assertTrue( $erase['done'] );
+
+		$this->assertNull( $this->dsar->get( $access_id ), 'Non-optout rows are deleted outright.' );
+
+		$row = $this->dsar->get( $optout_id );
+		$this->assertNotNull( $row, 'The opt-out row must survive as evidence.' );
+		$this->assertSame( 'optout', $row->type );
+		$this->assertSame( '', $row->email );
+		$this->assertSame( '', $row->name );
+		$this->assertSame( '', $row->details );
+		$this->assertSame( '', $row->ip_hash );
+	}
+
 	public function test_mail_failure_does_not_lose_the_record() {
 		add_filter( 'pre_wp_mail', '__return_false' );
 		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'mailfail@test.com' ] );
@@ -282,5 +640,111 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 		$this->assertNotSame( '', $hash_a );
 		$this->assertSame( $hash_a, $hash_b, 'Compressed and expanded forms of the same /64 must hash identically.' );
 		$this->assertNotSame( $hash_a, $hash_c, 'A different /64 must not collide.' );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Admin queue
+	 * ------------------------------------------------------------------- */
+
+	/** D011: query() gains a whitelisted deadline sort, and count() backs pagination. */
+	public function test_query_supports_deadline_ordering_and_count() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'response_days' => 20 ] ], false );
+		$this->dsar->create( [ 'type' => 'access', 'email' => 'order-mid@test.com' ] );
+
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'response_days' => 60 ] ], false );
+		$this->dsar->create( [ 'type' => 'access', 'email' => 'order-late@test.com' ] );
+
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'response_days' => 3 ] ], false );
+		$this->dsar->create( [ 'type' => 'access', 'email' => 'order-urgent@test.com' ] );
+
+		$rows = $this->dsar->query( [ 'orderby' => 'deadline', 'order' => 'asc' ] );
+		$this->assertSame( 'order-urgent@test.com', $rows[0]->email, 'Deadline-ascending must surface the most urgent request first.' );
+		$this->assertSame( 'order-late@test.com', $rows[2]->email );
+
+		$this->assertSame( 3, $this->dsar->count() );
+		$this->assertSame( 3, $this->dsar->count( [ 'status' => 'new' ] ) );
+		$this->assertSame( 0, $this->dsar->count( [ 'status' => 'completed' ] ) );
+	}
+
+	/**
+	 * D002/D003/D019/D020/D021: the queue must show the details field (the
+	 * only statement of what the requester wants), a verification badge, an
+	 * editable notes field, human labels, and a keyboard-operable Apply
+	 * button instead of an onchange auto-submit.
+	 */
+	public function test_queue_renders_details_notes_labels_and_verification_badge() {
+		$this->as_admin();
+		$this->dsar->create( [ 'type' => 'delete', 'email' => 'queue-render@test.com', 'details' => 'Remove my newsletter profile please' ] );
+
+		ob_start();
+		$this->dsar->render_admin_page();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( 'Remove my newsletter profile please', $html, 'D002: details must be visible where the acting happens.' );
+		$this->assertStringContainsString( 'Unverified', $html, 'D003: unverified rows must be badged.' );
+		$this->assertStringContainsString( 'anchor_cmp_dsar_notes', $html, 'D019: notes must be editable from the queue.' );
+		$this->assertStringContainsString( 'Delete my data', $html, 'D020: the type column speaks human labels, not slugs.' );
+		$this->assertStringContainsString( 'In progress', $html, 'D020: status options speak human labels, not slugs.' );
+		$this->assertStringContainsString( 'Apply', $html, 'D021: a real submit button is required.' );
+		$this->assertStringNotContainsString( 'onchange', $html, 'D021: no surprise auto-submit on select change.' );
+	}
+
+	/** D011: the status filter must actually limit the rendered rows. */
+	public function test_queue_status_filter_limits_rows() {
+		$this->as_admin();
+		$open_id = $this->dsar->create( [ 'type' => 'access', 'email' => 'filter-open@test.com' ] );
+		$done_id = $this->dsar->create( [ 'type' => 'access', 'email' => 'filter-done@test.com' ] );
+		$this->dsar->set_status( $done_id, 'completed' );
+
+		$_GET['status_filter'] = 'completed';
+		ob_start();
+		$this->dsar->render_admin_page();
+		$html = ob_get_clean();
+		unset( $_GET['status_filter'] );
+
+		$this->assertStringContainsString( 'filter-done@test.com', $html );
+		$this->assertStringNotContainsString( 'filter-open@test.com', $html );
+	}
+
+	/** D014: open_count() feeds the menu bubble and counts only new/in_progress. */
+	public function test_open_count_counts_only_open_requests() {
+		$a = $this->dsar->create( [ 'type' => 'access', 'email' => 'open-a@test.com' ] );
+		$b = $this->dsar->create( [ 'type' => 'access', 'email' => 'open-b@test.com' ] );
+		$this->dsar->set_status( $a, 'completed' );
+		$this->dsar->set_status( $b, 'in_progress' );
+
+		$this->assertSame( 1, $this->dsar->open_count() );
+	}
+
+	/**
+	 * D014: a statutory clock must be visible without navigating to it — an
+	 * admin notice fires when any open request is within 5 days of its
+	 * deadline or past it, and stays silent otherwise.
+	 */
+	public function test_admin_notice_warns_on_approaching_deadline() {
+		global $wpdb;
+		$this->as_admin();
+
+		$safe_id = $this->dsar->create( [ 'type' => 'access', 'email' => 'plenty-of-time@test.com' ] );
+
+		ob_start();
+		$this->dsar->admin_notice_deadlines();
+		$quiet = ob_get_clean();
+		$this->assertSame( '', $quiet, 'No notice while every deadline is comfortably far out.' );
+
+		$overdue_id = $this->dsar->create( [ 'type' => 'access', 'email' => 'overdue@test.com' ] );
+		$wpdb->update(
+			Anchor_Compliance_Dsar::table(),
+			[ 'deadline' => gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS ) ],
+			[ 'id' => $overdue_id ]
+		);
+
+		ob_start();
+		$this->dsar->admin_notice_deadlines();
+		$warning = ob_get_clean();
+
+		$this->assertStringContainsString( 'notice-warning', $warning );
+		$this->assertStringContainsString( 'privacy request', $warning );
+		$this->assertStringContainsString( Anchor_Compliance_Dsar::MENU_SLUG, $warning, 'The notice must link to the queue.' );
 	}
 }

@@ -30,6 +30,27 @@ class Anchor_Compliance_Script_Blocker {
 	/** MIME/type values that mean "this script executes as JavaScript." Anything else (application/ld+json, text/template, ...) is inert markup, not code, and must never be touched. */
 	const EXECUTABLE_TYPES = [ 'text/javascript', 'application/javascript', 'module' ];
 
+	/**
+	 * The two rewrite patterns, published as constants so
+	 * Anchor_Compliance_Snippets_Bridge references THE SAME bytes instead of
+	 * a transcription. The helpers below (type_value() etc.) were centralized
+	 * after a drift bug; the patterns — the likeliest thing to be tuned next
+	 * — are shared for the same reason. See rewrite_src_tags() and
+	 * rewrite_inline_scripts() for the full walkthrough of each.
+	 *
+	 * SRC_TAG_PATTERN_TEMPLATE is an sprintf() template; %s is the tag name
+	 * ('script', 'iframe', 'img').
+	 */
+	const SRC_TAG_PATTERN_TEMPLATE = '#<%s\b([^>]*?)(?<![\w:.-])src\s*=\s*(?:(["\'])((?:(?!\2)[^>])*)\2|([^\s>]+))([^>]*)>#is';
+	const INLINE_SCRIPT_PATTERN    = '#<script\b(?![^>]*(?<![\w:.-])src\s*=)([^>]*)>(.*?)</script>#is';
+
+	/**
+	 * <link rel> values that make the browser CONTACT the href's host ahead
+	 * of any script executing — a pre-consent request (at minimum an IP
+	 * transmission) even while the script itself is blocked.
+	 */
+	const LINK_HINT_RELS = [ 'preload', 'modulepreload', 'prefetch', 'preconnect', 'dns-prefetch' ];
+
 	public function __construct( $registry, $state, $geo ) {
 		$this->registry = $registry;
 		$this->state    = $state;
@@ -145,36 +166,62 @@ class Anchor_Compliance_Script_Blocker {
 
 		$original = $html;
 
+		// Each pass only sees the rules meaningful for its context: URL
+		// patterns never gate inline bodies (a theme script that merely
+		// mentions a youtube.com/watch link as a string is not a tracker),
+		// and 'fbq('-style patterns never gate URLs. See
+		// Anchor_Compliance_Service_Registry::RULE_CONTEXTS.
+		$src_rules    = Anchor_Compliance_Service_Registry::filter_rules_by_context( $rules, 'src' );
+		$iframe_rules = Anchor_Compliance_Service_Registry::filter_rules_by_context( $rules, 'iframe' );
+		$inline_rules = Anchor_Compliance_Service_Registry::filter_rules_by_context( $rules, 'inline' );
+
 		// Hide the body of non-executable <script> blocks (JSON-LD, HTML
-		// templates, ...) from the src/iframe passes below, so a URL that
+		// templates, ...) from the src/iframe/img passes below, so a URL that
 		// merely APPEARS inside inert text/markup (a JSON string value, a
 		// client-side template fragment) is never mistaken for a live tag.
 		// See mask_inert_scripts() for why this exists and what it does and
 		// does not touch.
 		$masked = [];
 		if ( false !== stripos( $original, '<script' ) && preg_match( '#<script\b[^>]*\btype\s*=#i', $original ) ) {
-			$stage = $this->mask_inert_scripts( $original, $masked );
+			$stage = self::mask_inert_scripts( $original, $masked );
 			if ( ! $this->pcre_ok( $stage ) ) {
 				return $this->fail_open( $original, 'mask_inert_scripts' );
 			}
 			$html = $stage;
 		}
 
-		$stage = $this->rewrite_src_tags( $html, 'script', $rules, $allowed );
+		$stage = $this->rewrite_src_tags( $html, 'script', $src_rules, $allowed );
 		if ( ! $this->pcre_ok( $stage ) ) {
 			return $this->fail_open( $original, 'rewrite_src_tags(script)' );
 		}
 		$html = $stage;
 
-		$stage = $this->rewrite_inline_scripts( $html, $rules, $allowed );
+		$stage = $this->rewrite_inline_scripts( $html, $inline_rules, $allowed );
 		if ( ! $this->pcre_ok( $stage ) ) {
 			return $this->fail_open( $original, 'rewrite_inline_scripts' );
 		}
 		$html = $stage;
 
-		$stage = $this->rewrite_src_tags( $html, 'iframe', $rules, $allowed );
+		$stage = $this->rewrite_src_tags( $html, 'iframe', $iframe_rules, $allowed );
 		if ( ! $this->pcre_ok( $stage ) ) {
 			return $this->fail_open( $original, 'rewrite_src_tags(iframe)' );
+		}
+		$html = $stage;
+
+		// <img> pixels: the noscript half of e.g. the Meta Pixel
+		// (facebook.com/tr) fires precisely for the no-JS visitors the
+		// front-end runtime can never help, so the server must catch it.
+		$stage = $this->rewrite_src_tags( $html, 'img', $src_rules, $allowed );
+		if ( ! $this->pcre_ok( $stage ) ) {
+			return $this->fail_open( $original, 'rewrite_src_tags(img)' );
+		}
+		$html = $stage;
+
+		// Resource hints (preload/prefetch/preconnect/dns-prefetch) to a
+		// gated host are pre-consent requests and belong to the same gate.
+		$stage = $this->rewrite_link_hints( $html, $src_rules, $allowed );
+		if ( ! $this->pcre_ok( $stage ) ) {
+			return $this->fail_open( $original, 'rewrite_link_hints' );
 		}
 		$html = $stage;
 
@@ -259,7 +306,10 @@ class Anchor_Compliance_Script_Blocker {
 	 * Hide the body of <script> blocks that do not execute as JavaScript
 	 * (application/ld+json, text/template, and similar) behind an opaque
 	 * token before the src/iframe passes run, then restore them verbatim
-	 * afterward (rewrite() does the restore via strtr()).
+	 * afterward (rewrite() does the restore via strtr()). Public static for
+	 * the same reason as type_value() and friends: the snippets bridge runs
+	 * its own iframe/img passes and needs the identical inert-body
+	 * protection, and a duplicated copy of this logic is how drift happens.
 	 *
 	 * Why this exists: rewrite_src_tags('iframe', ...) and
 	 * rewrite_src_tags('script', ...) scan the WHOLE document as flat text —
@@ -315,7 +365,7 @@ class Anchor_Compliance_Script_Blocker {
 	 * `value="..."`. The nonce makes the token unpredictable per request, so
 	 * it cannot be pre-planted.
 	 */
-	private function mask_inert_scripts( $html, array &$masked ) {
+	public static function mask_inert_scripts( $html, array &$masked ) {
 		$masked = [];
 		$i      = 0;
 
@@ -342,7 +392,7 @@ class Anchor_Compliance_Script_Blocker {
 				if ( preg_match( '#(?<![\w:.-])src\s*=#i', $attrs ) ) {
 					return $m[0]; // has a real src — the src-tag pass needs this intact.
 				}
-				if ( $this->is_executable_type( $this->type_value( $attrs ) ) ) {
+				if ( self::is_executable_type( self::type_value( $attrs ) ) ) {
 					return $m[0]; // real, src-less JS — rewrite_inline_scripts() still needs it.
 				}
 
@@ -478,7 +528,11 @@ class Anchor_Compliance_Script_Blocker {
 	 * ">" no matter how the quote or value is malformed.
 	 */
 	private function rewrite_src_tags( $html, $tag, array $rules, array $allowed ) {
-		$pattern = '#<' . $tag . '\b([^>]*?)(?<![\w:.-])src\s*=\s*(?:(["\'])((?:(?!\2)[^>])*)\2|([^\s>]+))([^>]*)>#is';
+		if ( ! $rules ) {
+			return $html; // no rule can match in this context — skip the whole-document scan.
+		}
+
+		$pattern = sprintf( self::SRC_TAG_PATTERN_TEMPLATE, $tag );
 
 		// Resolved once per call, not per matched tag — a page can carry many
 		// blocked embeds and Anchor_Compliance_Settings::get() is not free.
@@ -522,27 +576,89 @@ class Anchor_Compliance_Script_Blocker {
 					);
 				}
 
-				// An iframe leaves a visible, actionable placeholder rather
-				// than a hole. Built from <span> (a phrasing-content
-				// element), not <div>/<p>: iframes are legal inside a <p>
-				// (e.g. "<p>Watch: <iframe>...</iframe></p>"), but a <div>
-				// or nested <p> is not — the HTML parser would close the
-				// surrounding <p> early and orphan its closing tag. A span
-				// with display:block renders identically to a div while
-				// staying valid in both flow and phrasing contexts.
-				return sprintf(
-					'<span class="anchor-cmp-placeholder" style="display:block" data-anchor-consent="%1$s">'
-					. '<span class="anchor-cmp-placeholder__text" style="display:block">%2$s</span>'
-					. '<button type="button" class="anchor-cmp-placeholder__btn" data-anchor-accept="%1$s">%3$s</button></span>'
-					. '<iframe%4$s data-anchor-consent="%1$s" data-anchor-src="%5$s" style="display:none">',
-					esc_attr( $category ),
-					esc_html( $copy['text'] ),
-					esc_html( $copy['button'] ),
-					$attrs,
-					esc_attr( $clean_url )
-				);
+				if ( 'img' === $tag ) {
+					return self::blocked_img_markup( $attrs, $category, $clean_url );
+				}
+
+				return self::blocked_iframe_markup( $attrs, $category, $clean_url, $copy );
 			},
 			$html
+		);
+	}
+
+	/**
+	 * The neutralized shape of a blocked <img> pixel: no placeholder, no
+	 * visual stand-in — the only job is to prevent the request while carrying
+	 * enough state (data-anchor-src, mirroring blocked scripts) for the
+	 * front-end runtime to restore the original src on consent. Shared with
+	 * Anchor_Compliance_Snippets_Bridge so the two layers cannot drift.
+	 *
+	 * @param string $attrs     Surviving attributes (src already removed).
+	 * @param string $category  Gating category slug.
+	 * @param string $clean_url Entity-decoded original src.
+	 * @return string
+	 */
+	public static function blocked_img_markup( $attrs, $category, $clean_url ) {
+		return sprintf(
+			'<img%s data-anchor-consent="%s" data-anchor-src="%s">',
+			$attrs,
+			esc_attr( $category ),
+			esc_attr( $clean_url )
+		);
+	}
+
+	/**
+	 * The neutralized shape of a blocked <iframe>: a visible, actionable
+	 * placeholder rather than a hole, followed by the hidden, src-less
+	 * iframe. Built from <span> (a phrasing-content element), not <div>/<p>:
+	 * iframes are legal inside a <p> (e.g. "<p>Watch: <iframe>...</iframe></p>"),
+	 * but a <div> or nested <p> is not — the HTML parser would close the
+	 * surrounding <p> early and orphan its closing tag. A span with
+	 * display:block renders identically to a div while staying valid in both
+	 * flow and phrasing contexts.
+	 *
+	 * An existing style attribute is MERGED into the injected one rather than
+	 * left in place: per the HTML tokenizer the FIRST duplicate attribute
+	 * wins, so an embed already carrying style="width:100%" would keep it and
+	 * our trailing style="display:none" would never apply — the blocked,
+	 * src-less iframe rendering as a visible empty box beside the
+	 * placeholder. Merging (original declarations first, display:none last)
+	 * also means the JS runtime's activation — which clears only the display
+	 * property (el.style.display = '') — restores the author's own styling
+	 * intact. aria-hidden="true" matches the JS twin (neutralizeIframe in
+	 * frontend.js) so screen readers skip the hidden frame either way;
+	 * activation removes it.
+	 *
+	 * Shared with Anchor_Compliance_Snippets_Bridge so both layers emit the
+	 * exact same bytes for the front-end runtime to activate.
+	 *
+	 * @param string $attrs     Surviving attributes (src already removed).
+	 * @param string $category  Gating category slug.
+	 * @param string $clean_url Entity-decoded original src.
+	 * @param array  $copy      ['text' => ..., 'button' => ...]; see placeholder_copy_from_settings().
+	 * @return string
+	 */
+	public static function blocked_iframe_markup( $attrs, $category, $clean_url, array $copy ) {
+		$style = '';
+		$attrs = self::extract_style_attribute( $attrs, $style );
+
+		$style = trim( html_entity_decode( (string) $style, ENT_QUOTES, 'UTF-8' ) );
+		if ( '' !== $style && ';' !== substr( $style, -1 ) ) {
+			$style .= ';';
+		}
+		$style .= 'display:none';
+
+		return sprintf(
+			'<span class="anchor-cmp-placeholder" style="display:block" data-anchor-consent="%1$s">'
+			. '<span class="anchor-cmp-placeholder__text" style="display:block">%2$s</span>'
+			. '<button type="button" class="anchor-cmp-placeholder__btn" data-anchor-accept="%1$s">%3$s</button></span>'
+			. '<iframe%4$s data-anchor-consent="%1$s" data-anchor-src="%5$s" aria-hidden="true" style="%6$s">',
+			esc_attr( $category ),
+			esc_html( $copy['text'] ),
+			esc_html( $copy['button'] ),
+			$attrs,
+			esc_attr( $clean_url ),
+			esc_attr( $style )
 		);
 	}
 
@@ -564,10 +680,21 @@ class Anchor_Compliance_Script_Blocker {
 	 * @return array{text:string,button:string}
 	 */
 	private function placeholder_copy() {
-		if ( null !== $this->placeholder_copy_cache ) {
-			return $this->placeholder_copy_cache;
+		if ( null === $this->placeholder_copy_cache ) {
+			$this->placeholder_copy_cache = self::placeholder_copy_from_settings();
 		}
+		return $this->placeholder_copy_cache;
+	}
 
+	/**
+	 * Uncached settings read behind placeholder_copy() — public static so
+	 * Anchor_Compliance_Snippets_Bridge can build the SAME placeholder copy
+	 * for its own blocked iframes without duplicating the fallback/decoding
+	 * logic (see blocked_iframe_markup()).
+	 *
+	 * @return array{text:string,button:string}
+	 */
+	public static function placeholder_copy_from_settings() {
 		$content = Anchor_Compliance_Settings::get()['content'];
 
 		$text = isset( $content['placeholder_text'] ) ? (string) $content['placeholder_text'] : '';
@@ -580,12 +707,10 @@ class Anchor_Compliance_Script_Blocker {
 			$btn = __( 'Accept & Load', 'anchor-schema' );
 		}
 
-		$this->placeholder_copy_cache = [
+		return [
 			'text'   => html_entity_decode( $text, ENT_QUOTES, 'UTF-8' ),
 			'button' => html_entity_decode( $btn, ENT_QUOTES, 'UTF-8' ),
 		];
-
-		return $this->placeholder_copy_cache;
 	}
 
 	/**
@@ -629,8 +754,11 @@ class Anchor_Compliance_Script_Blocker {
 	 * application of this method a no-op on its own prior output).
 	 */
 	private function rewrite_inline_scripts( $html, array $rules, array $allowed ) {
+		if ( ! $rules ) {
+			return $html; // no rule can match in this context — skip the whole-document scan.
+		}
 		return preg_replace_callback(
-			'#<script\b(?![^>]*(?<![\w:.-])src\s*=)([^>]*)>(.*?)</script>#is',
+			self::INLINE_SCRIPT_PATTERN,
 			function ( $m ) use ( $rules, $allowed ) {
 				$attrs = $m[1];
 				$body  = $m[2];
@@ -734,5 +862,148 @@ class Anchor_Compliance_Script_Blocker {
 	 */
 	public static function strip_self_closing_slash( $after ) {
 		return preg_replace( '#/\s*$#', '', $after );
+	}
+
+	/**
+	 * Neutralize <link> resource hints whose href matches a denied rule.
+	 *
+	 * A `<link rel="preload" as="script" href="https://static.hotjar.com/...">`
+	 * (or rel=prefetch/preconnect/dns-prefetch) makes the browser contact the
+	 * tracker's host — transmitting the visitor's IP — before consent, even
+	 * while the script itself is blocked. The href moves to data-anchor-href
+	 * (symmetry with data-anchor-src) so the front-end runtime could restore
+	 * it on consent; with no href the hint is inert. rel is left untouched.
+	 *
+	 * Only rels in LINK_HINT_RELS are considered: a stylesheet, icon, or
+	 * canonical link is page furniture, not a tracker fetch, and must never
+	 * be gated. Idempotent for the same reason as the src passes — the
+	 * rewritten tag has no href, and data-anchor-href is excluded by
+	 * attr_value()'s lookbehind guard.
+	 */
+	private function rewrite_link_hints( $html, array $rules, array $allowed ) {
+		if ( ! $rules || false === stripos( $html, '<link' ) ) {
+			return $html;
+		}
+
+		return preg_replace_callback(
+			'#<link\b([^>]*)>#is',
+			function ( $m ) use ( $rules, $allowed ) {
+				$attrs = $m[1];
+
+				$rel = self::attr_value( $attrs, 'rel' );
+				if ( null === $rel ) {
+					return $m[0];
+				}
+				// rel is a space-separated token list; any hint token gates.
+				$tokens = preg_split( '#\s+#', strtolower( trim( $rel ) ) );
+				if ( ! array_intersect( (array) $tokens, self::LINK_HINT_RELS ) ) {
+					return $m[0]; // stylesheet, icon, canonical, ... — never gated.
+				}
+
+				$href = self::attr_value( $attrs, 'href' );
+				if ( null === $href || '' === $href ) {
+					return $m[0];
+				}
+
+				$category = $this->category_for( $href, $rules );
+				if ( null === $category || ! empty( $allowed[ $category ] ) ) {
+					return $m[0];
+				}
+
+				$this->blocked++;
+
+				// Decode once, encode once — see rewrite_src_tags().
+				$clean_url = html_entity_decode( $href, ENT_QUOTES, 'UTF-8' );
+
+				$attrs = self::strip_attribute( $attrs, 'href' );
+				$attrs = self::strip_self_closing_slash( rtrim( $attrs ) );
+
+				return sprintf(
+					'<link%s data-anchor-consent="%s" data-anchor-href="%s">',
+					$attrs,
+					esc_attr( $category ),
+					esc_attr( $clean_url )
+				);
+			},
+			$html
+		);
+	}
+
+	/**
+	 * Read one attribute's value (quoted or unquoted) out of an attribute
+	 * string. Same value-shape and (?<![\w:.-]) lookbehind as the src
+	 * patterns, so data-anchor-href is never read as href. Returns null when
+	 * the attribute is absent.
+	 *
+	 * @param string $attrs
+	 * @param string $name  Internal literal only ('rel', 'href') — never
+	 *                      interpolate untrusted input into the pattern.
+	 * @return string|null
+	 */
+	private static function attr_value( $attrs, $name ) {
+		if ( preg_match( '#(?<![\w:.-])' . $name . '\s*=\s*(["\'])((?:(?!\1)[^>])*)\1#is', $attrs, $m ) ) {
+			return $m[2];
+		}
+		if ( preg_match( '#(?<![\w:.-])' . $name . '\s*=\s*([^\s>]+)#i', $attrs, $m ) ) {
+			return $m[1];
+		}
+		return null;
+	}
+
+	/**
+	 * Remove one attribute from an attribute string, quote-awarely — the
+	 * same single-pass alternation as strip_type_attribute() (see that
+	 * method's docblock for why quote awareness is non-negotiable and why
+	 * unbalanced quotes are an accepted fail-open), generalized to a caller-
+	 * supplied name.
+	 *
+	 * @param string $attrs
+	 * @param string $name Internal literal only — never untrusted input.
+	 * @return string
+	 */
+	private static function strip_attribute( $attrs, $name ) {
+		return preg_replace_callback(
+			'#"[^"]*"|\'[^\']*\'|(\s' . $name . '\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>"\']+))#i',
+			static function ( $m ) {
+				return ( '' !== ( $m[1] ?? '' ) ) ? '' : $m[0];
+			},
+			$attrs
+		);
+	}
+
+	/**
+	 * Remove an existing style attribute from an attribute string —
+	 * quote-awarely, same alternation contract as strip_attribute() — and
+	 * hand its value back via $style so blocked_iframe_markup() can merge it
+	 * ahead of the injected display:none. Without this the ORIGINAL style
+	 * (first duplicate attribute wins) kept the blocked, src-less iframe
+	 * visible as an empty box beside the placeholder. On the (accepted)
+	 * unbalanced-quote fail-open the attribute survives untouched and $style
+	 * stays '' — identical trade to strip_type_attribute().
+	 *
+	 * @param string $attrs
+	 * @param string $style Receives the removed attribute's raw value ('' when absent).
+	 * @return string $attrs without its style attribute.
+	 */
+	private static function extract_style_attribute( $attrs, &$style ) {
+		$style = '';
+		$out   = preg_replace_callback(
+			'#"[^"]*"|\'[^\']*\'|(\sstyle\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>"\']+)))#i',
+			static function ( $m ) use ( &$style ) {
+				if ( '' === ( $m[1] ?? '' ) ) {
+					return $m[0]; // a quoted span — atomic, pass through untouched.
+				}
+				if ( '' !== ( $m[4] ?? '' ) ) {
+					$style = $m[4];
+				} elseif ( '' !== ( $m[3] ?? '' ) ) {
+					$style = $m[3];
+				} else {
+					$style = isset( $m[2] ) ? $m[2] : '';
+				}
+				return '';
+			},
+			$attrs
+		);
+		return ( null === $out ) ? $attrs : $out;
 	}
 }

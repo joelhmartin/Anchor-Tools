@@ -31,6 +31,67 @@ class Test_Compliance_Cookie_Policy extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( '_fbp', do_shortcode( '[anchor_cookie_policy]' ) );
 	}
 
+	/* ─── B017: pins for the shortcode's own options ─── */
+
+	/** Disable every functional service that carries cookies so the functional bucket is genuinely empty. */
+	private function empty_out_functional() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'services' => [
+				'intercom'       => [ 'enabled' => false, 'category' => 'functional' ],
+				'drift'          => [ 'enabled' => false, 'category' => 'functional' ],
+				'twitter_embeds' => [ 'enabled' => false, 'category' => 'functional' ],
+			],
+		], false );
+	}
+
+	public function test_empty_category_is_skipped_by_default() {
+		$this->empty_out_functional();
+		$out = do_shortcode( '[anchor_cookie_policy categories="functional"]' );
+		$this->assertStringNotContainsString( '<h3>Functional</h3>', $out, 'An empty category renders nothing unless show_empty is set.' );
+		$this->assertStringNotContainsString( '<table', $out );
+	}
+
+	public function test_show_empty_renders_the_heading_and_an_empty_table() {
+		$this->empty_out_functional();
+		$out = do_shortcode( '[anchor_cookie_policy categories="functional" show_empty="yes"]' );
+		$this->assertStringContainsString( '<h3>Functional</h3>', $out );
+		$this->assertStringContainsString( '<tbody></tbody>', $out, 'The table renders with headers and no rows.' );
+	}
+
+	/** An unrecognised categories value must not produce an empty policy page. */
+	public function test_invalid_categories_fall_back_to_all() {
+		$out = do_shortcode( '[anchor_cookie_policy categories="bogus, also-not-real"]' );
+		$this->assertStringContainsString( '<h3>Analytics</h3>', $out );
+		$this->assertStringContainsString( '<h3>Marketing</h3>', $out );
+		$this->assertStringContainsString( '_fbp', $out );
+	}
+
+	/** The caller's requested order is preserved. */
+	public function test_categories_attribute_order_is_respected() {
+		$out = do_shortcode( '[anchor_cookie_policy categories="marketing,analytics"]' );
+
+		$marketing = strpos( $out, '<h3>Marketing</h3>' );
+		$analytics = strpos( $out, '<h3>Analytics</h3>' );
+		$this->assertNotFalse( $marketing );
+		$this->assertNotFalse( $analytics );
+		$this->assertLessThan( $analytics, $marketing, 'categories="marketing,analytics" must render Marketing first.' );
+	}
+
+	/* ─── B009: custom-rule cookies are disclosed in the rendered table ─── */
+
+	public function test_custom_rule_cookies_render_with_the_rule_label_as_provider() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'custom_rules' => [
+				[ 'label' => 'Acme Heatmaps', 'url_pattern' => 'acme-heat.example', 'category' => 'analytics', 'cookie_patterns' => [ '_acme_hm*' ] ],
+			],
+		], false );
+
+		$out = do_shortcode( '[anchor_cookie_policy categories="analytics"]' );
+
+		$this->assertStringContainsString( '_acme_hm*', $out, 'The swept custom-rule cookie must also be disclosed.' );
+		$this->assertStringContainsString( 'Acme Heatmaps', $out, 'The rule label doubles as the provider.' );
+	}
+
 	public function test_output_is_escaped() {
 		add_filter( 'anchor_compliance_services', function ( $s ) {
 			$s['evil'] = [

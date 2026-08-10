@@ -118,9 +118,17 @@ class Anchor_Compliance_Consent_State {
 
 		$stored = $this->stored();
 		if ( null !== $stored ) {
+			// Strict whitelist, NOT sanitize_category(): that sanitizer falls
+			// back to 'marketing' for any unrecognized token (it categorizes
+			// *services*, where marketing is the conservative guess), which in
+			// a *grant list* would turn a forged/corrupt cookie value like
+			// cats:["junk"] into a marketing grant the visitor never gave. The
+			// JS mirror (frontend.js normalizeCategories) drops unknown tokens,
+			// and PHP must agree with it on the same cookie: unknown => dropped.
 			foreach ( (array) $stored['cats'] as $cat ) {
-				$cat = Anchor_Compliance_Settings::sanitize_category( $cat );
-				$out[ $cat ] = true;
+				if ( in_array( $cat, self::all_categories(), true ) ) {
+					$out[ $cat ] = true;
+				}
 			}
 		} elseif ( $default_grant ) {
 			foreach ( $out as $cat => $_ ) {

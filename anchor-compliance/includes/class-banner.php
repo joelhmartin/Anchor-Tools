@@ -135,7 +135,23 @@ class Anchor_Compliance_Banner {
 				'enabled'  => $ctm ? (bool) $ctm['enabled'] : false,
 				'category' => $ctm ? $ctm['category'] : 'marketing',
 			],
-			'i18n'             => $opts['content'],
+			// Only the strings the runtime actually reads (via i18nText() /
+			// applyNoticeCopy()). The other content strings (heading, body,
+			// button labels) are server-rendered into the banner markup and
+			// would ride along dead on every page if shipped here.
+			'i18n'             => array_intersect_key(
+				$opts['content'],
+				array_flip( [
+					'notice_body',
+					'dns_label',
+					'saved_message',
+					'unblocked_message',
+					'gpc_message',
+					'dns_confirmation',
+					'placeholder_text',
+					'placeholder_button',
+				] )
+			),
 		];
 	}
 
@@ -223,8 +239,27 @@ class Anchor_Compliance_Banner {
 	}
 
 	/**
+	 * Cache-busting version for an asset: the file's mtime (of the variant the
+	 * Asset Loader will actually serve), so every asset edit — and every
+	 * release build's fresh .min files — busts caches automatically. Falls
+	 * back to the module VERSION when the file can't be stat'd.
+	 *
+	 * @param string $relative Plugin-relative asset path.
+	 * @return string
+	 */
+	private function asset_version( $relative ) {
+		$path  = Anchor_Asset_Loader::path( $relative );
+		$mtime = file_exists( $path ) ? filemtime( $path ) : false;
+		return $mtime ? (string) $mtime : Anchor_Compliance_Module::VERSION;
+	}
+
+	/**
 	 * Registers (does not print) the front-end assets and attaches the
 	 * runtime payload. Hooked to wp_enqueue_scripts.
+	 *
+	 * Asset URLs go through Anchor_Asset_Loader (like the other modules) so a
+	 * release ZIP serves the CI-built .min variants while a git checkout
+	 * falls back to the committed sources.
 	 */
 	public function enqueue() {
 		$opts = $this->opts();
@@ -232,10 +267,11 @@ class Anchor_Compliance_Banner {
 			return;
 		}
 
-		$base = ANCHOR_TOOLS_PLUGIN_URL . 'anchor-compliance/assets/';
+		$css = 'anchor-compliance/assets/frontend.css';
+		$js  = 'anchor-compliance/assets/frontend.js';
 
-		wp_enqueue_style( 'anchor-compliance', $base . 'frontend.css', [], Anchor_Compliance_Module::VERSION );
-		wp_enqueue_script( 'anchor-compliance', $base . 'frontend.js', [], Anchor_Compliance_Module::VERSION, true );
+		wp_enqueue_style( 'anchor-compliance', Anchor_Asset_Loader::url( $css ), [], $this->asset_version( $css ) );
+		wp_enqueue_script( 'anchor-compliance', Anchor_Asset_Loader::url( $js ), [], $this->asset_version( $js ), true );
 
 		wp_add_inline_script(
 			'anchor-compliance',
@@ -270,6 +306,66 @@ class Anchor_Compliance_Banner {
 	}
 
 	/**
+	 * Whether this response is consent-variant — i.e. its HTML bakes in a
+	 * per-visitor consent decision that a shared full-page cache must not
+	 * replay to a different visitor. Two things vary the markup: the geo
+	 * posture (strict vs opt-out changes the GCM defaults emit_defaults()
+	 * prints and which copy/labels render) and the blocker's output (which
+	 * scripts are neutralized depends on the consent cookie). The cookie half
+	 * is already cache-proof client-side (the runtime re-reads the visitor's
+	 * own cookie over any cache-baked state); the posture half is not — the
+	 * runtime only ever relaxes strict→optout, so a cached opt-out page
+	 * served to an EU visitor would fire tags pre-consent.
+	 *
+	 * Conservative rule: no-store while the visitor has no (valid) consent
+	 * cookie, and always under strict posture. A consented opt-out visitor's
+	 * page stays cacheable.
+	 *
+	 * @return bool
+	 */
+	public function should_send_no_store() {
+		$opts = $this->opts();
+		if ( empty( $opts['general']['enabled'] ) ) {
+			return false;
+		}
+
+		/**
+		 * Filter whether Anchor Compliance may send no-store cache headers on
+		 * consent-variant responses. Return false when the host cache is
+		 * already configured to vary on / exclude the `anchor_consent` cookie
+		 * (the safe alternative: exclude requests carrying that cookie from
+		 * the page cache and cache the no-cookie variant per geo posture).
+		 *
+		 * @param bool $no_cache Default true.
+		 */
+		if ( ! apply_filters( 'anchor_compliance_no_cache', true ) ) {
+			return false;
+		}
+
+		return ! $this->state->has_stored_consent() || $this->geo->is_strict();
+	}
+
+	/**
+	 * Sends `Cache-Control: no-store` (and defines DONOTCACHEPAGE for
+	 * plugin-level page caches) when the response is consent-variant. Hooked
+	 * to send_headers, so it runs before any output. See
+	 * should_send_no_store() for the rule and the host-cache alternative.
+	 */
+	public function maybe_send_no_cache_headers() {
+		if ( ! $this->should_send_no_store() ) {
+			return;
+		}
+
+		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
+			define( 'DONOTCACHEPAGE', true );
+		}
+
+		if ( ! headers_sent() ) {
+			header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0' );
+		}
+	}
+
+	/**
 	 * Prints the banner + preference-center markup into the footer.
 	 * Hooked to wp_footer, priority 5 (ahead of most theme/plugin output).
 	 */
@@ -294,26 +390,55 @@ class Anchor_Compliance_Banner {
 		$descs      = $this->category_descriptions();
 		$cookies    = $this->registry->cookies_by_category();
 
+		// Same safe_hex() treatment as enqueue(): brand_colors() can carry a
+		// value straight from the never-sanitized anchor_site_config_options
+		// option, and esc_attr() alone would still allow arbitrary injected
+		// CSS declarations inside the style attribute.
 		$root_style = sprintf(
 			'--acmp-accent:%s;--acmp-surface:%s;--acmp-text:%s;--acmp-radius:%dpx;--acmp-accent-ink:%s;',
-			$colors['accent'],
-			$colors['surface'],
-			$colors['text'],
+			$this->safe_hex( $colors['accent'], '#bf8f43' ),
+			$this->safe_hex( $colors['surface'], '#ffffff' ),
+			$this->safe_hex( $colors['text'], '#1a1a1a' ),
 			$radius,
-			$accent_ink
+			$this->safe_hex( $accent_ink, '#000000' )
 		);
 
+		// A forced color scheme ('light'|'dark') is emitted as the
+		// [data-acmp-scheme] hook frontend.css keys its overrides off; 'auto'
+		// emits nothing and leaves prefers-color-scheme in charge.
+		$scheme_attr = in_array( $appearance['dark_mode'], [ 'light', 'dark' ], true )
+			? sprintf( ' data-acmp-scheme="%s"', esc_attr( $appearance['dark_mode'] ) )
+			: '';
+
 		printf(
-			'<div id="anchor-cmp" class="anchor-cmp anchor-cmp--%1$s anchor-cmp--%2$s" style="%3$s" hidden>',
+			'<div id="anchor-cmp" class="anchor-cmp anchor-cmp--%1$s anchor-cmp--%2$s" style="%3$s"%4$s hidden>',
 			esc_attr( $appearance['layout'] ),
 			esc_attr( $appearance['position'] ),
-			esc_attr( $root_style )
+			esc_attr( $root_style ),
+			$scheme_attr
 		);
 
 		// ── Banner panel ──────────────────────────────────────────────
+		// aria-modal only in strict posture: that is the only posture where
+		// the runtime actually traps focus and behaves modally. In opt-out
+		// posture the banner is a passive notice, and telling screen readers
+		// "modal" while the page stays freely browsable misdescribes it.
 		printf(
-			'<div id="anchor-cmp-banner" class="anchor-cmp-banner" role="dialog" aria-modal="true" aria-labelledby="anchor-cmp-heading">'
+			'<div id="anchor-cmp-banner" class="anchor-cmp-banner" role="dialog"%s aria-labelledby="anchor-cmp-heading">',
+			$strict ? ' aria-modal="true"' : ''
 		);
+
+		$logo_id = (int) $appearance['logo_id'];
+		if ( $logo_id ) {
+			$logo_url = wp_get_attachment_image_url( $logo_id, 'medium' );
+			if ( $logo_url ) {
+				printf(
+					'<img class="anchor-cmp-logo" src="%s" alt="" aria-hidden="true">',
+					esc_url( $logo_url )
+				);
+			}
+		}
+
 		printf( '<h2 id="anchor-cmp-heading" class="anchor-cmp-heading">%s</h2>', wp_kses_post( $content['heading'] ) );
 		printf( '<div class="anchor-cmp-body">%s</div>', wp_kses_post( $body_copy ) );
 

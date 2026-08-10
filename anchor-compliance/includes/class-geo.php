@@ -39,8 +39,18 @@ class Anchor_Compliance_Geo {
 		return Anchor_Compliance_Settings::get();
 	}
 
-	/** @return string|null Uppercase ISO-3166-1 alpha-2, or null. */
-	public function country() {
+	/**
+	 * @param bool $skip_remote When true, resolve from edge headers (tier 1)
+	 *                          only and never fall through to the metered
+	 *                          tier-2 IP-API lookup. Used by contexts where
+	 *                          the country is informational and the caller is
+	 *                          untrusted (the public REST consent endpoint),
+	 *                          so an attacker cannot mint outbound API calls.
+	 *                          Note the result (including null) is memoized
+	 *                          for the request either way.
+	 * @return string|null Uppercase ISO-3166-1 alpha-2, or null.
+	 */
+	public function country( $skip_remote = false ) {
 		if ( false !== $this->country ) {
 			return $this->country;
 		}
@@ -57,6 +67,10 @@ class Anchor_Compliance_Geo {
 				$this->source  = $label;
 				return $this->country;
 			}
+		}
+
+		if ( $skip_remote ) {
+			return $this->country;
 		}
 
 		$code = $this->lookup_via_api();

@@ -491,6 +491,143 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 		$wp_query->is_preview = $prev_preview;
 	}
 
+	// --- B016: pins for the unquoted-src branch and multi-tag blocked_count() ---
+
+	/** The unquoted branch `([^\s>]+)` exists for minifier output (see the pattern walkthrough); pin it for scripts. */
+	public function test_unquoted_script_src_is_blocked() {
+		$html = '<body><script src=https://connect.facebook.net/en_US/fbevents.js></script></body>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'type="text/plain"', $out );
+		$this->assertStringContainsString( 'data-anchor-src="https://connect.facebook.net/en_US/fbevents.js"', $out );
+		$this->assertStringNotContainsString( ' src=https://connect.facebook.net', $out, 'The live unquoted src must be removed.' );
+	}
+
+	/** Same minifier case for iframes — the placeholder machinery must engage too. */
+	public function test_unquoted_iframe_src_is_blocked() {
+		$html = '<body><iframe src=https://www.youtube.com/embed/abc123 width=560></iframe></body>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out );
+		$this->assertStringContainsString( 'data-anchor-src="https://www.youtube.com/embed/abc123"', $out );
+		$this->assertStringContainsString( 'anchor-cmp-placeholder', $out, 'An unquoted-src iframe must still get its placeholder.' );
+	}
+
+	/** blocked_count() must count every blocked tag across every pass on a multi-tag page. */
+	public function test_blocked_count_counts_every_blocked_tag() {
+		$html = '<body>'
+			. '<script src="https://connect.facebook.net/en_US/fbevents.js"></script>'
+			. '<script>fbq("init","1");</script>'
+			. '<iframe src="https://www.youtube.com/embed/a"></iframe>'
+			. '<img src="https://www.facebook.com/tr?id=1" height="1" width="1">'
+			. '<link rel="preconnect" href="https://static.hotjar.com">'
+			. '</body>';
+
+		$b = $this->blocker();
+		$b->rewrite( $html );
+
+		$this->assertSame( 5, $b->blocked_count(), 'One count per blocked tag: script src, inline, iframe, img pixel, link hint.' );
+	}
+
+	// --- B002: <img> pixels (the noscript half of e.g. the Meta Pixel) ---
+
+	public function test_img_pixel_is_neutralized() {
+		$html = '<body><noscript><img src="https://www.facebook.com/tr?id=123&amp;ev=PageView" height="1" width="1"></noscript></body>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringNotContainsString( ' src="https://www.facebook.com/tr', $out, 'The pixel request must be prevented.' );
+		$this->assertStringContainsString( 'data-anchor-src="https://www.facebook.com/tr?id=123&amp;ev=PageView"', $out, 'The original src must be carried for activation, entity round-trip intact.' );
+		$this->assertStringContainsString( 'data-anchor-consent="marketing"', $out );
+		$this->assertStringContainsString( 'height="1"', $out, 'Other img attributes must survive.' );
+		$this->assertStringNotContainsString( 'anchor-cmp-placeholder', $out, 'A blocked img is placeholder-free — the only job is preventing the request.' );
+	}
+
+	public function test_ordinary_images_are_untouched() {
+		$html = '<body><img src="/wp-content/uploads/photo.jpg" alt="Team photo"></body>';
+		$this->assertSame( $html, $this->blocker()->rewrite( $html ) );
+	}
+
+	// --- B003: <link> resource hints to gated hosts ---
+
+	public function test_link_hints_to_gated_hosts_are_neutralized() {
+		$html = '<head>'
+			. '<link rel="preconnect" href="https://static.hotjar.com">'
+			. '<link rel="preload" as="script" href="https://static.hotjar.com/c/hotjar-1.js">'
+			. '</head>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertSame( 0, preg_match( '#<link[^>]*\shref\s*=#i', $out ), 'No gated hint may keep a live href.' );
+		$this->assertStringContainsString( 'data-anchor-href="https://static.hotjar.com"', $out );
+		$this->assertStringContainsString( 'data-anchor-consent="analytics"', $out );
+	}
+
+	public function test_stylesheet_and_unmatched_links_are_untouched() {
+		// A stylesheet is page furniture even when its href matches a rule;
+		// only fetch-hint rels are gated. An unmatched hint is untouched too.
+		$html = '<head>'
+			. '<link rel="stylesheet" href="https://static.hotjar.com/style.css">'
+			. '<link rel="preload" as="script" href="/wp-content/themes/x/theme.js">'
+			. '<link rel="canonical" href="https://example.com/page/">'
+			. '</head>';
+		$this->assertSame( $html, $this->blocker()->rewrite( $html ) );
+	}
+
+	public function test_link_hint_rewrite_is_idempotent() {
+		$html  = '<head><link rel="preconnect" href="https://static.hotjar.com"></head>';
+		$b     = $this->blocker();
+		$once  = $b->rewrite( $html );
+		$this->assertSame( $once, $b->rewrite( $once ), 'A neutralized hint (data-anchor-href, no href) must never be re-processed.' );
+	}
+
+	// --- B005: existing style attribute must not defeat display:none ---
+
+	/**
+	 * PINS FIX B005. The original attributes used to be emitted AHEAD of the
+	 * injected style="display:none"; per the HTML tokenizer the FIRST
+	 * duplicate attribute wins, so an embed already carrying
+	 * style="width:100%" stayed visible as an empty box beside the
+	 * placeholder. The existing style is now merged (author declarations
+	 * first, display:none last — activation clears only the display
+	 * property, restoring the author's styling intact).
+	 */
+	public function test_blocked_iframe_with_existing_style_is_actually_hidden() {
+		$html = '<body><iframe src="https://www.youtube.com/embed/a" style="width:100%;height:360px" title="Vid"></iframe></body>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertSame( 1, preg_match( '#<iframe[^>]*>#', $out, $m ), 'Expected the rewritten iframe tag.' );
+		$tag = $m[0];
+
+		$this->assertSame( 1, substr_count( $tag, 'style=' ), 'Exactly one style attribute — a duplicate would let the first (visible) one win.' );
+		$this->assertStringContainsString( 'width:100%;height:360px;display:none', $tag, 'Author declarations survive, display:none is appended last.' );
+		$this->assertStringContainsString( 'title="Vid"', $tag, 'Other attributes must survive the style extraction.' );
+	}
+
+	/** The server-side iframe must carry aria-hidden="true" — its JS twin (neutralizeIframe) always has; activation removes it. */
+	public function test_blocked_iframe_emits_aria_hidden() {
+		$out = $this->blocker()->rewrite( '<body><iframe src="https://www.youtube.com/embed/a" width="560"></iframe></body>' );
+
+		$this->assertSame( 1, preg_match( '#<iframe[^>]*>#', $out, $m ) );
+		$this->assertStringContainsString( 'aria-hidden="true"', $m[0] );
+		$this->assertStringContainsString( 'style="display:none"', $m[0] );
+	}
+
+	// --- B011: URL-only patterns must not gate inline script bodies ---
+
+	/**
+	 * PINS FIX B011 (the structural fix for the same class the vimeo test
+	 * above pins per-pattern). 'youtube.com/watch' / 'youtu.be/' are URL
+	 * patterns; matched against inline BODIES they neutralized any theme
+	 * script that merely mentioned a video link as a string. Rules now carry
+	 * a 'contexts' axis and the inline pass only sees inline-context rules
+	 * (function-call-shaped patterns like 'fbq('), so a plain URL string in
+	 * an inline body is never gated — while the same URL as an iframe src
+	 * still is (test_youtube_watch_and_short_links_are_gated above).
+	 */
+	public function test_url_pattern_in_an_inline_script_body_is_not_gated() {
+		$html = '<body><script>var share = "https://www.youtube.com/watch?v=abc"; var s2 = "https://youtu.be/abc";</script></body>';
+		$this->assertSame( $html, $this->blocker()->rewrite( $html ), 'A theme inline script mentioning a video URL as a string is not a tracker.' );
+	}
+
 	/**
 	 * should_run()'s decision funnels through a single
 	 * 'anchor_compliance_should_run' filter applied to the FINAL boolean,

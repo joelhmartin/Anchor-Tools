@@ -176,6 +176,91 @@ class Test_Compliance_Rest extends WP_UnitTestCase {
 		$this->assertSame( 400, $res->get_status() );
 	}
 
+	/**
+	 * Regression (C007): the endpoint is public and unauthenticated, so it
+	 * must never let a caller mint metered outbound geo lookups — with an IP
+	 * API configured and no edge headers present, handling a consent POST
+	 * must stay header/tier-1 only and make zero HTTP requests.
+	 */
+	public function test_consent_post_never_triggers_remote_geo_lookup() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'regions' => [ 'ip_api_provider' => 'ipinfo', 'ip_api_token' => 'test-token' ],
+		], false );
+		unset( $_SERVER['HTTP_CF_IPCOUNTRY'] );
+
+		$http_calls = 0;
+		$blocker    = function ( $pre ) use ( &$http_calls ) {
+			$http_calls++;
+			return new WP_Error( 'blocked', 'No HTTP allowed in this test.' );
+		};
+		add_filter( 'pre_http_request', $blocker );
+
+		// A fresh Rest + Geo pair (nothing memoized from earlier tests),
+		// invoked directly so the geo path itself is what's exercised.
+		$rest = new Anchor_Compliance_Rest( new Anchor_Compliance_Consent_Log(), new Anchor_Compliance_Geo() );
+		$req  = new WP_REST_Request( 'POST', '/anchor-compliance/v1/consent' );
+		$req->set_param( 'consent_id', '88888888-0000-4000-8000-000000000000' );
+		$req->set_param( 'categories', [ 'necessary' ] );
+		$req->set_param( 'method', 'banner' );
+		$this->posted_consent_ids[] = '88888888-0000-4000-8000-000000000000';
+
+		$res = $rest->handle_consent( $req );
+
+		remove_filter( 'pre_http_request', $blocker );
+
+		$this->assertSame( 200, $res->get_status() );
+		$this->assertSame( 0, $http_calls, 'The REST consent context must never reach the tier-2 IP API.' );
+
+		$rows = ( new Anchor_Compliance_Consent_Log() )->query();
+		$this->assertCount( 1, $rows );
+		$this->assertSame( '', $rows[0]->region, 'Headers-or-nothing: no headers means an empty region, not a lookup.' );
+	}
+
+	/** Regression (LAW-5): CPRA opt-out and placeholder grants are honest, recordable methods. */
+	public function test_do_not_sell_and_placeholder_methods_are_accepted() {
+		foreach ( [ 'do_not_sell' => '99999999-1111-4000-8000-000000000000', 'placeholder' => '99999999-2222-4000-8000-000000000000' ] as $method => $consent_id ) {
+			$res = $this->post( [
+				'consent_id' => $consent_id,
+				'categories' => [ 'necessary' ],
+				'method'     => $method,
+			] );
+			$this->assertSame( 200, $res->get_status(), "Method {$method} must be accepted." );
+		}
+
+		$log = new Anchor_Compliance_Consent_Log();
+		$this->assertCount( 1, $log->query( [ 'method' => 'do_not_sell' ] ) );
+		$this->assertCount( 1, $log->query( [ 'method' => 'placeholder' ] ) );
+	}
+
+	/**
+	 * Regression (C016): the client's policyVersion is what the visitor
+	 * consented under; when supplied it must reach the audit row.
+	 */
+	public function test_policy_version_param_is_recorded() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'general' => [ 'policy_version' => 7 ] ], false );
+
+		$res = $this->post( [
+			'consent_id'     => 'aaaa1111-0000-4000-8000-000000000000',
+			'categories'     => [ 'necessary' ],
+			'method'         => 'banner',
+			'policy_version' => 2,
+		] );
+
+		$this->assertSame( 200, $res->get_status() );
+		$rows = ( new Anchor_Compliance_Consent_Log() )->query();
+		$this->assertSame( '2', $rows[0]->policy_version );
+	}
+
+	public function test_invalid_policy_version_is_rejected() {
+		$res = $this->post( [
+			'consent_id'     => 'bbbb1111-0000-4000-8000-000000000000',
+			'categories'     => [ 'necessary' ],
+			'method'         => 'banner',
+			'policy_version' => 0,
+		] );
+		$this->assertSame( 400, $res->get_status() );
+	}
+
 	/** Explicit, not incidental: an empty selection (essentials-only) is a valid consent choice. */
 	public function test_empty_categories_array_is_accepted() {
 		$res = $this->post( [

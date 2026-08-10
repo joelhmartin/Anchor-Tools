@@ -66,8 +66,23 @@ class Anchor_Compliance_Rest {
 					'required'          => false,
 					'type'              => 'string',
 					'default'           => 'banner',
+					// Single source of truth for the method vocabulary: the
+					// log's VALID_METHODS, so the endpoint and the audit table
+					// can never drift apart on what a recordable method is.
 					'validate_callback' => static function ( $v ) {
-						return in_array( $v, [ 'banner', 'preference_center', 'gpc', 'api' ], true );
+						return in_array( $v, Anchor_Compliance_Consent_Log::VALID_METHODS, true );
+					},
+				],
+				'policy_version' => [
+					'required'          => false,
+					'type'              => 'integer',
+					// The policy version the client's payload/cookie was minted
+					// under, so the audit row records the policy text the
+					// visitor actually saw (settings may have moved since the
+					// page rendered). Optional; the log falls back to current
+					// settings when omitted.
+					'validate_callback' => static function ( $v ) {
+						return is_numeric( $v ) && (int) $v > 0;
 					},
 				],
 			],
@@ -105,13 +120,32 @@ class Anchor_Compliance_Rest {
 		}
 		set_transient( $dedupe_key, 1, self::DEDUPE_WINDOW );
 
-		$logged = $this->log->record( [
+		/*
+		 * Header/tier-1 geo only ($skip_remote = true): this endpoint is
+		 * public and unauthenticated, and the tier-2 IP-API lookup is a
+		 * metered outbound request (2s timeout) keyed off spoofable proxy
+		 * headers — an attacker rotating fake IPs would mint one paid API
+		 * call plus 2s of PHP per POST, bypassing the consent_id dedupe
+		 * entirely. The region column on the audit row is informational, so
+		 * headers-or-nothing is enough here. Called before posture() on
+		 * purpose: country() memoizes its result, so the subsequent posture()
+		 * reuses the header-only resolution instead of re-triggering the
+		 * remote ladder.
+		 */
+		$region = (string) $this->geo->country( true );
+
+		$record = [
 			'consent_id' => $consent_id,
 			'categories' => $categories,
-			'region'     => (string) $this->geo->country(),
+			'region'     => $region,
 			'posture'    => $this->geo->posture(),
 			'method'     => $method,
-		] );
+		];
+		if ( null !== $request->get_param( 'policy_version' ) ) {
+			$record['policy_version'] = (int) $request->get_param( 'policy_version' );
+		}
+
+		$logged = $this->log->record( $record );
 
 		/**
 		 * Fires after a consent choice reaches the server.

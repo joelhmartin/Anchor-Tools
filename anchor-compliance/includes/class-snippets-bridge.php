@@ -90,6 +90,15 @@ class Anchor_Compliance_Snippets_Bridge {
 	}
 
 	public function save( $post_id ) {
+		// save_post fires for EVERY post type — and for revisions (post type
+		// 'revision'), whose ids also arrive here during a snippet save with
+		// the metabox fields still present in $_POST. Without this check the
+		// category meta was written onto the revision id (and onto any other
+		// post type saved while these fields lingered). Checking the post
+		// type covers wp_is_post_revision() as a side effect.
+		if ( get_post_type( $post_id ) !== $this->cpt() ) {
+			return;
+		}
 		if ( ! isset( $_POST[ self::NONCE ] ) || ! wp_verify_nonce( wp_unslash( $_POST[ self::NONCE ] ), self::ACTION ) ) {
 			return;
 		}
@@ -257,15 +266,15 @@ class Anchor_Compliance_Snippets_Bridge {
 	}
 
 	/**
-	 * Rewrite every <script src="..."> and inline <script> in $html to the
-	 * SAME neutralized shape Anchor_Compliance_Script_Blocker produces
-	 * (rewrite_src_tags() / rewrite_inline_scripts() in class-script-blocker.php),
-	 * so the shared front-end runtime can activate these tags identically to
-	 * any other blocked embed: src moves to data-anchor-src, any existing type
-	 * is replaced with type="text/plain", and data-anchor-consent carries the
-	 * category. Non-script markup in the snippet (HTML, a <style> block, plain
-	 * text) is left untouched — neither pattern matches anything but a
-	 * <script> tag.
+	 * Rewrite every <script src="...">, inline <script>, <iframe src>, and
+	 * <img src> in $html to the SAME neutralized shape
+	 * Anchor_Compliance_Script_Blocker produces (rewrite_src_tags() /
+	 * rewrite_inline_scripts() in class-script-blocker.php), so the shared
+	 * front-end runtime can activate these tags identically to any other
+	 * blocked embed: src moves to data-anchor-src, any existing type is
+	 * replaced with type="text/plain" (scripts), and data-anchor-consent
+	 * carries the category. Other markup in the snippet (a <style> block,
+	 * plain text, ordinary HTML) is left untouched.
 	 *
 	 * The actual attribute rewriting reuses Anchor_Compliance_Script_Blocker's
 	 * own public-static helpers (type_value(), is_executable_type(),
@@ -280,12 +289,83 @@ class Anchor_Compliance_Snippets_Bridge {
 	private function neutralize( $html, $category ) {
 		$html = $this->neutralize_src_tags( $html, $category );
 		$html = $this->neutralize_inline_scripts( $html, $category );
+
+		// The iframe/img passes below scan flat text, exactly like the page
+		// buffer's — so first hide the body of every non-executable <script>
+		// (JSON-LD, text/template, and the scripts the two passes above just
+		// neutralized to type="text/plain") behind opaque tokens, or a
+		// literal "<iframe src=...>" string sitting INSIDE an inert body
+		// would be mistaken for a live tag. Same shared machinery, same
+		// restore, as Anchor_Compliance_Script_Blocker::rewrite().
+		$masked = [];
+		$html   = (string) $html;
+		if ( false !== stripos( $html, '<script' ) && preg_match( '#<script\b[^>]*\btype\s*=#i', $html ) ) {
+			$stage = Anchor_Compliance_Script_Blocker::mask_inert_scripts( $html, $masked );
+			if ( null !== $stage ) {
+				$html = $stage;
+			} else {
+				$masked = []; // PCRE failure — fail open, scan unmasked.
+			}
+		}
+
+		// A snippet's DECLARED category gates everything it outputs, not only
+		// its <script> tags: a marketing snippet's iframe or img beacon from
+		// a host the services registry does not know is still that snippet's
+		// tracker and must not run pre-consent.
+		$html = $this->neutralize_embeds( $html, $category, 'iframe' );
+		$html = $this->neutralize_embeds( $html, $category, 'img' );
+
+		if ( $masked ) {
+			$html = strtr( $html, $masked );
+		}
 		return $html;
 	}
 
-	/** Mirrors Anchor_Compliance_Script_Blocker::rewrite_src_tags() for the 'script' tag only — see that method for the full pattern walkthrough. */
+	/**
+	 * Neutralize every <iframe src> / <img src> in the snippet to the exact
+	 * bytes the page buffer emits — the markup itself comes from
+	 * Anchor_Compliance_Script_Blocker::blocked_iframe_markup() /
+	 * blocked_img_markup(), so the shared front-end runtime activates these
+	 * identically to any other blocked embed.
+	 *
+	 * data: and about: URLs are skipped: neither makes a network request, so
+	 * gating them buys nothing (about:blank is also the JS runtime's own
+	 * skip in neutralizeIframe()). Idempotent like the blocker's passes —
+	 * the rewritten tag has no src, and data-anchor-src is excluded by the
+	 * pattern's lookbehind.
+	 */
+	private function neutralize_embeds( $html, $category, $tag ) {
+		$pattern = sprintf( Anchor_Compliance_Script_Blocker::SRC_TAG_PATTERN_TEMPLATE, $tag );
+		$copy    = ( 'iframe' === $tag ) ? Anchor_Compliance_Script_Blocker::placeholder_copy_from_settings() : [];
+
+		return preg_replace_callback(
+			$pattern,
+			function ( $m ) use ( $category, $tag, $copy ) {
+				$before = $m[1];
+				$url    = ( '' !== $m[2] ) ? $m[3] : $m[4];
+				$after  = Anchor_Compliance_Script_Blocker::strip_self_closing_slash( $m[5] );
+
+				$clean_url = html_entity_decode( $url, ENT_QUOTES, 'UTF-8' );
+
+				$scheme = strtolower( ltrim( $clean_url ) );
+				if ( 0 === strpos( $scheme, 'data:' ) || 0 === strpos( $scheme, 'about:' ) ) {
+					return $m[0]; // no network request — nothing to gate.
+				}
+
+				$attrs = Anchor_Compliance_Script_Blocker::strip_type_attribute( $before . $after );
+
+				if ( 'img' === $tag ) {
+					return Anchor_Compliance_Script_Blocker::blocked_img_markup( $attrs, $category, $clean_url );
+				}
+				return Anchor_Compliance_Script_Blocker::blocked_iframe_markup( $attrs, $category, $clean_url, $copy );
+			},
+			$html
+		);
+	}
+
+	/** Mirrors Anchor_Compliance_Script_Blocker::rewrite_src_tags() for the 'script' tag only — the pattern IS the blocker's own constant; see that class for the full walkthrough. */
 	private function neutralize_src_tags( $html, $category ) {
-		$pattern = '#<script\b([^>]*?)(?<![\w:.-])src\s*=\s*(?:(["\'])((?:(?!\2)[^>])*)\2|([^\s>]+))([^>]*)>#is';
+		$pattern = sprintf( Anchor_Compliance_Script_Blocker::SRC_TAG_PATTERN_TEMPLATE, 'script' );
 
 		return preg_replace_callback(
 			$pattern,
@@ -324,7 +404,7 @@ class Anchor_Compliance_Snippets_Bridge {
 	 */
 	private function neutralize_inline_scripts( $html, $category ) {
 		return preg_replace_callback(
-			'#<script\b(?![^>]*(?<![\w:.-])src\s*=)([^>]*)>(.*?)</script>#is',
+			Anchor_Compliance_Script_Blocker::INLINE_SCRIPT_PATTERN,
 			function ( $m ) use ( $category ) {
 				$attrs = $m[1];
 				$body  = $m[2];

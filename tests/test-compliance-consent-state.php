@@ -86,6 +86,32 @@ class Test_Compliance_Consent_State extends WP_UnitTestCase {
 		$this->assertTrue( $s->allows( 'functional' ), 'GPC covers sale/share, not functional storage.' );
 	}
 
+	/**
+	 * Regression (C001): the settings-side sanitize_category() falls back to
+	 * 'marketing' for unknown tokens (it categorizes services), so routing a
+	 * cookie's grant list through it turned a forged value like cats:["junk"]
+	 * into a marketing GRANT. Grant lists must drop unknown tokens — exactly
+	 * as the JS mirror does — never coerce them into a grant.
+	 */
+	public function test_unknown_cookie_tokens_are_dropped_not_coerced_into_marketing() {
+		$this->set_cookie( [ 'junk', 'analytics' ] );
+		$s = $this->state();
+
+		$this->assertTrue( $s->has_stored_consent() );
+		$this->assertTrue( $s->allows( 'analytics' ), 'Known tokens still grant.' );
+		$this->assertFalse( $s->allows( 'marketing' ), 'An unknown token must never grant marketing.' );
+		$this->assertFalse( $s->allows( 'functional' ) );
+	}
+
+	public function test_non_string_cookie_tokens_are_dropped() {
+		$this->set_cookie( [ 123, null, [ 'nested' ], 'functional' ] );
+		$s = $this->state();
+
+		$this->assertTrue( $s->allows( 'functional' ) );
+		$this->assertFalse( $s->allows( 'marketing' ) );
+		$this->assertFalse( $s->allows( 'analytics' ) );
+	}
+
 	public function test_gpc_can_be_disabled_in_settings() {
 		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'advanced' => [ 'honor_gpc' => false ] ], false );
 		$_SERVER['HTTP_SEC_GPC'] = '1';

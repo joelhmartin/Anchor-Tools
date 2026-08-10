@@ -374,6 +374,11 @@ class Anchor_Compliance_Snippets_Bridge {
 				$url    = ( '' !== $m[2] ) ? $m[3] : $m[4];
 				$after  = Anchor_Compliance_Script_Blocker::strip_self_closing_slash( $m[5] );
 
+				// Read the original type BEFORE stripping it — the shared
+				// builder preserves a "module" type in data-anchor-type so
+				// activation does not restore an ES module as a classic script.
+				$original_type = Anchor_Compliance_Script_Blocker::type_value( $before . $after );
+
 				$attrs = Anchor_Compliance_Script_Blocker::strip_type_attribute( $before . $after );
 
 				// Decode once, encode once — see the identical comment in
@@ -382,12 +387,7 @@ class Anchor_Compliance_Snippets_Bridge {
 				// query string).
 				$clean_url = html_entity_decode( $url, ENT_QUOTES, 'UTF-8' );
 
-				return sprintf(
-					'<script%s type="text/plain" data-anchor-consent="%s" data-anchor-src="%s">',
-					$attrs,
-					esc_attr( $category ),
-					esc_attr( $clean_url )
-				);
+				return Anchor_Compliance_Script_Blocker::blocked_script_markup( $attrs, $category, $clean_url, $original_type );
 			},
 			$html
 		);
@@ -409,7 +409,8 @@ class Anchor_Compliance_Snippets_Bridge {
 				$attrs = $m[1];
 				$body  = $m[2];
 
-				if ( ! Anchor_Compliance_Script_Blocker::is_executable_type( Anchor_Compliance_Script_Blocker::type_value( $attrs ) ) ) {
+				$original_type = Anchor_Compliance_Script_Blocker::type_value( $attrs );
+				if ( ! Anchor_Compliance_Script_Blocker::is_executable_type( $original_type ) ) {
 					return $m[0]; // JSON-LD, a client-side template, etc. — not code, never gated.
 				}
 
@@ -417,12 +418,12 @@ class Anchor_Compliance_Snippets_Bridge {
 					return $m[0]; // already handled — keeps this idempotent on its own prior output.
 				}
 
-				return sprintf(
-					'<script%s type="text/plain" data-anchor-consent="%s">%s</script>',
+				return Anchor_Compliance_Script_Blocker::blocked_script_markup(
 					Anchor_Compliance_Script_Blocker::strip_type_attribute( $attrs ),
-					esc_attr( $category ),
-					$body
-				);
+					$category,
+					null,
+					$original_type
+				) . $body . '</script>';
 			},
 			$html
 		);

@@ -34,9 +34,22 @@ class Anchor_Compliance_Service_Registry {
 	/**
 	 * Sane default contexts for a pattern that does not declare its own:
 	 * a function-call-shaped pattern ('fbq(') can only ever appear inside an
-	 * inline script body — it is not a URL; a URL-shaped pattern is only
-	 * meaningful where a URL appears (src attributes, iframe embeds, link
-	 * hints), never as a substring of an inline body.
+	 * inline script body — it is not a URL; a URL-shaped pattern defaults to
+	 * ALL THREE contexts, inline included. Tracker vendors distribute their
+	 * tags as paste-in inline loader snippets whose bodies embed the vendor
+	 * URL as a string (Hotjar's `r.src="https://static.hotjar.com/..."`,
+	 * Clarity, LinkedIn Insight, TikTok, HubSpot all ship this shape), so a
+	 * URL pattern that never gated inline bodies let every such snippet
+	 * execute pre-consent — only the rare 'fbq('-style pattern was caught.
+	 *
+	 * The false-positive class that motivated narrowing this (B011: a theme
+	 * inline script merely MENTIONING a youtube.com/watch link as a string is
+	 * not a tracker) is handled where it actually lives: the content-embed
+	 * builtins (youtube, vimeo, google_maps, twitter_embeds) declare
+	 * 'contexts' => ['src','iframe'] explicitly, because theirs are the URLs
+	 * that legitimately appear as plain links/strings in theme scripts. A
+	 * tracker CDN host appearing in an inline body, by contrast, IS the
+	 * tracker's own loader.
 	 *
 	 * A service entry (builtin or filter-added) may override this by
 	 * declaring its own 'contexts' list; unknown values are discarded.
@@ -45,7 +58,7 @@ class Anchor_Compliance_Service_Registry {
 	 * @return string[] Subset of RULE_CONTEXTS.
 	 */
 	public static function default_contexts_for_pattern( $pattern ) {
-		return ( false !== strpos( (string) $pattern, '(' ) ) ? [ 'inline' ] : [ 'src', 'iframe' ];
+		return ( false !== strpos( (string) $pattern, '(' ) ) ? [ 'inline' ] : self::RULE_CONTEXTS;
 	}
 
 	/**
@@ -117,6 +130,10 @@ class Anchor_Compliance_Service_Registry {
 			],
 			'google_maps' => [
 				'name' => 'Google Maps', 'provider' => 'Google', 'category' => 'functional',
+				// Content embed: its URLs legitimately appear as plain strings
+				// in theme inline scripts (a map link, a lazy-init URL), so
+				// inline bodies are excluded — see default_contexts_for_pattern().
+				'contexts' => [ 'src', 'iframe' ],
 				'patterns' => [ 'maps.googleapis.com', 'maps.google.com/maps/embed' ],
 				'cookies' => [],
 			],
@@ -129,6 +146,10 @@ class Anchor_Compliance_Service_Registry {
 			],
 			'youtube' => [
 				'name' => 'YouTube', 'provider' => 'Google', 'category' => 'marketing',
+				// Content embed: a theme inline script that merely mentions a
+				// video link as a string is not a tracker (pinned B011), so
+				// inline bodies are excluded — see default_contexts_for_pattern().
+				'contexts' => [ 'src', 'iframe' ],
 				'patterns' => [ 'youtube.com/embed', 'youtube-nocookie.com/embed', 'youtube.com/iframe_api', 'youtube.com/watch', 'youtu.be/' ],
 				'cookies' => [
 					[ 'name' => 'VISITOR_INFO1_LIVE', 'purpose' => 'Estimates bandwidth and player preferences.', 'duration' => '6 months' ],
@@ -137,6 +158,9 @@ class Anchor_Compliance_Service_Registry {
 			],
 			'vimeo' => [
 				'name' => 'Vimeo', 'provider' => 'Vimeo', 'category' => 'marketing',
+				// Content embed: same rationale as youtube (anchor-webinars
+				// builds a vimeo.com/api URL in an inline script, for one).
+				'contexts' => [ 'src', 'iframe' ],
 				'patterns' => [ 'player.vimeo.com', 'vimeo.com/api', 'vimeo.com/video/' ],
 				'cookies' => [
 					[ 'name' => 'vuid', 'purpose' => 'Player analytics.', 'duration' => '2 years' ],
@@ -183,6 +207,9 @@ class Anchor_Compliance_Service_Registry {
 			// tweet embed was an ad tracker and disclosed the wrong cookies.
 			'twitter_embeds' => [
 				'name' => 'X (Twitter) Embeds', 'provider' => 'X Corp', 'category' => 'functional',
+				// Content embed: a tweet URL/loader host mentioned as a string
+				// in a theme inline script is not the widget executing.
+				'contexts' => [ 'src', 'iframe' ],
 				'patterns' => [ 'platform.twitter.com' ],
 				'cookies' => [
 					[ 'name' => 'guest_id', 'purpose' => 'Identifies the browser to X for embedded content.', 'duration' => '2 years' ],

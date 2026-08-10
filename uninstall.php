@@ -32,6 +32,7 @@ global $wpdb;
  * names — keep in sync with:
  *   anchor-compliance/includes/class-consent-log.php (table, DB option, cron)
  *   anchor-compliance/includes/class-dsar.php        (table, DB option)
+ *   anchor-compliance/includes/class-settings.php    (EXPORT_AUDIT_OPTION)
  *   anchor-compliance/anchor-compliance.php          (OPTION_KEY, cron_hooks())
  */
 
@@ -43,6 +44,7 @@ $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}anchor_privacy_requests" ); /
 delete_option( 'anchor_compliance_options' );
 delete_option( 'anchor_compliance_log_db_version' );
 delete_option( 'anchor_compliance_dsar_db_version' );
+delete_option( 'anchor_compliance_export_audit' ); // D028 consent-log export audit trail.
 
 // Cron events. (The DSAR purge shares this daily hook — one clear covers both.)
 wp_clear_scheduled_hook( 'anchor_compliance_purge_log' );

@@ -276,7 +276,18 @@ class Test_Compliance_Registry extends WP_UnitTestCase {
 
 		$inline = wp_list_pluck( $r->rules_for_context( 'inline' ), 'pattern' );
 		$this->assertContains( 'fbq(', $inline, 'A function-call-shaped pattern belongs to the inline context.' );
-		$this->assertNotContains( 'youtube.com/watch', $inline, 'A URL pattern must never gate inline bodies.' );
+		// Tracker URL patterns gate inline bodies too — vendors ship paste-in
+		// inline loader snippets whose bodies embed the CDN host as a string.
+		$this->assertContains( 'static.hotjar.com', $inline, 'A tracker CDN pattern must gate inline loader snippets.' );
+		$this->assertContains( 'clarity.ms', $inline );
+		$this->assertContains( 'connect.facebook.net', $inline );
+		// ...but the content-embed services declare src/iframe-only contexts:
+		// a plain video/map/tweet link in a theme inline script is not a tracker.
+		$this->assertNotContains( 'youtube.com/watch', $inline, 'A content-embed URL pattern must never gate inline bodies.' );
+		$this->assertNotContains( 'youtu.be/', $inline );
+		$this->assertNotContains( 'vimeo.com/video/', $inline );
+		$this->assertNotContains( 'maps.googleapis.com', $inline );
+		$this->assertNotContains( 'platform.twitter.com', $inline );
 
 		$src = wp_list_pluck( $r->rules_for_context( 'src' ), 'pattern' );
 		$this->assertContains( 'youtube.com/watch', $src );
@@ -309,7 +320,7 @@ class Test_Compliance_Registry extends WP_UnitTestCase {
 			$by_pattern[ $rule['pattern'] ] = $rule['contexts'];
 		}
 
-		$this->assertSame( [ 'src', 'iframe' ], $by_pattern['acme-tracker.com'] );
+		$this->assertSame( [ 'src', 'iframe', 'inline' ], $by_pattern['acme-tracker.com'], 'A URL-shaped custom rule gates every context, inline included — an admin-registered tracker host inside an inline body is that tracker\'s loader.' );
 		$this->assertSame( [ 'inline' ], $by_pattern['acmeTrack('] );
 	}
 

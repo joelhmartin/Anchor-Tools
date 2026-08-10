@@ -44,6 +44,7 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 		$this->assertContains( 'status', $columns );
 		$this->assertContains( 'verified_at', $columns );
 		$this->assertContains( 'verify_key', $columns );
+		$this->assertContains( 'closed_at', $columns, 'Schema v3: retention is measured from closure.' );
 	}
 
 	/**
@@ -129,14 +130,89 @@ class Test_Compliance_Dsar extends WP_UnitTestCase {
 		$this->dsar->set_status( $old_closed, 'completed' );
 		$this->dsar->set_status( $recent_closed, 'rejected' );
 
+		// Schema v3: the purge clock runs from closed_at, so an expired closed
+		// row needs both its submission AND its closure backdated.
 		$backdate = gmdate( 'Y-m-d H:i:s', time() - 400 * DAY_IN_SECONDS );
-		$wpdb->update( Anchor_Compliance_Dsar::table(), [ 'created_at' => $backdate ], [ 'id' => $old_closed ] );
+		$wpdb->update( Anchor_Compliance_Dsar::table(), [ 'created_at' => $backdate, 'closed_at' => $backdate ], [ 'id' => $old_closed ] );
 		$wpdb->update( Anchor_Compliance_Dsar::table(), [ 'created_at' => $backdate ], [ 'id' => $old_open ] );
 
 		$this->assertSame( 1, Anchor_Compliance_Dsar::purge_expired() );
 		$this->assertNull( $this->dsar->get( $old_closed ), 'Closed rows past retention must be deleted.' );
 		$this->assertNotNull( $this->dsar->get( $recent_closed ), 'Closed rows inside the window must be kept.' );
 		$this->assertNotNull( $this->dsar->get( $old_open ), 'Open rows must never be purged, however old.' );
+	}
+
+	/**
+	 * Schema v3 (review finding 2): retention runs from CLOSURE, not
+	 * submission. A request that stayed open longer than the whole retention
+	 * window and was completed today must survive the nightly purge for
+	 * retention_days after that closure — under the old created_at rule it
+	 * was deleted by the very next cron run.
+	 */
+	public function test_purge_measures_retention_from_closure_not_creation() {
+		global $wpdb;
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'retention_days' => 365 ] ], false );
+
+		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'long-open@test.com' ] );
+		// Submitted 400 days ago…
+		$wpdb->update(
+			Anchor_Compliance_Dsar::table(),
+			[ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 400 * DAY_IN_SECONDS ) ],
+			[ 'id' => $id ]
+		);
+		// …but only answered today.
+		$this->assertSame( 'updated', $this->dsar->set_status( $id, 'completed' ) );
+
+		$this->assertSame( 0, Anchor_Compliance_Dsar::purge_expired() );
+		$this->assertNotNull( $this->dsar->get( $id ), 'A row closed today must survive for retention_days after closure, however old the submission.' );
+	}
+
+	/** Schema v3: closed_at is stamped on close, immovable on re-apply, kept across closed→closed, and cleared on reopen. */
+	public function test_set_status_stamps_and_clears_closed_at() {
+		global $wpdb;
+
+		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'closed-at@test.com' ] );
+		$this->assertNull( $this->dsar->get( $id )->closed_at, 'A new request has no closure time.' );
+
+		$this->assertSame( 'updated', $this->dsar->set_status( $id, 'completed' ) );
+		$this->assertNotEmpty( $this->dsar->get( $id )->closed_at, 'Closing must stamp closed_at.' );
+
+		// Deterministic re-apply check: pin closed_at to a known value, then
+		// re-apply the same status — the clock must not restart.
+		$wpdb->update( Anchor_Compliance_Dsar::table(), [ 'closed_at' => '2020-01-01 00:00:00' ], [ 'id' => $id ] );
+		$this->assertSame( 'unchanged', $this->dsar->set_status( $id, 'completed' ) );
+		$this->assertSame( '2020-01-01 00:00:00', $this->dsar->get( $id )->closed_at, 'Re-applying a closed status must not move the retention clock.' );
+
+		// completed -> rejected stays closed: the original closure stands.
+		$this->assertSame( 'updated', $this->dsar->set_status( $id, 'rejected' ) );
+		$this->assertSame( '2020-01-01 00:00:00', $this->dsar->get( $id )->closed_at, 'A closed→closed transition keeps the original closure time.' );
+
+		// Reopening clears it — the row is an open request again.
+		$this->assertSame( 'updated', $this->dsar->set_status( $id, 'in_progress' ) );
+		$this->assertNull( $this->dsar->get( $id )->closed_at, 'Reopening must clear closed_at.' );
+	}
+
+	/**
+	 * Schema v3: rows closed before the migration carry a closed status with a
+	 * NULL closed_at — those fall back to created_at (a bounded imperfection:
+	 * for legacy rows the clock may run early by however long the request sat
+	 * open, documented at the purge query).
+	 */
+	public function test_purge_falls_back_to_created_at_for_legacy_closed_rows() {
+		global $wpdb;
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'dsar' => [ 'retention_days' => 365 ] ], false );
+
+		$id = $this->dsar->create( [ 'type' => 'access', 'email' => 'legacy-closed@test.com' ] );
+		$this->dsar->set_status( $id, 'completed' );
+		// Simulate a pre-v3 row: old submission, closed status, no recorded closure.
+		$wpdb->update(
+			Anchor_Compliance_Dsar::table(),
+			[ 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 400 * DAY_IN_SECONDS ), 'closed_at' => null ],
+			[ 'id' => $id ]
+		);
+
+		$this->assertSame( 1, Anchor_Compliance_Dsar::purge_expired() );
+		$this->assertNull( $this->dsar->get( $id ), 'Legacy NULL-closed_at rows must still age out on created_at.' );
 	}
 
 	public function test_purge_expired_keeps_everything_when_retention_is_zero() {

@@ -34,9 +34,25 @@ class Anchor_Compliance_Geo {
 	/**
 	 * Which geo-header sources each regions.trusted_proxy mode honors.
 	 *
-	 * Any HTTP_* entry in HEADERS is client-forgeable unless a proxy the site
-	 * owner controls overwrites it in transit, so a header is only consulted
-	 * when the admin has declared the proxy that produces it (D009).
+	 * The trust model is built around what forgery can actually hurt:
+	 *
+	 * - COUNTRY headers: forging one only changes the forger's OWN banner
+	 *   posture — entirely self-inflicted, and the fail direction doesn't
+	 *   matter. So the well-known edge-CDN country headers (Cloudflare,
+	 *   CloudFront, Vercel) are honored by default ('edge'), restoring
+	 *   zero-config behavior for sites fronted by those CDNs. The generic
+	 *   X-Geo-Country stays OUT of 'edge': it is emitted by arbitrary
+	 *   middleboxes, and a misconfigured one echoing client input was the
+	 *   original audit instance (D009) — it needs an explicit 'other'.
+	 *
+	 * - Forwarded-IP headers: these drive the metered Tier-2 IP-API lookup
+	 *   and mint per-/24 cache entries (see client_ip()), a real abuse
+	 *   surface — they stay gated behind an explicitly declared proxy
+	 *   ('cloudflare' / 'other'). Under 'edge' and 'none', lookups use
+	 *   REMOTE_ADDR only.
+	 *
+	 * - 'none' remains available as a hardening mode: every HTTP header is
+	 *   ignored, geoip only.
 	 *
 	 * 'geoip' (GEOIP_COUNTRY_CODE) is not an HTTP header at all — it is a
 	 * server environment variable set by mod_geoip / ngx_http_geoip on the
@@ -44,6 +60,7 @@ class Anchor_Compliance_Geo {
 	 * prefix, so a visitor cannot inject it; it is trusted in every mode.
 	 */
 	const TRUST_MODES = [
+		'edge'       => [ 'cf', 'cloudfront', 'vercel', 'geoip' ],
 		'none'       => [ 'geoip' ],
 		'cloudflare' => [ 'cf', 'geoip' ],
 		'other'      => [ 'cloudfront', 'vercel', 'geoip', 'xgeo' ],
@@ -54,7 +71,7 @@ class Anchor_Compliance_Geo {
 	 * @return string[] The HEADERS labels honored under that mode.
 	 */
 	public static function trusted_labels( $mode ) {
-		return isset( self::TRUST_MODES[ $mode ] ) ? self::TRUST_MODES[ $mode ] : self::TRUST_MODES['none'];
+		return isset( self::TRUST_MODES[ $mode ] ) ? self::TRUST_MODES[ $mode ] : self::TRUST_MODES['edge'];
 	}
 
 	/** Placeholders that are syntactically valid but mean "unknown". */
@@ -67,11 +84,11 @@ class Anchor_Compliance_Geo {
 		return Anchor_Compliance_Settings::get();
 	}
 
-	/** @return string 'none' | 'cloudflare' | 'other' */
+	/** @return string 'edge' | 'none' | 'cloudflare' | 'other' */
 	private function trusted_proxy() {
 		$regions = $this->opts()['regions'];
-		$mode    = isset( $regions['trusted_proxy'] ) ? (string) $regions['trusted_proxy'] : 'none';
-		return isset( self::TRUST_MODES[ $mode ] ) ? $mode : 'none';
+		$mode    = isset( $regions['trusted_proxy'] ) ? (string) $regions['trusted_proxy'] : 'edge';
+		return isset( self::TRUST_MODES[ $mode ] ) ? $mode : 'edge';
 	}
 
 	/**
@@ -187,7 +204,10 @@ class Anchor_Compliance_Geo {
 		// Client-IP headers are only honored when the proxy that sets them is
 		// the one the admin declared trusted (D010) — a spoofed
 		// CF-Connecting-IP / X-Real-IP must never drive metered Tier-2
-		// lookups or mint fresh per-/24 cache entries.
+		// lookups or mint fresh per-/24 cache entries. Under 'edge' (the
+		// default) and 'none', only REMOTE_ADDR counts: country headers are
+		// safe to honor by default because forging one is self-inflicted, but
+		// forwarded-IP headers gate spend and stay opt-in.
 		$candidates = [ 'REMOTE_ADDR' ];
 		if ( 'cloudflare' === $mode ) {
 			$candidates = [ 'HTTP_CF_CONNECTING_IP', 'REMOTE_ADDR' ];

@@ -408,8 +408,22 @@ class Anchor_Compliance_Banner {
 		$radius     = (int) $appearance['radius'];
 		$accent_ink = $this->contrast_ink( $colors['accent'] );
 
-		$strict       = $this->geo->is_strict();
-		$body_copy    = $strict ? $content['body'] : $content['notice_body'];
+		$strict = $this->geo->is_strict();
+
+		// D024 boundary: blank-is-blank is honored for every content string
+		// EXCEPT the two the banner cannot be accessible without. The <h2> is
+		// the dialog's aria-labelledby target — rendered empty, the dialog has
+		// no accessible name at all — and a bodyless strict modal demands a
+		// decision it never explains. Those fall back to the shipped defaults
+		// at RENDER time only: storage keeps the admin's blank (the settings
+		// screen still shows the field as cleared), and every other content
+		// string (labels, dns_confirmation, etc.) still renders blank as blank.
+		$content_defaults = Anchor_Compliance_Settings::defaults()['content'];
+		$heading          = '' !== trim( (string) $content['heading'] ) ? $content['heading'] : $content_defaults['heading'];
+		$body_copy        = $strict ? $content['body'] : $content['notice_body'];
+		if ( '' === trim( (string) $body_copy ) ) {
+			$body_copy = $strict ? $content_defaults['body'] : $content_defaults['notice_body'];
+		}
 		$reject_label = $strict ? $content['reject_label'] : $content['dns_label'];
 
 		$categories = $this->categories();
@@ -466,7 +480,7 @@ class Anchor_Compliance_Banner {
 			}
 		}
 
-		printf( '<h2 id="anchor-cmp-heading" class="anchor-cmp-heading">%s</h2>', wp_kses_post( $content['heading'] ) );
+		printf( '<h2 id="anchor-cmp-heading" class="anchor-cmp-heading">%s</h2>', wp_kses_post( $heading ) );
 		printf( '<div class="anchor-cmp-body">%s</div>', wp_kses_post( $body_copy ) );
 
 		if ( $this->state->is_gpc() ) {

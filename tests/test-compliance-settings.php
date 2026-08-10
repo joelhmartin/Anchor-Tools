@@ -173,14 +173,19 @@ class Test_Compliance_Settings extends WP_UnitTestCase {
 	 * custom-rule purpose/duration (B009), export audit (D028).
 	 * ----------------------------------------------------------------- */
 
-	public function test_trusted_proxy_defaults_to_none_and_sanitizes() {
-		$this->assertSame( 'none', Anchor_Compliance_Settings::defaults()['regions']['trusted_proxy'] );
+	public function test_trusted_proxy_defaults_to_edge_and_sanitizes() {
+		// D009 (revised): 'edge' is the zero-config default — edge-CDN country
+		// headers are safe to honor (forging one is self-inflicted), so
+		// existing Cloudflare/CloudFront/Vercel-fronted installs keep working.
+		$this->assertSame( 'edge', Anchor_Compliance_Settings::defaults()['regions']['trusted_proxy'] );
 
-		$out = Anchor_Compliance_Settings::sanitize( [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ] );
-		$this->assertSame( 'cloudflare', $out['regions']['trusted_proxy'] );
+		foreach ( [ 'edge', 'none', 'cloudflare', 'other' ] as $mode ) {
+			$out = Anchor_Compliance_Settings::sanitize( [ 'regions' => [ 'trusted_proxy' => $mode ] ] );
+			$this->assertSame( $mode, $out['regions']['trusted_proxy'], "Mode {$mode} must survive sanitize." );
+		}
 
 		$out = Anchor_Compliance_Settings::sanitize( [ 'regions' => [ 'trusted_proxy' => 'evil-mode' ] ] );
-		$this->assertSame( 'none', $out['regions']['trusted_proxy'], 'An unrecognized mode must fall back to none.' );
+		$this->assertSame( 'edge', $out['regions']['trusted_proxy'], 'An unrecognized mode must fall back to the edge default.' );
 	}
 
 	public function test_deselecting_every_strict_country_stores_an_empty_list() {

@@ -10,7 +10,7 @@ class Test_Compliance_Settings_UI extends WP_UnitTestCase {
 	}
 
 	public function tear_down() {
-		unset( $_SERVER['HTTP_CF_IPCOUNTRY'] );
+		unset( $_SERVER['HTTP_CF_IPCOUNTRY'], $_SERVER['HTTP_X_GEO_COUNTRY'] );
 		parent::tear_down();
 	}
 
@@ -28,7 +28,6 @@ class Test_Compliance_Settings_UI extends WP_UnitTestCase {
 	}
 
 	public function test_shows_the_detected_region_readout() {
-		// D009: the header is only honored once its proxy is declared trusted.
 		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'cloudflare' ] ], false );
 		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
 		$html = $this->render();
@@ -36,26 +35,48 @@ class Test_Compliance_Settings_UI extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'CF-IPCountry', $html, 'The active geo tier must be named.' );
 	}
 
+	public function test_readout_detects_region_from_an_edge_header_with_zero_config() {
+		// D009 (revised): no stored option at all — the 'edge' default must
+		// honor a CF-IPCountry header out of the box, so existing
+		// Cloudflare-fronted installs need no migration step.
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
+		$html = $this->render();
+		$this->assertStringContainsString( 'Detected region: US', $html );
+		$this->assertStringNotContainsString( 'No geo header detected', $html );
+	}
+
 	public function test_warns_when_no_geo_header_is_present() {
 		$html = $this->render();
 		$this->assertStringContainsString( 'No geo header detected', $html );
 	}
 
+	public function test_readout_names_the_active_trust_mode() {
+		$html = $this->render();
+		$this->assertStringContainsString( 'Active trust mode', $html );
+		$this->assertStringContainsString( 'Edge CDN', $html, 'The default edge mode must be described.' );
+
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'regions' => [ 'trusted_proxy' => 'none' ] ], false );
+		$html = $this->render();
+		$this->assertStringContainsString( 'Active trust mode', $html );
+		$this->assertStringContainsString( 'hardened', $html, 'The none mode must be described as the hardened choice.' );
+	}
+
 	public function test_readout_explains_an_untrusted_geo_header() {
-		// D009: default trusted_proxy=none + a CF header present — the admin
-		// must be told the header exists but is deliberately ignored, or the
-		// "no geo header" message reads as a Cloudflare misconfiguration.
-		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
+		// D009 (revised): under the default 'edge' mode the generic
+		// X-Geo-Country header is deliberately ignored — the admin must be told
+		// the header exists but is not honored, or the "no geo header" message
+		// reads as a middlebox misconfiguration.
+		$_SERVER['HTTP_X_GEO_COUNTRY'] = 'US';
 		$html = $this->render();
 		$this->assertStringContainsString( 'No geo header detected', $html );
 		$this->assertStringContainsString( 'Trusted proxy', $html );
 		$this->assertStringContainsString( 'being ignored', $html );
 	}
 
-	public function test_renders_the_trusted_proxy_field() {
+	public function test_renders_the_trusted_proxy_field_with_all_four_modes() {
 		$html = $this->render();
 		$this->assertStringContainsString( 'name="' . Anchor_Compliance_Module::OPTION_KEY . '[regions][trusted_proxy]"', $html );
-		foreach ( [ 'none', 'cloudflare', 'other' ] as $mode ) {
+		foreach ( [ 'edge', 'none', 'cloudflare', 'other' ] as $mode ) {
 			$this->assertStringContainsString( 'value="' . $mode . '"', $html );
 		}
 	}

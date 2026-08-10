@@ -803,10 +803,20 @@
 			for (var i = 0; i < el.attributes.length; i++) {
 				var a = el.attributes[i];
 				var n = a.name.toLowerCase();
-				if (n === 'type' || n === 'data-anchor-consent' || n === 'data-anchor-src') { continue; }
+				if (n === 'type' || n === 'data-anchor-consent' || n === 'data-anchor-src' || n === 'data-anchor-type') { continue; }
 				try {
 					fresh.setAttribute(a.name, a.value);
 				} catch (e) { /* an invalid attribute name must not abort the rest */ }
+			}
+
+			// The server stashes the original executable type (only "module" —
+			// classic types all restore identically) in data-anchor-type.
+			// Without restoring it, an ES module snippet came back as a CLASSIC
+			// script and its import statements were a guaranteed SyntaxError —
+			// consent granted, tag dead. Absent attribute = classic, as before.
+			var restoredType = el.getAttribute('data-anchor-type');
+			if (restoredType) {
+				try { fresh.type = restoredType; } catch (e) { /* ignore */ }
 			}
 
 			// A CSP nonce is hidden from getAttribute() by browsers that
@@ -1008,17 +1018,23 @@
 
 		var body;
 		try {
-			body = JSON.stringify({
+			var payload = {
 				consent_id: consentId,
 				categories: categories,
-				method: method,
-				// The policy version this choice was made against (payload
-				// `policyVersion`, normalized in Section 1). On a full-page-
-				// cached site the server cannot infer it from the request, and
-				// an audit row without it cannot prove WHICH policy text the
-				// visitor saw.
-				policy_version: POLICY_VERSION
-			});
+				method: method
+			};
+			// The policy version this choice was made against (payload
+			// `policyVersion`, normalized in Section 1). On a full-page-
+			// cached site the server cannot infer it from the request, and
+			// an audit row without it cannot prove WHICH policy text the
+			// visitor saw. When it is UNKNOWN (a stale-cache payload
+			// normalized to 0) the key is omitted entirely and the server
+			// stamps the row with its current settings version — a known-bad
+			// value must never cost the audit record itself.
+			if (POLICY_VERSION) {
+				payload.policy_version = POLICY_VERSION;
+			}
+			body = JSON.stringify(payload);
 		} catch (e) {
 			return;
 		}
@@ -1368,6 +1384,7 @@
 	 */
 	var lastConsentAt = 0;
 	var lastConsentKey = '';
+	var lastConsentResult = true; // outcome of the attempt behind lastConsentKey
 	var CONSENT_DEBOUNCE_MS = 700;
 
 	function setConsent(categories, method, opts) {
@@ -1386,17 +1403,22 @@
 			// visitor can legitimately trigger the identical decision from a
 			// second, still-open dialog.
 			//
-			// Suppress the RECORD, never the UI response. Returning before the
-			// epilogue leaves the panel open with focus still trapped inside
-			// it and nothing visibly happening — a dead click.
-			if (!opts.keepOpen) {
+			// Suppress the RECORD, never the UI response — but report the
+			// REMEMBERED outcome, not a hardcoded success. If the deduped
+			// attempt failed to persist (cookies blocked), a rapid second
+			// do-not-sell/placeholder click must not convert that failure
+			// into a success announcement. On a remembered failure the panel
+			// (showing the save warning) also stays open, exactly as the
+			// original attempt left it.
+			if (lastConsentResult && !opts.keepOpen) {
 				closePanels();
 				releaseFocus();
 			}
-			return true;
+			return lastConsentResult;
 		}
 		lastConsentKey = key;
 		lastConsentAt = now;
+		lastConsentResult = true;
 
 		var consentId = uuidv4();
 
@@ -1437,7 +1459,9 @@
 			// is only persistence. So: no "saved" announcement, and any open
 			// panel stays open with an honest inline notice instead of
 			// closing as if the save succeeded and letting the banner
-			// silently reappear on the next page.
+			// silently reappear on the next page. Remember the failure so a
+			// deduped repeat of this same decision reports it too.
+			lastConsentResult = false;
 			showSaveWarning();
 			return false;
 		}
@@ -1798,10 +1822,17 @@
 		blocked.type = 'text/plain';
 		blocked.setAttribute('data-anchor-consent', rule.category);
 		blocked.setAttribute('data-anchor-src', src);
+		// Mirror the server's data-anchor-type contract (see activate()): a
+		// client-injected ES module must not be restored as a classic script.
+		var origType = (el.getAttribute('type') || '').split(';')[0]
+			.replace(/^\s+|\s+$/g, '').toLowerCase();
+		if (origType === 'module') {
+			blocked.setAttribute('data-anchor-type', 'module');
+		}
 		for (var i = 0; i < el.attributes.length; i++) {
 			var a = el.attributes[i];
 			var n = a.name.toLowerCase();
-			if (n === 'src' || n === 'type' || n === 'data-anchor-consent' || n === 'data-anchor-src') { continue; }
+			if (n === 'src' || n === 'type' || n === 'data-anchor-consent' || n === 'data-anchor-src' || n === 'data-anchor-type') { continue; }
 			try {
 				blocked.setAttribute(a.name, a.value);
 			} catch (e) { /* an invalid attribute name must not abort the rest */ }

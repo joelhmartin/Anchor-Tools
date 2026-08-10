@@ -18,7 +18,8 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 class Anchor_Compliance_Dsar {
 
 	const DB_VERSION_OPTION = 'anchor_compliance_dsar_db_version';
-	const DB_VERSION        = '2';
+	/** v3: adds closed_at — retention is measured from closure, not submission. */
+	const DB_VERSION        = '3';
 	const ACTION            = 'anchor_compliance_dsar';
 	const VERIFY_ACTION     = 'anchor_compliance_dsar_verify';
 	const NONCE_FIELD       = '_wpnonce';
@@ -75,6 +76,7 @@ class Anchor_Compliance_Dsar {
 			notes TEXT NOT NULL,
 			verified_at DATETIME NULL DEFAULT NULL,
 			verify_key CHAR(64) NOT NULL DEFAULT '',
+			closed_at DATETIME NULL DEFAULT NULL,
 			PRIMARY KEY  (id),
 			KEY email (email),
 			KEY status (status),
@@ -115,9 +117,17 @@ class Anchor_Compliance_Dsar {
 		global $wpdb;
 		$cutoff = gmdate( 'Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS );
 
+		// Retention counts from CLOSURE (closed_at, schema v3), not submission:
+		// a request that sat open for months and was completed today must still
+		// be kept for the full window after it was finally answered. Rows
+		// closed before the v3 migration carry a closed status with a NULL
+		// closed_at and fall back to created_at — for those legacy rows the
+		// clock may run early by however long the request sat open, a bounded
+		// imperfection accepted rather than inventing a closure date that was
+		// never recorded.
 		return (int) $wpdb->query(
 			$wpdb->prepare(
-				'DELETE FROM ' . self::table() . " WHERE status IN ('completed','rejected') AND created_at < %s",
+				'DELETE FROM ' . self::table() . " WHERE status IN ('completed','rejected') AND COALESCE(closed_at, created_at) < %s",
 				$cutoff
 			)
 		);
@@ -539,29 +549,48 @@ class Anchor_Compliance_Dsar {
 			return 'invalid';
 		}
 
-		global $wpdb;
-		$result = $wpdb->update(
-			self::table(),
-			[ 'status' => $status ],
-			[ 'id' => (int) $id ],
-			[ '%s' ],
-			[ '%d' ]
-		);
-
-		if ( false === $result ) {
-			return 'db_error';
-		}
-		if ( $result > 0 ) {
-			return 'updated';
-		}
-
-		// 0 rows: either the row doesn't exist or it already had this status —
-		// $wpdb->update() cannot tell the two apart, so look.
-		$row = $this->get( $id );
+		// Read-before-write (rather than inferring outcomes from affected-row
+		// counts): closed_at must move only on a real transition across the
+		// open/closed boundary. Blindly stamping NOW() on every re-apply of
+		// 'completed' would silently restart the retention clock (schema v3).
+		$row = $this->get( (int) $id );
 		if ( ! $row ) {
 			return 'not_found';
 		}
-		return $row->status === $status ? 'unchanged' : 'db_error';
+		if ( $row->status === $status ) {
+			return 'unchanged';
+		}
+
+		$closed_states = [ 'completed', 'rejected' ];
+		$was_closed    = in_array( (string) $row->status, $closed_states, true );
+		$now_closed    = in_array( $status, $closed_states, true );
+
+		$data   = [ 'status' => $status ];
+		$format = [ '%s' ];
+		if ( $now_closed && ! $was_closed ) {
+			// Transition INTO closed: purge_expired() counts retention from here.
+			$data['closed_at'] = gmdate( 'Y-m-d H:i:s' );
+			$format[]          = '%s';
+		} elseif ( ! $now_closed && $was_closed ) {
+			// Reopened: it is an open request again; the closure never happened
+			// as far as retention is concerned.
+			$data['closed_at'] = null;
+			$format[]          = '%s';
+		}
+		// completed <-> rejected stays closed: the original closure stands.
+
+		global $wpdb;
+		$result = $wpdb->update(
+			self::table(),
+			$data,
+			[ 'id' => (int) $row->id ],
+			$format,
+			[ '%d' ]
+		);
+
+		// The row exists and the status differs, so a successful UPDATE always
+		// touches exactly one row — anything else is a database failure.
+		return ( false === $result || $result < 1 ) ? 'db_error' : 'updated';
 	}
 
 	/** @return bool True unless the UPDATE itself failed. */

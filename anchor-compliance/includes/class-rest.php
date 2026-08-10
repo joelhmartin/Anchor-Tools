@@ -81,8 +81,16 @@ class Anchor_Compliance_Rest {
 					// visitor actually saw (settings may have moved since the
 					// page rendered). Optional; the log falls back to current
 					// settings when omitted.
+					//
+					// 0 is ACCEPTED, meaning "unknown": a page served from a
+					// stale full-page cache can carry a payload whose
+					// policyVersion the client normalized to 0, and rejecting
+					// the whole POST for that killed the audit record of a
+					// real consent choice. The log treats 0 exactly like an
+					// absent value — it falls back to the current settings
+					// version (see Anchor_Compliance_Consent_Log::record()).
 					'validate_callback' => static function ( $v ) {
-						return is_numeric( $v ) && (int) $v > 0;
+						return is_numeric( $v ) && (int) $v >= 0;
 					},
 				],
 			],
@@ -121,18 +129,20 @@ class Anchor_Compliance_Rest {
 		set_transient( $dedupe_key, 1, self::DEDUPE_WINDOW );
 
 		/*
-		 * Header/tier-1 geo only ($skip_remote = true): this endpoint is
-		 * public and unauthenticated, and the tier-2 IP-API lookup is a
-		 * metered outbound request (2s timeout) keyed off spoofable proxy
-		 * headers — an attacker rotating fake IPs would mint one paid API
-		 * call plus 2s of PHP per POST, bypassing the consent_id dedupe
-		 * entirely. The region column on the audit row is informational, so
-		 * headers-or-nothing is enough here. Called before posture() on
-		 * purpose: country() memoizes its result, so the subsequent posture()
-		 * reuses the header-only resolution instead of re-triggering the
-		 * remote ladder.
+		 * Full geo ladder, same as the page render: the audit row must record
+		 * the region/posture the visitor was actually SERVED, and a
+		 * header-only resolution here contradicted the page whenever tier 2
+		 * decided the served experience. The original reason for skipping the
+		 * remote tier — an attacker rotating spoofed proxy headers to mint
+		 * metered API calls — is closed inside the geo class itself now:
+		 * client-IP headers only drive the tier-2 lookup under a declared
+		 * trusted proxy (otherwise REMOTE_ADDR, which a POSTing attacker
+		 * cannot rotate), and results are cached per /24 block. Called before
+		 * posture() on purpose: country() memoizes its result, so the
+		 * subsequent posture() reuses this same resolution instead of
+		 * re-running the ladder.
 		 */
-		$region = (string) $this->geo->country( true );
+		$region = (string) $this->geo->country();
 
 		$record = [
 			'consent_id' => $consent_id,
@@ -142,6 +152,9 @@ class Anchor_Compliance_Rest {
 			'method'     => $method,
 		];
 		if ( null !== $request->get_param( 'policy_version' ) ) {
+			// A 0 ("unknown") flows through as-is; the log's record() treats
+			// any non-positive value like an absent one and stamps the row
+			// with the current settings version instead.
 			$record['policy_version'] = (int) $request->get_param( 'policy_version' );
 		}
 

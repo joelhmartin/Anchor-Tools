@@ -193,9 +193,9 @@ class Test_Compliance_Snippets_Bridge extends WP_UnitTestCase {
 
 	public function test_inline_output_matches_the_script_blocker_byte_for_byte() {
 		// The pattern is function-call-shaped ('...Marker(') so B011's
-		// contexts axis files it as an inline rule — a plain 'parityTestMarker'
-		// would now (correctly) be a URL rule the blocker never matches
-		// against inline bodies.
+		// contexts axis files it as an inline-only rule. (URL-shaped rules
+		// gate inline bodies too since the Finding-1 fix, but the call shape
+		// keeps this parity fixture pinned to the pure-inline path.)
 		update_option( Anchor_Compliance_Module::OPTION_KEY, [
 			'custom_rules' => [
 				[ 'label' => 'Parity Inline', 'url_pattern' => 'parityTestMarker(', 'category' => 'marketing', 'cookie_patterns' => [] ],
@@ -209,6 +209,43 @@ class Test_Compliance_Snippets_Bridge extends WP_UnitTestCase {
 			$this->blocker()->rewrite( $html ),
 			$this->bridge()->filter_snippet_output( $html, $id ),
 			'An inline <script> must be neutralized identically by the blocker and the bridge.'
+		);
+	}
+
+	/**
+	 * Finding 3 parity: a gated snippet's <script type="module"> must carry
+	 * data-anchor-type="module" (via the blocker's shared
+	 * blocked_script_markup() builder) so activation restores it as a module,
+	 * not a classic script whose import statements would SyntaxError.
+	 */
+	public function test_module_scripts_in_a_gated_snippet_preserve_their_type() {
+		$id  = $this->snippet( 'marketing' );
+		$out = $this->bridge()->filter_snippet_output(
+			'<script type="module" src="https://example.com/tracker.mjs"></script>'
+			. '<script type="module">import "https://example.com/inline.mjs";</script>',
+			$id
+		);
+
+		$this->assertSame( 2, substr_count( $out, 'data-anchor-type="module"' ), 'Both the src and the inline module script must keep their module-ness.' );
+		$this->assertSame( 2, substr_count( $out, 'type="text/plain"' ) );
+		$this->assertStringNotContainsString( 'type="module"', str_replace( 'data-anchor-type="module"', '', $out ), 'No live module type may survive neutralization.' );
+	}
+
+	/** And the byte-for-byte parity contract holds for module scripts too. */
+	public function test_module_script_output_matches_the_script_blocker_byte_for_byte() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'custom_rules' => [
+				[ 'label' => 'Parity', 'url_pattern' => 'parity-test.example', 'category' => 'marketing', 'cookie_patterns' => [] ],
+			],
+		], false );
+
+		$html = '<script type="module" src="https://parity-test.example/x.mjs"></script>';
+		$id   = $this->snippet( 'marketing' );
+
+		$this->assertSame(
+			$this->blocker()->rewrite( $html ),
+			$this->bridge()->filter_snippet_output( $html, $id ),
+			'A module <script src> must be neutralized identically by the blocker and the bridge.'
 		);
 	}
 

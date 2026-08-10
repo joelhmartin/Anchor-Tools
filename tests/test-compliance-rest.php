@@ -179,23 +179,33 @@ class Test_Compliance_Rest extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Regression (C007): the endpoint is public and unauthenticated, so it
-	 * must never let a caller mint metered outbound geo lookups — with an IP
-	 * API configured and no edge headers present, handling a consent POST
-	 * must stay header/tier-1 only and make zero HTTP requests.
+	 * Finding 5 (supersedes the C007 header-only pin): the audit row must
+	 * record the region/posture the visitor was actually SERVED, so the
+	 * record path resolves the FULL geo ladder — tier 2 included — exactly
+	 * like the page render did. C007's original quota-drain attack (spoofed
+	 * proxy headers minting metered lookups per POST) is closed inside the
+	 * geo class now: without a declared trusted proxy, both the geo headers
+	 * and the client-IP headers are ignored and the tier-2 lookup keys off
+	 * REMOTE_ADDR — which a POSTing attacker cannot rotate — with results
+	 * cached per /24 block. This test pins both halves: the lookup happens
+	 * (and lands in the row), and it is keyed off REMOTE_ADDR, not off the
+	 * spoofed header.
 	 */
-	public function test_consent_post_never_triggers_remote_geo_lookup() {
+	public function test_consent_record_resolves_region_through_the_full_geo_ladder() {
 		update_option( Anchor_Compliance_Module::OPTION_KEY, [
 			'regions' => [ 'ip_api_provider' => 'ipinfo', 'ip_api_token' => 'test-token' ],
 		], false );
 		unset( $_SERVER['HTTP_CF_IPCOUNTRY'] );
+		$prev_remote                      = $_SERVER['REMOTE_ADDR'] ?? null;
+		$_SERVER['REMOTE_ADDR']           = '203.0.113.5';
+		$_SERVER['HTTP_CF_CONNECTING_IP'] = '198.51.100.9'; // spoofed — trusted_proxy is 'none'
 
-		$http_calls = 0;
-		$blocker    = function ( $pre ) use ( &$http_calls ) {
-			$http_calls++;
-			return new WP_Error( 'blocked', 'No HTTP allowed in this test.' );
+		$urls = [];
+		$mock = function ( $pre, $args, $url ) use ( &$urls ) {
+			$urls[] = $url;
+			return [ 'headers' => [], 'body' => 'DE', 'response' => [ 'code' => 200, 'message' => 'OK' ], 'cookies' => [], 'filename' => null ];
 		};
-		add_filter( 'pre_http_request', $blocker );
+		add_filter( 'pre_http_request', $mock, 10, 3 );
 
 		// A fresh Rest + Geo pair (nothing memoized from earlier tests),
 		// invoked directly so the geo path itself is what's exercised.
@@ -206,16 +216,28 @@ class Test_Compliance_Rest extends WP_UnitTestCase {
 		$req->set_param( 'method', 'banner' );
 		$this->posted_consent_ids[] = '88888888-0000-4000-8000-000000000000';
 
-		$res = $rest->handle_consent( $req );
-
-		remove_filter( 'pre_http_request', $blocker );
+		try {
+			$res = $rest->handle_consent( $req );
+		} finally {
+			remove_filter( 'pre_http_request', $mock, 10 );
+			delete_transient( 'anchor_cmp_geo_' . md5( 'ipinfo|203.0.113.0' ) );
+			unset( $_SERVER['HTTP_CF_CONNECTING_IP'] );
+			if ( null === $prev_remote ) {
+				unset( $_SERVER['REMOTE_ADDR'] );
+			} else {
+				$_SERVER['REMOTE_ADDR'] = $prev_remote;
+			}
+		}
 
 		$this->assertSame( 200, $res->get_status() );
-		$this->assertSame( 0, $http_calls, 'The REST consent context must never reach the tier-2 IP API.' );
+		$this->assertCount( 1, $urls, 'Exactly one tier-2 lookup (memoized for posture()).' );
+		$this->assertStringContainsString( '203.0.113.5', $urls[0], 'The lookup must key off REMOTE_ADDR.' );
+		$this->assertStringNotContainsString( '198.51.100.9', $urls[0], 'A spoofed client-IP header must never drive the lookup without a declared trusted proxy.' );
 
 		$rows = ( new Anchor_Compliance_Consent_Log() )->query();
 		$this->assertCount( 1, $rows );
-		$this->assertSame( '', $rows[0]->region, 'Headers-or-nothing: no headers means an empty region, not a lookup.' );
+		$this->assertSame( 'DE', $rows[0]->region, 'The audit row must carry the same full-ladder region the page render would use.' );
+		$this->assertSame( 'strict', $rows[0]->posture, 'Posture must match the served experience (DE is in the default strict set).' );
 	}
 
 	/** Regression (LAW-5): CPRA opt-out and placeholder grants are honest, recordable methods. */
@@ -253,14 +275,52 @@ class Test_Compliance_Rest extends WP_UnitTestCase {
 		$this->assertSame( '2', $rows[0]->policy_version );
 	}
 
-	public function test_invalid_policy_version_is_rejected() {
+	public function test_negative_policy_version_is_rejected() {
 		$res = $this->post( [
 			'consent_id'     => 'bbbb1111-0000-4000-8000-000000000000',
 			'categories'     => [ 'necessary' ],
 			'method'         => 'banner',
-			'policy_version' => 0,
+			'policy_version' => -1,
 		] );
 		$this->assertSame( 400, $res->get_status() );
+	}
+
+	/**
+	 * Finding 4: policy_version 0 means "unknown" (a stale-full-page-cache
+	 * payload the client normalized to 0). It used to 400 the whole POST,
+	 * costing the audit record of a real consent choice. It must be accepted
+	 * and recorded under the CURRENT settings version — the same fallback as
+	 * an absent key.
+	 */
+	public function test_policy_version_zero_is_accepted_and_falls_back_to_settings_version() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'general' => [ 'policy_version' => 7 ] ], false );
+
+		$res = $this->post( [
+			'consent_id'     => 'cccc1111-0000-4000-8000-000000000000',
+			'categories'     => [ 'necessary' ],
+			'method'         => 'banner',
+			'policy_version' => 0,
+		] );
+
+		$this->assertSame( 200, $res->get_status(), 'A 0 ("unknown") policy_version must never cost the audit row.' );
+		$rows = ( new Anchor_Compliance_Consent_Log() )->query();
+		$this->assertCount( 1, $rows );
+		$this->assertSame( '7', $rows[0]->policy_version, 'Unknown falls back to the current settings version.' );
+	}
+
+	/** An absent policy_version key takes the same settings fallback. */
+	public function test_absent_policy_version_falls_back_to_settings_version() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'general' => [ 'policy_version' => 7 ] ], false );
+
+		$res = $this->post( [
+			'consent_id' => 'dddd1111-0000-4000-8000-000000000000',
+			'categories' => [ 'necessary' ],
+			'method'     => 'banner',
+		] );
+
+		$this->assertSame( 200, $res->get_status() );
+		$rows = ( new Anchor_Compliance_Consent_Log() )->query();
+		$this->assertSame( '7', $rows[0]->policy_version );
 	}
 
 	/** Explicit, not incidental: an empty selection (essentials-only) is a valid consent choice. */

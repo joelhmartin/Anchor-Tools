@@ -166,11 +166,16 @@ class Anchor_Compliance_Script_Blocker {
 
 		$original = $html;
 
-		// Each pass only sees the rules meaningful for its context: URL
-		// patterns never gate inline bodies (a theme script that merely
-		// mentions a youtube.com/watch link as a string is not a tracker),
-		// and 'fbq('-style patterns never gate URLs. See
-		// Anchor_Compliance_Service_Registry::RULE_CONTEXTS.
+		// Each pass only sees the rules meaningful for its context:
+		// 'fbq('-style patterns never gate URLs, and the content-embed
+		// services (youtube, vimeo, google_maps, twitter_embeds) declare
+		// src/iframe-only contexts so a theme script that merely mentions a
+		// video link as a string is not treated as a tracker — while tracker
+		// URL patterns (static.hotjar.com, clarity.ms, ...) DO gate inline
+		// bodies, because a vendor CDN host inside an inline body is the
+		// vendor's own paste-in loader snippet. See
+		// Anchor_Compliance_Service_Registry::RULE_CONTEXTS and
+		// default_contexts_for_pattern().
 		$src_rules    = Anchor_Compliance_Service_Registry::filter_rules_by_context( $rules, 'src' );
 		$iframe_rules = Anchor_Compliance_Service_Registry::filter_rules_by_context( $rules, 'iframe' );
 		$inline_rules = Anchor_Compliance_Service_Registry::filter_rules_by_context( $rules, 'inline' );
@@ -202,6 +207,25 @@ class Anchor_Compliance_Script_Blocker {
 		}
 		$html = $stage;
 
+		// Second masking pass: the two script passes above just minted NEW
+		// inert bodies — every script they neutralized is now
+		// type="text/plain", but its body is the original snippet, often
+		// carrying its own URL-bearing markup (a document.write'd
+		// <img src=".../tr">, an <iframe> string). The first mask ran before
+		// those bodies were inert, so they are still naked here; without this
+		// pass the iframe/img/link scans below would rewrite tags INSIDE a
+		// neutralized body, corrupting the exact bytes the front-end runtime
+		// must replay verbatim on consent. The snippets bridge already orders
+		// its passes this way (scripts first, then mask, then embeds).
+		$masked_late = [];
+		if ( false !== stripos( $html, '<script' ) && preg_match( '#<script\b[^>]*\btype\s*=#i', $html ) ) {
+			$stage = self::mask_inert_scripts( $html, $masked_late );
+			if ( ! $this->pcre_ok( $stage ) ) {
+				return $this->fail_open( $original, 'mask_inert_scripts(late)' );
+			}
+			$html = $stage;
+		}
+
 		$stage = $this->rewrite_src_tags( $html, 'iframe', $iframe_rules, $allowed );
 		if ( ! $this->pcre_ok( $stage ) ) {
 			return $this->fail_open( $original, 'rewrite_src_tags(iframe)' );
@@ -225,6 +249,12 @@ class Anchor_Compliance_Script_Blocker {
 		}
 		$html = $stage;
 
+		// Restore in reverse order of masking: a late token's replacement text
+		// could in principle contain an early token, and strtr() never
+		// re-scans its own replacements — so unwind late first, then early.
+		if ( $masked_late ) {
+			$html = strtr( $html, $masked_late );
+		}
 		if ( $masked ) {
 			$html = strtr( $html, $masked );
 		}
@@ -552,6 +582,10 @@ class Anchor_Compliance_Script_Blocker {
 
 				$this->blocked++;
 
+				// Read the original type BEFORE stripping it — blocked_script_markup()
+				// preserves a "module" type in data-anchor-type for restoration.
+				$original_type = self::type_value( $before . $after );
+
 				$attrs = $this->strip_type_attribute( $before . $after );
 
 				// The captured value came straight out of an HTML attribute,
@@ -568,12 +602,7 @@ class Anchor_Compliance_Script_Blocker {
 				$clean_url = html_entity_decode( $url, ENT_QUOTES, 'UTF-8' );
 
 				if ( 'script' === $tag ) {
-					return sprintf(
-						'<script%s type="text/plain" data-anchor-consent="%s" data-anchor-src="%s">',
-						$attrs,
-						esc_attr( $category ),
-						esc_attr( $clean_url )
-					);
+					return self::blocked_script_markup( $attrs, $category, $clean_url, $original_type );
 				}
 
 				if ( 'img' === $tag ) {
@@ -584,6 +613,55 @@ class Anchor_Compliance_Script_Blocker {
 			},
 			$html
 		);
+	}
+
+	/**
+	 * The neutralized OPENING TAG of a blocked <script> — shared with
+	 * Anchor_Compliance_Snippets_Bridge (like blocked_img_markup() /
+	 * blocked_iframe_markup()) so the two layers emit byte-identical markup
+	 * for the front-end runtime to activate. For a src script the body and
+	 * closing tag are untouched in the document; for an inline script the
+	 * caller appends the verbatim body and '</script>' itself.
+	 *
+	 * data-anchor-type: neutralizing discards the original type= (a duplicate
+	 * type attribute would let the FIRST one win and keep the script
+	 * executable — see strip_type_attribute()), which also discarded the one
+	 * executable type with distinct semantics: "module". The JS runtime's
+	 * activate() restored every blocked script as a CLASSIC script, so an ES
+	 * module (import statements, module-scoped await) restored as a
+	 * guaranteed SyntaxError — consent granted, tag dead. The original
+	 * module-ness therefore rides along in data-anchor-type and activate()
+	 * restores it. Classic types (absent, text/javascript,
+	 * application/javascript) all restore identically as classic, so only
+	 * 'module' is preserved — carrying the others would be noise.
+	 *
+	 * @param string      $attrs         Surviving attributes (type stripped; src removed for src scripts).
+	 * @param string      $category      Gating category slug.
+	 * @param string|null $clean_url     Entity-decoded original src, or null for an inline script.
+	 * @param string|null $original_type The tag's original type= value (type_value()), or null.
+	 * @return string
+	 */
+	public static function blocked_script_markup( $attrs, $category, $clean_url, $original_type ) {
+		$preserved = '';
+		if ( null !== $original_type ) {
+			// Same normalization as is_executable_type(): trim, drop any MIME
+			// parameter, lowercase.
+			$normalized = strtolower( trim( strtok( trim( (string) $original_type ), ';' ) ) );
+			if ( 'module' === $normalized ) {
+				$preserved = ' data-anchor-type="module"';
+			}
+		}
+
+		$tag = sprintf(
+			'<script%s type="text/plain" data-anchor-consent="%s"%s',
+			$attrs,
+			esc_attr( $category ),
+			$preserved
+		);
+		if ( null !== $clean_url ) {
+			$tag .= sprintf( ' data-anchor-src="%s"', esc_attr( $clean_url ) );
+		}
+		return $tag . '>';
 	}
 
 	/**
@@ -763,12 +841,31 @@ class Anchor_Compliance_Script_Blocker {
 				$attrs = $m[1];
 				$body  = $m[2];
 
-				if ( ! $this->is_executable_type( $this->type_value( $attrs ) ) ) {
+				$original_type = $this->type_value( $attrs );
+				if ( ! $this->is_executable_type( $original_type ) ) {
 					return $m[0]; // JSON-LD, a client-side template, etc. — not code, never gated.
 				}
 
 				if ( false !== stripos( $attrs, 'data-anchor-consent' ) ) {
 					return $m[0]; // already handled (e.g. by the snippets bridge)
+				}
+
+				// SELF-EXEMPTION — never gate this module's own inline scripts.
+				// WP prints wp_add_inline_script() bodies for our runtime as
+				// id="anchor-compliance-js-before" / "-js-after" / "-js-extra",
+				// and the -js-before payload IS window.AnchorComplianceData:
+				// its JSON necessarily contains the rule patterns themselves
+				// ('static.hotjar.com', 'youtube.com/embed', ... inside
+				// scriptRules/iframeRules), so matching its body against those
+				// same patterns neutralizes the runtime's own bootstrap —
+				// frontend.js then boots without a payload and silently bails,
+				// leaving the banner permanently hidden and every blocked tag
+				// permanently blocked. Checked BEFORE pattern matching, and
+				// deliberately narrow: an id-prefix match on our own script
+				// handle only, not a general allowlist mechanism.
+				$id = self::attr_value( $attrs, 'id' );
+				if ( null !== $id && 0 === stripos( $id, 'anchor-compliance' ) ) {
+					return $m[0];
 				}
 
 				$category = $this->category_for( $body, $rules );
@@ -778,12 +875,8 @@ class Anchor_Compliance_Script_Blocker {
 
 				$this->blocked++;
 
-				return sprintf(
-					'<script%s type="text/plain" data-anchor-consent="%s">%s</script>',
-					$this->strip_type_attribute( $attrs ),
-					esc_attr( $category ),
-					$body
-				);
+				return self::blocked_script_markup( $this->strip_type_attribute( $attrs ), $category, null, $original_type )
+					. $body . '</script>';
 			},
 			$html
 		);

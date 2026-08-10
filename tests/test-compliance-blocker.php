@@ -264,8 +264,46 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 		$html = '<script type="module" src="https://connect.facebook.net/en_US/fbevents.js"></script>';
 		$out  = $this->blocker()->rewrite( $html );
 
-		$this->assertSame( 1, substr_count( $out, 'type=' ), 'A blocked tag must end up with exactly one type= attribute.' );
+		// One REAL type= attribute (the lookbehind excludes data-anchor-type=,
+		// which is the module-ness marker, not a type attribute).
+		$this->assertSame( 1, preg_match_all( '#(?<![-\w])type=#', $out ), 'A blocked tag must end up with exactly one real type= attribute.' );
 		$this->assertStringContainsString( 'type="text/plain"', $out );
+	}
+
+	// --- Finding 3: blocked type="module" scripts must not restore as classic scripts ---
+
+	/**
+	 * Neutralizing strips the original type= (a duplicate would win as the
+	 * FIRST attribute and keep the script executable), which also discarded
+	 * the one executable type with distinct semantics. activate() then
+	 * restored every blocked script as CLASSIC, so an ES module's import
+	 * statements were a guaranteed SyntaxError after consent. The original
+	 * module-ness now rides in data-anchor-type; frontend.js activate()
+	 * restores it (verified by node --check + code trace — no JS harness).
+	 */
+	public function test_blocked_module_src_script_preserves_module_type_for_restoration() {
+		$html = '<script type="module" src="https://connect.facebook.net/en_US/fbevents.js"></script>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'data-anchor-type="module"', $out, 'The original module type must survive for activation.' );
+		$this->assertStringContainsString( 'type="text/plain"', $out );
+	}
+
+	public function test_blocked_module_inline_script_preserves_module_type_for_restoration() {
+		$html = '<script type="MODULE">import "https://connect.facebook.net/en_US/fbevents.js";</script>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'data-anchor-type="module"', $out, 'Case-insensitive: MODULE normalizes to module.' );
+		$this->assertStringContainsString( 'type="text/plain"', $out );
+	}
+
+	/** Classic types all restore identically as classic — carrying them would be noise, and the marker must stay absent. */
+	public function test_blocked_classic_script_carries_no_data_anchor_type() {
+		$out = $this->blocker()->rewrite( '<script type="text/javascript" src="https://static.hotjar.com/c/hotjar-1.js"></script>' );
+		$this->assertStringNotContainsString( 'data-anchor-type', $out );
+
+		$out = $this->blocker()->rewrite( '<script src="https://static.hotjar.com/c/hotjar-1.js"></script>' );
+		$this->assertStringNotContainsString( 'data-anchor-type', $out, 'An absent type is classic too.' );
 	}
 
 	public function test_single_quoted_src_is_blocked() {
@@ -619,15 +657,110 @@ class Test_Compliance_Blocker extends WP_UnitTestCase {
 	 * PINS FIX B011 (the structural fix for the same class the vimeo test
 	 * above pins per-pattern). 'youtube.com/watch' / 'youtu.be/' are URL
 	 * patterns; matched against inline BODIES they neutralized any theme
-	 * script that merely mentioned a video link as a string. Rules now carry
-	 * a 'contexts' axis and the inline pass only sees inline-context rules
-	 * (function-call-shaped patterns like 'fbq('), so a plain URL string in
-	 * an inline body is never gated — while the same URL as an iframe src
-	 * still is (test_youtube_watch_and_short_links_are_gated above).
+	 * script that merely mentioned a video link as a string. The content-embed
+	 * builtins (youtube, vimeo, google_maps, twitter_embeds) now declare
+	 * 'contexts' => ['src','iframe'] explicitly, so a plain content link in an
+	 * inline body is never gated — while the same URL as an iframe src still
+	 * is (test_youtube_watch_and_short_links_are_gated above). Note this is
+	 * deliberately NO LONGER true of tracker URL patterns in general: see
+	 * test_inline_loader_snippet_with_a_tracker_url_is_gated below.
 	 */
 	public function test_url_pattern_in_an_inline_script_body_is_not_gated() {
 		$html = '<body><script>var share = "https://www.youtube.com/watch?v=abc"; var s2 = "https://youtu.be/abc";</script></body>';
 		$this->assertSame( $html, $this->blocker()->rewrite( $html ), 'A theme inline script mentioning a video URL as a string is not a tracker.' );
+	}
+
+	// --- Finding 1: tracker URL patterns must gate inline loader snippets again ---
+
+	/**
+	 * Tracker vendors distribute paste-in INLINE loader snippets whose bodies
+	 * embed the vendor URL as a string — Hotjar's `r.src="https://static.hotjar.com/..."`,
+	 * Clarity, LinkedIn, TikTok, HubSpot all ship this shape. When B011's
+	 * contexts axis filed URL patterns as src/iframe-only, every such snippet
+	 * executed pre-consent (only 'fbq(' remained inline). URL patterns now
+	 * default to all three contexts; only the content-embed builtins opt out.
+	 */
+	public function test_inline_loader_snippet_with_a_tracker_url_is_gated() {
+		$html = '<body><script>(function(h,o,t,j){h._hjSettings={hjid:123};'
+			. 'var r=o.createElement("script");r.async=1;'
+			. 'r.src="https://static.hotjar.com/c/hotjar-123.js?sv=6";'
+			. 'o.head.appendChild(r);})(window,document);</script></body>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'type="text/plain"', $out, 'The pre-Wave-A blocker neutralized inline loader snippets by URL substring; that gating must hold.' );
+		$this->assertStringContainsString( 'data-anchor-consent="analytics"', $out );
+		$this->assertStringContainsString( 'r.src="https://static.hotjar.com/c/hotjar-123.js?sv=6"', $out, 'The body must be preserved verbatim for activation.' );
+	}
+
+	/** An admin's custom URL rule keeps inline gating too — its pattern shape infers all three contexts. */
+	public function test_custom_url_rule_gates_a_matching_inline_body() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'custom_rules' => [
+				[ 'label' => 'Acme', 'url_pattern' => 'acme-tracker.com', 'category' => 'analytics', 'cookie_patterns' => [] ],
+			],
+		], false );
+
+		$html = '<body><script>var s=document.createElement("script");s.src="https://cdn.acme-tracker.com/t.js";document.head.appendChild(s);</script></body>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'type="text/plain"', $out );
+		$this->assertStringContainsString( 'data-anchor-consent="analytics"', $out );
+	}
+
+	/**
+	 * SELF-EXEMPTION — the module must never gate its own bootstrap. The
+	 * runtime's payload (WP prints it as id="anchor-compliance-js-before")
+	 * is window.AnchorComplianceData, whose JSON necessarily contains the
+	 * rule patterns themselves inside scriptRules/iframeRules. With URL
+	 * patterns gating inline bodies (Finding 1, and equally true before the
+	 * contexts axis existed), that body matched its own rules and got
+	 * neutralized — frontend.js booted without a payload and silently
+	 * bailed, leaving the banner permanently hidden. Caught by the e2e
+	 * suite; pinned here so no future inline-gating change can regress it.
+	 */
+	public function test_the_modules_own_inline_payload_script_is_never_gated() {
+		$body = 'window.AnchorComplianceData = {"scriptRules":[{"pattern":"static.hotjar.com","category":"analytics"}],'
+			. '"iframeRules":[{"pattern":"youtube.com/embed","category":"marketing"}]};';
+
+		foreach ( [ 'anchor-compliance-js-before', 'anchor-compliance-js-after', 'anchor-compliance-js-extra' ] as $handle_id ) {
+			$html = '<body><script id="' . $handle_id . '">' . $body . '</script></body>';
+			$this->assertSame(
+				$html,
+				$this->blocker()->rewrite( $html ),
+				"The module's own {$handle_id} script must pass through byte-identical."
+			);
+		}
+
+		// The SAME body without the module's own id is still gated — this is
+		// a self-exemption, not a hole in inline gating.
+		$out = $this->blocker()->rewrite( '<body><script>' . $body . '</script></body>' );
+		$this->assertStringContainsString( 'type="text/plain"', $out, 'An untagged script carrying tracker patterns is still gated.' );
+		$this->assertStringContainsString( 'data-anchor-consent="analytics"', $out );
+
+		// And an UNRELATED id gets no exemption either.
+		$out = $this->blocker()->rewrite( '<body><script id="theme-inline-js">' . $body . '</script></body>' );
+		$this->assertStringContainsString( 'type="text/plain"', $out, 'The exemption is an anchor-compliance id prefix, not any id.' );
+	}
+
+	// --- Finding 2: later passes must not corrupt a freshly-neutralized inline body ---
+
+	/**
+	 * The inline pass converts a matched script to type="text/plain", but the
+	 * img/iframe/link passes that follow scan the document as flat text — so
+	 * URL-bearing tags INSIDE the newly-inert body (the Meta Pixel loader's
+	 * document.write'd noscript pixel, for one) were rewritten in place,
+	 * corrupting the exact bytes activate() must replay verbatim on consent.
+	 * A second masking pass now runs between the script passes and the
+	 * embed passes, mirroring the snippets bridge's ordering.
+	 */
+	public function test_img_inside_a_neutralized_inline_body_is_preserved_byte_for_byte() {
+		$body = 'fbq("init","1");document.write(\'<img src="https://www.facebook.com/tr?id=1" height="1"/>\');';
+		$html = '<body><script>' . $body . '</script></body>';
+		$out  = $this->blocker()->rewrite( $html );
+
+		$this->assertStringContainsString( 'type="text/plain"', $out, 'Sanity: the inline script itself is neutralized.' );
+		$this->assertStringContainsString( $body, $out, 'The neutralized body must be byte-identical — the img pass must never rewrite tags inside it.' );
+		$this->assertStringNotContainsString( 'data-anchor-src', $out, 'No pass may have lifted the src out of the inert body.' );
 	}
 
 	/**

@@ -2,11 +2,13 @@
 /**
  * Anchor Compliance — geo ladder and posture resolution.
  *
- * D009/D010: geo and client-IP headers are only honored when the
- * regions.trusted_proxy setting names the proxy that produces them
- * ('none' | 'cloudflare' | 'other'; default 'none'). Tests that exercise a
- * header therefore declare the matching trust mode first — and the spoof
- * tests pin that an undeclared header is ignored.
+ * D009/D010 (revised): the trust model splits by abuse surface. COUNTRY
+ * headers from the well-known edge CDNs are honored under the default 'edge'
+ * mode — forging one only affects the forger's own banner — while the generic
+ * X-Geo-Country and every forwarded-IP header (which drive metered Tier-2
+ * lookups) stay gated behind an explicitly declared proxy
+ * ('cloudflare' | 'other'). 'none' remains as a hardened ignore-everything
+ * mode. The spoof tests pin what the default refuses to honor.
  */
 class Test_Compliance_Geo extends WP_UnitTestCase {
 
@@ -32,21 +34,57 @@ class Test_Compliance_Geo extends WP_UnitTestCase {
 		);
 	}
 
-	/* ─── D009: trust gating ─── */
+	/* ─── D009 (revised): trust gating ─── */
 
-	public function test_geo_headers_are_ignored_by_default_spoof_attempt() {
-		// No trusted_proxy configured (default 'none'): every client-forgeable
-		// geo header must be ignored, no matter how many arrive.
+	public function test_edge_default_honors_edge_cdn_country_headers() {
+		// No option stored at all: the default mode is 'edge', which honors the
+		// well-known edge-CDN country headers with zero configuration — the
+		// pre-existing behavior for Cloudflare/CloudFront/Vercel-fronted sites.
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'de';
+		$g = $this->geo();
+		$this->assertSame( 'DE', $g->country() );
+		$this->assertSame( 'cf', $g->source() );
+	}
+
+	public function test_edge_default_honors_cloudfront_and_vercel_headers() {
+		$_SERVER['HTTP_CLOUDFRONT_VIEWER_COUNTRY'] = 'us';
+		$g = $this->geo();
+		$this->assertSame( 'US', $g->country() );
+		$this->assertSame( 'cloudfront', $g->source() );
+
+		unset( $_SERVER['HTTP_CLOUDFRONT_VIEWER_COUNTRY'] );
+		$_SERVER['HTTP_X_VERCEL_IP_COUNTRY'] = 'fr';
+		$g = $this->geo();
+		$this->assertSame( 'FR', $g->country() );
+		$this->assertSame( 'vercel', $g->source() );
+	}
+
+	public function test_edge_default_ignores_the_generic_x_geo_country_header() {
+		// X-Geo-Country is emitted by arbitrary middleboxes — a misconfigured
+		// one echoing client input was the original audit instance — so it is
+		// never trusted by default; it requires an explicit 'other'.
+		$_SERVER['HTTP_X_GEO_COUNTRY'] = 'US';
+
+		$g = $this->geo();
+		$this->assertNull( $g->country(), 'X-Geo-Country must be ignored under the default edge mode.' );
+		$this->assertSame( 'none', $g->source() );
+		// And the posture stays at the (strict) unknown fallback — the spoof
+		// cannot flip a strict-region visitor to opt-out.
+		$this->assertSame( 'strict', $this->geo()->posture() );
+	}
+
+	public function test_none_mode_ignores_every_geo_header() {
+		// 'none' remains the hardening mode: every HTTP geo header is ignored,
+		// no matter how many arrive.
+		$this->trust( 'none' );
 		$_SERVER['HTTP_CF_IPCOUNTRY']              = 'US';
 		$_SERVER['HTTP_X_GEO_COUNTRY']             = 'US';
 		$_SERVER['HTTP_X_VERCEL_IP_COUNTRY']       = 'US';
 		$_SERVER['HTTP_CLOUDFRONT_VIEWER_COUNTRY'] = 'US';
 
 		$g = $this->geo();
-		$this->assertNull( $g->country(), 'A spoofed geo header must not resolve a country under trusted_proxy=none.' );
+		$this->assertNull( $g->country(), 'Under trusted_proxy=none every geo header must be ignored.' );
 		$this->assertSame( 'none', $g->source() );
-		// And the posture stays at the (strict) unknown fallback — the spoof
-		// cannot flip a strict-region visitor to opt-out.
 		$this->assertSame( 'strict', $this->geo()->posture() );
 	}
 
@@ -81,10 +119,15 @@ class Test_Compliance_Geo extends WP_UnitTestCase {
 		$this->assertNull( $this->geo()->country() );
 	}
 
-	public function test_unknown_trust_mode_falls_back_to_none() {
+	public function test_unknown_trust_mode_falls_back_to_the_edge_default() {
+		// An unrecognized stored mode behaves exactly like a missing one: the
+		// 'edge' default — edge CDN country headers honored, X-Geo-Country not.
 		$this->trust( 'totally-bogus' );
-		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
-		$this->assertNull( $this->geo()->country() );
+		$_SERVER['HTTP_X_GEO_COUNTRY'] = 'DE';
+		$_SERVER['HTTP_CF_IPCOUNTRY']  = 'US';
+		$g = $this->geo();
+		$this->assertSame( 'US', $g->country() );
+		$this->assertSame( 'cf', $g->source() );
 	}
 
 	/* ─── Header parsing / ladder (under a declared trust mode) ─── */
@@ -187,14 +230,17 @@ class Test_Compliance_Geo extends WP_UnitTestCase {
 		return $method->invoke( $geo );
 	}
 
-	public function test_spoofed_connecting_ip_headers_are_ignored_without_a_trusted_proxy() {
+	public function test_spoofed_connecting_ip_headers_are_ignored_under_the_edge_default() {
+		// Country headers are safe to honor by default; forwarded-IP headers
+		// are not — they drive metered Tier-2 lookups. Under the default
+		// 'edge' mode only REMOTE_ADDR may reach the IP API.
 		$remote                           = $_SERVER['REMOTE_ADDR'] ?? null;
 		$_SERVER['REMOTE_ADDR']           = '203.0.113.7';
 		$_SERVER['HTTP_CF_CONNECTING_IP'] = '198.51.100.1';
 		$_SERVER['HTTP_X_REAL_IP']        = '198.51.100.2';
 		$_SERVER['HTTP_X_FORWARDED_FOR']  = '198.51.100.3';
 
-		$this->assertSame( '203.0.113.7', $this->client_ip( $this->geo() ), 'Under trusted_proxy=none only REMOTE_ADDR counts — a spoofed IP header must not drive Tier-2 lookups or mint cache entries.' );
+		$this->assertSame( '203.0.113.7', $this->client_ip( $this->geo() ), 'Under the default edge mode only REMOTE_ADDR counts — a spoofed IP header must not drive Tier-2 lookups or mint cache entries.' );
 
 		$_SERVER['REMOTE_ADDR'] = $remote;
 	}

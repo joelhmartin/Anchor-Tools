@@ -485,4 +485,61 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 		$this->banner()->render();
 		$this->assertStringNotContainsString( 'anchor-cmp-pill', ob_get_clean() );
 	}
+
+	/* -----------------------------------------------------------------
+	 * Review finding 3: blank-is-blank (D024) vs. accessibility.
+	 * ----------------------------------------------------------------- */
+
+	/**
+	 * A cleared heading/body must not ship an empty strict modal: the <h2> is
+	 * the dialog's aria-labelledby target, so heading and body copy fall back
+	 * to the shipped defaults at RENDER time (storage keeps the blank).
+	 */
+	public function test_cleared_heading_and_body_fall_back_to_defaults_at_render() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'content' => [ 'heading' => '', 'body' => '', 'notice_body' => '' ],
+		], false );
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'DE'; // Strict — the modal posture.
+
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$d = Anchor_Compliance_Settings::defaults()['content'];
+		$this->assertStringContainsString( $d['heading'], $html, 'A cleared heading must render the shipped default.' );
+		$this->assertMatchesRegularExpression(
+			'/<h2 id="anchor-cmp-heading"[^>]*>[^<]+<\/h2>/',
+			$html,
+			'The aria-labelledby target must never render empty.'
+		);
+		$this->assertStringContainsString( $d['body'], $html, 'A cleared strict body must render the shipped default.' );
+	}
+
+	public function test_cleared_notice_body_falls_back_in_optout_posture() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'regions' => [ 'trusted_proxy' => 'cloudflare' ],
+			'content' => [ 'notice_body' => '   ' ],
+		], false );
+		$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US'; // Opt-out — the notice posture.
+
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString(
+			Anchor_Compliance_Settings::defaults()['content']['notice_body'],
+			$html,
+			'Whitespace-only notice body counts as blank and falls back.'
+		);
+	}
+
+	/** All other content strings keep D024's blank-is-blank contract. */
+	public function test_cleared_optional_string_stays_blank() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'content' => [ 'dns_confirmation' => '' ],
+		], false );
+
+		$p = $this->banner()->payload();
+		$this->assertSame( '', $p['i18n']['dns_confirmation'], 'A deliberately cleared optional string must stay blank — only the accessibility-critical heading/body fall back.' );
+	}
 }

@@ -37,10 +37,16 @@ class Anchor_Compliance_Settings {
 			'regions' => [
 				'strict_countries'  => self::default_strict_countries(),
 				'unknown_fallback'  => 'strict', // strict | optout
-				// Which proxy's geo/IP headers to believe: none | cloudflare | other.
-				// 'none' (default) trusts only REMOTE_ADDR and server-side GeoIP —
-				// every HTTP geo/IP header is client-forgeable otherwise.
-				'trusted_proxy'     => 'none',
+				// Which geo/IP headers to believe: edge | none | cloudflare | other.
+				// 'edge' (default) honors only the well-known edge-CDN COUNTRY
+				// headers (CF-IPCountry, CloudFront-Viewer-Country,
+				// X-Vercel-IP-Country) plus server-side GeoIP: forging a country
+				// header only affects the forger's own banner, so it is safe by
+				// default and keeps Cloudflare/CloudFront/Vercel-fronted sites
+				// zero-config. Forwarded-IP headers (which drive metered Tier-2
+				// lookups) are only trusted under a declared 'cloudflare'/'other'
+				// proxy; 'none' ignores every header (hardening).
+				'trusted_proxy'     => 'edge',
 				'ip_api_provider'   => '',       // '' | ipinfo | ipapi
 				'ip_api_token'      => '',
 				'allow_client_relax' => true,
@@ -192,8 +198,8 @@ class Anchor_Compliance_Settings {
 		) ) ) );
 		$unknown_fallback = $r['unknown_fallback'] ?? '';
 		$out['regions']['unknown_fallback']   = in_array( $unknown_fallback, [ 'strict', 'optout' ], true ) ? $unknown_fallback : 'strict';
-		$trusted_proxy = $r['trusted_proxy'] ?? 'none';
-		$out['regions']['trusted_proxy']      = in_array( $trusted_proxy, [ 'none', 'cloudflare', 'other' ], true ) ? $trusted_proxy : 'none';
+		$trusted_proxy = $r['trusted_proxy'] ?? 'edge';
+		$out['regions']['trusted_proxy']      = in_array( $trusted_proxy, [ 'edge', 'none', 'cloudflare', 'other' ], true ) ? $trusted_proxy : 'edge';
 		$ip_api_provider = $r['ip_api_provider'] ?? '';
 		$out['regions']['ip_api_provider']    = in_array( $ip_api_provider, [ '', 'ipinfo', 'ipapi' ], true ) ? $ip_api_provider : '';
 		$out['regions']['ip_api_token']       = sanitize_text_field( (string) ( $r['ip_api_token'] ?? '' ) );
@@ -545,6 +551,15 @@ class Anchor_Compliance_Settings {
 		<h2><?php esc_html_e( 'Regions', 'anchor-schema' ); ?></h2>
 
 		<div class="anchor-cmp-geo-readout notice notice-info inline">
+			<p class="description">
+				<?php
+				printf(
+					/* translators: %s: human description of the active trusted-proxy mode */
+					esc_html__( 'Active trust mode: %s', 'anchor-schema' ),
+					esc_html( $this->trust_mode_label( (string) $r['trusted_proxy'] ) )
+				);
+				?>
+			</p>
 			<?php if ( 'none' === $source ) : ?>
 				<p>
 					<strong><?php esc_html_e( 'No geo header detected', 'anchor-schema' ); ?></strong>
@@ -552,7 +567,7 @@ class Anchor_Compliance_Settings {
 				</p>
 				<?php if ( $this->has_untrusted_geo_header( $r ) ) : ?>
 					<p class="description">
-						<?php esc_html_e( 'A geo header IS present on this request, but it is being ignored because it does not come from your configured Trusted proxy below — select the proxy actually in front of this site to start honoring it.', 'anchor-schema' ); ?>
+						<?php esc_html_e( 'A geo header IS present on this request, but it is being ignored because your active Trusted proxy mode does not honor its source — select the mode matching the proxy actually in front of this site to start honoring it.', 'anchor-schema' ); ?>
 					</p>
 				<?php endif; ?>
 				<p class="description">
@@ -579,15 +594,16 @@ class Anchor_Compliance_Settings {
 					<select id="anchor_cmp_trusted_proxy" name="<?php echo esc_attr( $opt ); ?>[regions][trusted_proxy]">
 						<?php
 						foreach ( [
-							'none'       => __( 'None — no proxy in front of this site (ignore all geo/IP headers)', 'anchor-schema' ),
-							'cloudflare' => __( 'Cloudflare — trust CF-IPCountry and CF-Connecting-IP', 'anchor-schema' ),
-							'other'      => __( 'Other reverse proxy / CDN — trust X-Real-IP, X-Forwarded-For, and CloudFront / Vercel / X-Geo-Country headers', 'anchor-schema' ),
+							'edge'       => __( 'Edge CDN country headers (default) — honor CF-IPCountry, CloudFront-Viewer-Country, and X-Vercel-IP-Country; lookups use the direct connection IP only', 'anchor-schema' ),
+							'cloudflare' => __( 'Cloudflare — trust CF-IPCountry, and also CF-Connecting-IP as the visitor IP for lookups', 'anchor-schema' ),
+							'other'      => __( 'Other reverse proxy / CDN — trust CloudFront / Vercel / X-Geo-Country country headers, and also X-Real-IP / X-Forwarded-For as the visitor IP', 'anchor-schema' ),
+							'none'       => __( 'None (hardened) — ignore every geo and visitor-IP header; server-side GeoIP only', 'anchor-schema' ),
 						] as $value => $label ) :
 							?>
 							<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $r['trusted_proxy'], $value ); ?>><?php echo esc_html( $label ); ?></option>
 						<?php endforeach; ?>
 					</select>
-					<p class="description"><?php esc_html_e( 'Geo and visitor-IP headers can be forged by any visitor unless a proxy you control overwrites them in transit. Select the proxy actually in front of this site; headers from any other source are ignored. Server-side GeoIP (GEOIP_COUNTRY_CODE) is always trusted — it is set by your own server, not the client.', 'anchor-schema' ); ?></p>
+					<p class="description"><?php esc_html_e( 'Country headers from the well-known edge CDNs are honored by default: a visitor forging one only changes their own banner, so there is nothing to protect. Visitor-IP headers are different — they drive metered IP-API lookups — so they are only believed when you declare the proxy that actually sets them (Cloudflare or Other); the generic X-Geo-Country header is likewise only honored under Other, since any middlebox can emit it. Server-side GeoIP (GEOIP_COUNTRY_CODE) is always trusted — it is set by your own server, not the client. Choose None to ignore every header.', 'anchor-schema' ); ?></p>
 				</td>
 			</tr>
 			<tr>
@@ -666,13 +682,27 @@ class Anchor_Compliance_Settings {
 	 * @return bool
 	 */
 	private function has_untrusted_geo_header( array $r ) {
-		$trusted = Anchor_Compliance_Geo::trusted_labels( (string) ( $r['trusted_proxy'] ?? 'none' ) );
+		$trusted = Anchor_Compliance_Geo::trusted_labels( (string) ( $r['trusted_proxy'] ?? 'edge' ) );
 		foreach ( Anchor_Compliance_Geo::HEADERS as $header => $label ) {
 			if ( ! empty( $_SERVER[ $header ] ) && ! in_array( $label, $trusted, true ) ) {
 				return true;
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * @param string $mode A regions.trusted_proxy value.
+	 * @return string Human description of the mode, for the geo readout.
+	 */
+	private function trust_mode_label( $mode ) {
+		$labels = [
+			'edge'       => __( 'Edge CDN (default) — honoring CF-IPCountry, CloudFront-Viewer-Country, X-Vercel-IP-Country, and server-side GeoIP', 'anchor-schema' ),
+			'cloudflare' => __( 'Cloudflare — honoring CF-IPCountry and server-side GeoIP; CF-Connecting-IP supplies the visitor IP for lookups', 'anchor-schema' ),
+			'other'      => __( 'Other reverse proxy — honoring CloudFront / Vercel / X-Geo-Country headers and server-side GeoIP; X-Real-IP / X-Forwarded-For supply the visitor IP', 'anchor-schema' ),
+			'none'       => __( 'None (hardened) — every geo and visitor-IP header ignored; server-side GeoIP only', 'anchor-schema' ),
+		];
+		return isset( $labels[ $mode ] ) ? $labels[ $mode ] : $labels['edge'];
 	}
 
 	/** @return string Human-readable name for a Anchor_Compliance_Geo::source() value. */

@@ -78,11 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true}}'
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true}}'
 if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
   wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events + Gallery modules enabled."
+log "Events + Gallery + Compliance modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.
@@ -460,6 +460,33 @@ GALLERY_PAGE_ID="$(wp eval '
 log "Gallery page #${GALLERY_PAGE_ID}"
 
 # ---------------------------------------------------------------------------
+# Compliance fixture (consent banner / script blocker E2E).
+# One published page carrying: a known third-party iframe (YouTube embed —
+# gated as `marketing` by the built-in service registry), the
+# [anchor_consent_link] shortcode, and the [anchor_privacy_request] form.
+# Written via wp eval with kses_remove_filters() so the CLI (no logged-in
+# user => kses active) does not strip the <iframe> out of post_content.
+# Idempotent, same idiom as the gallery fixture above.
+# ---------------------------------------------------------------------------
+COMPLIANCE_PAGE_ID="$(wp eval '
+  kses_remove_filters();
+  $existing = get_posts( [ "post_type" => "page", "name" => "cmp-e2e-consent", "posts_per_page" => 1, "fields" => "ids", "post_status" => "any" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "CMP E2E Consent",
+      "post_name"   => "cmp-e2e-consent",
+      "post_status" => "publish",
+  ] );
+  $content = "<h2>Compliance E2E fixture</h2>\n"
+      . "<iframe class=\"cmp-e2e-youtube\" src=\"https://www.youtube.com/embed/dQw4w9WgXcQ\" width=\"560\" height=\"315\" title=\"E2E gated embed\"></iframe>\n"
+      . "<p>[anchor_consent_link]</p>\n"
+      . "[anchor_privacy_request]";
+  wp_update_post( [ "ID" => $id, "post_status" => "publish", "post_content" => $content ] );
+  echo (int) $id;
+')"
+log "Compliance page #${COMPLIANCE_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
 # Emit the fixture for the Playwright specs (written via WP so the path is
 # correct inside the container; the bind mount surfaces it on the host).
 # ---------------------------------------------------------------------------
@@ -471,8 +498,9 @@ EXT_EMBED_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EMBED_EVENT_ID}"');')
 OFFERING_EVENT_URL="$(wp eval 'echo get_permalink('"${OFFERING_EVENT_ID}"');')"
 RECURRING_EVENT_URL="$(wp eval 'echo get_permalink('"${RECURRING_EVENT_ID}"');')"
 GALLERY_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_PAGE_ID}"');')"
+COMPLIANCE_PAGE_URL="$(wp eval 'echo get_permalink('"${COMPLIANCE_PAGE_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Multisession event URL: ${MULTI_EVENT_URL}"
@@ -481,5 +509,6 @@ log "External (embed) event URL: ${EXT_EMBED_EVENT_URL}"
 log "Offering event URL: ${OFFERING_EVENT_URL}"
 log "Recurring event URL: ${RECURRING_EVENT_URL}"
 log "Gallery page URL: ${GALLERY_PAGE_URL}"
+log "Compliance page URL: ${COMPLIANCE_PAGE_URL}"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 log "Seed complete."

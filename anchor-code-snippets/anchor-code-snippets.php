@@ -443,7 +443,10 @@ class Anchor_Code_Snippets_Module {
             $code     = get_post_meta( $snippet->ID, 'acs_code', true );
             if ( $code === '' || $code === false ) continue;
 
+            ob_start();
             $this->output_snippet( $language, $code );
+            $html = ob_get_clean();
+            echo apply_filters( 'anchor_code_snippet_output', $html, $snippet->ID );
         }
     }
 

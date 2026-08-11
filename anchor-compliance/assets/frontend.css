@@ -1,0 +1,1804 @@
+/*
+ * Anchor Compliance — consent banner, preference center, blocked-embed
+ * placeholder and cookie-policy tables.
+ *
+ * ---------------------------------------------------------------------------
+ * DESIGN NOTE — "the ledger"
+ * ---------------------------------------------------------------------------
+ * This component is a guest in someone else's design. It inherits the host
+ * site's typeface (never imposes one) and gets exactly one chromatic input:
+ * the client's accent. So the character has to come from structure and
+ * material, not from a palette.
+ *
+ * The banner is deliberately almost silent — type, air, a hairline ring, and
+ * one filled button. The personality lives in the preference center, which is
+ * built as a *ledger*: a fixed toggle gutter, hairline rules instead of card
+ * soup, and a system monospace with tabular figures for the cookie counts,
+ * names and durations. Consent IS a record — this module writes a UUID and a
+ * timestamp to an audit log — so a page that reads like a record sheet is
+ * telling the truth about itself rather than dressing up as a marketing modal.
+ *
+ * The accent is spent in four places only: the Accept fill, the switch track,
+ * the focus ring, and the rule under the GPC notice. Everything else is
+ * derived neutral.
+ *
+ * ---------------------------------------------------------------------------
+ * SIZING
+ * ---------------------------------------------------------------------------
+ * `em` throughout, anchored by a single clamped `font-size` on the root. A
+ * theme running the `html { font-size: 62.5% }` hack would otherwise shrink
+ * every `rem` here to 10px-based and make the banner unreadable. The clamp
+ * still tracks a user's own default-font-size preference, between 15 and 22px.
+ * `px` is used only for touch targets and hairlines, where it is the correct
+ * unit.
+ *
+ * Contrast was computed, not assumed: 352 text/background and UI/background
+ * pairs across 11 brand palettes x 2 schemes. Worst text pair 4.74:1,
+ * worst UI pair 3.28:1. See task-11-report.md for the table.
+ */
+
+/* ===========================================================================
+ * 1. TOKENS
+ *
+ * INPUTS (emitted by class-banner.php as an inline style on #anchor-cmp;
+ * the values below are only fallbacks for the standalone contexts — the
+ * shortcode link, the placeholder — that render outside that element):
+ *   --acmp-accent  --acmp-surface  --acmp-text  --acmp-radius  --acmp-accent-ink
+ *
+ * Everything else is derived. The two scheme-dependent primitives are
+ * --acmp-bg and --acmp-ink; every derived token is a mix of those two, so
+ * the dark blocks below redefine only those two (plus shadow/scrim alphas)
+ * and the whole system follows.
+ * ======================================================================== */
+
+#anchor-cmp {
+	/* Inputs — overridden by the inline style the banner prints. */
+	--acmp-accent: #bf8f43;
+	--acmp-surface: #ffffff;
+	--acmp-text: #1a1a1a;
+	--acmp-accent-ink: #000000;
+	--acmp-radius: 16px;
+
+	/* Scheme primitives (light). Defined here, never only in a media query. */
+	--acmp-bg: var(--acmp-surface);
+	--acmp-ink: var(--acmp-text);
+	--acmp-scrim: rgba(12, 14, 18, .45);
+	--acmp-lip: rgba(255, 255, 255, .72);
+	--acmp-shadow:
+		0 1px 2px rgba(12, 14, 18, .06),
+		0 8px 20px -6px rgba(12, 14, 18, .14),
+		0 28px 56px -20px rgba(12, 14, 18, .22);
+	--acmp-shadow-soft:
+		0 1px 2px rgba(12, 14, 18, .05),
+		0 10px 24px -12px rgba(12, 14, 18, .16);
+
+	/* Derived neutrals. The percentages are not decorative: each is the
+	 * lowest value that still clears WCAG AA for the worst brand palette
+	 * tested (a 10.6:1 text/surface pair). Lowering one lowers a ratio. */
+	--acmp-ink-soft: #3f3f3f;
+	--acmp-muted: #5a5a5a;
+	--acmp-line: #e4e4e4;
+	--acmp-line-strong: #7a7a7a;
+	--acmp-wash: #f6f6f6;
+	--acmp-wash-2: #ededed;
+	--acmp-accent-deep: #644f2c;
+	--acmp-accent-halo: rgba(191, 143, 67, .26);
+
+	--acmp-radius-sm: calc(var(--acmp-radius) * .5);
+	--acmp-pad: 1.5em;
+	--acmp-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+		"Liberation Mono", monospace;
+}
+
+/* The static neutrals above are the correct derivations for the *default*
+ * palette only. Where color-mix() is available (every engine since 2023) they
+ * are recomputed from whatever brand colors the site actually configured, so
+ * a blue-accented site gets blue-tinted focus rings and a cream surface gets
+ * cream-tinted hairlines. Guarded by @supports because an unsupported
+ * color-mix() in a custom property is *stored* as a valid token stream and
+ * only fails at substitution time — it would blank the color rather than fall
+ * back to the static value. */
+@supports (color: color-mix(in srgb, #000 50%, #fff)) {
+	#anchor-cmp {
+		--acmp-ink-soft: color-mix(in srgb, var(--acmp-ink) 84%, var(--acmp-bg));
+		--acmp-muted: color-mix(in srgb, var(--acmp-ink) 72%, var(--acmp-bg));
+		--acmp-line: color-mix(in srgb, var(--acmp-ink) 12%, var(--acmp-bg));
+		--acmp-line-strong: color-mix(in srgb, var(--acmp-ink) 58%, var(--acmp-bg));
+		--acmp-wash: color-mix(in srgb, var(--acmp-ink) 4%, var(--acmp-bg));
+		--acmp-wash-2: color-mix(in srgb, var(--acmp-ink) 8%, var(--acmp-bg));
+
+		/* Mixed toward the *panel ink*, not toward the accent's own ink, so it
+		 * darkens on a light panel and lightens on a dark one. That is what
+		 * keeps the focus ring and the Accept button's rim above 3:1 even when
+		 * the client picks an accent that is nearly the surface color. */
+		--acmp-accent-deep: color-mix(in srgb, var(--acmp-accent) 45%, var(--acmp-ink));
+		--acmp-accent-halo: color-mix(in srgb, var(--acmp-accent) 26%, transparent);
+	}
+}
+
+/* ---- Dark scheme -------------------------------------------------------
+ * Only the two primitives and the shadow/scrim alphas change; every derived
+ * token above re-resolves against them automatically.
+ *
+ * The emitted --acmp-surface / --acmp-text are the client's *light* brand
+ * colors and are wrong as-is in the dark, so the dark panel is a neutral
+ * near-black carrying 6% of the brand surface, and the dark ink a near-white
+ * carrying 5% of the accent. Tinted neutrals, not grey mush.
+ *
+ * Guarded so a forced setting wins in both directions:
+ *   media query  + :not([data-acmp-scheme="light"])  -> forced light wins
+ *   [data-acmp-scheme="dark"] (outside any query)    -> forced dark wins
+ * ---------------------------------------------------------------------- */
+@media (prefers-color-scheme: dark) {
+	#anchor-cmp:not([data-acmp-scheme="light"]) {
+		--acmp-bg: #1d1f23;
+		--acmp-ink: #f4f3f1;
+		--acmp-scrim: rgba(0, 0, 0, .62);
+		--acmp-lip: rgba(255, 255, 255, .055);
+		--acmp-shadow:
+			0 1px 2px rgba(0, 0, 0, .5),
+			0 10px 24px -8px rgba(0, 0, 0, .6),
+			0 32px 64px -24px rgba(0, 0, 0, .7);
+		--acmp-shadow-soft:
+			0 1px 2px rgba(0, 0, 0, .4),
+			0 12px 28px -14px rgba(0, 0, 0, .55);
+	}
+
+	@supports (color: color-mix(in srgb, #000 50%, #fff)) {
+		#anchor-cmp:not([data-acmp-scheme="light"]) {
+			--acmp-bg: color-mix(in srgb, var(--acmp-surface) 6%, #0f1115);
+			--acmp-ink: color-mix(in srgb, var(--acmp-accent) 5%, #f7f8fa);
+		}
+	}
+}
+
+#anchor-cmp[data-acmp-scheme="dark"] {
+	--acmp-bg: #1d1f23;
+	--acmp-ink: #f4f3f1;
+	--acmp-scrim: rgba(0, 0, 0, .62);
+	--acmp-lip: rgba(255, 255, 255, .055);
+	--acmp-shadow:
+		0 1px 2px rgba(0, 0, 0, .5),
+		0 10px 24px -8px rgba(0, 0, 0, .6),
+		0 32px 64px -24px rgba(0, 0, 0, .7);
+	--acmp-shadow-soft:
+		0 1px 2px rgba(0, 0, 0, .4),
+		0 12px 28px -14px rgba(0, 0, 0, .55);
+}
+
+@supports (color: color-mix(in srgb, #000 50%, #fff)) {
+	#anchor-cmp[data-acmp-scheme="dark"] {
+		--acmp-bg: color-mix(in srgb, var(--acmp-surface) 6%, #0f1115);
+		--acmp-ink: color-mix(in srgb, var(--acmp-accent) 5%, #f7f8fa);
+	}
+}
+
+/* ===========================================================================
+ * 2. ARMOR
+ * Assume a hostile theme: global `button { }`, `table { }`, `h2::after { }`
+ * decorations, `!important` link underlines, the lot. Everything the module
+ * renders is neutralised first, then styled.
+ * ======================================================================== */
+
+#anchor-cmp,
+#anchor-cmp *,
+#anchor-cmp *::before,
+#anchor-cmp *::after {
+	box-sizing: border-box;
+}
+
+#anchor-cmp {
+	/* See the SIZING note at the top of the file. */
+	font-size: clamp(15px, 1rem, 22px);
+	font-family: inherit;
+	font-weight: 400;
+	font-style: normal;
+	line-height: 1.5;
+	letter-spacing: normal;
+	text-align: start;
+	text-transform: none;
+	color: var(--acmp-ink);
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
+}
+
+/* The runtime drives visibility with the `hidden` attribute. A theme rule as
+ * ordinary as `div { display: block }` outranks the UA sheet's [hidden] and
+ * would leave a dismissed banner on screen, so this is not optional. */
+#anchor-cmp[hidden],
+#anchor-cmp [hidden] {
+	display: none !important;
+}
+
+/* :where() keeps the armor at (1,0,0). Without it `#anchor-cmp div` (1,0,1)
+ * would outrank `#anchor-cmp-banner` (1,0,0) and strip the panel's own
+ * background, border and padding back off again. Every rule below this point
+ * therefore beats the armor, and the armor still beats any theme rule that is
+ * not itself id-scoped. */
+#anchor-cmp :where(h2, p, div, span, label, table, thead, tbody, tr, th, td, details, summary) {
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	float: none;
+	text-shadow: none;
+	text-transform: none;
+	letter-spacing: inherit;
+	line-height: inherit;
+	color: inherit;
+	font: inherit;
+}
+
+/* Themes love hanging rules and flourishes off headings. */
+#anchor-cmp :where(h2)::before,
+#anchor-cmp :where(h2)::after,
+#anchor-cmp :where(summary, li)::marker {
+	content: none;
+}
+
+#anchor-cmp :where(button) {
+	/* The only !important in the module's own element armor. Globally
+	 * uppercasing buttons is a genuinely common theme habit and it is not
+	 * cosmetic here: it mangles translated labels and, in several scripts,
+	 * changes what the label says. Everything else wins on specificity. */
+	text-transform: none !important;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	width: auto;
+	min-width: 0;
+	max-width: 100%;
+	font: inherit;
+	line-height: 1.35;
+	color: inherit;
+	background: none;
+	box-shadow: none;
+	text-shadow: none;
+	text-decoration: none;
+	text-transform: none;
+	letter-spacing: inherit;
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+}
+
+#anchor-cmp :where(a) {
+	background: none;
+	box-shadow: none;
+	text-decoration: none;
+	text-transform: none;
+	letter-spacing: inherit;
+}
+
+#anchor-cmp :where(table) {
+	border-collapse: collapse;
+	border-spacing: 0;
+	table-layout: auto;
+	width: 100%;
+	max-width: none;
+}
+
+#anchor-cmp :where(tr:nth-child(odd), tr:nth-child(even)) {
+	background: none;
+}
+
+/* Focus: one ring, everywhere, always visible. The ring color is the accent
+ * pulled 55% toward the panel ink — the raw accent drops to 1.2:1 against a
+ * light surface for a pale brand color, which is not a focus indicator. */
+#anchor-cmp :focus-visible,
+.anchor-cmp-placeholder.anchor-cmp-placeholder :focus-visible,
+.anchor-cmp-link.anchor-cmp-link:focus-visible,
+.anchor-cmp-policy__scroll.anchor-cmp-policy__scroll:focus-visible {
+	/* No border-radius here: outlines already follow the element's own radius,
+	 * and setting one would reshape the pill and the switch on focus. */
+	outline: 2px solid var(--acmp-accent-deep, currentColor);
+	outline-offset: 2px;
+}
+
+#anchor-cmp .anchor-cmp-sr-only {
+	position: absolute !important;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* ===========================================================================
+ * 3. ROOT AND SCRIMS
+ * ======================================================================== */
+
+#anchor-cmp {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483001;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	align-content: end;
+	justify-items: stretch;
+
+	/* THE ROOT NEVER TAKES A CLICK.
+	 * It spans the viewport so the panels can be placed anywhere in it, which
+	 * means it would otherwise be a full-screen click-swallowing sheet — most
+	 * visibly in the `anchor-cmp--pill-only` state, where nothing is on screen
+	 * but the little re-entry button. Interactivity is re-enabled per element
+	 * (panels, pill, scrim) rather than switched per state, so no future state
+	 * can reintroduce the bug. */
+	pointer-events: none;
+}
+
+#anchor-cmp-banner,
+#anchor-cmp-prefs,
+#anchor-cmp .anchor-cmp-pill {
+	pointer-events: auto;
+}
+
+/* One scrim, on the root, for three situations: the modal preset, the
+ * preference center open over any preset, and — .anchor-cmp--gate, set by the
+ * runtime — STRICT posture on any preset. In a consent-required region the
+ * banner claims aria-modal and traps Tab, so the page behind it must be
+ * genuinely inert-looking for pointer users too; a bar or corner card whose
+ * page stays bright and clickable would make the modality a keyboard-only
+ * fiction (WCAG 2.1.2). The root never animates, so putting the scrim here
+ * (rather than on the panel) avoids the transform-creates-a-stacking-context
+ * flash that would paint it over the panel mid-entrance.
+ *
+ * :has() is how the second case is detected — the runtime signals an open
+ * preference center only by removing `hidden`. Where :has() is unsupported the
+ * preference center simply appears without a scrim: a degraded look, never a
+ * broken one. */
+#anchor-cmp.anchor-cmp--modal:not(.anchor-cmp--pill-only):not(.anchor-cmp--notice)::before,
+#anchor-cmp.anchor-cmp--gate:not(.anchor-cmp--pill-only)::before,
+#anchor-cmp:has(#anchor-cmp-prefs:not([hidden]))::before {
+	content: "";
+	position: fixed;
+	inset: 0;
+	z-index: -1;
+	background: var(--acmp-scrim);
+	-webkit-backdrop-filter: blur(6px);
+	backdrop-filter: blur(6px);
+	pointer-events: auto;
+	animation: acmp-fade .34s ease both;
+}
+
+/* The scroll-lock half of the strict gate. Set on <html> by the runtime
+ * alongside .anchor-cmp--gate and removed with it the moment a decision
+ * exists. !important because theme resets routinely put `overflow-x: hidden;
+ * overflow-y: scroll` (or plain `overflow: visible`) on html/body with high
+ * specificity, and a scroll lock that loses that fight silently is worse
+ * than none — the scrim would then dim a page that still scrolls. */
+html.anchor-cmp-scroll-lock,
+html.anchor-cmp-scroll-lock body {
+	overflow: hidden !important;
+}
+
+/* ===========================================================================
+ * 4. PANELS — base case is the mobile bottom sheet
+ *
+ * Mobile is not a fallback here, it is the base rule. The four desktop
+ * presets live in the min-width block in section 12, which also keeps the
+ * cascade honest: no specificity war between a preset and its override.
+ * ======================================================================== */
+
+#anchor-cmp-banner,
+#anchor-cmp-prefs {
+	position: relative;
+	width: 100%;
+	background: var(--acmp-bg);
+	color: var(--acmp-ink);
+	border: 1px solid var(--acmp-line);
+	border-bottom: 0;
+	border-radius: var(--acmp-radius) var(--acmp-radius) 0 0;
+	box-shadow:
+		var(--acmp-shadow),
+		inset 0 1px 0 var(--acmp-lip);
+	padding: 1em var(--acmp-pad) calc(var(--acmp-pad) + env(safe-area-inset-bottom, 0px));
+	max-height: 100dvh;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	animation: acmp-rise .34s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+/* Drag handle — the sheet affordance. Desktop removes it. */
+#anchor-cmp-banner::before,
+#anchor-cmp-prefs::before {
+	content: "";
+	display: block;
+	width: 2.25em;
+	height: 4px;
+	flex: none;
+	margin: 0 auto 1em;
+	border-radius: 999px;
+	background: var(--acmp-line-strong);
+	opacity: .5;
+}
+
+/* ---- Banner ---- */
+
+#anchor-cmp-banner {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	row-gap: .5em;
+}
+
+/* Optional brand logo (appearance.logo_id). Decorative — alt="" and
+ * aria-hidden server-side — so it gets a hard height cap: a client uploading
+ * their full-size header logo must not turn the consent banner into a
+ * billboard. width:auto guards against theme-level `img { width: 100% }`. */
+#anchor-cmp .anchor-cmp-logo {
+	display: block;
+	max-height: 40px;
+	width: auto;
+	max-width: 100%;
+	margin: 0 0 8px;
+}
+
+#anchor-cmp .anchor-cmp-heading {
+	font-size: 1.15em;
+	font-weight: 600;
+	line-height: 1.25;
+	letter-spacing: -.011em;
+	color: var(--acmp-ink);
+	text-wrap: balance;
+}
+
+#anchor-cmp .anchor-cmp-body {
+	font-size: .9375em;
+	line-height: 1.6;
+	color: var(--acmp-ink-soft);
+	overflow-wrap: break-word;
+}
+
+#anchor-cmp .anchor-cmp-body a {
+	/* `a { color: X !important }` and `text-decoration: none !important` are
+	 * both common; the first would put an unmeasured color on panel text. */
+	color: inherit !important;
+	text-decoration-line: underline !important;
+	text-decoration: underline;
+	text-decoration-color: var(--acmp-line-strong);
+	text-decoration-thickness: 1px;
+	text-underline-offset: .18em;
+}
+
+#anchor-cmp .anchor-cmp-body a:hover {
+	text-decoration-color: var(--acmp-accent-deep);
+}
+
+/* The GPC notice only exists when a real signal was honored, so it is one of
+ * the four places the accent is allowed to speak. */
+#anchor-cmp .anchor-cmp-gpc-notice {
+	font-size: .8125em;
+	line-height: 1.5;
+	color: var(--acmp-ink-soft);
+	background: var(--acmp-wash);
+	border-inline-start: 2px solid var(--acmp-accent);
+	border-radius: 0 var(--acmp-radius-sm) var(--acmp-radius-sm) 0;
+	padding: .625em .875em;
+	margin-block-start: .25em;
+}
+
+/* The could-not-save notice (F010): same quiet ledger-note shape as the GPC
+ * notice, but its rule is the strong neutral, NOT the accent — the accent's
+ * four slots are affirmations, and this is a failure report. Rendered by the
+ * runtime inside the banner (after the body) or the preference center (above
+ * the actions) when the consent cookie provably failed to persist. */
+#anchor-cmp .anchor-cmp-save-warning {
+	font-size: .8125em;
+	line-height: 1.5;
+	font-weight: 600;
+	color: var(--acmp-ink);
+	background: var(--acmp-wash-2);
+	border-inline-start: 2px solid var(--acmp-line-strong);
+	border-radius: 0 var(--acmp-radius-sm) var(--acmp-radius-sm) 0;
+	padding: .625em .875em;
+	margin-block-start: .25em;
+}
+
+/* Inside the preference center it sits between the scroll region and the
+ * sticky action bar, so it needs the panel's own horizontal padding. */
+#anchor-cmp-prefs .anchor-cmp-save-warning {
+	margin: .75em var(--acmp-pad) 0;
+}
+
+/* Mobile: stacked, full width. Section 12 turns this back into a row. */
+#anchor-cmp .anchor-cmp-actions {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: .625em;
+	margin-block-start: .75em;
+}
+
+/* ===========================================================================
+ * 5. BUTTONS
+ *
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │ EQUAL PROMINENCE — DO NOT "IMPROVE" THIS.                            │
+ * │                                                                      │
+ * │ .anchor-cmp-btn--reject, .anchor-cmp-btn--save and                   │
+ * │ .anchor-cmp-btn--accept share EVERY geometric and typographic        │
+ * │ property: min-height, padding, border-width, border-radius,          │
+ * │ font-size, font-weight, letter-spacing and flex-basis. All three     │
+ * │ carry a border that clears 3:1 against the panel. The only           │
+ * │ difference is the fill.                                              │
+ * │                                                                      │
+ * │ Making reject smaller, lighter, thinner, borderless, lower-contrast  │
+ * │ or narrower than accept is the exact dark pattern EU DPAs have       │
+ * │ issued fines over (CNIL v. Google/Facebook, Dec 2021, EUR 210m for   │
+ * │ precisely this asymmetry). If a client asks for a "softer" reject    │
+ * │ button, the answer is no.                                            │
+ * │                                                                      │
+ * │ Customize is deliberately quieter — it opens a panel, it does not    │
+ * │ record a decision, so it is not one of the peers.                    │
+ * └──────────────────────────────────────────────────────────────────────┘
+ * ======================================================================== */
+
+#anchor-cmp .anchor-cmp-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	/* 48px stacked touch targets on mobile; section 12 relaxes to 44px once
+	 * the row is horizontal and pointer input is likely. */
+	width: 100%;
+	min-height: 48px;
+	padding: .8em 1.35em;
+	border: 1.5px solid transparent;
+	border-radius: var(--acmp-radius-sm);
+	font-size: .9375em;
+	font-weight: 600;
+	line-height: 1.3;
+	letter-spacing: -.005em;
+	text-align: center;
+	white-space: normal;
+	overflow-wrap: break-word;
+	transition: transform .15s ease, background-color .15s ease,
+		border-color .15s ease, box-shadow .15s ease;
+}
+
+#anchor-cmp .anchor-cmp-btn:active {
+	transform: translateY(1px);
+}
+
+/* -- the two decision peers ------------------------------------------- */
+
+#anchor-cmp .anchor-cmp-btn--accept {
+	background: var(--acmp-accent);
+	color: var(--acmp-accent-ink);
+	/* A rim, not decoration: an accent close to the surface color would leave
+	 * the primary control with no discernible boundary. Derived toward the
+	 * panel ink, so it is guaranteed >= 3:1 whatever the brand color is. */
+	border-color: var(--acmp-accent-deep);
+}
+
+/* The fill is deliberately NOT changed on hover. --acmp-accent-ink is the
+ * best of black/white against the accent, which for a mid-tone accent leaves
+ * as little as 0.37 of headroom over 4.5:1 — a 6% veil is enough to fail it.
+ * Hover is carried by a halo and a 1px lift instead. */
+#anchor-cmp .anchor-cmp-btn--accept:hover {
+	box-shadow: 0 0 0 3px var(--acmp-accent-halo);
+	transform: translateY(-1px);
+}
+
+#anchor-cmp .anchor-cmp-btn--accept:active {
+	transform: translateY(1px);
+	box-shadow: none;
+}
+
+#anchor-cmp .anchor-cmp-btn--reject,
+#anchor-cmp .anchor-cmp-btn--save {
+	background: var(--acmp-wash);
+	color: var(--acmp-ink);
+	border-color: var(--acmp-line-strong);
+}
+
+#anchor-cmp .anchor-cmp-btn--reject:hover,
+#anchor-cmp .anchor-cmp-btn--save:hover {
+	background: var(--acmp-wash-2);
+	border-color: var(--acmp-ink);
+	transform: translateY(-1px);
+}
+
+#anchor-cmp .anchor-cmp-btn--reject:active,
+#anchor-cmp .anchor-cmp-btn--save:active {
+	transform: translateY(1px);
+}
+
+/* -- the quiet one ----------------------------------------------------- */
+
+#anchor-cmp .anchor-cmp-btn--customize {
+	background: none;
+	/* transparent, not absent: the box stays exactly the same size as its
+	 * neighbours so the row's baseline and height never shift. */
+	border-color: transparent;
+	color: var(--acmp-muted);
+	padding-inline: .75em;
+}
+
+#anchor-cmp .anchor-cmp-btn--customize:hover {
+	color: var(--acmp-ink);
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: .2em;
+}
+
+/* ===========================================================================
+ * 6. PREFERENCE CENTER
+ * ======================================================================== */
+
+#anchor-cmp-prefs {
+	position: fixed;
+	/* z-index MUST stay `auto`: the panel must not create a stacking context,
+	 * or the root's z-index:-1 scrim would paint on top of it. */
+	z-index: auto;
+	inset: max(2em, env(safe-area-inset-top, 0px)) 0 0 0;
+	display: flex;
+	flex-direction: column;
+	max-height: none;
+	overflow: hidden;
+	padding: 1em 0 0;
+}
+
+#anchor-cmp-prefs-heading {
+	flex: none;
+	font-size: 1.15em;
+	font-weight: 600;
+	line-height: 1.25;
+	letter-spacing: -.011em;
+	color: var(--acmp-ink);
+	padding: 0 calc(var(--acmp-pad) + 2.25em) .875em var(--acmp-pad);
+	margin-block-end: 0;
+	border-block-end: 1px solid var(--acmp-line);
+}
+
+#anchor-cmp .anchor-cmp-prefs-close {
+	position: absolute;
+	inset-block-start: 1em;
+	inset-inline-end: calc(var(--acmp-pad) - .5em);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 2.25em;
+	height: 2.25em;
+	min-height: 44px;
+	min-width: 44px;
+	border-radius: var(--acmp-radius-sm);
+	font-size: 1.25em;
+	line-height: 1;
+	color: var(--acmp-muted);
+	transition: background-color .15s ease, color .15s ease;
+}
+
+#anchor-cmp .anchor-cmp-prefs-close:hover {
+	background: var(--acmp-wash-2);
+	color: var(--acmp-ink);
+}
+
+/* The scroll region. Everything below it — links and actions — stays put,
+ * which is the sticky action bar. */
+#anchor-cmp .anchor-cmp-categories {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	scrollbar-width: thin;
+	scrollbar-color: var(--acmp-line-strong) transparent;
+	padding: 0 var(--acmp-pad);
+}
+
+/* ---- The ledger ---- */
+
+#anchor-cmp .anchor-cmp-category {
+	display: grid;
+	grid-template-columns: 2.75em minmax(0, 1fr);
+	column-gap: .875em;
+	align-items: start;
+	padding: 1.125em 0;
+	border-block-start: 1px solid var(--acmp-line);
+}
+
+#anchor-cmp .anchor-cmp-category:first-child {
+	border-block-start: 0;
+}
+
+/* Lifts the checkbox and its label into the ledger grid so the toggle sits in
+ * a fixed gutter and every row's text aligns on one rail. A plain <div> has no
+ * role to lose, so `display: contents` is safe for accessibility here. */
+#anchor-cmp .anchor-cmp-category-header {
+	display: contents;
+}
+
+#anchor-cmp .anchor-cmp-category-header label {
+	grid-column: 2;
+	grid-row: 1;
+	align-self: center;
+	min-height: 1.5em;
+	display: flex;
+	align-items: center;
+	font-size: .9375em;
+	font-weight: 600;
+	line-height: 1.3;
+	color: var(--acmp-ink);
+	cursor: pointer;
+}
+
+#anchor-cmp .anchor-cmp-category-desc {
+	grid-column: 2;
+	font-size: .8125em;
+	line-height: 1.55;
+	color: var(--acmp-muted);
+	margin-block-start: .25em;
+	overflow-wrap: break-word;
+}
+
+/* ===========================================================================
+ * 7. THE SWITCH
+ *
+ * Knob is drawn with a background-image circle rather than a pseudo-element:
+ * ::before on a replaced <input> is undefined behaviour and has historically
+ * differed between engines. background-position animates cleanly and works
+ * everywhere.
+ * ======================================================================== */
+
+#anchor-cmp .anchor-cmp-category-header input[type="checkbox"] {
+	/* Form controls do not inherit font by default (Chrome gives them
+	 * 13.333px), which would silently shrink this em-sized track. */
+	font: inherit;
+	grid-column: 1;
+	grid-row: 1;
+	align-self: center;
+	flex: none;
+	width: 2.75em;
+	height: 1.5em;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	border-radius: 999px;
+	background-color: var(--acmp-line-strong);
+	background-image: radial-gradient(circle closest-side, var(--acmp-bg) 98%, transparent 100%);
+	background-repeat: no-repeat;
+	background-size: 1.125em 1.125em;
+	background-position: .1875em center;
+	box-shadow: inset 0 1px 2px rgba(0, 0, 0, .12);
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+	transition: background-color .18s ease, background-position .18s cubic-bezier(.16, 1, .3, 1);
+}
+
+#anchor-cmp .anchor-cmp-category-header input[type="checkbox"]:checked {
+	background-color: var(--acmp-accent);
+	/* --acmp-accent-ink is computed server-side as the better of black/white
+	 * against the accent, so the knob is guaranteed >= 4.58:1 on the track
+	 * for ANY accent — including a pale one, where a white knob would vanish. */
+	background-image: radial-gradient(circle closest-side, var(--acmp-accent-ink) 98%, transparent 100%);
+	background-position: calc(100% - .1875em) center;
+}
+
+#anchor-cmp .anchor-cmp-category-header input[type="checkbox"]:disabled {
+	opacity: .55;
+	cursor: not-allowed;
+}
+
+#anchor-cmp .anchor-cmp-category-header input[type="checkbox"]:disabled + label {
+	cursor: default;
+}
+
+/* ===========================================================================
+ * 8. COOKIE DISCLOSURE + TABLE
+ * ======================================================================== */
+
+#anchor-cmp .anchor-cmp-category-cookies {
+	grid-column: 2;
+	margin-block-start: .625em;
+	/* The <details> is the scroll container so the table can stay a real
+	 * table (width:100% when there is room, min-width when there is not).
+	 * overflow-y is hidden rather than visible because `overflow-x: auto`
+	 * would otherwise compute overflow-y to auto and add a phantom vertical
+	 * scrollbar; the box is auto-height, so nothing is ever clipped. */
+	overflow-x: auto;
+	overflow-y: hidden;
+	overscroll-behavior-x: contain;
+	-webkit-overflow-scrolling: touch;
+	scrollbar-width: thin;
+	scrollbar-color: var(--acmp-line-strong) transparent;
+}
+
+#anchor-cmp .anchor-cmp-category-cookies > summary {
+	/* Pinned so the disclosure label stays readable while the table scrolls
+	 * horizontally underneath it. */
+	position: sticky;
+	inset-inline-start: 0;
+	/* block-level, shrink-wrapped: `position: sticky` on an inline-level box
+	 * is not reliably implemented. */
+	display: flex;
+	align-items: center;
+	gap: .5em;
+	width: -moz-fit-content;
+	width: fit-content;
+	padding: .25em 0;
+	font-family: var(--acmp-mono);
+	font-size: .6875em;
+	font-weight: 500;
+	letter-spacing: .085em;
+	text-transform: uppercase;
+	font-variant-numeric: tabular-nums;
+	color: var(--acmp-muted);
+	list-style: none;
+	cursor: pointer;
+	transition: color .15s ease;
+}
+
+#anchor-cmp .anchor-cmp-category-cookies > summary::-webkit-details-marker {
+	display: none;
+}
+
+#anchor-cmp .anchor-cmp-category-cookies > summary::after {
+	content: "";
+	width: .4em;
+	height: .4em;
+	margin-block-start: -.2em;
+	border-inline-end: 1.5px solid currentColor;
+	border-block-end: 1.5px solid currentColor;
+	transform: rotate(45deg);
+	transition: transform .18s ease;
+}
+
+#anchor-cmp .anchor-cmp-category-cookies[open] > summary::after {
+	transform: rotate(-135deg);
+	margin-block-start: .15em;
+}
+
+#anchor-cmp .anchor-cmp-category-cookies > summary:hover {
+	color: var(--acmp-ink);
+}
+
+#anchor-cmp .anchor-cmp-cookie-table {
+	min-width: 24em;
+	margin-block-start: .5em;
+	font-variant-numeric: tabular-nums;
+}
+
+#anchor-cmp .anchor-cmp-cookie-table th {
+	font-family: var(--acmp-mono);
+	font-size: .6875em;
+	font-weight: 500;
+	letter-spacing: .085em;
+	text-transform: uppercase;
+	text-align: start;
+	color: var(--acmp-muted);
+	padding: 0 1em .45em 0;
+	border-block-end: 1px solid var(--acmp-line);
+	white-space: nowrap;
+}
+
+#anchor-cmp .anchor-cmp-cookie-table td {
+	font-size: .8125em;
+	line-height: 1.5;
+	color: var(--acmp-ink-soft);
+	vertical-align: top;
+	padding: .5em 1em .5em 0;
+	border-block-end: 1px solid var(--acmp-line);
+	overflow-wrap: break-word;
+}
+
+#anchor-cmp .anchor-cmp-cookie-table th:last-child,
+#anchor-cmp .anchor-cmp-cookie-table td:last-child {
+	padding-inline-end: 0;
+	white-space: nowrap;
+}
+
+#anchor-cmp .anchor-cmp-cookie-table td:first-child {
+	font-family: var(--acmp-mono);
+	font-size: .75em;
+	color: var(--acmp-ink);
+	/* Cookie names are long single tokens (_ga_XXXXXXXXXX). Breaking one is
+	 * better than forcing the whole table into a scroll it does not need. */
+	overflow-wrap: anywhere;
+}
+
+#anchor-cmp .anchor-cmp-cookie-table tbody tr:last-child td {
+	border-block-end: 0;
+}
+
+/* A category with no registered cookies still renders a full <thead>. Column
+ * headers over nothing read as a broken table, so swap them for a neutral,
+ * language-independent em dash. */
+#anchor-cmp .anchor-cmp-category-cookies:has(tbody:empty) > .anchor-cmp-cookie-table {
+	display: none;
+}
+
+#anchor-cmp .anchor-cmp-category-cookies:has(tbody:empty)[open]::after {
+	content: "—";
+	display: block;
+	padding-block: .35em .1em;
+	font-family: var(--acmp-mono);
+	font-size: .8125em;
+	color: var(--acmp-muted);
+}
+
+/* ===========================================================================
+ * 9. PREFERENCE FOOTER
+ * ======================================================================== */
+
+#anchor-cmp .anchor-cmp-footer-links {
+	flex: none;
+	display: flex;
+	flex-wrap: wrap;
+	gap: .35em 1.25em;
+	padding: .875em var(--acmp-pad);
+	border-block-start: 1px solid var(--acmp-line);
+	background: var(--acmp-bg);
+}
+
+#anchor-cmp .anchor-cmp-footer-link {
+	font-size: .8125em;
+	color: var(--acmp-muted) !important;
+	text-decoration-line: underline !important;
+	text-decoration: underline;
+	text-decoration-color: var(--acmp-line-strong);
+	text-decoration-thickness: 1px;
+	text-underline-offset: .2em;
+	transition: color .15s ease, text-decoration-color .15s ease;
+}
+
+#anchor-cmp .anchor-cmp-footer-link:hover {
+	color: var(--acmp-ink);
+	text-decoration-color: var(--acmp-accent-deep);
+}
+
+#anchor-cmp .anchor-cmp-prefs-actions {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: .625em;
+	padding: var(--acmp-pad) var(--acmp-pad)
+		calc(var(--acmp-pad) + env(safe-area-inset-bottom, 0px));
+	border-block-start: 1px solid var(--acmp-line);
+	background: var(--acmp-bg);
+}
+
+/* One rule between the scroll region and the footer group, not two. */
+#anchor-cmp .anchor-cmp-footer-links + .anchor-cmp-prefs-actions {
+	border-block-start: 0;
+	padding-block-start: 0;
+}
+
+/* ===========================================================================
+ * 10. RE-ENTRY PILL
+ * ======================================================================== */
+
+#anchor-cmp .anchor-cmp-pill {
+	position: fixed;
+	inset-block-end: calc(1.25em + env(safe-area-inset-bottom, 0px));
+	left: 1.25em;
+	right: auto;
+	z-index: 2147483000;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 2.75em;
+	height: 2.75em;
+	min-width: 44px;
+	min-height: 44px;
+	border-radius: 999px;
+	background: var(--acmp-bg);
+	border: 1px solid var(--acmp-line);
+	box-shadow: var(--acmp-shadow-soft), inset 0 1px 0 var(--acmp-lip);
+	transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease;
+}
+
+/* The pill's own `appearance.pill_position` setting (bottom-left default,
+ * bottom-right) is independent of the banner's own corner — a site can run
+ * the banner as a top bar and still want the persistent re-entry pill parked
+ * bottom-right. class-banner.php emits the matching modifier class on the
+ * button itself, so this keys off that class, not the root's position class. */
+#anchor-cmp .anchor-cmp-pill--bottom-right {
+	left: auto;
+	right: 1.25em;
+}
+
+#anchor-cmp .anchor-cmp-pill::before {
+	content: "";
+	display: block;
+	width: 1.375em;
+	height: 1.375em;
+	background-color: var(--acmp-ink);
+	-webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round'%3E%3Cpath d='M3.6 8.9a9 9 0 0 1 16.8 0'/%3E%3Cpath d='M5.9 9.8a6.5 6.5 0 0 1 12.2 0'/%3E%3Cpath d='M8.3 10.6a4 4 0 0 1 7.4 0'/%3E%3Cpath d='M12 12.4v6.2'/%3E%3Cpath d='M8.4 14.4a10 10 0 0 1-1 4.2'/%3E%3Cpath d='M15.6 14.4a10 10 0 0 0 1 4.2'/%3E%3C/svg%3E");
+	mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round'%3E%3Cpath d='M3.6 8.9a9 9 0 0 1 16.8 0'/%3E%3Cpath d='M5.9 9.8a6.5 6.5 0 0 1 12.2 0'/%3E%3Cpath d='M8.3 10.6a4 4 0 0 1 7.4 0'/%3E%3Cpath d='M12 12.4v6.2'/%3E%3Cpath d='M8.4 14.4a10 10 0 0 1-1 4.2'/%3E%3Cpath d='M15.6 14.4a10 10 0 0 0 1 4.2'/%3E%3C/svg%3E");
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	mask-position: center;
+	-webkit-mask-size: contain;
+	mask-size: contain;
+}
+
+#anchor-cmp .anchor-cmp-pill:hover {
+	border-color: var(--acmp-accent-deep);
+	box-shadow: var(--acmp-shadow), inset 0 1px 0 var(--acmp-lip);
+	transform: translateY(-1px);
+}
+
+/* ===========================================================================
+ * 11. THINGS THAT RENDER OUTSIDE #anchor-cmp
+ *
+ * The shortcode link, the blocked-embed placeholder and the cookie-policy
+ * tables are not descendants of #anchor-cmp, so the inline style class-banner
+ * .php prints on that element (the primary source for the brand tokens) is
+ * out of reach. class-banner.php's enqueue() also registers the same tokens
+ * at :root via wp_add_inline_style(), so var(--acmp-*, fallback) here does
+ * resolve — but these rules still lead with `currentColor`, not the token,
+ * because the goal in this section is to inherit the host page's own text
+ * color and look native in any theme, not to project the brand accent into
+ * page content. var(--acmp-*, fallback) stays as the fallback layer for the
+ * one property, --acmp-radius, where matching the banner's own corner
+ * rounding is a genuine improvement rather than a branding intrusion.
+ * ======================================================================== */
+
+/* ---- [anchor_consent_link] / [anchor_do_not_sell] ---- */
+
+.anchor-cmp-link.anchor-cmp-link {
+	display: inline;
+	width: auto;
+	text-transform: none !important;
+	letter-spacing: inherit;
+	word-spacing: inherit;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+	font: inherit;
+	color: inherit;
+	text-align: inherit;
+	text-transform: none;
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: .18em;
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.anchor-cmp-link.anchor-cmp-link:hover {
+	text-decoration-thickness: 2px;
+}
+
+/* ---- Blocked-embed placeholder ---- */
+
+.anchor-cmp-placeholder.anchor-cmp-placeholder {
+	/* The blocker emits `style="display:block"` inline (the element must be a
+	 * <span> to stay valid inside a <p>, so it cannot rely on a stylesheet
+	 * rule). An inline style outranks anything here without !important, so the
+	 * content is centred with align-content — which works on a block container
+	 * — rather than by fighting for `display: flex`. Older engines that do not
+	 * support block-container align-content simply top-align the content,
+	 * which still reads correctly. */
+	align-content: center;
+	box-sizing: border-box;
+	margin: 0;
+	width: 100%;
+	max-width: 100%;
+	min-height: 12em;
+	padding: 1.75em 1.25em;
+	text-align: center;
+	border: 1px dashed;
+	border-color: color-mix(in srgb, currentColor 28%, transparent);
+	border-radius: var(--acmp-radius, 12px);
+	background: color-mix(in srgb, currentColor 4%, transparent);
+	color: inherit;
+	overflow: hidden;
+}
+
+@supports not (color: color-mix(in srgb, #000 50%, #fff)) {
+	.anchor-cmp-placeholder.anchor-cmp-placeholder {
+		border-color: currentColor;
+		opacity: .82;
+	}
+}
+
+.anchor-cmp-placeholder__text.anchor-cmp-placeholder__text {
+	display: block;
+	max-width: 34em;
+	padding: 0;
+	margin: 0 auto .9em;
+	font-size: .9375em;
+	line-height: 1.55;
+	color: inherit;
+	text-wrap: balance;
+}
+
+.anchor-cmp-placeholder__btn.anchor-cmp-placeholder__btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: auto;
+	min-height: 44px;
+	text-transform: none !important;
+	letter-spacing: normal;
+	word-spacing: normal;
+	margin: 0;
+	padding: .7em 1.25em;
+	font: inherit;
+	font-size: .9375em;
+	font-weight: 600;
+	line-height: 1.3;
+	color: inherit;
+	text-transform: none;
+	text-decoration: none;
+	border: 1.5px solid;
+	border-color: color-mix(in srgb, currentColor 55%, transparent);
+	border-radius: calc(var(--acmp-radius, 12px) * .5);
+	background: color-mix(in srgb, currentColor 7%, transparent);
+	box-shadow: none;
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+	touch-action: manipulation;
+	transition: background-color .15s ease, border-color .15s ease;
+}
+
+.anchor-cmp-placeholder__btn.anchor-cmp-placeholder__btn:hover {
+	border-color: currentColor;
+	background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+@supports not (color: color-mix(in srgb, #000 50%, #fff)) {
+	.anchor-cmp-placeholder__btn.anchor-cmp-placeholder__btn {
+		border-color: currentColor;
+		background: none;
+	}
+}
+
+/* ---- [anchor_cookie_policy] tables (Task 13) ----
+ * These render inside post content, so they inherit the theme's typography
+ * on purpose and are styled as a data sheet, not as a branded card. */
+
+.anchor-cmp-policy.anchor-cmp-policy {
+	margin-block: 1.5em;
+	color: inherit;
+	font: inherit;
+}
+
+.anchor-cmp-policy__scroll.anchor-cmp-policy__scroll {
+	/* The table scrolls inside this box. Nothing here may widen the page. */
+	max-width: 100%;
+	overflow-x: auto;
+	overscroll-behavior-x: contain;
+	-webkit-overflow-scrolling: touch;
+	scrollbar-width: thin;
+	border: 1px solid;
+	border-color: color-mix(in srgb, currentColor 16%, transparent);
+	border-radius: var(--acmp-radius, 12px);
+}
+
+.anchor-cmp-policy__scroll.anchor-cmp-policy__scroll + .anchor-cmp-policy__scroll {
+	margin-block-start: 1.25em;
+}
+
+.anchor-cmp-policy__table.anchor-cmp-policy__table {
+	width: 100%;
+	min-width: 34em;
+	margin: 0;
+	border: 0;
+	border-collapse: collapse;
+	border-spacing: 0;
+	font-size: .9375em;
+	font-variant-numeric: tabular-nums;
+	background: none;
+}
+
+.anchor-cmp-policy__table.anchor-cmp-policy__table caption {
+	padding: .9em 1em .6em;
+	font-family: var(--acmp-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+	font-size: .78em;
+	font-weight: 600;
+	letter-spacing: .085em;
+	text-transform: uppercase;
+	text-align: start;
+	color: inherit;
+	opacity: .72;
+}
+
+.anchor-cmp-policy__table.anchor-cmp-policy__table th,
+.anchor-cmp-policy__table.anchor-cmp-policy__table td {
+	padding: .7em 1em;
+	text-align: start;
+	vertical-align: top;
+	border: 0;
+	border-block-end: 1px solid;
+	border-block-end-color: color-mix(in srgb, currentColor 14%, transparent);
+	background: none;
+	overflow-wrap: break-word;
+}
+
+.anchor-cmp-policy__table.anchor-cmp-policy__table thead th {
+	font-family: var(--acmp-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+	font-size: .78em;
+	font-weight: 600;
+	letter-spacing: .085em;
+	text-transform: uppercase;
+	white-space: nowrap;
+	opacity: .72;
+}
+
+.anchor-cmp-policy__table.anchor-cmp-policy__table tbody td:first-child {
+	font-family: var(--acmp-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+	font-size: .88em;
+	white-space: nowrap;
+}
+
+.anchor-cmp-policy__table.anchor-cmp-policy__table tbody td:last-child {
+	white-space: nowrap;
+}
+
+.anchor-cmp-policy__table.anchor-cmp-policy__table tbody tr:last-child td {
+	border-block-end: 0;
+}
+
+@supports not (color: color-mix(in srgb, #000 50%, #fff)) {
+	.anchor-cmp-policy__scroll.anchor-cmp-policy__scroll,
+	.anchor-cmp-policy__table.anchor-cmp-policy__table th,
+	.anchor-cmp-policy__table.anchor-cmp-policy__table td {
+		border-color: currentColor;
+	}
+}
+
+/* ---- [anchor_privacy_request] DSAR form (class-dsar.php) ----
+ * Same guest posture as the placeholder and the policy tables: it renders
+ * inside post content, inherits the theme's typography and text color, and
+ * derives every surface from currentColor so it reads natively on light AND
+ * dark themes without a scheme hook. The brand tokens registered at :root by
+ * enqueue() supply only the radius (and the accent for focus, via the
+ * armor-level focus rule pattern); no brand color is projected into page
+ * content. */
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form {
+	display: block;
+	max-width: 34em;
+	margin-block: 1.5em;
+	color: inherit;
+	font: inherit;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form p {
+	margin: 0 0 1em;
+	padding: 0;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form label {
+	font-size: .875em;
+	font-weight: 600;
+	line-height: 1.4;
+	color: inherit;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="email"],
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="text"],
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form textarea {
+	box-sizing: border-box;
+	display: block;
+	width: 100%;
+	margin-block-start: .35em;
+	padding: .6em .75em;
+	font: inherit;
+	font-size: .9375em;
+	line-height: 1.4;
+	color: inherit;
+	background: color-mix(in srgb, currentColor 4%, transparent);
+	border: 1px solid color-mix(in srgb, currentColor 32%, transparent);
+	border-radius: calc(var(--acmp-radius, 12px) * .5);
+	-webkit-appearance: none;
+	appearance: none;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form textarea {
+	resize: vertical;
+	min-height: 6em;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form input:focus-visible,
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form textarea:focus-visible,
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form button:focus-visible {
+	outline: 2px solid var(--acmp-accent-deep, currentColor);
+	outline-offset: 2px;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form fieldset {
+	margin: 0 0 1em;
+	padding: .875em 1em 1em;
+	border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+	border-radius: var(--acmp-radius, 12px);
+	min-width: 0;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form legend {
+	padding: 0 .5em;
+	margin-inline-start: -.5em;
+	font-size: .875em;
+	font-weight: 600;
+	color: inherit;
+}
+
+/* The radio rows: the label wraps the input, so give the pair a touch-sized
+ * line and keep the radio's native rendering (a hand-drawn radio buys nothing
+ * here and costs forced-colors support). */
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form fieldset label {
+	display: inline-flex;
+	align-items: center;
+	gap: .5em;
+	min-height: 1.9em;
+	font-weight: 400;
+	font-size: .9375em;
+	cursor: pointer;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="radio"] {
+	margin: 0;
+	flex: none;
+	accent-color: var(--acmp-accent, currentColor);
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form button[type="submit"] {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: auto;
+	min-height: 44px;
+	margin: 0;
+	padding: .7em 1.5em;
+	font: inherit;
+	font-size: .9375em;
+	font-weight: 600;
+	line-height: 1.3;
+	text-transform: none !important;
+	text-decoration: none;
+	color: inherit;
+	background: color-mix(in srgb, currentColor 7%, transparent);
+	border: 1.5px solid color-mix(in srgb, currentColor 55%, transparent);
+	border-radius: calc(var(--acmp-radius, 12px) * .5);
+	box-shadow: none;
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+	touch-action: manipulation;
+	transition: background-color .15s ease, border-color .15s ease;
+}
+
+.anchor-cmp-dsar-form.anchor-cmp-dsar-form button[type="submit"]:hover {
+	border-color: currentColor;
+	background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* Outcome notices printed above the form (and the module-disabled stub).
+ * Status is carried by the border hue only — text stays the theme's own
+ * color, so contrast never depends on an unmeasured pairing; the two hues
+ * read as border accents on light and dark grounds alike. */
+.anchor-cmp-dsar-notice.anchor-cmp-dsar-notice,
+.anchor-cmp-dsar-disabled.anchor-cmp-dsar-disabled {
+	display: block;
+	max-width: 34em;
+	margin-block: 1em;
+	padding: .7em 1em;
+	font-size: .9375em;
+	line-height: 1.5;
+	color: inherit;
+	background: color-mix(in srgb, currentColor 5%, transparent);
+	border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+	border-inline-start-width: 3px;
+	border-radius: calc(var(--acmp-radius, 12px) * .5);
+}
+
+.anchor-cmp-dsar-success.anchor-cmp-dsar-success {
+	border-inline-start-color: #2e7d32;
+}
+
+.anchor-cmp-dsar-error.anchor-cmp-dsar-error {
+	border-inline-start-color: #c0392b;
+}
+
+@supports not (color: color-mix(in srgb, #000 50%, #fff)) {
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="email"],
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form input[type="text"],
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form textarea,
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form fieldset,
+	.anchor-cmp-dsar-form.anchor-cmp-dsar-form button[type="submit"],
+	.anchor-cmp-dsar-notice.anchor-cmp-dsar-notice,
+	.anchor-cmp-dsar-disabled.anchor-cmp-dsar-disabled {
+		background: none;
+		border-color: currentColor;
+	}
+}
+
+/* ===========================================================================
+ * 12. DESKTOP PRESETS (>= 641px)
+ * Below this width every preset is the bottom sheet defined above.
+ * ======================================================================== */
+
+@media (min-width: 641px) {
+
+	#anchor-cmp-banner,
+	#anchor-cmp-prefs {
+		border: 1px solid var(--acmp-line);
+		border-radius: var(--acmp-radius);
+		padding: var(--acmp-pad);
+		max-height: calc(100dvh - 3em);
+	}
+
+	#anchor-cmp-banner::before,
+	#anchor-cmp-prefs::before {
+		display: none;
+	}
+
+	/* -- shared root placement for the card presets -- */
+
+	#anchor-cmp.anchor-cmp--floating,
+	#anchor-cmp.anchor-cmp--corner,
+	#anchor-cmp.anchor-cmp--modal {
+		padding: 1.5em;
+		justify-items: start;
+	}
+
+	#anchor-cmp.anchor-cmp--bottom-left {
+		align-content: end;
+		justify-items: start;
+	}
+
+	#anchor-cmp.anchor-cmp--bottom-right {
+		align-content: end;
+		justify-items: end;
+	}
+
+	#anchor-cmp.anchor-cmp--bottom-center {
+		align-content: end;
+		justify-items: center;
+	}
+
+	#anchor-cmp.anchor-cmp--top {
+		align-content: start;
+		justify-items: center;
+	}
+
+	/* -- bar -- */
+
+	#anchor-cmp.anchor-cmp--bar {
+		display: block;
+		inset: auto 0 0 0;
+		padding: 0;
+	}
+
+	#anchor-cmp.anchor-cmp--bar.anchor-cmp--top {
+		inset: 0 0 auto 0;
+	}
+
+	#anchor-cmp.anchor-cmp--bar #anchor-cmp-banner {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: .35em 2.5em;
+		width: 100%;
+		max-width: none;
+		border: 0;
+		border-block-start: 1px solid var(--acmp-line);
+		border-radius: 0;
+		/* Full-bleed shelf, content capped at min(1100px, 100% - 3em) and
+		 * centred — expressed as padding so one element carries both the
+		 * background and the measure. */
+		padding: 1.25em max(1.5em, calc((100% - 1100px) / 2));
+		max-height: 60dvh;
+	}
+
+	#anchor-cmp.anchor-cmp--bar.anchor-cmp--top #anchor-cmp-banner {
+		border-block-start: 0;
+		border-block-end: 1px solid var(--acmp-line);
+	}
+
+	#anchor-cmp.anchor-cmp--bar .anchor-cmp-heading,
+	#anchor-cmp.anchor-cmp--bar .anchor-cmp-body,
+	#anchor-cmp.anchor-cmp--bar .anchor-cmp-gpc-notice {
+		grid-column: 1;
+	}
+
+	#anchor-cmp.anchor-cmp--bar .anchor-cmp-actions {
+		grid-column: 2;
+		grid-row: 1 / -1;
+		flex-wrap: nowrap;
+		margin-block-start: 0;
+	}
+
+	#anchor-cmp.anchor-cmp--bar .anchor-cmp-btn {
+		white-space: nowrap;
+	}
+
+	/* -- floating -- */
+
+	#anchor-cmp.anchor-cmp--floating #anchor-cmp-banner {
+		max-width: 26em;
+	}
+
+	/* -- corner: a compact popover -- */
+
+	#anchor-cmp.anchor-cmp--corner {
+		padding: 1.25em;
+	}
+
+	#anchor-cmp.anchor-cmp--corner #anchor-cmp-banner {
+		--acmp-pad: 1.25em;
+		max-width: 22em;
+	}
+
+	#anchor-cmp.anchor-cmp--corner .anchor-cmp-heading {
+		font-size: 1.05em;
+	}
+
+	#anchor-cmp.anchor-cmp--corner .anchor-cmp-body {
+		font-size: .875em;
+	}
+
+	#anchor-cmp.anchor-cmp--corner .anchor-cmp-btn {
+		font-size: .875em;
+	}
+
+	/* 22em is too narrow for three side-by-side actions — the peers wrap to
+	 * two lines and the row goes cramped. The compact popover keeps the
+	 * mobile stack, which also keeps the two peers exactly equal. */
+	#anchor-cmp.anchor-cmp--corner .anchor-cmp-actions {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	/* -- modal: always centred, position class ignored (source order matters,
+	 *    this must stay below the position rules) -- */
+
+	#anchor-cmp.anchor-cmp--modal {
+		align-content: center;
+		justify-items: center;
+	}
+
+	#anchor-cmp.anchor-cmp--modal #anchor-cmp-banner {
+		--acmp-pad: 1.75em;
+		max-width: 30em;
+	}
+
+	/* -- actions become a row --
+	 * A GRID, not a wrapping flex row. Reject and Accept occupy two 1fr
+	 * tracks, so they are the same width by construction — in a definite
+	 * container (the card presets) and in an indefinite one (the bar, where
+	 * flexible tracks equalise on the larger max-content). The flex version
+	 * of this put Accept on its own line in a narrow panel, where flex-grow
+	 * made it 45% wider than Reject. Equal prominence must not depend on how
+	 * a row happens to wrap. */
+
+	#anchor-cmp .anchor-cmp-actions {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+		align-items: stretch;
+	}
+
+	#anchor-cmp .anchor-cmp-prefs-actions {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		align-items: stretch;
+	}
+
+	#anchor-cmp .anchor-cmp-btn {
+		width: auto;
+		min-height: 44px;
+	}
+
+	#anchor-cmp.anchor-cmp--bar .anchor-cmp-actions {
+		grid-template-columns: minmax(8.5em, auto) auto minmax(8.5em, auto);
+	}
+
+	/* -- preference center: a centred dialog on every preset -- */
+
+	#anchor-cmp-prefs {
+		inset: 50% auto auto 50%;
+		translate: -50% -50%;
+		/* 100% of the initial containing block, which for a fixed-position
+		 * element excludes the classic scrollbar — unlike 100vw. */
+		width: min(38em, calc(100% - 3em));
+		max-height: min(42em, 100dvh - 4em);
+		padding: var(--acmp-pad) 0 0;
+	}
+
+	#anchor-cmp-prefs-heading {
+		padding-block-end: 1em;
+	}
+}
+
+/* ===========================================================================
+ * 13. RUNTIME STATE CLASSES
+ * Both are set by frontend.js and must come after the presets.
+ * ======================================================================== */
+
+/* -- .anchor-cmp--notice : the opt-out variant --------------------------
+ * An informational notice, not a gate. Lower elevation, tighter padding, and
+ * explicitly NO scrim — dimming the page for something the visitor is not
+ * required to answer would be dishonest as well as annoying. */
+
+#anchor-cmp.anchor-cmp--notice {
+	--acmp-pad: 1.25em;
+}
+
+#anchor-cmp.anchor-cmp--notice::before {
+	content: none;
+}
+
+#anchor-cmp.anchor-cmp--notice #anchor-cmp-banner {
+	box-shadow: var(--acmp-shadow-soft), inset 0 1px 0 var(--acmp-lip);
+}
+
+#anchor-cmp.anchor-cmp--notice .anchor-cmp-heading {
+	font-size: 1.05em;
+}
+
+#anchor-cmp.anchor-cmp--notice .anchor-cmp-body {
+	font-size: .875em;
+}
+
+@media (min-width: 641px) {
+	/* A notice with no scrim should not float in the middle of the viewport;
+	 * demote the modal preset to a bottom-anchored card. */
+	#anchor-cmp.anchor-cmp--notice.anchor-cmp--modal {
+		align-content: end;
+	}
+
+	#anchor-cmp.anchor-cmp--notice.anchor-cmp--modal #anchor-cmp-banner,
+	#anchor-cmp.anchor-cmp--notice.anchor-cmp--floating #anchor-cmp-banner {
+		max-width: 26em;
+	}
+}
+
+/* -- .anchor-cmp--pill-only : everything dismissed, pill still in the root --
+ * The root stays in the layout so the pill (its child) keeps a home. It must
+ * NOT become a full-screen overlay. pointer-events:none is already the root's
+ * permanent state (section 3) and the pill re-enables it for itself, so this
+ * block only has to make sure nothing paints. */
+
+#anchor-cmp.anchor-cmp--pill-only {
+	background: none;
+	border: 0;
+	box-shadow: none;
+	-webkit-backdrop-filter: none;
+	backdrop-filter: none;
+	pointer-events: none;
+}
+
+#anchor-cmp.anchor-cmp--pill-only::before,
+#anchor-cmp.anchor-cmp--pill-only::after {
+	content: none;
+}
+
+#anchor-cmp.anchor-cmp--pill-only .anchor-cmp-pill {
+	pointer-events: auto;
+}
+
+/* ===========================================================================
+ * 14. MOTION
+ * ======================================================================== */
+
+@keyframes acmp-rise {
+	from {
+		opacity: 0;
+		transform: translateY(12px) scale(.98);
+	}
+}
+
+@keyframes acmp-drop {
+	from {
+		opacity: 0;
+		transform: translateY(-12px) scale(.98);
+	}
+}
+
+@keyframes acmp-fade {
+	from {
+		opacity: 0;
+	}
+}
+
+#anchor-cmp.anchor-cmp--top #anchor-cmp-banner {
+	animation-name: acmp-drop;
+}
+
+/* The centred preference dialog is translated into place, so it cannot use a
+ * transform-based entrance without fighting `translate`. It fades instead. */
+@media (min-width: 641px) {
+	#anchor-cmp-prefs {
+		animation-name: acmp-fade;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#anchor-cmp,
+	#anchor-cmp::before,
+	#anchor-cmp::after,
+	#anchor-cmp *,
+	#anchor-cmp *::before,
+	#anchor-cmp *::after,
+	.anchor-cmp-placeholder.anchor-cmp-placeholder,
+	.anchor-cmp-placeholder.anchor-cmp-placeholder *,
+	.anchor-cmp-link.anchor-cmp-link {
+		animation: none !important;
+		transition: none !important;
+		scroll-behavior: auto !important;
+	}
+
+	#anchor-cmp .anchor-cmp-btn:active,
+	#anchor-cmp .anchor-cmp-btn:hover,
+	#anchor-cmp .anchor-cmp-pill:hover {
+		transform: none;
+	}
+}
+
+/* ===========================================================================
+ * 15. FORCED COLORS + PRINT
+ * ======================================================================== */
+
+@media (forced-colors: active) {
+	#anchor-cmp-banner,
+	#anchor-cmp-prefs,
+	#anchor-cmp .anchor-cmp-pill,
+	.anchor-cmp-placeholder.anchor-cmp-placeholder,
+	.anchor-cmp-policy__scroll.anchor-cmp-policy__scroll {
+		border: 1px solid CanvasText;
+		box-shadow: none;
+	}
+
+	#anchor-cmp .anchor-cmp-btn {
+		border: 1.5px solid ButtonBorder;
+		background: ButtonFace;
+		color: ButtonText;
+		forced-color-adjust: none;
+	}
+
+	#anchor-cmp .anchor-cmp-btn--accept {
+		background: Highlight;
+		color: HighlightText;
+		border-color: HighlightText;
+	}
+
+	#anchor-cmp :focus-visible {
+		outline: 3px solid Highlight;
+	}
+
+	/* The switch is a background-image knob, which forced-colors would flatten
+	 * away along with the track — losing the on/off state entirely. */
+	#anchor-cmp .anchor-cmp-category-header input[type="checkbox"] {
+		forced-color-adjust: none;
+		background-color: Canvas;
+		background-image: radial-gradient(circle closest-side, CanvasText 98%, transparent 100%);
+		border: 1px solid CanvasText;
+	}
+
+	#anchor-cmp .anchor-cmp-category-header input[type="checkbox"]:checked {
+		background-color: Highlight;
+		background-image: radial-gradient(circle closest-side, HighlightText 98%, transparent 100%);
+	}
+}
+
+@media print {
+	#anchor-cmp,
+	.anchor-cmp-pill.anchor-cmp-pill {
+		display: none !important;
+	}
+
+	.anchor-cmp-policy__scroll.anchor-cmp-policy__scroll {
+		overflow: visible;
+	}
+
+	.anchor-cmp-policy__table.anchor-cmp-policy__table {
+		min-width: 0;
+	}
+}

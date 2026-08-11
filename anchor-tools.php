@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Anchor Tools
  * Description: A set of tools provided by Anchor Corps. Lightweight Mega Menu, Popups, schema, galleries, forms, and content utilities.
- * Version: 3.9.37
+ * Version: 3.10.0
  * Author: Anchor Corps
  * Text Domain: anchor-tools
  */
@@ -301,6 +301,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Service-area & service-location pages with a linked Google map, hierarchy, and internal linking.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-locations/anchor-locations.php',
                 'class'       => '\\Anchor\\Locations\\Module',
+            ],
+            'compliance' => [
+                'label'       => __( 'Anchor Compliance', 'anchor-schema' ),
+                'description' => __( 'Geo-aware cookie consent banner, script blocking, Google Consent Mode v2, consent records, and privacy requests.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-compliance/anchor-compliance.php',
+                'class'       => 'Anchor_Compliance_Module',
             ],
         ];
     }

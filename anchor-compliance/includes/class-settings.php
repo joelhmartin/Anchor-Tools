@@ -52,13 +52,15 @@ class Anchor_Compliance_Settings {
 				'allow_client_relax' => true,
 			],
 			// 2026-08 restyle: the out-of-the-box look is a neutral, light,
-			// professional black-on-white bottom bar. Brand inheritance and
-			// auto dark mode remain fully supported but are now OPT-IN —
-			// flipping inherit_brand back on (and dark_mode to 'auto')
-			// restores the previous behavior. Stored options always win over
-			// these defaults, so existing configured sites are unaffected.
+			// professional black-on-white COMPACT FLOATING CARD (owner
+			// iteration on 3.10.2, which briefly defaulted to the bar).
+			// Brand inheritance and auto dark mode remain fully supported but
+			// are OPT-IN — flipping inherit_brand back on (and dark_mode to
+			// 'auto') restores the pre-3.10.2 behavior. Stored options always
+			// win over these defaults, so existing configured sites are
+			// unaffected.
 			'appearance' => [
-				'layout'          => 'bar', // bar | floating | modal | corner
+				'layout'          => 'floating', // bar | floating | modal | corner
 				'position'        => 'bottom-left',
 				'inherit_brand'   => false,
 				'color_accent'    => '#1a1a1a',
@@ -74,7 +76,7 @@ class Anchor_Compliance_Settings {
 				'heading'         => __( 'We value your privacy', 'anchor-schema' ),
 				'body'            => __( 'We use cookies to improve your experience, analyze site traffic, and personalize content. You can choose which categories to allow.', 'anchor-schema' ),
 				'accept_label'    => __( 'Accept All', 'anchor-schema' ),
-				'reject_label'    => __( 'Essential Only', 'anchor-schema' ),
+				'reject_label'    => __( 'Reject All', 'anchor-schema' ),
 				'customize_label' => __( 'Customize', 'anchor-schema' ),
 				'save_label'      => __( 'Save Preferences', 'anchor-schema' ),
 				'notice_body'     => __( 'We use cookies and similar technologies. You may opt out of the sale or sharing of your personal information.', 'anchor-schema' ),
@@ -213,7 +215,7 @@ class Anchor_Compliance_Settings {
 
 		// --- appearance ---
 		$a = isset( $input['appearance'] ) ? (array) $input['appearance'] : [];
-		$out['appearance']['layout']        = in_array( $a['layout'] ?? '', [ 'bar', 'floating', 'modal', 'corner' ], true ) ? $a['layout'] : 'bar';
+		$out['appearance']['layout']        = in_array( $a['layout'] ?? '', [ 'bar', 'floating', 'modal', 'corner' ], true ) ? $a['layout'] : 'floating';
 		$out['appearance']['position']      = in_array( $a['position'] ?? '', [ 'bottom-left', 'bottom-right', 'bottom-center', 'top' ], true ) ? $a['position'] : 'bottom-left';
 		$out['appearance']['inherit_brand'] = ! empty( $a['inherit_brand'] );
 		foreach ( [ 'color_accent', 'color_surface', 'color_text' ] as $k ) {

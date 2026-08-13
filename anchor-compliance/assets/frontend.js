@@ -607,10 +607,10 @@
 	 * a withdrawal signal into a grant the visitor never gave), and a
 	 * visitor who granted it must not lose it.
 	 *
-	 * Deliberately NOT used by the banner's reject-all: "Essential Only" is
+	 * Deliberately NOT used by the banner's reject-all: "Reject All" is
 	 * a REJECT (keep necessary, drop everything else), not a sale/share
 	 * opt-out — collapsing the two would silently re-grant functional to a
-	 * visitor who pressed a button that promised essential only.
+	 * visitor who pressed a button that promised to reject everything.
 	 */
 	function dnsGrantSet() {
 		var keep = ['necessary'];
@@ -2041,7 +2041,7 @@
 				break;
 
 			case 'reject-all':
-				// A REJECT, not a sale/share opt-out: "Essential Only" keeps
+				// A REJECT, not a sale/share opt-out: "Reject All" keeps
 				// necessary and drops everything else, including functional.
 				// Deliberately NOT dnsGrantSet() — see that helper's doc for
 				// why the two vocabularies must not be merged.
@@ -2136,9 +2136,18 @@
 
 		var body = qs('.anchor-cmp-body, .anchor-cmp-text, .anchor-cmp-copy', banner);
 		if (body && I18N.notice_body) {
+			// The server appends a "Cookie Policy" link to the body when a
+			// policy URL is configured; the notice copy must not eat it.
+			// The element reference stays valid after the innerHTML wipe
+			// (it is simply detached), so it can be re-appended as-is.
+			var policyLink = qs('.anchor-cmp-cookie-policy-link', body);
 			// Payload i18n strings are wp_kses_post()-sanitized server-side
 			// (Task 9) and are therefore trusted markup, not plain text.
 			body.innerHTML = I18N.notice_body;
+			if (policyLink) {
+				body.appendChild(document.createTextNode(' '));
+				body.appendChild(policyLink);
+			}
 		}
 
 		var reject = qs('[data-anchor-action="reject-all"]', banner);

@@ -101,6 +101,51 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'disabled', $html, 'Necessary must render as a locked toggle.' );
 	}
 
+	/**
+	 * 2026-08 iteration: the banner row is Customize / Reject All / Accept
+	 * All in that order — DOM order = visual order = focus order. (The
+	 * preference footer keeps its own reject/save/accept order.)
+	 */
+	public function test_banner_action_row_order_is_customize_reject_accept() {
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$customize = strpos( $html, 'data-anchor-action="customize"' );
+		$reject    = strpos( $html, 'data-anchor-action="reject-all"' );
+		$accept    = strpos( $html, 'data-anchor-action="accept-all"' );
+		$this->assertNotFalse( $customize );
+		$this->assertLessThan( $reject, $customize, 'Customize renders first in the banner row.' );
+		$this->assertLessThan( $accept, $reject, 'Reject renders before Accept.' );
+	}
+
+	/**
+	 * 2026-08 iteration: the body copy ends with a "Cookie Policy" link when
+	 * general.cookie_policy_url is configured — and never renders a dead link
+	 * when it is not.
+	 */
+	public function test_body_ends_with_cookie_policy_link_when_url_configured() {
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [
+			'general' => [ 'cookie_policy_url' => 'https://example.test/cookies/' ],
+		], false );
+
+		ob_start();
+		$this->banner()->render();
+		$html = ob_get_clean();
+
+		$this->assertMatchesRegularExpression(
+			'/<a href="https:\/\/example\.test\/cookies\/" class="anchor-cmp-cookie-policy-link">Cookie Policy<\/a><\/div>/',
+			$html,
+			'The Cookie Policy link must close out the body copy.'
+		);
+	}
+
+	public function test_body_has_no_cookie_policy_link_without_url() {
+		ob_start();
+		$this->banner()->render();
+		$this->assertStringNotContainsString( 'anchor-cmp-cookie-policy-link', ob_get_clean() );
+	}
+
 	public function test_render_is_suppressed_when_module_disabled() {
 		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'general' => [ 'enabled' => false ] ], false );
 		ob_start();

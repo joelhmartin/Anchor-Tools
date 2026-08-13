@@ -351,4 +351,63 @@ class Test_Compliance_Registry extends WP_UnitTestCase {
 		$this->assertNotContains( 'cdn.own.example', $patterns, 'Necessary is never gated — matching the builtin branch, a necessary custom rule is a dead entry and must be skipped.' );
 		$this->assertNull( $this->reg()->category_for_url( 'https://cdn.own.example/x.js' ) );
 	}
+
+	/* ─── 2026-08: duplicate disclosure rows ─── */
+
+	/**
+	 * Several builtin services legitimately list the same cookie (e.g. `_ga`
+	 * under both Google Analytics and Google Tag Manager), which rendered as
+	 * duplicate rows in every disclosure table. cookies_by_category() dedupes
+	 * by (name, provider) keeping the FIRST occurrence; the same name under a
+	 * DIFFERENT provider is a distinct disclosure and stays.
+	 */
+	public function test_cookies_by_category_dedupes_by_name_and_provider() {
+		add_filter( 'anchor_compliance_services', function ( $services ) {
+			$services['dupe_one'] = [
+				'name'     => 'Dupe One',
+				'provider' => 'DupeCo',
+				'category' => 'analytics',
+				'patterns' => [ 'one.example' ],
+				'cookies'  => [ [ 'name' => '_dupe', 'purpose' => 'First occurrence wins.', 'duration' => '1 year' ] ],
+			];
+			$services['dupe_two'] = [
+				'name'     => 'Dupe Two',
+				'provider' => 'DupeCo',
+				'category' => 'analytics',
+				'patterns' => [ 'two.example' ],
+				'cookies'  => [ [ 'name' => '_dupe', 'purpose' => 'Second occurrence, dropped.', 'duration' => '2 years' ] ],
+			];
+			$services['dupe_other_provider'] = [
+				'name'     => 'Dupe Other',
+				'provider' => 'OtherCo',
+				'category' => 'analytics',
+				'patterns' => [ 'other.example' ],
+				'cookies'  => [ [ 'name' => '_dupe', 'purpose' => 'Different provider, kept.', 'duration' => '30 days' ] ],
+			];
+			return $services;
+		} );
+
+		$rows = $this->reg()->cookies_by_category()['analytics'];
+
+		$dupeco = array_values( array_filter( $rows, static function ( $r ) {
+			return '_dupe' === $r['name'] && 'DupeCo' === $r['provider'];
+		} ) );
+		$this->assertCount( 1, $dupeco, 'Same name + same provider must collapse to one row.' );
+		$this->assertSame( 'First occurrence wins.', $dupeco[0]['purpose'] );
+
+		$otherco = array_values( array_filter( $rows, static function ( $r ) {
+			return '_dupe' === $r['name'] && 'OtherCo' === $r['provider'];
+		} ) );
+		$this->assertCount( 1, $otherco, 'Same cookie under another provider is a distinct disclosure.' );
+	}
+
+	/** No category may carry a (name, provider) pair twice — pins the builtin `_ga` dupe too. */
+	public function test_cookies_by_category_has_no_duplicate_rows_anywhere() {
+		foreach ( $this->reg()->cookies_by_category() as $category => $rows ) {
+			$keys = array_map( static function ( $r ) {
+				return strtolower( $r['name'] . '|' . $r['provider'] );
+			}, $rows );
+			$this->assertSame( array_values( array_unique( $keys ) ), $keys, "Duplicate disclosure rows in {$category}." );
+		}
+	}
 }

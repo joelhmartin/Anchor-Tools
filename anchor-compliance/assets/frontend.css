@@ -554,8 +554,10 @@ html.anchor-cmp-scroll-lock body {
  * │ precisely this asymmetry). If a client asks for a "softer" reject    │
  * │ button, the answer is no.                                            │
  * │                                                                      │
- * │ Customize is deliberately quieter — it opens a panel, it does not    │
- * │ record a decision, so it is not one of the peers.                    │
+ * │ Customize (2026-08 iteration) shares the secondary/outlined style    │
+ * │ and the row geometry — visually a third peer. That is allowed: the   │
+ * │ ban is one-way, on demoting REJECT below accept, and an equal        │
+ * │ Customize demotes nothing.                                           │
  * └──────────────────────────────────────────────────────────────────────┘
  * ======================================================================== */
 
@@ -611,41 +613,29 @@ html.anchor-cmp-scroll-lock body {
 	box-shadow: none;
 }
 
+/* Customize rides with the two secondary buttons (2026-08 iteration: the
+ * owner's reference row is Customize / Reject All / Accept All, outlined /
+ * outlined / solid). */
 #anchor-cmp .anchor-cmp-btn--reject,
-#anchor-cmp .anchor-cmp-btn--save {
+#anchor-cmp .anchor-cmp-btn--save,
+#anchor-cmp .anchor-cmp-btn--customize {
 	background: var(--acmp-wash);
 	color: var(--acmp-ink);
 	border-color: var(--acmp-line-strong);
 }
 
 #anchor-cmp .anchor-cmp-btn--reject:hover,
-#anchor-cmp .anchor-cmp-btn--save:hover {
+#anchor-cmp .anchor-cmp-btn--save:hover,
+#anchor-cmp .anchor-cmp-btn--customize:hover {
 	background: var(--acmp-wash-2);
 	border-color: var(--acmp-ink);
 	transform: translateY(-1px);
 }
 
 #anchor-cmp .anchor-cmp-btn--reject:active,
-#anchor-cmp .anchor-cmp-btn--save:active {
+#anchor-cmp .anchor-cmp-btn--save:active,
+#anchor-cmp .anchor-cmp-btn--customize:active {
 	transform: translateY(1px);
-}
-
-/* -- the quiet one ----------------------------------------------------- */
-
-#anchor-cmp .anchor-cmp-btn--customize {
-	background: none;
-	/* transparent, not absent: the box stays exactly the same size as its
-	 * neighbours so the row's baseline and height never shift. */
-	border-color: transparent;
-	color: var(--acmp-muted);
-	padding-inline: .75em;
-}
-
-#anchor-cmp .anchor-cmp-btn--customize:hover {
-	color: var(--acmp-ink);
-	text-decoration: underline;
-	text-decoration-thickness: 1px;
-	text-underline-offset: .2em;
 }
 
 /* ===========================================================================
@@ -1633,10 +1623,15 @@ html.anchor-cmp-scroll-lock body {
 		white-space: nowrap;
 	}
 
-	/* -- floating -- */
+	/* -- floating: the DEFAULT preset (2026-08 iteration) --
+	 * A compact card, CookieYes-scale: ~29em (~464px) wide, tight padding,
+	 * the 3.10.2 type scale, 8px default radius, soft shadow. The win over
+	 * the rejected earlier version is density, not decoration. */
 
 	#anchor-cmp.anchor-cmp--floating #anchor-cmp-banner {
-		max-width: 26em;
+		--acmp-pad: 1.25em;
+		max-width: 29em;
+		box-shadow: var(--acmp-shadow-soft), inset 0 1px 0 var(--acmp-lip);
 	}
 
 	/* -- corner: a compact popover -- */
@@ -1676,17 +1671,18 @@ html.anchor-cmp-scroll-lock body {
 	}
 
 	/* -- actions become a row --
-	 * A GRID, not a wrapping flex row. Reject and Accept occupy two 1fr
-	 * tracks, so they are the same width by construction — in a definite
-	 * container (the card presets) and in an indefinite one (the bar, where
-	 * flexible tracks equalise on the larger max-content). The flex version
-	 * of this put Accept on its own line in a narrow panel, where flex-grow
-	 * made it 45% wider than Reject. Equal prominence must not depend on how
-	 * a row happens to wrap. */
+	 * A GRID, not a wrapping flex row. All three buttons occupy 1fr tracks,
+	 * so they are the same width by construction — in a definite container
+	 * (the card presets) and in an indefinite one (the bar, where flexible
+	 * tracks equalise on the larger max-content). The flex version of this
+	 * put Accept on its own line in a narrow panel, where flex-grow made it
+	 * 45% wider than Reject. Equal prominence must not depend on how a row
+	 * happens to wrap. (2026-08 iteration: three equal thirds — Customize /
+	 * Reject All / Accept All; long labels wrap inside their own button.) */
 
 	#anchor-cmp .anchor-cmp-actions {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		align-items: stretch;
 	}
 
@@ -1702,7 +1698,7 @@ html.anchor-cmp-scroll-lock body {
 	}
 
 	#anchor-cmp.anchor-cmp--bar .anchor-cmp-actions {
-		grid-template-columns: minmax(8.5em, auto) auto minmax(8.5em, auto);
+		grid-template-columns: repeat(3, minmax(8.5em, auto));
 	}
 
 	/* -- preference center: a centred dialog on every preset -- */
@@ -1785,9 +1781,21 @@ html.anchor-cmp-scroll-lock body {
 	box-shadow: none;
 }
 
+/* In the NOTICE CARD the CPRA link sits on its OWN line, centered, below
+ * the button row (owner reference layout) — at every width. `order` moves
+ * only this one element to the end; the DOM/reading order is otherwise the
+ * visual order. The MODAL FOOTER keeps its left placement (below). */
+#anchor-cmp.anchor-cmp--notice .anchor-cmp-actions .anchor-cmp-btn--reject {
+	order: 99;
+	align-self: center;
+	width: auto;
+	text-align: center;
+	justify-content: center;
+}
+
 @media (min-width: 641px) {
-	/* Copy/buttons row: the demoted CPRA link parks left, Customize and
-	 * Accept keep the right. In the preference footer likewise: Save
+	/* Notice card: Customize + Accept share the row; the CPRA link takes a
+	 * full-width centered line beneath them. Preference footer: Save
 	 * (secondary) + Accept (primary) right-aligned, CPRA link small on the
 	 * left. Below 641px the base column stack applies unchanged. */
 	#anchor-cmp.anchor-cmp--notice .anchor-cmp-actions,
@@ -1807,7 +1815,17 @@ html.anchor-cmp-scroll-lock body {
 		flex: none;
 	}
 
-	#anchor-cmp.anchor-cmp--notice .anchor-cmp-btn--reject {
+	/* The two remaining notice-card buttons split the row evenly. */
+	#anchor-cmp.anchor-cmp--notice .anchor-cmp-actions .anchor-cmp-btn--customize,
+	#anchor-cmp.anchor-cmp--notice .anchor-cmp-actions .anchor-cmp-btn--accept {
+		flex: 1 1 0;
+	}
+
+	#anchor-cmp.anchor-cmp--notice .anchor-cmp-actions .anchor-cmp-btn--reject {
+		flex-basis: 100%;
+	}
+
+	#anchor-cmp.anchor-cmp--notice .anchor-cmp-prefs-actions .anchor-cmp-btn--reject {
 		margin-inline-end: auto;
 	}
 }
@@ -1821,7 +1839,7 @@ html.anchor-cmp-scroll-lock body {
 
 	#anchor-cmp.anchor-cmp--notice.anchor-cmp--modal #anchor-cmp-banner,
 	#anchor-cmp.anchor-cmp--notice.anchor-cmp--floating #anchor-cmp-banner {
-		max-width: 26em;
+		max-width: 29em;
 	}
 }
 

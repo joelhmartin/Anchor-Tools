@@ -22,15 +22,16 @@ class Test_Compliance_Settings extends WP_UnitTestCase {
 	}
 
 	/**
-	 * 2026-08 restyle: the shipped appearance defaults are the neutral, light,
-	 * professional look — black-on-white thin bottom bar. Brand inheritance
-	 * and auto dark mode are still available but OPT-IN; stored options always
-	 * win, so existing sites keep whatever they saved.
+	 * 2026-08 restyle (owner iteration): the shipped appearance defaults are
+	 * the neutral, light, professional look — a black-on-white COMPACT
+	 * FLOATING CARD (briefly 'bar' in 3.10.2; the owner chose the card).
+	 * Brand inheritance and auto dark mode are still available but OPT-IN;
+	 * stored options always win, so existing sites keep whatever they saved.
 	 */
-	public function test_appearance_defaults_are_the_neutral_light_bar() {
+	public function test_appearance_defaults_are_the_neutral_light_floating_card() {
 		$a = Anchor_Compliance_Settings::defaults()['appearance'];
 
-		$this->assertSame( 'bar', $a['layout'], 'Default preset is the thin full-width bottom bar.' );
+		$this->assertSame( 'floating', $a['layout'], 'Default preset is the compact floating card.' );
 		$this->assertFalse( $a['inherit_brand'], 'Brand inheritance is opt-in.' );
 		$this->assertSame( 'light', $a['dark_mode'], 'Dark/auto scheme is opt-in.' );
 		$this->assertSame( '#1a1a1a', $a['color_accent'], 'Accent defaults to near-black (dark button, white label).' );
@@ -38,19 +39,23 @@ class Test_Compliance_Settings extends WP_UnitTestCase {
 		$this->assertSame( '#1a1a1a', $a['color_text'] );
 		$this->assertSame( 8, $a['radius'], 'Modest corners: 8px panel, 4px buttons.' );
 
-		// The alternate presets/schemes must survive sanitize as choices.
+		// Owner iteration: the strict reject peer reads "Reject All".
+		$this->assertSame( 'Reject All', Anchor_Compliance_Settings::defaults()['content']['reject_label'] );
+
+		// The alternate presets/schemes must survive sanitize as choices —
+		// the bar keeps its 3.10.2 styling and stays selectable.
 		$out = Anchor_Compliance_Settings::sanitize( [ 'appearance' => [
-			'layout'        => 'floating',
+			'layout'        => 'bar',
 			'inherit_brand' => '1',
 			'dark_mode'     => 'auto',
 		] ] );
-		$this->assertSame( 'floating', $out['appearance']['layout'] );
+		$this->assertSame( 'bar', $out['appearance']['layout'] );
 		$this->assertTrue( $out['appearance']['inherit_brand'] );
 		$this->assertSame( 'auto', $out['appearance']['dark_mode'] );
 
 		// Unrecognized values fall back to the new defaults.
 		$out = Anchor_Compliance_Settings::sanitize( [ 'appearance' => [ 'layout' => 'bogus', 'dark_mode' => 'bogus' ] ] );
-		$this->assertSame( 'bar', $out['appearance']['layout'] );
+		$this->assertSame( 'floating', $out['appearance']['layout'] );
 		$this->assertSame( 'light', $out['appearance']['dark_mode'] );
 	}
 

@@ -464,6 +464,26 @@ class Anchor_Compliance_Service_Registry {
 			}
 		}
 
+		// De-duplicate per category by (name, provider), keeping the FIRST
+		// occurrence: several builtin services legitimately list the same
+		// cookie (e.g. `_ga` under both Google Analytics and Google Tag
+		// Manager), which rendered as duplicate rows in every disclosure
+		// table. The same cookie under a DIFFERENT provider is a distinct
+		// disclosure and is kept.
+		foreach ( $out as $category => $rows ) {
+			$seen   = [];
+			$unique = [];
+			foreach ( $rows as $row ) {
+				$key = strtolower( $row['name'] . '|' . $row['provider'] );
+				if ( isset( $seen[ $key ] ) ) {
+					continue;
+				}
+				$seen[ $key ] = true;
+				$unique[]     = $row;
+			}
+			$out[ $category ] = $unique;
+		}
+
 		return $out;
 	}
 

@@ -481,7 +481,21 @@ class Anchor_Compliance_Banner {
 		}
 
 		printf( '<h2 id="anchor-cmp-heading" class="anchor-cmp-heading">%s</h2>', wp_kses_post( $heading ) );
-		printf( '<div class="anchor-cmp-body">%s</div>', wp_kses_post( $body_copy ) );
+
+		// 2026-08 iteration: the body copy ends with a "Cookie Policy" link
+		// when (and only when) general.cookie_policy_url is configured — no
+		// URL, no dead link. The runtime's applyNoticeCopy() preserves this
+		// element across its notice_body innerHTML swap.
+		$cookie_policy_link = '';
+		$cookie_policy_url  = trim( (string) $opts['general']['cookie_policy_url'] );
+		if ( '' !== $cookie_policy_url ) {
+			$cookie_policy_link = sprintf(
+				' <a href="%1$s" class="anchor-cmp-cookie-policy-link">%2$s</a>',
+				esc_url( $cookie_policy_url ),
+				esc_html__( 'Cookie Policy', 'anchor-schema' )
+			);
+		}
+		printf( '<div class="anchor-cmp-body">%s%s</div>', wp_kses_post( $body_copy ), $cookie_policy_link );
 
 		if ( $this->state->is_gpc() ) {
 			printf(
@@ -490,14 +504,19 @@ class Anchor_Compliance_Banner {
 			);
 		}
 
+		// 2026-08 iteration: Customize / Reject All / Accept All, in that
+		// order (owner reference layout). DOM order = visual order = focus
+		// order; the two decision peers keep identical geometry (section 5 of
+		// frontend.css) — Customize joining them as an equal-sized outlined
+		// button is fine, the one-way ban is on DEMOTING reject.
 		echo '<div class="anchor-cmp-actions">';
-		printf(
-			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--reject" data-anchor-action="reject-all">%s</button>',
-			wp_kses_post( $reject_label )
-		);
 		printf(
 			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--customize" data-anchor-action="customize" aria-controls="anchor-cmp-prefs">%s</button>',
 			wp_kses_post( $content['customize_label'] )
+		);
+		printf(
+			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--reject" data-anchor-action="reject-all">%s</button>',
+			wp_kses_post( $reject_label )
 		);
 		printf(
 			'<button type="button" class="anchor-cmp-btn anchor-cmp-btn--accept" data-anchor-action="accept-all">%s</button>',

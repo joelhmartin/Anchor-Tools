@@ -1332,9 +1332,17 @@
 			}
 			if (openDialog === prefs && !hasChoice) {
 				// Cancel back to the banner, which is still an open question.
+				// Same posture split as the 'close' action: the strict banner
+				// is a modal and takes focus back; the opt-out notice is not a
+				// trap, so the prefs trap is released and a further Escape
+				// falls through to the no-trap notice-dismiss branch above.
 				e.preventDefault();
 				showBanner();
-				openWithFocus(banner, 'anchor-cmp-heading');
+				if ('strict' === posture) {
+					openWithFocus(banner, 'anchor-cmp-heading');
+				} else {
+					releaseFocus();
+				}
 				return;
 			}
 			if ('optout' === posture) {
@@ -2007,12 +2015,36 @@
 
 			case 'close':
 				// A cancel, never a decision. No cookie, no category change.
-				if (hasChoice || 'optout' === posture) {
+				//
+				// Gate on hasChoice ONLY — never on posture. Closing the
+				// preference panel is a cancel of "Customize", so an UNDECIDED
+				// visitor goes back to the banner, which is still an open
+				// question, in EVERY posture. The old `|| 'optout' === posture`
+				// shortcut dismissed an undecided visitor straight to the pill
+				// — a "decided" UI state with no decision behind it — and on a
+				// server-strict page relaxed client-side (tier 3) that is
+				// exactly the staging bug: Customize → toggle → ✕ collapsed
+				// everything to the pill with no cookie written. Dismissing the
+				// opt-out NOTICE without a choice stays possible, but through
+				// its own affordance: Escape with no dialog open (see
+				// handleKeydown), which dismisses the notice itself rather than
+				// cancelling the preference panel.
+				if (hasChoice) {
 					closePanels();
 					releaseFocus();
 				} else {
 					showBanner();
-					openWithFocus(banner, 'anchor-cmp-heading');
+					if ('strict' === posture) {
+						// The banner is a genuine modal here; the gate set at
+						// boot is still up, so focus goes back into it.
+						openWithFocus(banner, 'anchor-cmp-heading');
+					} else {
+						// Opt-out: the banner is a notice, not a focus trap
+						// (boot never traps it), so drop the prefs trap and
+						// hand focus back to the page. A further Escape now
+						// dismisses the notice via the no-trap branch.
+						releaseFocus();
+					}
 				}
 				break;
 

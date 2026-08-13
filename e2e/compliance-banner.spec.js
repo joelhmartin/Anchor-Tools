@@ -184,6 +184,53 @@ test.describe('consent banner (strict posture)', () => {
     await expect(prefs.locator('[data-anchor-category="marketing"]')).not.toBeChecked();
   });
 
+  test('closing the preference center without saving returns the undecided visitor to the banner, not the pill', async ({ page, context }) => {
+    // The user-reported path (staging, strict, first visit): Customize →
+    // toggle categories → close WITHOUT saving. No decision exists, so the
+    // banner must come back, the strict gate must stay up, the pill must NOT
+    // appear, and no consent cookie may be written.
+    await page.goto(seed.compliance_page_url);
+    await expect(page.locator('#anchor-cmp-banner')).toBeVisible();
+
+    await page.click('#anchor-cmp-banner [data-anchor-action="customize"]');
+    const prefs = page.locator('#anchor-cmp-prefs');
+    await expect(prefs).toBeVisible();
+
+    // Mess with the toggles like the reporter did — still not a decision.
+    await prefs.locator('[data-anchor-category="analytics"]').check();
+    await prefs.locator('[data-anchor-category="marketing"]').uncheck();
+
+    // The close affordance must be reachable in strict posture.
+    const closeBtn = prefs.locator('[data-anchor-action="close"]');
+    await expect(closeBtn).toBeVisible();
+    await closeBtn.click();
+
+    // Cancel, never a decision: back to the banner as an open question.
+    await expect(page.locator('#anchor-cmp-banner')).toBeVisible();
+    await expect(prefs).toBeHidden();
+
+    // The pill is a re-entry point for a DECIDED visitor; it must not exist
+    // as a state for someone who has chosen nothing.
+    await expect(page.locator('.anchor-cmp-pill[data-anchor-action="open-preferences"]')).toBeHidden();
+
+    // The strict modal gate (scrim + scroll lock, F008) survives the cancel.
+    await expect(page.locator('#anchor-cmp')).toHaveClass(/anchor-cmp--gate/);
+    await expect(page.locator('html')).toHaveClass(/anchor-cmp-scroll-lock/);
+
+    // Nothing was recorded.
+    expect(await readConsentCookie(context)).toBeNull();
+
+    // ESC from the reopened prefs panel is a cancel back to the banner too
+    // (never a grant): same invariants must hold.
+    await page.click('#anchor-cmp-banner [data-anchor-action="customize"]');
+    await expect(prefs).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#anchor-cmp-banner')).toBeVisible();
+    await expect(page.locator('.anchor-cmp-pill[data-anchor-action="open-preferences"]')).toBeHidden();
+    await expect(page.locator('#anchor-cmp')).toHaveClass(/anchor-cmp--gate/);
+    expect(await readConsentCookie(context)).toBeNull();
+  });
+
   test('blocked YouTube iframe is neutralized pre-consent and restored after accepting its category', async ({ page, context }) => {
     await page.goto(seed.compliance_page_url);
     await expect(page.locator('#anchor-cmp-banner')).toBeVisible();
@@ -241,6 +288,55 @@ test.describe('consent banner (strict posture)', () => {
     const dsarForm = page.locator('form:has(input[name="action"][value="anchor_compliance_dsar"])');
     await expect(dsarForm).toBeVisible();
     await expect(dsarForm.locator('input[type="email"]')).toBeVisible();
+  });
+});
+
+test.describe('consent banner (client-relaxed opt-out posture)', () => {
+  // The staging bug report ran THIS path, not the strict one: the server saw
+  // no geo header (posture 'strict', unknown_fallback), allow_client_relax is
+  // on by default, and the visitor's US timezone made the tier-3 relax flip
+  // the client posture to 'optout'. A US browser timezone reproduces it.
+  test.use({ timezoneId: 'America/Chicago' });
+
+  test('closing the preference center without saving returns the undecided visitor to the notice, not the pill', async ({ page, context }) => {
+    await page.goto(seed.compliance_page_url);
+
+    // Server rendered strict, client relaxed to the opt-out notice.
+    expect(await page.evaluate(() => window.AnchorComplianceData.posture)).toBe('strict');
+    await expect(page.locator('#anchor-cmp')).toHaveClass(/anchor-cmp--notice/);
+    const banner = page.locator('#anchor-cmp-banner');
+    await expect(banner).toBeVisible();
+
+    // Customize → mess with toggles → close WITHOUT saving (the reported path).
+    await page.click('#anchor-cmp-banner [data-anchor-action="customize"]');
+    const prefs = page.locator('#anchor-cmp-prefs');
+    await expect(prefs).toBeVisible();
+    await prefs.locator('[data-anchor-category="marketing"]').uncheck();
+    await prefs.locator('[data-anchor-action="close"]').click();
+
+    // A cancel, never a decision: the notice banner returns. The visitor must
+    // NOT be dismissed to the pill — no decision exists for the pill to stand
+    // in for, and no cookie may be written.
+    await expect(banner).toBeVisible();
+    await expect(prefs).toBeHidden();
+    await expect(page.locator('.anchor-cmp-pill[data-anchor-action="open-preferences"]')).toBeHidden();
+    expect(await readConsentCookie(context)).toBeNull();
+
+    // ESC inside the reopened prefs panel is the same cancel-to-banner.
+    await page.click('#anchor-cmp-banner [data-anchor-action="customize"]');
+    await expect(prefs).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(banner).toBeVisible();
+    await expect(page.locator('.anchor-cmp-pill[data-anchor-action="open-preferences"]')).toBeHidden();
+    expect(await readConsentCookie(context)).toBeNull();
+
+    // The NOTICE itself stays dismissible without a choice — via Escape with
+    // no dialog open (the deliberate ESC-never-grants design). That dismissal
+    // shows the re-entry pill for this pageview and still writes no cookie.
+    await page.keyboard.press('Escape');
+    await expect(banner).toBeHidden();
+    await expect(page.locator('.anchor-cmp-pill[data-anchor-action="open-preferences"]')).toBeVisible();
+    expect(await readConsentCookie(context)).toBeNull();
   });
 });
 

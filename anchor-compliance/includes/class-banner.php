@@ -322,7 +322,7 @@ class Anchor_Compliance_Banner {
 
 		$root_vars = sprintf(
 			':root{--acmp-accent:%s;--acmp-surface:%s;--acmp-text:%s;--acmp-radius:%dpx;--acmp-accent-ink:%s;}',
-			$this->safe_hex( $colors['accent'], '#bf8f43' ),
+			$this->safe_hex( $colors['accent'], '#1a1a1a' ),
 			$this->safe_hex( $colors['surface'], '#ffffff' ),
 			$this->safe_hex( $colors['text'], '#1a1a1a' ),
 			(int) $opts['appearance']['radius'],
@@ -437,7 +437,7 @@ class Anchor_Compliance_Banner {
 		// CSS declarations inside the style attribute.
 		$root_style = sprintf(
 			'--acmp-accent:%s;--acmp-surface:%s;--acmp-text:%s;--acmp-radius:%dpx;--acmp-accent-ink:%s;',
-			$this->safe_hex( $colors['accent'], '#bf8f43' ),
+			$this->safe_hex( $colors['accent'], '#1a1a1a' ),
 			$this->safe_hex( $colors['surface'], '#ffffff' ),
 			$this->safe_hex( $colors['text'], '#1a1a1a' ),
 			$radius,

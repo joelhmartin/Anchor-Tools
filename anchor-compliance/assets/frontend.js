@@ -1126,6 +1126,61 @@
 		}, 50);
 	}
 
+	var toastTimer = null;
+
+	/**
+	 * Visible confirmation for actions whose only feedback used to be the
+	 * screen-reader live region — most importantly the do-not-sell opt-out,
+	 * which closes the panel and otherwise "doesn't seem to do anything".
+	 *
+	 * ALWAYS pair this with announce(): the toast is aria-hidden so
+	 * screen-reader users are not told twice. Appended to <body>, not to
+	 * #anchor-cmp — after a decision the runtime may hide the whole root,
+	 * which would take the toast down with it. Shown ~5s, then removed;
+	 * frontend.css owns the fade and disables it under
+	 * prefers-reduced-motion.
+	 */
+	function showToast(message) {
+		if (!message || !document.body) { return; }
+
+		var toast = document.getElementById('anchor-cmp-toast');
+		if (!toast) {
+			toast = document.createElement('div');
+			toast.id = 'anchor-cmp-toast';
+			toast.className = 'anchor-cmp-toast';
+			toast.setAttribute('aria-hidden', 'true');
+			document.body.appendChild(toast);
+		}
+
+		// Mirror a forced scheme so the toast matches the banner's look; the
+		// 'auto' case carries no attribute and prefers-color-scheme decides.
+		var scheme = (root && root.getAttribute) ? root.getAttribute('data-acmp-scheme') : null;
+		if (scheme) {
+			toast.setAttribute('data-acmp-scheme', scheme);
+		} else {
+			toast.removeAttribute('data-acmp-scheme');
+		}
+
+		toast.textContent = message;
+		if (toast.classList) {
+			toast.classList.remove('anchor-cmp-toast--show');
+			void toast.offsetWidth; // restart the transition on repeat calls
+			toast.classList.add('anchor-cmp-toast--show');
+		}
+
+		if (toastTimer) { window.clearTimeout(toastTimer); }
+		toastTimer = window.setTimeout(function () {
+			toastTimer = null;
+			if (toast.classList) { toast.classList.remove('anchor-cmp-toast--show'); }
+			window.setTimeout(function () {
+				// A newer toast restarts the timer; only remove when idle.
+				if (!toastTimer && toast.parentNode) {
+					toast.parentNode.removeChild(toast);
+				}
+			}, 300);
+		}, 5000);
+	}
+
 	function showBanner() {
 		if (!root) { return; }
 		setHidden(root, false);
@@ -1479,7 +1534,9 @@
 			releaseFocus();
 		}
 		if (!opts.silent) {
-			announce(i18nText('saved_message', 'Your privacy preferences have been saved.'));
+			var savedMessage = i18nText('saved_message', 'Your privacy preferences have been saved.');
+			announce(savedMessage);
+			showToast(savedMessage);
 		}
 		return true;
 	}
@@ -2009,7 +2066,13 @@
 				// Recorded as its own method so the log can prove the opt-out
 				// link was honored, distinct from a preference-center save.
 				if (setConsent(dnsGrantSet(), 'do_not_sell', { silent: true })) {
-					announce(i18nText('dns_confirmation', 'You have opted out of the sale or sharing of your personal information.'));
+					// Both halves of the confirmation: the ARIA live region
+					// for screen readers, the aria-hidden toast for sighted
+					// users — without the toast this action "doesn't seem to
+					// do anything but close the widget".
+					var dnsMessage = i18nText('dns_confirmation', 'You have opted out of the sale or sharing of your personal information.');
+					announce(dnsMessage);
+					showToast(dnsMessage);
 				}
 				break;
 

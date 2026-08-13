@@ -51,15 +51,21 @@ class Anchor_Compliance_Settings {
 				'ip_api_token'      => '',
 				'allow_client_relax' => true,
 			],
+			// 2026-08 restyle: the out-of-the-box look is a neutral, light,
+			// professional black-on-white bottom bar. Brand inheritance and
+			// auto dark mode remain fully supported but are now OPT-IN —
+			// flipping inherit_brand back on (and dark_mode to 'auto')
+			// restores the previous behavior. Stored options always win over
+			// these defaults, so existing configured sites are unaffected.
 			'appearance' => [
-				'layout'          => 'floating', // bar | floating | modal | corner
+				'layout'          => 'bar', // bar | floating | modal | corner
 				'position'        => 'bottom-left',
-				'inherit_brand'   => true,
-				'color_accent'    => '#bf8f43',
+				'inherit_brand'   => false,
+				'color_accent'    => '#1a1a1a',
 				'color_surface'   => '#ffffff',
 				'color_text'      => '#1a1a1a',
-				'radius'          => 16,
-				'dark_mode'       => 'auto', // auto | light | dark
+				'radius'          => 8,
+				'dark_mode'       => 'light', // auto | light | dark
 				'logo_id'         => 0,
 				'show_pill'       => true,
 				'pill_position'   => 'bottom-left',
@@ -207,15 +213,15 @@ class Anchor_Compliance_Settings {
 
 		// --- appearance ---
 		$a = isset( $input['appearance'] ) ? (array) $input['appearance'] : [];
-		$out['appearance']['layout']        = in_array( $a['layout'] ?? '', [ 'bar', 'floating', 'modal', 'corner' ], true ) ? $a['layout'] : 'floating';
+		$out['appearance']['layout']        = in_array( $a['layout'] ?? '', [ 'bar', 'floating', 'modal', 'corner' ], true ) ? $a['layout'] : 'bar';
 		$out['appearance']['position']      = in_array( $a['position'] ?? '', [ 'bottom-left', 'bottom-right', 'bottom-center', 'top' ], true ) ? $a['position'] : 'bottom-left';
 		$out['appearance']['inherit_brand'] = ! empty( $a['inherit_brand'] );
 		foreach ( [ 'color_accent', 'color_surface', 'color_text' ] as $k ) {
 			$hex = sanitize_hex_color( (string) ( $a[ $k ] ?? '' ) );
 			$out['appearance'][ $k ] = $hex ? $hex : $d['appearance'][ $k ];
 		}
-		$out['appearance']['radius']        = min( 40, max( 0, (int) ( $a['radius'] ?? 16 ) ) );
-		$out['appearance']['dark_mode']     = in_array( $a['dark_mode'] ?? '', [ 'auto', 'light', 'dark' ], true ) ? $a['dark_mode'] : 'auto';
+		$out['appearance']['radius']        = min( 40, max( 0, (int) ( $a['radius'] ?? 8 ) ) );
+		$out['appearance']['dark_mode']     = in_array( $a['dark_mode'] ?? '', [ 'auto', 'light', 'dark' ], true ) ? $a['dark_mode'] : 'light';
 		$out['appearance']['logo_id']       = max( 0, (int) ( $a['logo_id'] ?? 0 ) );
 		$out['appearance']['show_pill']     = ! empty( $a['show_pill'] );
 		$out['appearance']['pill_position'] = in_array( $a['pill_position'] ?? '', [ 'bottom-left', 'bottom-right' ], true ) ? $a['pill_position'] : 'bottom-left';

@@ -21,6 +21,39 @@ class Test_Compliance_Settings extends WP_UnitTestCase {
 		$this->assertSame( 365, $d['general']['consent_lifetime_days'] );
 	}
 
+	/**
+	 * 2026-08 restyle: the shipped appearance defaults are the neutral, light,
+	 * professional look — black-on-white thin bottom bar. Brand inheritance
+	 * and auto dark mode are still available but OPT-IN; stored options always
+	 * win, so existing sites keep whatever they saved.
+	 */
+	public function test_appearance_defaults_are_the_neutral_light_bar() {
+		$a = Anchor_Compliance_Settings::defaults()['appearance'];
+
+		$this->assertSame( 'bar', $a['layout'], 'Default preset is the thin full-width bottom bar.' );
+		$this->assertFalse( $a['inherit_brand'], 'Brand inheritance is opt-in.' );
+		$this->assertSame( 'light', $a['dark_mode'], 'Dark/auto scheme is opt-in.' );
+		$this->assertSame( '#1a1a1a', $a['color_accent'], 'Accent defaults to near-black (dark button, white label).' );
+		$this->assertSame( '#ffffff', $a['color_surface'] );
+		$this->assertSame( '#1a1a1a', $a['color_text'] );
+		$this->assertSame( 8, $a['radius'], 'Modest corners: 8px panel, 4px buttons.' );
+
+		// The alternate presets/schemes must survive sanitize as choices.
+		$out = Anchor_Compliance_Settings::sanitize( [ 'appearance' => [
+			'layout'        => 'floating',
+			'inherit_brand' => '1',
+			'dark_mode'     => 'auto',
+		] ] );
+		$this->assertSame( 'floating', $out['appearance']['layout'] );
+		$this->assertTrue( $out['appearance']['inherit_brand'] );
+		$this->assertSame( 'auto', $out['appearance']['dark_mode'] );
+
+		// Unrecognized values fall back to the new defaults.
+		$out = Anchor_Compliance_Settings::sanitize( [ 'appearance' => [ 'layout' => 'bogus', 'dark_mode' => 'bogus' ] ] );
+		$this->assertSame( 'bar', $out['appearance']['layout'] );
+		$this->assertSame( 'light', $out['appearance']['dark_mode'] );
+	}
+
 	public function test_get_merges_stored_over_defaults() {
 		update_option(
 			Anchor_Compliance_Module::OPTION_KEY,

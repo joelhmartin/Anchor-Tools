@@ -128,6 +128,8 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 
 	public function test_brand_colors_partial_site_config_fills_gaps_from_module_settings() {
 		update_option( 'anchor_site_config_options', [ 'colors' => [ 'primary' => '#123456' ] ], false );
+		// 2026-08 restyle: inherit_brand is opt-in now, so opt in.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'appearance' => [ 'inherit_brand' => true ] ], false );
 
 		$defaults = Anchor_Compliance_Settings::defaults()['appearance'];
 		$colors   = $this->banner()->brand_colors();
@@ -244,7 +246,9 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 		$html = ob_get_clean();
 
 		$this->assertStringNotContainsString( 'evil.example', $html );
-		$this->assertStringContainsString( '--acmp-accent:#bf8f43', $html, 'Invalid color falls back to the known-safe default.' );
+		// 2026-08 restyle: the known-safe fallback is the neutral near-black
+		// default accent (was the old gold #bf8f43).
+		$this->assertStringContainsString( '--acmp-accent:#1a1a1a', $html, 'Invalid color falls back to the known-safe default.' );
 	}
 
 	/**
@@ -282,9 +286,19 @@ class Test_Compliance_Banner extends WP_UnitTestCase {
 	}
 
 	public function test_render_omits_scheme_attribute_on_auto() {
+		// 2026-08 restyle: 'auto' is no longer the shipped default ('light'
+		// is, and it emits data-acmp-scheme="light"), so opt into auto.
+		update_option( Anchor_Compliance_Module::OPTION_KEY, [ 'appearance' => [ 'dark_mode' => 'auto' ] ], false );
 		ob_start();
 		$this->banner()->render();
 		$this->assertStringNotContainsString( 'data-acmp-scheme', ob_get_clean() );
+	}
+
+	/** The new 'light' default must pin the scheme so OS dark mode cannot flip an unconfigured site. */
+	public function test_render_emits_light_scheme_attribute_by_default() {
+		ob_start();
+		$this->banner()->render();
+		$this->assertStringContainsString( 'data-acmp-scheme="light"', ob_get_clean() );
 	}
 
 	/** Regression (F006): a configured logo_id must actually render. */

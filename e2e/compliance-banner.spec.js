@@ -11,6 +11,7 @@ const { test, expect } = require('@playwright/test');
  *   - a YouTube <iframe> (gated as `marketing` by the built-in registry, so
  *     the output-buffer blocker neutralizes it server-side),
  *   - the [anchor_consent_link] shortcode,
+ *   - the [anchor_do_not_sell] shortcode,
  *   - the [anchor_privacy_request] DSAR form.
  * It writes compliance_page_url into e2e/.seed.json. Run `npm run env:seed`
  * before this spec.
@@ -337,6 +338,37 @@ test.describe('consent banner (client-relaxed opt-out posture)', () => {
     await expect(banner).toBeHidden();
     await expect(page.locator('.anchor-cmp-pill[data-anchor-action="open-preferences"]')).toBeVisible();
     expect(await readConsentCookie(context)).toBeNull();
+  });
+
+  test('[anchor_do_not_sell] shows a VISIBLE confirmation toast and records the opt-out', async ({ page, context }) => {
+    // Owner-reported gap: the do-not-sell click used to write only to the
+    // visually-hidden ARIA live region and close the panel — to a sighted
+    // user it "didn't seem to do anything". The confirmation must now also
+    // appear as an aria-hidden toast (#anchor-cmp-toast) so screen-reader
+    // users are not told twice.
+    await page.goto(seed.compliance_page_url);
+    await expect(page.locator('#anchor-cmp')).toHaveClass(/anchor-cmp--notice/);
+
+    // Dismiss the notice first (Escape, the no-choice dismissal) so the
+    // fixed bottom bar cannot cover the in-content shortcode link.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#anchor-cmp-banner')).toBeHidden();
+
+    const dns = page.locator('.anchor-cmp-link[data-anchor-action="do-not-sell"]');
+    await expect(dns).toBeVisible();
+    await dns.click();
+
+    const toast = page.locator('#anchor-cmp-toast');
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveText(/opted out of the sale or sharing/i);
+    await expect(toast).toHaveAttribute('aria-hidden', 'true');
+
+    // The opt-out really happened: analytics + marketing are revoked.
+    const cookie = await readConsentCookie(context);
+    expect(cookie).not.toBeNull();
+    expect(cookie.cats).not.toContain('analytics');
+    expect(cookie.cats).not.toContain('marketing');
+    expect(cookie.cats).toContain('necessary');
   });
 });
 

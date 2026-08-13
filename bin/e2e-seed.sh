@@ -480,6 +480,7 @@ COMPLIANCE_PAGE_ID="$(wp eval '
   $content = "<h2>Compliance E2E fixture</h2>\n"
       . "<iframe class=\"cmp-e2e-youtube\" src=\"https://www.youtube.com/embed/dQw4w9WgXcQ\" width=\"560\" height=\"315\" title=\"E2E gated embed\"></iframe>\n"
       . "<p>[anchor_consent_link]</p>\n"
+      . "<p>[anchor_do_not_sell]</p>\n"
       . "[anchor_privacy_request]";
   wp_update_post( [ "ID" => $id, "post_status" => "publish", "post_content" => $content ] );
   echo (int) $id;

@@ -15,9 +15,12 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 class Store_Manager {
 
 	const NONCE            = 'anchor_store_manager';
-	const DEFAULT_PER_PAGE = 20;
+	const DEFAULT_PER_PAGE = 10;
 	const MAX_PER_PAGE     = 200;
-	const ASSET_VERSION    = '2.0.0';
+	const ASSET_VERSION    = '2.1.0';
+
+	/** Choices offered by the per-page control. */
+	const PER_PAGE_CHOICES = [ 10, 20, 50, 100 ];
 
 	/** Meta keys included in the manager's free-text search. */
 	const SEARCH_META_KEYS = [
@@ -344,7 +347,8 @@ class Store_Manager {
 				'order'    => $_GET['asm_order'] ?? 'ASC',
 				's'        => $_GET['asm_s'] ?? '',
 				'paged'    => $_GET['asm_paged'] ?? 1,
-				'per_page' => $atts['per_page'],
+				// The reader's own choice wins over the shortcode's default.
+				'per_page' => $_GET['asm_per_page'] ?? $atts['per_page'],
 			]
 		);
 
@@ -386,6 +390,7 @@ class Store_Manager {
 		?>
 		<div class="asm-wrap" id="<?php echo \esc_attr( $uid ); ?>"
 			data-per-page="<?php echo \esc_attr( $args['per_page'] ); ?>"
+			data-default-per-page="<?php echo \esc_attr( (int) $atts['per_page'] ); ?>"
 			data-columns="<?php echo \esc_attr( \implode( ',', $columns ) ); ?>">
 
 			<div class="asm-list" data-asm-list>
@@ -514,9 +519,42 @@ class Store_Manager {
 				<?php echo \esc_html__( 'Apply', 'anchor-schema' ); ?>
 			</button>
 			<span class="asm-bulk-count" data-asm-bulk-count aria-live="polite"></span>
+
+			<div class="asm-perpage">
+				<label for="<?php echo \esc_attr( $uid ); ?>-perpage">
+					<?php echo \esc_html__( 'Per page', 'anchor-schema' ); ?>
+				</label>
+				<select id="<?php echo \esc_attr( $uid ); ?>-perpage" data-asm-per-page>
+					<?php foreach ( $this->per_page_choices( $args['per_page'] ) as $choice ) : ?>
+						<option value="<?php echo \esc_attr( $choice ); ?>" <?php \selected( $args['per_page'], $choice ); ?>>
+							<?php echo \esc_html( \number_format_i18n( $choice ) ); ?>
+						</option>
+					<?php endforeach; ?>
+				</select>
+			</div>
 		</div>
 		<?php
 		return \ob_get_clean();
+	}
+
+	/**
+	 * Per-page options, including the current value.
+	 *
+	 * A shortcode may set per_page="25", which isn't one of the standard
+	 * choices — it still needs to appear, or the control would silently
+	 * change the page size the moment it renders.
+	 */
+	public function per_page_choices( $current ) {
+		$choices = self::PER_PAGE_CHOICES;
+
+		$current = (int) $current;
+		if ( $current > 0 && ! \in_array( $current, $choices, true ) ) {
+			$choices[] = $current;
+		}
+
+		\sort( $choices, SORT_NUMERIC );
+
+		return $choices;
 	}
 
 	public function render_head( array $columns, array $args ) {

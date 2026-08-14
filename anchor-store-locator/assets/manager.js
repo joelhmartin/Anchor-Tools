@@ -32,6 +32,7 @@
 		this.$search = this.$wrap.find('[data-asm-search]');
 
 		this.columns = this.$wrap.data('columns') || '';
+		this.defaultPerPage = parseInt(this.$wrap.data('default-per-page'), 10) || 10;
 		this.mediaFrame = null;
 		this.request = null;
 		this.placesRequest = null;
@@ -47,7 +48,7 @@
 			order: 'ASC',
 			s: this.$search.val() || '',
 			paged: 1,
-			per_page: this.$wrap.data('per-page') || 20
+			per_page: parseInt(this.$wrap.data('per-page'), 10) || this.defaultPerPage
 		};
 
 		this.readSortFromDom();
@@ -86,6 +87,7 @@
 		setOrDrop('asm_order', s.order, 'ASC');
 		setOrDrop('asm_s', s.s, '');
 		setOrDrop('asm_paged', s.paged, 1);
+		setOrDrop('asm_per_page', s.per_page, this.defaultPerPage);
 
 		window.history.replaceState({}, '', url.toString());
 	};
@@ -289,6 +291,16 @@
 		/* --- Status tabs --- */
 		$wrap.on('click', '[data-asm-status]', function () {
 			self.state.status = $(this).data('asm-status');
+			self.state.paged = 1;
+			self.refresh();
+		});
+
+		/* --- Per page --- */
+		$wrap.on('change', '[data-asm-per-page]', function () {
+			var value = parseInt($(this).val(), 10);
+			if (isNaN(value) || value < 1) { return; }
+
+			self.state.per_page = value;
 			self.state.paged = 1;
 			self.refresh();
 		});

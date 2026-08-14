@@ -142,6 +142,7 @@
 .asm-bulk {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 8px;
 	margin-bottom: 10px;
 }
@@ -156,6 +157,24 @@
 .asm-bulk-count {
 	font-size: 13px;
 	color: var(--asm-text-muted);
+}
+
+/* Pushed to the far right of the bulk-actions row. */
+.asm-perpage {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.asm-perpage label {
+	font-size: 13px;
+	color: var(--asm-text-muted);
+	white-space: nowrap;
+}
+
+.asm-perpage select {
+	padding: 6px 8px;
 }
 
 /* ---- Table ---- */

@@ -175,6 +175,34 @@ class Test_Store_Manager extends WP_UnitTestCase {
 		$this->assertSame( 'Dana', $args['search'] );
 	}
 
+	/* ─── Per page ─── */
+
+	public function test_default_per_page_is_ten() {
+		$args = $this->manager()->normalize_args( [] );
+
+		$this->assertSame( 10, $args['per_page'] );
+		$this->assertSame( 10, \Anchor\StoreLocator\Store_Manager::DEFAULT_PER_PAGE );
+	}
+
+	public function test_per_page_choices_are_offered_in_order() {
+		$this->assertSame( [ 10, 20, 50, 100 ], $this->manager()->per_page_choices( 10 ) );
+	}
+
+	public function test_per_page_choices_include_a_custom_shortcode_value() {
+		// [anchor_store_manager per_page="25"] must still be selectable, or the
+		// control would silently resize the page the moment it renders.
+		$this->assertSame( [ 10, 20, 25, 50, 100 ], $this->manager()->per_page_choices( 25 ) );
+	}
+
+	public function test_bulk_bar_renders_the_per_page_control_with_the_current_value() {
+		$args = $this->manager()->normalize_args( [ 'per_page' => 50 ] );
+		$html = $this->manager()->render_bulk_bar( 'asm-1', $args );
+
+		$this->assertStringContainsString( 'data-asm-per-page', $html );
+		$this->assertMatchesRegularExpression( '/value="50"\s+selected/', $html );
+		$this->assertMatchesRegularExpression( '/value="10"\s*>/', $html );
+	}
+
 	public function test_normalize_args_clamps_per_page() {
 		$high = $this->manager()->normalize_args( [ 'per_page' => 9999 ] );
 		$this->assertSame( \Anchor\StoreLocator\Store_Manager::MAX_PER_PAGE, $high['per_page'] );

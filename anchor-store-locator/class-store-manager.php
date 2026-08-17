@@ -17,7 +17,7 @@ class Store_Manager {
 	const NONCE            = 'anchor_store_manager';
 	const DEFAULT_PER_PAGE = 10;
 	const MAX_PER_PAGE     = 200;
-	const ASSET_VERSION    = '2.1.0';
+	const ASSET_VERSION    = '2.2.0';
 
 	/** Choices offered by the per-page control. */
 	const PER_PAGE_CHOICES = [ 10, 20, 50, 100 ];
@@ -636,6 +636,15 @@ class Store_Manager {
 		foreach ( $query->posts as $post ) {
 			$can_edit   = \current_user_can( 'edit_post', $post->ID );
 			$can_delete = \current_user_can( 'delete_post', $post->ID );
+
+			// A published store links to its live page; a draft or pending one
+			// has no public URL, so editors get the preview link instead.
+			$view_url = '';
+			if ( ! $in_trash ) {
+				$view_url = $post->post_status === 'publish'
+					? (string) \get_permalink( $post )
+					: ( $can_edit ? (string) \get_preview_post_link( $post ) : '' );
+			}
 			?>
 			<tr data-asm-row data-id="<?php echo \esc_attr( $post->ID ); ?>">
 				<td class="asm-col-cb">
@@ -661,6 +670,14 @@ class Store_Manager {
 							</button>
 						<?php endif; ?>
 					<?php else : ?>
+						<?php if ( $view_url ) : ?>
+							<a class="asm-btn asm-btn--sm asm-btn--icon" href="<?php echo \esc_url( $view_url ); ?>"
+								target="_blank" rel="noopener noreferrer"
+								title="<?php echo \esc_attr__( 'View page', 'anchor-schema' ); ?>"
+								aria-label="<?php echo \esc_attr( \sprintf( /* translators: %s: store name. */ \__( 'View page for %s', 'anchor-schema' ), $post->post_title ) ); ?>">
+								<span class="asm-icon-arrow" aria-hidden="true">↗</span>
+							</a>
+						<?php endif; ?>
 						<?php if ( $can_edit ) : ?>
 							<button type="button" class="asm-btn asm-btn--sm" data-asm-action="edit" data-id="<?php echo \esc_attr( $post->ID ); ?>">
 								<?php echo \esc_html__( 'Edit', 'anchor-schema' ); ?>

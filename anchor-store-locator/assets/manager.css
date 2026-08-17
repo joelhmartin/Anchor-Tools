@@ -413,6 +413,22 @@ th[aria-sort="descending"] .asm-sort-arrow::after {
 	font-size: 15px;
 }
 
+/* Icon-only button — square, so the glyph sits centred rather than adrift. */
+.asm-btn--icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	vertical-align: middle;
+}
+
+.asm-icon-arrow {
+	font-size: 15px;
+	line-height: 1;
+}
+
 .asm-wrap :focus-visible {
 	outline: 2px solid var(--asm-accent);
 	outline-offset: 2px;

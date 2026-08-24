@@ -89,6 +89,53 @@
     });
   }
 
+  // Labels repeater (Labels section). Mirrors admin.js's initLabelsRepeater()
+  // exactly: same clone-template-row idiom, same Caption enable/disable rule
+  // (the caption is only meaningful for key="custom"). Unlike Sessions, this
+  // section is NOT wrapped in .anchor-event-conditional — labels apply to every
+  // event type — so the section is found by walking up to .anchor-event-section.
+  function initLabelsRepeater(){
+    var $section = $('.anchor-event-labels-table').closest('.anchor-event-section');
+    if(!$section.length){ return; }
+    var $rows = $section.find('.anchor-event-labels-rows');
+    var $template = $('#anchor-event-label-template');
+
+    function reindexRows(){
+      $rows.find('.anchor-event-label-row').each(function(i){
+        $(this).find('input, select').each(function(){
+          var name = $(this).attr('name');
+          if(!name){ return; }
+          name = name.replace(/anchor_event_labels\[\d+\]/, 'anchor_event_labels[' + i + ']');
+          $(this).attr('name', name);
+        });
+      });
+    }
+
+    function syncCaption($row){
+      var isCustom = $row.find('.anchor-label-key').val() === 'custom';
+      $row.find('.anchor-label-caption').prop('disabled', !isCustom);
+      if(!isCustom){ $row.find('.anchor-label-caption').val(''); }
+    }
+
+    $section.on('click', '.anchor-event-label-add', function(e){
+      e.preventDefault();
+      var index = $rows.find('.anchor-event-label-row').length;
+      var html = $template.html().replace(/__INDEX__/g, index);
+      $rows.append(html);
+      syncCaption($rows.find('.anchor-event-label-row').last());
+    });
+
+    $section.on('click', '.anchor-event-label-remove', function(e){
+      e.preventDefault();
+      $(this).closest('.anchor-event-label-row').remove();
+      reindexRows();
+    });
+
+    $section.on('change', '.anchor-label-key', function(){
+      syncCaption($(this).closest('.anchor-event-label-row'));
+    });
+  }
+
   // Offering-dates repeater (Offering Dates section, data-when-type="offering").
   // Task 2.3 front-end parity. The recurrence rule builder is admin-only (see
   // render_group_authoring_sections()'s $include_recurrence=false for this
@@ -252,6 +299,7 @@
     initThumbnailField();
     initGalleryField();
     initSessionsRepeater();
+    initLabelsRepeater();
     initOfferingRepeater();
     initDeleteConfirms();
     applyConditionalVisibility();

@@ -125,6 +125,26 @@
   vertical-align:middle;
 }
 
+.anchor-event-labels-table{
+  margin-bottom:8px;
+}
+
+.anchor-event-labels-table input[type="text"],
+.anchor-event-labels-table select{
+  width:100%;
+}
+
+.anchor-event-label-row td{
+  vertical-align:middle;
+}
+
+/* The caption input is disabled for every key except "custom", where the
+   author supplies their own caption — dim it so the reason reads at a glance. */
+.anchor-event-labels-table input[type="text"]:disabled{
+  background:#f0f0f1;
+  color:#8c8f94;
+}
+
 .anchor-event-offering-table{
   margin-bottom:8px;
 }

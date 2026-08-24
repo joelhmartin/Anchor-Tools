@@ -25,6 +25,31 @@
     var structureIndex = {};
     var state = loadState();
 
+    /* ------------------------------------------------------------------
+     * Third-party disclosure.
+     *
+     * A dictionary lookup leaves the visitor's browser: the word they picked
+     * off the page, plus their IP address, reach api.dictionaryapi.dev. That
+     * is a disclosure of page content to a third party we chose, so it is
+     * denied until the visitor says yes. Where Anchor Compliance is present a
+     * site-wide "functional" grant already answers the question; where it is
+     * absent the in-panel prompt is the whole mechanism, because the absence
+     * of a consent manager is not consent.
+     * ------------------------------------------------------------------ */
+    var DICTIONARY_HOST = 'api.dictionaryapi.dev';
+    var DICTIONARY_CONSENT_KEY = 'anchor_a11y_dictionary_consent_v1';
+    var CONSENT_CATEGORY = 'functional';
+    var consentApi = null;
+    var consentBound = false;
+    var lastFunctional = null;
+    var dictionaryGranted = readDictionaryGrant();
+    var pendingLookup = '';
+
+    // Speech synthesis: see pickLocalVoice() for why this is preferred rather
+    // than gated.
+    var preferredVoice = null;
+    var speechIsLocal = null;
+
     var profilePresets = {
         motor: {
             activeProfile: 'motor',
@@ -556,6 +581,7 @@
         updateCards();
         updateProfileCards();
         saveState();
+        updateSpeechNotice();
 
         if (!state.screenReader && window.speechSynthesis) {
             window.speechSynthesis.cancel();
@@ -654,8 +680,14 @@
         syncOverlayVisibility();
         if (key === 'page-structure') {
             populateStructureLists();
-        } else if (key === 'dictionary' && dictionaryInput) {
-            dictionaryInput.focus();
+        } else if (key === 'dictionary') {
+            updateDictionaryConsentUi();
+            if (!dictionaryAllowed()) {
+                renderDictionaryConsent(dictionaryInput ? dictionaryInput.value : '');
+            }
+            if (dictionaryInput) {
+                dictionaryInput.focus();
+            }
         }
     }
 
@@ -674,9 +706,17 @@
         switch (key) {
             case 'screen-reader':
                 state.screenReader = !state.screenReader;
-                announceText = state.screenReader
-                    ? (AnchorA11y.strings && AnchorA11y.strings.screenReaderEnabled) || 'Screen reader enabled.'
-                    : (AnchorA11y.strings && AnchorA11y.strings.screenReaderOff) || 'Screen reader disabled.';
+                if (state.screenReader) {
+                    refreshVoices();
+                    announceText = (AnchorA11y.strings && AnchorA11y.strings.screenReaderEnabled) || 'Screen reader enabled.';
+                    // Disclosed to screen-reader users through the live region
+                    // and to everyone else through the visible panel notice.
+                    if (speechIsLocal === false && speechNoticeText()) {
+                        announceText += ' ' + speechNoticeText();
+                    }
+                } else {
+                    announceText = (AnchorA11y.strings && AnchorA11y.strings.screenReaderOff) || 'Screen reader disabled.';
+                }
                 break;
             case 'smart-contrast':
                 state.smartContrast = !state.smartContrast;
@@ -792,14 +832,88 @@
         return (node.innerText || node.textContent || '').trim();
     }
 
+    /**
+     * `localService` is the only signal the Web Speech API gives about where
+     * synthesis actually happens. Several engines — Chrome's default network
+     * voices, some Android ones — ship the text to the vendor's servers.
+     *
+     * There is no request of ours to gate here, so a consent toggle would
+     * imply a guarantee we cannot enforce, and refusing to speak would silence
+     * a reading aid for someone who just asked for one. What we can do is
+     * choose a voice that never leaves the device, and say so plainly when no
+     * such voice exists.
+     */
+    function pickLocalVoice(voices) {
+        var lang = String(root.getAttribute('lang') || 'en').toLowerCase();
+        var base = lang.split('-')[0];
+        var local = [];
+        var i;
+
+        for (i = 0; i < voices.length; i++) {
+            if (voices[i] && voices[i].localService) {
+                local.push(voices[i]);
+            }
+        }
+        if (!local.length) {
+            return null;
+        }
+        for (i = 0; i < local.length; i++) {
+            if (String(local[i].lang || '').toLowerCase() === lang) {
+                return local[i];
+            }
+        }
+        for (i = 0; i < local.length; i++) {
+            if (String(local[i].lang || '').toLowerCase().indexOf(base) === 0) {
+                return local[i];
+            }
+        }
+        return local[0];
+    }
+
+    function refreshVoices() {
+        if (!window.speechSynthesis || !window.speechSynthesis.getVoices) {
+            return;
+        }
+        // Chrome populates the list asynchronously; an empty list means "not
+        // yet", not "none", so leave speechIsLocal unknown until it fills.
+        var voices = window.speechSynthesis.getVoices() || [];
+        if (!voices.length) {
+            return;
+        }
+        preferredVoice = pickLocalVoice(voices);
+        speechIsLocal = !!preferredVoice;
+        updateSpeechNotice();
+    }
+
+    function speechNoticeText() {
+        return (AnchorA11y.strings && AnchorA11y.strings.speechRemoteNotice) || '';
+    }
+
+    function updateSpeechNotice() {
+        var notice = widget && widget.querySelector('[data-speech-notice]');
+        if (!notice) {
+            return;
+        }
+        var show = state.screenReader && speechIsLocal === false;
+        notice.textContent = show ? speechNoticeText() : '';
+        notice.hidden = !show;
+    }
+
     function speakText(text) {
         if (!text || !window.speechSynthesis) {
             return;
+        }
+        if (speechIsLocal === null) {
+            refreshVoices();
         }
         window.speechSynthesis.cancel();
         var utterance = new window.SpeechSynthesisUtterance(text.replace(/\s+/g, ' ').trim().slice(0, 1200));
         utterance.rate = 1;
         utterance.pitch = 1;
+        if (preferredVoice) {
+            utterance.voice = preferredVoice;
+            utterance.lang = preferredVoice.lang;
+        }
         window.speechSynthesis.speak(utterance);
     }
 
@@ -993,6 +1107,144 @@
             .replace(/'/g, '&#39;');
     }
 
+    /**
+     * Three states, not two: 'granted', 'denied', or unset. A choice made in
+     * this panel is the narrowest and most specific one the visitor has made
+     * about this feature, so it outranks the site-wide category either way —
+     * which is what makes "you can turn it back off here" true on sites with
+     * no consent manager at all.
+     *
+     * @return {string} '' when the visitor has not decided here.
+     */
+    function readDictionaryGrant() {
+        try {
+            var stored = window.localStorage.getItem(DICTIONARY_CONSENT_KEY);
+            return (stored === 'granted' || stored === 'denied') ? stored : '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function writeDictionaryGrant(decision) {
+        dictionaryGranted = decision || '';
+        try {
+            if (dictionaryGranted) {
+                window.localStorage.setItem(DICTIONARY_CONSENT_KEY, dictionaryGranted);
+            } else {
+                window.localStorage.removeItem(DICTIONARY_CONSENT_KEY);
+            }
+        } catch (e) {
+            // Private mode / storage disabled: the decision holds for this page only.
+        }
+    }
+
+    /**
+     * Resolved lazily, never cached as "absent": both scripts sit in the
+     * footer and Anchor Compliance may execute after this one.
+     */
+    function getConsentApi() {
+        if (!consentApi && window.AnchorConsent && window.AnchorConsent.version === 1) {
+            consentApi = window.AnchorConsent;
+            lastFunctional = consentApi.has(CONSENT_CATEGORY);
+            if (!consentBound) {
+                consentBound = true;
+                consentApi.on('change', onConsentChange);
+            }
+        }
+        return consentApi;
+    }
+
+    /**
+     * Anchor Compliance hands subscribers `{ categories, consentId }`, not a
+     * bare category map, and `state` is already updated by the time this runs
+     * — so read the payload when it has one and ask the API when it does not.
+     */
+    function onConsentChange(payload) {
+        var categories = payload && payload.categories;
+        var granted = categories
+            ? !!categories[CONSENT_CATEGORY]
+            : !!(consentApi && consentApi.has(CONSENT_CATEGORY));
+        // Only a real withdrawal clears the narrower grant made here. An
+        // unrelated change (someone accepting analytics) must not revoke a
+        // decision the visitor made in this panel, and a category that was
+        // never granted was never withdrawn.
+        if (lastFunctional === true && !granted && dictionaryGranted !== 'denied') {
+            writeDictionaryGrant('');
+            if (currentModal && currentModal.id === 'anchor-a11y-modal-dictionary') {
+                renderDictionaryConsent('');
+                updateDictionaryConsentUi();
+            }
+        }
+        lastFunctional = granted;
+    }
+
+    function dictionaryAllowed() {
+        if (dictionaryGranted) {
+            return dictionaryGranted === 'granted';
+        }
+        var api = getConsentApi();
+        return !!(api && api.has(CONSENT_CATEGORY));
+    }
+
+    function updateDictionaryConsentUi() {
+        var revoke = widget && widget.querySelector('[data-dictionary-consent="revoke"]');
+        if (!revoke) {
+            return;
+        }
+        var allowed = dictionaryAllowed();
+        revoke.textContent = (AnchorA11y.strings && AnchorA11y.strings.dictionaryConsentRevoke)
+            || ('Stop sending words to ' + DICTIONARY_HOST);
+        revoke.hidden = !allowed;
+    }
+
+    /**
+     * The gate is a prompt, not a dead result box: the visitor most likely to
+     * need a definition is the one least well served by a feature that
+     * silently returns nothing.
+     */
+    function renderDictionaryConsent(word) {
+        if (!dictionaryResult) {
+            return;
+        }
+        pendingLookup = String(word || '');
+        var strings = AnchorA11y.strings || {};
+        var bodyText = strings.dictionaryConsentBody
+            || ('Definitions come from ' + DICTIONARY_HOST + ', a third-party service. Looking up a word sends that word and your IP address to them. Nothing is sent until you allow it.');
+        var allowText = strings.dictionaryConsentAllow || 'Allow dictionary lookups';
+
+        dictionaryResult.innerHTML = '<div class="anchor-a11y-consent-prompt">'
+            + '<p>' + escapeHtml(bodyText) + '</p>'
+            + '<button type="button" class="anchor-a11y-dictionary-submit" data-dictionary-consent="allow">'
+            + escapeHtml(allowText) + '</button>'
+            + '</div>';
+    }
+
+    function revokeDictionaryConsent() {
+        writeDictionaryGrant('denied');
+        pendingLookup = '';
+        updateDictionaryConsentUi();
+        renderDictionaryConsent(dictionaryInput ? dictionaryInput.value : '');
+    }
+
+    function grantDictionaryConsent() {
+        writeDictionaryGrant('granted');
+        updateDictionaryConsentUi();
+        var word = pendingLookup || (dictionaryInput ? dictionaryInput.value : '');
+        pendingLookup = '';
+        if (String(word || '').trim()) {
+            lookupWord(word);
+            return;
+        }
+        if (dictionaryResult) {
+            dictionaryResult.innerHTML = '<p>'
+                + escapeHtml((AnchorA11y.strings && AnchorA11y.strings.dictionaryEmpty) || 'Enter a word to look it up.')
+                + '</p>';
+        }
+        if (dictionaryInput) {
+            dictionaryInput.focus();
+        }
+    }
+
     function lookupWord(word) {
         if (!dictionaryResult) {
             return;
@@ -1003,8 +1255,13 @@
             return;
         }
 
+        if (!dictionaryAllowed()) {
+            renderDictionaryConsent(cleaned);
+            return;
+        }
+
         dictionaryResult.innerHTML = '<p>Loading...</p>';
-        fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(cleaned))
+        fetch('https://' + DICTIONARY_HOST + '/api/v2/entries/en/' + encodeURIComponent(cleaned))
             .then(function (response) {
                 if (!response.ok) {
                     throw new Error('Dictionary response failed');
@@ -1094,8 +1351,17 @@
     }
 
     function onWidgetClick(e) {
-        var target = e.target.closest('[data-toggle-feature],[data-cycle-feature],[data-open-panel],[data-open-modal],[data-choice],[data-profile],[data-close-modal],[data-structure-target],[data-section-toggle],[data-action],[data-structure-tab]');
+        var target = e.target.closest('[data-toggle-feature],[data-cycle-feature],[data-open-panel],[data-open-modal],[data-choice],[data-profile],[data-close-modal],[data-structure-target],[data-section-toggle],[data-action],[data-structure-tab],[data-dictionary-consent]');
         if (!target) {
+            return;
+        }
+
+        if (target.hasAttribute('data-dictionary-consent')) {
+            if (target.getAttribute('data-dictionary-consent') === 'revoke') {
+                revokeDictionaryConsent();
+            } else {
+                grantDictionaryConsent();
+            }
             return;
         }
 
@@ -1240,6 +1506,19 @@
         window.addEventListener('resize', function () {
             updateReadingOverlays();
         });
+
+        if (window.speechSynthesis) {
+            refreshVoices();
+            if (window.speechSynthesis.addEventListener) {
+                window.speechSynthesis.addEventListener('voiceschanged', refreshVoices);
+            } else {
+                window.speechSynthesis.onvoiceschanged = refreshVoices;
+            }
+        }
+
+        // Surfaces an existing site-wide grant (and subscribes to withdrawal)
+        // without waiting for the visitor to open the dictionary.
+        getConsentApi();
 
         applyAll();
     }

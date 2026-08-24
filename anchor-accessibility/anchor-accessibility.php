@@ -435,6 +435,12 @@ class Anchor_Accessibility_Module {
                 'dictionaryEmpty'     => __( 'Select a single word or enter one below to look it up.', 'anchor-schema' ),
                 'dictionaryMissing'   => __( 'No definition found for this word.', 'anchor-schema' ),
                 'dictionaryError'     => __( 'Dictionary lookup failed.', 'anchor-schema' ),
+                /* translators: %s: the hostname of the third-party dictionary service. */
+                'dictionaryConsentBody'  => sprintf( __( 'Definitions come from %s, a third-party service. Looking up a word sends that word — and your IP address — to them. Nothing is sent until you allow it, and you can turn it back off here at any time.', 'anchor-schema' ), 'api.dictionaryapi.dev' ),
+                'dictionaryConsentAllow' => __( 'Allow dictionary lookups', 'anchor-schema' ),
+                /* translators: %s: the hostname of the third-party dictionary service. */
+                'dictionaryConsentRevoke' => sprintf( __( 'Stop sending words to %s', 'anchor-schema' ), 'api.dictionaryapi.dev' ),
+                'speechRemoteNotice'     => __( 'Read-aloud uses your browser\'s own voices. No on-device voice is available here, so your browser may send the text it reads to its voice service. That happens inside your browser, outside this site\'s control.', 'anchor-schema' ),
                 'screenReaderEnabled' => __( 'Screen reader mode enabled. Click or focus text to hear it read aloud.', 'anchor-schema' ),
                 'screenReaderOff'     => __( 'Screen reader mode disabled.', 'anchor-schema' ),
             ],
@@ -583,6 +589,8 @@ class Anchor_Accessibility_Module {
                     </section>
                 </div>
 
+                <p class="anchor-a11y-speech-notice" data-speech-notice hidden></p>
+
                 <div class="anchor-a11y-footer">
                     <button class="anchor-a11y-reset" data-action="reset-all"><?php esc_html_e( 'Reset All', 'anchor-schema' ); ?></button>
                     <?php if ( $feature_flags['move-widget'] ) : ?>
@@ -680,6 +688,7 @@ class Anchor_Accessibility_Module {
                     <div class="anchor-a11y-dictionary-result" data-dictionary-result>
                         <p><?php esc_html_e( 'Select a single word or enter one below to look it up.', 'anchor-schema' ); ?></p>
                     </div>
+                    <button type="button" class="anchor-a11y-linklike anchor-a11y-dictionary-revoke" data-dictionary-consent="revoke" hidden></button>
                 </div>
             </div>
 

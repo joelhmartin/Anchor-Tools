@@ -88,6 +88,56 @@
     });
   }
 
+  // Labels repeater (Labels section). Same dependency-free clone-template-row
+  // idiom as initSessionsRepeater() above, with one addition: the Caption input
+  // is only meaningful for key="custom" (known keys resolve their caption from
+  // the server-side vocabulary), so it is enabled/disabled to match.
+  //
+  // Unlike Sessions, this section is NOT wrapped in .anchor-event-conditional —
+  // labels apply to every event type — so the section is found by walking up to
+  // .anchor-event-section instead.
+  function initLabelsRepeater(){
+    var $section = $('.anchor-event-labels-table').closest('.anchor-event-section');
+    if(!$section.length){ return; }
+    var $rows = $section.find('.anchor-event-labels-rows');
+    var $template = $('#anchor-event-label-template');
+
+    function reindexRows(){
+      $rows.find('.anchor-event-label-row').each(function(i){
+        $(this).find('input, select').each(function(){
+          var name = $(this).attr('name');
+          if(!name){ return; }
+          name = name.replace(/anchor_event_labels\[\d+\]/, 'anchor_event_labels[' + i + ']');
+          $(this).attr('name', name);
+        });
+      });
+    }
+
+    function syncCaption($row){
+      var isCustom = $row.find('.anchor-label-key').val() === 'custom';
+      $row.find('.anchor-label-caption').prop('disabled', !isCustom);
+      if(!isCustom){ $row.find('.anchor-label-caption').val(''); }
+    }
+
+    $section.on('click', '.anchor-event-label-add', function(e){
+      e.preventDefault();
+      var index = $rows.find('.anchor-event-label-row').length;
+      var html = $template.html().replace(/__INDEX__/g, index);
+      $rows.append(html);
+      syncCaption($rows.find('.anchor-event-label-row').last());
+    });
+
+    $section.on('click', '.anchor-event-label-remove', function(e){
+      e.preventDefault();
+      $(this).closest('.anchor-event-label-row').remove();
+      reindexRows();
+    });
+
+    $section.on('change', '.anchor-label-key', function(){
+      syncCaption($(this).closest('.anchor-event-label-row'));
+    });
+  }
+
   // Offering-dates repeater (Offering Dates section, data-when-type="offering").
   // Task 2.3. Same dependency-free clone-template-row idiom as
   // initSessionsRepeater() above, one column wider (adds Capacity).
@@ -252,6 +302,7 @@
     toggleRegistrationType();
     initGalleryField();
     initSessionsRepeater();
+    initLabelsRepeater();
     initOfferingRepeater();
     initRecurrenceBuilder();
     applyConditionalVisibility();

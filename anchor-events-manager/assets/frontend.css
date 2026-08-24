@@ -63,6 +63,34 @@
   margin-top:8px;
 }
 
+/* Event-level typed labels ("2 Day Course", "14 CE Credits").
+   Each badge also carries a per-key class (.anchor-event-label-duration, ...)
+   so a theme can restyle or reposition one badge without touching the rest. */
+.anchor-event-labels{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin:10px 0 0;
+  padding:0;
+  list-style:none;
+}
+
+.anchor-event-label{
+  display:inline-block;
+  padding:3px 9px;
+  border:1px solid var(--anchor-event-border);
+  border-radius:999px;
+  font-size:12px;
+  line-height:1.5;
+  color:var(--anchor-event-muted);
+  background:var(--anchor-event-bg);
+}
+
+.anchor-event-label-duration{
+  border-color:var(--anchor-event-accent);
+  color:var(--anchor-event-accent);
+}
+
 .anchor-event-excerpt{
   margin-top:10px;
   color:var(--anchor-event-text);

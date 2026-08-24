@@ -3,6 +3,11 @@ namespace Anchor\Events;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
+// Root-namespace theme template tags (anchor_event_label/anchor_event_labels).
+// Must be a separate file: PHP forbids a bracketed `namespace { }` block in a
+// file that already opened with an unbracketed `namespace Anchor\Events;`.
+require_once __DIR__ . '/template-tags.php';
+
 class Module {
     const CPT = 'event';
     const REG_CPT = 'anchor_event_reg';
@@ -1483,6 +1488,18 @@ class Module {
             // not weaken sanitization for external_embed.
             'type' => [ 'type' => 'string', 'show_in_rest' => false ],
             'sessions' => [ 'type' => 'array', 'show_in_rest' => false ],
+            // Event-level typed labels — short author-written descriptors a
+            // theme renders as badges ("2 Day Course", "14 CE Credits").
+            // Rows are { key, label, value }; `key` is clamped to
+            // labels_vocabulary() and `label` only carries a caption for
+            // key='custom' (known keys resolve their caption at render time so
+            // it stays translatable). Metabox/manager-form owned, so
+            // show_in_rest=false for the same reason as `sessions` above.
+            //
+            // Deliberately NOT derived from start/end dates: the same two-date
+            // span can be a "1.5 Day Course" or a "2 Day Course", and
+            // "2.5 Day Course" is not computable from dates at all.
+            'labels' => [ 'type' => 'array', 'show_in_rest' => false ],
             'registration_mode' => [ 'type' => 'string', 'show_in_rest' => false ],
             'external_url' => [ 'type' => 'string', 'show_in_rest' => false ],
             // Third-party embed markup (spec §Task 1.1+1.2). Classic-metabox-only
@@ -1560,6 +1577,7 @@ class Module {
             'activity' => [],
             'type' => 'single',
             'sessions' => [],
+            'labels' => [],
             'registration_mode' => 'free',
             'external_url' => '',
             'external_embed' => '',
@@ -1768,6 +1786,53 @@ class Module {
             </td>
             <td>
                 <button type="button" class="button-link-delete anchor-event-session-remove" aria-label="<?php echo esc_attr__( 'Remove session', 'anchor-schema' ); ?>">&times;</button>
+            </td>
+        </tr>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * Render a single labels-repeater table row. Field names use the index
+     * scheme anchor_event_labels[<index>][...], matching the session/ticket-tier
+     * row convention above. When $template is true, the literal token __INDEX__
+     * is used so the JS can substitute a fresh row index on add.
+     *
+     * The caption input is only meaningful for key='custom' (known keys resolve
+     * their caption from labels_vocabulary() at render time); the JS toggles its
+     * disabled state to match the selected key.
+     *
+     * @param int        $index
+     * @param array|null $row
+     * @param bool       $template
+     * @return string Escaped HTML.
+     */
+    private function event_label_row_html( $index, $row = null, $template = false ) {
+        $idx  = $template ? '__INDEX__' : (string) $index;
+        $base = 'anchor_event_labels[' . $idx . ']';
+
+        $key     = $row['key'] ?? 'duration';
+        $caption = $row['label'] ?? '';
+        $value   = $row['value'] ?? '';
+
+        \ob_start();
+        ?>
+        <tr class="anchor-event-label-row">
+            <td>
+                <select name="<?php echo esc_attr( $base . '[key]' ); ?>" class="anchor-label-key">
+                    <?php foreach ( $this->labels_vocabulary() as $vocab_key => $vocab_caption ) : ?>
+                        <option value="<?php echo esc_attr( $vocab_key ); ?>" <?php selected( $key, $vocab_key ); ?>><?php echo esc_html( $vocab_caption ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </td>
+            <td>
+                <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $caption ); ?>" class="anchor-label-caption" placeholder="<?php echo esc_attr__( 'Caption (custom only)', 'anchor-schema' ); ?>" <?php disabled( $key !== 'custom' ); ?> />
+            </td>
+            <td>
+                <input type="text" name="<?php echo esc_attr( $base . '[value]' ); ?>" value="<?php echo esc_attr( $value ); ?>" class="anchor-label-value" placeholder="<?php echo esc_attr__( 'e.g. 2 Day Course', 'anchor-schema' ); ?>" />
+            </td>
+            <td>
+                <button type="button" class="button-link-delete anchor-event-label-remove" aria-label="<?php echo esc_attr__( 'Remove label', 'anchor-schema' ); ?>">&times;</button>
             </td>
         </tr>
         <?php
@@ -2034,6 +2099,7 @@ class Module {
         $registration_mode = $this->registration_mode( $post->ID );
         $wc_active = \class_exists( 'WooCommerce' );
         $sessions = $this->get_sessions( $post->ID );
+        $labels = $this->get_labels( $post->ID );
         ?>
         <div class="anchor-event-meta">
             <div class="anchor-event-section">
@@ -2120,6 +2186,32 @@ class Module {
                 </p>
                 <script type="text/html" id="anchor-event-session-template">
                     <?php echo $this->event_session_row_html( 0, null, true ); // already escaped ?>
+                </script>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Labels', 'anchor-schema' ); ?></h3>
+                <p class="description"><?php echo esc_html__( 'Short badges shown on event cards — e.g. "2 Day Course", "14 CE Credits". Duration is stored as text on purpose: a two-date span could be a 1.5- or 2-day course, and "2.5 Day Course" cannot be derived from dates at all.', 'anchor-schema' ); ?></p>
+                <table class="widefat anchor-event-labels-table">
+                    <thead>
+                        <tr>
+                            <th><?php echo esc_html__( 'Type', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Caption', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Value', 'anchor-schema' ); ?></th>
+                            <th aria-hidden="true"></th>
+                        </tr>
+                    </thead>
+                    <tbody class="anchor-event-labels-rows">
+                        <?php foreach ( $labels as $i => $label_row ) : ?>
+                            <?php echo $this->event_label_row_html( (int) $i, $label_row ); // already escaped ?>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <p>
+                    <button type="button" class="button anchor-event-label-add"><?php echo esc_html__( 'Add label', 'anchor-schema' ); ?></button>
+                </p>
+                <script type="text/html" id="anchor-event-label-template">
+                    <?php echo $this->event_label_row_html( 0, null, true ); // already escaped ?>
                 </script>
             </div>
 
@@ -2910,6 +3002,7 @@ class Module {
             'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
             'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
             'reminder_offsets' => $this->sanitize_offset_csv( $_POST['anchor_event_reminder_offsets'] ?? '' ),
+            'labels' => $this->labels_input( $_POST ),
         ];
 
         // Event-type / registration-mode authoring UI (Task 1.3+1.4, front-end
@@ -3077,6 +3170,166 @@ class Module {
             ];
         }
         return $sessions;
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       Event-level typed labels ("2 Day Course", "14 CE Credits", ...).
+       ══════════════════════════════════════════════════════════ */
+
+    /**
+     * The fixed label vocabulary, key => display caption.
+     *
+     * Captions are resolved through this map at render time rather than stored
+     * with the row, so they stay translatable — persisting a translated caption
+     * would freeze it in whatever locale the author happened to save in.
+     *
+     * `custom` is the deliberate escape hatch: it carries an author-typed
+     * caption on the row itself, so a site needing a label this list does not
+     * anticipate never has to wait on a plugin release.
+     *
+     * @return array<string,string>
+     */
+    public function labels_vocabulary() {
+        return \apply_filters(
+            'anchor_events_labels_vocabulary',
+            [
+                'duration' => \__( 'Duration', 'anchor-schema' ),
+                'credits'  => \__( 'CE Credits', 'anchor-schema' ),
+                'format'   => \__( 'Format', 'anchor-schema' ),
+                'level'    => \__( 'Level', 'anchor-schema' ),
+                'custom'   => \__( 'Custom', 'anchor-schema' ),
+            ]
+        );
+    }
+
+    /**
+     * Sanitize the labels repeater rows. Mirrors sanitize_sessions_rows()
+     * exactly: plain text only (escaped on output, no trusted-HTML fields
+     * here), malformed rows skipped, and a row missing its one required field
+     * dropped rather than persisted blank.
+     *
+     * `value` is required — an empty or whitespace-only value is the labels
+     * equivalent of a session row with no date. `key` is clamped to the
+     * vocabulary so an unexpected value can never reach a CSS class name, and
+     * `label` is retained only for `custom` rows.
+     *
+     * @param array $raw Raw anchor_event_labels[] rows from $_POST (already wp_unslash()ed).
+     * @return array<int,array{key:string,label:string,value:string}>
+     */
+    private function sanitize_labels_rows( $raw ) {
+        $vocabulary = $this->labels_vocabulary();
+        $labels     = [];
+
+        foreach ( (array) $raw as $row ) {
+            if ( ! is_array( $row ) ) {
+                continue;
+            }
+
+            $value = \sanitize_text_field( $row['value'] ?? '' );
+            $value = trim( $value );
+            if ( $value === '' ) {
+                continue;
+            }
+
+            $key = \sanitize_key( $row['key'] ?? '' );
+            if ( ! isset( $vocabulary[ $key ] ) ) {
+                $key = 'custom';
+            }
+
+            $labels[] = [
+                'key'   => $key,
+                // Only a custom row carries its own caption; a known key
+                // resolves one from the vocabulary at render time.
+                'label' => $key === 'custom' ? \sanitize_text_field( $row['label'] ?? '' ) : '',
+                'value' => $value,
+            ];
+        }
+
+        return $labels;
+    }
+
+    /**
+     * Extract + sanitize the labels rows out of a raw, NOT-yet-unslashed input
+     * array shaped like $_POST.
+     *
+     * Called by BOTH save paths — the admin metabox save_meta() and the
+     * front-end manager form save_event_manager_fields() — for the same reason
+     * sanitize_event_type_input() exists: so the two forms can never drift on
+     * how these rows are read and sanitized.
+     *
+     * @param array $src Raw input array ($_POST-shaped).
+     * @return array<int,array{key:string,label:string,value:string}>
+     */
+    private function labels_input( array $src ) {
+        $raw = isset( $src['anchor_event_labels'] ) && is_array( $src['anchor_event_labels'] )
+            ? \wp_unslash( $src['anchor_event_labels'] )
+            : [];
+
+        return $this->sanitize_labels_rows( $raw );
+    }
+
+    /**
+     * Every label row for an event, each with a resolved display `caption`.
+     *
+     * Occurrence children inherit `labels` from their parent automatically —
+     * Occurrences::sync_shared_meta() copies every parent key not named in
+     * PER_OCCURRENCE_KEYS/NEVER_COPY_KEYS, and `labels` is in neither. A
+     * "2 Day Course" describes each date of a pick-one offering, so inheriting
+     * is the correct default.
+     *
+     * @param int $post_id
+     * @return array<int,array{key:string,label:string,value:string,caption:string}>
+     */
+    public function get_labels( $post_id ) {
+        $stored = \get_post_meta( (int) $post_id, $this->meta_key( 'labels' ), true );
+        if ( ! is_array( $stored ) ) {
+            $stored = [];
+        }
+
+        $vocabulary = $this->labels_vocabulary();
+        $rows       = [];
+
+        foreach ( $stored as $row ) {
+            if ( ! is_array( $row ) || ( $row['value'] ?? '' ) === '' ) {
+                continue;
+            }
+            $key = (string) ( $row['key'] ?? 'custom' );
+            $rows[] = [
+                'key'     => $key,
+                'label'   => (string) ( $row['label'] ?? '' ),
+                'value'   => (string) $row['value'],
+                'caption' => $key === 'custom'
+                    ? (string) ( $row['label'] ?? '' )
+                    : (string) ( $vocabulary[ $key ] ?? '' ),
+            ];
+        }
+
+        /**
+         * Filter the resolved label rows for an event.
+         *
+         * @param array $rows    Rows of { key, label, value, caption }.
+         * @param int   $post_id
+         */
+        return (array) \apply_filters( 'anchor_events_labels', $rows, (int) $post_id );
+    }
+
+    /**
+     * The value of a single label by key, or '' when the event has none.
+     *
+     * Duplicate keys are permitted (the sanitizer does not dedupe, matching the
+     * sessions repeater) and the first match wins.
+     *
+     * @param int    $post_id
+     * @param string $key
+     * @return string
+     */
+    public function get_label( $post_id, $key ) {
+        foreach ( $this->get_labels( $post_id ) as $row ) {
+            if ( $row['key'] === $key ) {
+                return $row['value'];
+            }
+        }
+        return '';
     }
 
     /* ══════════════════════════════════════════════════════════
@@ -3427,8 +3680,8 @@ class Module {
             return;
         }
         \wp_enqueue_media();
-        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.4' );
-        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.4', true );
+        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.5' );
+        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.5', true );
         // Ticket-tier repeatable table (spec §3.2).
         \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.0', true );
 
@@ -3469,7 +3722,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.10' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.11' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         \wp_add_inline_style( 'anchor-events-frontend', sprintf(
@@ -3892,7 +4145,7 @@ class Module {
             'anchor-events-manager-frontend',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
-            '1.0.2',
+            '1.0.3',
             true
         );
 
@@ -4263,6 +4516,9 @@ class Module {
         $registration_mode = $this->registration_mode( $event_id );
         $wc_active = \class_exists( 'WooCommerce' );
         $sessions = $this->get_sessions( $event_id );
+        // Safe with $event_id === 0 (new event): get_post_meta( 0, ... ) reads
+        // nothing, so get_labels() returns [].
+        $labels = $this->get_labels( $event_id );
 
         ob_start();
         ?>
@@ -4388,6 +4644,32 @@ class Module {
                 </p>
                 <script type="text/html" id="anchor-event-session-template">
                     <?php echo $this->event_session_row_html( 0, null, true ); // already escaped ?>
+                </script>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Labels', 'anchor-schema' ); ?></h3>
+                <p class="description"><?php echo esc_html__( 'Short badges shown on event cards — e.g. "2 Day Course", "14 CE Credits".', 'anchor-schema' ); ?></p>
+                <table class="widefat anchor-event-labels-table">
+                    <thead>
+                        <tr>
+                            <th><?php echo esc_html__( 'Type', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Caption', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Value', 'anchor-schema' ); ?></th>
+                            <th aria-hidden="true"></th>
+                        </tr>
+                    </thead>
+                    <tbody class="anchor-event-labels-rows">
+                        <?php foreach ( $labels as $i => $label_row ) : ?>
+                            <?php echo $this->event_label_row_html( (int) $i, $label_row ); // already escaped ?>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <p>
+                    <button type="button" class="anchor-event-button-secondary anchor-event-label-add"><?php echo esc_html__( 'Add label', 'anchor-schema' ); ?></button>
+                </p>
+                <script type="text/html" id="anchor-event-label-template">
+                    <?php echo $this->event_label_row_html( 0, null, true ); // already escaped ?>
                 </script>
             </div>
 
@@ -4619,6 +4901,7 @@ class Module {
             'hide_from_archive' => false,
             'featured' => false,
             'priority' => 0,
+            'labels' => $this->labels_input( $_POST ),
             'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
         ];
 
@@ -4805,6 +5088,7 @@ class Module {
         if ( $meta['venue'] ) {
             $output .= '<div class="anchor-event-meta">' . esc_html( $meta['venue'] ) . '</div>';
         }
+        $output .= $this->render_labels_badges( $post_id );
         $excerpt = \get_the_excerpt( $post_id );
         if ( $excerpt ) {
             $output .= '<div class="anchor-event-excerpt">' . esc_html( $excerpt ) . '</div>';
@@ -4813,6 +5097,38 @@ class Module {
         $output .= '</article>';
 
         \do_action( 'anchor_events_after_render', $post_id, $context );
+
+        return $output;
+    }
+
+    /**
+     * The event's labels as a badge list, or '' when the event has none.
+     *
+     * Each badge carries a per-key class (anchor-event-label-duration, ...) so a
+     * theme can style or position one specific badge rather than receiving an
+     * undifferentiated blob. The caption rides along in `data-caption` — the
+     * badge text is just the value, which is what reads well at card size.
+     *
+     * Values are plain text (see sanitize_labels_rows()) and escaped here.
+     *
+     * @param int $post_id
+     * @return string
+     */
+    private function render_labels_badges( $post_id ) {
+        $labels = $this->get_labels( $post_id );
+        if ( empty( $labels ) ) {
+            return '';
+        }
+
+        $output = '<ul class="anchor-event-labels">';
+        foreach ( $labels as $row ) {
+            $output .= '<li class="anchor-event-label anchor-event-label-' . esc_attr( $row['key'] ) . '"'
+                . ' data-label-key="' . esc_attr( $row['key'] ) . '"'
+                . ' data-caption="' . esc_attr( $row['caption'] ) . '">'
+                . esc_html( $row['value'] )
+                . '</li>';
+        }
+        $output .= '</ul>';
 
         return $output;
     }
@@ -4889,6 +5205,15 @@ class Module {
             } else {
                 $output .= '<div><strong>' . esc_html__( 'Virtual Event', 'anchor-schema' ) . ':</strong> ' . esc_html__( 'The join link is available to registered attendees.', 'anchor-schema' ) . '</div>';
             }
+        }
+        // Labels read as "Duration: 2 Day Course" here — the single page has the
+        // room for a caption, unlike the card, where the value alone is the badge.
+        foreach ( $this->get_labels( $post_id ) as $label_row ) {
+            $caption = $label_row['caption'] !== '' ? $label_row['caption'] . ': ' : '';
+            $output .= '<div class="anchor-event-label-detail anchor-event-label-' . esc_attr( $label_row['key'] ) . '">'
+                . '<strong>' . esc_html( $caption ) . '</strong>'
+                . esc_html( $label_row['value'] )
+                . '</div>';
         }
         $output .= '<div><strong>' . esc_html__( 'Status', 'anchor-schema' ) . ':</strong> ' . esc_html( ucfirst( $status ) ) . '</div>';
         $output .= '</div>';

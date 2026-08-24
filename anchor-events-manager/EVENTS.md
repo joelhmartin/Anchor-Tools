@@ -197,6 +197,7 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 | `type` | string | `single` \| `multisession` \| `offering` \| `recurring` |
 | `registration_mode` | string | `wc` \| `free` \| `external` |
 | `sessions` | array | Multi-session rows: `{date, start_time, end_time, label}` |
+| `labels` | array | Event-level badge rows: `{key, label, value}` — see "Event Labels" below |
 | `offering_dates` | array | Pick-one rows: `{date, start_time, end_time, label, capacity}` |
 | `recurrence` | array | Recurring rule: `{freq, interval, count?, until?, weekdays?, start_time, end_time, capacity}` |
 | `group_role` | string | `parent` \| `child` \| `` — engine-owned |
@@ -229,6 +230,77 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 - `resolve_email_template( string $type, int $event_id ): string` — per-event override → global option → default constant.
 - `compute_email_schedule( int $event_id ): array` — read-only upcoming reminder/roster schedule (see `EMAILS.md`).
 - `event_type( $event_id )`, `registration_mode( $event_id )`, `get_meta( $event_id )`, `meta_key( $key )`, `get_sessions( $event_id )`.
+- `get_labels( $event_id )`, `get_label( $event_id, $key )`, `labels_vocabulary()` — see "Event Labels" below.
+
+---
+
+## Event Labels
+
+Short, author-written descriptors a theme renders as badges: **"2 Day Course"**,
+**"14 CE Credits"**, **"Hands-on"**. They exist so course duration is first-class
+data instead of being buried in body copy.
+
+**Duration is text, not a computed value — on purpose.** A `2026-03-05 → 2026-03-06`
+span could be a "1.5 Day Course" (Thursday evening plus Friday) or a "2 Day
+Course", and "2.5 Day Course" cannot be derived from dates at all. Deriving it
+would be wrong often enough to be worse than leaving it blank.
+
+### Vocabulary
+
+| Key | Caption | Example value |
+|---|---|---|
+| `duration` | Duration | `2 Day Course` |
+| `credits` | CE Credits | `14 CE Credits` |
+| `format` | Format | `Hands-on` |
+| `level` | Level | `Advanced` |
+| `custom` | *(author-typed)* | `Spring 2027` |
+
+Captions for known keys are resolved at render time via `labels_vocabulary()`
+rather than stored, so they stay translatable — persisting a translated caption
+would freeze it in whatever locale the author saved in. Only a `custom` row
+carries its own caption on the row. An unknown key clamps to `custom`, and a row
+with an empty value is dropped (the labels equivalent of a session row with no
+date). Duplicate keys are allowed; `get_label()` returns the first match.
+
+### Theme API
+
+```php
+// One label — the DEKA "2 Day Course" badge.
+$duration = anchor_event_label( get_the_ID(), 'duration' );
+if ( $duration ) {
+    echo '<span class="course-badge">' . esc_html( $duration ) . '</span>';
+}
+
+// Every label, in author order. Rows are { key, label, value, caption }.
+foreach ( anchor_event_labels( get_the_ID() ) as $row ) {
+    printf( '<li class="badge-%s">%s</li>', esc_attr( $row['key'] ), esc_html( $row['value'] ) );
+}
+```
+
+Both are global functions (defined in `template-tags.php`, which is separate
+because PHP forbids a bracketed `namespace { }` block in a file that already
+opened with an unbracketed `namespace Anchor\Events;`).
+
+Values are **plain text** — always escape at the point of output.
+
+### Rendering
+
+- **Card** — a badge list, value only, each `<li>` carrying `anchor-event-label`
+  plus a per-key class (`anchor-event-label-duration`) and `data-caption`, so a
+  theme can position one badge specifically rather than styling a blob.
+- **Single** — `Caption: value` rows inside `.anchor-event-detail-meta`, matching
+  the existing Date / Venue / Status shape.
+- **Occurrence children inherit labels automatically.** `Occurrences::sync_shared_meta()`
+  copies every parent key not named in `PER_OCCURRENCE_KEYS` / `NEVER_COPY_KEYS`,
+  and `labels` is in neither — a "2 Day Course" describes each date of a pick-one
+  offering, so inheriting is the correct default. No engine change was required.
+
+### Not in JSON-LD
+
+Labels are deliberately absent from the schema.org output. `duration` there
+requires ISO-8601 (`P2D`); "2.5 Day Course" is free text that cannot be safely
+coerced, and emitting it would produce *invalid* structured data. A valid
+`duration` would need its own separate ISO field.
 
 ---
 
@@ -268,6 +340,8 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 
 | Filter | Args | Purpose |
 |---|---|---|
+| `anchor_events_labels` | `$rows, $post_id` | Resolved event label rows (`{key, label, value, caption}`) — inject or rewrite a label before render. |
+| `anchor_events_labels_vocabulary` | `$vocabulary` | The label `key => caption` map. Add a site-specific key here instead of overloading `custom`. |
 | `anchor_events_embed_allowed_html` | `$default_allowed` | `wp_kses()` allowlist for the External-mode `external_embed` field. |
 | `anchor_events_email_template_allowed_html` | `$default_allowed` | `wp_kses()` allowlist for admin-authored email template HTML (see `EMAILS.md`). |
 | `anchor_events_schema_default_currency` | `$default, $event_id` | Override the `priceCurrency` used in JSON-LD Offers. |

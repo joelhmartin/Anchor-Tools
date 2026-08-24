@@ -51,6 +51,46 @@ async function wpAdminLogin(page) {
   ]);
 }
 
+// Pin the consent posture to strict, the same lever e2e/compliance-banner.spec.js
+// uses. Without it the posture follows the runner's timezone — a US-local run
+// gets the relaxed opt-out notice while CI (UTC) gets the blocking gate — so the
+// banner's shape, and whether an accept-all button exists at all, would differ
+// between machines. Strict everywhere keeps acceptConsentBanner() deterministic.
+test.use({ timezoneId: 'Europe/Berlin' });
+
+/**
+ * Settle the compliance consent banner before driving this form.
+ *
+ * The CMP renders a floating bottom-left gate (`#anchor-cmp.anchor-cmp--gate`)
+ * that overlays the page until the visitor decides. It sits on top of the lower
+ * part of the manager form, so a click on `.anchor-event-session-add` resolves
+ * to a visible, enabled, stable button and then times out — Playwright reports
+ * "<div id="anchor-cmp" ...> intercepts pointer events".
+ *
+ * Accepting through the banner's own button (rather than pre-seeding a consent
+ * cookie) keeps this local to this spec: the compliance suite still exercises
+ * the undecided-visitor states on its own fixture page, and there is no
+ * hand-rolled cookie payload here to drift out of sync with the plugin's real
+ * cookie shape.
+ *
+ * Tolerant by design — if consent is already settled for this context, or the
+ * compliance module is disabled, the banner never appears and this is a no-op.
+ */
+async function acceptConsentBanner(page) {
+  const acceptAll = page.locator('#anchor-cmp-banner [data-anchor-action="accept-all"]');
+  // The banner is injected by the CMP client runtime, not server-rendered, so
+  // an instantaneous isVisible() can race it: it would report false, we would
+  // skip, and the banner would then appear and swallow the first click. Wait
+  // briefly for it instead, and treat "never appeared" as already settled.
+  try {
+    await acceptAll.waitFor({ state: 'visible', timeout: 5000 });
+  } catch {
+    return;
+  }
+  await acceptAll.click();
+  await expect(page.locator('#anchor-cmp-banner')).toBeHidden();
+}
+
 test.beforeEach(async ({ page }) => {
   await wpAdminLogin(page);
   const resp = await page.goto(MANAGER_PAGE_PATH);
@@ -59,6 +99,9 @@ test.beforeEach(async ({ page }) => {
     `Expected the seeded manager-form page at ${MANAGER_PAGE_PATH} to exist ` +
       '(bin/e2e-seed.sh should have created it — re-run `npm run env:seed`).'
   ).toBeTruthy();
+  // Sets the consent cookie for this context, so the banner stays down across
+  // the navigations each test makes afterwards.
+  await acceptConsentBanner(page);
 });
 
 test('front-end manager form: type/registration-mode choosers toggle the conditional sections', async ({ page }) => {
@@ -86,6 +129,11 @@ test('front-end manager form: type/registration-mode choosers toggle the conditi
 
 test('front-end manager form: create with multisession + external round-trips through save', async ({ page }) => {
   await page.goto(`${MANAGER_PAGE_PATH}?event_action=new`);
+  // Idempotent: the beforeEach already settled consent for this context, so
+  // this is normally a no-op. Kept because this is the test that clicks in the
+  // banner's corner of the viewport — if consent somehow did not stick, the
+  // failure mode is a 30s timeout rather than an obvious error.
+  await acceptConsentBanner(page);
 
   const uniqueTitle = `E2E Manager Multisession Event ${Date.now()}`;
   await page.fill('#anchor_event_title', uniqueTitle);

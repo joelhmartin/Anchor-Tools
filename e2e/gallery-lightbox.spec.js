@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('@playwright/test');
+const { acceptConsentBanner, STRICT_POSTURE_TIMEZONE } = require('./helpers/consent');
 
 /**
  * Gallery lightbox navigation.
@@ -31,6 +32,16 @@ test.beforeAll(() => {
   if (!seed.gallery_page_url) {
     throw new Error('Seed has no gallery_page_url — re-run `npm run env:seed`.');
   }
+});
+
+// Every test here clicks tiles / navigates the lightbox, so the CMP gate must be
+// settled first — see e2e/helpers/consent.js. Pinned to strict posture so a local
+// run reproduces CI rather than getting the non-blocking relaxed notice.
+test.use({ timezoneId: STRICT_POSTURE_TIMEZONE });
+
+test.beforeEach(async ({ page }) => {
+  await page.goto(seed.gallery_page_url);
+  await acceptConsentBanner(page);
 });
 
 test('gallery renders six tiles with the expected types', async ({ page }) => {

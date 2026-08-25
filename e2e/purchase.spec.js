@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('@playwright/test');
+const { acceptConsentBanner, STRICT_POSTURE_TIMEZONE } = require('./helpers/consent');
 
 /**
  * Critical purchase happy path:
@@ -51,6 +52,12 @@ async function wpAdminLogin(page) {
   ]);
 }
 
+// The guest checkout flow clicks through several front-end pages, so the CMP
+// gate must be settled first — see e2e/helpers/consent.js. Pinned to strict
+// posture so a local run reproduces CI rather than getting the non-blocking
+// relaxed notice.
+test.use({ timezoneId: STRICT_POSTURE_TIMEZONE });
+
 test('buy a paid ticket and land on the roster', async ({ page }) => {
   // GUEST purchase (no prior login) — the real-world path: a logged-out buyer
   // must be able to add a ticket and complete checkout. The cart is added via
@@ -60,6 +67,7 @@ test('buy a paid ticket and land on the roster', async ({ page }) => {
   // 1) Event-page storefront → choose GA qty 1 → AJAX add-to-cart.
   // ----------------------------------------------------------------------
   await page.goto(seed.event_url);
+  await acceptConsentBanner(page);
 
   const tickets = page.locator('.anchor-event-tickets');
   await expect(tickets, 'ticket block renders on the event page').toBeVisible();

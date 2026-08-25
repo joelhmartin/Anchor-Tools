@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('@playwright/test');
+const { acceptConsentBanner, STRICT_POSTURE_TIMEZONE } = require('./helpers/consent');
 
 /**
  * Front-end "event manager" authoring form (Task 1.5): the event-type /
@@ -56,40 +57,7 @@ async function wpAdminLogin(page) {
 // gets the relaxed opt-out notice while CI (UTC) gets the blocking gate — so the
 // banner's shape, and whether an accept-all button exists at all, would differ
 // between machines. Strict everywhere keeps acceptConsentBanner() deterministic.
-test.use({ timezoneId: 'Europe/Berlin' });
-
-/**
- * Settle the compliance consent banner before driving this form.
- *
- * The CMP renders a floating bottom-left gate (`#anchor-cmp.anchor-cmp--gate`)
- * that overlays the page until the visitor decides. It sits on top of the lower
- * part of the manager form, so a click on `.anchor-event-session-add` resolves
- * to a visible, enabled, stable button and then times out — Playwright reports
- * "<div id="anchor-cmp" ...> intercepts pointer events".
- *
- * Accepting through the banner's own button (rather than pre-seeding a consent
- * cookie) keeps this local to this spec: the compliance suite still exercises
- * the undecided-visitor states on its own fixture page, and there is no
- * hand-rolled cookie payload here to drift out of sync with the plugin's real
- * cookie shape.
- *
- * Tolerant by design — if consent is already settled for this context, or the
- * compliance module is disabled, the banner never appears and this is a no-op.
- */
-async function acceptConsentBanner(page) {
-  const acceptAll = page.locator('#anchor-cmp-banner [data-anchor-action="accept-all"]');
-  // The banner is injected by the CMP client runtime, not server-rendered, so
-  // an instantaneous isVisible() can race it: it would report false, we would
-  // skip, and the banner would then appear and swallow the first click. Wait
-  // briefly for it instead, and treat "never appeared" as already settled.
-  try {
-    await acceptAll.waitFor({ state: 'visible', timeout: 5000 });
-  } catch {
-    return;
-  }
-  await acceptAll.click();
-  await expect(page.locator('#anchor-cmp-banner')).toBeHidden();
-}
+test.use({ timezoneId: STRICT_POSTURE_TIMEZONE });
 
 test.beforeEach(async ({ page }) => {
   await wpAdminLogin(page);

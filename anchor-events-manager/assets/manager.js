@@ -34,25 +34,23 @@
 
   // Task 1.3+1.4 metabox parity (Task 1.5): show/hide the type-dependent and
   // mode-dependent form sections. A container carries data-when-type="a b"
-  // and/or data-when-mode="c d" (space-separated). Front-end manager sections
-  // can also carry data-when-registration="enabled" so registration-specific
-  // controls disappear when registration is off.
+  // and/or data-when-mode="c d" (space-separated). No such attribute on a
+  // container means "always shown" for that axis. A container with BOTH
+  // attributes only shows when both match. Mirrors admin.js exactly so the
+  // metabox and the front-end manager form behave identically.
   function applyConditionalVisibility(){
     var type = $('#anchor_event_type').val();
     var mode = $('#anchor_event_registration_mode').val();
-    var registrationEnabled = $('#anchor_event_registration_enabled').is(':checked');
 
     $('.anchor-event-conditional').each(function(){
       var $el = $(this);
       var whenType = $el.attr('data-when-type');
       var whenMode = $el.attr('data-when-mode');
-      var whenRegistration = $el.attr('data-when-registration');
 
       var typeMatches = !whenType || whenType.split(/\s+/).indexOf(type) !== -1;
       var modeMatches = !whenMode || whenMode.split(/\s+/).indexOf(mode) !== -1;
-      var registrationMatches = whenRegistration !== 'enabled' || registrationEnabled;
 
-      $el.toggle(typeMatches && modeMatches && registrationMatches);
+      $el.toggle(typeMatches && modeMatches);
     });
   }
 
@@ -308,10 +306,7 @@
 
     $('#anchor_event_all_day').on('change', toggleAllDay);
     $('#anchor_event_virtual').on('change', toggleVirtual);
-    $('#anchor_event_registration_enabled').on('change', function(){
-      toggleRegistration();
-      applyConditionalVisibility();
-    });
+    $('#anchor_event_registration_enabled').on('change', toggleRegistration);
     $('#anchor_event_registration_type').on('change', toggleRegistrationType);
     $('#anchor_event_type, #anchor_event_registration_mode').on('change', applyConditionalVisibility);
   });

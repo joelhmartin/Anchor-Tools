@@ -4731,15 +4731,15 @@ class Module {
                 <h3><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
-                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
-                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc"><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
-                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc"><label for="anchor_event_registration_open"><?php echo esc_html__( 'Registration opens', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_open" name="anchor_event_registration_open" value="<?php echo esc_attr( $meta['registration_open'] ); ?>" /></div>
-                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
-                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free"><label for="anchor_event_price"><?php echo esc_html__( 'Price label', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_price" name="anchor_event_price" value="<?php echo esc_attr( $meta['price'] ); ?>" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_open"><?php echo esc_html__( 'Registration opens', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_open" name="anchor_event_registration_open" value="<?php echo esc_attr( $meta['registration_open'] ); ?>" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_price"><?php echo esc_html__( 'Price label', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_price" name="anchor_event_price" value="<?php echo esc_attr( $meta['price'] ); ?>" /></div>
                 </div>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-registration="enabled" data-when-mode="external">
+            <div class="anchor-event-section anchor-event-conditional" data-when-mode="external">
                 <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
@@ -4759,7 +4759,7 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-registration="enabled" data-when-mode="wc">
+            <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc">
                 <h3><?php echo esc_html__( 'Tickets / Pricing', 'anchor-schema' ); ?></h3>
                 <?php echo $this->render_ticket_types_fields( $event_id, 'anchor-event-button-secondary' ); // already escaped ?>
             </div>
@@ -4773,12 +4773,13 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc">
-                <h3><?php echo esc_html__( 'Email settings', 'anchor-schema' ); ?></h3>
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Email Settings', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_reminder_offsets"><?php echo esc_html__( 'Reminder offsets (days)', 'anchor-schema' ); ?></label>
                         <input type="text" id="anchor_event_reminder_offsets" name="anchor_event_reminder_offsets" value="<?php echo esc_attr( $meta['reminder_offsets'] ); ?>" />
+                        <p class="description"><?php echo esc_html__( 'Comma-separated days before start (e.g. 14,3,1). Leave blank to use the global default.', 'anchor-schema' ); ?></p>
                     </div>
                 </div>
                 <details class="anchor-event-email-template-fields">

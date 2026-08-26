@@ -5820,7 +5820,19 @@ class Module {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
             exit;
         }
-        if ( $meta['registration_type'] === 'external' ) {
+        // Renderer and handler have to agree on what "external" means, and they
+        // did not: render_registration_form() routes on registration_mode()
+        // (line ~5453) while this only checked the LEGACY registration_type.
+        // An event authored through the mode select stores registration_mode
+        // and deliberately never writes registration_type (see save_meta()'s
+        // Task BC note), so for exactly those events the front end shows an
+        // outbound link while this handler would still claim a seat.
+        //
+        // That is reachable: REG_NONCE is a bare action nonce, not bound to
+        // event_id, so a nonce lifted from any internal event's form posts
+        // fine against an external one — phantom seats on somebody else's
+        // roster, and a confirmation email to go with them.
+        if ( $meta['registration_type'] === 'external' || $this->registration_mode( $event_id ) === 'external' ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
             exit;
         }

@@ -1654,11 +1654,25 @@ class Module {
      * @param \WP_Post $post
      */
     public function render_ticket_types_metabox( $post ) {
-        $tiers = $this->ticket_types->get( $post->ID );
+        echo $this->render_ticket_types_fields( (int) $post->ID, 'button' ); // already escaped
+    }
+
+    /**
+     * Shared ticket-tier authoring table for the wp-admin metabox and the
+     * front-end event manager. The persistence shape is identical in both
+     * places: anchor_event_tickets[<index>][...].
+     *
+     * @param int    $event_id
+     * @param string $button_class
+     * @return string Escaped HTML.
+     */
+    private function render_ticket_types_fields( $event_id, $button_class = 'button' ) {
+        $tiers = $this->ticket_types->get( $event_id );
         // The implicit-primary synthesized tier is not persisted; only show
         // authored rows so a blank event starts with an empty table.
-        $stored = \get_post_meta( $post->ID, Ticket_Types::META_KEY, true );
+        $stored = \get_post_meta( $event_id, Ticket_Types::META_KEY, true );
         $rows   = ( \is_array( $stored ) && ! empty( $stored ) ) ? $tiers : [];
+        \ob_start();
         ?>
         <div class="anchor-event-tickets anchor-event-conditional" id="anchor-event-tickets" data-when-mode="wc">
             <p class="description">
@@ -1684,13 +1698,14 @@ class Module {
                 </tbody>
             </table>
             <p>
-                <button type="button" class="button anchor-event-ticket-add"><?php echo esc_html__( 'Add ticket tier', 'anchor-schema' ); ?></button>
+                <button type="button" class="<?php echo esc_attr( $button_class ); ?> anchor-event-ticket-add"><?php echo esc_html__( 'Add ticket tier', 'anchor-schema' ); ?></button>
             </p>
             <script type="text/html" id="anchor-event-ticket-template">
                 <?php echo $this->ticket_type_row_html( 0, null, true ); // already escaped ?>
             </script>
         </div>
         <?php
+        return (string) \ob_get_clean();
     }
 
     /**
@@ -4140,12 +4155,20 @@ class Module {
 
         $this->enqueue_frontend_assets();
         \wp_enqueue_media();
+        \wp_enqueue_style( 'dashicons' );
         \wp_enqueue_script( 'jquery-ui-sortable' );
         \wp_enqueue_script(
             'anchor-events-manager-frontend',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
             '1.0.3',
+            true
+        );
+        \wp_enqueue_script(
+            'anchor-events-ticket-types',
+            \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ),
+            [ 'jquery', 'jquery-ui-sortable' ],
+            '1.0.0',
             true
         );
 
@@ -4683,8 +4706,24 @@ class Module {
                     <div class="anchor-event-field"><label for="anchor_event_address_city"><?php echo esc_html__( 'City', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_city" name="anchor_event_address_city" value="<?php echo esc_attr( $meta['address_city'] ); ?>" /></div>
                     <div class="anchor-event-field"><label for="anchor_event_address_state"><?php echo esc_html__( 'State', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_state" name="anchor_event_address_state" value="<?php echo esc_attr( $meta['address_state'] ); ?>" /></div>
                     <div class="anchor-event-field"><label for="anchor_event_address_zip"><?php echo esc_html__( 'Postal code', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_zip" name="anchor_event_address_zip" value="<?php echo esc_attr( $meta['address_zip'] ); ?>" /></div>
+                    <div class="anchor-event-field"><label for="anchor_event_address_country"><?php echo esc_html__( 'Country', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_country" name="anchor_event_address_country" value="<?php echo esc_attr( $meta['address_country'] ); ?>" /></div>
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_virtual" name="anchor_event_virtual" value="1" <?php checked( $meta['virtual'] ); ?> /> <?php echo esc_html__( 'Virtual event', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field" id="anchor-event-virtual-url"><label for="anchor_event_virtual_url"><?php echo esc_html__( 'Virtual URL', 'anchor-schema' ); ?></label><input type="url" id="anchor_event_virtual_url" name="anchor_event_virtual_url" value="<?php echo esc_attr( $meta['virtual_url'] ); ?>" /></div>
+                </div>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Status', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_status"><?php echo esc_html__( 'Event status', 'anchor-schema' ); ?></label>
+                        <select id="anchor_event_status" name="anchor_event_status">
+                            <option value="auto" <?php selected( $meta['status_mode'], 'auto' ); ?>><?php echo esc_html__( 'Auto (based on dates)', 'anchor-schema' ); ?></option>
+                            <?php foreach ( $this->get_status_options() as $key => $label ) : ?>
+                                <option value="<?php echo esc_attr( $key ); ?>" <?php selected( $meta['status_mode'] === 'manual' && $meta['status'] === $key ); ?>><?php echo esc_html( $label ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
                 </div>
             </div>
 
@@ -4692,14 +4731,15 @@ class Module {
                 <h3><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
-                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
-                    <div class="anchor-event-field anchor-event-registration-fields"><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
-                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_open"><?php echo esc_html__( 'Registration opens', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_open" name="anchor_event_registration_open" value="<?php echo esc_attr( $meta['registration_open'] ); ?>" /></div>
-                    <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc"><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc"><label for="anchor_event_registration_open"><?php echo esc_html__( 'Registration opens', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_open" name="anchor_event_registration_open" value="<?php echo esc_attr( $meta['registration_open'] ); ?>" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
+                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-conditional" data-when-registration="enabled" data-when-mode="free"><label for="anchor_event_price"><?php echo esc_html__( 'Price label', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_price" name="anchor_event_price" value="<?php echo esc_attr( $meta['price'] ); ?>" /></div>
                 </div>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-mode="external">
+            <div class="anchor-event-section anchor-event-conditional" data-when-registration="enabled" data-when-mode="external">
                 <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
@@ -4717,6 +4757,41 @@ class Module {
                         <p class="description"><?php echo esc_html__( 'Paste a third-party embed. Iframes allowed; scripts stripped by default.', 'anchor-schema' ); ?></p>
                     </div>
                 </div>
+            </div>
+
+            <div class="anchor-event-section anchor-event-conditional" data-when-registration="enabled" data-when-mode="wc">
+                <h3><?php echo esc_html__( 'Tickets / Pricing', 'anchor-schema' ); ?></h3>
+                <?php echo $this->render_ticket_types_fields( $event_id, 'anchor-event-button-secondary' ); // already escaped ?>
+            </div>
+
+            <div class="anchor-event-section">
+                <h3><?php echo esc_html__( 'Display controls', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_hide_from_archive" name="anchor_event_hide_from_archive" value="1" <?php checked( $meta['hide_from_archive'] ); ?> /> <?php echo esc_html__( 'Hide from archive', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_featured" name="anchor_event_featured" value="1" <?php checked( $meta['featured'] ); ?> /> <?php echo esc_html__( 'Featured / pinned', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field"><label for="anchor_event_priority"><?php echo esc_html__( 'Priority order', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_priority" name="anchor_event_priority" value="<?php echo esc_attr( $meta['priority'] ); ?>" /></div>
+                </div>
+            </div>
+
+            <div class="anchor-event-section anchor-event-conditional" data-when-registration="enabled" data-when-mode="free wc">
+                <h3><?php echo esc_html__( 'Email settings', 'anchor-schema' ); ?></h3>
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="anchor_event_reminder_offsets"><?php echo esc_html__( 'Reminder offsets (days)', 'anchor-schema' ); ?></label>
+                        <input type="text" id="anchor_event_reminder_offsets" name="anchor_event_reminder_offsets" value="<?php echo esc_attr( $meta['reminder_offsets'] ); ?>" />
+                    </div>
+                </div>
+                <details class="anchor-event-email-template-fields">
+                    <summary><?php echo esc_html__( 'Per-event email templates', 'anchor-schema' ); ?></summary>
+                    <div class="anchor-event-grid">
+                        <?php foreach ( $this->email_type_labels() as $type => $label ) : ?>
+                            <div class="anchor-event-field anchor-event-field-wide">
+                                <label for="anchor_email_tpl_<?php echo esc_attr( $type ); ?>"><?php echo esc_html( $label ); ?></label>
+                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="8" class="code"><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </details>
             </div>
 
             <div class="anchor-event-section">
@@ -4898,11 +4973,13 @@ class Module {
             // form's $input too, for the identical reason (the legacy fields
             // no longer render here either; leaving them listed would blank
             // an old external event's real link on its next re-save).
-            'hide_from_archive' => false,
-            'featured' => false,
-            'priority' => 0,
+            'price' => sanitize_text_field( $_POST['anchor_event_price'] ?? '' ),
+            'hide_from_archive' => ! empty( $_POST['anchor_event_hide_from_archive'] ),
+            'featured' => ! empty( $_POST['anchor_event_featured'] ),
+            'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
             'labels' => $this->labels_input( $_POST ),
             'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
+            'reminder_offsets' => $this->sanitize_offset_csv( $_POST['anchor_event_reminder_offsets'] ?? '' ),
         ];
 
         // Event-type / registration-mode authoring UI (Task 1.3 metabox parity,
@@ -4910,8 +4987,15 @@ class Module {
         // save_meta() — see that method's docblock.
         $input = array_merge( $input, $this->sanitize_event_type_input( $_POST, $current_registration_mode ) );
 
-        $input['status_mode'] = 'auto';
-        $input['status'] = $this->calculate_status( $input );
+        $status_raw = sanitize_text_field( $_POST['anchor_event_status'] ?? 'auto' );
+        if ( $status_raw === 'auto' ) {
+            $input['status_mode'] = 'auto';
+            $input['status'] = $this->calculate_status( $input );
+        } else {
+            $input['status_mode'] = 'manual';
+            $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true ) ? $status_raw : 'upcoming';
+        }
+
         $timestamps = $this->calculate_timestamps( $input );
         $input['start_ts'] = $timestamps['start'];
         $input['end_ts'] = $timestamps['end'];
@@ -4927,12 +5011,19 @@ class Module {
             \delete_post_thumbnail( $saved_id );
         }
 
+        // Ticket tiers use the same model/sanitizer as the admin metabox.
+        $ticket_rows = isset( $_POST['anchor_event_tickets'] ) && is_array( $_POST['anchor_event_tickets'] )
+            ? \wp_unslash( $_POST['anchor_event_tickets'] )
+            : [];
+        $this->ticket_types->save( $saved_id, $ticket_rows );
+
         // Group authoring (Task 2.3) — SAME dedicated validated persist+reconcile
         // step as save_meta(), reused (not duplicated) so the two save paths can
         // never drift. See persist_group_authoring()'s docblock.
         $this->persist_group_authoring( $saved_id, $input['type'] );
 
         $this->maybe_append_registration_shortcode( $saved_id, $input );
+        $this->save_email_templates( $saved_id );
         $this->clear_caches();
 
         return $input;
@@ -5915,6 +6006,44 @@ class Module {
             $email_text_field( 'email_bcc', 'email', '' );
         }, 'anchor_events_settings', 'anchor_events_email_sender' );
 
+        \add_settings_section( 'anchor_events_email_appearance', __( 'Email Appearance', 'anchor-schema' ), function() {
+            echo '<p>' . esc_html__( 'Basic branding for event confirmation, reminder, cancellation, and roster emails.', 'anchor-schema' ) . '</p>';
+        }, 'anchor_events_settings' );
+
+        \add_settings_field( 'email_logo_url', __( 'Logo URL', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="url" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[email_logo_url]" value="<?php echo esc_attr( $opts['email_logo_url'] ); ?>" class="regular-text" placeholder="https://example.com/logo.png" />
+            <p class="description"><?php echo esc_html__( 'Optional logo shown above event email content. Use a public image URL from the media library or CDN.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_email_appearance' );
+
+        $email_color_field = function( $key, $fallback ) {
+            $opts = $this->get_settings();
+            $value = \sanitize_hex_color( $opts[ $key ] ?? '' ) ?: $fallback;
+            printf(
+                '<input type="color" name="%1$s[%2$s]" value="%3$s" />',
+                esc_attr( self::OPTION_KEY ),
+                esc_attr( $key ),
+                esc_attr( $value )
+            );
+        };
+        \add_settings_field( 'email_background_color', __( 'Email background', 'anchor-schema' ), function() use ( $email_color_field ) {
+            $email_color_field( 'email_background_color', '#f4f4f4' );
+        }, 'anchor_events_settings', 'anchor_events_email_appearance' );
+        \add_settings_field( 'email_card_color', __( 'Content background', 'anchor-schema' ), function() use ( $email_color_field ) {
+            $email_color_field( 'email_card_color', '#ffffff' );
+        }, 'anchor_events_settings', 'anchor_events_email_appearance' );
+        \add_settings_field( 'email_text_color', __( 'Text color', 'anchor-schema' ), function() use ( $email_color_field ) {
+            $email_color_field( 'email_text_color', '#333333' );
+        }, 'anchor_events_settings', 'anchor_events_email_appearance' );
+        \add_settings_field( 'email_heading_color', __( 'Heading color', 'anchor-schema' ), function() use ( $email_color_field ) {
+            $email_color_field( 'email_heading_color', '#111111' );
+        }, 'anchor_events_settings', 'anchor_events_email_appearance' );
+        \add_settings_field( 'email_button_color', __( 'Button color', 'anchor-schema' ), function() use ( $email_color_field ) {
+            $email_color_field( 'email_button_color', '#111111' );
+        }, 'anchor_events_settings', 'anchor_events_email_appearance' );
+
         \add_settings_section( 'anchor_events_registration', __( 'Registration Settings', 'anchor-schema' ), function() {
             echo '<p>' . esc_html__( 'Control internal registration and email notifications.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
@@ -6201,6 +6330,12 @@ class Module {
         $output['email_reply_to_name']    = sanitize_text_field( $input['email_reply_to_name'] ?? '' );
         $output['email_reply_to_address'] = sanitize_email( $input['email_reply_to_address'] ?? '' );
         $output['email_bcc']              = sanitize_email( $input['email_bcc'] ?? '' );
+        $output['email_logo_url']         = esc_url_raw( $input['email_logo_url'] ?? '' );
+        $output['email_background_color'] = \sanitize_hex_color( $input['email_background_color'] ?? '' ) ?: $defaults['email_background_color'];
+        $output['email_card_color']       = \sanitize_hex_color( $input['email_card_color'] ?? '' ) ?: $defaults['email_card_color'];
+        $output['email_text_color']       = \sanitize_hex_color( $input['email_text_color'] ?? '' ) ?: $defaults['email_text_color'];
+        $output['email_heading_color']    = \sanitize_hex_color( $input['email_heading_color'] ?? '' ) ?: $defaults['email_heading_color'];
+        $output['email_button_color']     = \sanitize_hex_color( $input['email_button_color'] ?? '' ) ?: $defaults['email_button_color'];
 
         // Reserved/unused — preserve stored value (no UI field).
         $output['notify_attendee'] = $defaults['notify_attendee'];
@@ -7472,6 +7607,131 @@ ANCHOR_EVENTS_EMAIL_SHELL;
     }
 
     /**
+     * The recolorable regions of a rendered event email, keyed by the setting
+     * that drives each one. Every entry is [ <literal the stock markup emits>,
+     * [ <css declaration prefixes to rewrite> ] ].
+     *
+     * Two properties this map has to keep:
+     *
+     * 1. The stock literal is the SOURCE OF TRUTH for "unchanged". A setting
+     *    equal to it (in any hex spelling) is skipped entirely, so an install
+     *    that never touched Email Appearance renders the byte-for-byte email
+     *    it rendered before the feature existed — which is what
+     *    tests/test-email-templates.php's byte-equivalence cases assert.
+     *    Getting this wrong is not cosmetic: the stock CTA is #111, so a
+     *    "default" of #0f766e silently repaints every button on every site.
+     *
+     * 2. Prefixes are matched WITHOUT their trailing semicolon, because a
+     *    saved template has been through sanitize_email_template_html() ->
+     *    wp_kses, which rebuilds style attributes and drops the final ";".
+     *    apply_email_appearance() therefore anchors with a hex-digit
+     *    lookahead rather than a literal ";" (which would no-op on every
+     *    customized template) — see that method.
+     *
+     * The email has two stock buttons — the near-black CTA (#111) and the teal
+     * "join" button on virtual events (#0f766e) — and one setting drives both.
+     * Customizing flattens that distinction; leaving one of them stock while
+     * the other follows the brand color looks like a bug, not a design.
+     *
+     * `color:#222` (detail-row values) rides along with the body text color:
+     *  it is one shade darker than #333 in the stock design, but recoloring
+     *  the body while leaving it behind is how you get black-on-black rows in
+     *  a dark palette. Losing that one shade of emphasis is the cheaper bug.
+     *
+     * @return array<string,array{0:string,1:string[]}>
+     */
+    private function email_appearance_map() {
+        return [
+            'email_background_color' => [ '#f4f4f4', [ 'background:#f4f4f4' ] ],
+            'email_card_color'       => [ '#ffffff', [ 'background:#ffffff' ] ],
+            'email_heading_color'    => [ '#111111', [ 'color:#111' ] ],
+            'email_text_color'       => [ '#333333', [ 'color:#333', 'color:#222' ] ],
+            'email_button_color'     => [ '#111111', [ 'background:#111', 'background:#0f766e' ] ],
+        ];
+    }
+
+    /**
+     * Expand a hex color to its lowercase 6-digit form so #111 and #111111
+     * compare equal. Non-hex input is returned as-is (callers have already
+     * run it through sanitize_hex_color()).
+     *
+     * @param string $hex
+     * @return string
+     */
+    private function normalize_hex_color( $hex ) {
+        $hex = \strtolower( \trim( (string) $hex ) );
+        if ( \preg_match( '/^#([0-9a-f])([0-9a-f])([0-9a-f])$/', $hex, $m ) ) {
+            return '#' . $m[1] . $m[1] . $m[2] . $m[2] . $m[3] . $m[3];
+        }
+        return $hex;
+    }
+
+    /**
+     * Apply basic global branding to rendered event emails. A setting left at
+     * the stock value is not applied at all, so an untouched install keeps its
+     * existing email output byte for byte.
+     *
+     * @param string $html
+     * @param array  $settings
+     * @return string
+     */
+    private function apply_email_appearance( $html, array $settings ) {
+        $html = (string) $html;
+
+        foreach ( $this->email_appearance_map() as $key => $spec ) {
+            list( $stock, $prefixes ) = $spec;
+
+            $value = \sanitize_hex_color( $settings[ $key ] ?? '' );
+            if ( ! $value || $this->normalize_hex_color( $value ) === $this->normalize_hex_color( $stock ) ) {
+                continue;
+            }
+
+            foreach ( $prefixes as $prefix ) {
+                // The lookahead is what makes a semicolon-less match safe:
+                // it stops `color:#111` from eating the `#111111` in a
+                // longhand value, and lets the same pattern hit both the
+                // `...;` (raw shell) and `..."` (post-kses) spellings.
+                // Keep the property name: the prefix matched is the whole
+                // `background:#f4f4f4` declaration, so the replacement has to
+                // be `background:` + the new color, not the color alone.
+                $property    = \substr( $prefix, 0, \strpos( $prefix, '#' ) );
+                $pattern     = '/' . \preg_quote( $prefix, '/' ) . '(?![0-9a-fA-F])/';
+                $out         = \preg_replace( $pattern, $property . $value, $html );
+                if ( \is_string( $out ) ) {
+                    $html = $out;
+                }
+            }
+        }
+
+        $logo_url = \esc_url( $settings['email_logo_url'] ?? '' );
+        if ( $logo_url === '' ) {
+            return $html;
+        }
+
+        $logo = '<tr><td align="center" style="padding:24px 32px 0;">'
+            . '<img src="' . $logo_url . '" alt="' . esc_attr( \get_bloginfo( 'name' ) ) . '" width="160" style="display:block;max-width:160px;width:100%;height:auto;border:0;" />'
+            . '</td></tr>';
+
+        // Anchor on the 600px content table's opening tag, not on its style
+        // attribute: kses rewrites that attribute (and the card color may have
+        // just been swapped above), so matching the full tag string means the
+        // logo silently never renders on any customized template. width="600"
+        // is unique to this table in the shell. preg_replace_callback (not
+        // preg_replace) because the alt text is the site name, and a site
+        // named e.g. "Cash $1 Co" would otherwise be read as a backreference.
+        $out = \preg_replace_callback(
+            '/<table\b[^>]*\bwidth="600"[^>]*>/',
+            function ( $m ) use ( $logo ) {
+                return $m[0] . $logo;
+            },
+            $html,
+            1
+        );
+
+        return \is_string( $out ) ? $out : $html;
+    }
+
+    /**
      * Build the registration confirmation email HTML.
      *
      * Phase 6: accepts a single `$ctx` array (keys: event_id, name, status,
@@ -7622,6 +7882,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         ];
 
         $html = $this->expand_email_tokens( $template, $tokens );
+        $html = $this->apply_email_appearance( $html, $this->get_settings() );
 
         return \apply_filters( 'anchor_events_registration_email_html', $html, $ctx );
     }
@@ -7672,6 +7933,12 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'email_reply_to_name'    => '',
             'email_reply_to_address' => '',
             'email_bcc'              => '',
+            'email_logo_url'         => '',
+            'email_background_color' => '#f4f4f4',
+            'email_card_color'       => '#ffffff',
+            'email_text_color'       => '#333333',
+            'email_heading_color'    => '#111111',
+            'email_button_color'     => '#111111',
         ];
         $settings = \get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $settings ) ) {

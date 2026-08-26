@@ -206,6 +206,93 @@ class Test_Email_Builder extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'Main Hall', $html );
 	}
 
+	/**
+	 * Email Appearance settings reach a previewed email.
+	 *
+	 * NOTE the asserted spellings. The preview runs its template through
+	 * sanitize_email_template_html() -> wp_kses, which rebuilds every style
+	 * attribute and drops the trailing ";" — so the shell's own declarations
+	 * come out as `color:#0b1220"`, while the block tokens the builder appends
+	 * afterwards (greeting/intro paragraphs, CTA) never pass through kses and
+	 * keep theirs. Asserting a ";" on a shell declaration is how you write a
+	 * test that can never pass.
+	 */
+	public function test_render_email_preview_html_applies_basic_email_branding() {
+		update_option( Module::OPTION_KEY, [
+			'email_logo_url'         => 'https://example.test/logo.png',
+			'email_background_color' => '#101820',
+			'email_card_color'       => '#ffffff',
+			'email_text_color'       => '#1f2937',
+			'email_heading_color'    => '#0b1220',
+			'email_button_color'     => '#b91c1c',
+		], false );
+
+		$event_id = $this->make_event( [ 'title' => 'Branded Preview Event' ] );
+		$html = $this->module()->render_email_preview_html(
+			$event_id,
+			'confirmation',
+			$this->module()->default_email_template( 'confirmation' )
+		);
+
+		$this->assertStringContainsString( 'https://example.test/logo.png', $html );
+		$this->assertStringContainsString( 'background:#101820', $html );
+		// Shell declaration (kses-normalized): no trailing semicolon.
+		$this->assertStringContainsString( 'color:#0b1220"', $html );
+		// Block token (never kses'd): keeps its semicolon.
+		$this->assertStringContainsString( 'color:#1f2937;', $html );
+		$this->assertStringContainsString( 'background:#b91c1c', $html );
+
+		// The stock #111 heading and #333/#222 body colors are fully replaced,
+		// not left behind next to the branded ones.
+		$this->assertStringNotContainsString( 'color:#111"', $html );
+		$this->assertStringNotContainsString( 'color:#333;', $html );
+		$this->assertStringNotContainsString( 'color:#222;', $html );
+
+		delete_option( Module::OPTION_KEY );
+	}
+
+	/**
+	 * The guard the whole feature rests on: Email Appearance left at its
+	 * defaults must not touch a single byte of the email. Saving the settings
+	 * screen without changing a color writes the 6-digit spellings (#111111),
+	 * while the markup carries the 3-digit ones (#111) — so "unchanged" has to
+	 * be decided by comparing normalized colors, not string equality.
+	 *
+	 * tests/test-email-templates.php covers the never-saved case; this covers
+	 * the saved-but-untouched case, which is the one a color input produces.
+	 */
+	public function test_default_email_appearance_is_a_no_op() {
+		$event_id = $this->make_event( [ 'title' => 'Unbranded Event' ] );
+
+		$baseline = $this->module()->render_email_preview_html(
+			$event_id,
+			'confirmation',
+			$this->module()->default_email_template( 'confirmation' )
+		);
+
+		update_option( Module::OPTION_KEY, [
+			'email_logo_url'         => '',
+			'email_background_color' => '#f4f4f4',
+			'email_card_color'       => '#ffffff',
+			'email_text_color'       => '#333333',
+			'email_heading_color'    => '#111111',
+			'email_button_color'     => '#111111',
+		], false );
+
+		$branded = $this->module()->render_email_preview_html(
+			$event_id,
+			'confirmation',
+			$this->module()->default_email_template( 'confirmation' )
+		);
+
+		$this->assertSame( $baseline, $branded );
+		// And specifically: the stock CTA stays near-black rather than picking
+		// up an invented default accent.
+		$this->assertStringContainsString( 'background:#111;', $branded );
+
+		delete_option( Module::OPTION_KEY );
+	}
+
 	/* ---------------------------------------------------------------------
 	 * ajax_email_preview(): the thin nonce+capability-gated wrapper.
 	 * ------------------------------------------------------------------- */

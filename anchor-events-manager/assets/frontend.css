@@ -895,6 +895,55 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   padding:2px 6px;
 }
 
+.anchor-event-manager-form .anchor-event-tickets-table{
+  width:100%;
+  border-collapse:collapse;
+  margin:0 0 10px;
+}
+
+.anchor-event-manager-form .anchor-event-tickets-table th,
+.anchor-event-manager-form .anchor-event-tickets-table td{
+  padding:6px 8px;
+  text-align:left;
+  border-bottom:1px solid var(--anchor-event-border);
+  vertical-align:middle;
+}
+
+.anchor-event-manager-form .anchor-event-tickets-table input[type="text"],
+.anchor-event-manager-form .anchor-event-tickets-table input[type="date"],
+.anchor-event-manager-form .anchor-event-tickets-table input[type="number"]{
+  width:100%;
+}
+
+.anchor-event-manager-form .anchor-ticket-handle{
+  width:28px;
+  color:var(--anchor-event-muted);
+  cursor:move;
+}
+
+.anchor-event-manager-form .anchor-event-ticket-remove{
+  background:none;
+  border:none;
+  color:#b32d2e;
+  cursor:pointer;
+  font-size:16px;
+  line-height:1;
+  padding:2px 6px;
+}
+
+.anchor-event-manager-form .anchor-event-email-template-fields{
+  margin-top:14px;
+}
+
+.anchor-event-manager-form .anchor-event-email-template-fields summary{
+  cursor:pointer;
+  font-weight:600;
+}
+
+.anchor-event-manager-form .anchor-event-field-wide{
+  grid-column:1/-1;
+}
+
 .anchor-event-button,
 .anchor-event-button-secondary{
   display:inline-block;

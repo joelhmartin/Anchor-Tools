@@ -35,6 +35,7 @@
  */
 
 use Anchor\Events\Module;
+use Anchor\Events\Ticket_Types;
 
 /**
  * @group event-save
@@ -175,6 +176,57 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 		$this->call_save_event_manager_fields( $event_id, '2026-08-01', $fallback );
 
 		$this->assertSame( 'wc', get_post_meta( $event_id, '_anchor_event_registration_mode', true ) );
+	}
+
+	public function test_manager_save_persists_full_custom_field_set() {
+		$event_id = $this->make_event();
+
+		$_POST = $this->post_payload(
+			[
+				'anchor_event_registration_mode' => 'wc',
+				'anchor_event_address_country' => 'USA',
+				'anchor_event_price' => '$25',
+				'anchor_event_hide_from_archive' => '1',
+				'anchor_event_featured' => '1',
+				'anchor_event_priority' => '7',
+				'anchor_event_reminder_offsets' => '14,3,1',
+				'anchor_event_status' => 'cancelled',
+				'anchor_event_tickets' => [
+					[
+						'label' => 'General Admission',
+						'price' => '25',
+						'quota' => '30',
+						'sale_start' => '2026-07-01',
+						'sale_end' => '2026-07-31',
+						'active' => '1',
+					],
+				],
+				'anchor_email_tpl_confirmation' => '<p>Custom {event_title}</p><script>alert(1)</script>',
+			]
+		);
+
+		$fallback = $this->module()->registration_mode( $event_id );
+		$input = $this->call_save_event_manager_fields( $event_id, '2026-08-01', $fallback );
+
+		$this->assertSame( 'USA', get_post_meta( $event_id, '_anchor_event_address_country', true ) );
+		$this->assertSame( '$25', get_post_meta( $event_id, '_anchor_event_price', true ) );
+		$this->assertTrue( (bool) get_post_meta( $event_id, '_anchor_event_hide_from_archive', true ) );
+		$this->assertTrue( (bool) get_post_meta( $event_id, '_anchor_event_featured', true ) );
+		$this->assertSame( 7, (int) get_post_meta( $event_id, '_anchor_event_priority', true ) );
+		$this->assertSame( '14,3,1', get_post_meta( $event_id, '_anchor_event_reminder_offsets', true ) );
+		$this->assertSame( 'manual', get_post_meta( $event_id, '_anchor_event_status_mode', true ) );
+		$this->assertSame( 'cancelled', get_post_meta( $event_id, '_anchor_event_status', true ) );
+		$this->assertSame( 'cancelled', $input['status'] );
+
+		$tiers = get_post_meta( $event_id, Ticket_Types::META_KEY, true );
+		$this->assertCount( 1, $tiers );
+		$this->assertSame( 'General Admission', $tiers[0]['label'] );
+		$this->assertSame( 25.0, $tiers[0]['price'] );
+		$this->assertSame( 30, $tiers[0]['quota'] );
+
+		$template = get_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', true );
+		$this->assertStringContainsString( 'Custom {event_title}', $template );
+		$this->assertStringNotContainsString( '<script', $template );
 	}
 
 	/**

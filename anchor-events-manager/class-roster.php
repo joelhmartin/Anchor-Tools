@@ -453,8 +453,10 @@ class Roster {
         }
 
         if ( ! empty( $result['created'] ) ) {
+            $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_CONFIRMED, $guests );
             $this->redirect( $event_id, 'success', \__( 'Attendee added.', 'anchor-schema' ) );
         } elseif ( ! empty( $result['waitlisted'] ) ) {
+            $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_WAITLIST, $guests );
             $this->redirect( $event_id, 'success', \__( 'Attendee added to the waitlist (event is full).', 'anchor-schema' ) );
         } else {
             $this->redirect( $event_id, 'error', \__( 'Could not add attendee — the event is full and the waitlist is disabled.', 'anchor-schema' ) );

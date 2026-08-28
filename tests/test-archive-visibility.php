@@ -220,6 +220,80 @@ class Test_Archive_Visibility extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * Composing must not dissolve the caller's own filter.
+	 *
+	 * The ordering group is EXISTS-or-NOT-EXISTS, i.e. a tautology. Appended
+	 * to a meta_query whose ROOT relation is OR, it satisfies the whole thing
+	 * for every post — the caller's filter stops filtering and the query
+	 * returns the entire CPT. Anything added alongside an existing meta_query
+	 * has to be AND-ed with it, not dropped in beside it.
+	 */
+	public function test_ordering_does_not_dissolve_a_root_or_meta_query() {
+		$future = gmdate( 'Y-m-d', time() + 30 * DAY_IN_SECONDS );
+
+		$wanted   = $this->make_untouched_event( 'Wanted', $future );
+		$unwanted = $this->make_untouched_event( 'Unwanted', $future );
+		update_post_meta( $wanted, '_theme_featured', 'yes' );
+
+		$args = $this->module()->apply_event_ordering(
+			[
+				'post_type'      => Module::CPT,
+				'post_status'    => 'publish',
+				'posts_per_page' => -1,
+				'fields'         => 'ids',
+				'meta_query'     => [
+					'relation' => 'OR',
+					[ 'key' => '_theme_featured', 'value' => 'yes', 'compare' => '=' ],
+				],
+			],
+			'start_date',
+			'ASC'
+		);
+
+		$ids = get_posts( $args );
+
+		$this->assertContains( $wanted, $ids );
+		$this->assertNotContains(
+			$unwanted,
+			$ids,
+			"The tautological ordering group satisfied the caller's root OR, so the filter stopped filtering."
+		);
+	}
+
+	/**
+	 * get_events() must not let a caller's meta_query silently replace the
+	 * visibility rules — losing past-filtering and child-exclusion is the very
+	 * problem this API exists to stop themes from having.
+	 */
+	public function test_get_events_keeps_visibility_rules_alongside_a_caller_meta_query() {
+		$future = gmdate( 'Y-m-d', time() + 30 * DAY_IN_SECONDS );
+
+		$parent = $this->make_event( [ 'title' => 'Parent', 'start_date' => $future ] );
+		update_post_meta( $parent, '_anchor_event_group_role', 'parent' );
+		update_post_meta( $parent, '_theme_featured', 'yes' );
+
+		$child = $this->make_event( [ 'title' => 'Parent — Date', 'start_date' => $future ] );
+		update_post_meta( $child, '_anchor_event_group_role', 'child' );
+		update_post_meta( $child, '_theme_featured', 'yes' );
+
+		$ids = wp_list_pluck(
+			$this->module()->get_events( [
+				'meta_query' => [
+					[ 'key' => '_theme_featured', 'value' => 'yes', 'compare' => '=' ],
+				],
+			] ),
+			'ID'
+		);
+
+		$this->assertContains( $parent, $ids );
+		$this->assertNotContains(
+			$child,
+			$ids,
+			"A caller's meta_query replaced the visibility clauses, so group children came back."
+		);
+	}
+
+	/**
 	 * AE-1. EVENTS.md documents the collapse rule for the series archive:
 	 * a group shows as ONE row, the parent. The CPT archive never implemented
 	 * it, so a catalog lists the parent AND every child date.

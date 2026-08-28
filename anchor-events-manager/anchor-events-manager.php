@@ -3852,12 +3852,11 @@ class Module {
         if ( ! \is_array( $meta_query ) ) {
             $meta_query = [];
         }
-        $meta_query[] = [
+        $query->set( 'meta_query', $this->and_meta_query( $meta_query, [
             'key' => $this->meta_key( 'status' ),
             'value' => $status,
             'compare' => '=',
-        ];
-        $query->set( 'meta_query', $meta_query );
+        ] ) );
     }
 
     public function template_include( $template ) {
@@ -7189,6 +7188,31 @@ class Module {
     }
 
     /**
+     * AND two meta_query fragments together, preserving whatever root relation
+     * each already had by nesting them rather than concatenating them.
+     *
+     * Appending is not safe, and the ordering clause is the reason: it is
+     * EXISTS-or-NOT-EXISTS, i.e. a TAUTOLOGY. Dropped into a meta_query whose
+     * root relation is OR, it satisfies the whole query for every post — the
+     * caller's filter silently stops filtering and the query returns the
+     * entire CPT. The same appending bug turns an added status filter into an
+     * alternative rather than a requirement.
+     *
+     * @param array $existing Caller's meta_query (may be empty, may be root-OR).
+     * @param array $added    Clause or group to require alongside it.
+     * @return array
+     */
+    private function and_meta_query( array $existing, array $added ) {
+        // Drop a lone `relation` key: a meta_query with no actual clauses.
+        $has_clauses = ! empty( \array_diff_key( $existing, [ 'relation' => true ] ) );
+        if ( ! $has_clauses ) {
+            return [ 'relation' => 'AND', $added ];
+        }
+
+        return [ 'relation' => 'AND', $existing, $added ];
+    }
+
+    /**
      * Order a get_posts()/WP_Query args array by an event meta key without
      * dropping the posts that lack it. Replaces the meta_key/meta_value_num
      * pair every call site used to build by hand.
@@ -7204,10 +7228,9 @@ class Module {
     public function apply_event_ordering( array $args, $key = 'start_date', $order = 'ASC', $type = '' ) {
         $order = \strtoupper( (string) $order ) === 'DESC' ? 'DESC' : 'ASC';
 
-        $meta_query = isset( $args['meta_query'] ) && \is_array( $args['meta_query'] ) ? $args['meta_query'] : [];
-        $meta_query[] = $this->build_order_clause( $key, $type );
+        $existing = isset( $args['meta_query'] ) && \is_array( $args['meta_query'] ) ? $args['meta_query'] : [];
 
-        $args['meta_query'] = $meta_query;
+        $args['meta_query'] = $this->and_meta_query( $existing, $this->build_order_clause( $key, $type ) );
         // Secondary key on post_date so the keyless rows the LEFT JOIN
         // preserves land in a stable order rather than an arbitrary one.
         $args['orderby'] = [ 'anchor_event_order' => $order, 'date' => $order ];
@@ -7284,6 +7307,7 @@ class Module {
             $meta_query[] = $this->build_visibility_clause();
         }
         $meta_query[] = $this->build_order_clause();
+        // (Root relation is already AND above, so appending is safe here.)
 
         $order = \strtoupper( (string) $opts['order'] ) === 'DESC' ? 'DESC' : 'ASC';
 
@@ -7316,11 +7340,24 @@ class Module {
         ] ) );
         $args = \array_diff_key( $args, $opts );
 
+        $visibility = $this->get_event_visibility_args( $opts );
+
+        // A caller passing its own meta_query must ADD to the visibility rules,
+        // not silently replace them — losing past-filtering and child-exclusion
+        // is the exact problem this API exists to stop themes from having.
+        if ( isset( $args['meta_query'] ) && \is_array( $args['meta_query'] ) ) {
+            $visibility['meta_query'] = $this->and_meta_query(
+                $visibility['meta_query'],
+                $args['meta_query']
+            );
+            unset( $args['meta_query'] );
+        }
+
         return \get_posts( \array_merge( [
             'post_type'      => self::CPT,
             'post_status'    => 'publish',
             'posts_per_page' => -1,
-        ], $this->get_event_visibility_args( $opts ), $args ) );
+        ], $visibility, $args ) );
     }
 
     private function build_hide_clause() {

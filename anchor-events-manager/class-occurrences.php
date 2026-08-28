@@ -229,7 +229,7 @@ class Occurrences {
         $ids = [];
         foreach ( $this->existing_children_map( $parent_id ) as $child_id ) {
             $child_id = (int) $child_id;
-            if ( ! $include_closed && $this->is_closed( $child_id ) ) {
+            if ( ! $include_closed && ( $this->is_closed( $child_id ) || $this->has_ended( $child_id ) ) ) {
                 continue;
             }
             $ids[] = $child_id;
@@ -720,6 +720,61 @@ class Occurrences {
         foreach ( $shared as $key => $value ) {
             \update_post_meta( $child_id, $this->module->meta_key( $key ), $value );
         }
+
+        $this->sync_inherited_meta( $parent_id, $child_id );
+    }
+
+    /**
+     * Copy integrator-owned meta from parent to child.
+     *
+     * $parent_meta above is get_meta(), which is the plugin's OWN schema and
+     * nothing else — so a theme's fields (instructor, CE credits, a
+     * registration embed) were absent on every generated child, and templates
+     * had to read through to the parent on every single field to compensate.
+     * Reconciliation is the right place to solve that once.
+     *
+     * Keys are FULL meta keys, not `_anchor_event_` suffixes, because the
+     * fields being opted in belong to somebody else's namespace:
+     *
+     *     add_filter( 'anchor_events_inherited_meta_keys', function ( $keys ) {
+     *         return array_merge( $keys, [ '_deka_instructor', '_deka_ce_credits' ] );
+     *     } );
+     *
+     * A key absent on the parent is deleted from the child rather than left
+     * behind, so clearing the parent's value propagates the same way every
+     * other shared field does.
+     *
+     * @param int $parent_id
+     * @param int $child_id
+     */
+    private function sync_inherited_meta( $parent_id, $child_id ) {
+        /**
+         * Additional meta keys a child occurrence inherits from its parent.
+         *
+         * @param string[] $keys      Full meta keys. Default none.
+         * @param int      $parent_id
+         * @param int      $child_id
+         */
+        $keys = \apply_filters( 'anchor_events_inherited_meta_keys', [], $parent_id, $child_id );
+        if ( ! \is_array( $keys ) ) {
+            return;
+        }
+
+        $own_prefix = $this->module->meta_key( '' );
+        foreach ( \array_unique( \array_filter( \array_map( 'strval', $keys ) ) ) as $key ) {
+            // Refuse the plugin's own namespace: PER_OCCURRENCE_KEYS and
+            // NEVER_COPY_KEYS exist precisely to keep some of those OFF a
+            // child, and a filter must not be able to reinstate them.
+            if ( $own_prefix !== '' && \strpos( $key, $own_prefix ) === 0 ) {
+                continue;
+            }
+
+            if ( ! \metadata_exists( 'post', $parent_id, $key ) ) {
+                \delete_post_meta( $child_id, $key );
+                continue;
+            }
+            \update_post_meta( $child_id, $key, \get_post_meta( $parent_id, $key, true ) );
+        }
     }
 
     /**
@@ -898,8 +953,60 @@ class Occurrences {
      * @param int $child_id
      * @return bool
      */
+    /**
+     * The MANUAL close flag, and only that.
+     *
+     * It is tempting to fold "its date has passed" in here, since that is what
+     * every caller asking "is this occurrence live?" means. Do not: three
+     * engine-internal callers use this as a state predicate, not a visibility
+     * one, and a date-aware is_closed() silently breaks all three.
+     *
+     *   - retire_child() early-returns on a closed child instead of trashing
+     *     it, so every past child with no seats would leak forever.
+     *   - soft_close() early-returns as a no-op, so the real close (status
+     *     cancelled, registration off, the flag itself) would never be
+     *     written.
+     *   - revive_if_closed() early-returns, so re-adding a past date to
+     *     offering_dates would silently fail to revive it.
+     *
+     * The date rule belongs to the READ path — see has_ended(), applied in
+     * children() where "live" is what is actually being asked.
+     *
+     * @param int $child_id
+     * @return bool
+     */
     private function is_closed( $child_id ) {
         return (bool) \get_post_meta( $child_id, $this->module->meta_key( 'occurrence_closed' ), true );
+    }
+
+    /**
+     * Whether an occurrence's own date has already passed.
+     *
+     * A parent takes its headline date from its first live child, so before
+     * this existed a passed occurrence that nobody had ticked "closed" by hand
+     * kept advertising a date that had already gone. The manual flag stays as
+     * an override for closing early (selling out); this is the automatic half
+     * nobody has to remember.
+     *
+     * Reads the date fields rather than the end_ts mirror: only events saved
+     * through the plugin have the mirror, and a child created before the
+     * mirrors existed would otherwise read as "ends at 0" — i.e. permanently
+     * past — and vanish from its parent's date list.
+     *
+     * @param int $child_id
+     * @return bool
+     */
+    private function has_ended( $child_id ) {
+        $mk    = $this->module->meta_key( 'end_date' );
+        $end   = (string) \get_post_meta( $child_id, $mk, true );
+        if ( $end === '' ) {
+            $end = (string) \get_post_meta( $child_id, $this->module->meta_key( 'start_date' ), true );
+        }
+        if ( $end === '' ) {
+            return false; // Undated: no end to have passed.
+        }
+
+        return $end < \current_time( 'Y-m-d' );
     }
 
     /**
@@ -983,7 +1090,16 @@ class Occurrences {
      * @return int
      */
     private function start_ts( $child_id ) {
-        return (int) \get_post_meta( $child_id, $this->module->meta_key( 'start_ts' ), true );
+        $ts = (int) \get_post_meta( $child_id, $this->module->meta_key( 'start_ts' ), true );
+        if ( $ts > 0 ) {
+            return $ts;
+        }
+
+        // No mirror (imported child, or one predating the timestamp fields):
+        // derive from the date so children() still sorts chronologically
+        // rather than piling every keyless row at 0.
+        $date = (string) \get_post_meta( $child_id, $this->module->meta_key( 'start_date' ), true );
+        return $date !== '' ? (int) \strtotime( $date . ' 00:00' ) : 0;
     }
 
     /**

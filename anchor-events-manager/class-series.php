@@ -74,7 +74,11 @@ class Series {
             return '';
         }
 
-        $query = new \WP_Query( [
+        // Ordering goes through the module helper: the meta_key/meta_value_num
+        // pair this used to carry is an INNER JOIN on start_ts, so any event
+        // in the series without that key was dropped from its own series
+        // archive rather than sorted last.
+        $query = new \WP_Query( $this->module->apply_event_ordering( [
             'post_type'      => Module::CPT,
             'post_status'    => 'publish',
             'posts_per_page' => -1,
@@ -85,11 +89,8 @@ class Series {
                     'terms'    => (int) $term->term_id,
                 ],
             ],
-            'meta_key'       => $this->module->meta_key( 'start_ts' ),
-            'orderby'        => 'meta_value_num',
-            'order'          => 'ASC',
             'no_found_rows'  => true,
-        ] );
+        ], 'start_date', 'ASC' ) );
 
         \ob_start();
         ?>

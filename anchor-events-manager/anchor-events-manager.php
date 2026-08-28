@@ -3842,13 +3842,22 @@ class Module {
         if ( ! $status ) {
             return;
         }
-        $query->set( 'meta_query', [
-            [
-                'key' => $this->meta_key( 'status' ),
-                'value' => $status,
-                'compare' => '=',
-            ],
-        ] );
+        // Merge, never replace: admin_sorting() is hooked on the same
+        // pre_get_posts priority and runs first, and its ordering clause lives
+        // in meta_query now. Overwriting the array would drop that clause
+        // while `orderby` still referenced it, so quick-filtering AND sorting
+        // a column together silently lost the sort. The old meta_key approach
+        // happened to be immune, which is why this is new.
+        $meta_query = $query->get( 'meta_query' );
+        if ( ! \is_array( $meta_query ) ) {
+            $meta_query = [];
+        }
+        $meta_query[] = [
+            'key' => $this->meta_key( 'status' ),
+            'value' => $status,
+            'compare' => '=',
+        ];
+        $query->set( 'meta_query', $meta_query );
     }
 
     public function template_include( $template ) {
@@ -7148,13 +7157,23 @@ class Module {
      * accounted for 15 of 19 missing courses, and in the admin list it means
      * sorting by Venue hides every event that has no venue. Pairing EXISTS
      * with NOT EXISTS under an OR makes WP_Meta_Query emit a LEFT JOIN, so a
-     * keyless post still comes back — it just sorts as empty/zero.
+     * keyless post still comes back.
      *
-     * @param string $key  Meta key suffix.
-     * @param string $type Optional meta_query type (e.g. NUMERIC).
+     * NOTE the name is on the EXISTS member and not on the OR group. WP_Query
+     * only resolves an `orderby` alias to a FIRST-ORDER clause (one with a
+     * `key`); naming the group instead means the alias matches nothing, WP
+     * discards it silently, and every one of these queries falls back to post
+     * date. That failure is invisible to a membership assertion — the right
+     * rows come back in the wrong order — which is exactly how it survived the
+     * first round of tests here. test_archive_is_ordered_by_event_date() is
+     * the guard.
+     *
+     * @param string $key   Meta key suffix.
+     * @param string $type  Optional meta_query type (e.g. NUMERIC).
+     * @param string $alias Name given to the sortable first-order clause.
      * @return array
      */
-    private function build_order_clause( $key = 'start_date', $type = '' ) {
+    private function build_order_clause( $key = 'start_date', $type = '', $alias = 'anchor_event_order' ) {
         $exists     = [ 'key' => $this->meta_key( $key ), 'compare' => 'EXISTS' ];
         $not_exists = [ 'key' => $this->meta_key( $key ), 'compare' => 'NOT EXISTS' ];
         if ( $type !== '' ) {
@@ -7162,7 +7181,11 @@ class Module {
             $not_exists['type'] = $type;
         }
 
-        return [ 'relation' => 'OR', $exists, $not_exists ];
+        return [
+            'relation' => 'OR',
+            $alias     => $exists,
+            $not_exists,
+        ];
     }
 
     /**
@@ -7182,7 +7205,7 @@ class Module {
         $order = \strtoupper( (string) $order ) === 'DESC' ? 'DESC' : 'ASC';
 
         $meta_query = isset( $args['meta_query'] ) && \is_array( $args['meta_query'] ) ? $args['meta_query'] : [];
-        $meta_query['anchor_event_order'] = $this->build_order_clause( $key, $type );
+        $meta_query[] = $this->build_order_clause( $key, $type );
 
         $args['meta_query'] = $meta_query;
         // Secondary key on post_date so the keyless rows the LEFT JOIN
@@ -7260,7 +7283,7 @@ class Module {
         if ( ! $opts['include_past'] ) {
             $meta_query[] = $this->build_visibility_clause();
         }
-        $meta_query['anchor_event_order'] = $this->build_order_clause();
+        $meta_query[] = $this->build_order_clause();
 
         $order = \strtoupper( (string) $opts['order'] ) === 'DESC' ? 'DESC' : 'ASC';
 

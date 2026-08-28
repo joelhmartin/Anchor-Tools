@@ -137,6 +137,89 @@ class Test_Archive_Visibility extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * The archive must still be in DATE order, not just complete.
+	 *
+	 * This is the assertion the first version of these tests lacked, and the
+	 * gap a reviewer caught: every case above checks membership, so an
+	 * ordering clause that WP silently discarded would have passed all of
+	 * them while the catalog fell back to post-date order.
+	 */
+	public function test_archive_is_ordered_by_event_date() {
+		$base = time() + 10 * DAY_IN_SECONDS;
+
+		// Created in deliberately the wrong order, so passing by accident
+		// (post_date order == insertion order) is not possible.
+		$third  = $this->make_untouched_event( 'Third',  gmdate( 'Y-m-d', $base + 60 * DAY_IN_SECONDS ) );
+		$first  = $this->make_untouched_event( 'First',  gmdate( 'Y-m-d', $base ) );
+		$second = $this->make_untouched_event( 'Second', gmdate( 'Y-m-d', $base + 30 * DAY_IN_SECONDS ) );
+
+		$ids = $this->archive_ids();
+
+		$this->assertSame(
+			[ $first, $second, $third ],
+			$ids,
+			'The archive is not in event-date order — the named ordering clause was discarded.'
+		);
+	}
+
+	/** get_events() carries the same ordering, since it shares the args. */
+	public function test_get_events_is_ordered_by_event_date() {
+		$base = time() + 10 * DAY_IN_SECONDS;
+
+		$later   = $this->make_untouched_event( 'Later',   gmdate( 'Y-m-d', $base + 45 * DAY_IN_SECONDS ) );
+		$earlier = $this->make_untouched_event( 'Earlier', gmdate( 'Y-m-d', $base ) );
+
+		$ids = wp_list_pluck( $this->module()->get_events(), 'ID' );
+
+		$this->assertSame( [ $earlier, $later ], $ids );
+	}
+
+	/**
+	 * The admin list table: quick-filtering by status AND sorting a column at
+	 * the same time must keep both.
+	 *
+	 * admin_sorting() and apply_quick_filters() are hooked on the same
+	 * pre_get_posts priority. Now that the ordering lives in meta_query, a
+	 * quick filter that REPLACES meta_query silently drops the ordering clause
+	 * while orderby still points at it. The old meta_key approach was immune,
+	 * so this failure mode is new and needs its own guard.
+	 */
+	public function test_quick_filter_and_column_sort_survive_each_other() {
+		set_current_screen( 'edit-event' );
+
+		$query = new WP_Query();
+		$query->init();
+		$query->set( 'post_type', Module::CPT );
+		$query->set( 'orderby', 'anchor_event_start' );
+
+		// is_main_query() is identity against wp_the_query.
+		$previous                 = $GLOBALS['wp_the_query'] ?? null;
+		$GLOBALS['wp_the_query']  = $query;
+		$_GET['event_status']     = 'upcoming';
+
+		$this->module()->admin_sorting( $query );
+		$this->module()->apply_quick_filters( $query );
+
+		$meta_query = $query->get( 'meta_query' );
+		$flat       = wp_json_encode( $meta_query );
+
+		unset( $_GET['event_status'] );
+		$GLOBALS['wp_the_query'] = $previous;
+		set_current_screen( 'front' );
+
+		$this->assertStringContainsString(
+			'anchor_event_order',
+			$flat,
+			'The quick filter overwrote meta_query and took the ordering clause with it.'
+		);
+		$this->assertStringContainsString(
+			'_anchor_event_status',
+			$flat,
+			'The status quick filter was lost.'
+		);
+	}
+
+	/**
 	 * AE-1. EVENTS.md documents the collapse rule for the series archive:
 	 * a group shows as ONE row, the parent. The CPT archive never implemented
 	 * it, so a catalog lists the parent AND every child date.

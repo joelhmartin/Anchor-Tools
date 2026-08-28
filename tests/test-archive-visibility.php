@@ -276,6 +276,12 @@ class Test_Archive_Visibility extends Anchor_Events_TestCase {
 		update_post_meta( $child, '_anchor_event_group_role', 'child' );
 		update_post_meta( $child, '_theme_featured', 'yes' );
 
+		// Not featured: without this the test only proves the visibility rules
+		// survived, and would still pass if the caller's meta_query were
+		// dropped entirely. Both halves of the AND need a witness.
+		$unfeatured = $this->make_event( [ 'title' => 'Unfeatured Parent', 'start_date' => $future ] );
+		update_post_meta( $unfeatured, '_anchor_event_group_role', 'parent' );
+
 		$ids = wp_list_pluck(
 			$this->module()->get_events( [
 				'meta_query' => [
@@ -290,6 +296,11 @@ class Test_Archive_Visibility extends Anchor_Events_TestCase {
 			$child,
 			$ids,
 			"A caller's meta_query replaced the visibility clauses, so group children came back."
+		);
+		$this->assertNotContains(
+			$unfeatured,
+			$ids,
+			"The caller's own meta_query was dropped — only the visibility rules were applied."
 		);
 	}
 

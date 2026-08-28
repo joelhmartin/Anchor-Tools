@@ -188,6 +188,65 @@ unchanged after upgrade.
 
 ---
 
+## Rendering Events Outside the Archive
+
+All visibility rules live in one place. A theme, shortcode or block that needs
+"the events to show" should call the module rather than rebuild the query:
+
+```php
+$module = \Anchor\Events\Module::instance();
+
+// The same list the CPT archive renders.
+$events = $module->get_events();
+
+// Options (all default to the archive's own behaviour):
+$events = $module->get_events( [
+    'include_past'     => false, // default: the archive_hide_past setting
+    'include_children' => false, // default: collapse a group to its parent
+    'include_closed'   => false, // soft-closed occurrences
+    'include_hidden'   => false, // hide_from_archive events
+    'posts_per_page'   => 6,     // any other get_posts() arg passes through
+] );
+```
+
+`get_event_visibility_args()` returns just the `meta_query` / `orderby` /
+`order` triple if you are building your own `WP_Query`, and the resolved args
+run through the `anchor_events_visibility_args` filter.
+
+### Ordering without filtering
+
+`meta_key` + `orderby => meta_value*` is an **INNER JOIN**: every post missing
+that key is dropped from the results, so sorting silently becomes filtering.
+Use the helper instead — it emits a LEFT JOIN, so a post without the key sorts
+last rather than disappearing:
+
+```php
+$args = $module->apply_event_ordering( $args, 'start_date', 'ASC' );
+$module->set_event_ordering( $query, 'capacity', 'DESC', 'NUMERIC' ); // pre_get_posts
+```
+
+Prefer `start_date`/`end_date` over the `start_ts`/`end_ts` mirrors when
+querying. The mirrors are only written when an event is saved through the
+plugin, so imported events (and any predating the fields) do not have them;
+the date fields are what the author typed and are always present.
+
+### Inheriting your own meta onto occurrences
+
+Reconciliation copies the plugin's own schema to each generated child. Opt
+your fields in with `anchor_events_inherited_meta_keys` (full meta keys) rather
+than reading through to the parent at render time:
+
+```php
+add_filter( 'anchor_events_inherited_meta_keys', function ( $keys ) {
+    return array_merge( $keys, [ '_deka_instructor', '_deka_ce_credits' ] );
+} );
+```
+
+Keys in the plugin's own `_anchor_event_` namespace are ignored — some of those
+are deliberately kept off a child.
+
+---
+
 ## Key Meta Keys
 
 All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).

@@ -3793,23 +3793,23 @@ class Module {
         if ( $query->get( 'post_type' ) !== self::CPT ) {
             return;
         }
-        $orderby = $query->get( 'orderby' );
-        switch ( $orderby ) {
+        // Every branch goes through set_event_ordering() for the same reason
+        // the archive does: the meta_key/meta_value pair is an INNER JOIN, so
+        // sorting the list table by Venue used to HIDE every event without a
+        // venue rather than sort it last.
+        $order = $query->get( 'order' ) ?: 'ASC';
+        switch ( $query->get( 'orderby' ) ) {
             case 'anchor_event_start':
-                $query->set( 'meta_key', $this->meta_key( 'start_ts' ) );
-                $query->set( 'orderby', 'meta_value_num' );
+                $this->set_event_ordering( $query, 'start_date', $order );
                 break;
             case 'anchor_event_status':
-                $query->set( 'meta_key', $this->meta_key( 'status' ) );
-                $query->set( 'orderby', 'meta_value' );
+                $this->set_event_ordering( $query, 'status', $order );
                 break;
             case 'anchor_event_venue':
-                $query->set( 'meta_key', $this->meta_key( 'venue' ) );
-                $query->set( 'orderby', 'meta_value' );
+                $this->set_event_ordering( $query, 'venue', $order );
                 break;
             case 'anchor_event_capacity':
-                $query->set( 'meta_key', $this->meta_key( 'capacity' ) );
-                $query->set( 'orderby', 'meta_value_num' );
+                $this->set_event_ordering( $query, 'capacity', $order, 'NUMERIC' );
                 break;
         }
     }
@@ -4055,10 +4055,8 @@ class Module {
             'post_status' => [ 'publish', 'draft', 'future', 'private' ],
             'posts_per_page' => max( 1, min( 200, (int) $atts['limit'] ) ),
             'meta_query' => $meta_query,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
-            'order' => strtoupper( $atts['order'] ) === 'DESC' ? 'DESC' : 'ASC',
         ];
+        $args = $this->apply_event_ordering( $args, 'start_date', $atts['order'] );
         $events = \get_posts( $args );
 
         if ( empty( $events ) ) {
@@ -4403,10 +4401,8 @@ class Module {
             'post_status' => [ 'publish', 'draft', 'future', 'private', 'pending' ],
             'posts_per_page' => max( 1, min( 200, (int) $atts['limit'] ) ),
             'meta_query' => $meta_query,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
-            'order' => strtoupper( $atts['order'] ) === 'DESC' ? 'DESC' : 'ASC',
         ];
+        $args = $this->apply_event_ordering( $args, 'start_date', $atts['order'] );
         $events = \get_posts( $args );
 
         $new_url = \add_query_arg( [ 'event_action' => 'new' ], \remove_query_arg( [ 'event_id', 'event_manager_notice' ] ) );
@@ -5125,8 +5121,6 @@ class Module {
             'post_type' => self::CPT,
             'post_status' => 'publish',
             'posts_per_page' => $limit,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
             'order' => $order,
             'meta_query' => $meta_query,
             'tax_query' => $tax_query,
@@ -5136,8 +5130,9 @@ class Module {
             $query_args['orderby'] = 'title';
             unset( $query_args['meta_key'] );
         } elseif ( $orderby === 'priority' ) {
-            $query_args['meta_key'] = $this->meta_key( 'priority' );
-            $query_args['orderby'] = 'meta_value_num';
+            $query_args = $this->apply_event_ordering( $query_args, 'priority', $order, 'NUMERIC' );
+        } else {
+            $query_args = $this->apply_event_ordering( $query_args, 'start_date', $order );
         }
 
         $query_args = \apply_filters( 'anchor_events_query_args', $query_args, $atts );
@@ -6480,6 +6475,16 @@ class Module {
         }
     }
 
+    /**
+     * The CPT archive's main query. Everything it decides now comes from
+     * get_event_visibility_args(), so the archive, the shortcodes and any
+     * theme calling get_events() cannot drift apart again — which they had:
+     * this hook grew a soft-close clause the shortcodes never got, and both
+     * carried the same start_ts ordering join that was dropping every event
+     * without that key from the results.
+     *
+     * @param \WP_Query $query
+     */
     public function filter_archive_query( $query ) {
         if ( \is_admin() || ! $query->is_main_query() ) {
             return;
@@ -6487,25 +6492,15 @@ class Module {
         if ( ! $query->is_post_type_archive( self::CPT ) ) {
             return;
         }
-        $settings = $this->get_settings();
-        // FIX 3 (review round): the plain CPT archive is unaware of Task 2.4's
-        // soft-close state — a soft-closed group child stays post_status=publish
-        // (its roster is preserved) so it was showing up here as a normal "View
-        // Event" card that dead-ends into render_registration_form()'s "no
-        // longer available" notice. Excluded the same way hide_from_archive
-        // already is (build_hide_clause()) — a meta_query addition, not a
-        // template-level filter. The series-taxonomy archive needs no such
-        // guard: Occurrences::reconcile() only assigns the series term to live
-        // children (see assign_series()), so a closed child was never tagged
-        // into a series archive in the first place.
-        $meta_query = [ $this->build_hide_clause(), $this->build_closed_clause() ];
-        if ( ! empty( $settings['archive_hide_past'] ) ) {
-            $meta_query[] = $this->build_visibility_clause();
+
+        foreach ( $this->get_event_visibility_args() as $key => $value ) {
+            $query->set( $key, $value );
         }
-        $query->set( 'meta_query', $meta_query );
-        $query->set( 'meta_key', $this->meta_key( 'start_ts' ) );
-        $query->set( 'orderby', 'meta_value_num' );
-        $query->set( 'order', 'ASC' );
+
+        // The old ordering pair has to be cleared explicitly: a stale
+        // meta_key would still be joined even though orderby is now a
+        // named-clause array, resurrecting the row-dropping INNER JOIN.
+        $query->set( 'meta_key', '' );
     }
 
     public function clear_caches_on_delete( $post_id ) {
@@ -6961,10 +6956,8 @@ class Module {
             'posts_per_page' => -1,
             'post_status' => 'publish',
             'meta_query' => $meta_query,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
-            'order' => 'ASC',
         ];
+        $args = $this->apply_event_ordering( $args, 'start_date', 'ASC' );
 
         $args = \apply_filters( 'anchor_events_query_args', $args, $atts );
         $events = $this->get_cached_ids( $args );
@@ -7050,13 +7043,261 @@ class Module {
         return $this->calculate_status( $meta );
     }
 
-    private function build_visibility_clause() {
+    /**
+     * A meta key that is absent OR stored empty. Both spellings occur for the
+     * same "no value" state: an imported event never had the row written,
+     * while an event saved through the plugin gets the key with '' in it.
+     * Every clause below that means "unset" has to cover both.
+     *
+     * @param string $key
+     * @return array
+     */
+    private function blank_or_absent_clause( $key ) {
         return [
-            'key' => $this->meta_key( 'end_ts' ),
-            'value' => time(),
-            'compare' => '>=',
-            'type' => 'NUMERIC',
+            'relation' => 'OR',
+            [ 'key' => $this->meta_key( $key ), 'compare' => 'NOT EXISTS' ],
+            [ 'key' => $this->meta_key( $key ), 'value' => '', 'compare' => '=' ],
         ];
+    }
+
+    /**
+     * "Has not finished yet", for archive_hide_past.
+     *
+     * Compares the DATE fields, not the end_ts mirror this used to read. Two
+     * reasons, both learned from the reported install:
+     *
+     *  1. A meta_query comparison silently requires its key to exist, so
+     *     `end_ts >= now` did not hide past events — it hid every event
+     *     without an end_ts. The timestamp mirrors are only written when an
+     *     event is saved through the plugin, so on a site whose events
+     *     arrived by import (or predate the mirrors) that is nearly all of
+     *     them, and the setting emptied the catalog.
+     *  2. start_date/end_date are what the author actually typed. Every dated
+     *     event has them, which is exactly the property the filter needs.
+     *
+     * Mirrors calculate_timestamps()' own rule that a blank end_date means a
+     * single-day event ending on its start_date, and lets a genuinely undated
+     * event through: it has no end to be past.
+     *
+     * @return array
+     */
+    private function build_visibility_clause() {
+        $today = \current_time( 'Y-m-d' );
+
+        return [
+            'relation' => 'OR',
+            // Runs through a real end date that has not passed.
+            [
+                'key' => $this->meta_key( 'end_date' ),
+                'value' => $today,
+                'compare' => '>=',
+                'type' => 'DATE',
+            ],
+            // Single-day event: no end date, so the start date is the end.
+            [
+                'relation' => 'AND',
+                $this->blank_or_absent_clause( 'end_date' ),
+                [
+                    'key' => $this->meta_key( 'start_date' ),
+                    'value' => $today,
+                    'compare' => '>=',
+                    'type' => 'DATE',
+                ],
+            ],
+            // Undated: nothing to be past, so it is never hidden.
+            [
+                'relation' => 'AND',
+                $this->blank_or_absent_clause( 'end_date' ),
+                $this->blank_or_absent_clause( 'start_date' ),
+            ],
+        ];
+    }
+
+    /**
+     * Collapses a group to its parent row, the way EVENTS.md already documents
+     * for the series archive ("the archive collapses each group down to ONE
+     * row (the parent)"). The CPT archive never implemented it, so a catalog
+     * listed the parent AND every generated child date beside it.
+     *
+     * Same NOT-EXISTS-or-not-equal shape as build_hide_clause(): a post that
+     * has never had group_role written — every ungrouped event — is unaffected.
+     *
+     * @return array
+     */
+    private function build_group_collapse_clause() {
+        return [
+            'relation' => 'OR',
+            [
+                'key' => $this->meta_key( 'group_role' ),
+                'compare' => 'NOT EXISTS',
+            ],
+            [
+                'key' => $this->meta_key( 'group_role' ),
+                'value' => 'child',
+                'compare' => '!=',
+            ],
+        ];
+    }
+
+    /**
+     * An ordering clause that sorts WITHOUT filtering.
+     *
+     * `meta_key => X` + `orderby => meta_value*` is an INNER JOIN on X, so
+     * every post missing that key is dropped from the result set entirely.
+     * Sorting quietly becomes filtering: on the reported install that alone
+     * accounted for 15 of 19 missing courses, and in the admin list it means
+     * sorting by Venue hides every event that has no venue. Pairing EXISTS
+     * with NOT EXISTS under an OR makes WP_Meta_Query emit a LEFT JOIN, so a
+     * keyless post still comes back — it just sorts as empty/zero.
+     *
+     * @param string $key  Meta key suffix.
+     * @param string $type Optional meta_query type (e.g. NUMERIC).
+     * @return array
+     */
+    private function build_order_clause( $key = 'start_date', $type = '' ) {
+        $exists     = [ 'key' => $this->meta_key( $key ), 'compare' => 'EXISTS' ];
+        $not_exists = [ 'key' => $this->meta_key( $key ), 'compare' => 'NOT EXISTS' ];
+        if ( $type !== '' ) {
+            $exists['type']     = $type;
+            $not_exists['type'] = $type;
+        }
+
+        return [ 'relation' => 'OR', $exists, $not_exists ];
+    }
+
+    /**
+     * Order a get_posts()/WP_Query args array by an event meta key without
+     * dropping the posts that lack it. Replaces the meta_key/meta_value_num
+     * pair every call site used to build by hand.
+     *
+     * Public because a theme ordering its own event query hits the same trap.
+     *
+     * @param array  $args  Query args (an existing meta_query is preserved).
+     * @param string $key   Meta key suffix to sort on.
+     * @param string $order ASC|DESC.
+     * @param string $type  Optional meta_query type (e.g. NUMERIC).
+     * @return array
+     */
+    public function apply_event_ordering( array $args, $key = 'start_date', $order = 'ASC', $type = '' ) {
+        $order = \strtoupper( (string) $order ) === 'DESC' ? 'DESC' : 'ASC';
+
+        $meta_query = isset( $args['meta_query'] ) && \is_array( $args['meta_query'] ) ? $args['meta_query'] : [];
+        $meta_query['anchor_event_order'] = $this->build_order_clause( $key, $type );
+
+        $args['meta_query'] = $meta_query;
+        // Secondary key on post_date so the keyless rows the LEFT JOIN
+        // preserves land in a stable order rather than an arbitrary one.
+        $args['orderby'] = [ 'anchor_event_order' => $order, 'date' => $order ];
+        $args['order']   = $order;
+        unset( $args['meta_key'] ); // A stale meta_key re-adds the INNER JOIN.
+
+        return $args;
+    }
+
+    /**
+     * apply_event_ordering() for a live WP_Query (pre_get_posts callers).
+     *
+     * @param \WP_Query $query
+     * @param string    $key
+     * @param string    $order
+     * @param string    $type
+     */
+    public function set_event_ordering( $query, $key = 'start_date', $order = 'ASC', $type = '' ) {
+        $args = $this->apply_event_ordering(
+            [ 'meta_query' => $query->get( 'meta_query' ) ?: [] ],
+            $key,
+            $order,
+            $type
+        );
+
+        $query->set( 'meta_query', $args['meta_query'] );
+        $query->set( 'orderby', $args['orderby'] );
+        $query->set( 'meta_key', '' );
+    }
+
+    /**
+     * THE resolved "which events should be shown" ruleset — meta_query,
+     * orderby and order — in one place, so the archive, the shortcodes and a
+     * theme rendering events anywhere else all get the same answer.
+     *
+     * Before this existed, the rules lived only inside a pre_get_posts hook on
+     * the archive's main query. Anything rendering events elsewhere (a
+     * shortcode, a card deck, a homepage strip) got nothing and had to
+     * reimplement past-filtering, child-exclusion and ordering by hand — and
+     * the plugin's own shortcodes had already drifted from the archive by the
+     * time this was written.
+     *
+     * @param array $opts {
+     *     @type bool $include_past     Include events that have finished.
+     *                                  Default: the archive_hide_past setting.
+     *     @type bool $include_children Include group child occurrences.
+     *                                  Default false (show the parent only).
+     *     @type bool $include_closed   Include soft-closed occurrences. Default false.
+     *     @type bool $include_hidden   Include hide_from_archive events. Default false.
+     * }
+     * @return array{meta_query:array,orderby:array,order:string}
+     */
+    public function get_event_visibility_args( array $opts = [] ) {
+        $settings = $this->get_settings();
+        $opts = \wp_parse_args( $opts, [
+            'include_past'     => empty( $settings['archive_hide_past'] ),
+            'include_children' => false,
+            'include_closed'   => false,
+            'include_hidden'   => false,
+            'order'            => 'ASC',
+        ] );
+
+        $meta_query = [ 'relation' => 'AND' ];
+        if ( ! $opts['include_hidden'] ) {
+            $meta_query[] = $this->build_hide_clause();
+        }
+        if ( ! $opts['include_closed'] ) {
+            $meta_query[] = $this->build_closed_clause();
+        }
+        if ( ! $opts['include_children'] ) {
+            $meta_query[] = $this->build_group_collapse_clause();
+        }
+        if ( ! $opts['include_past'] ) {
+            $meta_query[] = $this->build_visibility_clause();
+        }
+        $meta_query['anchor_event_order'] = $this->build_order_clause();
+
+        $order = \strtoupper( (string) $opts['order'] ) === 'DESC' ? 'DESC' : 'ASC';
+
+        /**
+         * Filter the resolved event visibility args.
+         *
+         * @param array $args
+         * @param array $opts
+         */
+        return \apply_filters( 'anchor_events_visibility_args', [
+            'meta_query' => $meta_query,
+            // Secondary key on post_date so the keyless rows the LEFT JOIN
+            // preserves land in a stable order instead of an arbitrary one.
+            'orderby'    => [ 'anchor_event_order' => $order, 'date' => $order ],
+            'order'      => $order,
+        ], $opts );
+    }
+
+    /**
+     * The events to show, as post objects. The public front door for a theme
+     * or shortcode that needs the same list the archive renders.
+     *
+     * @param array $args get_posts() args; the keys documented on
+     *                    get_event_visibility_args() are honored too.
+     * @return \WP_Post[]
+     */
+    public function get_events( array $args = [] ) {
+        $opts = \array_intersect_key( $args, \array_flip( [
+            'include_past', 'include_children', 'include_closed', 'include_hidden', 'order',
+        ] ) );
+        $args = \array_diff_key( $args, $opts );
+
+        return \get_posts( \array_merge( [
+            'post_type'      => self::CPT,
+            'post_status'    => 'publish',
+            'posts_per_page' => -1,
+        ], $this->get_event_visibility_args( $opts ), $args ) );
     }
 
     private function build_hide_clause() {

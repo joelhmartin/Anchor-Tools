@@ -1234,3 +1234,83 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   font-size:14px;
   color:var(--anchor-event-muted,#6b7280);
 }
+
+/* -------------------------------------------------------------------------
+ * Manager form wizard ([event_manager steps="yes"]). Baseline only — a theme
+ * can restyle every piece; without JS none of the is-wizard rules apply and the
+ * form renders as one page.
+ * ------------------------------------------------------------------------- */
+.anchor-event-steps{
+  list-style:none;
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin:0 0 24px;
+  padding:0;
+  counter-reset:none;
+}
+.anchor-event-steps__item{
+  flex:1 1 150px;
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  padding:12px 14px;
+  border:1px solid var(--anchor-event-border,#e2e4e8);
+  border-radius:8px;
+  cursor:pointer;
+  opacity:.55;
+}
+.anchor-event-steps__item.is-current,
+.anchor-event-steps__item.is-done{ opacity:1; }
+.anchor-event-steps__item.is-current{ border-color:currentColor; }
+.anchor-event-steps__n{
+  flex:0 0 auto;
+  width:22px;
+  height:22px;
+  border-radius:999px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  font-size:12px;
+  border:1px solid currentColor;
+}
+.anchor-event-steps__label{ display:flex; flex-direction:column; gap:2px; }
+.anchor-event-steps__title{ font-size:14px; font-weight:600; }
+.anchor-event-steps__hint{ font-size:12px; color:var(--anchor-event-muted,#6b7280); }
+
+.anchor-event-wizard-nav{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  margin-top:24px;
+}
+.anchor-event-wizard-where{
+  margin:0;
+  font-size:13px;
+  color:var(--anchor-event-muted,#6b7280);
+}
+
+/* Explanatory copy */
+.anchor-event-hint{
+  margin:6px 0 0;
+  font-size:13px;
+  line-height:1.55;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-event-hint--section{
+  margin:-8px 0 18px;
+  max-width:80ch;
+}
+
+/* Validation */
+.anchor-event-error{
+  margin:6px 0 0;
+  font-size:13px;
+  color:#b32d2e;
+}
+.anchor-event-field.has-error input,
+.anchor-event-field.has-error select,
+.anchor-event-field.has-error textarea{
+  border-color:#b32d2e;
+}

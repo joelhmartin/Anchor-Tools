@@ -4148,7 +4148,12 @@ class Module {
             'show_past' => 'yes',
             'limit' => 50,
             'order' => 'ASC',
+            // steps="yes" turns the new/edit form into a validated wizard. Off by
+            // default so existing single-page installs are untouched.
+            'steps' => 'no',
         ], $atts );
+
+        $wizard = \in_array( \strtolower( (string) $atts['steps'] ), [ 'yes', '1', 'true', 'on' ], true );
 
         $action = isset( $_GET['event_action'] ) ? sanitize_key( $_GET['event_action'] ) : '';
         $event_id = isset( $_GET['event_id'] ) ? (int) $_GET['event_id'] : 0;
@@ -4164,6 +4169,15 @@ class Module {
             '1.0.4',
             true
         );
+        if ( $wizard ) {
+            \wp_enqueue_script(
+                'anchor-events-manager-wizard',
+                \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager-wizard.js' ),
+                [],
+                '1.0.0',
+                true
+            );
+        }
         \wp_enqueue_script(
             'anchor-events-ticket-types',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ),
@@ -4176,10 +4190,10 @@ class Module {
         $output .= $this->render_event_manager_notice();
 
         if ( $action === 'new' ) {
-            $output .= $this->render_event_manager_form( 0 );
+            $output .= $this->render_event_manager_form( 0, $wizard );
         } elseif ( $action === 'edit' && $event_id ) {
             if ( \current_user_can( 'edit_post', $event_id ) && \get_post_type( $event_id ) === self::CPT ) {
-                $output .= $this->render_event_manager_form( $event_id );
+                $output .= $this->render_event_manager_form( $event_id, $wizard );
             } else {
                 $output .= '<p>' . esc_html__( 'You do not have permission to edit that event.', 'anchor-schema' ) . '</p>';
             }
@@ -4520,7 +4534,25 @@ class Module {
         return $output;
     }
 
-    private function render_event_manager_form( $event_id ) {
+    /**
+     * Titles for the manager form's wizard steps, keyed by the data-step number
+     * stamped on each .anchor-event-section. One definition drives both the rail
+     * and the "Step 2 of 5" readout, so adding a section to a step needs no JS
+     * change — only the data-step attribute.
+     *
+     * @return array<int,array{title:string,hint:string}>
+     */
+    private function manager_form_steps() {
+        return [
+            1 => [ 'title' => __( 'Basics', 'anchor-schema' ),        'hint' => __( 'Name and description', 'anchor-schema' ) ],
+            2 => [ 'title' => __( 'Schedule', 'anchor-schema' ),      'hint' => __( 'Type, dates, sessions', 'anchor-schema' ) ],
+            3 => [ 'title' => __( 'Details', 'anchor-schema' ),       'hint' => __( 'Place, labels, images', 'anchor-schema' ) ],
+            4 => [ 'title' => __( 'Registration', 'anchor-schema' ),  'hint' => __( 'How people sign up', 'anchor-schema' ) ],
+            5 => [ 'title' => __( 'Emails', 'anchor-schema' ),        'hint' => __( 'What attendees receive', 'anchor-schema' ) ],
+        ];
+    }
+
+    private function render_event_manager_form( $event_id, $wizard = false ) {
         $is_edit = $event_id > 0;
         $post = $is_edit ? \get_post( $event_id ) : null;
         if ( $is_edit && ( ! $post || $post->post_type !== self::CPT ) ) {
@@ -4564,12 +4596,35 @@ class Module {
                 <a class="anchor-event-button-secondary" href="<?php echo esc_url( $base_url ); ?>"><?php echo esc_html__( 'Back to list', 'anchor-schema' ); ?></a>
             </div>
 
-            <div class="anchor-event-section">
+            <?php if ( $wizard ) :
+                /**
+                 * Step rail. Rendered server-side but inert until manager-wizard.js
+                 * adds .is-wizard to the form: with JS off every section stays
+                 * visible and the form submits in one go exactly as before, so the
+                 * wizard is progressive enhancement rather than a dependency.
+                 */
+                ?>
+                <ol class="anchor-event-steps" aria-label="<?php esc_attr_e( 'Form steps', 'anchor-schema' ); ?>">
+                <?php foreach ( $this->manager_form_steps() as $n => $step ) : ?>
+                    <li class="anchor-event-steps__item" data-step-nav="<?php echo (int) $n; ?>">
+                        <span class="anchor-event-steps__n"><?php echo (int) $n; ?></span>
+                        <span class="anchor-event-steps__label">
+                            <span class="anchor-event-steps__title"><?php echo esc_html( $step['title'] ); ?></span>
+                            <span class="anchor-event-steps__hint"><?php echo esc_html( $step['hint'] ); ?></span>
+                        </span>
+                    </li>
+                <?php endforeach; ?>
+                </ol>
+            <?php endif; ?>
+
+            <div class="anchor-event-section" data-step="1">
                 <h3><?php echo esc_html__( 'Basics', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'The name and copy that appear on the course card, the course page and in search results.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field" style="grid-column:1/-1;">
                         <label for="anchor_event_title"><?php echo esc_html__( 'Title', 'anchor-schema' ); ?> *</label>
                         <input type="text" id="anchor_event_title" name="anchor_event_title" value="<?php echo esc_attr( $title ); ?>" required />
+                        <p class="anchor-event-hint"><?php echo esc_html__( 'Required.', 'anchor-schema' ); ?></p>
                     </div>
                     <div class="anchor-event-field" style="grid-column:1/-1;">
                         <label for="anchor_event_content"><?php echo esc_html__( 'Description', 'anchor-schema' ); ?></label>
@@ -4586,8 +4641,9 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="2">
                 <h3><?php echo esc_html__( 'Event Type & Registration', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'What shape this event is, and how people are meant to sign up. The rest of the form changes to match, so set this before filling anything else in.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_type"><?php echo esc_html__( 'Event Type', 'anchor-schema' ); ?></label>
@@ -4622,12 +4678,14 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="2">
                 <h3><?php echo esc_html__( 'Date & Time', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'The start date is required — listings sort by it, and a course drops out of the public catalog once its date has passed.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_start_date"><?php echo esc_html__( 'Start date', 'anchor-schema' ); ?> *</label>
                         <input type="date" id="anchor_event_start_date" name="anchor_event_start_date" value="<?php echo esc_attr( $meta['start_date'] ); ?>" required />
+                        <p class="anchor-event-hint"><?php echo esc_html__( 'Required. An event cannot be saved without one.', 'anchor-schema' ); ?></p>
                     </div>
                     <div class="anchor-event-field">
                         <label for="anchor_event_end_date"><?php echo esc_html__( 'End date', 'anchor-schema' ); ?></label>
@@ -4651,8 +4709,9 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-type="multisession">
+            <div class="anchor-event-section anchor-event-conditional" data-when-type="multisession" data-step="2">
                 <h3><?php echo esc_html__( 'Sessions', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'For a multi-session course: one row per meeting. Attendees register once for the whole series.', 'anchor-schema' ); ?></p>
                 <p class="description"><?php echo esc_html__( 'Add one row per session date/time in this series.', 'anchor-schema' ); ?></p>
                 <table class="widefat anchor-event-sessions-table">
                     <thead>
@@ -4678,8 +4737,9 @@ class Module {
                 </script>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="3">
                 <h3><?php echo esc_html__( 'Labels', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Short badges shown on the card, e.g. a level or a track.', 'anchor-schema' ); ?></p>
                 <p class="description"><?php echo esc_html__( 'Short badges shown on event cards — e.g. "2 Day Course", "14 CE Credits".', 'anchor-schema' ); ?></p>
                 <table class="widefat anchor-event-labels-table">
                     <thead>
@@ -4706,8 +4766,9 @@ class Module {
 
             <?php $this->render_group_authoring_sections( $event_id, $meta, $event_type, false ); ?>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="3">
                 <h3><?php echo esc_html__( 'Location', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Where it is held. Leave blank for something scheduled per practice.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field"><label for="anchor_event_venue"><?php echo esc_html__( 'Venue', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_venue" name="anchor_event_venue" value="<?php echo esc_attr( $meta['venue'] ); ?>" /></div>
                     <div class="anchor-event-field"><label for="anchor_event_address_street"><?php echo esc_html__( 'Street', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_street" name="anchor_event_address_street" value="<?php echo esc_attr( $meta['address_street'] ); ?>" /></div>
@@ -4720,8 +4781,9 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Status', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Capacity and whether registration is currently open. Closing registration leaves the page up but removes the form.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_status"><?php echo esc_html__( 'Event status', 'anchor-schema' ); ?></label>
@@ -4735,8 +4797,9 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Settings for the built-in registration system. If this course uses an external form instead, set the mode above to External.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
@@ -4747,8 +4810,9 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-mode="external">
+            <div class="anchor-event-section anchor-event-conditional" data-when-mode="external" data-step="4">
                 <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Send people to a form hosted elsewhere. Registrations then live in that system, not in this site.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_external_url"><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></label>
@@ -4767,13 +4831,15 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc">
+            <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc" data-step="4">
                 <h3><?php echo esc_html__( 'Tickets / Pricing', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Paid tiers sold through WooCommerce. Each tier can carry its own price, quota and sale window.', 'anchor-schema' ); ?></p>
                 <?php echo $this->render_ticket_types_fields( $event_id, 'anchor-event-button-secondary' ); // already escaped ?>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Display controls', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Where this event is allowed to appear in public listings.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_hide_from_archive" name="anchor_event_hide_from_archive" value="1" <?php checked( $meta['hide_from_archive'] ); ?> /> <?php echo esc_html__( 'Hide from archive', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_featured" name="anchor_event_featured" value="1" <?php checked( $meta['featured'] ); ?> /> <?php echo esc_html__( 'Featured / pinned', 'anchor-schema' ); ?></label></div>
@@ -4781,8 +4847,9 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="5">
                 <h3><?php echo esc_html__( 'Email Settings', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'What people receive when they register here, and the reminder that goes out before the date. Leave a template untouched to keep using the site-wide default.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_reminder_offsets"><?php echo esc_html__( 'Reminder offsets (days)', 'anchor-schema' ); ?></label>
@@ -4803,8 +4870,9 @@ class Module {
                 </details>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="3">
                 <h3><?php echo esc_html__( 'Featured image', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'The card image. For Academy courses this is normally the instructor headshot.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-thumbnail-field">
                     <input type="hidden" id="anchor_event_thumbnail_id" name="anchor_event_thumbnail_id" value="<?php echo esc_attr( $thumbnail_id ); ?>" />
                     <div class="anchor-event-thumbnail-preview">
@@ -4819,8 +4887,9 @@ class Module {
                 </div>
             </div>
 
-            <div class="anchor-event-section">
+            <div class="anchor-event-section" data-step="3">
                 <h3><?php echo esc_html__( 'Photo gallery', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Extra images for the course page. Optional.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-gallery-field" data-max="0">
                     <input type="hidden" id="anchor_event_gallery" name="anchor_event_gallery" value="<?php echo esc_attr( implode( ',', $gallery_ids ) ); ?>" />
                     <ul class="anchor-event-gallery-previews">
@@ -4856,6 +4925,14 @@ class Module {
              */
             \do_action( 'anchor_events_manager_form_fields', $event_id, $this );
             ?>
+
+            <?php if ( $wizard ) : ?>
+                <div class="anchor-event-wizard-nav" hidden>
+                    <button type="button" class="anchor-event-button-secondary" data-wizard-back><?php echo esc_html__( 'Back', 'anchor-schema' ); ?></button>
+                    <p class="anchor-event-wizard-where" role="status" aria-live="polite"></p>
+                    <button type="button" class="anchor-event-button" data-wizard-next><?php echo esc_html__( 'Continue', 'anchor-schema' ); ?></button>
+                </div>
+            <?php endif; ?>
 
             <div class="anchor-event-manager-submit">
                 <button type="submit" class="anchor-event-button"><?php echo $is_edit ? esc_html__( 'Save changes', 'anchor-schema' ) : esc_html__( 'Create event', 'anchor-schema' ); ?></button>

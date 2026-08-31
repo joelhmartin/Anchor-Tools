@@ -22,6 +22,34 @@
     });
   });
 
+  // ── Page scroll lock ────────────────────────────────────────────────────
+  // Refcounted, because fly-ins coexist with an exclusive popup: a fly-in
+  // closing must never release a lock the modal behind it still holds. The
+  // class goes on <html>; frontend.css locks html and body together.
+  var scrollLocks = 0;
+
+  function lockScroll(modal){
+    if(modal._scrollLocked) return;
+    modal._scrollLocked = true;
+    if(scrollLocks++ > 0) return;
+    var doc = document.documentElement;
+    // Reserve the width the scrollbar occupied, so the page underneath doesn't
+    // jump sideways the moment the popup opens.
+    var gap = (window.innerWidth || doc.clientWidth) - doc.clientWidth;
+    if(gap > 0){ doc.style.setProperty('--up-scrollbar-gap', gap + 'px'); }
+    doc.classList.add('up-scroll-lock');
+  }
+
+  function unlockScroll(modal){
+    if(!modal._scrollLocked) return;
+    modal._scrollLocked = false;
+    if(--scrollLocks > 0) return;
+    scrollLocks = 0;
+    var doc = document.documentElement;
+    doc.classList.remove('up-scroll-lock');
+    doc.style.removeProperty('--up-scrollbar-gap');
+  }
+
   // Storage helpers
   function markShown(id, mode, minutes){
     try{
@@ -269,6 +297,7 @@
     modal._closing = false;
     if(modal._closeTimer){ clearTimeout(modal._closeTimer); modal._closeTimer = null; }
     modal.hidden = false;
+    if(modal._lockScroll){ lockScroll(modal); }
     var closeBtn = modal.querySelector('.up-modal__close');
     if(closeBtn){ closeBtn.focus(); }
   }
@@ -401,6 +430,8 @@
 
   function closeModal(modal){
     if(modal.hidden) return;
+    // Before the early returns below, so a lock can never outlive its popup.
+    unlockScroll(modal);
     // Fullscreen takeover animates back to its anchor instead of just hiding.
     if(isFullscreen(modal)){
       collapseTakeover(modal);
@@ -481,6 +512,13 @@
     // Fly-ins coexist with other popups; every other style takes over the
     // screen and is mutually exclusive. Drives the close-coordination above.
     modal._exclusive = (popupStyle.indexOf('flyin') !== 0);
+    // Only styles that cover the screen can freeze the page. A fly-in is a
+    // compact card the visitor is meant to keep reading past, and the
+    // fullscreen takeover (returned above) is itself scroll-driven, so
+    // neither ever locks — whatever the setting says.
+    // Absent means on, matching the PHP default, so popups saved before this
+    // setting existed still lock.
+    modal._lockScroll = (sn.lock_scroll == null || String(sn.lock_scroll) !== '0') && modal._exclusive;
     if (popupStyle === 'modal' && sn.modal_max_width) {
       modal.style.setProperty('--up-modal-max-width', sn.modal_max_width);
     }

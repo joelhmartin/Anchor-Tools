@@ -1127,3 +1127,197 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-lostlink:hover{
   text-decoration:underline;
 }
+
+/* -------------------------------------------------------------------------
+ * Front-end attendee console (Roster::render_frontend). Baseline layout only —
+ * colour comes from the same custom properties as the rest of this file, so a
+ * theme can restyle it without touching the plugin.
+ * ------------------------------------------------------------------------- */
+.anchor-roster-fe-summary{
+  list-style:none;
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  margin:0 0 20px;
+  padding:0;
+}
+.anchor-roster-fe-summary li{
+  flex:1 1 110px;
+  border:1px solid var(--anchor-event-border,#e2e4e8);
+  border-radius:8px;
+  padding:12px 14px;
+  font-size:12px;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-roster-fe-summary span{
+  display:block;
+  font-size:24px;
+  font-weight:600;
+  color:var(--anchor-event-text,#111827);
+  margin-bottom:4px;
+}
+.anchor-roster-fe-help{
+  font-size:14px;
+  line-height:1.6;
+  color:var(--anchor-event-muted,#6b7280);
+  margin:0 0 16px;
+}
+.anchor-roster-fe-warn{
+  border:1px solid #f0c36d;
+  background:#fdf6e3;
+  color:#8a5a1e;
+  border-radius:8px;
+  padding:12px 14px;
+  margin-bottom:16px;
+}
+.anchor-roster-fe-check{
+  margin:10px 0 0;
+  font-size:14px;
+}
+.anchor-roster-fe-check input{
+  margin-right:8px;
+}
+.anchor-roster-fe-tablewrap{
+  overflow-x:auto;
+  border:1px solid var(--anchor-event-border,#e2e4e8);
+  border-radius:8px;
+}
+.anchor-roster-fe-table{
+  width:100%;
+  border-collapse:collapse;
+  min-width:820px;
+}
+.anchor-roster-fe-table th,
+.anchor-roster-fe-table td{
+  text-align:left;
+  padding:10px 12px;
+  border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
+  font-size:14px;
+  vertical-align:top;
+}
+.anchor-roster-fe-table thead th{
+  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-roster-fe-table tbody tr:last-child td{
+  border-bottom:0;
+}
+.anchor-roster-fe-sub{
+  display:block;
+  font-size:12px;
+  color:var(--anchor-event-muted,#6b7280);
+  margin-top:2px;
+}
+.anchor-roster-fe-pill{
+  display:inline-block;
+  color:#fff;
+  font-size:11px;
+  line-height:1.6;
+  padding:2px 8px;
+  border-radius:10px;
+}
+.anchor-roster-fe-actions a{
+  margin-right:10px;
+}
+.anchor-roster-fe-actions a.anchor-roster-fe-danger{
+  color:#b32d2e;
+}
+.anchor-roster-fe-tools{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-top:16px;
+}
+.anchor-roster-fe-empty{
+  font-size:14px;
+  color:var(--anchor-event-muted,#6b7280);
+}
+
+/* -------------------------------------------------------------------------
+ * Manager form wizard ([event_manager steps="yes"]). Baseline only — a theme
+ * can restyle every piece; without JS none of the is-wizard rules apply and the
+ * form renders as one page.
+ * ------------------------------------------------------------------------- */
+.anchor-event-steps{
+  list-style:none;
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin:0 0 24px;
+  padding:0;
+  counter-reset:none;
+}
+.anchor-event-steps__item{
+  flex:1 1 150px;
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  padding:12px 14px;
+  border:1px solid var(--anchor-event-border,#e2e4e8);
+  border-radius:8px;
+  cursor:pointer;
+  opacity:.55;
+}
+.anchor-event-steps__item.is-current,
+.anchor-event-steps__item.is-done{ opacity:1; }
+.anchor-event-steps__item.is-current{ border-color:currentColor; }
+.anchor-event-steps__n{
+  flex:0 0 auto;
+  width:22px;
+  height:22px;
+  border-radius:999px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  font-size:12px;
+  border:1px solid currentColor;
+}
+.anchor-event-steps__label{ display:flex; flex-direction:column; gap:2px; }
+.anchor-event-steps__title{ font-size:14px; font-weight:600; }
+.anchor-event-steps__hint{ font-size:12px; color:var(--anchor-event-muted,#6b7280); }
+
+.anchor-event-wizard-nav{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  margin-top:24px;
+}
+.anchor-event-wizard-where{
+  margin:0;
+  font-size:13px;
+  color:var(--anchor-event-muted,#6b7280);
+}
+
+/* Explanatory copy */
+.anchor-event-hint{
+  margin:6px 0 0;
+  font-size:13px;
+  line-height:1.55;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-event-hint--section{
+  margin:-8px 0 18px;
+  max-width:80ch;
+}
+
+/* Validation */
+.anchor-event-error{
+  margin:6px 0 0;
+  font-size:13px;
+  color:#b32d2e;
+}
+.anchor-event-field.has-error input,
+.anchor-event-field.has-error select,
+.anchor-event-field.has-error textarea{
+  border-color:#b32d2e;
+}
+
+/* Step visibility. !important because the event-type/registration-mode logic
+   toggles conditional sections with an inline display, which would otherwise
+   keep a switched-on conditional on screen during every step. */
+.anchor-event-manager-form.is-wizard [data-step].is-step-hidden{
+  display:none !important;
+}

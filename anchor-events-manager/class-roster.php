@@ -429,6 +429,12 @@ class Roster {
         // the per-tier quota in the seat layer; recorded in the seat history note.
         $allow_over = ! empty( $_POST['roster_allow_over'] );
 
+        // Whether this manual add emails the attendee. The wp-admin form has no
+        // such control and posts nothing, so it keeps the historical behaviour
+        // (always notify); the front-end console offers a checkbox for the case
+        // where somebody is being added after they were told in person.
+        $notify = ! isset( $_POST['roster_notify_control'] ) || ! empty( $_POST['roster_notify'] );
+
         if ( $name === '' ) {
             $this->redirect( $event_id, 'error', \__( 'A name is required.', 'anchor-schema' ) );
         }
@@ -453,10 +459,16 @@ class Roster {
         }
 
         if ( ! empty( $result['created'] ) ) {
-            $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_CONFIRMED, $guests );
-            $this->redirect( $event_id, 'success', \__( 'Attendee added.', 'anchor-schema' ) );
+            if ( $notify ) {
+                $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_CONFIRMED, $guests );
+            }
+            $this->redirect( $event_id, 'success', $notify
+                ? \__( 'Attendee added and emailed.', 'anchor-schema' )
+                : \__( 'Attendee added (no confirmation email sent).', 'anchor-schema' ) );
         } elseif ( ! empty( $result['waitlisted'] ) ) {
-            $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_WAITLIST, $guests );
+            if ( $notify ) {
+                $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_WAITLIST, $guests );
+            }
             $this->redirect( $event_id, 'success', \__( 'Attendee added to the waitlist (event is full).', 'anchor-schema' ) );
         } else {
             $this->redirect( $event_id, 'error', \__( 'Could not add attendee — the event is full and the waitlist is disabled.', 'anchor-schema' ) );
@@ -546,10 +558,34 @@ class Roster {
     }
 
     private function redirect( $event_id, $type, $message ) {
-        $url = $this->roster_url( (int) $event_id, [
+        $args = [
             'roster_msg'  => \rawurlencode( $message ),
             'roster_type' => ( $type === 'error' ? 'error' : 'success' ),
-        ] );
+        ];
+
+        // The front-end console posts the page it wants to come back to. Anything
+        // off-site is dropped by wp_validate_redirect() and we fall back to the
+        // wp-admin roster screen, so both surfaces land where the action started.
+        $return = isset( $_REQUEST['roster_return'] )
+            ? \esc_url_raw( \rawurldecode( \wp_unslash( $_REQUEST['roster_return'] ) ) )
+            : '';
+        if ( $return !== '' ) {
+            $return = (string) \wp_validate_redirect( $return, '' );
+        }
+
+        if ( $return !== '' ) {
+            // Pin the view back to this event's roster. A return URL that lost its
+            // event_id (or pointed at the console's list) would otherwise drop the
+            // user on a roster with nothing selected right after they acted on one.
+            $args = \array_merge( $args, [
+                'event_action' => 'roster',
+                'event_id'     => (int) $event_id,
+            ] );
+            $url = \add_query_arg( $args, \remove_query_arg( [ 'roster_msg', 'roster_type', 'seat_id' ], $return ) );
+        } else {
+            $url = $this->roster_url( (int) $event_id, $args );
+        }
+
         \wp_safe_redirect( $url );
         exit;
     }
@@ -728,6 +764,305 @@ class Roster {
 
     private function render_status_pill_styles() {
         echo '<style>.anchor-roster-pill{display:inline-block;padding:2px 8px;border-radius:10px;color:#fff;font-size:11px;line-height:1.6;}</style>';
+    }
+
+    /* ---------------------------------------------------------------------
+     * Front-end surface (the [event_manager] "roster" view)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Attendee console for one event, rendered outside wp-admin.
+     *
+     * Deliberately a second *view*, never a second implementation: the counts
+     * come from Registrations, the mutations post to the same
+     * anchor_roster_add / _edit / _cancel handlers with the same nonces, and the
+     * export reuses anchor_event_export. Only the markup differs — WP_List_Table
+     * is an admin-only class, so the seat table is rendered directly here.
+     *
+     * @param int    $event_id
+     * @param string $return_url Front-end page to come back to after an action.
+     * @return string
+     */
+    public function render_frontend( $event_id, $return_url ) {
+        $event_id = (int) $event_id;
+        if ( ! self::current_user_can_manage() ) {
+            return '<p>' . \esc_html__( 'You do not have permission to view attendees.', 'anchor-schema' ) . '</p>';
+        }
+        if ( \get_post_type( $event_id ) !== Module::CPT ) {
+            return '<p>' . \esc_html__( 'Event not found.', 'anchor-schema' ) . '</p>';
+        }
+
+        $return_url = $return_url ?: \home_url();
+        $list_url   = \remove_query_arg( [ 'event_action', 'event_id', 'seat_id', 'roster_msg', 'roster_type' ], $return_url );
+        $self_url   = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $event_id ], $list_url );
+        $seat_id    = isset( $_GET['seat_id'] ) ? (int) \wp_unslash( $_GET['seat_id'] ) : 0;
+
+        $summary = $this->registrations->get_event_summary( $event_id );
+        $seats   = $this->registrations->query_seats( [
+            'event_id' => $event_id,
+            'status'   => 'all',
+            'per_page' => 500,
+            'orderby'  => 'attendee',
+            'order'    => 'ASC',
+        ] );
+
+        \ob_start();
+        ?>
+        <div class="anchor-roster-fe">
+
+            <div class="anchor-event-manager-toolbar">
+                <h2><?php echo \esc_html( \get_the_title( $event_id ) ); ?> — <?php \esc_html_e( 'Attendees', 'anchor-schema' ); ?></h2>
+                <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $list_url ); ?>"><?php \esc_html_e( 'Back to list', 'anchor-schema' ); ?></a>
+            </div>
+
+            <?php echo $this->frontend_notice(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+
+            <ul class="anchor-roster-fe-summary">
+                <li><span><?php echo (int) $summary['confirmed']; ?></span><?php \esc_html_e( 'Confirmed', 'anchor-schema' ); ?></li>
+                <li><span><?php echo (int) $summary['pending']; ?></span><?php \esc_html_e( 'Pending', 'anchor-schema' ); ?></li>
+                <li><span><?php echo (int) $summary['waitlist']; ?></span><?php \esc_html_e( 'Waitlist', 'anchor-schema' ); ?></li>
+                <li><span><?php echo (int) $summary['cancelled']; ?></span><?php \esc_html_e( 'Cancelled', 'anchor-schema' ); ?></li>
+                <li><span><?php echo $summary['capacity'] > 0 ? (int) $summary['capacity'] : '&infin;'; ?></span><?php \esc_html_e( 'Capacity', 'anchor-schema' ); ?></li>
+                <li><span><?php echo $summary['remaining'] < 0 ? '&infin;' : (int) $summary['remaining']; ?></span><?php \esc_html_e( 'Seats left', 'anchor-schema' ); ?></li>
+            </ul>
+
+            <?php if ( ! empty( $summary['is_overbooked'] ) ) : ?>
+                <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'This event is overbooked — reserved seats exceed capacity.', 'anchor-schema' ); ?></p>
+            <?php endif; ?>
+
+            <?php if ( $seat_id > 0 && \get_post_type( $seat_id ) === Module::REG_CPT ) : ?>
+                <?php echo $this->frontend_edit_form( $event_id, $seat_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+            <?php else : ?>
+                <?php echo $this->frontend_add_form( $event_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+            <?php endif; ?>
+
+            <div class="anchor-event-section">
+                <h3><?php \esc_html_e( 'Registered', 'anchor-schema' ); ?></h3>
+                <?php if ( empty( $seats['items'] ) ) : ?>
+                    <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'Nobody is registered yet.', 'anchor-schema' ); ?></p>
+                <?php else : ?>
+                <div class="anchor-roster-fe-tablewrap">
+                    <table class="anchor-roster-fe-table">
+                        <thead>
+                            <tr>
+                                <th scope="col"><?php \esc_html_e( 'Attendee', 'anchor-schema' ); ?></th>
+                                <th scope="col"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></th>
+                                <th scope="col"><?php \esc_html_e( 'Ticket', 'anchor-schema' ); ?></th>
+                                <th scope="col"><?php \esc_html_e( 'Party', 'anchor-schema' ); ?></th>
+                                <th scope="col"><?php \esc_html_e( 'Source', 'anchor-schema' ); ?></th>
+                                <th scope="col"><?php \esc_html_e( 'Added', 'anchor-schema' ); ?></th>
+                                <th scope="col"><?php \esc_html_e( 'Actions', 'anchor-schema' ); ?></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ( $seats['items'] as $seat ) :
+                            $edit_link   = \add_query_arg( 'seat_id', (int) $seat['id'], $self_url );
+                            $cancel_link = \add_query_arg( 'roster_return', \rawurlencode( $self_url ), $this->cancel_url( $event_id, $seat['id'] ) );
+                            $is_cancelled = \in_array( $seat['status'], [ Registrations::STATUS_CANCELLED, Registrations::STATUS_REFUNDED, Registrations::STATUS_FAILED ], true );
+                        ?>
+                            <tr>
+                                <td>
+                                    <strong><?php echo \esc_html( $seat['name'] ); ?></strong>
+                                    <?php if ( $seat['email'] !== '' ) : ?>
+                                        <span class="anchor-roster-fe-sub"><a href="mailto:<?php echo \esc_attr( $seat['email'] ); ?>"><?php echo \esc_html( $seat['email'] ); ?></a></span>
+                                    <?php endif; ?>
+                                    <?php if ( $seat['phone'] !== '' ) : ?>
+                                        <span class="anchor-roster-fe-sub"><?php echo \esc_html( $seat['phone'] ); ?></span>
+                                    <?php endif; ?>
+                                </td>
+                                <td><span class="anchor-roster-fe-pill" style="background:<?php echo \esc_attr( $this->status_color( $seat['status'] ) ); ?>"><?php echo \esc_html( $this->status_label( $seat['status'] ) ); ?></span></td>
+                                <td><?php echo \esc_html( $this->tier_label( $event_id, $seat['ticket_type_id'] ) ); ?></td>
+                                <td><?php echo (int) ( 1 + (int) $seat['guests'] ); ?></td>
+                                <td>
+                                    <?php echo \esc_html( $seat['source'] ); ?>
+                                    <?php if ( (int) $seat['order_id'] > 0 ) :
+                                        $olink = $this->order_link( (int) $seat['order_id'] ); ?>
+                                        <span class="anchor-roster-fe-sub"><?php if ( $olink ) : ?><a href="<?php echo \esc_url( $olink ); ?>">#<?php echo (int) $seat['order_id']; ?></a><?php else : ?>#<?php echo (int) $seat['order_id']; ?><?php endif; ?></span>
+                                    <?php endif; ?>
+                                </td>
+                                <td><?php echo \esc_html( $seat['date'] ); ?></td>
+                                <td class="anchor-roster-fe-actions">
+                                    <a href="<?php echo \esc_url( $edit_link ); ?>"><?php \esc_html_e( 'Edit', 'anchor-schema' ); ?></a>
+                                    <?php if ( ! $is_cancelled ) : ?>
+                                        <a class="anchor-roster-fe-danger" href="<?php echo \esc_url( $cancel_link ); ?>" data-confirm="<?php \esc_attr_e( 'Cancel this seat?', 'anchor-schema' ); ?>"><?php \esc_html_e( 'Cancel', 'anchor-schema' ); ?></a>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
+
+                <p class="anchor-roster-fe-tools">
+                    <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $event_id, 'scope' => 'all' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV', 'anchor-schema' ); ?></a>
+                    <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $event_id, 'scope' => 'active' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV (confirmed only)', 'anchor-schema' ); ?></a>
+                </p>
+            </div>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /** Manual "add attendee" form for the front-end console. */
+    private function frontend_add_form( $event_id, $self_url ) {
+        $event_id = (int) $event_id;
+        $tiers    = $this->frontend_tier_choices( $event_id );
+
+        \ob_start();
+        ?>
+        <div class="anchor-event-section">
+            <h3><?php \esc_html_e( 'Add an attendee', 'anchor-schema' ); ?></h3>
+            <p class="anchor-roster-fe-help"><?php \esc_html_e( 'Seats added here are real registrations: they count against capacity, appear in the export, and receive the same confirmation and reminder emails as a public sign-up. Untick “Send the confirmation email” to add somebody silently — reminders still go out.', 'anchor-schema' ); ?></p>
+            <form method="post" action="<?php echo \esc_url( \admin_url( 'admin-post.php' ) ); ?>" class="anchor-roster-fe-form">
+                <input type="hidden" name="action" value="anchor_roster_add" />
+                <input type="hidden" name="event_id" value="<?php echo \esc_attr( (string) $event_id ); ?>" />
+                <input type="hidden" name="roster_return" value="<?php echo \esc_url( $self_url ); ?>" />
+                <?php \wp_nonce_field( 'anchor_roster_add_' . $event_id ); ?>
+
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="roster_name"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?> *</label>
+                        <input type="text" id="roster_name" name="roster_name" required />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="roster_email"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
+                        <input type="email" id="roster_email" name="roster_email" />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="roster_phone"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
+                        <input type="text" id="roster_phone" name="roster_phone" />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="roster_guests"><?php \esc_html_e( 'Additional guests', 'anchor-schema' ); ?></label>
+                        <input type="number" id="roster_guests" name="roster_guests" value="0" min="0" />
+                    </div>
+                    <?php if ( ! empty( $tiers ) ) : ?>
+                    <div class="anchor-event-field">
+                        <label for="roster_ticket_type"><?php \esc_html_e( 'Ticket type', 'anchor-schema' ); ?></label>
+                        <select id="roster_ticket_type" name="roster_ticket_type">
+                            <?php foreach ( $tiers as $tier_id => $label ) : ?>
+                                <option value="<?php echo \esc_attr( $tier_id ); ?>"><?php echo \esc_html( $label ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <?php endif; ?>
+                </div>
+
+                <input type="hidden" name="roster_notify_control" value="1" />
+                <p class="anchor-roster-fe-check"><label><input type="checkbox" name="roster_notify" value="1" checked /> <?php \esc_html_e( 'Send the confirmation email', 'anchor-schema' ); ?></label></p>
+                <p class="anchor-roster-fe-check"><label><input type="checkbox" name="roster_allow_over" value="1" /> <?php \esc_html_e( 'Allow over capacity (bypass the event capacity and tier quota)', 'anchor-schema' ); ?></label></p>
+
+                <button type="submit" class="anchor-event-button"><?php \esc_html_e( 'Add attendee', 'anchor-schema' ); ?></button>
+            </form>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /** Edit one seat from the front-end console. */
+    private function frontend_edit_form( $event_id, $seat_id, $self_url ) {
+        $event_id = (int) $event_id;
+        $seat_id  = (int) $seat_id;
+
+        $name   = (string) \get_post_meta( $seat_id, '_anchor_event_name', true );
+        $email  = (string) \get_post_meta( $seat_id, '_anchor_event_email', true );
+        $phone  = (string) \get_post_meta( $seat_id, '_anchor_event_phone', true );
+        $status = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
+        $order  = (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true );
+
+        \ob_start();
+        ?>
+        <div class="anchor-event-section anchor-roster-fe-editing">
+            <h3><?php \esc_html_e( 'Edit seat', 'anchor-schema' ); ?> #<?php echo (int) $seat_id; ?></h3>
+            <?php if ( $order > 0 ) : ?>
+                <p class="anchor-roster-fe-help"><?php \esc_html_e( 'This seat came from a WooCommerce order — cancel or refund it in the order so payment and seats stay in step.', 'anchor-schema' ); ?></p>
+            <?php endif; ?>
+            <form method="post" action="<?php echo \esc_url( \admin_url( 'admin-post.php' ) ); ?>" class="anchor-roster-fe-form">
+                <input type="hidden" name="action" value="anchor_roster_edit" />
+                <input type="hidden" name="event_id" value="<?php echo \esc_attr( (string) $event_id ); ?>" />
+                <input type="hidden" name="seat_id" value="<?php echo \esc_attr( (string) $seat_id ); ?>" />
+                <input type="hidden" name="roster_return" value="<?php echo \esc_url( $self_url ); ?>" />
+                <?php \wp_nonce_field( 'anchor_roster_edit_' . $event_id ); ?>
+
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="roster_name"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?></label>
+                        <input type="text" id="roster_name" name="roster_name" value="<?php echo \esc_attr( $name ); ?>" />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="roster_email"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
+                        <input type="email" id="roster_email" name="roster_email" value="<?php echo \esc_attr( $email ); ?>" />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="roster_phone"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
+                        <input type="text" id="roster_phone" name="roster_phone" value="<?php echo \esc_attr( $phone ); ?>" />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="roster_status"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></label>
+                        <select id="roster_status" name="roster_status">
+                            <?php foreach ( $this->status_options() as $val => $label ) : ?>
+                                <option value="<?php echo \esc_attr( $val ); ?>" <?php \selected( $status, $val ); ?>><?php echo \esc_html( $label ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+
+                <button type="submit" class="anchor-event-button"><?php \esc_html_e( 'Save seat', 'anchor-schema' ); ?></button>
+                <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $self_url ); ?>"><?php \esc_html_e( 'Cancel', 'anchor-schema' ); ?></a>
+            </form>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * Active ticket tiers as id => label, primary first. Same resolution rules as
+     * tier_row(); returned as data so the front-end form can lay it out itself.
+     *
+     * @param int $event_id
+     * @return array<string,string>
+     */
+    private function frontend_tier_choices( $event_id ) {
+        $tt = isset( $this->module->ticket_types ) ? $this->module->ticket_types : null;
+        if ( ! $tt ) {
+            return [];
+        }
+        $tiers  = (array) $tt->get( (int) $event_id );
+        $active = [];
+        foreach ( $tiers as $t ) {
+            if ( ! empty( $t['active'] ) ) {
+                $active[] = $t;
+            }
+        }
+        if ( empty( $active ) ) {
+            $active = $tiers;
+        }
+
+        $out = [];
+        foreach ( $active as $t ) {
+            $id    = (string) ( $t['id'] ?? 'primary' );
+            $label = ( isset( $t['label'] ) && $t['label'] !== '' ) ? (string) $t['label'] : \__( 'Registration', 'anchor-schema' );
+            $price = (float) ( $t['price'] ?? 0 );
+            if ( $price > 0 ) {
+                $label .= ' — ' . ( \function_exists( 'wc_price' ) ? \wp_strip_all_tags( \wc_price( $price ) ) : \number_format_i18n( $price, 2 ) );
+            }
+            $out[ $id ] = $label;
+        }
+        return $out;
+    }
+
+    /** The roster_msg/roster_type notice, in front-end markup. */
+    private function frontend_notice() {
+        if ( empty( $_GET['roster_msg'] ) ) {
+            return '';
+        }
+        $msg = \sanitize_text_field( \rawurldecode( \wp_unslash( $_GET['roster_msg'] ) ) );
+        if ( $msg === '' ) {
+            return '';
+        }
+        $type = ( isset( $_GET['roster_type'] ) && \wp_unslash( $_GET['roster_type'] ) === 'error' ) ? 'is-error' : 'is-ok';
+        return '<div class="anchor-event-manager-notice ' . \esc_attr( $type ) . '">' . \esc_html( $msg ) . '</div>';
     }
 }
 

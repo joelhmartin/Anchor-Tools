@@ -284,8 +284,10 @@
     });
   }
 
-  function initDeleteConfirms(){
-    $(document).on('click', '.anchor-event-admin-delete', function(e){
+  // Any control carrying data-confirm asks first — the event delete link, the
+  // roster cancel link, and anything added later.
+  function initConfirms(){
+    $(document).on('click', '[data-confirm]', function(e){
       var msg = $(this).data('confirm') || 'Are you sure?';
       if(!confirm(msg)){ e.preventDefault(); }
     });
@@ -301,7 +303,7 @@
     initSessionsRepeater();
     initLabelsRepeater();
     initOfferingRepeater();
-    initDeleteConfirms();
+    initConfirms();
     applyConditionalVisibility();
 
     $('#anchor_event_all_day').on('change', toggleAllDay);

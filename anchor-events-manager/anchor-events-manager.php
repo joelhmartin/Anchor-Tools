@@ -12,6 +12,9 @@ class Module {
     const CPT = 'event';
     const REG_CPT = 'anchor_event_reg';
     const OPTION_KEY = 'anchor_events_settings';
+
+    /** Per-event attendee questions (see get_registration_questions()). */
+    const QUESTIONS_META = '_anchor_event_reg_questions';
     const CACHE_OPTION = 'anchor_events_cache_keys';
     const NONCE = 'anchor_event_meta_nonce';
     const REG_NONCE = 'anchor_event_reg_nonce';
@@ -4842,6 +4845,33 @@ class Module {
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_price"><?php echo esc_html__( 'Price label', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_price" name="anchor_event_price" value="<?php echo esc_attr( $meta['price'] ); ?>" /></div>
                 </div>
+                <div class="anchor-event-questions">
+                    <h4><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h4>
+                    <p class="anchor-event-hint"><?php echo esc_html__( 'Anything you want to ask each person attending, on top of their name, email and phone. Each question becomes a column on the registration list and in the CSV export.', 'anchor-schema' ); ?></p>
+                    <table class="widefat anchor-event-questions-table">
+                        <thead>
+                            <tr>
+                                <th><?php echo esc_html__( 'Question', 'anchor-schema' ); ?></th>
+                                <th><?php echo esc_html__( 'Answer type', 'anchor-schema' ); ?></th>
+                                <th><?php echo esc_html__( 'Choices', 'anchor-schema' ); ?></th>
+                                <th><?php echo esc_html__( 'Required', 'anchor-schema' ); ?></th>
+                                <th aria-hidden="true"></th>
+                            </tr>
+                        </thead>
+                        <tbody class="anchor-event-questions-rows">
+                            <?php foreach ( $this->get_registration_questions( $event_id ) as $qi => $q_row ) : ?>
+                                <?php echo $this->event_question_row_html( (int) $qi, $q_row ); // already escaped ?>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <p>
+                        <button type="button" class="anchor-event-button-secondary anchor-event-question-add"><?php echo esc_html__( 'Add question', 'anchor-schema' ); ?></button>
+                    </p>
+                    <script type="text/html" id="anchor-event-question-template">
+                        <?php echo $this->event_question_row_html( 0, null, true ); // already escaped ?>
+                    </script>
+                </div>
+
             </div>
 
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="external" data-step="4">
@@ -5161,6 +5191,7 @@ class Module {
 
         $this->maybe_append_registration_shortcode( $saved_id, $input );
         $this->save_email_templates( $saved_id );
+        $this->save_registration_questions( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
         $this->clear_caches();
 
         return $input;
@@ -7254,6 +7285,153 @@ class Module {
         // Single capacity authority lives in the data layer (spec §9.1). Passing the
         // tier enforces its per-tier quota alongside the event total.
         return $this->registrations->capacity_decision( $event_id, $meta, $party_size, $tier );
+    }
+
+    /**
+     * The extra questions this event asks each attendee, on top of the built-in
+     * name / email / phone.
+     *
+     * Answers are stored on the seat in _anchor_event_reg_fields, which the roster
+     * and the CSV export already read — Registrations::get_export_rows() collects
+     * every key it finds and merges them into the header — so a question added
+     * here becomes a roster column and an export column with no further wiring.
+     *
+     * @param int $event_id
+     * @return array<int,array{key:string,label:string,type:string,options:array,required:bool}>
+     */
+    public function get_registration_questions( $event_id ) {
+        $raw = \get_post_meta( (int) $event_id, self::QUESTIONS_META, true );
+        return $this->normalize_registration_questions( \is_array( $raw ) ? $raw : [] );
+    }
+
+    /**
+     * Normalize question rows. Drops rows with no label, derives a stable key from
+     * the label when one is not supplied, and guarantees key uniqueness — the key
+     * identifies the answer on every seat, so a duplicate would merge two
+     * questions into one column.
+     *
+     * @param array $rows
+     * @return array
+     */
+    public function normalize_registration_questions( $rows ) {
+        $clean = [];
+        $seen  = [];
+        foreach ( (array) $rows as $row ) {
+            if ( ! \is_array( $row ) ) {
+                continue;
+            }
+            $label = \sanitize_text_field( (string) ( $row['label'] ?? '' ) );
+            if ( $label === '' ) {
+                continue;
+            }
+            $key = \sanitize_key( (string) ( $row['key'] ?? '' ) );
+            if ( $key === '' ) {
+                $key = \sanitize_key( \substr( \sanitize_title( $label ), 0, 32 ) );
+            }
+            if ( $key === '' ) {
+                $key = 'question';
+            }
+            if ( isset( $seen[ $key ] ) ) {
+                $n = 2;
+                while ( isset( $seen[ $key . '_' . $n ] ) ) {
+                    $n++;
+                }
+                $key = $key . '_' . $n;
+            }
+            $seen[ $key ] = true;
+
+            $type = \sanitize_key( (string) ( $row['type'] ?? 'text' ) );
+            if ( ! \in_array( $type, [ 'text', 'textarea', 'select', 'checkbox' ], true ) ) {
+                $type = 'text';
+            }
+
+            $options = [];
+            if ( $type === 'select' ) {
+                $raw_options = $row['options'] ?? '';
+                if ( ! \is_array( $raw_options ) ) {
+                    $raw_options = \preg_split( '/\r\n|\r|\n/', (string) $raw_options );
+                }
+                foreach ( (array) $raw_options as $opt ) {
+                    $opt = \sanitize_text_field( (string) $opt );
+                    if ( $opt !== '' ) {
+                        $options[] = $opt;
+                    }
+                }
+                if ( empty( $options ) ) {
+                    $type = 'text'; // a select with nothing to select is a text box
+                }
+            }
+
+            $clean[] = [
+                'key'      => $key,
+                'label'    => $label,
+                'type'     => $type,
+                'options'  => $options,
+                'required' => ! empty( $row['required'] ),
+            ];
+        }
+        return $clean;
+    }
+
+    /** Persist the posted question repeater for an event. */
+    private function save_registration_questions( $post_id, array $src ) {
+        $raw = isset( $src['anchor_event_questions'] ) && \is_array( $src['anchor_event_questions'] )
+            ? \wp_unslash( $src['anchor_event_questions'] )
+            : [];
+        $clean = $this->normalize_registration_questions( $raw );
+        if ( empty( $clean ) ) {
+            \delete_post_meta( $post_id, self::QUESTIONS_META );
+            return;
+        }
+        \update_post_meta( $post_id, self::QUESTIONS_META, $clean );
+    }
+
+    /**
+     * One row of the question repeater. Mirrors event_label_row_html(): the
+     * template copy uses __INDEX__, which manager.js rewrites on add.
+     *
+     * @param int        $index
+     * @param array|null $row
+     * @param bool       $template
+     * @return string
+     */
+    private function event_question_row_html( $index, $row = null, $template = false ) {
+        $idx  = $template ? '__INDEX__' : (string) $index;
+        $base = 'anchor_event_questions[' . $idx . ']';
+
+        $label    = $row['label'] ?? '';
+        $key      = $row['key'] ?? '';
+        $type     = $row['type'] ?? 'text';
+        $options  = isset( $row['options'] ) && \is_array( $row['options'] ) ? \implode( "\n", $row['options'] ) : '';
+        $required = ! empty( $row['required'] );
+
+        \ob_start();
+        ?>
+        <tr class="anchor-event-question-row">
+            <td>
+                <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $label ); ?>" placeholder="<?php echo esc_attr__( 'e.g. Practice or organization', 'anchor-schema' ); ?>" />
+                <input type="hidden" name="<?php echo esc_attr( $base . '[key]' ); ?>" value="<?php echo esc_attr( $key ); ?>" />
+            </td>
+            <td>
+                <select name="<?php echo esc_attr( $base . '[type]' ); ?>" class="anchor-question-type">
+                    <option value="text" <?php selected( $type, 'text' ); ?>><?php echo esc_html__( 'Short text', 'anchor-schema' ); ?></option>
+                    <option value="textarea" <?php selected( $type, 'textarea' ); ?>><?php echo esc_html__( 'Long text', 'anchor-schema' ); ?></option>
+                    <option value="select" <?php selected( $type, 'select' ); ?>><?php echo esc_html__( 'Choose one', 'anchor-schema' ); ?></option>
+                    <option value="checkbox" <?php selected( $type, 'checkbox' ); ?>><?php echo esc_html__( 'Yes / no', 'anchor-schema' ); ?></option>
+                </select>
+            </td>
+            <td>
+                <textarea name="<?php echo esc_attr( $base . '[options]' ); ?>" rows="2" placeholder="<?php echo esc_attr__( 'One choice per line', 'anchor-schema' ); ?>"><?php echo esc_textarea( $options ); ?></textarea>
+            </td>
+            <td>
+                <label><input type="checkbox" name="<?php echo esc_attr( $base . '[required]' ); ?>" value="1" <?php checked( $required ); ?> /> <?php echo esc_html__( 'Required', 'anchor-schema' ); ?></label>
+            </td>
+            <td>
+                <button type="button" class="button-link-delete anchor-event-question-remove" aria-label="<?php echo esc_attr__( 'Remove question', 'anchor-schema' ); ?>">&times;</button>
+            </td>
+        </tr>
+        <?php
+        return (string) \ob_get_clean();
     }
 
     private function get_registration_fields() {

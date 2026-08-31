@@ -100,7 +100,15 @@
     // `moved` is false only for the first paint, so the page does not jump on load.
     function render(moved) {
       sections.forEach(function (el) {
-        el.hidden = parseInt(el.getAttribute('data-step'), 10) !== current;
+        // A class, not el.hidden: the type/mode logic toggles conditional
+        // sections with an inline display, and an inline style beats the UA
+        // [hidden] rule — a switched-on conditional would stay on screen through
+        // every step. The stylesheet's .is-step-hidden carries !important so the
+        // step always wins, and clearing it hands control back to that logic.
+        var off = parseInt(el.getAttribute('data-step'), 10) !== current;
+        el.classList.toggle('is-step-hidden', off);
+        if (off) { el.setAttribute('aria-hidden', 'true'); }
+        else { el.removeAttribute('aria-hidden'); }
       });
 
       if (rail) {

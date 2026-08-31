@@ -4148,12 +4148,23 @@ class Module {
             'show_past' => 'yes',
             'limit' => 50,
             'order' => 'ASC',
-            // steps="yes" turns the new/edit form into a validated wizard. Off by
-            // default so existing single-page installs are untouched.
+            // Where the validated wizard applies:
+            //   no   (default) — never; the form stays one page, as it always was
+            //   new            — only when creating, where a guided order helps
+            //   all            — creating and editing
+            // Editing is deliberately excluded from "new": someone opening an
+            // existing event is usually changing one field they already have in
+            // mind, and a wizard makes them walk to it.
             'steps' => 'no',
         ], $atts );
 
-        $wizard = \in_array( \strtolower( (string) $atts['steps'] ), [ 'yes', '1', 'true', 'on' ], true );
+        $steps_mode = \strtolower( \trim( (string) $atts['steps'] ) );
+        if ( \in_array( $steps_mode, [ 'yes', '1', 'true', 'on' ], true ) ) {
+            $steps_mode = 'all'; // back-compat with the boolean spelling
+        }
+        $wizard_new  = \in_array( $steps_mode, [ 'new', 'all' ], true );
+        $wizard_edit = ( $steps_mode === 'all' );
+        $wizard      = $wizard_new || $wizard_edit; // gates the asset enqueue only
 
         $action = isset( $_GET['event_action'] ) ? sanitize_key( $_GET['event_action'] ) : '';
         $event_id = isset( $_GET['event_id'] ) ? (int) $_GET['event_id'] : 0;
@@ -4190,10 +4201,10 @@ class Module {
         $output .= $this->render_event_manager_notice();
 
         if ( $action === 'new' ) {
-            $output .= $this->render_event_manager_form( 0, $wizard );
+            $output .= $this->render_event_manager_form( 0, $wizard_new );
         } elseif ( $action === 'edit' && $event_id ) {
             if ( \current_user_can( 'edit_post', $event_id ) && \get_post_type( $event_id ) === self::CPT ) {
-                $output .= $this->render_event_manager_form( $event_id, $wizard );
+                $output .= $this->render_event_manager_form( $event_id, $wizard_edit );
             } else {
                 $output .= '<p>' . esc_html__( 'You do not have permission to edit that event.', 'anchor-schema' ) . '</p>';
             }

@@ -1314,3 +1314,10 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-field.has-error textarea{
   border-color:#b32d2e;
 }
+
+/* Step visibility. !important because the event-type/registration-mode logic
+   toggles conditional sections with an inline display, which would otherwise
+   keep a switched-on conditional on screen during every step. */
+.anchor-event-manager-form.is-wizard [data-step].is-step-hidden{
+  display:none !important;
+}

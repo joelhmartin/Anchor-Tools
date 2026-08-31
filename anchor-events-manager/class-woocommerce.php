@@ -1240,6 +1240,26 @@ class WooCommerce {
                 $phone = isset( $posted[ $cart_item_key ][ $i ]['phone'] ) ? \sanitize_text_field( $posted[ $cart_item_key ][ $i ]['phone'] ) : '';
                 $base  = 'anchor_attendees[' . $cart_item_key . '][' . $i . ']';
 
+                /**
+                 * Row class for the next field. A single-line input takes half the
+                 * row and pairs with its neighbour; a long field takes the whole
+                 * row and restarts the pairing so the next pair opens on the left.
+                 * WooCommerce already styles form-row-first/last as a 50/50 pair,
+                 * so this reads correctly on a stock checkout as well as a themed
+                 * one — the block sits full-width at the top of the form, and
+                 * full-width inputs inside it just make it long.
+                 */
+                $slot = 0;
+                $row_class = function ( $wide = false ) use ( &$slot ) {
+                    if ( $wide ) {
+                        $slot = 0;
+                        return 'form-row-wide';
+                    }
+                    $class = ( $slot % 2 === 0 ) ? 'form-row-first' : 'form-row-last';
+                    $slot++;
+                    return $class;
+                };
+
                 echo '<div class="anchor-event-attendee-seat">';
                 echo '<p class="anchor-event-attendee-heading">' . \esc_html(
                     \sprintf(
@@ -1250,17 +1270,17 @@ class WooCommerce {
                     )
                 ) . '</p>';
 
-                echo '<p class="form-row form-row-wide">';
+                echo '<p class="form-row ' . \esc_attr( $row_class() ) . '">';
                 echo '<label>' . \esc_html__( 'Name', 'anchor-schema' ) . ' <abbr class="required" title="required">*</abbr></label>';
                 echo '<input type="text" class="input-text" name="' . \esc_attr( $base . '[name]' ) . '" value="' . \esc_attr( $name ) . '" required />';
                 echo '</p>';
 
-                echo '<p class="form-row form-row-first">';
+                echo '<p class="form-row ' . \esc_attr( $row_class() ) . '">';
                 echo '<label>' . \esc_html__( 'Email', 'anchor-schema' ) . ' <abbr class="required" title="required">*</abbr></label>';
                 echo '<input type="email" class="input-text" name="' . \esc_attr( $base . '[email]' ) . '" value="' . \esc_attr( $email ) . '" required />';
                 echo '</p>';
 
-                echo '<p class="form-row form-row-last">';
+                echo '<p class="form-row ' . \esc_attr( $row_class() ) . '">';
                 echo '<label>' . \esc_html__( 'Phone', 'anchor-schema' ) . ' <abbr class="required" title="required">*</abbr></label>';
                 echo '<input type="tel" class="input-text" name="' . \esc_attr( $base . '[phone]' ) . '" value="' . \esc_attr( $phone ) . '" required />';
                 echo '</p>';
@@ -1276,7 +1296,7 @@ class WooCommerce {
                     $req_attr = $q['required'] ? ' required' : '';
                     $req_mark = $q['required'] ? ' <abbr class="required" title="required">*</abbr>' : '';
 
-                    echo '<p class="form-row form-row-wide">';
+                    echo '<p class="form-row ' . \esc_attr( $row_class( $q['type'] === 'textarea' ) ) . '">';
                     echo '<label>' . \esc_html( $q['label'] ) . $req_mark . '</label>'; // phpcs:ignore WordPress.Security.EscapeOutput -- $req_mark is a literal.
                     if ( $q['type'] === 'textarea' ) {
                         echo '<textarea class="input-text" rows="3" name="' . \esc_attr( $q_name ) . '"' . $req_attr . '>' . \esc_textarea( $q_value ) . '</textarea>'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.

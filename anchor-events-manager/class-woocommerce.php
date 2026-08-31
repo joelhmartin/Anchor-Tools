@@ -115,8 +115,30 @@ class WooCommerce {
         \add_action( 'woocommerce_check_cart_items', [ $this, 'notice_over_capacity_cart_items' ] );
 
         // Checkout attendee capture (classic shortcode checkout).
-        \add_action( 'woocommerce_checkout_after_customer_details', [ $this, 'render_checkout_attendee_fields' ], 10 );
+        /**
+         * Where the per-seat attendee fields render on the checkout.
+         *
+         * Before customer details, not after: measured on a live 2-seat order,
+         * "after" put the attendee block ~1,900px below billing, so the buyer
+         * filled nine required address fields before being asked the one thing
+         * the purchase is actually about — who is attending. Filterable for a
+         * site that wants the old placement back.
+         */
+        \add_action(
+            \apply_filters( 'anchor_events_checkout_attendees_hook', 'woocommerce_checkout_before_customer_details' ),
+            [ $this, 'render_checkout_attendee_fields' ],
+            10
+        );
         \add_action( 'woocommerce_after_checkout_validation', [ $this, 'validate_checkout_attendees' ], 10, 2 );
+
+        // A cart of nothing but event tickets has nothing to ship. Late priority
+        // on purpose: WooCommerce Checkout Manager registers
+        // force_shipping_address() on this same filter at 10 and turns the block
+        // back on, so anything at the default priority is silently undone.
+        \add_filter( 'woocommerce_cart_needs_shipping_address', [ $this, 'filter_needs_shipping_address' ], 99 );
+
+        // Nothing is being delivered either, so stop asking about delivery.
+        \add_filter( 'woocommerce_checkout_fields', [ $this, 'filter_checkout_fields' ], 99 );
         \add_action( 'woocommerce_checkout_create_order_line_item', [ $this, 'persist_attendees_to_line_item' ], 10, 4 );
         \add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_checkout_assets' ] );
 
@@ -1491,6 +1513,64 @@ class WooCommerce {
         $item->update_meta_data( '_anchor_event_id', $event_id );
         $item->update_meta_data( '_anchor_product_id', $product_id );
         $item->update_meta_data( '_anchor_variation_id', $variation_id );
+    }
+
+    /**
+     * Drop the shipping address block when the cart is event tickets and nothing
+     * else. Managed ticket variations are created virtual, so WooCommerce should
+     * already work this out — but a site that enables shipping globally, or any
+     * extension filtering this, can leave the whole "Ship to a different address"
+     * block on screen. On a course registration that is a screenful of address
+     * fields for something that will never be posted anywhere.
+     *
+     * Only ever removes: a cart holding one physical item keeps its shipping
+     * address, and the filter returns early if something upstream already said no.
+     *
+     * @param bool $needs
+     * @return bool
+     */
+    public function filter_needs_shipping_address( $needs ) {
+        if ( ! $needs || ! \function_exists( 'WC' ) || ! \WC()->cart ) {
+            return $needs;
+        }
+        return $this->cart_is_events_only() ? false : $needs;
+    }
+
+    /**
+     * Reword the order-notes field on a ticket-only cart. WooCommerce's default
+     * placeholder is "Notes about your order, e.g. special notes for delivery",
+     * which reads as a mistake when the thing being bought is a seat at a course.
+     * Text only — the field keeps its name, so anything reading order notes is
+     * unaffected.
+     *
+     * @param array $fields
+     * @return array
+     */
+    public function filter_checkout_fields( $fields ) {
+        if ( ! $this->cart_is_events_only() ) {
+            return $fields;
+        }
+        if ( isset( $fields['order']['order_comments'] ) ) {
+            $fields['order']['order_comments']['label']       = \__( 'Anything we should know?', 'anchor-schema' );
+            $fields['order']['order_comments']['placeholder'] = \__( 'Dietary requirements, accessibility needs, or anything else for the organizer.', 'anchor-schema' );
+        }
+        return $fields;
+    }
+
+    /**
+     * True when every line in the cart is an event ticket.
+     *
+     * @return bool
+     */
+    private function cart_is_events_only() {
+        if ( ! \function_exists( 'WC' ) || ! \WC()->cart ) {
+            return false;
+        }
+        $cart = \WC()->cart->get_cart();
+        if ( empty( $cart ) ) {
+            return false;
+        }
+        return \count( $this->get_event_cart_lines() ) === \count( $cart );
     }
 
     /** Enqueue the minimal checkout-attendees JS on the checkout page only. */

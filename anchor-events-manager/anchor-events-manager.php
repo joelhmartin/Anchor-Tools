@@ -1993,7 +1993,7 @@ class Module {
         ?>
         <div class="anchor-event-section anchor-event-conditional" data-when-type="offering">
             <h3><?php echo esc_html__( 'Offering Dates', 'anchor-schema' ); ?></h3>
-            <p class="description"><?php echo esc_html__( 'Add one row per date visitors can pick from. Saving generates/manages one full event per date — its own capacity, seats, and (when WooCommerce ticketing is enabled) its own product. Rows with no date are ignored.', 'anchor-schema' ); ?></p>
+            <p class="description"><?php echo esc_html__( 'One row per date this course is being offered. Visitors pick the date that suits them, and each one keeps its own seat count, so filling up in Denver does not close Dallas. Blank rows are skipped.', 'anchor-schema' ); ?></p>
             <div class="notice notice-error inline anchor-event-offering-error"<?php echo $offering_invalid ? '' : ' style="display:none;"'; ?>>
                 <p><?php echo esc_html__( 'Add at least one offering date before saving — no dates were generated/updated.', 'anchor-schema' ); ?></p>
             </div>
@@ -2031,7 +2031,7 @@ class Module {
         <?php if ( $include_recurrence ) : ?>
         <div class="anchor-event-section anchor-event-conditional" data-when-type="recurring">
             <h3><?php echo esc_html__( 'Recurring Schedule', 'anchor-schema' ); ?></h3>
-            <p class="description"><?php echo esc_html__( 'Define a repeating rule (weekly or monthly). Saving generates/manages one full event per occurrence, anchored on this event\'s Start Date above. You must set an end — a number of occurrences OR an until date — before this rule will generate anything.', 'anchor-schema' ); ?></p>
+            <p class="description"><?php echo esc_html__( 'For a course that repeats on a schedule — every Tuesday, or the first of each month. It starts from the Start Date above and creates each date for you. Tell it when to stop, either after a number of dates or on a final date; without that it will not create anything.', 'anchor-schema' ); ?></p>
             <div class="notice notice-error inline anchor-event-recurrence-error"<?php echo $recurrence_invalid ? '' : ' style="display:none;"'; ?>>
                 <p><?php echo esc_html__( 'Set an end for the recurrence — a number of occurrences or an until date — before saving. No occurrences were generated/updated.', 'anchor-schema' ); ?></p>
             </div>
@@ -4639,7 +4639,30 @@ class Module {
                     </div>
                     <div class="anchor-event-field" style="grid-column:1/-1;">
                         <label for="anchor_event_content"><?php echo esc_html__( 'Description', 'anchor-schema' ); ?></label>
-                        <textarea id="anchor_event_content" name="anchor_event_content" rows="6"><?php echo esc_textarea( $content ); ?></textarea>
+                        <?php
+                        /**
+                         * The real WordPress editor, so the body of the course page is
+                         * written the way it reads instead of hand-typed HTML. The Text
+                         * tab is deliberately kept: existing events store markup the
+                         * visual editor would otherwise quietly reformat, and whoever
+                         * wrote that markup needs a way back to it.
+                         *
+                         * textarea_name matches the field handle_event_manager_save()
+                         * already reads, so the save path is unchanged.
+                         */
+                        \wp_editor( $content, 'anchor_event_content', [
+                            'textarea_name' => 'anchor_event_content',
+                            'textarea_rows' => 14,
+                            'media_buttons' => true,
+                            'teeny'         => false,
+                            'quicktags'     => true,
+                            'tinymce'       => [
+                                'toolbar1' => 'formatselect,bold,italic,bullist,numlist,link,unlink,blockquote,removeformat,undo,redo',
+                                'toolbar2' => '',
+                            ],
+                        ] );
+                        ?>
+                        <p class="anchor-event-hint"><?php echo esc_html__( 'Visual writes the page for you; Text shows the underlying HTML if you need it.', 'anchor-schema' ); ?></p>
                     </div>
                     <div class="anchor-event-field">
                         <label for="anchor_event_post_status"><?php echo esc_html__( 'Publish status', 'anchor-schema' ); ?></label>
@@ -4654,7 +4677,7 @@ class Module {
 
             <div class="anchor-event-section" data-step="2">
                 <h3><?php echo esc_html__( 'Event Type & Registration', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'What shape this event is, and how people are meant to sign up. The rest of the form changes to match, so set this before filling anything else in.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Is this one date, several dates people choose between, or a multi-day course? And do they sign up here or somewhere else? Set these two first — the rest of the form changes to match.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_type"><?php echo esc_html__( 'Event Type', 'anchor-schema' ); ?></label>
@@ -4691,7 +4714,7 @@ class Module {
 
             <div class="anchor-event-section" data-step="2">
                 <h3><?php echo esc_html__( 'Date & Time', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'The start date is required — listings sort by it, and a course drops out of the public catalog once its date has passed.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'When the course runs. The start date is required, and once it has passed the course stops appearing on the site.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_start_date"><?php echo esc_html__( 'Start date', 'anchor-schema' ); ?> *</label>
@@ -4722,7 +4745,7 @@ class Module {
 
             <div class="anchor-event-section anchor-event-conditional" data-when-type="multisession" data-step="2">
                 <h3><?php echo esc_html__( 'Sessions', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'For a multi-session course: one row per meeting. Attendees register once for the whole series.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'For a course that runs over several meetings. List each meeting here; people sign up once and are booked for all of them.', 'anchor-schema' ); ?></p>
                 <p class="description"><?php echo esc_html__( 'Add one row per session date/time in this series.', 'anchor-schema' ); ?></p>
                 <table class="widefat anchor-event-sessions-table">
                     <thead>
@@ -4750,7 +4773,7 @@ class Module {
 
             <div class="anchor-event-section" data-step="3">
                 <h3><?php echo esc_html__( 'Labels', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Short badges shown on the card, e.g. a level or a track.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Small badges on the course card, like a level or a track.', 'anchor-schema' ); ?></p>
                 <p class="description"><?php echo esc_html__( 'Short badges shown on event cards — e.g. "2 Day Course", "14 CE Credits".', 'anchor-schema' ); ?></p>
                 <table class="widefat anchor-event-labels-table">
                     <thead>
@@ -4794,7 +4817,7 @@ class Module {
 
             <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Status', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Capacity and whether registration is currently open. Closing registration leaves the page up but removes the form.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Whether people can still sign up. Closing it keeps the course page online but takes the sign-up form off it.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_status"><?php echo esc_html__( 'Event status', 'anchor-schema' ); ?></label>
@@ -4810,7 +4833,7 @@ class Module {
 
             <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Settings for the built-in registration system. If this course uses an external form instead, set the mode above to External.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'How many people can come, and what they are asked when they sign up here. If sign-ups happen on another site instead, choose External above.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
@@ -4823,7 +4846,7 @@ class Module {
 
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="external" data-step="4">
                 <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Send people to a form hosted elsewhere. Registrations then live in that system, not in this site.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Send people to a sign-up form somewhere else. Those names will live in that system, so they will not appear under Attendees here.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_external_url"><?php echo esc_html__( 'External URL', 'anchor-schema' ); ?></label>
@@ -4844,13 +4867,13 @@ class Module {
 
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="wc" data-step="4">
                 <h3><?php echo esc_html__( 'Tickets / Pricing', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Paid tiers sold through WooCommerce. Each tier can carry its own price, quota and sale window.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Paid tickets. Add a row per price — early bird, standard, student — each with its own price, how many are available, and when it can be bought.', 'anchor-schema' ); ?></p>
                 <?php echo $this->render_ticket_types_fields( $event_id, 'anchor-event-button-secondary' ); // already escaped ?>
             </div>
 
             <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Display controls', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Where this event is allowed to appear in public listings.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Which pages on the site this course shows up on.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_hide_from_archive" name="anchor_event_hide_from_archive" value="1" <?php checked( $meta['hide_from_archive'] ); ?> /> <?php echo esc_html__( 'Hide from archive', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_featured" name="anchor_event_featured" value="1" <?php checked( $meta['featured'] ); ?> /> <?php echo esc_html__( 'Featured / pinned', 'anchor-schema' ); ?></label></div>
@@ -4860,7 +4883,7 @@ class Module {
 
             <div class="anchor-event-section" data-step="5">
                 <h3><?php echo esc_html__( 'Email Settings', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'What people receive when they register here, and the reminder that goes out before the date. Leave a template untouched to keep using the site-wide default.', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'The emails people get when they sign up, and the reminder before the course. Leave one alone and it keeps using the standard wording.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
                         <label for="anchor_event_reminder_offsets"><?php echo esc_html__( 'Reminder offsets (days)', 'anchor-schema' ); ?></label>

@@ -1,6 +1,21 @@
 .up-modal[hidden] {
   display: none;
 }
+
+/* Page scroll lock, set on <html> by the runtime while a screen-covering popup
+   is open (see lockScroll in frontend.js). !important because themes routinely
+   set overflow on html/body with high specificity, and a lock that silently
+   loses that fight is worse than none — the backdrop would then dim a page
+   that still scrolls under it. The padding fills the width the vanished
+   scrollbar occupied, so the page doesn't jump sideways on open. */
+html.up-scroll-lock,
+html.up-scroll-lock body {
+  overflow: hidden !important;
+}
+html.up-scroll-lock body {
+  padding-right: var(--up-scrollbar-gap, 0px);
+}
+
 .up-modal {
   position: fixed;
   inset: 0;

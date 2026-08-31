@@ -233,6 +233,7 @@ class Anchor_Universal_Popups_Module {
             'theater_max_width' => '',      // e.g. 90% or 1600px, blank = default 90%
             'theater_max_height' => '',     // e.g. 90% or 900px, blank = default 90%
             'flyin_max_width' => '',        // e.g. 420px or 30%, blank = default 400px
+            'lock_scroll' => '1',           // 0 or 1 — freeze the page behind screen-covering popups
             'autoplay' => '0',              // 0 or 1 for video popups
             'html' => '',
             'shortcode' => '',              // shortcode content to be rendered with do_shortcode()
@@ -767,6 +768,15 @@ class Anchor_Universal_Popups_Module {
             <input type="text" name="up_close_color" id="up_close_color" value="<?php echo esc_attr($m['close_color']); ?>" placeholder="#ffffff" />
           </div>
 
+          <div data-up-hide-when-style="fullscreen,flyin-bottom,flyin-bottom-left,flyin-bottom-right">
+            <label>Lock page scroll</label>
+            <select name="up_lock_scroll">
+              <option value="1" <?php selected($m['lock_scroll'], '1'); ?>>Yes &mdash; freeze the page behind the popup</option>
+              <option value="0" <?php selected($m['lock_scroll'], '0'); ?>>No &mdash; the page keeps scrolling</option>
+            </select>
+            <p class="description">Stops the page scrolling underneath while the popup is open. Fly-ins and the fullscreen takeover never lock scrolling &mdash; they&rsquo;re meant to be scrolled past.</p>
+          </div>
+
           <div data-up-show-when-style="fullscreen">
             <hr/>
             <p class="description" style="margin:6px 0;">
@@ -947,7 +957,7 @@ class Anchor_Universal_Popups_Module {
             'mode','video_url','video_id','aspect_ratio','thumb_size','custom_thumb',
             'tile_style','theme','show_title','title_position','show_duration','show_channel',
             'hover_effect','play_button_style','border_radius',
-            'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','autoplay','close_color',
+            'popup_style','modal_max_width','theater_max_width','theater_max_height','flyin_max_width','lock_scroll','autoplay','close_color',
             'html','css','js',
             'trigger_type','trigger_value','delay_ms',
             'scroll_mode','scroll_percent','scroll_target',
@@ -1184,6 +1194,7 @@ class Anchor_Universal_Popups_Module {
                 'theater_max_width' => $m['theater_max_width'],
                 'theater_max_height' => $m['theater_max_height'],
                 'flyin_max_width' => $m['flyin_max_width'],
+                'lock_scroll' => ($m['lock_scroll'] === '0' ? '0' : '1'),
                 'autoplay' => ($m['autoplay'] === '1'),
                 'close_color' => $m['close_color'],
                 'html' => do_shortcode( $m['html'] ), // HTML supports embedded shortcodes

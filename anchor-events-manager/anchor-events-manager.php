@@ -3737,7 +3737,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.12' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.13' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         \wp_add_inline_style( 'anchor-events-frontend', sprintf(
@@ -4161,7 +4161,7 @@ class Module {
             'anchor-events-manager-frontend',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
-            '1.0.3',
+            '1.0.4',
             true
         );
         \wp_enqueue_script(
@@ -4183,6 +4183,10 @@ class Module {
             } else {
                 $output .= '<p>' . esc_html__( 'You do not have permission to edit that event.', 'anchor-schema' ) . '</p>';
             }
+        } elseif ( $action === 'roster' && $event_id ) {
+            // Attendees for one event. Same data layer and same add/edit/cancel
+            // handlers as the wp-admin Roster screen — only the markup differs.
+            $output .= $this->roster->render_frontend( $event_id, $this->get_event_manager_page_url() );
         } else {
             $output .= $this->render_event_manager_list( $atts );
         }
@@ -4482,6 +4486,10 @@ class Module {
             $output .= '<strong>' . esc_html__( 'Waitlist', 'anchor-schema' ) . ':</strong> ' . esc_html( $waitlist ) . ' &middot; ';
         }
         $output .= '<a href="' . esc_url( $edit_url ) . '">' . esc_html__( 'Edit', 'anchor-schema' ) . '</a> &middot; ';
+        if ( Roster::current_user_can_manage() ) {
+            $roster_url = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $event->ID ], $base_url );
+            $output .= '<a href="' . esc_url( $roster_url ) . '">' . esc_html__( 'Attendees', 'anchor-schema' ) . '</a> &middot; ';
+        }
         $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a> &middot; ';
         $output .= '<a class="anchor-event-admin-delete" href="' . esc_url( $delete_url ) . '" data-confirm="' . esc_attr__( 'Move this event to trash?', 'anchor-schema' ) . '">' . esc_html__( 'Delete', 'anchor-schema' ) . '</a>';
         $output .= '</p>';
@@ -4831,6 +4839,23 @@ class Module {
                     </p>
                 </div>
             </div>
+
+            <?php
+            /**
+             * Extra authoring fields for the front-end manager form.
+             *
+             * A theme that adds its own event metabox can print the same inputs
+             * here (including its own nonce) and they save through the metabox's
+             * existing save_post handler — handle_event_manager_save() goes through
+             * wp_insert_post()/wp_update_post(), so save_post fires exactly as it
+             * does in wp-admin. That keeps one save path per field set instead of
+             * teaching this form about every theme's meta.
+             *
+             * @param int    $event_id 0 when creating a new event.
+             * @param Module $module   This module instance.
+             */
+            \do_action( 'anchor_events_manager_form_fields', $event_id, $this );
+            ?>
 
             <div class="anchor-event-manager-submit">
                 <button type="submit" class="anchor-event-button"><?php echo $is_edit ? esc_html__( 'Save changes', 'anchor-schema' ) : esc_html__( 'Create event', 'anchor-schema' ); ?></button>

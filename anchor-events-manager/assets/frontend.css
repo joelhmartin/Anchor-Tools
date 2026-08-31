@@ -4,6 +4,7 @@
   --anchor-event-text:#111827;
   --anchor-event-muted:#6b7280;
   --anchor-event-accent:#0f766e;
+  --anchor-event-accent-fg:#ffffff;
   --anchor-event-radius:10px;
 }
 
@@ -107,7 +108,7 @@
   padding:8px 14px;
   border-radius:999px;
   background:var(--anchor-event-accent);
-  color:#fff;
+  color:var(--anchor-event-accent-fg,#fff);
   text-decoration:none;
   font-weight:600;
 }
@@ -959,7 +960,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 
 .anchor-event-button{
   background:var(--anchor-event-accent);
-  color:#fff;
+  color:var(--anchor-event-accent-fg,#fff);
   border-color:var(--anchor-event-accent);
 }
 

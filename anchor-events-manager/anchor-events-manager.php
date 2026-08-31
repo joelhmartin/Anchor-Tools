@@ -3736,16 +3736,56 @@ class Module {
         }
     }
 
+    /**
+     * Black or white text for a given background, whichever a reader can
+     * actually see. Uses the WCAG relative-luminance formula rather than a
+     * simple brightness average, so a mid-tone accent (the kind most brand
+     * palettes pick) lands on the correct side instead of always taking white.
+     *
+     * @param string $hex Background colour, #rgb or #rrggbb.
+     * @return string Hex colour for text on that background.
+     */
+    private function readable_foreground( $hex ) {
+        $hex = \ltrim( (string) $hex, '#' );
+        if ( \strlen( $hex ) === 3 ) {
+            $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+        }
+        if ( \strlen( $hex ) !== 6 ) {
+            return '#ffffff';
+        }
+
+        $channel = function ( $c ) {
+            $c = \hexdec( $c ) / 255;
+            return $c <= 0.03928 ? $c / 12.92 : \pow( ( $c + 0.055 ) / 1.055, 2.4 );
+        };
+        $lum = 0.2126 * $channel( \substr( $hex, 0, 2 ) )
+             + 0.7152 * $channel( \substr( $hex, 2, 2 ) )
+             + 0.0722 * $channel( \substr( $hex, 4, 2 ) );
+
+        // Contrast against white vs against the module's own dark text colour.
+        $vs_white = 1.05 / ( $lum + 0.05 );
+        $vs_dark  = ( $lum + 0.05 ) / 0.0606; // #111827 luminance + 0.05
+        return $vs_dark > $vs_white ? '#111827' : '#ffffff';
+    }
+
     public function enqueue_frontend_assets() {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.13' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.17' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
+        // Drive the module's accent custom property, not just the register button.
+        // Every other button the module renders (View cart, Checkout, the list
+        // CTAs) reads --anchor-event-accent, so setting only .anchor-event-register
+        // left them on the built-in teal and the colour setting looked broken.
+        $btn_fg = $this->readable_foreground( $btn_color );
         \wp_add_inline_style( 'anchor-events-frontend', sprintf(
-            '.anchor-event-register{background:%1$s !important;border-color:%1$s !important;color:#fff !important;}.anchor-event-register:hover{filter:brightness(0.92);}',
-            $btn_color
+            ':root{--anchor-event-accent:%1$s;--anchor-event-accent-fg:%2$s;}'
+            . '.anchor-event-register{background:%1$s !important;border-color:%1$s !important;color:%2$s !important;}'
+            . '.anchor-event-register:hover{filter:brightness(0.92);}',
+            $btn_color,
+            $btn_fg
         ) );
         \wp_enqueue_script( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.js' ), [], '1.0.5', true );
         \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [

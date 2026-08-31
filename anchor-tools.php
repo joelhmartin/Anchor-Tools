@@ -58,6 +58,13 @@ if ( class_exists( Dotenv::class ) && file_exists( ANCHOR_TOOLS_PLUGIN_DIR . '.e
 if ( ! class_exists( 'Anchor_Asset_Loader' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-asset-loader.php';
 }
+// Core service, not a module: the webinar gate (and any other consumer) needs
+// the shared auth form to exist unconditionally — a toggleable module could be
+// disabled and would silently break every gated page.
+if ( ! class_exists( 'Anchor_Auth_Form' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-auth-form.php';
+    Anchor_Auth_Form::init();
+}
 if ( ! class_exists( 'Anchor_Monaco' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-monaco.php';
 }

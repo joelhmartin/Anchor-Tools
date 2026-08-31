@@ -28,12 +28,6 @@ class Module {
         \add_action( 'quick_edit_custom_box', [ $this, 'render_inline_edit_box' ], 10, 2 );
         \add_action( 'bulk_edit_custom_box', [ $this, 'render_inline_edit_box' ], 10, 2 );
 
-        // Inline AJAX login + registration for gated webinars.
-        \add_action( 'wp_ajax_nopriv_anchor_webinar_login', [ $this, 'handle_login' ] );
-        \add_action( 'wp_ajax_anchor_webinar_login', [ $this, 'handle_login' ] );
-        \add_action( 'wp_ajax_nopriv_anchor_webinar_register', [ $this, 'handle_register' ] );
-        \add_action( 'wp_ajax_anchor_webinar_register', [ $this, 'handle_register' ] );
-
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 50 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
         \add_action( 'admin_menu', [ $this, 'register_analytics_page' ] );
@@ -442,132 +436,6 @@ class Module {
     }
 
     /**
-     * AJAX: sign a visitor in from the inline webinar login form.
-     */
-    public function handle_login() {
-        if ( ! \check_ajax_referer( 'anchor_webinar_login', 'nonce', false ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'Security check failed. Please refresh the page and try again.', 'anchor-schema' ) ] );
-        }
-
-        // Throttle brute-force guessing: at most 10 sign-in attempts per IP per 15 min.
-        if ( $this->rate_limited( 'login', 10, 15 * MINUTE_IN_SECONDS ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'Too many attempts. Please try again later.', 'anchor-schema' ) ] );
-        }
-
-        $login = \sanitize_text_field( \wp_unslash( $_POST['log'] ?? '' ) );
-        $pass  = (string) ( $_POST['pwd'] ?? '' );
-
-        if ( $login === '' || $pass === '' ) {
-            \wp_send_json_error( [ 'message' => \__( 'Please enter your username and password.', 'anchor-schema' ) ] );
-        }
-
-        $user = \wp_signon(
-            [
-                'user_login'    => $login,
-                'user_password' => $pass,
-                'remember'      => ! empty( $_POST['rememberme'] ),
-            ],
-            \is_ssl()
-        );
-
-        if ( \is_wp_error( $user ) ) {
-            // Generic message — never reveal whether the username exists.
-            \wp_send_json_error( [ 'message' => \__( 'Invalid username or password.', 'anchor-schema' ) ] );
-        }
-
-        \wp_set_current_user( $user->ID );
-        \wp_send_json_success();
-    }
-
-    /**
-     * AJAX: create an account from the inline webinar register form, sign the
-     * new user in immediately, and let the JS reload the webinar so the content
-     * unlocks in place. Honours the site's "Anyone can register" setting.
-     */
-    public function handle_register() {
-        if ( ! \check_ajax_referer( 'anchor_webinar_login', 'nonce', false ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'Security check failed. Please refresh the page and try again.', 'anchor-schema' ) ] );
-        }
-
-        if ( \is_user_logged_in() ) {
-            \wp_send_json_success(); // Already signed in — just reload.
-        }
-
-        if ( ! $this->registration_enabled() ) {
-            \wp_send_json_error( [ 'message' => \__( 'Registration is currently disabled. Please contact us for access.', 'anchor-schema' ) ] );
-        }
-
-        // Throttle: at most 10 account creations per IP per hour (a backstop —
-        // Turnstile is the primary bot barrier; this stays lenient for shared
-        // office/NAT IPs where several real people may register).
-        if ( $this->rate_limited( 'register', 10, HOUR_IN_SECONDS ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'Too many attempts. Please try again later.', 'anchor-schema' ) ] );
-        }
-
-        // Honeypot: real visitors never see or fill this field; bots do.
-        if ( ! empty( $_POST['website'] ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'Registration failed. Please try again.', 'anchor-schema' ) ] );
-        }
-
-        // Bot check (only enforced once Turnstile keys are configured).
-        if ( ! $this->verify_turnstile( (string) \wp_unslash( $_POST['cf-turnstile-response'] ?? '' ) ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'Please complete the verification and try again.', 'anchor-schema' ) ] );
-        }
-
-        $email = \sanitize_email( \wp_unslash( $_POST['email'] ?? '' ) );
-        $pass  = (string) ( $_POST['pwd'] ?? '' );
-        $name  = \sanitize_text_field( \wp_unslash( $_POST['name'] ?? '' ) );
-
-        if ( ! \is_email( $email ) ) {
-            \wp_send_json_error( [ 'message' => \__( 'Please enter a valid email address.', 'anchor-schema' ) ] );
-        }
-        if ( \strlen( $pass ) < 6 ) {
-            \wp_send_json_error( [ 'message' => \__( 'Please choose a password of at least 6 characters.', 'anchor-schema' ) ] );
-        }
-
-        // Note: we deliberately do NOT check email_exists() up front and report
-        // it separately — that would let the form be used to probe which emails
-        // are registered. wp_insert_user() below rejects a duplicate email and
-        // we return the same neutral message as any other creation failure, so
-        // the response can't distinguish "already registered" from other errors.
-
-        // Derive a unique username from the email's local part.
-        $base = \sanitize_user( \current( \explode( '@', $email ) ), true );
-        if ( '' === $base ) {
-            $base = 'member';
-        }
-        $username = $base;
-        $suffix   = 1;
-        while ( \username_exists( $username ) ) {
-            $username = $base . $suffix;
-            $suffix++;
-        }
-
-        $user_id = \wp_insert_user( [
-            'user_login'   => $username,
-            'user_email'   => $email,
-            'user_pass'    => $pass,
-            'display_name' => $name !== '' ? $name : $username,
-            'first_name'   => $name,
-            'role'         => \get_option( 'default_role' ),
-        ] );
-
-        if ( \is_wp_error( $user_id ) ) {
-            // Neutral, non-enumerating message — covers a duplicate email as well
-            // as any other failure without revealing which occurred.
-            \wp_send_json_error( [ 'message' => \__( 'We couldn’t complete your registration. If you already have an account, please sign in instead.', 'anchor-schema' ) ] );
-        }
-
-        // Notify the site admin of the new registration (the visitor chose their
-        // own password and is being logged in, so no "set password" email).
-        \wp_new_user_notification( $user_id, null, 'admin' );
-
-        \wp_set_current_user( $user_id );
-        \wp_set_auth_cookie( $user_id, true, \is_ssl() );
-        \wp_send_json_success();
-    }
-
-    /**
      * Render the access gate (login form or "no access" notice) for the template.
      */
     public function render_access_gate( $post_id ) {
@@ -590,89 +458,19 @@ class Module {
         return \ob_get_clean();
     }
 
+    /**
+     * The gate's sign-in / register form is the shared Anchor_Auth_Form
+     * component — this module is just one of its call sites.
+     */
     private function render_login_form( $post_id ) {
-        $opts          = $this->get_settings();
-        $can_register  = $this->registration_enabled();
-        $turnstile_key = ( $can_register && $this->turnstile_configured() ) ? $opts['turnstile_site_key'] : '';
-        $lost_url      = \wp_lostpassword_url( \get_permalink( $post_id ) );
-        $permalink     = \get_permalink( $post_id );
-        $style         = \sprintf( '--awg-accent:%s;--awg-accent-contrast:%s;', $opts['accent_color'], $opts['accent_text_color'] );
-        \ob_start();
-        ?>
-        <div class="anchor-webinar-gate anchor-webinar-gate--login" style="<?php echo \esc_attr( $style ); ?>">
-            <div class="anchor-webinar-login">
-                <h2 class="anchor-webinar-login__title"><?php echo \esc_html__( 'Members-only webinar', 'anchor-schema' ); ?></h2>
-                <p class="anchor-webinar-login__subtitle">
-                    <?php echo $can_register
-                        ? \esc_html__( 'Sign in or create a free account to watch this webinar.', 'anchor-schema' )
-                        : \esc_html__( 'This webinar is available to members. Please sign in to continue watching.', 'anchor-schema' ); ?>
-                </p>
-
-                <?php if ( $can_register ) : ?>
-                    <div class="anchor-webinar-gate__tabs" role="tablist">
-                        <button type="button" class="anchor-webinar-gate__tab is-active" data-awtab="login" role="tab" aria-selected="true"><?php echo \esc_html__( 'Sign In', 'anchor-schema' ); ?></button>
-                        <button type="button" class="anchor-webinar-gate__tab" data-awtab="register" role="tab" aria-selected="false"><?php echo \esc_html__( 'Register', 'anchor-schema' ); ?></button>
-                    </div>
-                <?php endif; ?>
-
-                <div class="anchor-webinar-gate__panel is-active" data-awpanel="login">
-                    <form class="anchor-webinar-login__form" method="post" novalidate action="<?php echo \esc_url( \site_url( 'wp-login.php', 'login_post' ) ); ?>">
-                        <input type="hidden" name="redirect_to" value="<?php echo \esc_url( $permalink ); ?>" />
-                        <div class="anchor-webinar-login__field">
-                            <label for="awl-user"><?php echo \esc_html__( 'Username or Email', 'anchor-schema' ); ?></label>
-                            <input type="text" id="awl-user" name="log" autocomplete="username" required />
-                        </div>
-                        <div class="anchor-webinar-login__field">
-                            <label for="awl-pass"><?php echo \esc_html__( 'Password', 'anchor-schema' ); ?></label>
-                            <input type="password" id="awl-pass" name="pwd" autocomplete="current-password" required />
-                        </div>
-                        <div class="anchor-webinar-login__row">
-                            <label class="anchor-webinar-login__remember">
-                                <input type="checkbox" name="rememberme" value="1" /> <?php echo \esc_html__( 'Remember me', 'anchor-schema' ); ?>
-                            </label>
-                            <a class="anchor-webinar-login__lost" href="<?php echo \esc_url( $lost_url ); ?>"><?php echo \esc_html__( 'Lost your password?', 'anchor-schema' ); ?></a>
-                        </div>
-                        <div class="anchor-webinar-login__error" role="alert" hidden></div>
-                        <button type="submit" class="anchor-webinar-login__submit"><?php echo \esc_html__( 'Sign In', 'anchor-schema' ); ?></button>
-                    </form>
-                </div>
-
-                <?php if ( $can_register ) : ?>
-                    <div class="anchor-webinar-gate__panel" data-awpanel="register">
-                        <form class="anchor-webinar-register__form" method="post" novalidate action="<?php echo \esc_url( \wp_registration_url() ); ?>">
-                            <div class="anchor-webinar-login__field">
-                                <label for="awr-name"><?php echo \esc_html__( 'Full Name', 'anchor-schema' ); ?></label>
-                                <input type="text" id="awr-name" name="name" autocomplete="name" />
-                            </div>
-                            <div class="anchor-webinar-login__field">
-                                <label for="awr-email"><?php echo \esc_html__( 'Email', 'anchor-schema' ); ?></label>
-                                <input type="email" id="awr-email" name="email" autocomplete="email" required />
-                            </div>
-                            <div class="anchor-webinar-login__field">
-                                <label for="awr-pass"><?php echo \esc_html__( 'Create a Password', 'anchor-schema' ); ?></label>
-                                <input type="password" id="awr-pass" name="pwd" autocomplete="new-password" required />
-                            </div>
-                            <?php // Honeypot: hidden from real users; bots that autofill it are rejected. ?>
-                            <div class="anchor-webinar-hp" aria-hidden="true">
-                                <label for="awr-website"><?php echo \esc_html__( 'Website', 'anchor-schema' ); ?></label>
-                                <input type="text" id="awr-website" name="website" tabindex="-1" autocomplete="off" />
-                            </div>
-                            <?php if ( $turnstile_key ) : // Explicit render (see login.js) — no auto-render class. ?>
-                                <div class="anchor-webinar-register__captcha" data-sitekey="<?php echo \esc_attr( $turnstile_key ); ?>"></div>
-                            <?php endif; ?>
-                            <div class="anchor-webinar-register__error" role="alert" hidden></div>
-                            <button type="submit" class="anchor-webinar-register__submit"><?php echo \esc_html__( 'Create Account &amp; Watch', 'anchor-schema' ); ?></button>
-                            <p class="anchor-webinar-login__register">
-                                <?php echo \esc_html__( 'Already have an account?', 'anchor-schema' ); ?>
-                                <a href="#" data-awtab-link="login"><?php echo \esc_html__( 'Sign in', 'anchor-schema' ); ?></a>
-                            </p>
-                        </form>
-                    </div>
-                <?php endif; ?>
-            </div>
-        </div>
-        <?php
-        return \ob_get_clean();
+        return \Anchor_Auth_Form::render( [
+            'redirect_to' => \get_permalink( $post_id ),
+            'title'       => \__( 'Members-only webinar', 'anchor-schema' ),
+            'subtitle'    => \Anchor_Auth_Form::registration_enabled()
+                ? \__( 'Sign in or create a free account to watch this webinar.', 'anchor-schema' )
+                : \__( 'This webinar is available to members. Please sign in to continue watching.', 'anchor-schema' ),
+            'context'     => 'webinar',
+        ] );
     }
 
     public function add_access_column( $columns ) {
@@ -811,79 +609,12 @@ class Module {
             );
         }, 'anchor_webinars_settings', 'anchor_webinars_main' );
 
-        \add_settings_section( 'anchor_webinars_registration', \__( 'Gate Registration', 'anchor-schema' ), function() {
-            echo '<p>' . \esc_html__( 'Let visitors create an account directly from a gated webinar\'s Sign In / Register form, without opening WordPress\'s site-wide registration page. New accounts get the default role and are signed in immediately.', 'anchor-schema' ) . '</p>';
-        }, 'anchor_webinars_settings' );
-
-        \add_settings_field( 'allow_registration', \__( 'Allow registration', 'anchor-schema' ), function() {
-            $opts = $this->get_settings();
-            printf(
-                '<label><input type="checkbox" name="%1$s[allow_registration]" value="1" %2$s /> %3$s</label>',
-                \esc_attr( self::OPTION_KEY ),
-                \checked( ! empty( $opts['allow_registration'] ), true, false ),
-                \esc_html__( 'Show a Register tab on the webinar gate so visitors can sign up to watch.', 'anchor-schema' )
-            );
-        }, 'anchor_webinars_settings', 'anchor_webinars_registration' );
-
-        \add_settings_field( 'turnstile_site_key', \__( 'Turnstile Site Key', 'anchor-schema' ), function() {
-            $opts = $this->get_settings();
-            printf(
-                '<input type="text" name="%1$s[turnstile_site_key]" value="%2$s" class="regular-text" autocomplete="off" /><p class="description">%3$s</p>',
-                \esc_attr( self::OPTION_KEY ),
-                \esc_attr( $opts['turnstile_site_key'] ),
-                \esc_html__( 'Cloudflare Turnstile (free) protects the register form from bots. Create a free widget at dash.cloudflare.com → Turnstile and paste both keys here. Leave blank to disable the CAPTCHA (a honeypot + rate limit still apply).', 'anchor-schema' )
-            );
-        }, 'anchor_webinars_settings', 'anchor_webinars_registration' );
-
-        \add_settings_field( 'turnstile_secret', \__( 'Turnstile Secret Key', 'anchor-schema' ), function() {
-            $opts = $this->get_settings();
-            printf(
-                '<input type="password" name="%1$s[turnstile_secret]" value="%2$s" class="regular-text" autocomplete="off" />',
-                \esc_attr( self::OPTION_KEY ),
-                \esc_attr( $opts['turnstile_secret'] )
-            );
-        }, 'anchor_webinars_settings', 'anchor_webinars_registration' );
-
-        \add_settings_section( 'anchor_webinars_appearance', \__( 'Gate Appearance', 'anchor-schema' ), function() {
-            echo '<p>' . \esc_html__( 'Match the Sign In / Register gate to your brand. These colors apply to the buttons, active tab, links and focus states.', 'anchor-schema' ) . '</p>';
-        }, 'anchor_webinars_settings' );
-
-        \add_settings_field( 'accent_color', \__( 'Accent Color', 'anchor-schema' ), function() {
-            $opts = $this->get_settings();
-            printf(
-                '<input type="color" name="%1$s[accent_color]" value="%2$s" /> <code>%2$s</code><p class="description">%3$s</p>',
-                \esc_attr( self::OPTION_KEY ),
-                \esc_attr( $opts['accent_color'] ),
-                \esc_html__( 'Buttons, active tab, links and focus ring.', 'anchor-schema' )
-            );
-        }, 'anchor_webinars_settings', 'anchor_webinars_appearance' );
-
-        \add_settings_field( 'accent_text_color', \__( 'Button Text Color', 'anchor-schema' ), function() {
-            $opts = $this->get_settings();
-            printf(
-                '<input type="color" name="%1$s[accent_text_color]" value="%2$s" /> <code>%2$s</code><p class="description">%3$s</p>',
-                \esc_attr( self::OPTION_KEY ),
-                \esc_attr( $opts['accent_text_color'] ),
-                \esc_html__( 'Text/label color shown on top of the accent buttons.', 'anchor-schema' )
-            );
-        }, 'anchor_webinars_settings', 'anchor_webinars_appearance' );
     }
 
     public function sanitize_settings( $input ) {
         return [
-            'vimeo_api_key'      => \sanitize_text_field( $input['vimeo_api_key'] ?? '' ),
-            'allow_registration' => empty( $input['allow_registration'] ) ? 0 : 1,
-            'turnstile_site_key' => \sanitize_text_field( $input['turnstile_site_key'] ?? '' ),
-            'turnstile_secret'   => \sanitize_text_field( $input['turnstile_secret'] ?? '' ),
-            'accent_color'       => $this->sanitize_hex( $input['accent_color'] ?? '', '#2563eb' ),
-            'accent_text_color'  => $this->sanitize_hex( $input['accent_text_color'] ?? '', '#ffffff' ),
+            'vimeo_api_key' => \sanitize_text_field( $input['vimeo_api_key'] ?? '' ),
         ];
-    }
-
-    /** Validate a hex color; fall back to $default when empty/invalid. */
-    private function sanitize_hex( $value, $default ) {
-        $clean = \sanitize_hex_color( $value );
-        return $clean ? $clean : $default;
     }
 
     public function render_tab_content() {
@@ -1005,17 +736,7 @@ class Module {
         // Blocked visitors: load only what the gate needs, never the player/Vimeo ID.
         if ( ! $this->can_user_access( $post_id ) ) {
             if ( ! \is_user_logged_in() ) {
-                $deps = [];
-                // Cloudflare Turnstile (free bot protection) for the register form.
-                if ( $this->registration_enabled() && $this->turnstile_configured() ) {
-                    \wp_enqueue_script( 'cf-turnstile', 'https://challenges.cloudflare.com/turnstile/v0/api.js', [], null, true );
-                    $deps[] = 'cf-turnstile';
-                }
-                \wp_enqueue_script( 'anchor-webinar-login', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/login.js' ), $deps, '1.2.0', true );
-                \wp_localize_script( 'anchor-webinar-login', 'ANCHOR_WEBINAR_LOGIN', [
-                    'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
-                    'nonce'   => \wp_create_nonce( 'anchor_webinar_login' ),
-                ] );
+                \Anchor_Auth_Form::enqueue_assets();
             }
             return;
         }
@@ -1238,12 +959,7 @@ class Module {
 
     private function get_settings() {
         $defaults = [
-            'vimeo_api_key'      => '',
-            'allow_registration' => 1,
-            'turnstile_site_key' => '',
-            'turnstile_secret'   => '',
-            'accent_color'       => '#2563eb',
-            'accent_text_color'  => '#ffffff',
+            'vimeo_api_key' => '',
         ];
         $settings = \get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $settings ) ) {
@@ -1252,63 +968,4 @@ class Module {
         return \wp_parse_args( $settings, $defaults );
     }
 
-    /** Registration via the webinar gate is allowed (decoupled from WP's site-wide switch). */
-    private function registration_enabled() {
-        $opts = $this->get_settings();
-        return ! empty( $opts['allow_registration'] );
-    }
-
-    /** Both Turnstile keys are present, so the CAPTCHA should render + be enforced. */
-    private function turnstile_configured() {
-        $opts = $this->get_settings();
-        return $opts['turnstile_site_key'] !== '' && $opts['turnstile_secret'] !== '';
-    }
-
-    /**
-     * Verify a Cloudflare Turnstile token server-side. Returns true when Turnstile
-     * is not configured so registration keeps working before keys are added
-     * (the honeypot + rate limit still apply in that case).
-     */
-    private function verify_turnstile( $token ) {
-        if ( ! $this->turnstile_configured() ) {
-            return true;
-        }
-        if ( $token === '' ) {
-            return false;
-        }
-        $opts = $this->get_settings();
-        $resp = \wp_remote_post( 'https://challenges.cloudflare.com/turnstile/v0/siteverify', [
-            'timeout' => 10,
-            'body'    => [
-                'secret'   => $opts['turnstile_secret'],
-                'response' => $token,
-                'remoteip' => $this->client_ip(),
-            ],
-        ] );
-        if ( \is_wp_error( $resp ) ) {
-            return false;
-        }
-        $data = \json_decode( \wp_remote_retrieve_body( $resp ), true );
-        return ! empty( $data['success'] );
-    }
-
-    /**
-     * Simple per-IP rate limit. Returns true when the caller is OVER the limit
-     * and should be blocked; otherwise records the attempt and returns false.
-     */
-    private function rate_limited( $bucket, $max, $window ) {
-        $key   = 'anchor_webinar_rl_' . $bucket . '_' . \md5( $this->client_ip() );
-        $count = (int) \get_transient( $key );
-        if ( $count >= $max ) {
-            return true;
-        }
-        \set_transient( $key, $count + 1, $window );
-        return false;
-    }
-
-    /** Real client IP for rate-limiting keys. Uses REMOTE_ADDR (not spoofable client headers). */
-    private function client_ip() {
-        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-        return \filter_var( $ip, FILTER_VALIDATE_IP ) ? $ip : '0.0.0.0';
-    }
 }

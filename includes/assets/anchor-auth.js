@@ -1,20 +1,25 @@
 /**
- * Anchor Webinars — inline gate (sign in / register).
- * Submits the gated-webinar login or register form via AJAX; on success reloads
- * the same URL so the page re-renders with the player. Never navigates away.
+ * Anchor Auth Form — shared inline sign in / register.
+ *
+ * Progressive enhancement over the real <form> markup: without JS both forms
+ * post to wp-login.php / wp_registration_url() as normal. With JS they submit
+ * over AJAX and then send the browser to the server-validated redirect target
+ * (the webinar permalink, the my-account page, ...). The server re-validates
+ * that target with wp_validate_redirect(), so the value posted from here is
+ * never trusted on its own.
  */
 (function () {
-    if (!window.ANCHOR_WEBINAR_LOGIN) { return; }
+    if (!window.ANCHOR_AUTH) { return; }
 
-    var cfg = window.ANCHOR_WEBINAR_LOGIN;
-    var gate = document.querySelector('.anchor-webinar-gate--login');
+    var cfg = window.ANCHOR_AUTH;
+    var gate = document.querySelector('.anchor-auth');
     if (!gate) { return; }
 
     // --- Cloudflare Turnstile (register form) ---
     // Rendered explicitly rather than via the auto-render class, because the
     // register panel starts hidden (display:none) and Turnstile's implicit
     // render is unreliable inside hidden containers.
-    var captchaEl = gate.querySelector('.anchor-webinar-register__captcha');
+    var captchaEl = gate.querySelector('.anchor-auth-register__captcha');
     var captchaId = null;
 
     function renderCaptcha() {
@@ -118,7 +123,13 @@
                 .then(function (r) { return r.json(); })
                 .then(function (res) {
                     if (res && res.success) {
-                        window.location.reload();
+                        var dest = (res.data && res.data.redirect) || '';
+                        if (dest) {
+                            window.location.assign(dest);
+                        } else {
+                            // No target (or same page): re-render in place.
+                            window.location.reload();
+                        }
                         return;
                     }
                     setBusy(false);
@@ -133,20 +144,20 @@
         });
     }
 
-    wire(gate.querySelector('.anchor-webinar-login__form'), {
-        action: 'anchor_webinar_login',
-        fields: ['log', 'pwd', 'rememberme'],
-        errorSel: '.anchor-webinar-login__error',
-        submitSel: '.anchor-webinar-login__submit',
+    wire(gate.querySelector('.anchor-auth-login__form'), {
+        action: 'anchor_auth_login',
+        fields: ['log', 'pwd', 'rememberme', 'redirect_to'],
+        errorSel: '.anchor-auth-login__error',
+        submitSel: '.anchor-auth-login__submit',
         busyLabel: 'Signing in…',
         failMsg: 'Sign in failed. Please try again.'
     });
 
-    wire(gate.querySelector('.anchor-webinar-register__form'), {
-        action: 'anchor_webinar_register',
-        fields: ['name', 'email', 'pwd', 'website', 'cf-turnstile-response'],
-        errorSel: '.anchor-webinar-register__error',
-        submitSel: '.anchor-webinar-register__submit',
+    wire(gate.querySelector('.anchor-auth-register__form'), {
+        action: 'anchor_auth_register',
+        fields: ['name', 'email', 'pwd', 'website', 'cf-turnstile-response', 'redirect_to'],
+        errorSel: '.anchor-auth-register__error',
+        submitSel: '.anchor-auth-register__submit',
         busyLabel: 'Creating account…',
         failMsg: 'Registration failed. Please try again.',
         resetCaptcha: true

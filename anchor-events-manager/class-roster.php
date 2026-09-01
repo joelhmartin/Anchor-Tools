@@ -710,6 +710,13 @@ class Roster {
      * ------------------------------------------------------------------- */
 
     /** Status options for the edit select. */
+    /** Questions for an event — lets the inner list-table class reach the module. */
+    public function module_questions( $event_id ) {
+        return \method_exists( $this->module, 'get_registration_questions' )
+            ? $this->module->get_registration_questions( (int) $event_id )
+            : [];
+    }
+
     public function status_options() {
         return [
             Registrations::STATUS_CONFIRMED => \__( 'Confirmed', 'anchor-schema' ),
@@ -797,7 +804,8 @@ class Roster {
         $self_url   = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $event_id ], $list_url );
         $seat_id    = isset( $_GET['seat_id'] ) ? (int) \wp_unslash( $_GET['seat_id'] ) : 0;
 
-        $summary = $this->registrations->get_event_summary( $event_id );
+        $questions = $this->module_questions( $event_id );
+        $summary   = $this->registrations->get_event_summary( $event_id );
         $seats   = $this->registrations->query_seats( [
             'event_id' => $event_id,
             'status'   => 'all',
@@ -849,6 +857,9 @@ class Roster {
                                 <th scope="col"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></th>
                                 <th scope="col"><?php \esc_html_e( 'Ticket', 'anchor-schema' ); ?></th>
                                 <th scope="col"><?php \esc_html_e( 'Party', 'anchor-schema' ); ?></th>
+                                <?php foreach ( $questions as $q ) : ?>
+                                    <th scope="col"><?php echo \esc_html( $q['label'] ); ?></th>
+                                <?php endforeach; ?>
                                 <th scope="col"><?php \esc_html_e( 'Source', 'anchor-schema' ); ?></th>
                                 <th scope="col"><?php \esc_html_e( 'Added', 'anchor-schema' ); ?></th>
                                 <th scope="col"><?php \esc_html_e( 'Actions', 'anchor-schema' ); ?></th>
@@ -873,6 +884,10 @@ class Roster {
                                 <td><span class="anchor-roster-fe-pill" style="background:<?php echo \esc_attr( $this->status_color( $seat['status'] ) ); ?>"><?php echo \esc_html( $this->status_label( $seat['status'] ) ); ?></span></td>
                                 <td><?php echo \esc_html( $this->tier_label( $event_id, $seat['ticket_type_id'] ) ); ?></td>
                                 <td><?php echo (int) ( 1 + (int) $seat['guests'] ); ?></td>
+                                <?php $answers = isset( $seat['reg_fields'] ) && \is_array( $seat['reg_fields'] ) ? $seat['reg_fields'] : []; ?>
+                                <?php foreach ( $questions as $q ) : ?>
+                                    <td><?php echo \esc_html( (string) ( $answers[ $q['label'] ] ?? '' ) ); ?></td>
+                                <?php endforeach; ?>
                                 <td>
                                     <?php echo \esc_html( $seat['source'] ); ?>
                                     <?php if ( (int) $seat['order_id'] > 0 ) :
@@ -1098,8 +1113,17 @@ if ( \is_admin() ) {
                 ] );
             }
 
+            /** Extra columns for this event's own attendee questions. */
+            private function question_columns() {
+                $cols = [];
+                foreach ( $this->roster->module_questions( $this->event_id ) as $q ) {
+                    $cols[ 'q_' . $q['key'] ] = $q['label'];
+                }
+                return $cols;
+            }
+
             public function get_columns() {
-                return [
+                return \array_merge( [
                     'cb'       => '<input type="checkbox" />',
                     'attendee' => \__( 'Attendee', 'anchor-schema' ),
                     'email'    => \__( 'Email', 'anchor-schema' ),
@@ -1111,7 +1135,7 @@ if ( \is_admin() ) {
                     'order'    => \__( 'Order', 'anchor-schema' ),
                     'seat'     => \__( 'Seat', 'anchor-schema' ),
                     'date'     => \__( 'Date', 'anchor-schema' ),
-                ];
+                ], $this->question_columns() );
             }
 
             protected function get_sortable_columns() {
@@ -1218,6 +1242,11 @@ if ( \is_admin() ) {
             }
 
             public function column_default( $item, $column_name ) {
+                if ( \strpos( $column_name, 'q_' ) === 0 ) {
+                    $label  = $this->question_columns()[ $column_name ] ?? '';
+                    $fields = isset( $item['reg_fields'] ) && \is_array( $item['reg_fields'] ) ? $item['reg_fields'] : [];
+                    return \esc_html( (string) ( $fields[ $label ] ?? '' ) );
+                }
                 switch ( $column_name ) {
                     case 'email':
                         return \esc_html( $item['email'] );

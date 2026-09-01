@@ -1666,3 +1666,18 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   .anchor-event-email-modal__body{ grid-template-columns:1fr; }
   .anchor-event-email-fields{ border-right:0; border-bottom:1px solid var(--anchor-event-border,#e2e4e8); }
 }
+
+/* GrapesJS designer pane. The library ships its own chrome; this only gives it
+   the same box as the preview and the source view so the three tabs swap cleanly. */
+.anchor-event-email-design{
+  flex:1 1 auto;
+  min-height:52vh;
+  overflow:hidden;
+  background:#fff;
+}
+.anchor-event-email-design .gjs-editor{ border:0; }
+.anchor-event-email-design .gjs-cv-canvas{ background:#f4f4f4; }
+/* The library's own z-index sits below a <dialog>'s top layer, so its dropdowns
+   and modals would open behind the builder. */
+.anchor-event-email-modal .gjs-off-prv,
+.anchor-event-email-modal .gjs-mdl-container{ z-index:2147483000; }

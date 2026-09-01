@@ -4339,11 +4339,15 @@ class Module {
             $this->asset_version( 'anchor-events-manager/assets/manager.js' ),
             true
         );
-        // The per-event email builder: modal, live preview, media picker.
+        // The per-event email builder: modal, live preview, media picker, and the
+        // GrapesJS visual designer behind the Design tab.
+        if ( \class_exists( 'Anchor_Grapes' ) ) {
+            \Anchor_Grapes::enqueue();
+        }
         \wp_enqueue_script(
             'anchor-events-email-modal',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-modal.js' ),
-            [],
+            \class_exists( 'Anchor_Grapes' ) ? [ 'anchor-grapes-newsletter' ] : [],
             $this->asset_version( 'anchor-events-manager/assets/email-modal.js' ),
             true
         );
@@ -5137,10 +5141,12 @@ class Module {
                                 <div class="anchor-event-email-preview-pane">
                                     <div class="anchor-event-email-toolbar">
                                         <button type="button" class="anchor-event-email-tab is-active" data-email-view="preview"><?php echo esc_html__( 'Preview', 'anchor-schema' ); ?></button>
+                                        <button type="button" class="anchor-event-email-tab" data-email-view="design"><?php echo esc_html__( 'Design', 'anchor-schema' ); ?></button>
                                         <button type="button" class="anchor-event-email-tab" data-email-view="html"><?php echo esc_html__( 'HTML', 'anchor-schema' ); ?></button>
                                         <span class="anchor-event-email-status" aria-live="polite"></span>
                                     </div>
                                     <iframe class="anchor-event-email-frame" title="<?php echo esc_attr( sprintf( __( '%s email preview', 'anchor-schema' ), $label ) ); ?>"></iframe>
+                                    <div class="anchor-event-email-design" hidden></div>
                                     <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
                                 </div>
                             </div>
@@ -6413,8 +6419,55 @@ class Module {
         \add_settings_field( 'email_logo_url', __( 'Logo URL', 'anchor-schema' ), function() {
             $opts = $this->get_settings();
             ?>
-            <input type="url" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[email_logo_url]" value="<?php echo esc_attr( $opts['email_logo_url'] ); ?>" class="regular-text" placeholder="https://example.com/logo.png" />
-            <p class="description"><?php echo esc_html__( 'Optional logo shown above event email content. Use a public image URL from the media library or CDN.', 'anchor-schema' ); ?></p>
+            <?php
+            // Loaded here rather than in admin_assets(), which only runs on the
+            // event edit screen. Calling it during the settings render still works:
+            // the media templates print on admin_footer.
+            \wp_enqueue_media();
+            ?>
+            <span class="anchor-logo-field">
+                <input type="url" id="anchor_event_email_logo_url" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[email_logo_url]" value="<?php echo esc_attr( $opts['email_logo_url'] ); ?>" class="regular-text" placeholder="https://example.com/logo.png" />
+                <button type="button" class="button" id="anchor-logo-choose"><?php echo esc_html__( 'Choose image', 'anchor-schema' ); ?></button>
+                <button type="button" class="button-link-delete" id="anchor-logo-clear"<?php echo $opts['email_logo_url'] === '' ? ' hidden' : ''; ?>><?php echo esc_html__( 'Remove', 'anchor-schema' ); ?></button>
+            </span>
+            <p class="description"><?php echo esc_html__( 'Optional logo shown above event email content. Pick one from the media library, or paste any public image URL.', 'anchor-schema' ); ?></p>
+            <p><img id="anchor-logo-preview" src="<?php echo esc_url( $opts['email_logo_url'] ); ?>" alt="" style="max-width:220px;height:auto;<?php echo $opts['email_logo_url'] === '' ? 'display:none;' : ''; ?>" /></p>
+            <script>
+            (function () {
+                var input   = document.getElementById( 'anchor_event_email_logo_url' );
+                var choose  = document.getElementById( 'anchor-logo-choose' );
+                var clear   = document.getElementById( 'anchor-logo-clear' );
+                var preview = document.getElementById( 'anchor-logo-preview' );
+                if ( ! input || ! choose ) { return; }
+
+                function show( url ) {
+                    input.value = url;
+                    preview.src = url;
+                    preview.style.display = url ? '' : 'none';
+                    clear.hidden = ! url;
+                }
+
+                choose.addEventListener( 'click', function () {
+                    if ( ! window.wp || ! wp.media ) { return; }
+                    var picker = wp.media( {
+                        title: <?php echo wp_json_encode( __( 'Choose a logo', 'anchor-schema' ) ); ?>,
+                        library: { type: 'image' },
+                        multiple: false,
+                        button: { text: <?php echo wp_json_encode( __( 'Use this image', 'anchor-schema' ) ); ?> }
+                    } );
+                    picker.on( 'select', function () {
+                        var img = picker.state().get( 'selection' ).first().toJSON();
+                        // Full size on purpose: an email logo is rendered at a fixed
+                        // width and a thumbnail would be resampled up.
+                        show( img.url );
+                    } );
+                    picker.open();
+                } );
+
+                clear.addEventListener( 'click', function () { show( '' ); } );
+                input.addEventListener( 'input', function () { show( input.value ); } );
+            })();
+            </script>
             <?php
         }, 'anchor_events_settings', 'anchor_events_email_appearance' );
 

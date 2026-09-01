@@ -993,7 +993,7 @@ class Module {
 
     public function frontend_assets() {
         if ( \is_singular( self::CPT ) || \is_post_type_archive( self::CPT ) ) {
-            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.3.0' );
+            \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.4.0' );
         }
 
         if ( ! \is_singular( self::CPT ) ) {
@@ -1025,16 +1025,74 @@ class Module {
             return;
         }
 
-        \wp_enqueue_script( 'vimeo-player', 'https://player.vimeo.com/api/player.js', [], null, true );
-        \wp_enqueue_script( 'anchor-webinar-player', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/player.js' ), [ 'vimeo-player' ], '1.0.0', true );
+        $this->enqueue_player_assets();
+    }
 
-        \wp_localize_script( 'anchor-webinar-player', 'ANCHOR_WEBINAR', [
-            'ajaxUrl'   => \admin_url( 'admin-ajax.php' ),
-            'nonce'     => \wp_create_nonce( 'anchor_webinar_log' ),
-            'webinarId' => $post_id,
-            'vimeoId'   => $vimeo_id,
-            'userId'    => \get_current_user_id(),
-        ] );
+    /**
+     * Load the tracked Vimeo player once per request.
+     *
+     * Safe to call late (from a shortcode inside the_content) — both scripts are
+     * footer scripts, and WordPress prints late-enqueued styles in the footer too.
+     */
+    public function enqueue_player_assets() {
+        if ( \wp_script_is( 'anchor-webinar-player', 'enqueued' ) ) {
+            return;
+        }
+
+        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.4.0' );
+        \wp_enqueue_script( 'vimeo-player', 'https://player.vimeo.com/api/player.js', [], null, true );
+        \wp_enqueue_script( 'anchor-webinar-player', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/player.js' ), [ 'vimeo-player' ], '2.0.0', true );
+        \wp_localize_script( 'anchor-webinar-player', 'ANCHOR_WEBINAR', $this->player_config() );
+    }
+
+    /**
+     * Page-level player config. webinarId/vimeoId are only a fallback for the
+     * legacy bare <div id="anchor-webinar-player"> that older webinar content
+     * still carries; render_player() containers carry their own data attributes.
+     */
+    private function player_config() {
+        $config = [
+            'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
+            'nonce'   => \wp_create_nonce( 'anchor_webinar_log' ),
+            'userId'  => \get_current_user_id(),
+        ];
+
+        if ( \is_singular( self::CPT ) ) {
+            $queried_id = \get_queried_object_id();
+            $vimeo_id   = $queried_id ? \get_post_meta( $queried_id, '_anchor_webinar_vimeo_id', true ) : '';
+            if ( $vimeo_id && $this->can_user_access( $queried_id ) ) {
+                $config['webinarId'] = $queried_id;
+                $config['vimeoId']   = $vimeo_id;
+            }
+        }
+
+        return $config;
+    }
+
+    /**
+     * The one and only webinar player container. Every render path — single
+     * template, [anchor_webinar] shortcode, builder layout — goes through here,
+     * so watch tracking can never be attached to one path and missing from another.
+     */
+    public function render_player( $post_id, $vimeo_id = '' ) {
+        $post_id = (int) $post_id;
+        if ( ! $post_id ) {
+            return '';
+        }
+        if ( $vimeo_id === '' ) {
+            $vimeo_id = \get_post_meta( $post_id, '_anchor_webinar_vimeo_id', true );
+        }
+        if ( ! $vimeo_id ) {
+            return '';
+        }
+
+        $this->enqueue_player_assets();
+
+        return \sprintf(
+            '<div class="anchor-webinar-player" data-anchor-webinar-player data-webinar-id="%d" data-vimeo-id="%s"></div>',
+            $post_id,
+            \esc_attr( $vimeo_id )
+        );
     }
 
     public function template_include( $template ) {
@@ -1076,19 +1134,10 @@ class Module {
             return '';
         }
 
-        \wp_enqueue_style( 'anchor-webinars-frontend', \Anchor_Asset_Loader::url( 'anchor-webinars/assets/frontend.css' ), [], '1.3.0' );
-
-        $embed_url = 'https://player.vimeo.com/video/' . \rawurlencode( $vimeo_id ) . '?dnt=1';
-
         \ob_start();
         ?>
         <div class="anchor-webinar-block">
-            <div class="anchor-webinar-block__player">
-                <iframe src="<?php echo \esc_url( $embed_url ); ?>"
-                    frameborder="0"
-                    allow="autoplay; fullscreen; picture-in-picture"
-                    allowfullscreen></iframe>
-            </div>
+            <?php echo $this->render_player( $post->ID, $vimeo_id ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — markup built internally. ?>
             <?php if ( $webinar_date ) : ?>
                 <p class="anchor-webinar-block__date"><?php echo \esc_html( \date_i18n( 'F j, Y', \strtotime( $webinar_date ) ) ); ?></p>
             <?php endif; ?>

@@ -2616,7 +2616,11 @@ class Module {
     /** Persist the per-event subject/intro pairs posted by the email builder. */
     private function save_email_fields( $post_id, array $src ) {
         foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
-            foreach ( [ 'subject' => 'sanitize_text_field', 'intro' => 'sanitize_textarea_field' ] as $field => $clean ) {
+            // 'intro' is authored in a visual editor now, so it is markup:
+            // wp_kses_post() keeps the formatting and strips anything unsafe.
+            // sanitize_textarea_field() used to flatten it to plain text, which
+            // would silently delete every bold/link/list an author added.
+            foreach ( [ 'subject' => 'sanitize_text_field', 'intro' => 'wp_kses_post' ] as $field => $clean ) {
                 $key = 'anchor_event_email_' . $field . '_' . $type;
                 if ( ! isset( $src[ $key ] ) ) {
                     continue;
@@ -2653,12 +2657,45 @@ class Module {
         return $key !== '' ? (string) ( $s[ $key ] ?? '' ) : '';
     }
 
-    private function documented_email_tokens() {
+    /**
+     * Tokens that resolve inside the SUBJECT and OPENING LINES.
+     *
+     * These two fields are expanded with email_tokens() before they are handed
+     * to the template, so the only keys that can resolve here are that method's
+     * keys. This list is exactly those keys and nothing else.
+     *
+     * The block tokens ({intro}, {detail_rows}, {seat_list}, {cta_button},
+     * {header_image} ...) are deliberately absent: they are regions of the
+     * template document, substituted by build_registration_email_html() one
+     * pass LATER, and str_replace() does not re-scan what it just wrote. Offering
+     * them here produced the exact bug this list fixes — {intro} typed into the
+     * intro survived to the inbox as the literal text "{intro}", and the other
+     * four silently expanded to nothing.
+     */
+    private function wording_email_tokens() {
         return [
-            'event_title', 'event_date', 'event_time', 'venue', 'attendee_name',
-            'join_link', 'event_url', 'site_name', 'intro',
-            'detail_rows', 'seat_list', 'cta_button', 'header_image',
+            'event_title', 'event_date', 'event_time', 'venue', 'days_until',
+            'attendee_name', 'join_link', 'event_url', 'site_name',
+            'remaining', 'seat_count', 'status', 'order_number', 'order_url',
         ];
+    }
+
+    /**
+     * Tokens that resolve inside the raw HTML template — the scalars plus the
+     * pre-rendered block regions. Mirrors the $tokens map built in
+     * build_registration_email_html(); every name here is a real key there.
+     */
+    private function template_email_tokens() {
+        return [
+            'event_title', 'event_date', 'event_time', 'venue', 'days_until',
+            'attendee_name', 'status', 'join_link', 'event_url', 'site_name', 'event_id',
+            'intro', 'greeting', 'header_image', 'guests_line', 'waitlist_notice',
+            'detail_rows', 'seat_list', 'join_button', 'cta_button',
+        ];
+    }
+
+    private function documented_email_tokens() {
+        return $this->template_email_tokens();
     }
 
     /** Human labels for the Emails builder's outer (email-type) tab bar. */
@@ -3090,7 +3127,7 @@ class Module {
         $this->preview_field_override = [
             'type'    => $type,
             'subject' => isset( $_POST['subject'] ) ? \sanitize_text_field( \wp_unslash( $_POST['subject'] ) ) : null,
-            'intro'   => isset( $_POST['intro'] ) ? \sanitize_textarea_field( \wp_unslash( $_POST['intro'] ) ) : null,
+            'intro'   => isset( $_POST['intro'] ) ? \wp_kses_post( \wp_unslash( $_POST['intro'] ) ) : null,
         ];
         $this->preview_field_override = \array_filter( $this->preview_field_override, function ( $v ) { return $v !== null; } );
 
@@ -4379,29 +4416,35 @@ class Module {
             true
         );
         // The per-event email builder: modal, live preview, media picker, and the
-        // GrapesJS visual designer behind the Design tab.
-        if ( \class_exists( 'Anchor_Grapes' ) ) {
-            \Anchor_Grapes::enqueue();
-        }
+        // visual editor for the opening lines.
+        //
+        // That editor is WordPress's own — the same wp_editor() already used for
+        // the event Description above, reached here through wp.editor.initialize()
+        // so it can be attached after the dialog opens. It brings the real media
+        // library with it, which is the whole reason the third-party visual
+        // builder that used to sit behind a "Design" tab was removed: its asset
+        // manager was a parallel place to put files that WordPress knew nothing
+        // about, and its component model rewrote hand-built email HTML on every
+        // round trip.
+        \wp_enqueue_editor();
         \wp_enqueue_script(
             'anchor-events-email-modal',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-modal.js' ),
-            \class_exists( 'Anchor_Grapes' ) ? [ 'anchor-grapes-newsletter' ] : [],
+            [ 'jquery' ],
             $this->asset_version( 'anchor-events-manager/assets/email-modal.js' ),
             true
         );
-        // Resolved sample values for the scalar tokens, so the designer can show
-        // what an email would actually say. Only the scalars: the block tokens
-        // ({detail_rows}, {seat_list}, {cta_button}, {header_image}) expand to
-        // markup, and swapping those into an editing canvas as text would be a
-        // lie about what gets sent.
+        // Resolved sample values for the scalar tokens, shown on the palette so a
+        // token's meaning is visible before it is inserted. Only the scalars: the
+        // block tokens ({detail_rows}, {seat_list}, {cta_button}, {header_image})
+        // expand to markup, and there is no honest one-line preview of those.
         $sample_tokens = [];
         if ( $event_id > 0 ) {
             $all = $this->email_tokens( [
                 'event_id' => $event_id,
                 'seat'     => [ 'name' => \__( 'Sample Attendee', 'anchor-schema' ), 'email' => 'sample@example.test' ],
             ] );
-            foreach ( [ 'event_title', 'event_date', 'event_time', 'venue', 'attendee_name', 'site_name', 'event_url', 'join_link' ] as $k ) {
+            foreach ( $this->wording_email_tokens() as $k ) {
                 if ( isset( $all[ $k ] ) && \is_scalar( $all[ $k ] ) ) {
                     // These are substituted as text nodes in the canvas, so an
                     // entity-encoded title would show as "&#038;" rather than "&".
@@ -5156,7 +5199,7 @@ class Module {
                 </div>
 
                 <div class="anchor-event-emails" data-event="<?php echo esc_attr( $event_id ); ?>">
-                    <p class="anchor-event-hint"><?php echo esc_html__( 'Each email has its own editor: the wording on the left, a live preview on the right, and a switch to edit the raw HTML if you want to rebuild it entirely.', 'anchor-schema' ); ?></p>
+                    <p class="anchor-event-hint"><?php echo esc_html__( 'Each email has its own editor: the wording on the left with a visual editor, a live preview on the right, and an HTML tab if you want to rebuild the whole email.', 'anchor-schema' ); ?></p>
                     <input type="hidden" name="anchor_event_email_switches_present" value="1" />
                     <ul class="anchor-event-email-list">
                         <?php foreach ( $this->email_type_labels() as $type => $label ) : ?>
@@ -5191,30 +5234,55 @@ class Module {
                                         placeholder="<?php echo esc_attr( $subject_default ); ?>" data-email-field="subject" />
 
                                     <label for="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Opening lines', 'anchor-schema' ); ?></label>
+                                    <?php
+                                    /**
+                                     * Plain textarea in the markup; the visual editor is attached to it
+                                     * on open by wp.editor.initialize(). Initialising TinyMCE inside a
+                                     * closed <dialog> measures a zero-height iframe, and four eager
+                                     * instances (one per email type) would load on every event edit.
+                                     */
+                                    ?>
                                     <textarea id="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>"
-                                        name="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>" rows="6"
+                                        class="anchor-event-email-intro"
+                                        name="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>" rows="8"
                                         placeholder="<?php echo esc_attr( $intro_default ); ?>" data-email-field="intro"><?php echo esc_textarea( (string) \get_post_meta( $event_id, '_anchor_event_email_intro_' . $type, true ) ); ?></textarea>
-                                    <p class="anchor-event-hint"><?php echo esc_html__( 'Leave either blank to use the site-wide wording shown in grey.', 'anchor-schema' ); ?></p>
+                                    <p class="anchor-event-hint"><?php echo esc_html__( 'Leave either blank to use the site-wide wording shown in grey. Use the Add Media button for images.', 'anchor-schema' ); ?></p>
 
-                                    <p class="anchor-event-email-tokens-label"><?php echo esc_html__( 'Insert a token', 'anchor-schema' ); ?></p>
-                                    <div class="anchor-event-email-tokens">
-                                        <?php foreach ( $this->documented_email_tokens() as $token ) : ?>
-                                            <button type="button" class="anchor-event-token" data-token="{<?php echo esc_attr( $token ); ?>}">{<?php echo esc_html( $token ); ?>}</button>
-                                        <?php endforeach; ?>
+                                    <?php
+                                    /**
+                                     * Two palettes, not one. A token only resolves in the field whose
+                                     * expansion pass knows the key — see wording_email_tokens(). The
+                                     * template group is hidden until the HTML view is open, so a block
+                                     * token cannot be dropped into wording that will never expand it.
+                                     */
+                                    ?>
+                                    <div class="anchor-event-email-tokens-group" data-token-scope="wording">
+                                        <p class="anchor-event-email-tokens-label"><?php echo esc_html__( 'Insert a token', 'anchor-schema' ); ?></p>
+                                        <div class="anchor-event-email-tokens">
+                                            <?php foreach ( $this->wording_email_tokens() as $token ) : ?>
+                                                <button type="button" class="anchor-event-token" data-token="{<?php echo esc_attr( $token ); ?>}">{<?php echo esc_html( $token ); ?>}</button>
+                                            <?php endforeach; ?>
+                                        </div>
                                     </div>
 
-                                    <button type="button" class="anchor-event-button-secondary anchor-event-email-media"><?php echo esc_html__( 'Insert image from library', 'anchor-schema' ); ?></button>
+                                    <div class="anchor-event-email-tokens-group" data-token-scope="template" hidden>
+                                        <p class="anchor-event-email-tokens-label"><?php echo esc_html__( 'Insert a token (HTML)', 'anchor-schema' ); ?></p>
+                                        <div class="anchor-event-email-tokens">
+                                            <?php foreach ( $this->template_email_tokens() as $token ) : ?>
+                                                <button type="button" class="anchor-event-token" data-token="{<?php echo esc_attr( $token ); ?>}">{<?php echo esc_html( $token ); ?>}</button>
+                                            <?php endforeach; ?>
+                                        </div>
+                                        <button type="button" class="anchor-event-button-secondary anchor-event-email-media"><?php echo esc_html__( 'Insert image from library', 'anchor-schema' ); ?></button>
+                                    </div>
                                 </div>
 
                                 <div class="anchor-event-email-preview-pane">
                                     <div class="anchor-event-email-toolbar">
                                         <button type="button" class="anchor-event-email-tab is-active" data-email-view="preview"><?php echo esc_html__( 'Preview', 'anchor-schema' ); ?></button>
-                                        <button type="button" class="anchor-event-email-tab" data-email-view="design"><?php echo esc_html__( 'Design', 'anchor-schema' ); ?></button>
                                         <button type="button" class="anchor-event-email-tab" data-email-view="html"><?php echo esc_html__( 'HTML', 'anchor-schema' ); ?></button>
                                         <span class="anchor-event-email-status" aria-live="polite"></span>
                                     </div>
                                     <iframe class="anchor-event-email-frame" title="<?php echo esc_attr( sprintf( __( '%s email preview', 'anchor-schema' ), $label ) ); ?>"></iframe>
-                                    <div class="anchor-event-email-design" hidden></div>
                                     <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
                                 </div>
                             </div>
@@ -8143,6 +8211,97 @@ ANCHOR_EVENTS_EMAIL_SHELL;
      * original inline `header_image` conditional from build_registration_email_html().
      * Returns '' when the condition is false, exactly as before.
      */
+    /**
+     * The {intro} region — the author's opening lines, rendered for email.
+     *
+     * Two shapes arrive here and both have to keep working:
+     *
+     *  - Plain text, from every event authored before the opening lines became a
+     *    visual editor (and from the site-wide defaults, which are still plain
+     *    __() strings). Handled exactly as it always was: split on blank lines,
+     *    escaped, one styled <p> per block. Byte-for-byte identical output — no
+     *    existing event's email changes.
+     *  - Markup, from the visual editor. Run through wp_kses_post() and then
+     *    given inline styles, because email clients have no stylesheet to fall
+     *    back on: a bare <p> from TinyMCE would inherit whatever Gmail feels
+     *    like, next to the styled paragraphs the rest of the template emits.
+     *
+     * The discriminator is a named list of the tags the editor actually emits,
+     * NOT "does this contain a < ". strip_tags() reads "3<4 and 5>2" as a tag
+     * and deletes "4 and 5"; routing that sentence down the markup branch would
+     * silently destroy an author's copy. A named list cannot misfire on prose.
+     */
+    private function tpl_block_intro( $message ) {
+        $message = (string) $message;
+        if ( \trim( $message ) === '' ) {
+            return '';
+        }
+
+        $has_markup = (bool) \preg_match(
+            '#</?(?:p|br|ul|ol|li|strong|em|b|i|u|a|h[1-6]|blockquote|img|span|div|table|tr|td)\b[^>]*>#i',
+            $message
+        );
+
+        if ( ! $has_markup ) {
+            $paragraphs = '';
+            foreach ( \preg_split( "/(\r\n|\n|\r){2,}/", \trim( $message ) ) as $block ) {
+                $block = \trim( $block );
+                if ( $block === '' ) {
+                    continue;
+                }
+                $paragraphs .= '<p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">'
+                    . \nl2br( \esc_html( $block ) )
+                    . '</p>';
+            }
+            return $paragraphs;
+        }
+
+        // wpautop() because the classic editor hands its content back to the
+        // textarea with paragraphs collapsed to blank lines (inline tags intact),
+        // so the stored value can be either shape. wpautop() turns the collapsed
+        // form into paragraphs and leaves already-wrapped markup alone, which
+        // means one path renders both.
+        return $this->inline_email_styles( \wpautop( \wp_kses_post( $message ) ) );
+    }
+
+    /**
+     * Give the editor's bare block tags the inline styles email needs.
+     *
+     * Only tags with no style attribute of their own are touched, so an author
+     * who set something in the HTML tab keeps it.
+     */
+    private function inline_email_styles( $html ) {
+        $styles = [
+            'p'          => 'margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;',
+            'ul'         => 'margin:0 0 16px;padding:0 0 0 20px;font-size:16px;line-height:1.5;color:#333;',
+            'ol'         => 'margin:0 0 16px;padding:0 0 0 20px;font-size:16px;line-height:1.5;color:#333;',
+            'li'         => 'margin:0 0 6px;',
+            'h1'         => 'margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;',
+            'h2'         => 'margin:0 0 12px;font-size:20px;line-height:1.3;color:#111;',
+            'h3'         => 'margin:0 0 12px;font-size:18px;line-height:1.3;color:#111;',
+            'h4'         => 'margin:0 0 12px;font-size:16px;line-height:1.3;color:#111;',
+            'blockquote' => 'margin:0 0 16px;padding:0 0 0 16px;border-left:3px solid #ddd;color:#555;',
+            'a'          => 'color:#0f766e;',
+            'img'        => 'max-width:100%;height:auto;display:block;',
+        ];
+
+        foreach ( $styles as $tag => $css ) {
+            $html = \preg_replace_callback(
+                '#<' . $tag . '(\s[^>]*)?>#i',
+                function ( $m ) use ( $tag, $css ) {
+                    $attrs = $m[1] ?? '';
+                    if ( \stripos( $attrs, 'style=' ) !== false ) {
+                        return $m[0];
+                    }
+                    return '<' . $tag . $attrs . ' style="' . $css . '">';
+                },
+                $html
+            );
+        }
+
+        return $html;
+    }
+
     private function tpl_block_header_image( $image_url, $event_title ) {
         \ob_start();
         ?><?php if ( $image_url ) : ?>
@@ -8496,16 +8655,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             }
         }
 
-        $paragraphs = '';
-        foreach ( preg_split( "/(\r\n|\n|\r){2,}/", trim( $message ) ) as $block ) {
-            $block = trim( $block );
-            if ( $block === '' ) {
-                continue;
-            }
-            $paragraphs .= '<p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">'
-                . nl2br( esc_html( $block ) )
-                . '</p>';
-        }
+        $paragraphs = $this->tpl_block_intro( $message );
 
         // Task 3.1 — resolve the template (per-event override -> global option ->
         // default constant), then expand the same scalar+block token set into it.

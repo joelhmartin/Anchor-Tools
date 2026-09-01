@@ -24,6 +24,76 @@
     return btoa(bin);
   }
 
+  /**
+   * Indent an HTML document so the source view is readable.
+   *
+   * The stored templates carry whatever whitespace they were authored with —
+   * usually a heredoc's leading indentation plus tokens strung across lines —
+   * which renders as a wall. This re-indents by nesting depth: one tag per line,
+   * two spaces per level.
+   *
+   * Whitespace between tags is not significant in these templates (they are
+   * table-based emails), and the value is run through wp_kses on save either
+   * way, so re-indenting cannot change what the email renders. <pre>, <style>
+   * and <script> keep their contents verbatim.
+   */
+  var VOID_TAGS = ['area','base','br','col','embed','hr','img','input','link','meta','source','track','wbr'];
+  var VERBATIM = ['pre','style','script','textarea'];
+
+  function formatHtml(html) {
+    if (!html || !html.trim()) { return html; }
+    var parts = String(html).replace(/>\s+</g, '><').split(/(<[^>]+>)/g).filter(function (t) { return t !== ''; });
+    var out = [], depth = 0, verbatim = null;
+
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      var isTag = part.charAt(0) === '<';
+
+      if (verbatim) {
+        out.push(part);
+        if (isTag && part.toLowerCase().indexOf('</' + verbatim) === 0) { verbatim = null; depth = Math.max(0, depth - 1); }
+        continue;
+      }
+      if (!isTag) {
+        var text = part.trim();
+        if (text !== '') { out.push(pad(depth) + text); }
+        continue;
+      }
+
+      var name = (part.match(/^<\s*\/?\s*([a-zA-Z0-9-]+)/) || [])[1];
+      name = name ? name.toLowerCase() : '';
+
+      if (part.indexOf('</') === 0) {
+        depth = Math.max(0, depth - 1);
+        out.push(pad(depth) + part);
+        continue;
+      }
+
+      var selfClosing = part.slice(-2) === '/>' || VOID_TAGS.indexOf(name) !== -1 || part.charAt(1) === '!' || part.charAt(1) === '?';
+
+      // An element whose entire content is one text node stays on one line.
+      // Breaking it would put whitespace inside a <td>, which is exactly how the
+      // gap under an image appears in Outlook — and these are the cells holding
+      // {header_image} and {cta_button}.
+      if (!selfClosing && parts[i + 1] && parts[i + 1].charAt(0) !== '<'
+          && parts[i + 2] && parts[i + 2].toLowerCase().indexOf('</' + name) === 0) {
+        out.push(pad(depth) + part + parts[i + 1].trim() + parts[i + 2]);
+        i += 2;
+        continue;
+      }
+
+      out.push(pad(depth) + part);
+      if (!selfClosing) {
+        depth++;
+        if (VERBATIM.indexOf(name) !== -1) { verbatim = name; }
+      }
+    }
+
+    return out.join('\n');
+  }
+
+  function pad(n) { return new Array(n + 1).join('  '); }
+
   function ready(fn) {
     if (document.readyState !== 'loading') { fn(); }
     else { document.addEventListener('DOMContentLoaded', fn); }
@@ -90,6 +160,12 @@
       wrap.querySelectorAll('.anchor-event-email-open').forEach(function (btn) {
         if (btn.getAttribute('data-email-type') !== type) { return; }
         btn.addEventListener('click', function () {
+          // Indent once, the first time it is opened — re-indenting on every
+          // visit would fight an author who laid their own markup out.
+          if (source && !source.dataset.formatted) {
+            source.value = formatHtml(source.value);
+            source.dataset.formatted = '1';
+          }
           if (typeof modal.showModal === 'function') { modal.showModal(); }
           else { modal.setAttribute('open', ''); }
           render();

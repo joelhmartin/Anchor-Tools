@@ -2,10 +2,21 @@
  * Per-event email builder for the front-end manager form.
  *
  * One modal per email type: the wording on the left, a rendered preview on the
- * right, and a switch to the raw HTML. The preview is the plugin's own
- * anchor_events_email_preview endpoint, which renders the real template against
- * real event data, so what the panel shows is what the email will be — including
- * the subject and opening lines currently typed but not yet saved.
+ * right, and an HTML tab holding the whole template. The preview is the
+ * plugin's own anchor_events_email_preview endpoint, which renders the real
+ * template against real event data, so what the panel shows is what the email
+ * will be — including the subject and opening lines currently typed but not yet
+ * saved.
+ *
+ * The opening lines are edited in WordPress's own TinyMCE, attached to the
+ * textarea on first open. That is a deliberate replacement for a third-party
+ * visual page builder that used to sit behind a "Design" tab: it round-tripped
+ * hand-built email HTML through its own component model and lost markup on
+ * every visit, it rendered {tokens} as editable text with no way to resolve
+ * them, and its asset manager was a second place to put files that WordPress
+ * knew nothing about. TinyMCE edits only the prose region — the part that is
+ * actually per-event — and the HTML tab remains the way to rebuild the whole
+ * document.
  *
  * The fields are ordinary inputs inside the manager form, so nothing here needs
  * to save anything: closing the modal leaves the values in the form and the
@@ -98,33 +109,51 @@
 
   function pad(n) { return new Array(n + 1).join('  '); }
 
-  /**
-   * Split a full email document into the parts GrapesJS should and should not
-   * touch.
-   *
-   * The designer edits the body only. Everything above it — doctype, <head>,
-   * charset, viewport, the <title> carrying {event_title} — is exactly the sort
-   * of thing an email client cares about and a visual editor happily rewrites,
-   * so it is held aside verbatim and put back on export.
-   */
-  function splitShell(html) {
-    var m = String(html).match(/^([\s\S]*?<body[^>]*>)([\s\S]*?)(<\/body>[\s\S]*)$/i);
-    if (!m) { return { head: '', body: String(html), tail: '' }; }
-    return { head: m[1], body: m[2], tail: m[3] };
-  }
-
-  function joinShell(shell, body) {
-    if (!shell.head) { return body; }
-    return shell.head + '\n' + body + '\n' + shell.tail;
-  }
-
   function ready(fn) {
     if (document.readyState !== 'loading') { fn(); }
     else { document.addEventListener('DOMContentLoaded', fn); }
   }
 
+  /**
+   * WordPress's media library. One picker for every caller in this file.
+   *
+   * `host` is the <dialog> the picker was opened from. A dialog opened with
+   * showModal() is in the browser's TOP LAYER, which paints above the whole
+   * normal stacking context — no z-index on the media modal can reach it, and
+   * raising one only looks like it should work. WordPress appends the media
+   * modal to <body>, so it lands underneath: hit-testing the centre of the
+   * "Select Image" panel returned the dialog's preview iframe, meaning nothing
+   * in the picker was clickable. Moving the element into the dialog puts it in
+   * the same top-layer subtree. It is a live DOM move, so the Backbone view
+   * keeps its listeners and closing still tears it down normally.
+   */
+  function openMedia(onPick, onFail, host) {
+    if (!window.wp || !wp.media) { if (onFail) { onFail(); } return; }
+    var picker = wp.media({
+      title: 'Choose an image',
+      library: { type: 'image' },
+      multiple: false,
+      button: { text: 'Use this image' }
+    });
+    picker.on('select', function () {
+      var img = picker.state().get('selection').first().toJSON();
+      onPick(img.sizes && img.sizes.large ? img.sizes.large.url : img.url, img);
+    });
+    picker.on('open', function () {
+      if (!host) { return; }
+      // After the view has rendered itself into <body>.
+      window.requestAnimationFrame(function () {
+        document.querySelectorAll('.media-modal, .media-modal-backdrop').forEach(function (el) {
+          if (!host.contains(el)) { host.appendChild(el); }
+        });
+      });
+    });
+    picker.open();
+  }
+
   function init(wrap) {
     var eventId = wrap.getAttribute('data-event') || '0';
+    var form    = wrap.closest('form');
 
     wrap.querySelectorAll('[data-email-modal]').forEach(function (modal) {
       var type    = modal.getAttribute('data-email-modal');
@@ -134,14 +163,19 @@
       var frame   = modal.querySelector('.anchor-event-email-frame');
       var status  = modal.querySelector('.anchor-event-email-status');
       var timer   = null;
+      var view    = 'preview';
+      var mce     = null;            // the TinyMCE instance, once attached
       var lastFocused = intro;
 
-      // Remember where a token or image should land.
-      [subject, intro, source].forEach(function (el) {
-        if (el) { el.addEventListener('focus', function () { lastFocused = el; }); }
-      });
-
       function say(msg) { if (status) { status.textContent = msg || ''; } }
+
+      /** The opening lines as they stand right now, editor or textarea. */
+      function introValue() {
+        if (mce && !mce.isHidden()) { return mce.getContent(); }
+        return intro ? intro.value : '';
+      }
+
+      // ---------------------------------------------------------------- preview
 
       function render() {
         if (!frame) { return; }
@@ -157,7 +191,7 @@
         // and then sanitises exactly as before, so nothing is trusted extra.
         body.set('template_b64', b64(source ? source.value : ''));
         body.set('subject', subject ? subject.value : '');
-        body.set('intro', intro ? intro.value : '');
+        body.set('intro', introValue());
 
         fetch(cfg.ajaxUrl, { method: 'POST', credentials: 'same-origin', body: body })
           .then(function (r) { return r.json(); })
@@ -177,10 +211,80 @@
       }
 
       [subject, intro, source].forEach(function (el) {
-        if (el) { el.addEventListener('input', renderSoon); }
+        if (!el) { return; }
+        el.addEventListener('focus', function () { lastFocused = el; });
+        el.addEventListener('input', renderSoon);
       });
 
-      // open / close
+      // ------------------------------------------------------- visual editor
+
+      /**
+       * Attach WordPress's editor to the opening-lines textarea.
+       *
+       * Deferred to the first open: TinyMCE measures its iframe at init, and a
+       * <dialog> that has never been shown has no layout — an eager instance
+       * comes up zero-height. Four of these (one per email type) on every event
+       * edit would also be four editors nobody asked for.
+       */
+      function mountEditor() {
+        if (mce || !intro || !window.wp || !wp.editor || !window.tinymce) { return; }
+        var id = intro.id;
+
+        try {
+          wp.editor.initialize(id, {
+            quicktags: false,
+            mediaButtons: false,
+            tinymce: {
+              wpautop: true,
+              menubar: false,
+              statusbar: false,
+              branding: false,
+              height: 220,
+              toolbar1: 'bold,italic,bullist,numlist,link,unlink,anchorimage,removeformat,undo,redo',
+              toolbar2: '',
+              setup: function (ed) {
+                mce = ed;
+
+                // Our own image button, wired to the WordPress media library.
+                // The alternative — the editor's stock image dialog — asks for a
+                // URL and knows nothing about the site's uploads.
+                ed.addButton('anchorimage', {
+                  icon: 'image',
+                  tooltip: 'Insert image from library',
+                  onclick: function () {
+                    openMedia(function (url, img) {
+                      ed.insertContent('<img src="' + url + '" alt="' + (img.alt || '') +
+                        '" style="max-width:100%;height:auto;" />');
+                    }, function () { say('Media library unavailable'); }, modal);
+                  }
+                });
+
+                // Everything typed in the editor lands back in the textarea the
+                // form posts, and drives the live preview. One source of truth:
+                // the editor never holds state the save path cannot see.
+                ed.on('keyup change SetContent ExecCommand NodeChange', function () {
+                  ed.save();
+                  renderSoon();
+                });
+                ed.on('focus', function () { lastFocused = intro; });
+              }
+            }
+          });
+        } catch (e) {
+          mce = null;   // plain textarea still works; nothing is lost
+        }
+      }
+
+      // TinyMCE keeps its content in an iframe until told otherwise, so the
+      // textarea would post whatever it held at page load without this.
+      if (form) {
+        form.addEventListener('submit', function () {
+          if (mce) { mce.save(); }
+        });
+      }
+
+      // --------------------------------------------------------- open / close
+
       wrap.querySelectorAll('.anchor-event-email-open').forEach(function (btn) {
         if (btn.getAttribute('data-email-type') !== type) { return; }
         btn.addEventListener('click', function () {
@@ -192,204 +296,86 @@
           }
           if (typeof modal.showModal === 'function') { modal.showModal(); }
           else { modal.setAttribute('open', ''); }
+          mountEditor();
           render();
         });
       });
       modal.querySelectorAll('.anchor-event-email-close').forEach(function (btn) {
         btn.addEventListener('click', function () {
+          if (mce) { mce.save(); }
           if (typeof modal.close === 'function') { modal.close(); }
           else { modal.removeAttribute('open'); }
         });
       });
 
-      // Preview / Design / HTML switch
-      var design = modal.querySelector('.anchor-event-email-design');
-      var editor = null;
-      var shell  = null;
-
-      function mountDesigner() {
-        if (editor || !design || !window.grapesjs) { return; }
-        var preset = window['grapesjs-preset-newsletter'] || window.grapesjsPresetNewsletter;
-        shell = splitShell(source ? source.value : '');
-
-        editor = grapesjs.init({
-          container: design,
-          height: '100%',
-          fromElement: false,
-          storageManager: false,
-          plugins: preset ? [preset] : [],
-          pluginsOpts: preset ? new Map([[preset, { modalTitleImport: 'Paste your HTML' }]]) : undefined,
-          assetManager: { assets: [], upload: false, custom: false },
-          components: shell.body
-        });
-
-        // The media library is WordPress's, not GrapesJS's own uploader — the
-        // asset manager here would otherwise offer a second, parallel place to
-        // put files that the site knows nothing about.
-        editor.on('run:open-assets', function () {
-          editor.Modal.close();
-          openMedia(function (url) {
-            var sel = editor.getSelected();
-            if (sel && sel.is('image')) { sel.set('src', url); }
-            else { editor.addComponents('<img src="' + url + '" style="max-width:100%;height:auto;" />'); }
-          });
-        });
-
-        // Anything done in the designer is written straight back into the source
-        // textarea, which is the field the form actually posts. One source of
-        // truth: the designer never holds state the save path cannot see.
-        editor.on('update', syncFromDesigner);
-
-        addSampleToggle();
-      }
-
-      /**
-       * Show what the tokens actually say, inside the designer.
-       *
-       * Substitution happens in the canvas DOM only, never in the model, and the
-       * editor is put into its own preview mode while it is on — so nothing an
-       * author does can bake a sample value into the saved template. Toggling
-       * off restores the tokens from the originals kept alongside.
-       */
-      function addSampleToggle() {
-        var panels = editor.Panels;
-        if (!panels || !panels.getPanel) { return; }
-        var vals = cfg.tokens || {};
-        if (!Object.keys(vals).length) { return; }
-        var on = false;
-
-        panels.addButton('options', {
-          id: 'anchor-sample-data',
-          className: 'fa fa-eye',
-          label: 'abc',
-          attributes: { title: 'Show sample data' },
-          command: function () {
-            var doc = editor.Canvas.getDocument();
-            if (!doc) { return; }
-            on = !on;
-            if (on) {
-              editor.runCommand('core:preview');
-              walkText(doc.body, function (node) {
-                if (node.__anchorRaw === undefined) { node.__anchorRaw = node.nodeValue; }
-                node.nodeValue = node.__anchorRaw.replace(/\{([a-z_]+)\}/g, function (m, k) {
-                  return Object.prototype.hasOwnProperty.call(vals, k) ? vals[k] : m;
-                });
-              });
-            } else {
-              walkText(doc.body, function (node) {
-                if (node.__anchorRaw !== undefined) { node.nodeValue = node.__anchorRaw; }
-              });
-              editor.stopCommand('core:preview');
-            }
-          }
-        });
-      }
-
-      function walkText(root, fn) {
-        var w = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
-        var n, list = [];
-        while ((n = w.nextNode())) { list.push(n); }
-        list.forEach(fn);
-      }
-
-      function syncFromDesigner() {
-        if (!editor || !source) { return; }
-
-        // The preset's inlined export, not getHtml()+getCss(). The email
-        // sanitiser allows `style` as an ATTRIBUTE but has no <style> ELEMENT in
-        // its allowlist, so a stylesheet block was stripped by wp_kses while its
-        // CSS text survived — which is how raw declarations ended up rendering as
-        // visible text in the preview. Inlined styles land on attributes that are
-        // allowed, and inline CSS is what email clients want anyway.
-        var html;
-        try {
-          html = editor.runCommand('gjs-get-inlined-html');
-        } catch (e) {
-          html = editor.getHtml();
-        }
-        if (typeof html !== 'string') { html = editor.getHtml(); }
-
-        var body = html.replace(/^\s*<body[^>]*>/i, '').replace(/<\/body>\s*$/i, '');
-        source.value = joinShell(shell || splitShell(source.value), body);
-        // The designer emits one unbroken line. Flag it so the HTML view
-        // re-indents before anyone has to read it — formatting once on open was
-        // never going to cover markup written after that.
-        source.dataset.machine = '1';
-        renderSoon();
-      }
+      // ------------------------------------------------------ Preview / HTML
 
       modal.querySelectorAll('[data-email-view]').forEach(function (tab) {
         tab.addEventListener('click', function () {
-          var view = tab.getAttribute('data-email-view');
+          view = tab.getAttribute('data-email-view');
           modal.querySelectorAll('[data-email-view]').forEach(function (t) {
             t.classList.toggle('is-active', t === tab);
           });
-          if (view === 'html' && source && source.dataset.machine === '1') {
-            source.value = formatHtml(source.value);
-            delete source.dataset.machine;
-          }
           if (source) { source.hidden = view !== 'html'; }
           if (frame)  { frame.hidden  = view !== 'preview'; }
-          if (design) { design.hidden = view !== 'design'; }
 
-          if (view === 'design') {
-            mountDesigner();
-            // Hand the designer whatever the HTML tab may have changed.
-            if (editor) {
-              shell = splitShell(source.value);
-              editor.setComponents(shell.body);
-              editor.refresh();
-            }
+          // A token only resolves in the field whose expansion pass knows the
+          // key, so the palette shows the set that belongs to the open view.
+          modal.querySelectorAll('[data-token-scope]').forEach(function (group) {
+            var scope = group.getAttribute('data-token-scope');
+            group.hidden = (view === 'html') ? scope !== 'template' : scope !== 'wording';
+          });
+          if (view === 'html') { lastFocused = source; }
+          if (view === 'preview') {
+            if (mce) { mce.save(); }
+            lastFocused = intro;
+            render();
           }
-          if (view === 'preview') { render(); }
         });
       });
 
-      // Show what each token resolves to for this event, on hover.
+      // ------------------------------------------------------- token palette
+
       modal.querySelectorAll('.anchor-event-token').forEach(function (btn) {
         var key = (btn.getAttribute('data-token') || '').replace(/[{}]/g, '');
         var val = (cfg.tokens || {})[key];
+        // Show what the token resolves to for this event, on hover.
         if (val) { btn.title = '{' + key + '} → ' + val; }
-      });
 
-      // token buttons write into whichever field was last focused
-      modal.querySelectorAll('.anchor-event-token').forEach(function (btn) {
         btn.addEventListener('click', function () {
-          insertAtCursor(lastFocused || intro, btn.getAttribute('data-token') || '');
+          insertToken(btn.getAttribute('data-token') || '');
         });
       });
 
-      function openMedia(onPick) {
-        if (!window.wp || !wp.media) { say('Media library unavailable'); return; }
-        var picker = wp.media({ title: 'Choose an image', library: { type: 'image' }, multiple: false,
-                                button: { text: 'Use this image' } });
-        picker.on('select', function () {
-          var img = picker.state().get('selection').first().toJSON();
-          onPick(img.sizes && img.sizes.large ? img.sizes.large.url : img.url, img);
-        });
-        picker.open();
+      function insertToken(text) {
+        // In the HTML view the target is the source; otherwise it is whichever
+        // wording field was last touched, and the editor takes it as content.
+        if (view === 'html') { insertAtCursor(source, text); return; }
+        if (lastFocused === subject) { insertAtCursor(subject, text); return; }
+        if (mce && !mce.isHidden()) {
+          mce.insertContent(text);
+          mce.save();
+          renderSoon();
+          return;
+        }
+        insertAtCursor(intro, text);
       }
 
-      // media library -> insert the URL, never re-upload
+      // media library -> insert an <img> at the cursor in the HTML view
       var media = modal.querySelector('.anchor-event-email-media');
       if (media) {
         media.addEventListener('click', function () {
           openMedia(function (url, img) {
-            var target = lastFocused || source;
-            // In the HTML view an <img> is what you want; in a text field the URL is.
-            var snippet = (target === source)
-              ? '<img src="' + url + '" alt="' + (img.alt || '') + '" style="max-width:100%;height:auto;" />'
-              : url;
-            insertAtCursor(target, snippet);
+            insertAtCursor(source, '<img src="' + url + '" alt="' + (img.alt || '') +
+              '" style="max-width:100%;height:auto;" />');
             if (navigator.clipboard) { navigator.clipboard.writeText(url).catch(function () {}); }
             say('Image inserted — URL also copied');
-          });
+          }, function () { say('Media library unavailable'); }, modal);
         });
       }
 
       function insertAtCursor(el, text) {
         if (!el) { return; }
-        if (el.hidden) { el = intro; }
         var start = el.selectionStart, end = el.selectionEnd;
         if (typeof start === 'number') {
           el.value = el.value.slice(0, start) + text + el.value.slice(end);

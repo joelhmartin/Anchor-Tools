@@ -1609,7 +1609,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   color:var(--anchor-event-muted,#6b7280); padding:0 4px;
 }
 .anchor-event-email-modal__body{
-  display:grid; grid-template-columns:320px 1fr; gap:0;
+  display:grid; grid-template-columns:minmax(340px,420px) 1fr; gap:0;
   max-height:calc(88vh - 132px);
 }
 .anchor-event-email-fields{
@@ -1629,6 +1629,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   letter-spacing:.06em; color:var(--anchor-event-muted,#6b7280);
 }
 .anchor-event-email-tokens{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+.anchor-event-email-tokens-group[hidden]{ display:none; }
 .anchor-event-token{
   border:1px solid var(--anchor-event-border,#e2e4e8); background:#fff; border-radius:999px;
   padding:4px 10px; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -1670,20 +1671,22 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   .anchor-event-email-fields{ border-right:0; border-bottom:1px solid var(--anchor-event-border,#e2e4e8); }
 }
 
-/* GrapesJS designer pane. The library ships its own chrome; this only gives it
-   the same box as the preview and the source view so the three tabs swap cleanly. */
-.anchor-event-email-design{
-  flex:1 1 auto;
-  min-height:52vh;
-  overflow:hidden;
-  background:#fff;
+/* WordPress's editor inside the wording column. It ships its own chrome; this
+   only keeps it inside the column and stops the iframe collapsing on open. */
+.anchor-event-email-fields .wp-editor-wrap{ margin-bottom:4px; }
+.anchor-event-email-fields .mce-tinymce{
+  box-shadow:none; border:1px solid var(--anchor-event-border,#e2e4e8); border-radius:8px;
 }
-.anchor-event-email-design .gjs-editor{ border:0; }
-.anchor-event-email-design .gjs-cv-canvas{ background:#f4f4f4; }
-/* The library's own z-index sits below a <dialog>'s top layer, so its dropdowns
-   and modals would open behind the builder. */
-.anchor-event-email-modal .gjs-off-prv,
-.anchor-event-email-modal .gjs-mdl-container{ z-index:2147483000; }
+.anchor-event-email-fields .mce-toolbar-grp{ border-radius:8px 8px 0 0; }
+.anchor-event-email-fields .mce-edit-area iframe{ min-height:180px; }
+
+/* The media library opening behind the builder is NOT a z-index problem and has
+   no CSS fix: a <dialog> opened with showModal() is in the browser's top layer,
+   which paints above the entire normal stacking context whatever z-index the
+   media modal carries. email-modal.js moves the modal into the dialog instead.
+   Inside it, the modal keeps its own fixed positioning — the dialog sets no
+   transform, so it is not a containing block and does not clip it. */
+.anchor-event-email-modal .media-modal{ position:fixed; }
 
 /* Emails step: one row per email — a switch and the editor that opens it. */
 .anchor-event-email-list{ list-style:none; margin:12px 0 6px; padding:0; display:grid; gap:8px; max-width:520px; }

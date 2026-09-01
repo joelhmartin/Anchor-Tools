@@ -5220,7 +5220,16 @@ class Module {
                         $subject_default = $this->email_field_default( $type, 'subject' );
                         $intro_default   = $this->email_field_default( $type, 'intro' );
                         ?>
-                        <dialog class="anchor-event-email-modal" data-email-modal="<?php echo esc_attr( $type ); ?>">
+                        <?php
+                        /**
+                         * tabindex so the dialog can take programmatic focus. It is
+                         * opened with show(), not showModal(), so the browser moves
+                         * focus nowhere on its own — and the Esc-to-close handler is
+                         * bound to this element, so without focus landing inside it
+                         * the key never arrives.
+                         */
+                        ?>
+                        <dialog class="anchor-event-email-modal" tabindex="-1" data-email-modal="<?php echo esc_attr( $type ); ?>">
                             <div class="anchor-event-email-modal__head">
                                 <h3><?php echo esc_html( sprintf( __( '%s email', 'anchor-schema' ), $label ) ); ?></h3>
                                 <button type="button" class="anchor-event-email-close" aria-label="<?php echo esc_attr__( 'Close', 'anchor-schema' ); ?>">&times;</button>

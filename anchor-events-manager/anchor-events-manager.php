@@ -3772,7 +3772,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.19' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.21' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         // Drive the module's accent custom property, not just the register button.
@@ -4780,8 +4780,7 @@ class Module {
                         <label for="anchor_event_timezone"><?php echo esc_html__( 'Timezone', 'anchor-schema' ); ?></label>
                         <select id="anchor_event_timezone" name="anchor_event_timezone"><?php echo $timezone_options; ?></select>
                     </div>
-                    <div class="anchor-event-field">
-                        <label><input type="checkbox" id="anchor_event_all_day" name="anchor_event_all_day" value="1" <?php checked( $meta['all_day'] ); ?> /> <?php echo esc_html__( 'All-day event', 'anchor-schema' ); ?></label>
+                    <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Duration', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_all_day" name="anchor_event_all_day" value="1" <?php checked( $meta['all_day'] ); ?> /> <?php echo esc_html__( 'All-day event', 'anchor-schema' ); ?></label>
                     </div>
                 </div>
             </div>
@@ -4851,7 +4850,7 @@ class Module {
                     <div class="anchor-event-field"><label for="anchor_event_address_state"><?php echo esc_html__( 'State', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_state" name="anchor_event_address_state" value="<?php echo esc_attr( $meta['address_state'] ); ?>" /></div>
                     <div class="anchor-event-field"><label for="anchor_event_address_zip"><?php echo esc_html__( 'Postal code', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_zip" name="anchor_event_address_zip" value="<?php echo esc_attr( $meta['address_zip'] ); ?>" /></div>
                     <div class="anchor-event-field"><label for="anchor_event_address_country"><?php echo esc_html__( 'Country', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_country" name="anchor_event_address_country" value="<?php echo esc_attr( $meta['address_country'] ); ?>" /></div>
-                    <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_virtual" name="anchor_event_virtual" value="1" <?php checked( $meta['virtual'] ); ?> /> <?php echo esc_html__( 'Virtual event', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Format', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_virtual" name="anchor_event_virtual" value="1" <?php checked( $meta['virtual'] ); ?> /> <?php echo esc_html__( 'Virtual event', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field" id="anchor-event-virtual-url"><label for="anchor_event_virtual_url"><?php echo esc_html__( 'Virtual URL', 'anchor-schema' ); ?></label><input type="url" id="anchor_event_virtual_url" name="anchor_event_virtual_url" value="<?php echo esc_attr( $meta['virtual_url'] ); ?>" /></div>
                 </div>
             </div>
@@ -4876,16 +4875,20 @@ class Module {
                 <h3><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'How many people can come, and what they are asked when they sign up here. If sign-ups happen on another site instead, choose External above.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
-                    <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
-                    <div class="anchor-event-field anchor-event-registration-fields"><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Waitlist', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_open"><?php echo esc_html__( 'Registration opens', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_open" name="anchor_event_registration_open" value="<?php echo esc_attr( $meta['registration_open'] ); ?>" /></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_price"><?php echo esc_html__( 'Price label', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_price" name="anchor_event_price" value="<?php echo esc_attr( $meta['price'] ); ?>" /></div>
                 </div>
+
+            </div>
+
+            <div class="anchor-event-section" data-step="4">
+                <h3><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h3>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Anything you want to ask each person attending, on top of their name, email and phone. Each question becomes a column on the registration list and in the CSV export.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-questions">
-                    <h4><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h4>
-                    <p class="anchor-event-hint"><?php echo esc_html__( 'Anything you want to ask each person attending, on top of their name, email and phone. Each question becomes a column on the registration list and in the CSV export.', 'anchor-schema' ); ?></p>
                     <table class="widefat anchor-event-questions-table">
                         <thead>
                             <tr>
@@ -4909,7 +4912,6 @@ class Module {
                         <?php echo $this->event_question_row_html( 0, null, true ); // already escaped ?>
                     </script>
                 </div>
-
             </div>
 
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="external" data-step="4">
@@ -4943,8 +4945,8 @@ class Module {
                 <h3><?php echo esc_html__( 'Display controls', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Which pages on the site this event shows up on.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
-                    <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_hide_from_archive" name="anchor_event_hide_from_archive" value="1" <?php checked( $meta['hide_from_archive'] ); ?> /> <?php echo esc_html__( 'Hide from archive', 'anchor-schema' ); ?></label></div>
-                    <div class="anchor-event-field"><label><input type="checkbox" id="anchor_event_featured" name="anchor_event_featured" value="1" <?php checked( $meta['featured'] ); ?> /> <?php echo esc_html__( 'Featured / pinned', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Archive', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_hide_from_archive" name="anchor_event_hide_from_archive" value="1" <?php checked( $meta['hide_from_archive'] ); ?> /> <?php echo esc_html__( 'Hide from archive', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Featured', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_featured" name="anchor_event_featured" value="1" <?php checked( $meta['featured'] ); ?> /> <?php echo esc_html__( 'Featured / pinned', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field"><label for="anchor_event_priority"><?php echo esc_html__( 'Priority order', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_priority" name="anchor_event_priority" value="<?php echo esc_attr( $meta['priority'] ); ?>" /></div>
                 </div>
             </div>

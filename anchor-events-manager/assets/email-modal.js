@@ -202,6 +202,7 @@
     wrap.querySelectorAll('[data-email-modal]').forEach(function (modal) {
       var type    = modal.getAttribute('data-email-modal');
       var subject = modal.querySelector('[data-email-field="subject"]');
+      var preheader = modal.querySelector('[data-email-field="preheader"]');
       var intro   = modal.querySelector('[data-email-field="intro"]');
       var source  = modal.querySelector('.anchor-event-email-source');
       // The two CTA buttons, keyed the way the preview endpoint reads them.
@@ -242,6 +243,7 @@
         // and then sanitises exactly as before, so nothing is trusted extra.
         body.set('template_b64', b64(source ? source.value : ''));
         body.set('subject', subject ? subject.value : '');
+        body.set('preheader', preheader ? preheader.value : '');
         body.set('intro', introValue());
         Object.keys(ctas).forEach(function (k) {
           if (ctas[k]) { body.set(k, ctas[k].value); }
@@ -264,7 +266,7 @@
         timer = window.setTimeout(render, 400);
       }
 
-      [subject, intro, source].forEach(function (el) {
+      [subject, preheader, intro, source].forEach(function (el) {
         if (!el) { return; }
         el.addEventListener('focus', function () { lastFocused = el; });
         el.addEventListener('input', renderSoon);
@@ -418,7 +420,7 @@
         // In the HTML view the target is the source; otherwise it is whichever
         // wording field was last touched, and the editor takes it as content.
         if (view === 'html') { insertAtCursor(source, text); return; }
-        if (lastFocused === subject) { insertAtCursor(subject, text); return; }
+        if (lastFocused === subject || lastFocused === preheader) { insertAtCursor(lastFocused, text); return; }
         if (mce && !mce.isHidden()) {
           mce.insertContent(text);
           mce.save();

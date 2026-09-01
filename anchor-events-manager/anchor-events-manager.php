@@ -529,7 +529,7 @@ class Module {
             'type'          => 'reminder',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        return $this->send_html_email( (string) $seat['email'], $subject, $html );
+        return $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id );
     }
 
     /** Build + send the organizer roster digest (confirmed attendees + counts). */
@@ -591,7 +591,7 @@ class Module {
             'type'          => 'roster',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        return $this->send_html_email( $to, $subject, $html );
+        return $this->send_html_email( $to, $subject, $html, [], $event_id );
     }
 
     /**
@@ -793,10 +793,11 @@ class Module {
      *
      * @return bool True on success.
      */
-    public function send_html_email( $to, $subject, $html, $headers = [] ) {
+    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0 ) {
         if ( empty( $headers ) ) {
-            // Apply the configured event sender identity (From / Reply-To / BCC).
-            $headers = $this->email_headers( [ 'Content-Type: text/html; charset=UTF-8' ] );
+            // Apply the sender identity: the event's own where it sets one,
+            // the site-wide setting otherwise (From / Reply-To / Cc / Bcc).
+            $headers = $this->email_headers( [ 'Content-Type: text/html; charset=UTF-8' ], $event_id );
         } else {
             // Caller supplied headers explicitly (e.g. Bcc) — normalize to an array
             // and make sure a text/html Content-Type is present exactly once,
@@ -830,32 +831,72 @@ class Module {
      * @param array $extra Header lines to prepend (e.g. the Content-Type line).
      * @return array
      */
-    public function email_headers( array $extra = [] ) {
+    public function email_headers( array $extra = [], $event_id = 0 ) {
         $settings = $this->get_settings();
         $headers  = $extra;
 
-        $from_email = \sanitize_email( $settings['email_from_address'] ?? '' );
+        // Per-event overrides beat the site-wide setting, field by field: an
+        // event can change only its Reply-To and keep the site's From. Empty
+        // means "not overridden", which is why each is read with a fallback
+        // rather than merged as a block.
+        $ev = function ( $key, $default ) use ( $event_id ) {
+            if ( ! $event_id ) {
+                return $default;
+            }
+            $value = \get_post_meta( (int) $event_id, '_anchor_event_' . $key, true );
+            return ( \is_string( $value ) && \trim( $value ) !== '' ) ? $value : $default;
+        };
+
+        $from_email = \sanitize_email( $ev( 'email_from_address', $settings['email_from_address'] ?? '' ) );
         if ( $from_email ) {
-            $from_name = \sanitize_text_field( $settings['email_from_name'] ?? '' );
+            $from_name = \sanitize_text_field( $ev( 'email_from_name', $settings['email_from_name'] ?? '' ) );
             $headers[] = $from_name !== ''
                 ? sprintf( 'From: %s <%s>', $this->encode_email_name( $from_name ), $from_email )
                 : 'From: ' . $from_email;
         }
 
-        $reply_email = \sanitize_email( $settings['email_reply_to_address'] ?? '' );
+        $reply_email = \sanitize_email( $ev( 'email_reply_to_address', $settings['email_reply_to_address'] ?? '' ) );
         if ( $reply_email ) {
-            $reply_name = \sanitize_text_field( $settings['email_reply_to_name'] ?? '' );
+            $reply_name = \sanitize_text_field( $ev( 'email_reply_to_name', $settings['email_reply_to_name'] ?? '' ) );
             $headers[] = $reply_name !== ''
                 ? sprintf( 'Reply-To: %s <%s>', $this->encode_email_name( $reply_name ), $reply_email )
                 : 'Reply-To: ' . $reply_email;
         }
 
-        $bcc = \sanitize_email( $settings['email_bcc'] ?? '' );
-        if ( $bcc ) {
-            $headers[] = 'Bcc: ' . $bcc;
+        // Cc and Bcc take a list. The event's list ADDS to the site-wide one
+        // rather than replacing it — a site-wide Bcc is normally an archive or
+        // a compliance copy, and an event quietly dropping it would be a
+        // surprise nobody asked for.
+        foreach ( [ 'Cc' => 'email_cc', 'Bcc' => 'email_bcc' ] as $header => $key ) {
+            $list = \array_merge(
+                $this->email_address_list( $settings[ $key ] ?? '' ),
+                $this->email_address_list( $event_id ? \get_post_meta( (int) $event_id, '_anchor_event_' . $key, true ) : '' )
+            );
+            foreach ( \array_unique( $list ) as $address ) {
+                $headers[] = $header . ': ' . $address;
+            }
         }
 
         return $headers;
+    }
+
+    /**
+     * Split a comma/newline separated address list into valid addresses.
+     *
+     * Anything that is not an address is dropped rather than passed through:
+     * a malformed entry in a Cc header can make the whole message bounce, and
+     * one typo should not cost an event its confirmation emails.
+     */
+    public function email_address_list( $raw ) {
+        $parts = \preg_split( '/[,;\r\n]+/', (string) $raw, -1, PREG_SPLIT_NO_EMPTY );
+        $out   = [];
+        foreach ( (array) $parts as $part ) {
+            $address = \sanitize_email( \trim( $part ) );
+            if ( $address !== '' && \is_email( $address ) ) {
+                $out[] = $address;
+            }
+        }
+        return $out;
     }
 
     /** Quote a display name for an email header if it contains characters that need it. */
@@ -2852,6 +2893,37 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 : (string) ( $defaults[ $field ] ?? '' );
         }
         return $out;
+    }
+
+    /**
+     * Persist the per-event sender identity.
+     *
+     * Empty is written, not skipped: an author clearing From email means "go
+     * back to the site-wide one", and email_headers() reads an empty override
+     * as exactly that.
+     */
+    private function save_email_sender_fields( $post_id, array $src ) {
+        if ( empty( $src['anchor_event_sender_present'] ) ) {
+            return;
+        }
+        $fields = [
+            'email_from_name'        => 'sanitize_text_field',
+            'email_from_address'     => 'sanitize_email',
+            'email_reply_to_address' => 'sanitize_email',
+            'email_cc'               => 'list',
+            'email_bcc'              => 'list',
+        ];
+        foreach ( $fields as $key => $clean ) {
+            $form = 'anchor_event_' . $key;
+            if ( ! isset( $src[ $form ] ) ) {
+                continue;
+            }
+            $raw   = \wp_unslash( $src[ $form ] );
+            $value = ( $clean === 'list' )
+                ? \implode( ', ', $this->email_address_list( $raw ) )
+                : \call_user_func( '\\' . $clean, $raw );
+            \update_post_meta( $post_id, '_anchor_event_' . $key, $value );
+        }
     }
 
     /** Persist the CTA label/URL pairs posted by the email builder. */
@@ -5452,6 +5524,43 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     </div>
                 </div>
 
+                <?php
+                $sender_fields = [
+                    'email_from_name'        => [ __( 'From name', 'anchor-schema' ),  'text',  \get_option( 'blogname' ) ],
+                    'email_from_address'     => [ __( 'From email', 'anchor-schema' ), 'email', '' ],
+                    'email_reply_to_address' => [ __( 'Reply-To', 'anchor-schema' ),   'email', '' ],
+                    'email_cc'               => [ __( 'CC', 'anchor-schema' ),         'text',  'one@example.com, two@example.com' ],
+                    'email_bcc'              => [ __( 'BCC', 'anchor-schema' ),        'text',  'one@example.com, two@example.com' ],
+                ];
+                $site_email = $this->get_settings();
+                ?>
+                <div class="anchor-event-sender">
+                    <h4><?php echo esc_html__( 'Who these emails come from', 'anchor-schema' ); ?></h4>
+                    <p class="anchor-event-hint"><?php
+                        /* translators: %s: the site-wide From identity these fields fall back to. */
+                        echo esc_html( sprintf(
+                            __( 'Leave blank to use the site-wide setting: %s. CC and BCC add to the site-wide list rather than replacing it.', 'anchor-schema' ),
+                            trim( ( $site_email['email_from_name'] ?? '' ) . ' <' . ( $site_email['email_from_address'] ?? '' ) . '>' )
+                        ) );
+                    ?></p>
+                    <input type="hidden" name="anchor_event_sender_present" value="1" />
+                    <div class="anchor-event-grid">
+                        <?php foreach ( $sender_fields as $key => $meta_field ) :
+                            list( $label, $input_type, $placeholder ) = $meta_field;
+                            $value = (string) \get_post_meta( $event_id, '_anchor_event_' . $key, true ); ?>
+                            <div class="anchor-event-field">
+                                <label for="anchor_event_<?php echo esc_attr( $key ); ?>"><?php echo esc_html( $label ); ?></label>
+                                <input type="<?php echo esc_attr( $input_type ); ?>"
+                                    id="anchor_event_<?php echo esc_attr( $key ); ?>"
+                                    name="anchor_event_<?php echo esc_attr( $key ); ?>"
+                                    value="<?php echo esc_attr( $value ); ?>"
+                                    placeholder="<?php echo esc_attr( $placeholder ); ?>" />
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <p class="anchor-event-hint"><?php echo esc_html__( 'Keep the From address on this site\'s own domain. Mail is signed for this domain, and a From somewhere else will be treated as spoofed and land in spam.', 'anchor-schema' ); ?></p>
+                </div>
+
                 <div class="anchor-event-emails" data-event="<?php echo esc_attr( $event_id ); ?>">
                     <p class="anchor-event-hint"><?php echo esc_html__( 'Each email has its own editor: the wording on the left with a visual editor, a live preview on the right, and an HTML tab if you want to rebuild the whole email.', 'anchor-schema' ); ?></p>
                     <input type="hidden" name="anchor_event_email_switches_present" value="1" />
@@ -5878,6 +5987,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $this->save_email_fields( $saved_id, $_POST );
         $this->save_email_switches( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
         $this->save_email_cta_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
+        $this->save_email_sender_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
         $this->clear_caches();
 
         return $input;
@@ -6868,8 +6978,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         \add_settings_field( 'email_reply_to_address', __( 'Reply-To email', 'anchor-schema' ), function() use ( $email_text_field ) {
             $email_text_field( 'email_reply_to_address', 'email', '' );
         }, 'anchor_events_settings', 'anchor_events_email_sender' );
-        \add_settings_field( 'email_bcc', __( 'BCC email (optional)', 'anchor-schema' ), function() use ( $email_text_field ) {
-            $email_text_field( 'email_bcc', 'email', '' );
+        \add_settings_field( 'email_cc', __( 'CC (optional)', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_cc', 'text', 'one@example.com, two@example.com' );
+        }, 'anchor-events-settings', 'anchor_events_email_section' );
+        \add_settings_field( 'email_bcc', __( 'BCC (optional)', 'anchor-schema' ), function() use ( $email_text_field ) {
+            $email_text_field( 'email_bcc', 'text', 'one@example.com, two@example.com' );
         }, 'anchor_events_settings', 'anchor_events_email_sender' );
 
         \add_settings_section( 'anchor_events_email_appearance', __( 'Email Appearance', 'anchor-schema' ), function() {
@@ -7242,7 +7355,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output['email_from_address']     = sanitize_email( $input['email_from_address'] ?? '' );
         $output['email_reply_to_name']    = sanitize_text_field( $input['email_reply_to_name'] ?? '' );
         $output['email_reply_to_address'] = sanitize_email( $input['email_reply_to_address'] ?? '' );
-        $output['email_bcc']              = sanitize_email( $input['email_bcc'] ?? '' );
+        $output['email_cc']               = \implode( ', ', $this->email_address_list( $input['email_cc'] ?? '' ) );
+        $output['email_bcc']              = \implode( ', ', $this->email_address_list( $input['email_bcc'] ?? '' ) );
         $output['email_logo_url']         = esc_url_raw( $input['email_logo_url'] ?? '' );
         $output['email_background_color'] = \sanitize_hex_color( $input['email_background_color'] ?? '' ) ?: $defaults['email_background_color'];
         $output['email_card_color']       = \sanitize_hex_color( $input['email_card_color'] ?? '' ) ?: $defaults['email_card_color'];
@@ -8260,7 +8374,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! empty( $settings['notify_user'] ) ) {
             $subject = sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title );
             $html = $this->build_registration_email_html( $event_id, $name, $status, $settings, $guests );
-            $this->send_html_email( $email, $subject, $html );
+            $this->send_html_email( $email, $subject, $html, [], $event_id );
         }
     }
 
@@ -8368,7 +8482,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'type'          => 'cancellation',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        $sent = $this->send_html_email( $email, $subject, $html );
+        $sent = $this->send_html_email( $email, $subject, $html, [], $event_id );
         if ( $sent ) {
             \update_post_meta( $seat_id, '_anchor_event_cancel_emailed', true );
         }
@@ -9223,6 +9337,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'email_from_address'     => '',
             'email_reply_to_name'    => '',
             'email_reply_to_address' => '',
+            'email_cc'               => '',
             'email_bcc'              => '',
             'email_logo_url'         => '',
             'email_background_color' => '#f4f4f4',

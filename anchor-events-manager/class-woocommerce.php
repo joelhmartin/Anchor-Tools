@@ -2887,7 +2887,7 @@ class WooCommerce {
             'type'          => 'confirmation',
         ];
         $html = $this->module->build_registration_email_html( $ctx );
-        return $this->module->send_html_email( $to, $subject, $html );
+        return $this->module->send_html_email( $to, $subject, $html, [], $primary_id );
     }
 
     /**
@@ -2993,7 +2993,7 @@ class WooCommerce {
             'type'          => ( $kind === 'released' ) ? 'cancellation' : 'confirmation',
         ];
         $html = $this->module->build_registration_email_html( $ctx );
-        return $this->module->send_html_email( $to, $subject, $html );
+        return $this->module->send_html_email( $to, $subject, $html, [], $event_id );
     }
 
     /**

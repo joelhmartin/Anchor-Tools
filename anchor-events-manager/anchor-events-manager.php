@@ -33,6 +33,17 @@ class Module {
     private static $instance = null;
     private $assets_enqueued = false;
 
+    /**
+     * True only while a preview is rendering. Makes build_registration_email_html()
+     * substitute preview_sample_scalars() for tokens the event has no value for,
+     * and render the conditional regions that would otherwise be empty. Never
+     * set on a send path.
+     */
+    private $preview_samples = false;
+
+    /** Unsaved CTA label/url pairs supplied by a live preview request; see get_email_cta(). */
+    private $preview_cta_override = null;
+
     /** Unsaved subject/intro supplied by a live preview request; see get_email_field(). */
     private $preview_field_override = null;
 
@@ -2690,7 +2701,7 @@ class Module {
             'event_title', 'event_date', 'event_time', 'venue', 'days_until',
             'attendee_name', 'status', 'join_link', 'event_url', 'site_name', 'event_id',
             'intro', 'greeting', 'header_image', 'guests_line', 'waitlist_notice',
-            'detail_rows', 'seat_list', 'join_button', 'cta_button',
+            'detail_rows', 'seat_list', 'join_button', 'cta_button', 'cta_button_2',
         ];
     }
 
@@ -2756,8 +2767,116 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'guests_line'     => __( '"Your party of N is confirmed." Empty unless guests were booked.', 'anchor-schema' ),
             'waitlist_notice' => __( 'A note that the recipient is on the waitlist. Empty for everyone else.', 'anchor-schema' ),
             'join_button'     => __( 'The join link button. Only for virtual events, and only once confirmed.', 'anchor-schema' ),
-            'cta_button'      => __( 'The "View event details" button.', 'anchor-schema' ),
+            'cta_button'      => __( 'The main button, from the Button field on the left. Empty unless it has both text and a link.', 'anchor-schema' ),
+            'cta_button_2'    => __( 'The second button, from the Second button field on the left. Empty unless it has both text and a link.', 'anchor-schema' ),
         ];
+    }
+
+    /**
+     * Stand-in values for the scalar tokens, used ONLY where a real one is
+     * missing and ONLY outside a real send.
+     *
+     * Half the token set is conditional on data a given event may not have —
+     * a room link only exists for a virtual event, an order number only after
+     * a WooCommerce order, days_until only while the date is still ahead. In a
+     * preview those tokens expanded to an empty string, so the panel showed a
+     * gap and there was no way to tell a token that does nothing from one that
+     * is simply not applicable here.
+     *
+     * Every caller is a preview or the palette's hover text. Nothing on a send
+     * path reads this — see the guard in build_registration_email_html(), which
+     * only applies these when $ctx['preview_samples'] is set, and that flag is
+     * set in exactly one place: build_preview_ctx().
+     *
+     * @param int $event_id Used only to build a plausible order URL.
+     */
+    private function preview_sample_scalars( $event_id = 0 ) {
+        return [
+            'event_title'   => __( 'Sample Event', 'anchor-schema' ),
+            'site_name'     => \get_bloginfo( 'name' ),
+            'attendee_name' => __( 'Sample Attendee', 'anchor-schema' ),
+            'venue'         => __( 'Sample Venue, Dallas TX', 'anchor-schema' ),
+            'event_date'    => \wp_date( \get_option( 'date_format' ), \time() + ( 14 * DAY_IN_SECONDS ) ),
+            'event_time'    => \wp_date( \get_option( 'time_format' ), \time() + ( 14 * DAY_IN_SECONDS ) ),
+            'days_until'    => '14',
+            'status'        => 'confirmed',
+            'seat_count'    => '1',
+            'remaining'     => '8',
+            'order_number'  => '1042',
+            'order_url'     => \home_url( '/my-account/view-order/1042/' ),
+            'join_link'     => \home_url( '/sample-join-link/' ),
+            'event_url'     => $event_id ? (string) \get_permalink( $event_id ) : \home_url(),
+            'event_id'      => (string) (int) $event_id,
+        ];
+    }
+
+    /**
+     * The call-to-action buttons for one email, per event.
+     *
+     * Two slots. Slot 1 is the button the template has always rendered; slot 2
+     * is a second, optional one. Each is a label and a URL, and a button only
+     * renders when it has both.
+     *
+     * "No meta" and "empty meta" mean different things on purpose. An event
+     * that has never been through this panel has no meta, and keeps the caller's
+     * defaults — for slot 1 that is "View event details" pointing at the event,
+     * exactly what every existing email already sends. An author who clears the
+     * field saves an empty string, which is a deliberate "no button". Without
+     * that distinction, adding these fields would have silently dropped the CTA
+     * from every email on the site.
+     *
+     * @param int    $slot     1 or 2.
+     * @param array  $defaults label/url to fall back to when the event has no meta.
+     */
+    public function get_email_cta( $event_id, $type, $slot, array $defaults = [] ) {
+        $type   = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
+        $slot   = ( (int) $slot === 2 ) ? 2 : 1;
+        $prefix = '_anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+
+        // What the builder currently has typed, before any save — same contract
+        // as get_email_field()'s override, so the preview shows the button the
+        // author is editing rather than the one on disk.
+        if ( \is_array( $this->preview_cta_override )
+            && ( $this->preview_cta_override['type'] ?? '' ) === $type
+            && isset( $this->preview_cta_override[ $slot ] ) ) {
+            return $this->preview_cta_override[ $slot ];
+        }
+
+        $out = [];
+        foreach ( [ 'label', 'url' ] as $field ) {
+            $key   = $prefix . $field . '_' . $type;
+            $saved = \get_post_meta( (int) $event_id, $key, true );
+            // metadata_exists(), not a truthiness check: '' is a real answer here.
+            $out[ $field ] = \metadata_exists( 'post', (int) $event_id, $key )
+                ? (string) $saved
+                : (string) ( $defaults[ $field ] ?? '' );
+        }
+        return $out;
+    }
+
+    /** Persist the CTA label/URL pairs posted by the email builder. */
+    private function save_email_cta_fields( $post_id, array $src ) {
+        // Only when the builder was actually on the page, so a save from any
+        // other form cannot blank a button it never rendered.
+        if ( empty( $src['anchor_event_email_cta_present'] ) ) {
+            return;
+        }
+        foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
+            foreach ( [ 1, 2 ] as $slot ) {
+                $prefix = '_anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+                $form   = 'anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+                foreach ( [ 'label' => 'sanitize_text_field', 'url' => 'esc_url_raw' ] as $field => $clean ) {
+                    $key = $form . $field . '_' . $type;
+                    if ( ! isset( $src[ $key ] ) ) {
+                        continue;
+                    }
+                    $value = \call_user_func( '\\' . $clean, \wp_unslash( $src[ $key ] ) );
+                    // Always written, including empty: an empty value is the
+                    // author saying "no button", which get_email_cta() honours.
+                    \update_post_meta( $post_id, $prefix . $field . '_' . $type, $value );
+                }
+            }
+        }
     }
 
     private function documented_email_tokens() {
@@ -3044,6 +3163,22 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $tokens = $this->email_tokens( [ 'event_id' => $event_id, 'seat' => $sample_seat ] );
 
+        // Fill in whatever this event genuinely has no value for, so every
+        // token in the palette shows what it produces instead of a gap. Set
+        // here and nowhere else; no send path reaches this method.
+        $this->preview_samples = true;
+
+        // The subject and opening lines are expanded against $tokens a few
+        // lines below — BEFORE build_registration_email_html() gets a chance to
+        // apply the same stand-ins to the template. Without this, a token typed
+        // into the body still resolved to nothing while the identical token in
+        // the template resolved to a sample.
+        foreach ( $this->preview_sample_scalars( $event_id ) as $key => $sample ) {
+            if ( isset( $tokens[ $key ] ) && \trim( (string) $tokens[ $key ] ) === '' ) {
+                $tokens[ $key ] = $sample;
+            }
+        }
+
         switch ( $type ) {
             case 'reminder':
                 $intro       = $this->expand_email_tokens( $this->get_email_field( $event_id, 'reminder', 'intro', $settings['reminder_intro'] ), $tokens );
@@ -3167,6 +3302,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $this->build_registration_email_html( $ctx );
         } finally {
             $this->preview_template_override = null;
+            $this->preview_samples           = false;
         }
     }
 
@@ -3205,10 +3341,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         ];
         $this->preview_field_override = \array_filter( $this->preview_field_override, function ( $v ) { return $v !== null; } );
 
+        $cta_override = [ 'type' => $type ];
+        foreach ( [ 1 => '', 2 => '2' ] as $slot => $suffix ) {
+            $label_key = 'cta' . $suffix . '_label';
+            $url_key   = 'cta' . $suffix . '_url';
+            if ( isset( $_POST[ $label_key ] ) || isset( $_POST[ $url_key ] ) ) {
+                $cta_override[ $slot ] = [
+                    'label' => \sanitize_text_field( \wp_unslash( $_POST[ $label_key ] ?? '' ) ),
+                    'url'   => \esc_url_raw( \wp_unslash( $_POST[ $url_key ] ?? '' ) ),
+                ];
+            }
+        }
+        $this->preview_cta_override = ( \count( $cta_override ) > 1 ) ? $cta_override : null;
+
         try {
             $html = $this->render_email_preview_html( $event_id, $type, $raw_template );
         } finally {
             $this->preview_field_override = null;
+            $this->preview_cta_override   = null;
         }
 
         \wp_send_json_success( [ 'html' => $html ] );
@@ -4508,22 +4658,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $this->asset_version( 'anchor-events-manager/assets/email-modal.js' ),
             true
         );
-        // Resolved sample values for the scalar tokens, shown on the palette so a
-        // token's meaning is visible before it is inserted. Only the scalars: the
-        // block tokens ({detail_rows}, {seat_list}, {cta_button}, {header_image})
-        // expand to markup, and there is no honest one-line preview of those.
-        $sample_tokens = [];
+        // Values for the palette's hover text, so a token's meaning is visible
+        // before it is inserted. Every scalar gets one: the event's real value
+        // where it has one, and the same stand-in the preview uses where it does
+        // not — otherwise the tokens that are conditional (a room link, an order
+        // number, days_until once the date has passed) would hover blank, which
+        // is exactly the case the author most needs explained. The block tokens
+        // are not here; they expand to markup and have prose notes instead, from
+        // template_token_notes().
+        $sample_tokens = $this->preview_sample_scalars( $event_id );
         if ( $event_id > 0 ) {
             $all = $this->email_tokens( [
                 'event_id' => $event_id,
                 'seat'     => [ 'name' => \__( 'Sample Attendee', 'anchor-schema' ), 'email' => 'sample@example.test' ],
             ] );
-            foreach ( $this->wording_email_tokens() as $k ) {
-                if ( isset( $all[ $k ] ) && \is_scalar( $all[ $k ] ) ) {
-                    // These are substituted as text nodes in the canvas, so an
-                    // entity-encoded title would show as "&#038;" rather than "&".
-                    $sample_tokens[ $k ] = \html_entity_decode( (string) $all[ $k ], ENT_QUOTES, 'UTF-8' );
+            foreach ( $all as $k => $v ) {
+                if ( ! \is_scalar( $v ) || \trim( (string) $v ) === '' ) {
+                    continue;
                 }
+                // Substituted as plain text, so an entity-encoded title would
+                // show as "&#038;" rather than "&".
+                $sample_tokens[ $k ] = \html_entity_decode( (string) $v, ENT_QUOTES, 'UTF-8' );
             }
         }
 
@@ -5275,6 +5430,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 <div class="anchor-event-emails" data-event="<?php echo esc_attr( $event_id ); ?>">
                     <p class="anchor-event-hint"><?php echo esc_html__( 'Each email has its own editor: the wording on the left with a visual editor, a live preview on the right, and an HTML tab if you want to rebuild the whole email.', 'anchor-schema' ); ?></p>
                     <input type="hidden" name="anchor_event_email_switches_present" value="1" />
+                    <input type="hidden" name="anchor_event_email_cta_present" value="1" />
                     <ul class="anchor-event-email-list">
                         <?php foreach ( $this->email_type_labels() as $type => $label ) : ?>
                             <li>
@@ -5336,6 +5492,36 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     </button>
 
                                     <?php
+                                    $cta_defaults = [ 'label' => __( 'View event details', 'anchor-schema' ), 'url' => (string) \get_permalink( $event_id ) ];
+                                    $cta1 = $this->get_email_cta( $event_id, $type, 1, $cta_defaults );
+                                    $cta2 = $this->get_email_cta( $event_id, $type, 2 );
+                                    ?>
+                                    <label for="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Button', 'anchor-schema' ); ?></label>
+                                    <div class="anchor-event-email-cta">
+                                        <input type="text" id="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"
+                                            name="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"
+                                            value="<?php echo esc_attr( $cta1['label'] ); ?>"
+                                            placeholder="<?php echo esc_attr__( 'Button text', 'anchor-schema' ); ?>" />
+                                        <input type="url" id="anchor_event_email_cta_url_<?php echo esc_attr( $type ); ?>"
+                                            name="anchor_event_email_cta_url_<?php echo esc_attr( $type ); ?>"
+                                            value="<?php echo esc_attr( $cta1['url'] ); ?>"
+                                            placeholder="https://" />
+                                    </div>
+
+                                    <label for="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Second button', 'anchor-schema' ); ?></label>
+                                    <div class="anchor-event-email-cta">
+                                        <input type="text" id="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"
+                                            name="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"
+                                            value="<?php echo esc_attr( $cta2['label'] ); ?>"
+                                            placeholder="<?php echo esc_attr__( 'Button text', 'anchor-schema' ); ?>" />
+                                        <input type="url" id="anchor_event_email_cta2_url_<?php echo esc_attr( $type ); ?>"
+                                            name="anchor_event_email_cta2_url_<?php echo esc_attr( $type ); ?>"
+                                            value="<?php echo esc_attr( $cta2['url'] ); ?>"
+                                            placeholder="https://" />
+                                    </div>
+                                    <p class="anchor-event-hint"><?php echo esc_html__( 'A button shows only when it has both text and a link. Clear either one to remove it.', 'anchor-schema' ); ?></p>
+
+                                    <?php
                                     /**
                                      * Two palettes, not one. A token only resolves in the field whose
                                      * expansion pass knows the key — see wording_email_tokens(). The
@@ -5382,6 +5568,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                         <button type="button" class="anchor-event-email-tab is-active" data-email-view="preview"><?php echo esc_html__( 'Preview', 'anchor-schema' ); ?></button>
                                         <button type="button" class="anchor-event-email-tab" data-email-view="html"><?php echo esc_html__( 'HTML', 'anchor-schema' ); ?></button>
                                         <span class="anchor-event-email-status" aria-live="polite"></span>
+                                        <span class="anchor-event-email-note"><?php echo esc_html__( 'Preview uses sample data and shows every region, including ones a given recipient would not get.', 'anchor-schema' ); ?></span>
                                     </div>
                                     <iframe class="anchor-event-email-frame" title="<?php echo esc_attr( sprintf( __( '%s email preview', 'anchor-schema' ), $label ) ); ?>"></iframe>
                                     <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
@@ -5656,7 +5843,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $this->save_email_templates( $saved_id );
         $this->save_registration_questions( $saved_id, $_POST );
         $this->save_email_fields( $saved_id, $_POST );
-        $this->save_email_switches( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller. // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller. // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
+        $this->save_email_switches( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
+        $this->save_email_cta_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
         $this->clear_caches();
 
         return $input;
@@ -8287,6 +8475,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                             </tr>
                             {join_button}
                             {cta_button}
+                            {cta_button_2}
                             <tr>
                                 <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
                                     {site_name}
@@ -8576,12 +8765,13 @@ ANCHOR_EVENTS_EMAIL_SHELL;
      * original inline `cta_button` conditional from build_registration_email_html().
      * Returns '' when the condition is false, exactly as before.
      */
-    private function tpl_block_cta_button( $cta_url, $cta_label ) {
+    private function tpl_block_cta_button( $cta_url, $cta_label, $bg = '#111', $fg = '#ffffff' ) {
+        $border = ( $bg === '#ffffff' ) ? 'border:1px solid #d4d4d8;' : 'border:1px solid ' . $bg . ';';
         \ob_start();
         ?><?php if ( $cta_url && $cta_label ) : ?>
                             <tr>
                                 <td style="padding:8px 32px 32px;">
-                                    <a href="<?php echo esc_url( $cta_url ); ?>" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                    <a href="<?php echo esc_url( $cta_url ); ?>" style="display:inline-block;padding:12px 20px;background:<?php echo esc_attr( $bg ); ?>;color:<?php echo esc_attr( $fg ); ?>;text-decoration:none;border-radius:4px;font-size:15px;<?php echo esc_attr( $border ); ?>">
                                         <?php echo esc_html( $cta_label ); ?>
                                     </a>
                                 </td>
@@ -8800,6 +8990,24 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             }
         }
 
+        // Preview only. A confirmation for an in-person event has no room link,
+        // no guests and no waitlist notice, so three of the blocks in the
+        // template rendered nothing and looked broken. Showing them with sample
+        // content is the only way to see what they do. $preview is false on
+        // every send path, so nothing here can reach an inbox.
+        // Per-event CTA overrides. Resolved here rather than in each caller's
+        // $ctx so every send path — free, WooCommerce, reminder, cancellation,
+        // roster — picks them up from one place.
+        $cta  = $this->get_email_cta( $event_id, $type, 1, [ 'label' => $cta_label, 'url' => $cta_url ] );
+        $cta2 = $this->get_email_cta( $event_id, $type, 2 );
+
+        $preview = ! empty( $this->preview_samples );
+        if ( $preview ) {
+            $samples = $this->preview_sample_scalars( $event_id );
+            if ( $join_url === '' )   { $join_url = $samples['join_link']; }
+            if ( $guests === 0 )      { $guests   = 1; }
+        }
+
         $paragraphs = $this->tpl_block_intro( $message );
 
         // Task 3.1 — resolve the template (per-event override -> global option ->
@@ -8849,12 +9057,27 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'header_image'     => $this->tpl_block_header_image( $image_url, $event_title ),
             'greeting'         => $this->tpl_block_greeting( $name ),
             'guests_line'      => $this->tpl_block_guests_line( $guests ),
-            'waitlist_notice'  => $this->tpl_block_waitlist_notice( $status ),
+            'waitlist_notice'  => $this->tpl_block_waitlist_notice( $preview ? 'waitlist' : $status ),
             'detail_rows'      => $this->tpl_block_detail_rows( $detail_rows ),
             'seat_list'        => $this->tpl_block_seat_list( $seat_list ),
             'join_button'      => $this->tpl_block_join_button( $join_url ),
-            'cta_button'       => $this->tpl_block_cta_button( $cta_url, $cta_label ),
+            'cta_button'       => $this->tpl_block_cta_button( $cta['url'], $cta['label'] ),
+            'cta_button_2'     => $this->tpl_block_cta_button( $cta2['url'], $cta2['label'], '#ffffff', '#111' ),
         ];
+
+        // Preview only: any scalar this event has no value for gets a stand-in,
+        // so a token never expands to a gap the author has to guess about.
+        // Escaped the same way the real value directly above would have been.
+        if ( $preview ) {
+            foreach ( $this->preview_sample_scalars( $event_id ) as $key => $sample ) {
+                if ( ! isset( $tokens[ $key ] ) || \trim( (string) $tokens[ $key ] ) !== '' ) {
+                    continue;
+                }
+                $tokens[ $key ] = \in_array( $key, [ 'join_link', 'event_url', 'order_url' ], true )
+                    ? \esc_url( $sample )
+                    : \esc_html( $sample );
+            }
+        }
 
         $html = $this->expand_email_tokens( $template, $tokens );
         $html = $this->apply_email_appearance( $html, $this->get_settings() );

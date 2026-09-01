@@ -1578,3 +1578,86 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   display:inline-flex;
   align-items:center;
 }
+
+/* -------------------------------------------------------------------------
+ * Per-event email builder. One modal per email type: wording on the left, a
+ * rendered preview on the right, and a switch to the raw HTML.
+ * ------------------------------------------------------------------------- */
+.anchor-event-email-buttons{ display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 0; }
+.anchor-event-email-modal{
+  width:min(1180px,94vw);
+  max-height:88vh;
+  padding:0;
+  border:1px solid var(--anchor-event-border,#e2e4e8);
+  border-radius:14px;
+  background:#fff;
+  color:var(--anchor-event-text,#111827);
+  overflow:hidden;
+}
+.anchor-event-email-modal::backdrop{ background:rgba(17,24,39,.45); }
+.anchor-event-email-modal__head{
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  padding:18px 22px; border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
+}
+.anchor-event-email-modal__head h3{ margin:0; font-size:18px; }
+.anchor-event-email-close{
+  border:0; background:none; font-size:24px; line-height:1; cursor:pointer;
+  color:var(--anchor-event-muted,#6b7280); padding:0 4px;
+}
+.anchor-event-email-modal__body{
+  display:grid; grid-template-columns:320px 1fr; gap:0;
+  max-height:calc(88vh - 132px);
+}
+.anchor-event-email-fields{
+  padding:20px 22px; overflow-y:auto;
+  border-right:1px solid var(--anchor-event-border,#e2e4e8);
+  background:#fbfbfc;
+}
+.anchor-event-email-fields label{
+  display:block; font-size:12px; font-weight:600; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--anchor-event-muted,#6b7280); margin:14px 0 6px;
+}
+.anchor-event-email-fields label:first-child{ margin-top:0; }
+.anchor-event-email-fields input[type="text"],
+.anchor-event-email-fields textarea{ width:100%; box-sizing:border-box; }
+.anchor-event-email-tokens-label{
+  margin:18px 0 8px; font-size:12px; font-weight:600; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-event-email-tokens{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+.anchor-event-token{
+  border:1px solid var(--anchor-event-border,#e2e4e8); background:#fff; border-radius:999px;
+  padding:4px 10px; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  cursor:pointer; color:var(--anchor-event-text,#111827);
+}
+.anchor-event-token:hover{ border-color:var(--anchor-event-muted,#6b7280); }
+.anchor-event-email-preview-pane{ display:flex; flex-direction:column; min-width:0; }
+.anchor-event-email-toolbar{
+  display:flex; align-items:center; gap:8px;
+  padding:10px 16px; border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
+}
+.anchor-event-email-tab{
+  border:1px solid transparent; background:none; cursor:pointer; border-radius:8px;
+  padding:6px 12px; font-size:13px; color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-event-email-tab.is-active{
+  border-color:var(--anchor-event-border,#e2e4e8);
+  background:#fff; color:var(--anchor-event-text,#111827); font-weight:600;
+}
+.anchor-event-email-status{ margin-left:auto; font-size:12px; color:var(--anchor-event-muted,#6b7280); }
+.anchor-event-email-frame{
+  flex:1 1 auto; width:100%; min-height:52vh; border:0; background:#f4f4f4;
+}
+.anchor-event-email-source{
+  flex:1 1 auto; width:100%; min-height:52vh; border:0; padding:16px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
+  resize:none; box-sizing:border-box;
+}
+.anchor-event-email-modal__foot{
+  display:flex; align-items:center; gap:14px;
+  padding:14px 22px; border-top:1px solid var(--anchor-event-border,#e2e4e8);
+}
+@media (max-width:900px){
+  .anchor-event-email-modal__body{ grid-template-columns:1fr; }
+  .anchor-event-email-fields{ border-right:0; border-bottom:1px solid var(--anchor-event-border,#e2e4e8); }
+}

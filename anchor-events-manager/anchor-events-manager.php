@@ -4220,7 +4220,7 @@ class Module {
             'anchor-events-manager-frontend',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
-            '1.0.4',
+            '1.0.5',
             true
         );
         if ( $wizard ) {

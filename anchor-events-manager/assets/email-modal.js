@@ -204,6 +204,13 @@
       var subject = modal.querySelector('[data-email-field="subject"]');
       var intro   = modal.querySelector('[data-email-field="intro"]');
       var source  = modal.querySelector('.anchor-event-email-source');
+      // The two CTA buttons, keyed the way the preview endpoint reads them.
+      var ctas = {
+        cta_label:   modal.querySelector('[name^="anchor_event_email_cta_label_"]'),
+        cta_url:     modal.querySelector('[name^="anchor_event_email_cta_url_"]'),
+        cta2_label:  modal.querySelector('[name^="anchor_event_email_cta2_label_"]'),
+        cta2_url:    modal.querySelector('[name^="anchor_event_email_cta2_url_"]')
+      };
       var frame   = modal.querySelector('.anchor-event-email-frame');
       var status  = modal.querySelector('.anchor-event-email-status');
       var timer   = null;
@@ -236,6 +243,9 @@
         body.set('template_b64', b64(source ? source.value : ''));
         body.set('subject', subject ? subject.value : '');
         body.set('intro', introValue());
+        Object.keys(ctas).forEach(function (k) {
+          if (ctas[k]) { body.set(k, ctas[k].value); }
+        });
 
         fetch(cfg.ajaxUrl, { method: 'POST', credentials: 'same-origin', body: body })
           .then(function (r) { return r.json(); })
@@ -258,6 +268,9 @@
         if (!el) { return; }
         el.addEventListener('focus', function () { lastFocused = el; });
         el.addEventListener('input', renderSoon);
+      });
+      Object.keys(ctas).forEach(function (k) {
+        if (ctas[k]) { ctas[k].addEventListener('input', renderSoon); }
       });
 
       // ------------------------------------------------------- visual editor
@@ -392,7 +405,8 @@
       modal.querySelectorAll('.anchor-event-token').forEach(function (btn) {
         var key = (btn.getAttribute('data-token') || '').replace(/[{}]/g, '');
         var val = (cfg.tokens || {})[key];
-        // Show what the token resolves to for this event, on hover.
+        // Show what the token resolves to for this event, on hover. The block
+        // tokens carry a prose note from the server instead — don't overwrite it.
         if (val) { btn.title = '{' + key + '} → ' + val; }
 
         btn.addEventListener('click', function () {

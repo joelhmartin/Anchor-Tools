@@ -1672,6 +1672,13 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
 .anchor-event-email-tokens{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
 .anchor-event-email-tokens-group[hidden]{ display:none; }
 .anchor-event-email-starter{ margin:0 0 4px; }
+/* Button text and its link, as one row — they are one setting. */
+.anchor-event-email-cta{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.anchor-event-email-cta input{ width:100%; box-sizing:border-box; }
+.anchor-event-email-note{
+  margin-left:auto; font-size:11.5px; line-height:1.4; text-align:right;
+  color:var(--anchor-event-muted,#6b7280); max-width:46ch;
+}
 .anchor-event-email-legend{
   margin:0 0 16px; font-size:12.5px; line-height:1.5;
   color:var(--anchor-event-muted,#6b7280);

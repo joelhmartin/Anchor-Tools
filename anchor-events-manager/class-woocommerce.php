@@ -2848,6 +2848,12 @@ class WooCommerce {
             'seat_count'   => $total_seats,
             'event_title'  => $primary_id ? \get_the_title( $primary_id ) : '',
         ];
+
+        // The event can switch its confirmation email off. Checked here, where
+        // the order's primary event is finally known.
+        if ( $primary_id && ! $this->module->is_email_enabled( $primary_id, 'confirmation' ) ) {
+            return false;
+        }
         // Per-event overrides win; otherwise the site setting, otherwise the shipped default.
         $subject = $this->module->expand_email_tokens(
             $this->module->get_email_field(

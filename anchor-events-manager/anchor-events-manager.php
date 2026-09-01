@@ -483,6 +483,9 @@ class Module {
      * @return bool True on successful send.
      */
     public function send_reminder_email( array $seat, $event_id, $offset, $settings = null ) {
+        if ( ! $this->is_email_enabled( $event_id, 'reminder' ) ) {
+            return false;
+        }
         if ( empty( $seat['email'] ) ) {
             return false;
         }
@@ -520,6 +523,9 @@ class Module {
 
     /** Build + send the organizer roster digest (confirmed attendees + counts). */
     public function send_roster_email( $event_id ) {
+        if ( ! $this->is_email_enabled( $event_id, 'roster' ) ) {
+            return false;
+        }
         $event_id = (int) $event_id;
         if ( \get_post_type( $event_id ) !== self::CPT ) {
             return false;
@@ -2574,6 +2580,39 @@ class Module {
         return ( \is_string( $meta ) && $meta !== '' ) ? $meta : (string) $fallback;
     }
 
+    /**
+     * Is this email switched on for this event?
+     *
+     * Enabled unless explicitly turned off, so every event that already exists
+     * keeps sending exactly what it sends today — the meta is only ever written
+     * when someone unticks the box.
+     *
+     * @param int    $event_id
+     * @param string $type
+     * @return bool
+     */
+    public function is_email_enabled( $event_id, $type ) {
+        $type = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
+        return \get_post_meta( (int) $event_id, '_anchor_event_email_off_' . $type, true ) !== '1';
+    }
+
+    /** Persist the per-type on/off switches posted by the email builder. */
+    private function save_email_switches( $post_id, array $src ) {
+        // Only trust the post when the builder was actually on screen, otherwise
+        // a save from anywhere else would read "absent" as "turned off".
+        if ( empty( $src['anchor_event_email_switches_present'] ) ) {
+            return;
+        }
+        foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
+            $on = ! empty( $src[ 'anchor_event_email_on_' . $type ] );
+            if ( $on ) {
+                \delete_post_meta( $post_id, '_anchor_event_email_off_' . $type );
+            } else {
+                \update_post_meta( $post_id, '_anchor_event_email_off_' . $type, '1' );
+            }
+        }
+    }
+
     /** Persist the per-event subject/intro pairs posted by the email builder. */
     private function save_email_fields( $post_id, array $src ) {
         foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
@@ -4351,9 +4390,30 @@ class Module {
             $this->asset_version( 'anchor-events-manager/assets/email-modal.js' ),
             true
         );
+        // Resolved sample values for the scalar tokens, so the designer can show
+        // what an email would actually say. Only the scalars: the block tokens
+        // ({detail_rows}, {seat_list}, {cta_button}, {header_image}) expand to
+        // markup, and swapping those into an editing canvas as text would be a
+        // lie about what gets sent.
+        $sample_tokens = [];
+        if ( $event_id > 0 ) {
+            $all = $this->email_tokens( [
+                'event_id' => $event_id,
+                'seat'     => [ 'name' => \__( 'Sample Attendee', 'anchor-schema' ), 'email' => 'sample@example.test' ],
+            ] );
+            foreach ( [ 'event_title', 'event_date', 'event_time', 'venue', 'attendee_name', 'site_name', 'event_url', 'join_link' ] as $k ) {
+                if ( isset( $all[ $k ] ) && \is_scalar( $all[ $k ] ) ) {
+                    // These are substituted as text nodes in the canvas, so an
+                    // entity-encoded title would show as "&#038;" rather than "&".
+                    $sample_tokens[ $k ] = \html_entity_decode( (string) $all[ $k ], ENT_QUOTES, 'UTF-8' );
+                }
+            }
+        }
+
         \wp_localize_script( 'anchor-events-email-modal', 'ANCHOR_EVENT_EMAILS', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
             'nonce'   => \wp_create_nonce( 'anchor_events_email_preview' ),
+            'tokens'  => $sample_tokens,
         ] );
 
         if ( $wizard ) {
@@ -5097,13 +5157,21 @@ class Module {
 
                 <div class="anchor-event-emails" data-event="<?php echo esc_attr( $event_id ); ?>">
                     <p class="anchor-event-hint"><?php echo esc_html__( 'Each email has its own editor: the wording on the left, a live preview on the right, and a switch to edit the raw HTML if you want to rebuild it entirely.', 'anchor-schema' ); ?></p>
-                    <div class="anchor-event-email-buttons">
+                    <input type="hidden" name="anchor_event_email_switches_present" value="1" />
+                    <ul class="anchor-event-email-list">
                         <?php foreach ( $this->email_type_labels() as $type => $label ) : ?>
-                            <button type="button" class="anchor-event-button-secondary anchor-event-email-open" data-email-type="<?php echo esc_attr( $type ); ?>">
-                                <?php echo esc_html( $label ); ?>
-                            </button>
+                            <li>
+                                <label class="anchor-event-email-switch">
+                                    <input type="checkbox" name="anchor_event_email_on_<?php echo esc_attr( $type ); ?>" value="1" <?php checked( $this->is_email_enabled( $event_id, $type ) ); ?> />
+                                    <span><?php echo esc_html( $label ); ?></span>
+                                </label>
+                                <button type="button" class="anchor-event-button-secondary anchor-event-email-open" data-email-type="<?php echo esc_attr( $type ); ?>">
+                                    <?php echo esc_html__( 'Edit', 'anchor-schema' ); ?>
+                                </button>
+                            </li>
                         <?php endforeach; ?>
-                    </div>
+                    </ul>
+                    <p class="anchor-event-hint"><?php echo esc_html__( 'Untick an email to stop this event sending it. All four are on by default.', 'anchor-schema' ); ?></p>
 
                     <?php foreach ( $this->email_type_labels() as $type => $label ) :
                         $subject_default = $this->email_field_default( $type, 'subject' );
@@ -5151,8 +5219,9 @@ class Module {
                                 </div>
                             </div>
                             <div class="anchor-event-email-modal__foot">
-                                <button type="button" class="anchor-event-button anchor-event-email-close"><?php echo esc_html__( 'Done', 'anchor-schema' ); ?></button>
-                                <span class="anchor-event-hint"><?php echo esc_html__( 'Changes are kept when you save the event.', 'anchor-schema' ); ?></span>
+                                <button type="submit" class="anchor-event-button"><?php echo esc_html__( 'Save event', 'anchor-schema' ); ?></button>
+                                <button type="button" class="anchor-event-button-secondary anchor-event-email-close"><?php echo esc_html__( 'Close', 'anchor-schema' ); ?></button>
+                                <span class="anchor-event-hint"><?php echo esc_html__( 'Closing keeps your changes on the form; Save event writes them.', 'anchor-schema' ); ?></span>
                             </div>
                         </dialog>
                     <?php endforeach; ?>
@@ -5417,7 +5486,8 @@ class Module {
         $this->maybe_append_registration_shortcode( $saved_id, $input );
         $this->save_email_templates( $saved_id );
         $this->save_registration_questions( $saved_id, $_POST );
-        $this->save_email_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller. // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
+        $this->save_email_fields( $saved_id, $_POST );
+        $this->save_email_switches( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller. // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller. // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
         $this->clear_caches();
 
         return $input;
@@ -7736,6 +7806,9 @@ class Module {
     }
 
     public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
+        if ( ! $this->is_email_enabled( $event_id, 'confirmation' ) ) {
+            return;
+        }
         $settings = $this->get_settings();
         $event_title = \get_the_title( $event_id );
         $event_link = \get_permalink( $event_id );
@@ -7833,6 +7906,9 @@ class Module {
             return false;
         }
         $event_id = (int) $info['event_id'];
+        if ( ! $this->is_email_enabled( $event_id, 'cancellation' ) ) {
+            return false;
+        }
         $status   = (string) $info['status']; // cancelled | refunded
         $order    = ( $order_id > 0 && \function_exists( 'wc_get_order' ) ) ? \wc_get_order( $order_id ) : null;
 

@@ -235,13 +235,77 @@
         // textarea, which is the field the form actually posts. One source of
         // truth: the designer never holds state the save path cannot see.
         editor.on('update', syncFromDesigner);
+
+        addSampleToggle();
+      }
+
+      /**
+       * Show what the tokens actually say, inside the designer.
+       *
+       * Substitution happens in the canvas DOM only, never in the model, and the
+       * editor is put into its own preview mode while it is on — so nothing an
+       * author does can bake a sample value into the saved template. Toggling
+       * off restores the tokens from the originals kept alongside.
+       */
+      function addSampleToggle() {
+        var panels = editor.Panels;
+        if (!panels || !panels.getPanel) { return; }
+        var vals = cfg.tokens || {};
+        if (!Object.keys(vals).length) { return; }
+        var on = false;
+
+        panels.addButton('options', {
+          id: 'anchor-sample-data',
+          className: 'fa fa-eye',
+          label: 'abc',
+          attributes: { title: 'Show sample data' },
+          command: function () {
+            var doc = editor.Canvas.getDocument();
+            if (!doc) { return; }
+            on = !on;
+            if (on) {
+              editor.runCommand('core:preview');
+              walkText(doc.body, function (node) {
+                if (node.__anchorRaw === undefined) { node.__anchorRaw = node.nodeValue; }
+                node.nodeValue = node.__anchorRaw.replace(/\{([a-z_]+)\}/g, function (m, k) {
+                  return Object.prototype.hasOwnProperty.call(vals, k) ? vals[k] : m;
+                });
+              });
+            } else {
+              walkText(doc.body, function (node) {
+                if (node.__anchorRaw !== undefined) { node.nodeValue = node.__anchorRaw; }
+              });
+              editor.stopCommand('core:preview');
+            }
+          }
+        });
+      }
+
+      function walkText(root, fn) {
+        var w = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        var n, list = [];
+        while ((n = w.nextNode())) { list.push(n); }
+        list.forEach(fn);
       }
 
       function syncFromDesigner() {
         if (!editor || !source) { return; }
-        var body = editor.getHtml().replace(/^<body[^>]*>/i, '').replace(/<\/body>$/i, '');
-        var css  = editor.getCss({ avoidProtected: true });
-        if (css && css.trim()) { body += '\n<style>' + css + '</style>'; }
+
+        // The preset's inlined export, not getHtml()+getCss(). The email
+        // sanitiser allows `style` as an ATTRIBUTE but has no <style> ELEMENT in
+        // its allowlist, so a stylesheet block was stripped by wp_kses while its
+        // CSS text survived — which is how raw declarations ended up rendering as
+        // visible text in the preview. Inlined styles land on attributes that are
+        // allowed, and inline CSS is what email clients want anyway.
+        var html;
+        try {
+          html = editor.runCommand('gjs-get-inlined-html');
+        } catch (e) {
+          html = editor.getHtml();
+        }
+        if (typeof html !== 'string') { html = editor.getHtml(); }
+
+        var body = html.replace(/^\s*<body[^>]*>/i, '').replace(/<\/body>\s*$/i, '');
         source.value = joinShell(shell || splitShell(source.value), body);
         renderSoon();
       }
@@ -267,6 +331,13 @@
           }
           if (view === 'preview') { render(); }
         });
+      });
+
+      // Show what each token resolves to for this event, on hover.
+      modal.querySelectorAll('.anchor-event-token').forEach(function (btn) {
+        var key = (btn.getAttribute('data-token') || '').replace(/[{}]/g, '');
+        var val = (cfg.tokens || {})[key];
+        if (val) { btn.title = '{' + key + '} → ' + val; }
       });
 
       // token buttons write into whichever field was last focused

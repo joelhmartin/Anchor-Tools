@@ -1322,3 +1322,89 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-manager-form.is-wizard [data-step].is-step-hidden{
   display:none !important;
 }
+
+/* -------------------------------------------------------------------------
+ * Attendee-question repeater on the manager form. The markup borrows wp-admin's
+ * .widefat table, which has no styling out on the front end — so the cells
+ * collapse, the remove button sits on top of the Required label, and a Choices
+ * textarea overlaps the row beneath it.
+ * ------------------------------------------------------------------------- */
+.anchor-event-questions{
+  margin-top:8px;
+}
+.anchor-event-questions > h4{
+  margin:0 0 4px;
+  font-size:16px;
+}
+.anchor-event-questions-table{
+  width:100%;
+  border-collapse:collapse;
+  table-layout:fixed;
+}
+.anchor-event-questions-table th{
+  text-align:left;
+  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  color:var(--anchor-event-muted,#6b7280);
+  font-weight:600;
+  padding:0 10px 8px 0;
+}
+.anchor-event-questions-table th:nth-child(1){ width:30%; }
+.anchor-event-questions-table th:nth-child(2){ width:18%; }
+.anchor-event-questions-table th:nth-child(3){ width:30%; }
+.anchor-event-questions-table th:nth-child(4){ width:16%; }
+.anchor-event-questions-table th:nth-child(5){ width:6%; }
+.anchor-event-questions-table td{
+  padding:0 10px 12px 0;
+  vertical-align:top;
+}
+.anchor-event-questions-table td:last-child{
+  padding-right:0;
+  text-align:right;
+}
+.anchor-event-questions-table input[type="text"],
+.anchor-event-questions-table select,
+.anchor-event-questions-table textarea{
+  width:100%;
+  box-sizing:border-box;
+}
+.anchor-event-questions-table textarea{
+  min-height:64px;
+  resize:vertical;
+}
+/* The Required cell is a checkbox with a word, not a form row. */
+.anchor-event-questions-table td label{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  white-space:nowrap;
+  font-size:14px;
+  margin:0;
+  padding-top:9px;
+}
+.anchor-event-question-remove{
+  border:0;
+  background:none;
+  cursor:pointer;
+  font-size:20px;
+  line-height:1;
+  padding:9px 4px 0;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-event-question-remove:hover{ color:#b32d2e; }
+
+@media (max-width:782px){
+  .anchor-event-questions-table,
+  .anchor-event-questions-table tbody,
+  .anchor-event-questions-table tr,
+  .anchor-event-questions-table td{ display:block; width:100%; }
+  .anchor-event-questions-table thead{ display:none; }
+  .anchor-event-questions-table tr{
+    border:1px solid var(--anchor-event-border,#e2e4e8);
+    border-radius:8px;
+    padding:12px;
+    margin-bottom:12px;
+  }
+  .anchor-event-questions-table td:last-child{ text-align:left; }
+}

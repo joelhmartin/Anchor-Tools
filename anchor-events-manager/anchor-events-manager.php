@@ -3772,7 +3772,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.18' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.19' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         // Drive the module's accent custom property, not just the register button.
@@ -4789,7 +4789,6 @@ class Module {
             <div class="anchor-event-section anchor-event-conditional" data-when-type="multisession" data-step="2">
                 <h3><?php echo esc_html__( 'Sessions', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'For an event that runs over several sessions. List each session here; people sign up once and are booked for all of them.', 'anchor-schema' ); ?></p>
-                <p class="description"><?php echo esc_html__( 'Add one row per session date/time in this series.', 'anchor-schema' ); ?></p>
                 <table class="widefat anchor-event-sessions-table">
                     <thead>
                         <tr>
@@ -4816,8 +4815,7 @@ class Module {
 
             <div class="anchor-event-section" data-step="3">
                 <h3><?php echo esc_html__( 'Labels', 'anchor-schema' ); ?></h3>
-                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Small badges on the event card, like a level or a track.', 'anchor-schema' ); ?></p>
-                <p class="description"><?php echo esc_html__( 'Short badges shown on event cards — e.g. "2 Day Course", "14 CE Credits".', 'anchor-schema' ); ?></p>
+                <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Short badges shown on the event card — e.g. 2 Day Course, or 14 CE Credits.', 'anchor-schema' ); ?></p>
                 <table class="widefat anchor-event-labels-table">
                     <thead>
                         <tr>

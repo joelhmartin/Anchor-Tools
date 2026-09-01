@@ -1408,3 +1408,145 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   }
   .anchor-event-questions-table td:last-child{ text-align:left; }
 }
+
+/* ===========================================================================
+ * Manager form — one look for every repeater, button and checkbox.
+ *
+ * These four repeaters grew separately and each picked up its own idiom: three
+ * different header treatments, three different remove buttons, and an "Add"
+ * control that is a styled button in three places and wp-admin's unstyled
+ * .button in the fourth. The checkboxes were browser default, so a 13px box sat
+ * against an uppercase mono label. This section is deliberately last in the file
+ * so it settles all of that in one place.
+ * ======================================================================== */
+.anchor-event-manager-form .anchor-event-offering-table,
+.anchor-event-manager-form .anchor-event-sessions-table,
+.anchor-event-manager-form .anchor-event-labels-table,
+.anchor-event-manager-form .anchor-event-questions-table{
+  width:100%;
+  border-collapse:collapse;
+  margin:6px 0 14px;
+}
+.anchor-event-manager-form .anchor-event-offering-table th,
+.anchor-event-manager-form .anchor-event-sessions-table th,
+.anchor-event-manager-form .anchor-event-labels-table th,
+.anchor-event-manager-form .anchor-event-questions-table th{
+  text-align:left;
+  font-size:13px;
+  font-weight:600;
+  text-transform:none;
+  letter-spacing:normal;
+  color:var(--anchor-event-text,#111827);
+  padding:0 12px 8px 0;
+  border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
+}
+.anchor-event-manager-form .anchor-event-offering-table td,
+.anchor-event-manager-form .anchor-event-sessions-table td,
+.anchor-event-manager-form .anchor-event-labels-table td,
+.anchor-event-manager-form .anchor-event-questions-table td{
+  padding:10px 12px 10px 0;
+  vertical-align:middle;
+  border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
+}
+.anchor-event-manager-form .anchor-event-offering-table tr:last-child td,
+.anchor-event-manager-form .anchor-event-sessions-table tr:last-child td,
+.anchor-event-manager-form .anchor-event-labels-table tr:last-child td,
+.anchor-event-manager-form .anchor-event-questions-table tr:last-child td{
+  border-bottom:0;
+}
+/* The remove column: same narrow, right-aligned slot in every repeater. */
+.anchor-event-manager-form .anchor-event-offering-table th:last-child,
+.anchor-event-manager-form .anchor-event-sessions-table th:last-child,
+.anchor-event-manager-form .anchor-event-labels-table th:last-child,
+.anchor-event-manager-form .anchor-event-questions-table th:last-child,
+.anchor-event-manager-form .anchor-event-offering-table td:last-child,
+.anchor-event-manager-form .anchor-event-sessions-table td:last-child,
+.anchor-event-manager-form .anchor-event-labels-table td:last-child,
+.anchor-event-manager-form .anchor-event-questions-table td:last-child{
+  width:40px;
+  padding-right:0;
+  text-align:right;
+}
+.anchor-event-manager-form .anchor-event-offering-table input,
+.anchor-event-manager-form .anchor-event-offering-table select,
+.anchor-event-manager-form .anchor-event-sessions-table input,
+.anchor-event-manager-form .anchor-event-sessions-table select,
+.anchor-event-manager-form .anchor-event-labels-table input,
+.anchor-event-manager-form .anchor-event-labels-table select,
+.anchor-event-manager-form .anchor-event-questions-table input:not([type="checkbox"]),
+.anchor-event-manager-form .anchor-event-questions-table select,
+.anchor-event-manager-form .anchor-event-questions-table textarea{
+  width:100%;
+  box-sizing:border-box;
+  margin:0;
+}
+.anchor-event-manager-form .anchor-event-questions-table{ table-layout:fixed; }
+.anchor-event-manager-form .anchor-event-questions-table textarea{
+  min-height:60px;
+  resize:vertical;
+}
+
+/* One remove control, four repeaters. */
+.anchor-event-manager-form .anchor-event-offering-remove,
+.anchor-event-manager-form .anchor-event-session-remove,
+.anchor-event-manager-form .anchor-event-label-remove,
+.anchor-event-manager-form .anchor-event-question-remove{
+  border:0;
+  background:none;
+  cursor:pointer;
+  font-size:18px;
+  line-height:1;
+  padding:4px 2px;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-event-manager-form .anchor-event-offering-remove:hover,
+.anchor-event-manager-form .anchor-event-session-remove:hover,
+.anchor-event-manager-form .anchor-event-label-remove:hover,
+.anchor-event-manager-form .anchor-event-question-remove:hover{ color:#b32d2e; }
+
+/* The offering repeater is shared with the metabox and carries wp-admin's
+   .button, which has no styling out here — "Add date" rendered as bare text
+   while its siblings were buttons. */
+.anchor-event-manager-form .button{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 14px;
+  border:1px solid var(--anchor-event-border,#e2e4e8);
+  border-radius:8px;
+  background:#fff;
+  color:var(--anchor-event-text,#111827);
+  font-size:14px;
+  line-height:1.2;
+  cursor:pointer;
+  text-decoration:none;
+}
+.anchor-event-manager-form .button:hover{ border-color:var(--anchor-event-muted,#6b7280); }
+
+/* Checkboxes: a real target, sentence-case label, bottom-aligned so it sits on
+   the same line as the inputs beside it in the grid rather than floating above. */
+.anchor-event-manager-form .anchor-event-field:has(> label > input[type="checkbox"]){
+  display:flex;
+  align-items:flex-end;
+  padding-bottom:11px;
+}
+.anchor-event-manager-form .anchor-event-field > label:has(> input[type="checkbox"]){
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  margin:0;
+  font-family:inherit;
+  font-size:14px;
+  font-weight:400;
+  letter-spacing:normal;
+  text-transform:none;
+  color:var(--anchor-event-text,#111827);
+  cursor:pointer;
+}
+.anchor-event-manager-form input[type="checkbox"]{
+  width:17px;
+  height:17px;
+  margin:0;
+  flex:0 0 auto;
+  cursor:pointer;
+}

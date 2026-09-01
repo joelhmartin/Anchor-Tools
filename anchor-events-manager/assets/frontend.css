@@ -1600,11 +1600,38 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 }
 /* Scoped to [open], never the bare element: the UA sheet hides a closed dialog
    with `dialog:not([open]){display:none}`, and an author `display` on the base
-   selector outranks it — the modal would sit open on the page permanently. */
-.anchor-event-email-modal[open]{ display:flex; flex-direction:column; }
+   selector outranks it — the modal would sit open on the page permanently.
+
+   The z-index is measured, not picked. The builder is opened non-modally (see
+   email-modal.js) precisely so that the popups it hosts can stack above it by
+   the ordinary rules, and each of those has a known layer:
+
+     WordPress admin bar        99999
+     THIS DIALOG               100001
+     TinyMCE floating panels   100100+   (the link bar, menus, tooltips)
+     WordPress link modal      100105
+     WordPress media library   160000
+
+   So it clears the site's own chrome and sits under every widget that has to
+   appear on top of it. Raising this above 100100 puts the link bar back
+   behind the builder. */
+.anchor-event-email-modal[open]{
+  display:flex; flex-direction:column;
+  position:fixed; inset:0; z-index:100001;
+}
+.anchor-event-email-modal[open]:focus{ outline:none; }
+.anchor-event-email-backdrop{
+  position:fixed; inset:0; z-index:100000;
+  background:rgba(17,24,39,.45);
+}
+/* The floating panels above are placed at DOCUMENT coordinates while the
+   dialog is fixed to the viewport, so a page that scrolled underneath would
+   slide them away from it. */
+body.anchor-event-email-modal-open{ overflow:hidden; }
 .anchor-event-email-modal__head{ flex:0 0 auto; }
 .anchor-event-email-modal__foot{ flex:0 0 auto; }
-.anchor-event-email-modal::backdrop{ background:rgba(17,24,39,.45); }
+/* ::backdrop only renders for a dialog opened with showModal(); this one is
+   opened with show(), so .anchor-event-email-backdrop stands in for it. */
 .anchor-event-email-modal__head{
   display:flex; align-items:center; justify-content:space-between; gap:16px;
   padding:18px 22px; border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
@@ -1644,6 +1671,18 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 }
 .anchor-event-email-tokens{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
 .anchor-event-email-tokens-group[hidden]{ display:none; }
+.anchor-event-email-starter{ margin:0 0 4px; }
+.anchor-event-email-legend{
+  margin:0 0 16px; font-size:12.5px; line-height:1.5;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-event-email-legend summary{ cursor:pointer; font-weight:600; padding:4px 0; }
+.anchor-event-email-legend dl{ margin:8px 0 10px; }
+.anchor-event-email-legend dt{
+  margin:8px 0 2px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--anchor-event-text,#111827);
+}
+.anchor-event-email-legend dd{ margin:0; }
 .anchor-event-token{
   border:1px solid var(--anchor-event-border,#e2e4e8); background:#fff; border-radius:999px;
   padding:4px 10px; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -1694,13 +1733,9 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-email-fields .mce-toolbar-grp{ border-radius:8px 8px 0 0; }
 .anchor-event-email-fields .mce-edit-area iframe{ min-height:180px; }
 
-/* The media library opening behind the builder is NOT a z-index problem and has
-   no CSS fix: a <dialog> opened with showModal() is in the browser's top layer,
-   which paints above the entire normal stacking context whatever z-index the
-   media modal carries. email-modal.js moves the modal into the dialog instead.
-   Inside it, the modal keeps its own fixed positioning — the dialog sets no
-   transform, so it is not a containing block and does not clip it. */
-.anchor-event-email-modal .media-modal{ position:fixed; }
+/* The media library needs no special handling any more: at z-index 160000 it
+   is above the builder's 100001 by the ordinary rules. It only ever needed a
+   workaround while the builder was in the top layer. */
 
 /* Emails step: one row per email — a switch and the editor that opens it. */
 .anchor-event-email-list{ list-style:none; margin:12px 0 6px; padding:0; display:grid; gap:8px; max-width:520px; }

@@ -109,25 +109,61 @@
 
   function pad(n) { return new Array(n + 1).join('  '); }
 
+  /**
+   * Open and close the builder WITHOUT the top layer.
+   *
+   * showModal() puts a dialog in the browser's top layer, which paints above
+   * the entire normal stacking context. That is the opposite of what this
+   * dialog needs: it hosts other components' popups, and every one of them is
+   * appended to <body> — TinyMCE's floating panels (the link bar's "Paste URL
+   * or type to search", menus, tooltips) and WordPress's media library and
+   * link modal. All of them rendered behind the builder, and no z-index can
+   * reach past the top layer, so each was a separate unfixable bug.
+   *
+   * The media modal could be adopted into the dialog because it is
+   * position:fixed with inset:0. TinyMCE's panels cannot: they are
+   * position:absolute at DOCUMENT coordinates, and a modal dialog is their
+   * offset parent, so moving one relocates it.
+   *
+   * So the dialog is opened non-modally and given a measured z-index instead
+   * (see frontend.css), which puts every one of those widgets back on top by
+   * the ordinary rules. What showModal() provided for free and is restored
+   * here: a backdrop, Esc to close, and a page that does not scroll behind the
+   * dialog — that last one matters, because those absolutely-positioned panels
+   * are placed in document coordinates and would drift away from the fixed
+   * dialog if the page moved under them.
+   */
+  var BACKDROP_CLASS = 'anchor-event-email-backdrop';
+
+  function openDialog(modal) {
+    if (!document.querySelector('.' + BACKDROP_CLASS)) {
+      var back = document.createElement('div');
+      back.className = BACKDROP_CLASS;
+      document.body.appendChild(back);
+    }
+    document.body.classList.add('anchor-event-email-modal-open');
+    if (typeof modal.show === 'function') { modal.show(); }
+    else { modal.setAttribute('open', ''); }
+    modal.focus();
+  }
+
+  function closeDialog(modal) {
+    if (typeof modal.close === 'function') { modal.close(); }
+    else { modal.removeAttribute('open'); }
+    if (!document.querySelector('[data-email-modal][open]')) {
+      document.body.classList.remove('anchor-event-email-modal-open');
+      var back = document.querySelector('.' + BACKDROP_CLASS);
+      if (back) { back.remove(); }
+    }
+  }
+
   function ready(fn) {
     if (document.readyState !== 'loading') { fn(); }
     else { document.addEventListener('DOMContentLoaded', fn); }
   }
 
-  /**
-   * WordPress's media library. One picker for every caller in this file.
-   *
-   * `host` is the <dialog> the picker was opened from. A dialog opened with
-   * showModal() is in the browser's TOP LAYER, which paints above the whole
-   * normal stacking context — no z-index on the media modal can reach it, and
-   * raising one only looks like it should work. WordPress appends the media
-   * modal to <body>, so it lands underneath: hit-testing the centre of the
-   * "Select Image" panel returned the dialog's preview iframe, meaning nothing
-   * in the picker was clickable. Moving the element into the dialog puts it in
-   * the same top-layer subtree. It is a live DOM move, so the Backbone view
-   * keeps its listeners and closing still tears it down normally.
-   */
-  function openMedia(onPick, onFail, host) {
+  /** WordPress's media library. One picker for every caller in this file. */
+  function openMedia(onPick, onFail) {
     if (!window.wp || !wp.media) { if (onFail) { onFail(); } return; }
     var picker = wp.media({
       title: 'Choose an image',
@@ -138,15 +174,6 @@
     picker.on('select', function () {
       var img = picker.state().get('selection').first().toJSON();
       onPick(img.sizes && img.sizes.large ? img.sizes.large.url : img.url, img);
-    });
-    picker.on('open', function () {
-      if (!host) { return; }
-      // After the view has rendered itself into <body>.
-      window.requestAnimationFrame(function () {
-        document.querySelectorAll('.media-modal, .media-modal-backdrop').forEach(function (el) {
-          if (!host.contains(el)) { host.appendChild(el); }
-        });
-      });
     });
     picker.open();
   }
@@ -255,7 +282,7 @@
                     openMedia(function (url, img) {
                       ed.insertContent('<img src="' + url + '" alt="' + (img.alt || '') +
                         '" style="max-width:100%;height:auto;" />');
-                    }, function () { say('Media library unavailable'); }, modal);
+                    }, function () { say('Media library unavailable'); });
                   }
                 });
 
@@ -294,8 +321,7 @@
             source.value = formatHtml(source.value);
             source.dataset.formatted = '1';
           }
-          if (typeof modal.showModal === 'function') { modal.showModal(); }
-          else { modal.setAttribute('open', ''); }
+          openDialog(modal);
           mountEditor();
           render();
         });
@@ -303,9 +329,19 @@
       modal.querySelectorAll('.anchor-event-email-close').forEach(function (btn) {
         btn.addEventListener('click', function () {
           if (mce) { mce.save(); }
-          if (typeof modal.close === 'function') { modal.close(); }
-          else { modal.removeAttribute('open'); }
+          closeDialog(modal);
         });
+      });
+
+      // A non-modal dialog gets no Esc handling from the browser. Ignore the
+      // key while a widget of TinyMCE's or WordPress's is open on top —
+      // theirs should close first, not the whole builder underneath it.
+      modal.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') { return; }
+        if (document.querySelector('.mce-floatpanel:not([style*="display: none"]), .media-modal, #wp-link-wrap.wp-link-open')) { return; }
+        e.preventDefault();
+        if (mce) { mce.save(); }
+        closeDialog(modal);
       });
 
       // ------------------------------------------------------ Preview / HTML
@@ -361,6 +397,22 @@
         insertAtCursor(intro, text);
       }
 
+      // "Start from a draft" — real copy with the tokens already placed, so the
+      // body is something to edit rather than something to invent. It replaces
+      // what is there, so it asks first when that would throw work away.
+      var starter = modal.querySelector('.anchor-event-email-starter');
+      if (starter) {
+        starter.addEventListener('click', function () {
+          var html = starter.getAttribute('data-starter') || '';
+          var current = introValue().replace(/<[^>]*>/g, '').trim();
+          if (current !== '' && !window.confirm('Replace the opening lines with the draft?')) { return; }
+          if (mce && !mce.isHidden()) { mce.setContent(html); mce.save(); }
+          else if (intro) { intro.value = html; }
+          renderSoon();
+          say('Draft loaded — edit it however you like');
+        });
+      }
+
       // media library -> insert an <img> at the cursor in the HTML view
       var media = modal.querySelector('.anchor-event-email-media');
       if (media) {
@@ -370,7 +422,7 @@
               '" style="max-width:100%;height:auto;" />');
             if (navigator.clipboard) { navigator.clipboard.writeText(url).catch(function () {}); }
             say('Image inserted — URL also copied');
-          }, function () { say('Media library unavailable'); }, modal);
+          }, function () { say('Media library unavailable'); });
         });
       }
 

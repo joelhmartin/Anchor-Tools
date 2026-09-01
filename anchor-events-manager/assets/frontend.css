@@ -1525,7 +1525,10 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 
 /* Checkboxes: a real target, sentence-case label, bottom-aligned so it sits on
    the same line as the inputs beside it in the grid rather than floating above. */
-.anchor-event-manager-form .anchor-event-field:has(> label > input[type="checkbox"]){
+/* Superseded by .anchor-event-field--check below, which gives these fields a
+   heading and lays them out as a column. Kept only for a checkbox field that has
+   no heading of its own. */
+.anchor-event-manager-form .anchor-event-field:has(> label > input[type="checkbox"]):not(.anchor-event-field--check){
   display:flex;
   align-items:flex-end;
   padding-bottom:11px;
@@ -1549,4 +1552,29 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   margin:0;
   flex:0 0 auto;
   cursor:pointer;
+}
+
+/* A checkbox field gets the same heading treatment as the fields beside it, so
+   it reads as a labelled column rather than a control floating in the grid. The
+   heading matches the <label> styling a text field would use; the checkbox's own
+   caption stays sentence case underneath. */
+.anchor-event-manager-form .anchor-event-field--check{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  padding-bottom:0;
+}
+.anchor-event-manager-form .anchor-event-field-heading{
+  display:block;
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--anchor-event-muted,#6b7280);
+  margin-bottom:6px;
+}
+.anchor-event-manager-form .anchor-event-field--check > label{
+  min-height:42px;          /* line up with the inputs in the same row */
+  display:inline-flex;
+  align-items:center;
 }

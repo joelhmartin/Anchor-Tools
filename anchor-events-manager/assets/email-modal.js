@@ -94,6 +94,26 @@
 
   function pad(n) { return new Array(n + 1).join('  '); }
 
+  /**
+   * Split a full email document into the parts GrapesJS should and should not
+   * touch.
+   *
+   * The designer edits the body only. Everything above it — doctype, <head>,
+   * charset, viewport, the <title> carrying {event_title} — is exactly the sort
+   * of thing an email client cares about and a visual editor happily rewrites,
+   * so it is held aside verbatim and put back on export.
+   */
+  function splitShell(html) {
+    var m = String(html).match(/^([\s\S]*?<body[^>]*>)([\s\S]*?)(<\/body>[\s\S]*)$/i);
+    if (!m) { return { head: '', body: String(html), tail: '' }; }
+    return { head: m[1], body: m[2], tail: m[3] };
+  }
+
+  function joinShell(shell, body) {
+    if (!shell.head) { return body; }
+    return shell.head + '\n' + body + '\n' + shell.tail;
+  }
+
   function ready(fn) {
     if (document.readyState !== 'loading') { fn(); }
     else { document.addEventListener('DOMContentLoaded', fn); }
@@ -178,17 +198,74 @@
         });
       });
 
-      // Preview / HTML switch
+      // Preview / Design / HTML switch
+      var design = modal.querySelector('.anchor-event-email-design');
+      var editor = null;
+      var shell  = null;
+
+      function mountDesigner() {
+        if (editor || !design || !window.grapesjs) { return; }
+        var preset = window['grapesjs-preset-newsletter'] || window.grapesjsPresetNewsletter;
+        shell = splitShell(source ? source.value : '');
+
+        editor = grapesjs.init({
+          container: design,
+          height: '100%',
+          fromElement: false,
+          storageManager: false,
+          plugins: preset ? [preset] : [],
+          pluginsOpts: preset ? new Map([[preset, { modalTitleImport: 'Paste your HTML' }]]) : undefined,
+          assetManager: { assets: [], upload: false, custom: false },
+          components: shell.body
+        });
+
+        // The media library is WordPress's, not GrapesJS's own uploader — the
+        // asset manager here would otherwise offer a second, parallel place to
+        // put files that the site knows nothing about.
+        editor.on('run:open-assets', function () {
+          editor.Modal.close();
+          openMedia(function (url) {
+            var sel = editor.getSelected();
+            if (sel && sel.is('image')) { sel.set('src', url); }
+            else { editor.addComponents('<img src="' + url + '" style="max-width:100%;height:auto;" />'); }
+          });
+        });
+
+        // Anything done in the designer is written straight back into the source
+        // textarea, which is the field the form actually posts. One source of
+        // truth: the designer never holds state the save path cannot see.
+        editor.on('update', syncFromDesigner);
+      }
+
+      function syncFromDesigner() {
+        if (!editor || !source) { return; }
+        var body = editor.getHtml().replace(/^<body[^>]*>/i, '').replace(/<\/body>$/i, '');
+        var css  = editor.getCss({ avoidProtected: true });
+        if (css && css.trim()) { body += '\n<style>' + css + '</style>'; }
+        source.value = joinShell(shell || splitShell(source.value), body);
+        renderSoon();
+      }
+
       modal.querySelectorAll('[data-email-view]').forEach(function (tab) {
         tab.addEventListener('click', function () {
           var view = tab.getAttribute('data-email-view');
           modal.querySelectorAll('[data-email-view]').forEach(function (t) {
             t.classList.toggle('is-active', t === tab);
           });
-          var html = view === 'html';
-          if (source) { source.hidden = !html; }
-          if (frame) { frame.hidden = html; }
-          if (!html) { render(); }
+          if (source) { source.hidden = view !== 'html'; }
+          if (frame)  { frame.hidden  = view !== 'preview'; }
+          if (design) { design.hidden = view !== 'design'; }
+
+          if (view === 'design') {
+            mountDesigner();
+            // Hand the designer whatever the HTML tab may have changed.
+            if (editor) {
+              shell = splitShell(source.value);
+              editor.setComponents(shell.body);
+              editor.refresh();
+            }
+          }
+          if (view === 'preview') { render(); }
         });
       });
 
@@ -199,16 +276,22 @@
         });
       });
 
+      function openMedia(onPick) {
+        if (!window.wp || !wp.media) { say('Media library unavailable'); return; }
+        var picker = wp.media({ title: 'Choose an image', library: { type: 'image' }, multiple: false,
+                                button: { text: 'Use this image' } });
+        picker.on('select', function () {
+          var img = picker.state().get('selection').first().toJSON();
+          onPick(img.sizes && img.sizes.large ? img.sizes.large.url : img.url, img);
+        });
+        picker.open();
+      }
+
       // media library -> insert the URL, never re-upload
       var media = modal.querySelector('.anchor-event-email-media');
       if (media) {
         media.addEventListener('click', function () {
-          if (!window.wp || !wp.media) { say('Media library unavailable'); return; }
-          var picker = wp.media({ title: 'Choose an image', library: { type: 'image' }, multiple: false,
-                                  button: { text: 'Use this image' } });
-          picker.on('select', function () {
-            var img = picker.state().get('selection').first().toJSON();
-            var url = (img.sizes && img.sizes.large ? img.sizes.large.url : img.url);
+          openMedia(function (url, img) {
             var target = lastFocused || source;
             // In the HTML view an <img> is what you want; in a text field the URL is.
             var snippet = (target === source)
@@ -218,7 +301,6 @@
             if (navigator.clipboard) { navigator.clipboard.writeText(url).catch(function () {}); }
             say('Image inserted — URL also copied');
           });
-          picker.open();
         });
       }
 

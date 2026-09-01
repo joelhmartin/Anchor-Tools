@@ -66,12 +66,20 @@
         continue;
       }
       if (!isTag) {
-        // Collapse runs of whitespace inside a text node. HTML collapses them
-        // when it renders, so this changes nothing about the email — but it is
-        // the difference between "{greeting}          {intro}" straggling across
-        // the editor and a line you can read.
-        var text = part.replace(/\s+/g, ' ').trim();
-        if (text !== '') { out.push(pad(depth) + text); }
+        // Collapse runs of SPACES inside a text node, but keep the author's
+        // line breaks. HTML collapses both when it renders, so neither choice
+        // changes the email — but they read very differently.
+        //
+        // Collapsing newlines too was the earlier behaviour, and it is what put
+        // "{greeting} {intro} {guests_line} {waitlist_notice} {detail_rows}
+        // {seat_list}" on a single line, which reads as though those regions
+        // will render inline. They do not — each expands to its own block
+        // element — so the line was misleading about the output. One token per
+        // line says what actually happens.
+        part.split(/\r\n|\n|\r/).forEach(function (line) {
+          var text = line.replace(/[ \t]+/g, ' ').trim();
+          if (text !== '') { out.push(pad(depth) + text); }
+        });
         continue;
       }
 
@@ -86,12 +94,21 @@
 
       var selfClosing = part.slice(-2) === '/>' || VOID_TAGS.indexOf(name) !== -1 || part.charAt(1) === '!' || part.charAt(1) === '?';
 
-      // An element whose entire content is one text node stays on one line.
-      // Breaking it would put whitespace inside a <td>, which is exactly how the
-      // gap under an image appears in Outlook — and these are the cells holding
-      // {header_image} and {cta_button}.
+      // An element whose entire content is one SHORT text node stays on one
+      // line. Breaking it would put whitespace inside a <td>, which is exactly
+      // how the gap under an image appears in Outlook — and those are the cells
+      // holding {header_image} and {cta_button}, each a single short token.
+      //
+      // The length cap is why the body cell now breaks: it holds six tokens in
+      // one text node, and keeping that on one line was what made
+      // "{greeting} {intro} {guests_line} ..." read as though the regions were
+      // going to render inline. They do not — each expands to its own block
+      // element — but the source said otherwise, so the source was the bug. A
+      // text cell gains nothing from the Outlook protection anyway; only an
+      // image cell does.
       if (!selfClosing && parts[i + 1] && parts[i + 1].charAt(0) !== '<'
-          && parts[i + 2] && parts[i + 2].toLowerCase().indexOf('</' + name) === 0) {
+          && parts[i + 2] && parts[i + 2].toLowerCase().indexOf('</' + name) === 0
+          && parts[i + 1].replace(/\s+/g, ' ').trim().length <= 60) {
         out.push(pad(depth) + part + parts[i + 1].replace(/\s+/g, ' ').trim() + parts[i + 2]);
         i += 2;
         continue;

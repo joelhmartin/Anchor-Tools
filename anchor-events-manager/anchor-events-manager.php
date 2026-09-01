@@ -8269,18 +8269,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 <tr>
                     <td align="center">
                         <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
-                            {header_image}                            <tr>
+                            {header_image}
+                            <tr>
                                 <td style="padding:28px 32px 8px;">
                                     <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">{event_title}</h1>
                                 </td>
                             </tr>
                             <tr>
                                 <td style="padding:16px 32px 8px;">
-                                    {greeting}                                    {intro}                                    {guests_line}                                    {waitlist_notice}                                    {detail_rows}                                    {seat_list}                                </td>
+                                    {greeting}
+                                    {intro}
+                                    {guests_line}
+                                    {waitlist_notice}
+                                    {detail_rows}
+                                    {seat_list}
+                                </td>
                             </tr>
-                            {join_button}                            {cta_button}                            <tr>
+                            {join_button}
+                            {cta_button}
+                            <tr>
                                 <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
-                                    {site_name}                                </td>
+                                    {site_name}
+                                </td>
                             </tr>
                         </table>
                     </td>
@@ -8515,8 +8525,8 @@ ANCHOR_EVENTS_EMAIL_SHELL;
                                                 $value = isset( $row['value'] ) ? (string) $row['value'] : '';
                                                 if ( $label === '' && $value === '' ) { continue; } ?>
                                                 <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;"><?php echo esc_html( $label ); ?></td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;"><?php echo esc_html( $value ); ?></td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;"><?php echo esc_html( $label ); ?></td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;"><?php echo esc_html( $value ); ?></td>
                                                 </tr>
                                             <?php endforeach; ?>
                                         </table>

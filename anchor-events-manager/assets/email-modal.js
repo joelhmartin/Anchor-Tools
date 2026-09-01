@@ -55,7 +55,11 @@
         continue;
       }
       if (!isTag) {
-        var text = part.trim();
+        // Collapse runs of whitespace inside a text node. HTML collapses them
+        // when it renders, so this changes nothing about the email — but it is
+        // the difference between "{greeting}          {intro}" straggling across
+        // the editor and a line you can read.
+        var text = part.replace(/\s+/g, ' ').trim();
         if (text !== '') { out.push(pad(depth) + text); }
         continue;
       }
@@ -77,7 +81,7 @@
       // {header_image} and {cta_button}.
       if (!selfClosing && parts[i + 1] && parts[i + 1].charAt(0) !== '<'
           && parts[i + 2] && parts[i + 2].toLowerCase().indexOf('</' + name) === 0) {
-        out.push(pad(depth) + part + parts[i + 1].trim() + parts[i + 2]);
+        out.push(pad(depth) + part + parts[i + 1].replace(/\s+/g, ' ').trim() + parts[i + 2]);
         i += 2;
         continue;
       }
@@ -307,6 +311,10 @@
 
         var body = html.replace(/^\s*<body[^>]*>/i, '').replace(/<\/body>\s*$/i, '');
         source.value = joinShell(shell || splitShell(source.value), body);
+        // The designer emits one unbroken line. Flag it so the HTML view
+        // re-indents before anyone has to read it — formatting once on open was
+        // never going to cover markup written after that.
+        source.dataset.machine = '1';
         renderSoon();
       }
 
@@ -316,6 +324,10 @@
           modal.querySelectorAll('[data-email-view]').forEach(function (t) {
             t.classList.toggle('is-active', t === tab);
           });
+          if (view === 'html' && source && source.dataset.machine === '1') {
+            source.value = formatHtml(source.value);
+            delete source.dataset.machine;
+          }
           if (source) { source.hidden = view !== 'html'; }
           if (frame)  { frame.hidden  = view !== 'preview'; }
           if (design) { design.hidden = view !== 'design'; }

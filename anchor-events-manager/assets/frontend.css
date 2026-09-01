@@ -1655,7 +1655,10 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-email-source{
   flex:1 1 auto; width:100%; min-height:52vh; border:0; padding:16px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
-  line-height:1.6; tab-size:2; white-space:pre; overflow:auto;
+  line-height:1.6; tab-size:2; overflow:auto;
+  /* Wrap rather than scroll sideways: inlined email CSS makes single attributes
+     hundreds of characters long, and a horizontal scrollbar hides the markup. */
+  white-space:pre-wrap; overflow-wrap:anywhere;
   resize:none; box-sizing:border-box; color:#111827; background:#fcfcfd;
 }
 .anchor-event-email-modal__foot{

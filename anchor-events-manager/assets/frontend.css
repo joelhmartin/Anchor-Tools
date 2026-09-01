@@ -1585,6 +1585,10 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
  * ------------------------------------------------------------------------- */
 .anchor-event-email-buttons{ display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 0; }
 .anchor-event-email-modal{
+  /* A theme with a universal `* { margin: 0 }` reset overrides the UA's
+     `dialog { margin: auto }` and the modal ends up in the top-left corner.
+     Stating it here keeps the builder centred whatever the theme does. */
+  margin:auto;
   width:min(1180px,94vw);
   max-height:88vh;
   padding:0;

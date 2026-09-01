@@ -397,6 +397,22 @@
         insertAtCursor(intro, text);
       }
 
+      // "Start from a draft" — real copy with the tokens already placed, so the
+      // body is something to edit rather than something to invent. It replaces
+      // what is there, so it asks first when that would throw work away.
+      var starter = modal.querySelector('.anchor-event-email-starter');
+      if (starter) {
+        starter.addEventListener('click', function () {
+          var html = starter.getAttribute('data-starter') || '';
+          var current = introValue().replace(/<[^>]*>/g, '').trim();
+          if (current !== '' && !window.confirm('Replace the opening lines with the draft?')) { return; }
+          if (mce && !mce.isHidden()) { mce.setContent(html); mce.save(); }
+          else if (intro) { intro.value = html; }
+          renderSoon();
+          say('Draft loaded — edit it however you like');
+        });
+      }
+
       // media library -> insert an <img> at the cursor in the HTML view
       var media = modal.querySelector('.anchor-event-email-media');
       if (media) {

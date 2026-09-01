@@ -2694,6 +2694,72 @@ class Module {
         ];
     }
 
+    /**
+     * Editable starter copy for the opening lines, per email type.
+     *
+     * NOT the same thing as the fallback wording. The fallback (see
+     * email_field_default()) is what an event sends when its opening lines are
+     * left blank, and it stays a one-liner so that nothing changes for the
+     * events already relying on it. This is what the "Start from a draft"
+     * button drops into the editor: real copy with the tokens already placed,
+     * so the field is something to edit rather than something to invent.
+     *
+     * Nothing here is written anywhere until the author clicks that button and
+     * then saves the event.
+     *
+     * No draft opens with a greeting: the template emits {greeting} ("Hi
+     * <name>,") immediately before {intro}, so one here would send the email
+     * out saying hello twice.
+     */
+    private function email_starter_copy( $type ) {
+        $starters = [
+            'confirmation' => [
+__( "You're registered for <strong>{event_title}</strong> — we're looking forward to seeing you.", 'anchor-schema' ),
+                __( 'It runs on {event_date} at {event_time}, at {venue}.', 'anchor-schema' ),
+                __( 'If anything changes, just reply to this email and we\'ll sort it out.', 'anchor-schema' ),
+            ],
+            'reminder' => [
+__( '<strong>{event_title}</strong> is coming up in {days_until} days — on {event_date} at {event_time}.', 'anchor-schema' ),
+                __( 'Where to go: {venue}. Please arrive a few minutes early so we can start on time.', 'anchor-schema' ),
+            ],
+            'cancellation' => [
+__( 'Your registration for <strong>{event_title}</strong> on {event_date} has been cancelled.', 'anchor-schema' ),
+                __( "If you didn't expect this, reply to this email and we'll look into it right away.", 'anchor-schema' ),
+            ],
+            'roster' => [
+                __( 'Here is the current roster for <strong>{event_title}</strong> on {event_date}.', 'anchor-schema' ),
+                __( '{seat_count} registered so far, {remaining} places still open.', 'anchor-schema' ),
+            ],
+        ];
+        $lines = $starters[ $type ] ?? $starters['confirmation'];
+        return \implode( '', \array_map( function ( $line ) {
+            return '<p>' . $line . '</p>';
+        }, $lines ) );
+    }
+
+    /**
+     * What each block token puts in the email, and when it puts nothing.
+     *
+     * These are regions of the template document rather than values, which is
+     * why several of them look like they "do nothing" in a preview: each is
+     * conditional, and renders an empty string when its condition is false. A
+     * confirmation for someone who brought no guests and is not waitlisted
+     * genuinely has no {guests_line} and no {waitlist_notice}.
+     */
+    private function template_token_notes() {
+        return [
+            'intro'           => __( 'The Opening lines from this panel — the body of the email.', 'anchor-schema' ),
+            'greeting'        => __( '"Hi <name>," as its own paragraph. Empty when the recipient has no name on file.', 'anchor-schema' ),
+            'header_image'    => __( "The event's featured image. Empty when it has none.", 'anchor-schema' ),
+            'detail_rows'     => __( 'A small label/value table — what it lists depends on the email (date and venue for a reminder, the seats booked for a confirmation).', 'anchor-schema' ),
+            'seat_list'       => __( 'A bulleted list of the attendees. Only the roster and multi-seat confirmations have one.', 'anchor-schema' ),
+            'guests_line'     => __( '"Your party of N is confirmed." Empty unless guests were booked.', 'anchor-schema' ),
+            'waitlist_notice' => __( 'A note that the recipient is on the waitlist. Empty for everyone else.', 'anchor-schema' ),
+            'join_button'     => __( 'The join link button. Only for virtual events, and only once confirmed.', 'anchor-schema' ),
+            'cta_button'      => __( 'The "View event details" button.', 'anchor-schema' ),
+        ];
+    }
+
     private function documented_email_tokens() {
         return $this->template_email_tokens();
     }
@@ -3049,8 +3115,16 @@ class Module {
                     'status'        => \Anchor\Events\Registrations::STATUS_CONFIRMED,
                     'intro_message' => $intro,
                     'guests'        => 0,
-                    'detail_rows'   => [],
-                    'seat_list'     => [],
+                    // Was []. The real confirmation builds one row per event with
+                    // its seat count (Anchor\Events\WooCommerce::send_customer_email),
+                    // so an empty array here made {detail_rows} and {seat_list}
+                    // look dead in the preview when they are not — the panel was
+                    // showing less than the email actually sends.
+                    'detail_rows'   => [ [
+                        'label' => $tokens['event_title'],
+                        'value' => \sprintf( \_n( '%d seat', '%d seats', 1, 'anchor-schema' ), 1 ),
+                    ] ],
+                    'seat_list'     => [ \sprintf( '%s (%s)', $sample_seat['name'], $tokens['event_title'] ) ],
                     'cta_label'     => __( 'View event details', 'anchor-schema' ),
                     'cta_url'       => $tokens['event_url'],
                     'type'          => 'confirmation',
@@ -5255,7 +5329,11 @@ class Module {
                                         class="anchor-event-email-intro"
                                         name="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>" rows="8"
                                         placeholder="<?php echo esc_attr( $intro_default ); ?>" data-email-field="intro"><?php echo esc_textarea( (string) \get_post_meta( $event_id, '_anchor_event_email_intro_' . $type, true ) ); ?></textarea>
-                                    <p class="anchor-event-hint"><?php echo esc_html__( 'Leave either blank to use the site-wide wording shown in grey. Use the Add Media button for images.', 'anchor-schema' ); ?></p>
+                                    <p class="anchor-event-hint"><?php echo esc_html__( 'This is the body of the email. Leave it blank to use the site-wide wording shown in grey.', 'anchor-schema' ); ?></p>
+                                    <button type="button" class="anchor-event-button-secondary anchor-event-email-starter"
+                                        data-starter="<?php echo esc_attr( $this->email_starter_copy( $type ) ); ?>">
+                                        <?php echo esc_html__( 'Start from a draft', 'anchor-schema' ); ?>
+                                    </button>
 
                                     <?php
                                     /**
@@ -5276,11 +5354,25 @@ class Module {
 
                                     <div class="anchor-event-email-tokens-group" data-token-scope="template" hidden>
                                         <p class="anchor-event-email-tokens-label"><?php echo esc_html__( 'Insert a token (HTML)', 'anchor-schema' ); ?></p>
+                                        <?php $notes = $this->template_token_notes(); ?>
                                         <div class="anchor-event-email-tokens">
                                             <?php foreach ( $this->template_email_tokens() as $token ) : ?>
-                                                <button type="button" class="anchor-event-token" data-token="{<?php echo esc_attr( $token ); ?>}">{<?php echo esc_html( $token ); ?>}</button>
+                                                <button type="button" class="anchor-event-token"
+                                                    <?php echo isset( $notes[ $token ] ) ? 'title="' . esc_attr( $notes[ $token ] ) . '"' : ''; ?>
+                                                    data-token="{<?php echo esc_attr( $token ); ?>}">{<?php echo esc_html( $token ); ?>}</button>
                                             <?php endforeach; ?>
                                         </div>
+                                        <details class="anchor-event-email-legend">
+                                            <summary><?php echo esc_html__( 'What do these do?', 'anchor-schema' ); ?></summary>
+                                            <p><?php echo esc_html__( 'Each one is a region of the email, not a value. Several are conditional and render nothing when they do not apply — that is why a preview can look like they are broken.', 'anchor-schema' ); ?></p>
+                                            <dl>
+                                                <?php foreach ( $notes as $token => $note ) : ?>
+                                                    <dt>{<?php echo esc_html( $token ); ?>}</dt>
+                                                    <dd><?php echo esc_html( $note ); ?></dd>
+                                                <?php endforeach; ?>
+                                            </dl>
+                                            <p><?php echo esc_html__( 'You are not required to keep any of them. To make the email nothing but what you write in Opening lines, delete the others from this template and leave {intro}.', 'anchor-schema' ); ?></p>
+                                        </details>
                                         <button type="button" class="anchor-event-button-secondary anchor-event-email-media"><?php echo esc_html__( 'Insert image from library', 'anchor-schema' ); ?></button>
                                     </div>
                                 </div>

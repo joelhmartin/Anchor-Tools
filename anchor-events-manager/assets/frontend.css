@@ -1671,6 +1671,18 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
 }
 .anchor-event-email-tokens{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
 .anchor-event-email-tokens-group[hidden]{ display:none; }
+.anchor-event-email-starter{ margin:0 0 4px; }
+.anchor-event-email-legend{
+  margin:0 0 16px; font-size:12.5px; line-height:1.5;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-event-email-legend summary{ cursor:pointer; font-weight:600; padding:4px 0; }
+.anchor-event-email-legend dl{ margin:8px 0 10px; }
+.anchor-event-email-legend dt{
+  margin:8px 0 2px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--anchor-event-text,#111827);
+}
+.anchor-event-email-legend dd{ margin:0; }
 .anchor-event-token{
   border:1px solid var(--anchor-event-border,#e2e4e8); background:#fff; border-radius:999px;
   padding:4px 10px; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;

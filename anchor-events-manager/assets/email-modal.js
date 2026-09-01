@@ -114,8 +114,20 @@
     else { document.addEventListener('DOMContentLoaded', fn); }
   }
 
-  /** WordPress's media library. One picker for every caller in this file. */
-  function openMedia(onPick, onFail) {
+  /**
+   * WordPress's media library. One picker for every caller in this file.
+   *
+   * `host` is the <dialog> the picker was opened from. A dialog opened with
+   * showModal() is in the browser's TOP LAYER, which paints above the whole
+   * normal stacking context — no z-index on the media modal can reach it, and
+   * raising one only looks like it should work. WordPress appends the media
+   * modal to <body>, so it lands underneath: hit-testing the centre of the
+   * "Select Image" panel returned the dialog's preview iframe, meaning nothing
+   * in the picker was clickable. Moving the element into the dialog puts it in
+   * the same top-layer subtree. It is a live DOM move, so the Backbone view
+   * keeps its listeners and closing still tears it down normally.
+   */
+  function openMedia(onPick, onFail, host) {
     if (!window.wp || !wp.media) { if (onFail) { onFail(); } return; }
     var picker = wp.media({
       title: 'Choose an image',
@@ -126,6 +138,15 @@
     picker.on('select', function () {
       var img = picker.state().get('selection').first().toJSON();
       onPick(img.sizes && img.sizes.large ? img.sizes.large.url : img.url, img);
+    });
+    picker.on('open', function () {
+      if (!host) { return; }
+      // After the view has rendered itself into <body>.
+      window.requestAnimationFrame(function () {
+        document.querySelectorAll('.media-modal, .media-modal-backdrop').forEach(function (el) {
+          if (!host.contains(el)) { host.appendChild(el); }
+        });
+      });
     });
     picker.open();
   }
@@ -234,7 +255,7 @@
                     openMedia(function (url, img) {
                       ed.insertContent('<img src="' + url + '" alt="' + (img.alt || '') +
                         '" style="max-width:100%;height:auto;" />');
-                    }, function () { say('Media library unavailable'); });
+                    }, function () { say('Media library unavailable'); }, modal);
                   }
                 });
 
@@ -349,7 +370,7 @@
               '" style="max-width:100%;height:auto;" />');
             if (navigator.clipboard) { navigator.clipboard.writeText(url).catch(function () {}); }
             say('Image inserted — URL also copied');
-          }, function () { say('Media library unavailable'); });
+          }, function () { say('Media library unavailable'); }, modal);
         });
       }
 

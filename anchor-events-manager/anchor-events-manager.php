@@ -7453,9 +7453,9 @@ class Module {
     private function calculate_timestamps( $meta ) {
         $settings = $this->get_settings();
         if ( $settings['timezone_mode'] === 'site' ) {
-            $timezone = \get_option( 'timezone_string' ) ?: 'UTC';
+            $timezone = '';                      // '' = the site's zone, resolved in normalize_timezone()
         } else {
-            $timezone = $meta['timezone'] ? $meta['timezone'] : ( \get_option( 'timezone_string' ) ?: 'UTC' );
+            $timezone = $meta['timezone'] ? $meta['timezone'] : '';
         }
         $start_time = $meta['all_day'] ? '00:00' : ( $meta['start_time'] ?: '00:00' );
         $end_date = $meta['end_date'] ?: $meta['start_date'];
@@ -7471,12 +7471,46 @@ class Module {
         return [ 'start' => $start, 'end' => $end ];
     }
 
+    /**
+     * A timezone string DateTimeZone will actually accept.
+     *
+     * Three shapes reach here. A named zone ("America/Chicago") is fine. An
+     * empty one means "use the site's", which is wp_timezone_string() — NOT
+     * get_option('timezone_string'), because that option is empty on any site
+     * configured with a raw UTC offset instead of a named zone. And WordPress's
+     * own manual-offset form ("UTC-6", which get_meta_defaults() mints and the
+     * timezone dropdown offers) is REJECTED by DateTimeZone — it wants
+     * "-06:00".
+     *
+     * Both of those last two used to end at the catch below, silently, so every
+     * event on this site had a start_ts six hours from the date its admin
+     * typed: {event_date} rendered blank or a day early, and the reminder
+     * scheduler's start_ts window never matched.
+     */
+    private function normalize_timezone( $timezone ) {
+        $timezone = \trim( (string) $timezone );
+
+        if ( $timezone === '' ) {
+            return \wp_timezone_string();   // named zone, or ±HH:MM from gmt_offset
+        }
+        // UTC-6, UTC+5.5 — the decimal form WordPress uses for manual offsets.
+        if ( \preg_match( '/^UTC([+-])(\d+(?:\.\d+)?)$/i', $timezone, $m ) ) {
+            $minutes = (int) \round( (float) $m[2] * 60 );
+            return \sprintf( '%s%02d:%02d', $m[1], \intdiv( $minutes, 60 ), $minutes % 60 );
+        }
+        // UTC-06:30 / UTC-0630
+        if ( \preg_match( '/^UTC([+-])(\d{1,2}):?(\d{2})$/i', $timezone, $m ) ) {
+            return \sprintf( '%s%02d:%02d', $m[1], (int) $m[2], (int) $m[3] );
+        }
+        return $timezone;
+    }
+
     private function to_timestamp( $date, $time, $timezone ) {
         if ( ! $date ) {
             return 0;
         }
         try {
-            $tz = new \DateTimeZone( $timezone ?: 'UTC' );
+            $tz = new \DateTimeZone( $this->normalize_timezone( $timezone ) );
         } catch ( \Exception $e ) {
             $tz = new \DateTimeZone( 'UTC' );
         }
@@ -7513,7 +7547,7 @@ class Module {
 
         $month = $requested_month;
         $month_start = $month . '-01';
-        $timezone = \get_option( 'timezone_string' ) ?: 'UTC';
+        $timezone = '';                          // as above — normalize_timezone() resolves it
         $start = $this->to_timestamp( $month_start, '00:00', $timezone );
         $end = strtotime( '+1 month', strtotime( $month_start ) );
 

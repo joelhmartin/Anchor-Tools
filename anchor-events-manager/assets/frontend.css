@@ -1680,11 +1680,13 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-event-email-fields .mce-toolbar-grp{ border-radius:8px 8px 0 0; }
 .anchor-event-email-fields .mce-edit-area iframe{ min-height:180px; }
 
-/* A <dialog> opened with showModal() sits in the top layer, above everything in
-   the normal stacking context — including the media library, which would open
-   behind the builder. Lifting the media modal's own layer is what puts it back
-   in front. */
-.media-modal, .media-modal-backdrop{ z-index:2147483000; }
+/* The media library opening behind the builder is NOT a z-index problem and has
+   no CSS fix: a <dialog> opened with showModal() is in the browser's top layer,
+   which paints above the entire normal stacking context whatever z-index the
+   media modal carries. email-modal.js moves the modal into the dialog instead.
+   Inside it, the modal keeps its own fixed positioning — the dialog sets no
+   transform, so it is not a containing block and does not clip it. */
+.anchor-event-email-modal .media-modal{ position:fixed; }
 
 /* Emails step: one row per email — a switch and the editor that opens it. */
 .anchor-event-email-list{ list-style:none; margin:12px 0 6px; padding:0; display:grid; gap:8px; max-width:520px; }

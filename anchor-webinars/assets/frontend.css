@@ -7,7 +7,11 @@
     margin: 2em 0;
 }
 
-.anchor-webinar-block__player {
+/* ---- Player container (shared by every render path) ----
+   The Vimeo iframe is a direct child, so this ratio box owns the layout —
+   never nest it inside a second padding-bottom wrapper or it collapses. */
+.anchor-webinar-player,
+#anchor-webinar-player {
     position: relative;
     padding-bottom: 56.25%; /* 16:9 */
     height: 0;
@@ -16,7 +20,8 @@
     background: #000;
 }
 
-.anchor-webinar-block__player iframe {
+.anchor-webinar-player iframe,
+#anchor-webinar-player iframe {
     position: absolute;
     top: 0;
     left: 0;
@@ -70,31 +75,9 @@
     border-radius: 8px;
 }
 
-.anchor-webinar-single .anchor-webinar-player-wrap {
-    position: relative;
-    padding-bottom: 56.25%;
-    height: 0;
-    overflow: hidden;
-    border-radius: 8px;
-    background: #000;
-    margin-bottom: 1.5em;
-}
-
-.anchor-webinar-single .anchor-webinar-player-wrap iframe {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    border: 0;
-}
-
+.anchor-webinar-single .anchor-webinar-player,
 .anchor-webinar-single #anchor-webinar-player {
     margin-bottom: 1.5em;
-}
-
-.anchor-webinar-single #anchor-webinar-player iframe {
-    border-radius: 8px;
 }
 
 .anchor-webinar-single .anchor-webinar-description {

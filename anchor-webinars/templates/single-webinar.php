@@ -26,9 +26,7 @@ $module = \Anchor\Webinars\Module::instance();
             $has_player = $module ? $module->content_has_player_container( get_the_ID() ) : false;
             ?>
             <?php if ( $vimeo_id && ! $has_player ) : ?>
-                <div class="anchor-webinar-player-wrap">
-                    <div id="anchor-webinar-player"></div>
-                </div>
+                <?php echo $module ? $module->render_player( get_the_ID(), $vimeo_id ) : ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped — markup built internally. ?>
             <?php elseif ( ! $vimeo_id && has_post_thumbnail() ) : ?>
                 <div class="anchor-webinar-featured-img">
                     <?php the_post_thumbnail( 'large' ); ?>

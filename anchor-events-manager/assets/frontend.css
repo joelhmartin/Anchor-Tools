@@ -1744,6 +1744,14 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
    is above the builder's 100001 by the ordinary rules. It only ever needed a
    workaround while the builder was in the top layer. */
 
+/* Per-event sender identity, above the four email editors. */
+.anchor-event-sender{
+  margin:14px 0 22px; padding:16px 18px;
+  border:1px solid var(--anchor-event-border,#e2e4e8); border-radius:10px;
+  background:#fbfbfc;
+}
+.anchor-event-sender h4{ margin:0 0 6px; font-size:14px; }
+
 /* Emails step: one row per email — a switch and the editor that opens it. */
 .anchor-event-email-list{ list-style:none; margin:12px 0 6px; padding:0; display:grid; gap:8px; max-width:520px; }
 .anchor-event-email-list li{

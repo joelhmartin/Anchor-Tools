@@ -5568,7 +5568,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                         <button type="button" class="anchor-event-email-tab is-active" data-email-view="preview"><?php echo esc_html__( 'Preview', 'anchor-schema' ); ?></button>
                                         <button type="button" class="anchor-event-email-tab" data-email-view="html"><?php echo esc_html__( 'HTML', 'anchor-schema' ); ?></button>
                                         <span class="anchor-event-email-status" aria-live="polite"></span>
-                                        <span class="anchor-event-email-note"><?php echo esc_html__( 'Preview uses sample data and shows every region, including ones a given recipient would not get.', 'anchor-schema' ); ?></span>
+                                        <span class="anchor-event-email-note"><?php echo esc_html__( 'Preview fills empty tokens with sample data, and shows text regions a given recipient might not get.', 'anchor-schema' ); ?></span>
                                     </div>
                                     <iframe class="anchor-event-email-frame" title="<?php echo esc_attr( sprintf( __( '%s email preview', 'anchor-schema' ), $label ) ); ?>"></iframe>
                                     <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
@@ -9004,8 +9004,22 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         $preview = ! empty( $this->preview_samples );
         if ( $preview ) {
             $samples = $this->preview_sample_scalars( $event_id );
-            if ( $join_url === '' )   { $join_url = $samples['join_link']; }
-            if ( $guests === 0 )      { $guests   = 1; }
+            if ( $guests === 0 ) { $guests = 1; }
+
+            // A stand-in room link ONLY for an event that is actually virtual
+            // and simply has no URL saved yet. Never for an in-person event.
+            //
+            // {join_button} is a full-width button, and faking one put a second
+            // button in the preview of an event that will never send it —
+            // indistinguishable from the CTA buttons that ARE configured just
+            // above it. Same reason {header_image} gets no stand-in photo: a
+            // sample is helpful when it is obviously filling a gap in a line of
+            // text, and misleading when it renders as a piece of the layout the
+            // author did not put there. The {join_link} SCALAR still gets a
+            // stand-in further down, so a token typed into the body resolves.
+            if ( $join_url === '' && ! empty( $event_meta['virtual'] ) ) {
+                $join_url = $samples['join_link'];
+            }
         }
 
         $paragraphs = $this->tpl_block_intro( $message );

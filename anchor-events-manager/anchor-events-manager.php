@@ -2290,7 +2290,7 @@ class Module {
                     </div>
                     <div class="anchor-event-field" id="anchor-event-virtual-url">
                         <label for="anchor_event_virtual_url"><?php echo esc_html__( 'Virtual Event URL', 'anchor-schema' ); ?></label>
-                        <input type="url" id="anchor_event_virtual_url" name="anchor_event_virtual_url" value="<?php echo esc_attr( $meta['virtual_url'] ); ?>" />
+                        <input type="url" id="anchor_event_virtual_url" name="anchor_event_virtual_url" value="<?php echo esc_attr( $meta['virtual_url'] ); ?>" data-required-when-virtual="1" />
                     </div>
                 </div>
             </div>
@@ -2577,7 +2577,7 @@ class Module {
      * @return string
      */
     public function get_email_field( $event_id, $type, $field, $fallback = '' ) {
-        $field = ( $field === 'subject' ) ? 'subject' : 'intro';
+        $field = \in_array( $field, [ 'subject', 'intro', 'preheader' ], true ) ? $field : 'intro';
         $type  = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
 
         // A live preview passes unsaved values so the panel reflects typing.
@@ -2631,7 +2631,7 @@ class Module {
             // wp_kses_post() keeps the formatting and strips anything unsafe.
             // sanitize_textarea_field() used to flatten it to plain text, which
             // would silently delete every bold/link/list an author added.
-            foreach ( [ 'subject' => 'sanitize_text_field', 'intro' => 'wp_kses_post' ] as $field => $clean ) {
+            foreach ( [ 'subject' => 'sanitize_text_field', 'intro' => 'wp_kses_post', 'preheader' => 'sanitize_text_field' ] as $field => $clean ) {
                 $key = 'anchor_event_email_' . $field . '_' . $type;
                 if ( ! isset( $src[ $key ] ) ) {
                     continue;
@@ -2700,8 +2700,8 @@ class Module {
         return [
             'event_title', 'event_date', 'event_time', 'venue', 'days_until',
             'attendee_name', 'status', 'join_link', 'event_url', 'site_name', 'event_id',
-            'intro', 'greeting', 'header_image', 'guests_line', 'waitlist_notice',
-            'detail_rows', 'seat_list', 'join_button', 'cta_button', 'cta_button_2',
+            'preheader', 'intro', 'greeting', 'header_image', 'guests_line', 'waitlist_notice',
+            'detail_rows', 'seat_list', 'cta_button', 'cta_button_2',
         ];
     }
 
@@ -2759,6 +2759,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      */
     private function template_token_notes() {
         return [
+            'preheader'       => __( 'The Preview text from this panel, hidden in the email and shown by the inbox after the subject.', 'anchor-schema' ),
             'intro'           => __( 'The Opening lines from this panel — the body of the email.', 'anchor-schema' ),
             'greeting'        => __( '"Hi <name>," as its own paragraph. Empty when the recipient has no name on file.', 'anchor-schema' ),
             'header_image'    => __( "The event's featured image. Empty when it has none.", 'anchor-schema' ),
@@ -2766,7 +2767,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'seat_list'       => __( 'A bulleted list of the attendees. Only the roster and multi-seat confirmations have one.', 'anchor-schema' ),
             'guests_line'     => __( '"Your party of N is confirmed." Empty unless guests were booked.', 'anchor-schema' ),
             'waitlist_notice' => __( 'A note that the recipient is on the waitlist. Empty for everyone else.', 'anchor-schema' ),
-            'join_button'     => __( 'The join link button. Only for virtual events, and only once confirmed.', 'anchor-schema' ),
             'cta_button'      => __( 'The main button, from the Button field on the left. Empty unless it has both text and a link.', 'anchor-schema' ),
             'cta_button_2'    => __( 'The second button, from the Second button field on the left. Empty unless it has both text and a link.', 'anchor-schema' ),
         ];
@@ -2877,6 +2877,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 }
             }
         }
+    }
+
+    /**
+     * The button an event gets when nobody has set one.
+     *
+     * Virtual events point at the room, everything else at the event page. Kept
+     * in one place because the builder's field and the renderer must agree —
+     * if they drifted, the preview would show a different button from the one
+     * that sends.
+     *
+     * @param array $fallback Caller's own label/url, used for a non-virtual event.
+     */
+    private function default_email_cta( $event_id, array $fallback = [] ) {
+        $meta = $event_id ? $this->get_meta( (int) $event_id ) : [];
+        if ( ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] ) ) {
+            return [
+                'label' => __( 'Join the event', 'anchor-schema' ),
+                'url'   => (string) $meta['virtual_url'],
+            ];
+        }
+        return [
+            'label' => (string) ( $fallback['label'] ?? __( 'View event details', 'anchor-schema' ) ),
+            'url'   => (string) ( $fallback['url'] ?? ( $event_id ? \get_permalink( $event_id ) : \home_url() ) ),
+        ];
     }
 
     private function documented_email_tokens() {
@@ -3338,6 +3362,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'type'    => $type,
             'subject' => isset( $_POST['subject'] ) ? \sanitize_text_field( \wp_unslash( $_POST['subject'] ) ) : null,
             'intro'   => isset( $_POST['intro'] ) ? \wp_kses_post( \wp_unslash( $_POST['intro'] ) ) : null,
+            'preheader' => isset( $_POST['preheader'] ) ? \sanitize_text_field( \wp_unslash( $_POST['preheader'] ) ) : null,
         ];
         $this->preview_field_override = \array_filter( $this->preview_field_override, function ( $v ) { return $v !== null; } );
 
@@ -5316,7 +5341,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     <div class="anchor-event-field"><label for="anchor_event_address_zip"><?php echo esc_html__( 'Postal code', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_zip" name="anchor_event_address_zip" value="<?php echo esc_attr( $meta['address_zip'] ); ?>" /></div>
                     <div class="anchor-event-field"><label for="anchor_event_address_country"><?php echo esc_html__( 'Country', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_address_country" name="anchor_event_address_country" value="<?php echo esc_attr( $meta['address_country'] ); ?>" /></div>
                     <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Format', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_virtual" name="anchor_event_virtual" value="1" <?php checked( $meta['virtual'] ); ?> /> <?php echo esc_html__( 'Virtual event', 'anchor-schema' ); ?></label></div>
-                    <div class="anchor-event-field" id="anchor-event-virtual-url"><label for="anchor_event_virtual_url"><?php echo esc_html__( 'Virtual URL', 'anchor-schema' ); ?></label><input type="url" id="anchor_event_virtual_url" name="anchor_event_virtual_url" value="<?php echo esc_attr( $meta['virtual_url'] ); ?>" /></div>
+                    <div class="anchor-event-field" id="anchor-event-virtual-url"><label for="anchor_event_virtual_url"><?php echo esc_html__( 'Virtual URL', 'anchor-schema' ); ?></label><input type="url" id="anchor_event_virtual_url" name="anchor_event_virtual_url" value="<?php echo esc_attr( $meta['virtual_url'] ); ?>" data-required-when-virtual="1" /></div>
                 </div>
             </div>
 
@@ -5472,6 +5497,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                         value="<?php echo esc_attr( (string) \get_post_meta( $event_id, '_anchor_event_email_subject_' . $type, true ) ); ?>"
                                         placeholder="<?php echo esc_attr( $subject_default ); ?>" data-email-field="subject" />
 
+                                    <label for="anchor_event_email_preheader_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Preview text', 'anchor-schema' ); ?></label>
+                                    <input type="text" id="anchor_event_email_preheader_<?php echo esc_attr( $type ); ?>"
+                                        name="anchor_event_email_preheader_<?php echo esc_attr( $type ); ?>"
+                                        value="<?php echo esc_attr( (string) \get_post_meta( $event_id, '_anchor_event_email_preheader_' . $type, true ) ); ?>"
+                                        placeholder="<?php echo esc_attr__( 'Shown after the subject in the inbox', 'anchor-schema' ); ?>"
+                                        data-email-field="preheader" />
+                                    <p class="anchor-event-hint"><?php echo esc_html__( 'Hidden inside the email itself. Tokens work here, and in the subject.', 'anchor-schema' ); ?></p>
+
                                     <label for="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Opening lines', 'anchor-schema' ); ?></label>
                                     <?php
                                     /**
@@ -5492,7 +5525,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     </button>
 
                                     <?php
-                                    $cta_defaults = [ 'label' => __( 'View event details', 'anchor-schema' ), 'url' => (string) \get_permalink( $event_id ) ];
+                                    $cta_defaults = $this->default_email_cta( $event_id );
                                     $cta1 = $this->get_email_cta( $event_id, $type, 1, $cta_defaults );
                                     $cta2 = $this->get_email_cta( $event_id, $type, 2 );
                                     ?>
@@ -8453,6 +8486,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <title>{event_title}</title>
         </head>
         <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            {preheader}
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
                 <tr>
                     <td align="center">
@@ -8473,7 +8507,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     {seat_list}
                                 </td>
                             </tr>
-                            {join_button}
                             {cta_button}
                             {cta_button_2}
                             <tr>
@@ -8653,6 +8686,34 @@ ANCHOR_EVENTS_EMAIL_SHELL;
      * original inline `greeting` conditional from build_registration_email_html().
      * Returns '' when the condition is false, exactly as before.
      */
+    /**
+     * The {preheader} region — the line an inbox shows after the subject.
+     *
+     * Hidden in the message body itself: every belt-and-braces property here is
+     * for one client or another (mso-hide for Outlook, the 1px font and zero
+     * opacity for the rest), because none of them agree on how to hide a node
+     * without also hiding it from the list preview.
+     *
+     * The trailing run of zero-width joiners and word joiners is the standard
+     * trick to stop a client padding the preview out with whatever body copy
+     * comes next — without it the inbox shows the preheader followed by the
+     * first line of the email anyway, which defeats the point of writing one.
+     *
+     * Tags are stripped: this is read as plain text by the mail client, and
+     * markup here would show up as literal angle brackets in the inbox list.
+     */
+    private function tpl_block_preheader( $text ) {
+        $text = \trim( \wp_strip_all_tags( (string) $text ) );
+        if ( $text === '' ) {
+            return '';
+        }
+        return '<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;'
+            . 'font-size:1px;line-height:1px;color:#ffffff;opacity:0;">'
+            . \esc_html( $text )
+            . \str_repeat( '&#8199;&#65279;&#847;', 30 )
+            . '</div>';
+    }
+
     private function tpl_block_greeting( $name ) {
         \ob_start();
         ?><?php if ( $name ) : ?>
@@ -8998,7 +9059,14 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // Per-event CTA overrides. Resolved here rather than in each caller's
         // $ctx so every send path — free, WooCommerce, reminder, cancellation,
         // roster — picks them up from one place.
-        $cta  = $this->get_email_cta( $event_id, $type, 1, [ 'label' => $cta_label, 'url' => $cta_url ] );
+        //
+        // A virtual event defaults to its room link. That replaces the separate
+        // {join_button} region, which was a second button no field controlled:
+        // it appeared and disappeared on rules the author could not see, and
+        // read as a stray duplicate of the CTA sitting right beside it. Same
+        // link, same place, but now it is in a field that can be renamed,
+        // repointed, or emptied.
+        $cta  = $this->get_email_cta( $event_id, $type, 1, $this->default_email_cta( $event_id, [ 'label' => $cta_label, 'url' => $cta_url ] ) );
         $cta2 = $this->get_email_cta( $event_id, $type, 2 );
 
         $preview = ! empty( $this->preview_samples );
@@ -9092,6 +9160,17 @@ ANCHOR_EVENTS_EMAIL_SHELL;
                     : \esc_html( $sample );
             }
         }
+
+        // The preheader, expanded against the SCALARS only: a block token here
+        // would push markup into a line the inbox reads as plain text.
+        $scalars = \array_intersect_key( $tokens, \array_flip( [
+            'event_id', 'event_title', 'site_name', 'attendee_name', 'status', 'join_link',
+            'event_url', 'event_date', 'event_time', 'venue', 'days_until',
+        ] ) );
+        $tokens['preheader'] = $this->tpl_block_preheader( $this->expand_email_tokens(
+            $this->get_email_field( $event_id, $type, 'preheader', '' ),
+            $scalars
+        ) );
 
         $html = $this->expand_email_tokens( $template, $tokens );
         $html = $this->apply_email_appearance( $html, $this->get_settings() );

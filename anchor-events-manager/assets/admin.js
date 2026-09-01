@@ -8,11 +8,36 @@
   }
 
   function toggleVirtual(){
-    if($('#anchor_event_virtual').is(':checked')){
+    $('#anchor-event-virtual-url').toggle($('#anchor_event_virtual').is(':checked'));
+  }
+
+  /**
+   * A virtual event needs somewhere to send people.
+   *
+   * Deliberately NOT the `required` attribute. This field sits on one step of a
+   * multi-step form, so it is usually off screen when Save is pressed, and the
+   * browser refuses to submit a form with an invalid hidden control while
+   * showing nothing — the button just stops working. Constraint validation also
+   * runs before the submit event, so a handler cannot recover from it.
+   *
+   * Checking it here instead means the form can jump to the step holding the
+   * field first, and then let the browser report against a control that is
+   * actually visible.
+   */
+  function guardVirtualUrl(){
+    var $url = $('[data-required-when-virtual]');
+    if(!$url.length){ return; }
+    $url.closest('form').on('submit', function(e){
+      if(!$('#anchor_event_virtual').is(':checked')){ return; }
+      if($.trim($url.val()) !== ''){ return; }
+      e.preventDefault();
+      var step = $url.closest('[data-step]').attr('data-step');
+      if(step){ $('[data-step-nav="' + step + '"]').trigger('click'); }
       $('#anchor-event-virtual-url').show();
-    } else {
-      $('#anchor-event-virtual-url').hide();
-    }
+      $url[0].setCustomValidity('Add the link attendees will join at, or untick "Virtual event".');
+      $url[0].reportValidity();
+      $url.one('input', function(){ $url[0].setCustomValidity(''); });
+    });
   }
 
   function toggleRegistration(){
@@ -309,6 +334,7 @@
 
     $('#anchor_event_all_day').on('change', toggleAllDay);
     $('#anchor_event_virtual').on('change', toggleVirtual);
+    guardVirtualUrl();
     $('#anchor_event_registration_enabled').on('change', toggleRegistration);
     $('#anchor_event_registration_type').on('change', toggleRegistrationType);
     $('#anchor_event_type, #anchor_event_registration_mode').on('change', applyConditionalVisibility);

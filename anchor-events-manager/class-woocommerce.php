@@ -2848,12 +2848,23 @@ class WooCommerce {
             'seat_count'   => $total_seats,
             'event_title'  => $primary_id ? \get_the_title( $primary_id ) : '',
         ];
+        // Per-event overrides win; otherwise the site setting, otherwise the shipped default.
         $subject = $this->module->expand_email_tokens(
-            $settings['wc_customer_subject'] !== '' ? $settings['wc_customer_subject'] : \__( 'Your event registration is confirmed', 'anchor-schema' ),
+            $this->module->get_email_field(
+                $primary_id,
+                'confirmation',
+                'subject',
+                $settings['wc_customer_subject'] !== '' ? $settings['wc_customer_subject'] : \__( 'Your event registration is confirmed', 'anchor-schema' )
+            ),
             $tokens
         );
         $intro = $this->module->expand_email_tokens(
-            $settings['wc_customer_intro'] !== '' ? $settings['wc_customer_intro'] : \__( 'Thank you for your order. Your registration is confirmed — the details are below.', 'anchor-schema' ),
+            $this->module->get_email_field(
+                $primary_id,
+                'confirmation',
+                'intro',
+                $settings['wc_customer_intro'] !== '' ? $settings['wc_customer_intro'] : \__( 'Thank you for your order. Your registration is confirmed — the details are below.', 'anchor-schema' )
+            ),
             $tokens
         );
 

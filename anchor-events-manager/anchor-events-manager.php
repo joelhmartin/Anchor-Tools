@@ -33,6 +33,9 @@ class Module {
     private static $instance = null;
     private $assets_enqueued = false;
 
+    /** Unsaved subject/intro supplied by a live preview request; see get_email_field(). */
+    private $preview_field_override = null;
+
     /** @var Registrations Seat data-access layer (always loaded). */
     public $registrations = null;
 
@@ -487,8 +490,8 @@ class Module {
             $settings = $this->get_settings();
         }
         $tokens   = $this->email_tokens( [ 'event_id' => (int) $event_id, 'seat' => $seat ] );
-        $subject  = $this->expand_email_tokens( $settings['reminder_subject'], $tokens );
-        $intro    = $this->expand_email_tokens( $settings['reminder_intro'], $tokens );
+        $subject  = $this->expand_email_tokens( $this->get_email_field( $event_id, 'reminder', 'subject', $settings['reminder_subject'] ), $tokens );
+        $intro    = $this->expand_email_tokens( $this->get_email_field( $event_id, 'reminder', 'intro', $settings['reminder_intro'] ), $tokens );
 
         $detail_rows = [];
         if ( $tokens['event_date'] !== '' ) {
@@ -538,8 +541,8 @@ class Module {
             : \__( 'Unlimited', 'anchor-schema' );
         // Pass the already-computed remaining so email_tokens() doesn't recount.
         $tokens  = $this->email_tokens( [ 'event_id' => $event_id, 'seat_count' => count( $seats['items'] ), 'remaining' => $remaining ] );
-        $subject = $this->expand_email_tokens( $settings['roster_subject'], $tokens );
-        $intro   = $this->expand_email_tokens( $settings['roster_intro'], $tokens );
+        $subject = $this->expand_email_tokens( $this->get_email_field( $event_id, 'roster', 'subject', $settings['roster_subject'] ), $tokens );
+        $intro   = $this->expand_email_tokens( $this->get_email_field( $event_id, 'roster', 'intro', $settings['roster_intro'] ), $tokens );
 
         $detail_rows = [
             [ 'label' => \__( 'Date', 'anchor-schema' ),      'value' => $tokens['event_date'] ],
@@ -2540,6 +2543,77 @@ class Module {
      *
      * @return string[] Token names WITHOUT braces.
      */
+    /**
+     * A per-event override for one of the writable email fields, falling back to
+     * whatever the caller already used.
+     *
+     * The subject and intro of every lifecycle email have only ever been global
+     * settings, so an event could rewrite the HTML shell but not the sentence
+     * inside it. These are per event now. The fallback is passed in rather than
+     * looked up here so each send path keeps its own historical default when no
+     * override exists — this can only ever add a value, never change one.
+     *
+     * @param int    $event_id
+     * @param string $type     One of EMAIL_TEMPLATE_TYPES.
+     * @param string $field    'subject' or 'intro'.
+     * @param string $fallback The caller's existing value.
+     * @return string
+     */
+    public function get_email_field( $event_id, $type, $field, $fallback = '' ) {
+        $field = ( $field === 'subject' ) ? 'subject' : 'intro';
+        $type  = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? $type : 'confirmation';
+
+        // A live preview passes unsaved values so the panel reflects typing.
+        if ( \is_array( $this->preview_field_override )
+            && ( $this->preview_field_override['type'] ?? '' ) === $type
+            && isset( $this->preview_field_override[ $field ] ) ) {
+            return (string) $this->preview_field_override[ $field ];
+        }
+
+        $meta = \get_post_meta( (int) $event_id, '_anchor_event_email_' . $field . '_' . $type, true );
+        return ( \is_string( $meta ) && $meta !== '' ) ? $meta : (string) $fallback;
+    }
+
+    /** Persist the per-event subject/intro pairs posted by the email builder. */
+    private function save_email_fields( $post_id, array $src ) {
+        foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
+            foreach ( [ 'subject' => 'sanitize_text_field', 'intro' => 'sanitize_textarea_field' ] as $field => $clean ) {
+                $key = 'anchor_event_email_' . $field . '_' . $type;
+                if ( ! isset( $src[ $key ] ) ) {
+                    continue;
+                }
+                $value = \call_user_func( '\\' . $clean, \wp_unslash( $src[ $key ] ) );
+                $meta  = '_anchor_event_email_' . $field . '_' . $type;
+                if ( \trim( (string) $value ) === '' ) {
+                    \delete_post_meta( $post_id, $meta );   // empty means "use the site default"
+                } else {
+                    \update_post_meta( $post_id, $meta, $value );
+                }
+            }
+        }
+    }
+
+    /**
+     * The site-wide wording for one email field — what the event falls back to
+     * when it has no override. Shown as the placeholder in the builder so the
+     * author can see what they are replacing.
+     *
+     * @param string $type
+     * @param string $field 'subject' or 'intro'
+     * @return string
+     */
+    public function email_field_default( $type, $field ) {
+        $s = $this->get_settings();
+        $map = [
+            'confirmation' => [ 'subject' => 'wc_customer_subject', 'intro' => 'confirmation_message' ],
+            'reminder'     => [ 'subject' => 'reminder_subject',     'intro' => 'reminder_intro' ],
+            'cancellation' => [ 'subject' => 'cancellation_subject', 'intro' => 'cancellation_intro' ],
+            'roster'       => [ 'subject' => 'roster_subject',       'intro' => 'roster_intro' ],
+        ];
+        $key = $map[ $type ][ $field ] ?? '';
+        return $key !== '' ? (string) ( $s[ $key ] ?? '' ) : '';
+    }
+
     private function documented_email_tokens() {
         return [
             'event_title', 'event_date', 'event_time', 'venue', 'attendee_name',
@@ -2830,7 +2904,7 @@ class Module {
 
         switch ( $type ) {
             case 'reminder':
-                $intro       = $this->expand_email_tokens( $settings['reminder_intro'], $tokens );
+                $intro       = $this->expand_email_tokens( $this->get_email_field( $event_id, 'reminder', 'intro', $settings['reminder_intro'] ), $tokens );
                 $detail_rows = [];
                 if ( $tokens['event_date'] !== '' ) { $detail_rows[] = [ 'label' => __( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ]; }
                 if ( $tokens['event_time'] !== '' ) { $detail_rows[] = [ 'label' => __( 'Time', 'anchor-schema' ), 'value' => $tokens['event_time'] ]; }
@@ -2847,7 +2921,7 @@ class Module {
                 ];
 
             case 'cancellation':
-                $intro       = $this->expand_email_tokens( $settings['cancellation_intro'], $tokens );
+                $intro       = $this->expand_email_tokens( $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] ), $tokens );
                 $detail_rows = [ [ 'label' => __( 'Event', 'anchor-schema' ), 'value' => $tokens['event_title'] ] ];
                 if ( $tokens['event_date'] !== '' ) { $detail_rows[] = [ 'label' => __( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ]; }
                 return [
@@ -2867,7 +2941,7 @@ class Module {
                 $remaining = isset( $summary['remaining'] ) && (int) $summary['remaining'] >= 0
                     ? (string) (int) $summary['remaining']
                     : __( 'Unlimited', 'anchor-schema' );
-                $intro       = $this->expand_email_tokens( $settings['roster_intro'], $tokens );
+                $intro       = $this->expand_email_tokens( $this->get_email_field( $event_id, 'roster', 'intro', $settings['roster_intro'] ), $tokens );
                 $detail_rows = [
                     [ 'label' => __( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ],
                     [ 'label' => __( 'Venue', 'anchor-schema' ), 'value' => $tokens['venue'] ],
@@ -2892,7 +2966,7 @@ class Module {
                 ];
 
             default: // confirmation
-                $intro = $this->expand_email_tokens( (string) ( $settings['confirmation_message'] ?? '' ), $tokens );
+                $intro = $this->expand_email_tokens( $this->get_email_field( $event_id, 'confirmation', 'intro', (string) ( $settings['confirmation_message'] ?? '' ) ), $tokens );
                 return [
                     'event_id'      => $event_id,
                     'name'          => (string) $sample_seat['name'],
@@ -2961,9 +3035,33 @@ class Module {
         }
 
         $type         = isset( $_POST['type'] ) ? \sanitize_text_field( \wp_unslash( $_POST['type'] ) ) : 'confirmation';
-        $raw_template = isset( $_POST['template'] ) ? (string) \wp_unslash( $_POST['template'] ) : '';
+        // The builder sends the template base64-encoded: a security plugin sees raw
+        // HTML in a POST field and blocks the request with its own 403 before
+        // WordPress runs. Decoding here changes nothing about trust — the value
+        // still goes through sanitize_email_template_html() below.
+        if ( isset( $_POST['template_b64'] ) ) {
+            $decoded      = \base64_decode( (string) \wp_unslash( $_POST['template_b64'] ), true );
+            $raw_template = ( $decoded === false ) ? '' : $decoded;
+        } else {
+            $raw_template = isset( $_POST['template'] ) ? (string) \wp_unslash( $_POST['template'] ) : '';
+        }
 
-        \wp_send_json_success( [ 'html' => $this->render_email_preview_html( $event_id, $type, $raw_template ) ] );
+        // The builder sends the subject/intro currently in its fields so the panel
+        // shows what the email would say right now, not what was last saved.
+        $this->preview_field_override = [
+            'type'    => $type,
+            'subject' => isset( $_POST['subject'] ) ? \sanitize_text_field( \wp_unslash( $_POST['subject'] ) ) : null,
+            'intro'   => isset( $_POST['intro'] ) ? \sanitize_textarea_field( \wp_unslash( $_POST['intro'] ) ) : null,
+        ];
+        $this->preview_field_override = \array_filter( $this->preview_field_override, function ( $v ) { return $v !== null; } );
+
+        try {
+            $html = $this->render_email_preview_html( $event_id, $type, $raw_template );
+        } finally {
+            $this->preview_field_override = null;
+        }
+
+        \wp_send_json_success( [ 'html' => $html ] );
     }
 
     public function save_meta( $post_id ) {
@@ -3772,7 +3870,7 @@ class Module {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.21' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.23' );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         // Drive the module's accent custom property, not just the register button.
@@ -4223,6 +4321,19 @@ class Module {
             '1.0.5',
             true
         );
+        // The per-event email builder: modal, live preview, media picker.
+        \wp_enqueue_script(
+            'anchor-events-email-modal',
+            \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-modal.js' ),
+            [],
+            '1.0.0',
+            true
+        );
+        \wp_localize_script( 'anchor-events-email-modal', 'ANCHOR_EVENT_EMAILS', [
+            'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
+            'nonce'   => \wp_create_nonce( 'anchor_events_email_preview' ),
+        ] );
+
         if ( $wizard ) {
             \wp_enqueue_script(
                 'anchor-events-manager-wizard',
@@ -4961,17 +5072,67 @@ class Module {
                         <p class="description"><?php echo esc_html__( 'Comma-separated days before start (e.g. 14,3,1). Leave blank to use the global default.', 'anchor-schema' ); ?></p>
                     </div>
                 </div>
-                <details class="anchor-event-email-template-fields">
-                    <summary><?php echo esc_html__( 'Per-event email templates', 'anchor-schema' ); ?></summary>
-                    <div class="anchor-event-grid">
+
+                <div class="anchor-event-emails" data-event="<?php echo esc_attr( $event_id ); ?>">
+                    <p class="anchor-event-hint"><?php echo esc_html__( 'Each email has its own editor: the wording on the left, a live preview on the right, and a switch to edit the raw HTML if you want to rebuild it entirely.', 'anchor-schema' ); ?></p>
+                    <div class="anchor-event-email-buttons">
                         <?php foreach ( $this->email_type_labels() as $type => $label ) : ?>
-                            <div class="anchor-event-field anchor-event-field-wide">
-                                <label for="anchor_email_tpl_<?php echo esc_attr( $type ); ?>"><?php echo esc_html( $label ); ?></label>
-                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="8" class="code"><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
-                            </div>
+                            <button type="button" class="anchor-event-button-secondary anchor-event-email-open" data-email-type="<?php echo esc_attr( $type ); ?>">
+                                <?php echo esc_html( $label ); ?>
+                            </button>
                         <?php endforeach; ?>
                     </div>
-                </details>
+
+                    <?php foreach ( $this->email_type_labels() as $type => $label ) :
+                        $subject_default = $this->email_field_default( $type, 'subject' );
+                        $intro_default   = $this->email_field_default( $type, 'intro' );
+                        ?>
+                        <dialog class="anchor-event-email-modal" data-email-modal="<?php echo esc_attr( $type ); ?>">
+                            <div class="anchor-event-email-modal__head">
+                                <h3><?php echo esc_html( sprintf( __( '%s email', 'anchor-schema' ), $label ) ); ?></h3>
+                                <button type="button" class="anchor-event-email-close" aria-label="<?php echo esc_attr__( 'Close', 'anchor-schema' ); ?>">&times;</button>
+                            </div>
+                            <div class="anchor-event-email-modal__body">
+                                <div class="anchor-event-email-fields">
+                                    <label for="anchor_event_email_subject_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Subject', 'anchor-schema' ); ?></label>
+                                    <input type="text" id="anchor_event_email_subject_<?php echo esc_attr( $type ); ?>"
+                                        name="anchor_event_email_subject_<?php echo esc_attr( $type ); ?>"
+                                        value="<?php echo esc_attr( (string) \get_post_meta( $event_id, '_anchor_event_email_subject_' . $type, true ) ); ?>"
+                                        placeholder="<?php echo esc_attr( $subject_default ); ?>" data-email-field="subject" />
+
+                                    <label for="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Opening lines', 'anchor-schema' ); ?></label>
+                                    <textarea id="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>"
+                                        name="anchor_event_email_intro_<?php echo esc_attr( $type ); ?>" rows="6"
+                                        placeholder="<?php echo esc_attr( $intro_default ); ?>" data-email-field="intro"><?php echo esc_textarea( (string) \get_post_meta( $event_id, '_anchor_event_email_intro_' . $type, true ) ); ?></textarea>
+                                    <p class="anchor-event-hint"><?php echo esc_html__( 'Leave either blank to use the site-wide wording shown in grey.', 'anchor-schema' ); ?></p>
+
+                                    <p class="anchor-event-email-tokens-label"><?php echo esc_html__( 'Insert a token', 'anchor-schema' ); ?></p>
+                                    <div class="anchor-event-email-tokens">
+                                        <?php foreach ( $this->documented_email_tokens() as $token ) : ?>
+                                            <button type="button" class="anchor-event-token" data-token="{<?php echo esc_attr( $token ); ?>}">{<?php echo esc_html( $token ); ?>}</button>
+                                        <?php endforeach; ?>
+                                    </div>
+
+                                    <button type="button" class="anchor-event-button-secondary anchor-event-email-media"><?php echo esc_html__( 'Insert image from library', 'anchor-schema' ); ?></button>
+                                </div>
+
+                                <div class="anchor-event-email-preview-pane">
+                                    <div class="anchor-event-email-toolbar">
+                                        <button type="button" class="anchor-event-email-tab is-active" data-email-view="preview"><?php echo esc_html__( 'Preview', 'anchor-schema' ); ?></button>
+                                        <button type="button" class="anchor-event-email-tab" data-email-view="html"><?php echo esc_html__( 'HTML', 'anchor-schema' ); ?></button>
+                                        <span class="anchor-event-email-status" aria-live="polite"></span>
+                                    </div>
+                                    <iframe class="anchor-event-email-frame" title="<?php echo esc_attr( sprintf( __( '%s email preview', 'anchor-schema' ), $label ) ); ?>"></iframe>
+                                    <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
+                                </div>
+                            </div>
+                            <div class="anchor-event-email-modal__foot">
+                                <button type="button" class="anchor-event-button anchor-event-email-close"><?php echo esc_html__( 'Done', 'anchor-schema' ); ?></button>
+                                <span class="anchor-event-hint"><?php echo esc_html__( 'Changes are kept when you save the event.', 'anchor-schema' ); ?></span>
+                            </div>
+                        </dialog>
+                    <?php endforeach; ?>
+                </div>
             </div>
 
             <div class="anchor-event-section" data-step="3">
@@ -5231,7 +5392,8 @@ class Module {
 
         $this->maybe_append_registration_shortcode( $saved_id, $input );
         $this->save_email_templates( $saved_id );
-        $this->save_registration_questions( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
+        $this->save_registration_questions( $saved_id, $_POST );
+        $this->save_email_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller. // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
         $this->clear_caches();
 
         return $input;
@@ -7606,11 +7768,15 @@ class Module {
         $tokens = $this->email_tokens( [ 'event_id' => $event_id, 'seat' => array_merge( $info, [ 'name' => $name, 'status' => $status ] ), 'order' => $order ?: null ] );
         $is_refund = ( $status === \Anchor\Events\Registrations::STATUS_REFUNDED );
         $subject = $this->expand_email_tokens(
-            $is_refund ? \str_ireplace( 'cancelled', 'refunded', $settings['cancellation_subject'] ) : $settings['cancellation_subject'],
+            $is_refund
+                ? \str_ireplace( 'cancelled', 'refunded', $this->get_email_field( $event_id, 'cancellation', 'subject', $settings['cancellation_subject'] ) )
+                : $this->get_email_field( $event_id, 'cancellation', 'subject', $settings['cancellation_subject'] ),
             $tokens
         );
         $intro = $this->expand_email_tokens(
-            $is_refund ? \str_ireplace( 'cancelled', 'refunded', $settings['cancellation_intro'] ) : $settings['cancellation_intro'],
+            $is_refund
+                ? \str_ireplace( 'cancelled', 'refunded', $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] ) )
+                : $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] ),
             $tokens
         );
         $detail_rows = [ [ 'label' => \__( 'Event', 'anchor-schema' ), 'value' => $tokens['event_title'] ] ];

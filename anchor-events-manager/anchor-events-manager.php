@@ -3799,7 +3799,7 @@ class Module {
         \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.5' );
         \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.5', true );
         // Ticket-tier repeatable table (spec §3.2).
-        \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.0', true );
+        \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], $this->asset_version( 'anchor-events-manager/assets/ticket-types-admin.js' ), true );
 
         // Task 3.2 — Emails builder metabox (Monaco + token palette + preview),
         // cloned from the anchor-blocks house pattern.
@@ -3866,11 +3866,29 @@ class Module {
         return $vs_dark > $vs_white ? '#111827' : '#ffffff';
     }
 
+    /**
+     * Cache-busting version for one of this module's assets.
+     *
+     * Hand-maintained version strings are a standing trap: edit the file, forget
+     * the bump, and every browser keeps serving the old copy while the source on
+     * disk says otherwise — which reads as "the code didn't deploy". filemtime()
+     * cannot fall out of step with the file it versions. Falls back to the
+     * plugin version if the file cannot be stat'd.
+     *
+     * @param string $relative Path under the plugin root.
+     * @return string
+     */
+    private function asset_version( $relative ) {
+        $path = \Anchor_Asset_Loader::path( $relative );
+        $time = \is_readable( $path ) ? \filemtime( $path ) : false;
+        return $time ? (string) $time : ( \defined( 'ANCHOR_TOOLS_VERSION' ) ? ANCHOR_TOOLS_VERSION : '1' );
+    }
+
     public function enqueue_frontend_assets() {
         if ( $this->assets_enqueued ) {
             return;
         }
-        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], '1.0.24' );
+        \wp_enqueue_style( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.css' ), [], $this->asset_version( 'anchor-events-manager/assets/frontend.css' ) );
         $settings = $this->get_settings();
         $btn_color = \sanitize_hex_color( $settings['register_button_color'] ?? '' ) ?: '#0f766e';
         // Drive the module's accent custom property, not just the register button.
@@ -3885,7 +3903,7 @@ class Module {
             $btn_color,
             $btn_fg
         ) );
-        \wp_enqueue_script( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.js' ), [], '1.0.5', true );
+        \wp_enqueue_script( 'anchor-events-frontend', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/frontend.js' ), [], $this->asset_version( 'anchor-events-manager/assets/frontend.js' ), true );
         \wp_localize_script( 'anchor-events-frontend', 'ANCHOR_EVENTS_AJAX', [
             'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
             'nonce'   => \wp_create_nonce( 'anchor_events_calendar' ),
@@ -4318,7 +4336,7 @@ class Module {
             'anchor-events-manager-frontend',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
-            '1.0.5',
+            $this->asset_version( 'anchor-events-manager/assets/manager.js' ),
             true
         );
         // The per-event email builder: modal, live preview, media picker.
@@ -4326,7 +4344,7 @@ class Module {
             'anchor-events-email-modal',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-modal.js' ),
             [],
-            '1.0.0',
+            $this->asset_version( 'anchor-events-manager/assets/email-modal.js' ),
             true
         );
         \wp_localize_script( 'anchor-events-email-modal', 'ANCHOR_EVENT_EMAILS', [
@@ -4339,7 +4357,7 @@ class Module {
                 'anchor-events-manager-wizard',
                 \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/manager-wizard.js' ),
                 [],
-                '1.0.0',
+                $this->asset_version( 'anchor-events-manager/assets/manager-wizard.js' ),
                 true
             );
         }
@@ -4347,7 +4365,7 @@ class Module {
             'anchor-events-ticket-types',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ),
             [ 'jquery', 'jquery-ui-sortable' ],
-            '1.0.0',
+            $this->asset_version( 'anchor-events-manager/assets/ticket-types-admin.js' ),
             true
         );
 

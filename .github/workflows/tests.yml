@@ -84,3 +84,15 @@ jobs:
 
       - name: Run PHPUnit
         run: composer test
+
+      # The `composer test` script above is `phpunit && phpunit --group ajax`,
+      # but composer aborts the sequence on the first non-zero exit — so while
+      # any pre-existing failure stands in the main suite, the ajax pass inside
+      # it never executes. This step runs it unconditionally (`if: always()`),
+      # so the @group ajax tests (tests/test-add-to-cart-ajax.php, excluded by
+      # the WordPress bootstrap unless named) are reported in their own right
+      # and can fail the job on their own. It inherits the same job-level
+      # WP_TESTS_DIR / WP_CORE_DIR env and working directory as the step above.
+      - name: AJAX group
+        if: always()
+        run: vendor/bin/phpunit --group ajax

@@ -47,10 +47,12 @@ class Test_Listing_Exclusions extends Anchor_Events_TestCase {
 	/**
 	 * A reconciled offering parent with two future dates.
 	 *
+	 * @param string $title Parent title; children become "<title> — October"/"— November".
 	 * @return int Parent post id.
 	 */
-	private function parent_with_two_dates() {
+	private function parent_with_two_dates( $title = 'Test Event' ) {
 		$parent = $this->make_event( [
+			'title'                => $title,
 			'type'                 => 'offering',
 			'registration_enabled' => true,
 			'registration_mode'    => 'free',
@@ -182,11 +184,27 @@ class Test_Listing_Exclusions extends Anchor_Events_TestCase {
 		}, 10, 2 );
 	}
 
-	private function enable_reminders() {
+	/**
+	 * Capture every wp_mail() subject without sending — the roster digest goes
+	 * to one organizer address for every event, so the subject ("Final roster
+	 * for {event_title}") is what says WHICH event was digested.
+	 */
+	private function capture_mail_subjects( array &$sent ) {
+		add_filter( 'pre_wp_mail', function ( $null, $atts ) use ( &$sent ) {
+			$sent[] = $atts['subject'];
+			return true;
+		}, 10, 2 );
+	}
+
+	private function configure_sweep( array $overrides ) {
 		update_option( 'anchor_events_settings', array_merge(
 			$this->module()->get_settings(),
-			[ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ]
+			$overrides
 		) );
+	}
+
+	private function enable_reminders() {
+		$this->configure_sweep( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
 	}
 
 	public function test_reminder_sweep_skips_group_parent_and_cancelled_date() {
@@ -213,6 +231,52 @@ class Test_Listing_Exclusions extends Anchor_Events_TestCase {
 		$this->module()->run_reminder_sweep();
 
 		$this->assertSame( [], $sent, 'Neither a cancelled date nor a group parent may be reminded.' );
+	}
+
+	/**
+	 * The OTHER half of REG-D2: maybe_send_scheduled_roster() runs inside the
+	 * same per-event loop, so a group parent used to earn the organizer a
+	 * digest of its own ("0 confirmed") on top of one digest per child, and a
+	 * cancelled date still digested its stranded roster. Both guards must sit
+	 * ABOVE the roster pass, not just above the reminder pass — this test fails
+	 * if the parent `continue` is moved below maybe_send_scheduled_roster().
+	 */
+	public function test_roster_digest_skips_group_parent_and_cancelled_date() {
+		$this->configure_sweep( [
+			'reminder_enabled'       => false, // isolate the roster pass
+			'organizer_roster_email' => true,
+			'roster_auto_offset'     => 1,
+			'organizer_email'        => 'organizer@example.com',
+		] );
+
+		$parent   = $this->parent_with_two_dates( 'Container Course' );
+		$children = $this->occurrences()->children( $parent, true );
+		$due      = time() + 20 * HOUR_IN_SECONDS;
+
+		// Parent + BOTH dates land inside the 1-day roster window.
+		foreach ( [ $parent, $children[0], $children[1] ] as $id ) {
+			update_post_meta( $id, '_anchor_event_start_ts', $due );
+		}
+
+		// The November date is cancelled the way soft_close() writes it.
+		update_post_meta( $children[1], '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $children[1], '_anchor_event_status', 'cancelled' );
+
+		$this->make_seat( $parent, [ 'status' => Registrations::STATUS_CONFIRMED, 'email' => 'p@example.com' ] );
+		$this->make_seat( $children[0], [ 'status' => Registrations::STATUS_CONFIRMED, 'email' => 'a@example.com' ] );
+		$this->make_seat( $children[1], [ 'status' => Registrations::STATUS_CONFIRMED, 'email' => 'b@example.com' ] );
+
+		$subjects = [];
+		$this->capture_mail_subjects( $subjects );
+
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame(
+			[ 'Final roster for Container Course — October' ],
+			$subjects,
+			'Only the live date earns an organizer digest — never the container, never a cancelled date.'
+		);
+		$this->assertSame( '', get_post_meta( $parent, '_anchor_event_roster_sent', true ), 'A parent must not even be marked as digested.' );
 	}
 
 	public function test_reminder_sweep_still_sends_for_a_live_single_event() {

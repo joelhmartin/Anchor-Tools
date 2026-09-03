@@ -7977,7 +7977,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $start_time = $meta['all_day'] ? '00:00' : ( $meta['start_time'] ?: '00:00' );
         $end_date = $meta['end_date'] ?: $meta['start_date'];
-        $end_time = $meta['all_day'] ? '23:59' : ( $meta['end_time'] ?: $start_time );
+        $end_time = ( $meta['all_day'] || ! $meta['end_time'] ) ? '23:59' : $meta['end_time'];
 
         $start = $this->to_timestamp( $meta['start_date'], $start_time, $timezone );
         $end = $this->to_timestamp( $end_date, $end_time, $timezone );

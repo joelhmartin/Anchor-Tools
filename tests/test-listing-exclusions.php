@@ -297,7 +297,7 @@ class Test_Listing_Exclusions extends Anchor_Events_TestCase {
 		update_option( 'anchor_events_settings', array_merge(
 			$this->module()->get_settings(),
 			$overrides
-		) );
+		), false );
 	}
 
 	private function enable_reminders() {

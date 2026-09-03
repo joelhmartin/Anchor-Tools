@@ -6453,6 +6453,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'This date is no longer available.', 'anchor-schema' ) . '</div>';
         }
 
+        // RENDER-D1 / WOO-D1: `registration_enabled` is the outermost gate on
+        // ALL registration UI, so it is checked BEFORE the render seam below.
+        // It used to sit after the apply_filters(), which meant WooCommerce's
+        // callback could hand back a full ticket block + "Add to cart" button
+        // for an event whose "Enable registration" box was unticked — the
+        // buyer then got a generic "Could not add Ticket to the cart" from
+        // is_purchasable(). Nothing on this filter may re-introduce a form for
+        // a disabled event.
+        if ( ! $meta['registration_enabled'] ) {
+            return '';
+        }
+
         // Render seam (spec §3): the WooCommerce class swaps the free form for a
         // buy button on linked events by returning non-empty here. Inert until the
         // Phase 2 filter callback is registered (no consumers otherwise).
@@ -6461,8 +6473,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $override;
         }
 
-        if ( ! $meta['registration_enabled'] ) {
-            return '';
+        // WOO-D19: a paid event whose storefront produced nothing (WooCommerce
+        // off, product missing, every tier inactive) must NOT fall through to
+        // the free internal form below — that would book free seats on a
+        // ticketed course. The one wc-mode call that legitimately wants the free
+        // form is WooCommerce's own mixed free+paid re-entry, which has already
+        // rendered the paid storefront and is now asking for the FREE-tier form
+        // to append to it; is_rendering_free() marks exactly that nested call.
+        $wc_free_reentry = ( $this->woocommerce && $this->woocommerce->is_rendering_free( $post_id ) );
+        if ( ! $wc_free_reentry && $this->registration_mode( $post_id ) === 'wc' ) {
+            return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'Tickets are not available right now.', 'anchor-schema' ) . '</div>';
         }
 
         // External registration mode (Task 1.6): the event's registration/

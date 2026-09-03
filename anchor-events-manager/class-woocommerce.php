@@ -670,6 +670,26 @@ class WooCommerce {
     /** Per-PHP-process guard so the free-tier render seam can't re-enter. */
     private static $rendering_free = [];
 
+    /**
+     * Whether we are currently inside the mixed free+paid re-entry, i.e. the
+     * paid storefront has already rendered and is calling back into
+     * Module::render_registration_form() to append the inline form for this
+     * event's FREE tiers.
+     *
+     * Read by the module's WOO-D19 wc-mode guard, which must return the
+     * "tickets unavailable" notice for a paid event whose storefront produced
+     * nothing — but must NOT do so for this nested call, whose whole purpose is
+     * to build the free form for an event that IS selling. The flag lives here
+     * because this class owns the re-entry; the module reads it rather than
+     * keeping a second copy of the same state.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function is_rendering_free( $event_id ) {
+        return ! empty( self::$rendering_free[ (int) $event_id ] );
+    }
+
     /** Sane upper bound for a single tier's quantity selector (unlimited cap). */
     const QTY_CAP = 20;
 
@@ -693,6 +713,15 @@ class WooCommerce {
      * @return string
      */
     public function filter_registration_form( $html, $post_id, $meta ) {
+        // RENDER-D1 / WOO-D1: registration switched off means no buy UI, ever.
+        // Module::render_registration_form() now returns before ever applying
+        // this filter for a disabled event; this repeats the check so the
+        // callback is also safe when invoked directly or by another consumer
+        // of the `anchor_events_registration_form` filter.
+        if ( empty( $meta['registration_enabled'] ) ) {
+            return $html;
+        }
+
         $event_id = (int) $post_id;
 
         // Re-entry from our own free-tier render seam → let the native free form
@@ -832,6 +861,12 @@ class WooCommerce {
      * @return string
      */
     private function legacy_product_link_form( $html, $event_id, $meta ) {
+        // RENDER-D1 / WOO-D1: same gate as filter_registration_form() — a
+        // disabled event never gets the legacy "Register — $500" product link.
+        if ( empty( $meta['registration_enabled'] ) ) {
+            return $html;
+        }
+
         $links = $this->products_for_event( $event_id );
         if ( empty( $links ) || ! \function_exists( 'wc_get_product' ) ) {
             return $html; // Not linked → let the free form render.

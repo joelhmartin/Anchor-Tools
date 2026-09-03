@@ -319,14 +319,23 @@ coerced, and emitting it would produce *invalid* structured data. A valid
 - Anything else (**`single`**) renders one plain node.
 
 **Offers**, keyed off `registration_mode( $event_id )`:
-- `wc`: one `Offer` per active ticket tier, priced from the tier; `availability`
-  comes from the event's overall remaining capacity (one cheap query, not per-tier).
+- `wc`: one `Offer` per active ticket tier, priced from the tier.
 - `external`: one `Offer` with `url` = `external_url` (or the permalink) and `price`
   parsed from `external_display_price` when a numeric substring is found — never
   fabricated when unparseable.
 - `free` (default): one zero-price `Offer` (a present zero-price offer, per Google's
   guidance, is the canonical "free to attend" signal — preferred over omitting
-  `offers`).
+  `offers` for a bookable event).
+
+`availability` on every branch is `Module::bookability()` — the single
+purchasability authority the storefront, the cart, the choose-a-date picker and
+the series archive also ask — mapped through `Event_Schema::availability_for()`:
+`open` → `InStock`, `waitlist` → `LimitedAvailability`, `full` → `SoldOut`.
+A state with no availability value (`closed`, `disabled`, a group `parent`)
+emits **no Offer at all** rather than a false one, so a finished event, an event
+outside its registration window, an event with registration switched off and a
+group-parent container all advertise no price. The `wc` branch asks per **tier**,
+so an exhausted tier quota is `SoldOut` while its sibling stays `InStock`.
 
 Emission (`Module::render_event_schema()`, on `wp_head` for single `event` views) is
 skipped when: there's nothing to advertise; the parent Anchor Schema plugin already

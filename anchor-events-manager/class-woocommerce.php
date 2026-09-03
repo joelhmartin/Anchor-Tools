@@ -1210,9 +1210,28 @@ class WooCommerce {
         // The registration_enabled and end_ts gates that used to live here are
         // now inside bookability()/capacity_decision(), so every other reader
         // gets them too instead of only this one.
-        return $this->module->is_bookable(
-            $this->module->bookability( $event_id, $this->tier_for_product_object( $product, $event_id ) )
-        ) ? $purchasable : false;
+        $tier = $this->tier_for_product_object( $product, $event_id );
+        if ( ! $this->module->is_bookable( $this->module->bookability( $event_id, $tier ) ) ) {
+            return false;
+        }
+
+        // ...plus the tier's own sale window, which bookability() deliberately
+        // does not answer. The storefront row (render_ticket_row()) and
+        // ajax_add_to_cart() both refuse a tier outside its sale_start /
+        // sale_end, but this filter did not — so a tier whose sale opens next
+        // month was still buyable straight from the variable product's own
+        // add-to-cart form, bypassing the event page entirely. The window stays
+        // OUT of bookability() on purpose: the schema builders want an Offer
+        // with `validFrom` for a not-yet-open tier, not an omitted Offer.
+        //
+        // A null tier is a simple product or a variation whose managed event is
+        // not this one; there is no window to apply, and the event-level gate
+        // above already stands.
+        if ( $tier && ! $this->module->ticket_types->is_on_sale( $tier ) ) {
+            return false;
+        }
+
+        return $purchasable;
     }
 
     /**

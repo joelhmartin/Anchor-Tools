@@ -13,7 +13,13 @@
         "yoast/phpunit-polyfills": "^1.1"
     },
     "scripts": {
-        "test": "phpunit"
+        "test": [
+            "phpunit",
+            "phpunit --group ajax"
+        ]
+    },
+    "scripts-descriptions": {
+        "test": "Full suite, then the ajax group. Two passes on purpose: the WordPress test bootstrap excludes @group ajax unless it is named on the command line, so a bare `phpunit` silently skips tests/test-add-to-cart-ajax.php entirely. Composer stops on the first non-zero exit, so this is `phpunit && phpunit --group ajax`. It lives here rather than as a second CI step because CI runs `composer test` and nothing else, which is what keeps a local run identical to CI."
     },
     "config": {
         "platform": {

@@ -186,6 +186,91 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 	}
 
 	/* ------------------------------------------------------------------
+	 * The tier's own SALE WINDOW is part of "can this be bought".
+	 *
+	 * render_ticket_row() and ajax_add_to_cart() both refuse a tier outside
+	 * its sale_start/sale_end, but filter_is_purchasable() only asked
+	 * bookability() — which deliberately does not answer the window, because
+	 * the schema builders want an Offer with `validFrom` for a tier whose
+	 * sales open later, not an omitted Offer. The result was the third
+	 * disagreement this file exists to prevent: a tier whose sale opens next
+	 * month was still buyable straight from the variable product's own
+	 * add-to-cart form, with the event page saying "Sales open <date>".
+	 * ------------------------------------------------------------------ */
+
+	public function test_tier_before_its_sale_window_is_not_purchasable() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [], [
+			[
+				'label'      => 'Early bird',
+				'price'      => '25',
+				'active'     => 1,
+				'sale_start' => gmdate( 'Y-m-d', time() + 30 * DAY_IN_SECONDS ),
+			],
+		] );
+
+		// The event itself is bookable — only the tier's window is shut, which
+		// is exactly the case the bookability-only check could not see.
+		$this->assertTrue( $this->module()->is_bookable( $this->module()->bookability( $event, $tiers[0] ) ) );
+
+		$this->assertFalse(
+			$this->woocommerce()->filter_is_purchasable( true, $this->variation( $event, $tiers[0] ) ),
+			'A tier whose sale opens next month must not be buyable from the product permalink.'
+		);
+	}
+
+	public function test_tier_after_its_sale_window_is_not_purchasable() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [], [
+			[
+				'label'    => 'Early bird',
+				'price'    => '25',
+				'active'   => 1,
+				'sale_end' => gmdate( 'Y-m-d', time() - 2 * DAY_IN_SECONDS ),
+			],
+		] );
+
+		$this->assertFalse(
+			$this->woocommerce()->filter_is_purchasable( true, $this->variation( $event, $tiers[0] ) )
+		);
+	}
+
+	public function test_same_tier_is_purchasable_once_its_sale_window_is_open() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [], [
+			[
+				'label'      => 'Early bird',
+				'price'      => '25',
+				'active'     => 1,
+				'sale_start' => gmdate( 'Y-m-d', time() - 2 * DAY_IN_SECONDS ),
+				'sale_end'   => gmdate( 'Y-m-d', time() + 30 * DAY_IN_SECONDS ),
+			],
+		] );
+
+		$this->assertTrue(
+			$this->woocommerce()->filter_is_purchasable( true, $this->variation( $event, $tiers[0] ) ),
+			'An open window must not be turned into a blanket refusal.'
+		);
+	}
+
+	/**
+	 * The window is a TIER fact, so it must not leak to the event level: a
+	 * simple/legacy product resolves no tier and keeps the event-level answer.
+	 */
+	public function test_the_sale_window_does_not_bind_a_product_with_no_resolved_tier() {
+		list( $event, $tiers, $product_id ) = $this->make_ticketed_event( [], [
+			[
+				'label'      => 'Early bird',
+				'price'      => '25',
+				'active'     => 1,
+				'sale_start' => gmdate( 'Y-m-d', time() + 30 * DAY_IN_SECONDS ),
+			],
+		] );
+
+		$this->assertTrue(
+			$this->woocommerce()->filter_is_purchasable( true, wc_get_product( $product_id ) ),
+			'The parent variable product resolves no tier, so only the event-level gate applies to it.'
+		);
+	}
+
+	/* ------------------------------------------------------------------
 	 * RENDER-D32 / MODEL-D42 — the picker and the series archive.
 	 * ------------------------------------------------------------------ */
 

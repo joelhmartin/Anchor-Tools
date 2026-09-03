@@ -972,7 +972,7 @@ class WooCommerce {
             'anchor-event-storefront',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/event-storefront.js' ),
             [ 'jquery' ],
-            '1.0.0',
+            $this->module->asset_version( 'anchor-events-manager/assets/event-storefront.js' ),
             true
         );
         // Prefer WooCommerce's wc-ajax endpoint (frontend context → reliable guest
@@ -1772,7 +1772,7 @@ class WooCommerce {
             'anchor-event-checkout-attendees',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/checkout-attendees.js' ),
             [ 'jquery' ],
-            '1.0.0',
+            $this->module->asset_version( 'anchor-events-manager/assets/checkout-attendees.js' ),
             true
         );
     }

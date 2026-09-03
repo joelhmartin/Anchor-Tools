@@ -4289,8 +4289,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
         \wp_enqueue_media();
-        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.5' );
-        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.5', true );
+        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], $this->asset_version( 'anchor-events-manager/assets/admin.css' ) );
+        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], $this->asset_version( 'anchor-events-manager/assets/admin.js' ), true );
         // Ticket-tier repeatable table (spec §3.2).
         \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], $this->asset_version( 'anchor-events-manager/assets/ticket-types-admin.js' ), true );
 
@@ -4300,9 +4300,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \Anchor_Preview_CSS::enqueue_for_admin();
         }
         \Anchor_Monaco::enqueue( self::CPT );
-        $edir = \plugin_dir_path( __FILE__ ) . 'assets/';
-        \wp_enqueue_style( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.css' ), [], (string) \filemtime( $edir . 'email-builder.css' ) );
-        \wp_enqueue_script( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview' ], (string) \filemtime( $edir . 'email-builder.js' ), true );
+        \wp_enqueue_style( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.css' ), [], $this->asset_version( 'anchor-events-manager/assets/email-builder.css' ) );
+        \wp_enqueue_script( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview' ], $this->asset_version( 'anchor-events-manager/assets/email-builder.js' ), true );
 
         $post_id  = isset( $GLOBALS['post'] ) && $GLOBALS['post'] ? (int) $GLOBALS['post']->ID : 0;
         $defaults = [];
@@ -4371,7 +4370,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param string $relative Path under the plugin root.
      * @return string
      */
-    private function asset_version( $relative ) {
+    public function asset_version( $relative ) {
         $path = \Anchor_Asset_Loader::path( $relative );
         $time = \is_readable( $path ) ? \filemtime( $path ) : false;
         return $time ? (string) $time : ( \defined( 'ANCHOR_TOOLS_VERSION' ) ? ANCHOR_TOOLS_VERSION : '1' );

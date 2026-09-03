@@ -51,4 +51,45 @@ class Test_Rest_Exposure extends Anchor_Events_TestCase {
 		$this->assertArrayNotHasKey( '_anchor_event_virtual_url', $data['meta'] ?? [] );
 		$this->assertArrayNotHasKey( '_anchor_event_organizer_email', $data['meta'] ?? [] );
 	}
+
+	/**
+	 * REST_PUBLIC_META must not carry entries the per-key schema overrides.
+	 *
+	 * register_meta() does array_merge( [ 'show_in_rest' => in_array( $key,
+	 * REST_PUBLIC_META ) ], $schema ) — the per-key $schema comes SECOND, so a
+	 * key that sets its own 'show_in_rest' => false wins and its allow-list
+	 * entry does nothing at all. `type` and `external_display_price` were both
+	 * listed and both overridden: the constant read as if two metabox-owned
+	 * keys were public while the schema kept them hidden, which is the kind of
+	 * disagreement that gets "fixed" in the wrong direction later.
+	 *
+	 * This asserts the invariant rather than the two names, so a future
+	 * addition to the list cannot quietly become dead in the same way.
+	 */
+	public function test_rest_public_meta_holds_no_entries_the_schema_overrides() {
+		$schema = new ReflectionMethod( \Anchor\Events\Module::class, 'get_meta_schema' );
+		$schema->setAccessible( true );
+		$keys = $schema->invoke( $this->module() );
+
+		$dead = [];
+		foreach ( \Anchor\Events\Module::REST_PUBLIC_META as $key ) {
+			$this->assertArrayHasKey( $key, $keys, "REST_PUBLIC_META lists '$key', which is not a get_meta_schema() key at all." );
+			if ( array_key_exists( 'show_in_rest', $keys[ $key ] ) ) {
+				$dead[] = $key;
+			}
+		}
+
+		$this->assertSame( [], $dead, 'These allow-list entries are overridden by their own schema entry and therefore do nothing. Remove them from REST_PUBLIC_META, or drop the per-key show_in_rest — do not leave both.' );
+	}
+
+	/** The two removed keys are, and stay, hidden — the overrides are the intent. */
+	public function test_metabox_owned_keys_are_not_in_rest_meta() {
+		$event = $this->make_event( [ 'type' => 'single', 'external_display_price' => '$495', 'start_date' => '2030-01-01' ] );
+		$req   = new WP_REST_Request( 'GET', '/wp/v2/event/' . $event );
+		$data  = rest_get_server()->dispatch( $req )->get_data();
+
+		$this->assertArrayHasKey( '_anchor_event_start_date', $data['meta'] ?? [], 'Positive control: an allow-listed key must be present.' );
+		$this->assertArrayNotHasKey( '_anchor_event_type', $data['meta'] ?? [] );
+		$this->assertArrayNotHasKey( '_anchor_event_external_display_price', $data['meta'] ?? [] );
+	}
 }

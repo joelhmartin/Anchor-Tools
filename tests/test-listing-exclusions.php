@@ -173,6 +173,103 @@ class Test_Listing_Exclusions extends Anchor_Events_TestCase {
 	}
 
 	/* ------------------------------------------------------------------
+	 * B2. ...but a STAFF surface still has to reach a cancelled roster.
+	 *
+	 * Folding occurrence_closed into build_hide_clause() gave every caller the
+	 * public rule, including the two capability-gated surfaces. A soft close
+	 * exists precisely BECAUSE the date still holds seats — somebody has to
+	 * email or refund those people — so hiding the date from the only two
+	 * screens built to manage it made that roster unreachable. Both now pass
+	 * $public = false, which drops the occurrence_closed half and keeps the
+	 * hide_from_archive half.
+	 * ------------------------------------------------------------------ */
+
+	/** Log in as somebody who passes the edit_others_posts gate on both surfaces. */
+	private function login_as_staff() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'editor' ] ) );
+		$this->assertTrue( current_user_can( 'edit_others_posts' ) );
+	}
+
+	public function test_staff_clause_keeps_soft_closed_dates_and_still_drops_hidden_ones() {
+		$staff  = $this->module()->build_hide_clause( false );
+		$public = $this->module()->build_hide_clause();
+
+		$keys = [];
+		foreach ( $staff as $name => $sub ) {
+			if ( 'relation' === $name ) {
+				continue;
+			}
+			$keys[] = $sub['key'];
+		}
+		$this->assertSame( [ '_anchor_event_hide_from_archive', '_anchor_event_hide_from_archive' ], $keys, 'The staff clause is the hide_from_archive half only.' );
+		$this->assertNotEquals( $public, $staff, 'The public clause must still carry the occurrence_closed half.' );
+	}
+
+	public function test_soft_closed_child_is_listed_by_the_registrants_shortcode_for_staff() {
+		$this->login_as_staff();
+
+		$parent = $this->parent_with_two_dates();
+		$closed = $this->soft_close_child( $parent, 1 );
+		$live   = $this->occurrences()->children( $parent );
+
+		$html = do_shortcode( '[event_registrants_list limit="50"]' );
+
+		$this->assertStringContainsString(
+			esc_html( get_the_title( $closed ) ),
+			$html,
+			'A cancelled date must stay listed for staff — its roster is the reason it was soft-closed rather than deleted.'
+		);
+		$this->assertStringContainsString( 'attendee@example.test', $html, 'The stranded registrant has to be reachable, not just the row.' );
+		$this->assertStringContainsString( esc_html( get_the_title( $live[0] ) ), $html, 'The live date is still listed too.' );
+	}
+
+	public function test_soft_closed_child_is_listed_by_the_front_end_event_manager_for_staff() {
+		$this->login_as_staff();
+
+		$parent = $this->parent_with_two_dates();
+		$closed = $this->soft_close_child( $parent, 1 );
+		$live   = $this->occurrences()->children( $parent );
+
+		$html = do_shortcode( '[event_manager limit="50"]' );
+
+		$this->assertStringContainsString(
+			esc_html( get_the_title( $closed ) ),
+			$html,
+			'The Events Manager console must still show a cancelled date so its roster can be emailed or refunded.'
+		);
+		$this->assertStringContainsString( esc_html( get_the_title( $live[0] ) ), $html );
+	}
+
+	/** The staff exemption is for occurrence_closed ONLY — hide_from_archive still binds. */
+	public function test_hidden_event_stays_hidden_from_the_staff_surfaces() {
+		$this->login_as_staff();
+
+		$hidden = $this->make_event( [
+			'title'             => 'Hidden staff session',
+			'timezone'          => 'UTC',
+			'start_date'        => '2030-12-01',
+			'start_time'        => '09:00',
+			'hide_from_archive' => '1',
+		] );
+		update_post_meta( $hidden, '_anchor_event_start_ts', strtotime( '2030-12-01 09:00 UTC' ) );
+
+		$this->assertStringNotContainsString( 'Hidden staff session', do_shortcode( '[event_registrants_list limit="50"]' ) );
+		$this->assertStringNotContainsString( 'Hidden staff session', do_shortcode( '[event_manager limit="50"]' ) );
+	}
+
+	/** ...and the public list is unchanged: the cancelled date is still absent there. */
+	public function test_public_list_still_excludes_the_soft_closed_child_while_staff_see_it() {
+		$parent = $this->parent_with_two_dates();
+		$closed = $this->soft_close_child( $parent, 1 );
+
+		$public = do_shortcode( '[events_list limit="50"]' );
+		$this->assertStringNotContainsString( get_permalink( $closed ), $public );
+
+		$this->login_as_staff();
+		$this->assertStringContainsString( esc_html( get_the_title( $closed ) ), do_shortcode( '[event_registrants_list limit="50"]' ) );
+	}
+
+	/* ------------------------------------------------------------------
 	 * C. The reminder sweep (MODEL-D17, REG-D2).
 	 * ------------------------------------------------------------------ */
 

@@ -125,6 +125,46 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		$this->assertSame( '1', get_option( 'anchor_events_ts_backfilled' ) );
 	}
 
+	/**
+	 * The back-fill changes what every cached listing should contain, so it
+	 * has to invalidate them.
+	 *
+	 * get_cached_ids() stores the ID list for an hour keyed by query args, and
+	 * an event with no `start_ts` row is dropped by the `meta_key => start_ts`
+	 * ordering join — so the list cached a moment before the back-fill is a
+	 * list the back-fill just made wrong. Without clear_caches() the newly
+	 * dated events stayed invisible for up to an hour after the migration that
+	 * was supposed to reveal them, on the exact admin page load that ran it.
+	 *
+	 * show_past="yes" on purpose: build_visibility_clause() embeds time() in
+	 * the meta_query, so a show_past="no" cache key changes every second and
+	 * could never be observed going stale.
+	 */
+	public function test_backfill_invalidates_the_listing_cache() {
+		$this->login_as_admin();
+		$event = $this->make_event( [ 'title' => 'Legacy Event', 'start_date' => '2030-12-05' ] );
+		delete_post_meta( $event, '_anchor_event_start_ts' );
+		delete_post_meta( $event, '_anchor_event_end_ts' );
+		delete_option( 'anchor_events_ts_backfilled' );
+		$this->module()->clear_caches();
+
+		// Prime the cache while the event is still invisible to the ordering join.
+		$this->assertStringNotContainsString(
+			esc_url( get_permalink( $event ) ),
+			do_shortcode( '[events_list show_past="yes" limit="50"]' ),
+			'Precondition: an event with no start_ts row is dropped by the ordering join.'
+		);
+
+		$this->module()->backfill_timestamps();
+
+		// Deliberately NO manual clear_caches() here — the back-fill owns it.
+		$this->assertStringContainsString(
+			esc_url( get_permalink( $event ) ),
+			do_shortcode( '[events_list show_past="yes" limit="50"]' ),
+			'The back-fill must clear the listing cache it just invalidated.'
+		);
+	}
+
 	/** backfill_timestamps() is capability-gated, so its tests need a user who could edit events by hand. */
 	private function login_as_admin() {
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );

@@ -14,9 +14,20 @@ class Module {
 
     // Task 7 (COORD-D2): the only get_meta_schema() keys exposed over REST by
     // default. Everything else defaults to show_in_rest => false unless the
-    // schema entry itself opts back in explicitly (array_merge below puts the
-    // per-key $schema after this default, so an explicit override still wins).
-    const REST_PUBLIC_META = [ 'start_date', 'end_date', 'start_time', 'end_time', 'all_day', 'timezone', 'venue', 'address_city', 'address_state', 'address_country', 'status', 'type', 'price', 'external_display_price' ];
+    // schema entry itself opts back in explicitly (array_merge in
+    // register_meta() puts the per-key $schema AFTER this default, so an
+    // explicit override always wins over this list).
+    //
+    // Because the per-key entry wins, listing a key here that also sets
+    // 'show_in_rest' => false in get_meta_schema() does nothing at all. `type`
+    // and `external_display_price` were both listed and both overridden, so
+    // they were dead entries that read as "exposed" while the schema kept them
+    // hidden — they are metabox/manager-form owned on purpose (see the
+    // last-write-wins note on `type` in get_meta_schema()). They are removed
+    // from this list rather than from their overrides: the overrides are the
+    // intended behaviour. Anything added here must NOT carry its own
+    // show_in_rest.
+    const REST_PUBLIC_META = [ 'start_date', 'end_date', 'start_time', 'end_time', 'all_day', 'timezone', 'venue', 'address_city', 'address_state', 'address_country', 'status', 'price' ];
     const OPTION_KEY = 'anchor_events_settings';
 
     /** Per-event attendee questions (see get_registration_questions()). */
@@ -4702,7 +4713,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $this->enqueue_frontend_assets();
 
-        $meta_query = [ $this->build_hide_clause() ];
+        // $public = false: this shortcode is gated on edit_others_posts and
+        // exists to reach rosters. A soft-closed date still HAS a roster to
+        // email or refund, so the occurrence_closed half of the exclusion is
+        // not applied here — hide_from_archive still is.
+        $meta_query = [ $this->build_hide_clause( false ) ];
         if ( $atts['show_past'] === 'no' ) {
             $meta_query[] = $this->build_visibility_clause();
         }
@@ -5128,7 +5143,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     private function render_event_manager_list( $atts ) {
-        $meta_query = [ $this->build_hide_clause() ];
+        // $public = false — same reason as shortcode_event_registrants_list():
+        // the manager console is a staff surface and a cancelled date's roster
+        // has to stay findable. See build_hide_clause().
+        $meta_query = [ $this->build_hide_clause( false ) ];
         if ( $atts['show_past'] === 'no' ) {
             $meta_query[] = $this->build_visibility_clause();
         }
@@ -7986,6 +8004,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             ],
         ] );
 
+        // One query for the whole batch instead of one per get_meta() call:
+        // get_meta() reads ~40 keys per event through get_post_meta(), and with
+        // a cold meta cache that is 200 uncached round trips on an admin page
+        // load. Priming the cache up front makes them all cache hits.
+        if ( ! empty( $ids ) ) {
+            \update_meta_cache( 'post', $ids );
+        }
+
         $written = 0;
         foreach ( $ids as $event_id ) {
             $meta = $this->get_meta( $event_id );
@@ -7996,6 +8022,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \update_post_meta( $event_id, $this->meta_key( 'start_ts' ), $timestamps['start'] );
             \update_post_meta( $event_id, $this->meta_key( 'end_ts' ), $timestamps['end'] );
             $written++;
+        }
+
+        // Newly-dated events change what every cached listing should contain —
+        // an event that was invisible to the start_ts ordering join a moment
+        // ago now sorts into [events_list], the calendar and the archive. The
+        // listing caches are keyed by query args, not by post state, so they
+        // would otherwise keep serving the pre-backfill result until they
+        // expired on their own.
+        if ( $written > 0 ) {
+            $this->clear_caches();
         }
 
         // A short batch means nothing is left to fill; because the query now
@@ -8343,15 +8379,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * "Hide past events" as an UNDATED-safe clause (audit RENDER-D31).
+     * "Hide past events" without treating a missing `end_ts` as PAST
+     * (audit RENDER-D31).
      *
      * The old shape was a bare `end_ts >= time()` comparison, which INNER-JOINs
-     * postmeta: any event that never had an `end_ts` row written — every legacy
-     * event on a site that predates the `_ts` keys — was treated as PAST and
-     * silently dropped from every listing. An event with no end timestamp is
-     * undated, not over, so the NOT EXISTS branch keeps it visible. The
-     * back-fill (backfill_timestamps()) mints the missing rows; this clause is
-     * what stops the gap from hiding events in the meantime.
+     * postmeta: an event that never had an `end_ts` row written was treated as
+     * over and silently dropped. The NOT EXISTS branch is what stops that.
+     *
+     * Be precise about what it does and does not rescue, because the clause is
+     * only one of two joins a listing applies:
+     *   - It rescues an event that HAS a `start_ts` row but no `end_ts` row —
+     *     a single-day event saved before end_ts existed, or one whose end
+     *     meta was lost. That event is undated at the far end, not finished.
+     *   - It does NOT rescue an event with NO `start_ts` at all. Every listing
+     *     query also orders by `meta_key => start_ts` / `meta_value_num`,
+     *     which INNER-JOINs postmeta on start_ts, so a start_ts-less event is
+     *     dropped by the ORDERING join no matter what this clause says. That
+     *     is the gap backfill_timestamps() closes: it mints `start_ts`/`end_ts`
+     *     for every legacy event that still has a `start_date`, which is what
+     *     actually returns fully-undated legacy events to the listings.
      */
     public function build_visibility_clause() {
         return [
@@ -8370,10 +8416,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * The single listing-exclusion clause: everything a public list of events
-     * must leave out, regardless of dates (audit RENDER-D15 / MODEL-D3).
+     * The single listing-exclusion clause: everything a list of events must
+     * leave out, regardless of dates (audit RENDER-D15 / MODEL-D3).
      *
-     * Two facts hide an event from a listing:
+     * Two facts hide an event from a PUBLIC listing:
      *   - `hide_from_archive` — the editor's explicit "keep this off lists".
      *   - `occurrence_closed` — a soft-closed group child (Occurrences::
      *     soft_close() preserves the post + its roster but the date is no
@@ -8387,28 +8433,46 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Folding them into one clause makes every existing call site correct and
      * leaves nothing to forget at the next one.
      *
+     * Only the `hide_from_archive` half is an exclusion for STAFF, though. A
+     * soft-closed date keeps its roster — that is the entire point of a soft
+     * close — and somebody has to email or refund those attendees, so the two
+     * capability-gated surfaces ([event_registrants_list], which requires
+     * edit_others_posts, and the front-end Events Manager console) pass
+     * $public = false and keep cancelled dates in the list. Folding the closed
+     * half in unconditionally would have made a cancelled date's roster
+     * unreachable from the surfaces built to manage it.
+     *
      * Each half keeps the NOT-EXISTS-or-not-truthy shape: a post that has
      * never had the meta row written (every legacy event, and every group
      * child before its first soft-close) is unaffected rather than
      * INNER-JOINed out.
      *
+     * @param bool $public Whether this is a public-facing listing (default
+     *                     true). False = a staff surface: hidden events are
+     *                     still excluded, soft-closed dates are not.
      * @return array meta_query clause.
      */
-    public function build_hide_clause() {
+    public function build_hide_clause( $public = true ) {
+        $hidden = [
+            'relation' => 'OR',
+            [
+                'key' => $this->meta_key( 'hide_from_archive' ),
+                'compare' => 'NOT EXISTS',
+            ],
+            [
+                'key' => $this->meta_key( 'hide_from_archive' ),
+                'value' => '1',
+                'compare' => '!=',
+            ],
+        ];
+
+        if ( ! $public ) {
+            return $hidden;
+        }
+
         return [
             'relation' => 'AND',
-            [
-                'relation' => 'OR',
-                [
-                    'key' => $this->meta_key( 'hide_from_archive' ),
-                    'compare' => 'NOT EXISTS',
-                ],
-                [
-                    'key' => $this->meta_key( 'hide_from_archive' ),
-                    'value' => '1',
-                    'compare' => '!=',
-                ],
-            ],
+            $hidden,
             [
                 'relation' => 'OR',
                 [

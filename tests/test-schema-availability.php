@@ -195,8 +195,18 @@ class Test_Schema_Availability extends Anchor_Events_TestCase {
 		$this->assertArrayHasKey( 'offers', $node['subEvent'][0] );
 	}
 
-	/** Registration switched off means no Offer at all, on any branch. */
-	public function test_registration_disabled_emits_no_offers() {
+	/**
+	 * Registration switched off is NOT the same as "nothing to sell".
+	 *
+	 * `disabled` is the default state of an event and the permanent state of
+	 * every display-only site, so omitting the Offer for it stripped `offers`
+	 * from the majority of events on such a site — the price stopped reaching
+	 * search results because nobody had switched on a registration feature
+	 * they do not use. The Offer is emitted with price / priceCurrency / url;
+	 * only the `availability` claim is withheld, because there is no honest
+	 * schema.org value for "not for sale".
+	 */
+	public function test_registration_disabled_emits_an_offer_without_availability() {
 		$event = $this->make_event( [
 			'registration_enabled' => false,
 			'registration_mode'    => 'free',
@@ -206,6 +216,88 @@ class Test_Schema_Availability extends Anchor_Events_TestCase {
 
 		$node = $this->schema()->for_event( $event );
 
-		$this->assertArrayNotHasKey( 'offers', $node );
+		$this->assertArrayHasKey( 'offers', $node, 'Registration off must not strip the price out of the markup.' );
+		$this->assertCount( 1, $node['offers'] );
+		$this->assertArrayNotHasKey( 'availability', $node['offers'][0], 'There is no honest availability value for an event that is not for sale.' );
+		$this->assertSame( 0, $node['offers'][0]['price'] );
+		$this->assertSame( get_permalink( $event ), $node['offers'][0]['url'] );
+	}
+
+	/** The same ruling on the wc branch: tier prices survive, availability does not. */
+	public function test_registration_disabled_wc_offers_keep_their_prices() {
+		$event = $this->make_event(
+			[
+				'registration_enabled' => false,
+				'registration_mode'    => 'wc',
+				'start_date'           => '2030-01-01',
+				'timezone'             => 'UTC',
+			],
+			[
+				[ 'label' => 'VIP', 'price' => '75', 'active' => 1 ],
+				[ 'label' => 'General', 'price' => '25', 'active' => 1 ],
+			]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertArrayHasKey( 'offers', $node );
+		$this->assertCount( 2, $node['offers'] );
+		foreach ( $node['offers'] as $offer ) {
+			$this->assertArrayNotHasKey( 'availability', $offer );
+		}
+		$prices = array_column( $node['offers'], 'price' );
+		sort( $prices );
+		$this->assertSame( [ 25, 75 ], $prices );
+	}
+
+	/** ...and on the external branch. */
+	public function test_registration_disabled_external_offer_keeps_its_url_and_price() {
+		$event = $this->make_event( [
+			'registration_enabled'   => false,
+			'registration_mode'      => 'external',
+			'external_url'           => 'https://example.com/register',
+			'external_display_price' => '$495',
+			'start_date'             => '2030-01-01',
+			'timezone'               => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertArrayHasKey( 'offers', $node );
+		$this->assertArrayNotHasKey( 'availability', $node['offers'][0] );
+		$this->assertSame( 'https://example.com/register', $node['offers'][0]['url'] );
+		$this->assertSame( 495, $node['offers'][0]['price'] );
+	}
+
+	/**
+	 * The states that DO still omit the Offer entirely stay omitted — this is
+	 * the line between "no availability claim" and "nothing to advertise".
+	 * A soft-closed occurrence is `closed`, not `disabled`.
+	 */
+	public function test_soft_closed_occurrence_still_emits_no_offers() {
+		$parent = $this->make_event( [
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'registration_mode'    => 'free',
+			'timezone'             => 'UTC',
+		] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0 ],
+			[ 'date' => '2030-11-13', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'November', 'capacity' => 0 ],
+		] );
+		$this->module()->occurrences->reconcile( $parent );
+
+		$children = $this->module()->occurrences->children( $parent, true );
+		$closed   = (int) $children[1];
+		$this->make_seat( $closed );
+		update_post_meta( $parent, '_anchor_event_offering_dates', [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0 ],
+		] );
+		$this->module()->occurrences->reconcile( $parent );
+		$this->assertTrue( (bool) get_post_meta( $closed, '_anchor_event_occurrence_closed', true ) );
+
+		$node = $this->schema()->for_event( $closed );
+
+		$this->assertArrayNotHasKey( 'offers', $node, 'A cancelled date has nothing to advertise at all.' );
 	}
 }

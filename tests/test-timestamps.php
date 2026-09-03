@@ -46,7 +46,14 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		$event = $this->make_event( [ 'title' => 'Legacy Event', 'start_date' => '2030-12-05' ] );
 		delete_post_meta( $event, '_anchor_event_start_ts' );
 		delete_post_meta( $event, '_anchor_event_end_ts' );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
 		$this->reset_backfill_state();
+
+		// The selection clause is a single `!=` on the version key, which
+		// WP_Meta_Query resolves through a NOT EXISTS subquery. Assert the row
+		// is genuinely ABSENT, so this test proves the never-stamped event is
+		// still selected rather than quietly relying on a stale row matching.
+		$this->assertSame( [], get_post_meta( $event, '_anchor_event_ts_version' ), 'Precondition: no version row at all.' );
 
 		$this->module()->backfill_timestamps();
 

@@ -394,6 +394,11 @@ class Module {
      * Same calculators as every other save path, via persist_timestamps() and
      * persist_auto_status() — not a second implementation.
      *
+     * Status is included deliberately: on an auto-mode event a REST-written
+     * `_anchor_event_status` is recomputed from the dates and overwritten,
+     * because in auto mode the dates own the status — a client that wants to
+     * set it by hand has to switch the event to manual mode first.
+     *
      * @param \WP_Post         $post
      * @param \WP_REST_Request $request  Unused; part of the hook signature.
      * @param bool             $creating Unused; part of the hook signature.
@@ -8078,6 +8083,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 'relation' => 'OR',
                 // Never computed under a versioned schema — every event that
                 // predates this migration, whether or not it has `_ts` rows.
+                //
+                // This arm cannot be folded into the one below as a single
+                // `compare => '!='`. WP_Meta_Query DOES nest negative operators
+                // in a NOT EXISTS subquery, but only for `compare_key` — the
+                // comparison against the meta KEY name (class-wp-meta-query.php
+                // ~L655 switches on $meta_compare_key, not $meta_compare). A
+                // value-level `!=` gets a plain join, so it matches only posts
+                // that HAVE the row, and every never-stamped event — the whole
+                // legacy population this migration exists for — is skipped.
+                // Tried, measured: 6 of the 13 Test_Timestamps cases fail, all
+                // of them the missing-row ones.
                 [ 'key' => $this->meta_key( 'ts_version' ), 'compare' => 'NOT EXISTS' ],
                 // Computed, but under older rules than the ones in force now.
                 [ 'key' => $this->meta_key( 'ts_version' ), 'value' => self::TS_SCHEMA_VERSION, 'compare' => '<', 'type' => 'NUMERIC' ],

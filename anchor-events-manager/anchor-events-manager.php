@@ -7932,9 +7932,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'suppress_filters' => true,
             'meta_query' => [
                 [ 'key' => $this->meta_key( 'start_ts' ), 'compare' => 'NOT EXISTS' ],
+                // An event with no start_date row can never be filled; leaving it
+                // out keeps a batch full of fillable posts instead of letting
+                // dateless ones occupy the window pass after pass.
+                [ 'key' => $this->meta_key( 'start_date' ), 'compare' => 'EXISTS' ],
             ],
         ] );
 
+        $written = 0;
         foreach ( $ids as $event_id ) {
             $meta = $this->get_meta( $event_id );
             if ( empty( $meta['start_date'] ) ) {
@@ -7943,9 +7948,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $timestamps = $this->calculate_timestamps( $meta );
             \update_post_meta( $event_id, $this->meta_key( 'start_ts' ), $timestamps['start'] );
             \update_post_meta( $event_id, $this->meta_key( 'end_ts' ), $timestamps['end'] );
+            $written++;
         }
 
-        if ( count( $ids ) < $batch ) {
+        // A short batch means nothing is left. A FULL batch that wrote nothing
+        // means every post in it is unfillable (start_date row present but
+        // empty) and the next pass would fetch the same 200 forever — stop
+        // rather than run a query on every admin page load for good.
+        if ( count( $ids ) < $batch || $written === 0 ) {
             \update_option( 'anchor_events_ts_backfilled', '1', false );
         }
     }

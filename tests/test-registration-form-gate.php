@@ -69,4 +69,49 @@ class Test_Registration_Form_Gate extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'anchor_event_reg_nonce', $html, 'The appended free form must be a real form.' );
 		$this->assertStringNotContainsString( 'Tickets are not available right now.', $html );
 	}
+
+	/**
+	 * Fix round 1, finding 1: a `wc`-mode event whose only ACTIVE tier is a free
+	 * one is a bookable FREE course, not a ticketed one, so the WOO-D19 notice
+	 * must not fire. WooCommerce::filter_registration_form() returns $html
+	 * unchanged here ($paid_active is empty, no legacy product), and
+	 * $rendering_free is never set, so only the free-tier predicate keeps the
+	 * form alive.
+	 */
+	public function test_wc_mode_with_an_active_free_tier_still_renders_the_free_form() {
+		$event = $this->make_event(
+			[ 'registration_enabled' => true, 'registration_mode' => 'wc', 'start_date' => '2030-10-23' ],
+			[ [ 'label' => 'Free seat', 'price' => '0', 'active' => 1 ] ]
+		);
+
+		$html = $this->module()->render_registration_form( $event );
+
+		$this->assertStringContainsString( 'anchor_event_reg_nonce', $html );
+		$this->assertStringNotContainsString( 'Tickets are not available right now.', $html );
+	}
+
+	/**
+	 * The companion to the test above, and the reason its predicate is
+	 * "AUTHORED active free tier" rather than "active free tier": an event with
+	 * NO tier rows at all gets an implicit primary tier synthesized by
+	 * Ticket_Types::get() at price 0 / active, which must NOT read as a free
+	 * course. This is WOO-D19 case (a)/(b) — the no-tiers, no-product wc event —
+	 * and it is covered by test 2 above; this test pins the discriminator
+	 * directly so a future widening of the predicate fails loudly here.
+	 */
+	public function test_synthesized_primary_tier_does_not_count_as_a_free_course() {
+		$event = $this->make_event( [ 'registration_enabled' => true, 'registration_mode' => 'wc', 'start_date' => '2030-10-23' ] );
+
+		// Sanity: the plain helper DOES report a free tier for this event — the
+		// synthesized primary. The guard must not be fooled by it.
+		$this->assertNotEmpty(
+			$this->module()->get_active_free_tiers( $event ),
+			'Fixture assumption: Ticket_Types::get() synthesizes an active free primary tier when nothing is authored.'
+		);
+		$this->assertSame( '', get_post_meta( $event, \Anchor\Events\Ticket_Types::META_KEY, true ), 'Fixture must have no authored tier rows.' );
+
+		$html = $this->module()->render_registration_form( $event );
+
+		$this->assertStringContainsString( 'Tickets are not available right now.', $html );
+	}
 }

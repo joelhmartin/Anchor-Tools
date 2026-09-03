@@ -777,8 +777,16 @@ class WooCommerce {
         // Mixed free + paid event → also render the lightweight inline free form.
         if ( $has_free_active ) {
             self::$rendering_free[ $event_id ] = true;
-            $free = (string) $this->module->render_registration_form( $event_id );
-            unset( self::$rendering_free[ $event_id ] );
+            try {
+                $free = (string) $this->module->render_registration_form( $event_id );
+            } finally {
+                // The flag gates a money path (Module::render_registration_form()'s
+                // WOO-D19 wc-mode guard reads it via is_rendering_free()). A filter
+                // callback that throws inside the nested render must not leave it
+                // set for the rest of the request, which would suppress the
+                // "tickets unavailable" notice on every later event on the page.
+                unset( self::$rendering_free[ $event_id ] );
+            }
             if ( $free !== '' ) {
                 $out .= '<div class="anchor-event-free-registration">' . $free . '</div>';
             }

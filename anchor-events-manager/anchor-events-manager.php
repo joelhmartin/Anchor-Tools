@@ -189,6 +189,10 @@ class Module {
 
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 40 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
+        // One-time start_ts/end_ts back-fill for legacy events (audit MODEL-D2).
+        // admin_init, never init: it writes meta, so it must not run on a
+        // front-end request (MODEL-D41). Flag-guarded and batched.
+        \add_action( 'admin_init', [ $this, 'backfill_timestamps' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
@@ -319,6 +323,17 @@ class Module {
             return;
         }
         $meta = $this->get_meta( $post->ID );
+
+        // A quick-edit publish never runs the meta box save, so an event could
+        // reach 'publish' with no start_ts/end_ts row at all and drop out of
+        // every listing (audit MODEL-D2). Write them here too — before the
+        // manual-status bail, because visibility does not depend on status_mode.
+        if ( $new_status === 'publish' && ! empty( $meta['start_date'] ) ) {
+            $timestamps = $this->calculate_timestamps( $meta );
+            \update_post_meta( $post->ID, $this->meta_key( 'start_ts' ), $timestamps['start'] );
+            \update_post_meta( $post->ID, $this->meta_key( 'end_ts' ), $timestamps['end'] );
+        }
+
         if ( $meta['status_mode'] === 'manual' ) {
             return;
         }
@@ -6474,14 +6489,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         // WOO-D19: a paid event whose storefront produced nothing (WooCommerce
-        // off, product missing, every tier inactive) must NOT fall through to
-        // the free internal form below — that would book free seats on a
-        // ticketed course. The one wc-mode call that legitimately wants the free
-        // form is WooCommerce's own mixed free+paid re-entry, which has already
-        // rendered the paid storefront and is now asking for the FREE-tier form
-        // to append to it; is_rendering_free() marks exactly that nested call.
+        // off, product missing, every paid tier deactivated) must NOT fall
+        // through to the free internal form below — that would book free seats
+        // on a ticketed course. Two wc-mode cases legitimately DO want the free
+        // form and are exempted:
+        //
+        //  - the event still has an AUTHORED active free tier, so it is a
+        //    bookable free course rather than a ticketed one (a free tier that
+        //    `Ticket_Types::get()` merely synthesized does not count — see
+        //    has_authored_free_tier()); and
+        //  - WooCommerce's own mixed free+paid re-entry, which has already
+        //    rendered the paid storefront and is now asking for the FREE-tier
+        //    form to append to it. is_rendering_free() marks that nested call.
+        //    It is subsumed by the free-tier test above (the re-entry only fires
+        //    when an active free tier exists) but is kept explicit so the seam
+        //    stays correct independently of how the tier predicate evolves.
         $wc_free_reentry = ( $this->woocommerce && $this->woocommerce->is_rendering_free( $post_id ) );
-        if ( ! $wc_free_reentry && $this->registration_mode( $post_id ) === 'wc' ) {
+        $free_bookable   = $this->has_authored_free_tier( $post_id );
+        if ( ! $wc_free_reentry && ! $free_bookable && $this->registration_mode( $post_id ) === 'wc' ) {
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'Tickets are not available right now.', 'anchor-schema' ) . '</div>';
         }
 
@@ -7876,6 +7901,56 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * One-time, batched back-fill of start_ts/end_ts (audit MODEL-D2).
+     *
+     * Legacy events never had the `_ts` keys written — nothing back-filled them
+     * — and every listing query orders by `start_ts` (meta_key + orderby =
+     * meta_value_num), which INNER-JOINs postmeta. An event without the row was
+     * therefore absent from the archive, [events_list], [event_calendar],
+     * [event_manager] and [event_registrants_list] entirely, not merely
+     * unsorted.
+     *
+     * Runs on admin_init (never on the front end: see the constructor) in
+     * batches of 200, and only declares itself done once a batch comes back
+     * short — so a site with thousands of events converges over a few admin
+     * page loads instead of timing out on one, and a site with no events at all
+     * finishes on the first call. Events with no start_date can't produce a
+     * timestamp and are skipped; they don't hold the flag open.
+     */
+    public function backfill_timestamps() {
+        if ( \get_option( 'anchor_events_ts_backfilled' ) ) {
+            return;
+        }
+
+        $batch = 200;
+        $ids = \get_posts( [
+            'post_type' => self::CPT,
+            'post_status' => 'any',
+            'posts_per_page' => $batch,
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'suppress_filters' => true,
+            'meta_query' => [
+                [ 'key' => $this->meta_key( 'start_ts' ), 'compare' => 'NOT EXISTS' ],
+            ],
+        ] );
+
+        foreach ( $ids as $event_id ) {
+            $meta = $this->get_meta( $event_id );
+            if ( empty( $meta['start_date'] ) ) {
+                continue;
+            }
+            $timestamps = $this->calculate_timestamps( $meta );
+            \update_post_meta( $event_id, $this->meta_key( 'start_ts' ), $timestamps['start'] );
+            \update_post_meta( $event_id, $this->meta_key( 'end_ts' ), $timestamps['end'] );
+        }
+
+        if ( count( $ids ) < $batch ) {
+            \update_option( 'anchor_events_ts_backfilled', '1', false );
+        }
+    }
+
+    /**
      * Active FREE tiers (price == 0) for an event, in order. Used by the inline
      * registration form (paid tiers are sold through WooCommerce, not here).
      *
@@ -7894,6 +7969,35 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $tiers[] = $tier;
         }
         return $tiers;
+    }
+
+    /**
+     * Whether the event has an AUTHORED active free tier — i.e. somebody
+     * deliberately published a free ticket for it.
+     *
+     * This is deliberately narrower than `! empty( get_active_free_tiers() )`.
+     * `Ticket_Types::get()` synthesizes an implicit primary tier (price from the
+     * legacy `price` field, `active => true`) for any event with no stored tier
+     * rows, so on an event with NO tier authoring at all the plain helper reports
+     * a free tier that nobody ever created. The WOO-D19 guard in
+     * render_registration_form() keys off this method because that exact case —
+     * a `wc` event with no tiers and no product — is the bug it exists to close;
+     * treating the synthesized placeholder as a real free ticket would hand the
+     * free form straight back to a ticketed course.
+     *
+     * (That `get()` does not itself report whether it synthesized is the gap
+     * recorded as WOO-D6; when that is fixed, this should read the flag instead
+     * of re-checking the stored meta.)
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    private function has_authored_free_tier( $event_id ) {
+        $stored = \get_post_meta( $event_id, Ticket_Types::META_KEY, true );
+        if ( ! \is_array( $stored ) || empty( $stored ) ) {
+            return false;
+        }
+        return ! empty( $this->get_active_free_tiers( $event_id ) );
     }
 
     private function sanitize_date( $value ) {
@@ -8180,12 +8284,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $this->calculate_status( $meta );
     }
 
+    /**
+     * "Hide past events" as an UNDATED-safe clause (audit RENDER-D31).
+     *
+     * The old shape was a bare `end_ts >= time()` comparison, which INNER-JOINs
+     * postmeta: any event that never had an `end_ts` row written — every legacy
+     * event on a site that predates the `_ts` keys — was treated as PAST and
+     * silently dropped from every listing. An event with no end timestamp is
+     * undated, not over, so the NOT EXISTS branch keeps it visible. The
+     * back-fill (backfill_timestamps()) mints the missing rows; this clause is
+     * what stops the gap from hiding events in the meantime.
+     */
     private function build_visibility_clause() {
         return [
-            'key' => $this->meta_key( 'end_ts' ),
-            'value' => time(),
-            'compare' => '>=',
-            'type' => 'NUMERIC',
+            'relation' => 'OR',
+            [
+                'key' => $this->meta_key( 'end_ts' ),
+                'compare' => 'NOT EXISTS',
+            ],
+            [
+                'key' => $this->meta_key( 'end_ts' ),
+                'value' => time(),
+                'compare' => '>=',
+                'type' => 'NUMERIC',
+            ],
         ];
     }
 

@@ -190,8 +190,11 @@ class Module {
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 40 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
         // One-time start_ts/end_ts back-fill for legacy events (audit MODEL-D2).
-        // admin_init, never init: it writes meta, so it must not run on a
-        // front-end request (MODEL-D41). Flag-guarded and batched.
+        // admin_init, never init: it writes meta, so it must not run on an
+        // ordinary front-end pageload (MODEL-D41). admin_init alone does not
+        // make it privileged — admin-post.php fires it before auth, for the
+        // nopriv handlers registered below — so the method itself is
+        // capability-gated as well as flag-guarded and batched.
         \add_action( 'admin_init', [ $this, 'backfill_timestamps' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
@@ -7924,14 +7927,22 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * [event_manager] and [event_registrants_list] entirely, not merely
      * unsorted.
      *
-     * Runs on admin_init (never on the front end: see the constructor) in
-     * batches of 200, and only declares itself done once a batch comes back
-     * short — so a site with thousands of events converges over a few admin
-     * page loads instead of timing out on one, and a site with no events at all
-     * finishes on the first call. Events with no start_date can't produce a
-     * timestamp and are skipped; they don't hold the flag open.
+     * Runs on admin_init in batches of 200, and only declares itself done once a
+     * batch comes back short — so a site with thousands of events converges over
+     * a few admin page loads instead of timing out on one, and a site with no
+     * events at all finishes on the first call.
+     *
+     * admin_init is NOT an authenticated hook: wp-admin/admin-post.php fires it
+     * before it validates the auth cookie, and this module registers
+     * admin_post_nopriv_anchor_event_register and ..._manager_login — so a
+     * logged-out visitor's registration POST reaches this method. Hence the
+     * capability check: the back-fill only ever runs for a user who could have
+     * edited the events by hand, never inline on a public request.
      */
     public function backfill_timestamps() {
+        if ( ! \current_user_can( 'edit_posts' ) ) {
+            return;
+        }
         if ( \get_option( 'anchor_events_ts_backfilled' ) ) {
             return;
         }
@@ -7946,10 +7957,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'suppress_filters' => true,
             'meta_query' => [
                 [ 'key' => $this->meta_key( 'start_ts' ), 'compare' => 'NOT EXISTS' ],
-                // An event with no start_date row can never be filled; leaving it
-                // out keeps a batch full of fillable posts instead of letting
-                // dateless ones occupy the window pass after pass.
-                [ 'key' => $this->meta_key( 'start_date' ), 'compare' => 'EXISTS' ],
+                // Only events this can actually fill. `!= ''` excludes both the
+                // missing row (no join match) and the present-but-empty one that
+                // EXISTS would have let through — without it a window of 200
+                // dateless posts would come back every pass and strand the older
+                // fillable ones behind them.
+                [ 'key' => $this->meta_key( 'start_date' ), 'value' => '', 'compare' => '!=' ],
             ],
         ] );
 
@@ -7965,10 +7978,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $written++;
         }
 
-        // A short batch means nothing is left. A FULL batch that wrote nothing
-        // means every post in it is unfillable (start_date row present but
-        // empty) and the next pass would fetch the same 200 forever — stop
-        // rather than run a query on every admin page load for good.
+        // A short batch means nothing is left to fill; because the query now
+        // returns only fillable posts, this is the condition that actually ends
+        // the migration. The $written === 0 arm is belt and braces: a full batch
+        // that wrote nothing can only repeat itself forever, so stop rather than
+        // run this query on every admin page load for good.
         if ( count( $ids ) < $batch || $written === 0 ) {
             \update_option( 'anchor_events_ts_backfilled', '1', false );
         }

@@ -896,6 +896,10 @@ class WooCommerce {
      * paid tiers keeps the original "Register — $price" link to the product page.
      * Returns `$html` unchanged when the event has no linked product (free form).
      *
+     * The link's state is Module::bookability(), the same authority the linked
+     * product's own `is_purchasable` now consults — otherwise this is the one
+     * remaining surface that can advertise a seat the cart refuses.
+     *
      * @param string $html
      * @param int    $event_id
      * @param array  $meta
@@ -923,22 +927,26 @@ class WooCommerce {
             return $html;
         }
 
-        $capacity  = (int) ( $meta['capacity'] ?? 0 );
-        $unlimited = ( $capacity <= 0 );
-        $waitlist  = ! empty( $meta['waitlist'] );
-        $remaining = $unlimited ? PHP_INT_MAX : (int) $this->registrations->remaining_capacity( $event_id, $capacity );
-        $sold_out  = ( ! $unlimited && $remaining <= 0 );
+        // WOO-D2: the escape hatch asks the same authority as the managed
+        // storefront. It used to derive "sold out" from remaining_capacity()
+        // alone, so a hand-flagged sold_out event with capacity 0 (unlimited)
+        // rendered "Register — $500" pointing at a product page whose cart —
+        // now correctly routed through bookability() — refuses the sale.
+        $state = $this->module->bookability( $event_id );
 
         $price_html = $product->get_price_html();
         $url        = \get_permalink( $product_id );
 
         $out = '<div class="anchor-event-registration anchor-event-registration-woocommerce">';
 
-        if ( $sold_out && ! $waitlist ) {
+        if ( ! $this->module->is_bookable( $state ) ) {
+            $label = ( 'full' === $state )
+                ? \__( 'Sold out', 'anchor-schema' )
+                : \__( 'Registration closed', 'anchor-schema' );
             $out .= '<button type="button" class="anchor-event-button anchor-event-register" disabled aria-disabled="true">'
-                . \esc_html__( 'Sold out', 'anchor-schema' ) . '</button>';
+                . \esc_html( $label ) . '</button>';
         } else {
-            $label = $sold_out && $waitlist
+            $label = ( Registrations::STATUS_WAITLIST === $state )
                 ? \__( 'Join waitlist', 'anchor-schema' )
                 : \__( 'Register', 'anchor-schema' );
             $text = $price_html !== ''
@@ -1203,31 +1211,48 @@ class WooCommerce {
         // now inside bookability()/capacity_decision(), so every other reader
         // gets them too instead of only this one.
         return $this->module->is_bookable(
-            $this->module->bookability( $event_id, $this->tier_for_product_object( $product ) )
+            $this->module->bookability( $event_id, $this->tier_for_product_object( $product, $event_id ) )
         ) ? $purchasable : false;
     }
 
     /**
-     * The ticket tier a managed product object represents, or null for a
-     * simple product / a variation we don't manage.
+     * The ticket tier a managed product object represents FOR $event_id, or
+     * null for a simple product, a variation we don't manage, or a variation
+     * whose managed event is not the one the caller resolved.
      *
      * WOO-D3: the storefront row and the purchase path have to ask about the
      * SAME thing. A tier whose own quota is exhausted while the event still
      * has room is 'full' for that tier only, and that answer is only
      * reachable when the tier is passed in.
      *
+     * The two link metas can disagree: `Product_Sync::tier_for_variation()`
+     * reads the managed event off the WC PARENT (`_anchor_evt_managed_event`),
+     * while the caller resolved the event from the admin-editable link meta on
+     * the VARIATION (`_anchor_evt_link_event_id`). Re-pointing that dropdown at
+     * another event makes them differ, and looking the tier up under the wrong
+     * event yields a quota that counts seats nobody can hold — i.e. a quota
+     * that silently stops binding. On a mismatch we return null and let the
+     * EVENT-level answer stand: the capacity total, the sold_out flag, the
+     * registration window and the past-event check all still bind against the
+     * event the line actually registers for. Refusing the variation outright
+     * was the alternative, and it is the wrong trade: it would make a
+     * deliberate admin re-point permanently unpurchasable with no UI saying
+     * why, whereas dropping to the event-level gate under-enforces only the
+     * optional per-tier quota of a tier that no longer belongs to this event.
+     *
      * @param \WC_Product $product
+     * @param int         $event_id Event the caller resolved for this line.
      * @return array|null Normalized tier row.
      */
-    private function tier_for_product_object( $product ) {
+    private function tier_for_product_object( $product, $event_id ) {
         if ( ! $product->is_type( 'variation' ) || ! $this->module->product_sync || ! $this->module->ticket_types ) {
             return null;
         }
         $map = $this->module->product_sync->tier_for_variation( (int) $product->get_id() );
-        if ( (int) $map['event_id'] <= 0 || (string) $map['tier_id'] === '' ) {
+        if ( (string) $map['tier_id'] === '' || (int) $map['event_id'] !== (int) $event_id ) {
             return null;
         }
-        $tier = $this->module->ticket_types->find( (int) $map['event_id'], (string) $map['tier_id'] );
+        $tier = $this->module->ticket_types->find( (int) $event_id, (string) $map['tier_id'] );
         return $tier ?: null;
     }
 

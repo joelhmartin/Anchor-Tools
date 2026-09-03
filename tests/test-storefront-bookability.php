@@ -208,4 +208,158 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'Details', $html );
 		$this->assertStringNotContainsString( '>Register<', $html );
 	}
+
+	/* ------------------------------------------------------------------
+	 * WOO-D2 — the legacy manually-linked-product escape hatch.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * Create a plain WooCommerce product hand-linked to $event_id, the way the
+	 * pre-tier "escape hatch" workflow does (parent toggle + event id meta).
+	 *
+	 * @param int   $event_id
+	 * @param float $price
+	 * @return int Product id.
+	 */
+	private function link_legacy_product( $event_id, $price = 500 ) {
+		$product = new WC_Product_Simple();
+		$product->set_name( 'Legacy Course Ticket' );
+		$product->set_regular_price( (string) $price );
+		$product->set_status( 'publish' );
+		$product_id = $product->save();
+
+		update_post_meta( $product_id, \Anchor\Events\WooCommerce::META_ENABLED, '1' );
+		update_post_meta( $product_id, \Anchor\Events\WooCommerce::META_EVENT_ID, (int) $event_id );
+
+		return (int) $product_id;
+	}
+
+	/**
+	 * The escape hatch used to read remaining_capacity() only, so a
+	 * hand-flagged sold-out event with capacity 0 (unlimited) rendered
+	 * "Register — $500" pointing at a product page the cart now refuses.
+	 */
+	public function test_legacy_product_link_is_sold_out_for_a_hand_flagged_event() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'capacity'             => 0,
+			'sold_out'             => true,
+			'start_date'           => '2030-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$this->link_legacy_product( $event );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Sold out', $html );
+		$this->assertStringNotContainsString( 'Register — ', $html );
+		$this->assertStringNotContainsString( '<a class="anchor-event-button', $html );
+	}
+
+	/** An event past its registration window gets a disabled button, not a link. */
+	public function test_legacy_product_link_is_closed_outside_the_registration_window() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'registration_close'   => gmdate( 'Y-m-d', time() - DAY_IN_SECONDS * 2 ),
+			'start_date'           => '2030-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$this->link_legacy_product( $event );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Registration closed', $html );
+		$this->assertStringNotContainsString( '<a class="anchor-event-button', $html );
+	}
+
+	/** A bookable event still gets the real "Register — $price" link. */
+	public function test_legacy_product_link_still_renders_for_a_bookable_event() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'start_date'           => '2030-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$product_id = $this->link_legacy_product( $event );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Register', $html );
+		$this->assertStringContainsString( esc_url( get_permalink( $product_id ) ), $html );
+	}
+
+	/* ------------------------------------------------------------------
+	 * The two link metas can disagree.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * `filter_is_purchasable()` resolves the event from the admin-editable
+	 * `_anchor_evt_link_event_id` on the VARIATION; `tier_for_variation()`
+	 * reads the managed event off the WC PARENT. Re-point the dropdown and
+	 * they differ — looking the tier up under the wrong event yields a quota
+	 * counting seats nobody can hold, i.e. a quota that silently stops
+	 * binding. On a mismatch we fall back to the EVENT-level answer, which
+	 * still enforces capacity, sold_out, the window and the past.
+	 */
+	public function test_a_repointed_variation_falls_back_to_the_event_level_gate() {
+		list( $event_b, $tiers_b ) = $this->make_ticketed_event(
+			[ 'title' => 'Event B', 'capacity' => 100 ],
+			[ [ 'label' => 'VIP', 'price' => '75', 'active' => 1, 'quota' => 1 ] ]
+		);
+		$variation = $this->variation( $event_b, $tiers_b[0] );
+
+		// Event A is sold out at the EVENT level; it has no tier of its own.
+		$event_a = $this->make_event( [
+			'registration_enabled' => true,
+			'capacity'             => 1,
+			'start_date'           => '2030-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$this->make_seat( $event_a );
+
+		// Re-point the variation's link meta at event A (the admin dropdown).
+		update_post_meta( $variation->get_id(), \Anchor\Events\WooCommerce::META_EVENT_ID, $event_a );
+
+		$this->assertSame(
+			$event_a,
+			$this->woocommerce()->event_for_variation( $variation->get_id() ),
+			'Sanity: the line now registers for event A.'
+		);
+
+		// Event A's own capacity still binds — the foreign tier cannot mask it.
+		$this->assertFalse(
+			$this->woocommerce()->filter_is_purchasable( true, $variation )
+		);
+	}
+
+	/**
+	 * The observable half of the same bug: a FOREIGN tier's quota must not be
+	 * consulted against this event's seats. Tier ids are per-event, so the
+	 * same id can exist on two events with different quotas — before the fix
+	 * the wrong event's quota decided, which refuses a sale as readily as it
+	 * permits one.
+	 */
+	public function test_a_repointed_variation_does_not_consult_the_other_events_tier_quota() {
+		list( $event_b, $tiers_b ) = $this->make_ticketed_event(
+			[ 'title' => 'Event B', 'capacity' => 100 ],
+			[ [ 'label' => 'VIP', 'price' => '75', 'active' => 1, 'quota' => 1 ] ]
+		);
+		$variation = $this->variation( $event_b, $tiers_b[0] );
+
+		// Event A has unlimited capacity and no tiers of its own, but carries a
+		// seat tagged with the same tier id (a legacy seat, or a collided id).
+		$event_a = $this->make_event( [
+			'registration_enabled' => true,
+			'capacity'             => 0,
+			'start_date'           => '2030-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$this->make_seat( $event_a, [ 'ticket_type_id' => $tiers_b[0]['id'] ] );
+
+		update_post_meta( $variation->get_id(), \Anchor\Events\WooCommerce::META_EVENT_ID, $event_a );
+
+		$this->assertTrue(
+			$this->woocommerce()->filter_is_purchasable( true, $variation ),
+			"Event B's quota of 1 must not be applied to event A's seats."
+		);
+	}
 }

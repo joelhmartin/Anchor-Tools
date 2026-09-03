@@ -89,6 +89,12 @@ class Occurrences {
         'capacity',
         'status_mode',
         'status',
+        // Availability is a fact about ONE date, not about the group. Closing or
+        // selling out the September date must not close November, and must not be
+        // silently undone the next time the parent is saved — which is exactly
+        // what happened while these were copied down from the parent.
+        'registration_enabled',
+        'sold_out',
     ];
 
     /**
@@ -153,13 +159,23 @@ class Occurrences {
             $desired_map[ $row['date'] ] = $row;
         }
 
-        $existing_map = $this->existing_children_map( $parent_id ); // occurrence_key => child_id (live + closed, excludes trash)
+        // Trashed children are included on purpose. Removing a date trashes its
+        // occurrence; adding the same date back must revive THAT occurrence, not
+        // build a second one beside it. Without this the original stays in the
+        // trash for ever and the date silently acquires a duplicate post.
+        $existing_map = $this->existing_children_map( $parent_id, true ); // occurrence_key => child_id (live + closed + trashed)
 
         $live_ids = [];
 
         foreach ( $desired_map as $key => $row ) {
             if ( isset( $existing_map[ $key ] ) ) {
                 $child_id = (int) $existing_map[ $key ];
+                // A wanted date whose occurrence is in the trash comes back out,
+                // keeping its id, its roster and its history.
+                if ( \get_post_status( $child_id ) === 'trash' ) {
+                    \wp_untrash_post( $child_id );
+                    \wp_update_post( [ 'ID' => $child_id, 'post_status' => 'publish' ] );
+                }
                 $this->sync_child_from_parent( $parent_id, $child_id, $row );
                 $this->revive_if_closed( $child_id );
                 $live_ids[] = $child_id;
@@ -175,6 +191,10 @@ class Occurrences {
             if ( isset( $desired_map[ $key ] ) ) {
                 continue; // still desired — handled above.
             }
+            // Already in the trash and still unwanted: leave it exactly as it is.
+            if ( \get_post_status( (int) $child_id ) === 'trash' ) {
+                continue;
+            }
             $this->retire_child( (int) $child_id );
         }
 
@@ -183,6 +203,8 @@ class Occurrences {
         \usort( $live_ids, function ( $a, $b ) {
             return $this->start_ts( $a ) <=> $this->start_ts( $b );
         } );
+
+        $this->sync_parent_span( $parent_id, $live_ids );
 
         return $live_ids;
     }
@@ -202,6 +224,65 @@ class Occurrences {
      *
      * @param int $parent_id
      */
+    /**
+     * Give the parent the date span its occurrences actually cover.
+     *
+     * A container's own dates are otherwise whatever was last typed into them,
+     * which drifts the moment an occurrence is added or removed — and anything
+     * sorting or labelling by the parent's start_ts then places it arbitrarily.
+     * Deriving it removes the only reason to hand-stretch an end date to keep a
+     * multi-date event visible.
+     *
+     * Earliest start to latest end across live children. Left untouched when
+     * there are none, so an event that has stopped being a container keeps the
+     * dates it had rather than being blanked.
+     *
+     * @param int   $parent_id
+     * @param int[] $live_ids Live children, already sorted earliest-first.
+     * @return void
+     */
+    private function sync_parent_span( $parent_id, array $live_ids ) {
+        if ( empty( $live_ids ) ) {
+            return;
+        }
+
+        $mk = function ( $k ) {
+            return $this->module->meta_key( $k );
+        };
+
+        $starts = [];
+        $ends   = [];
+        foreach ( $live_ids as $child_id ) {
+            $start = (string) \get_post_meta( (int) $child_id, $mk( 'start_date' ), true );
+            if ( $start === '' ) {
+                continue;
+            }
+            $end      = (string) \get_post_meta( (int) $child_id, $mk( 'end_date' ), true );
+            $starts[] = $start;
+            $ends[]   = $end !== '' ? $end : $start;
+        }
+
+        if ( empty( $starts ) ) {
+            return;
+        }
+
+        $start_date = \min( $starts );
+        $end_date   = \max( $ends );
+
+        \update_post_meta( $parent_id, $mk( 'start_date' ), $start_date );
+        \update_post_meta( $parent_id, $mk( 'end_date' ), $end_date );
+
+        // Recompute through the module so the parent's timestamps use the exact
+        // same timezone/all-day rules as every other event.
+        $meta = $this->module->get_meta( $parent_id );
+        $meta['start_date'] = $start_date;
+        $meta['end_date']   = $end_date;
+
+        $ts = $this->module->compute_timestamps( $meta );
+        \update_post_meta( $parent_id, $mk( 'start_ts' ), (int) $ts['start'] );
+        \update_post_meta( $parent_id, $mk( 'end_ts' ), (int) $ts['end'] );
+    }
+
     public function retire_all_children( $parent_id ) {
         $parent_id = (int) $parent_id;
         if ( $parent_id <= 0 ) {
@@ -570,6 +651,12 @@ class Occurrences {
         // A child occurrence is always a plain single event.
         \update_post_meta( $child_id, $this->module->meta_key( 'type' ), 'single' );
 
+        // Availability is seeded from the parent ONCE, at creation, so a new date
+        // inherits the group's default — and is never re-applied, because it is a
+        // per-occurrence key from here on (see PER_OCCURRENCE_KEYS).
+        \update_post_meta( $child_id, $this->module->meta_key( 'registration_enabled' ), ! empty( $parent_meta['registration_enabled'] ) );
+        \update_post_meta( $child_id, $this->module->meta_key( 'sold_out' ), false );
+
         // Per-occurrence date/capacity meta, set ONCE from the row (falling
         // back to the parent's current capacity default when the row carries
         // no override).
@@ -578,7 +665,7 @@ class Occurrences {
         // Shared fields (title[+suffix] handled above already; everything
         // else copied here), ticket tiers, and product sync.
         $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
-        $this->sync_ticket_types( $parent_id, $child_id );
+        $this->sync_ticket_types( $parent_id, $child_id, $row );
         $this->sync_product( $child_id, $parent_meta );
 
         return $child_id;
@@ -610,7 +697,7 @@ class Occurrences {
         $this->apply_occurrence_editable_fields( $child_id, $row, $parent_meta );
 
         $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
-        $this->sync_ticket_types( $parent_id, $child_id );
+        $this->sync_ticket_types( $parent_id, $child_id, $row );
         $this->sync_product( $child_id, $parent_meta );
     }
 
@@ -631,10 +718,11 @@ class Occurrences {
             return $this->module->meta_key( $k );
         };
 
-        // Date identity — set ONCE at creation; never re-applied by a later
-        // reconcile of a matched child (see apply_occurrence_editable_fields).
+        // Date identity — the START date, set ONCE at creation and never
+        // re-applied by a later reconcile (children are matched on it). The END
+        // date is NOT identity: it is written by apply_occurrence_editable_fields
+        // below, so adding a second day to an existing row still propagates.
         \update_post_meta( $child_id, $mk( 'start_date' ), $row['date'] );
-        \update_post_meta( $child_id, $mk( 'end_date' ), $row['date'] );
 
         $this->apply_occurrence_editable_fields( $child_id, $row, $parent_meta );
 
@@ -642,7 +730,7 @@ class Occurrences {
         $end_time   = $row['end_time'] !== '' ? $row['end_time'] : $start_time;
         $occurrence_meta = [
             'start_date' => $row['date'],
-            'end_date'   => $row['date'],
+            'end_date'   => ( $row['end_date'] ?? '' ) !== '' ? $row['end_date'] : $row['date'],
             'start_time' => $start_time,
             'end_time'   => $end_time,
             'all_day'    => ! empty( $parent_meta['all_day'] ),
@@ -684,10 +772,13 @@ class Occurrences {
         \update_post_meta( $child_id, $mk( 'end_time' ), $end_time );
         \update_post_meta( $child_id, $mk( 'capacity' ), $capacity );
 
-        // Recompute from the row's (possibly changed) times + the child's OWN
-        // immutable date identity — never the row's date.
+        // The child's start date is its identity and is read, never written,
+        // here. Its end date follows the row, so a one-day occurrence that
+        // becomes two days updates in place; an empty row value means same-day.
         $start_date = (string) \get_post_meta( $child_id, $mk( 'start_date' ), true );
-        $end_date   = (string) \get_post_meta( $child_id, $mk( 'end_date' ), true );
+        $row_end    = (string) ( $row['end_date'] ?? '' );
+        $end_date   = ( $row_end !== '' && $row_end >= $start_date ) ? $row_end : $start_date;
+        \update_post_meta( $child_id, $mk( 'end_date' ), $end_date );
 
         $occurrence_meta = [
             'start_date' => $start_date,
@@ -732,20 +823,44 @@ class Occurrences {
      * @param int $parent_id
      * @param int $child_id
      */
-    private function sync_ticket_types( $parent_id, $child_id ) {
+    private function sync_ticket_types( $parent_id, $child_id, array $occurrence_row = [] ) {
         $raw = \get_post_meta( $parent_id, Ticket_Types::META_KEY, true );
         if ( ! \is_array( $raw ) || empty( $raw ) ) {
             $this->module->ticket_types->save( $child_id, [] );
             return;
         }
 
+        // When the occurrence names its own tier, the child gets THAT tier only.
+        // Copying the parent's whole list onto every child is right when tiers
+        // are prices shared across all dates (early bird / student), and wrong
+        // when each tier IS a date — that produced a December occurrence selling
+        // an October ticket. The link is what tells the two apart.
+        $tier_id = \sanitize_key( (string) ( $occurrence_row['tier_id'] ?? '' ) );
+
         $rows = [];
         foreach ( $raw as $row ) {
             if ( ! \is_array( $row ) ) {
                 continue;
             }
+            if ( $tier_id !== '' && \sanitize_key( (string) ( $row['id'] ?? '' ) ) !== $tier_id ) {
+                continue;
+            }
+            // Always cleared: the child's variation is its own, created by
+            // Product_Sync against the child's product, not the parent's.
             $row['wc_variation_id'] = 0;
             $rows[]                 = $row;
+        }
+
+        // A link that matches nothing would silently sell nothing, so fall back
+        // to the full list rather than leaving the occurrence unbookable.
+        if ( $tier_id !== '' && empty( $rows ) ) {
+            foreach ( $raw as $row ) {
+                if ( ! \is_array( $row ) ) {
+                    continue;
+                }
+                $row['wc_variation_id'] = 0;
+                $rows[]                 = $row;
+            }
         }
 
         $this->module->ticket_types->save( $child_id, $rows );
@@ -927,10 +1042,10 @@ class Occurrences {
      * @param int $parent_id
      * @return array<string,int>
      */
-    private function existing_children_map( $parent_id ) {
+    private function existing_children_map( $parent_id, $include_trashed = false ) {
         $ids = \get_posts( [
             'post_type'      => Module::CPT,
-            'post_status'    => 'publish',
+            'post_status'    => $include_trashed ? [ 'publish', 'trash' ] : 'publish',
             'posts_per_page' => -1,
             'fields'         => 'ids',
             'no_found_rows'  => true,
@@ -1038,12 +1153,25 @@ class Occurrences {
             }
             $seen[ $date ] = true;
 
+            // end_date lets one offering span more than a day (a two-day
+            // masterclass is one occurrence, not two). '' means same-day, which
+            // is what every row written before this field existed means.
+            $end_date = $this->normalize_date( (string) ( $row['end_date'] ?? '' ) );
+            if ( $end_date !== '' && $end_date < $date ) {
+                $end_date = '';
+            }
+
             $out[] = [
                 'date'       => $date,
+                'end_date'   => $end_date,
                 'start_time' => $this->normalize_time( (string) ( $row['start_time'] ?? '' ) ),
                 'end_time'   => $this->normalize_time( (string) ( $row['end_time'] ?? '' ) ),
                 'label'      => \sanitize_text_field( (string) ( $row['label'] ?? '' ) ),
                 'capacity'   => \max( 0, (int) ( $row['capacity'] ?? 0 ) ),
+                // Which of the parent's ticket tiers is THIS date's ticket. '' =
+                // unlinked, which keeps the pre-existing copy-every-tier behaviour
+                // for groups that use tiers as prices rather than as dates.
+                'tier_id'    => \sanitize_key( (string) ( $row['tier_id'] ?? '' ) ),
             ];
         }
         return $out;

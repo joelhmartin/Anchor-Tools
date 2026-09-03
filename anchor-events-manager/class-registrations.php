@@ -481,6 +481,16 @@ class Registrations {
         }
         $requested = max( 1, (int) $requested );
 
+        // Marked full by hand. A course can be at capacity without its seat count
+        // ever being entered here — which is how "sold out" was recorded before
+        // there was a field for it. Checked in the capacity authority so every
+        // caller (the date picker, the CTA, purchasability, the storefront) agrees
+        // instead of each re-deciding. Waitlist still wins, exactly as it does for
+        // a count-based full.
+        if ( ! empty( $meta['sold_out'] ) ) {
+            return ! empty( $meta['waitlist'] ) ? self::STATUS_WAITLIST : 'full';
+        }
+
         // Event total governs the waitlist (spec §7): if the event total is full,
         // the waitlist toggle decides waitlist-vs-full regardless of any tier.
         $capacity = (int) ( $meta['capacity'] ?? 0 );

@@ -1517,6 +1517,11 @@ class Module {
             'registration_open' => [ 'type' => 'string' ],
             'registration_close' => [ 'type' => 'string' ],
             'waitlist' => [ 'type' => 'boolean' ],
+            // Full, as distinct from merely closed. Capacity can say this on its
+            // own, but a course can be full without its seat count ever being
+            // entered — and "registration happens elsewhere" is not the same
+            // message to a visitor as "no seats left".
+            'sold_out' => [ 'type' => 'boolean' ],
             'registration_type' => [ 'type' => 'string' ],
             'registration_url' => [ 'type' => 'string' ],
             'price' => [ 'type' => 'string' ],
@@ -1625,6 +1630,7 @@ class Module {
             'registration_open' => '',
             'registration_close' => '',
             'waitlist' => false,
+            'sold_out' => false,
             'registration_type' => 'internal',
             'registration_url' => '',
             'price' => '',
@@ -1934,11 +1940,13 @@ class Module {
      * @param bool       $template
      * @return string Escaped HTML.
      */
-    private function event_offering_row_html( $index, $row = null, $template = false ) {
+    private function event_offering_row_html( $index, $row = null, $template = false, array $tiers = [] ) {
         $idx = $template ? '__INDEX__' : (string) $index;
         $base = 'anchor_event_offering_dates[' . $idx . ']';
 
         $date = $row['date'] ?? '';
+        $end_date = $row['end_date'] ?? '';
+        $tier_id = $row['tier_id'] ?? '';
         $start_time = $row['start_time'] ?? '';
         $end_time = $row['end_time'] ?? '';
         $label = $row['label'] ?? '';
@@ -1951,6 +1959,9 @@ class Module {
                 <input type="date" name="<?php echo esc_attr( $base . '[date]' ); ?>" value="<?php echo esc_attr( $date ); ?>" class="anchor-offering-date" />
             </td>
             <td>
+                <input type="date" name="<?php echo esc_attr( $base . '[end_date]' ); ?>" value="<?php echo esc_attr( $end_date ); ?>" class="anchor-offering-end-date" />
+            </td>
+            <td>
                 <input type="time" name="<?php echo esc_attr( $base . '[start_time]' ); ?>" value="<?php echo esc_attr( $start_time ); ?>" class="anchor-offering-start-time" />
             </td>
             <td>
@@ -1961,6 +1972,18 @@ class Module {
             </td>
             <td>
                 <input type="number" min="0" step="1" name="<?php echo esc_attr( $base . '[capacity]' ); ?>" value="<?php echo esc_attr( $capacity ); ?>" class="anchor-offering-capacity" placeholder="<?php echo esc_attr__( 'Default', 'anchor-schema' ); ?>" />
+            </td>
+            <td>
+                <select name="<?php echo esc_attr( $base . '[tier_id]' ); ?>" class="anchor-offering-tier">
+                    <option value=""><?php echo esc_html__( 'All tickets', 'anchor-schema' ); ?></option>
+                    <?php foreach ( $tiers as $tier ) :
+                        $t_id = (string) ( $tier['id'] ?? '' );
+                        if ( $t_id === '' ) { continue; }
+                        $t_label = (string) ( $tier['label'] ?? '' );
+                        ?>
+                        <option value="<?php echo esc_attr( $t_id ); ?>" <?php selected( $tier_id, $t_id ); ?>><?php echo esc_html( $t_label !== '' ? $t_label : $t_id ); ?></option>
+                    <?php endforeach; ?>
+                </select>
             </td>
             <td>
                 <button type="button" class="button-link-delete anchor-event-offering-remove" aria-label="<?php echo esc_attr__( 'Remove date', 'anchor-schema' ); ?>">&times;</button>
@@ -2041,6 +2064,9 @@ class Module {
         $child_count = ( $post_id && in_array( $event_type, [ 'offering', 'recurring' ], true ) )
             ? count( $this->occurrences->children( $post_id ) )
             : 0;
+        // The event's own ticket tiers, offered per row so a date can name which
+        // ticket it sells. Empty on a free event, leaving only "All tickets".
+        $offering_tiers = $post_id ? (array) $this->ticket_types->get( $post_id ) : [];
         ?>
         <?php
         // Inline validation surfacing (Task 2.3 notice fix): the Gutenberg
@@ -2055,7 +2081,7 @@ class Module {
         // admin_notices()) is left in place unchanged for the front-end form.
         $offering_invalid = ( $event_type === 'offering' && empty( $offering_dates ) );
         ?>
-        <div class="anchor-event-section anchor-event-conditional" data-when-type="offering">
+        <div class="anchor-event-section anchor-event-conditional" data-step="2" data-when-type="offering">
             <h3><?php echo esc_html__( 'Offering Dates', 'anchor-schema' ); ?></h3>
             <p class="description"><?php echo esc_html__( 'One row per date this event is being offered. Visitors pick the date that suits them, and each date keeps its own seat count, so one filling up does not close the others. Blank rows are skipped.', 'anchor-schema' ); ?></p>
             <div class="notice notice-error inline anchor-event-offering-error"<?php echo $offering_invalid ? '' : ' style="display:none;"'; ?>>
@@ -2068,16 +2094,18 @@ class Module {
                 <thead>
                     <tr>
                         <th><?php echo esc_html__( 'Date', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'End date', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Ticket', 'anchor-schema' ); ?></th>
                         <th aria-hidden="true"></th>
                     </tr>
                 </thead>
                 <tbody class="anchor-event-offering-rows">
                     <?php foreach ( $offering_dates as $i => $row ) : ?>
-                        <?php echo $this->event_offering_row_html( (int) $i, $row ); // already escaped ?>
+                        <?php echo $this->event_offering_row_html( (int) $i, $row, false, $offering_tiers ); // already escaped ?>
                     <?php endforeach; ?>
                 </tbody>
             </table>
@@ -2085,7 +2113,7 @@ class Module {
                 <button type="button" class="button anchor-event-offering-add"><?php echo esc_html__( 'Add date', 'anchor-schema' ); ?></button>
             </p>
             <script type="text/html" id="anchor-event-offering-template">
-                <?php echo $this->event_offering_row_html( 0, null, true ); // already escaped ?>
+                <?php echo $this->event_offering_row_html( 0, null, true, $offering_tiers ); // already escaped ?>
             </script>
         </div>
 
@@ -2093,7 +2121,7 @@ class Module {
         $recurrence_invalid = ( $event_type === 'recurring' && empty( $recurrence['count'] ) && empty( $recurrence['until'] ) );
         ?>
         <?php if ( $include_recurrence ) : ?>
-        <div class="anchor-event-section anchor-event-conditional" data-when-type="recurring">
+        <div class="anchor-event-section anchor-event-conditional" data-step="2" data-when-type="recurring">
             <h3><?php echo esc_html__( 'Recurring Schedule', 'anchor-schema' ); ?></h3>
             <p class="description"><?php echo esc_html__( 'For an event that repeats on a schedule — every Tuesday, or the first of each month. It starts from the Start Date above and creates each date for you. Tell it when to stop, either after a number of dates or on a final date; without that it will not create anything.', 'anchor-schema' ); ?></p>
             <div class="notice notice-error inline anchor-event-recurrence-error"<?php echo $recurrence_invalid ? '' : ' style="display:none;"'; ?>>
@@ -2148,7 +2176,7 @@ class Module {
             <p class="description anchor-event-recurrence-terminator-hint"><?php echo esc_html__( 'Required: set "End after" OR "...or end by date" (or both — whichever is hit first wins). Without one of these, saving will NOT generate any events.', 'anchor-schema' ); ?></p>
         </div>
         <?php elseif ( $event_type === 'recurring' ) : ?>
-        <div class="anchor-event-section anchor-event-conditional" data-when-type="recurring">
+        <div class="anchor-event-section anchor-event-conditional" data-step="2" data-when-type="recurring">
             <h3><?php echo esc_html__( 'Recurring Schedule', 'anchor-schema' ); ?></h3>
             <div class="notice notice-info inline anchor-event-recurrence-admin-only">
                 <p><?php echo esc_html__( 'Recurring events are managed in the admin. This event\'s recurrence rule is preserved and cannot be edited from this form.', 'anchor-schema' ); ?></p>
@@ -2383,6 +2411,13 @@ class Module {
                             <input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> />
                             <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?>
                         </label>
+                    </div>
+                    <div class="anchor-event-field anchor-event-registration-fields">
+                        <label>
+                            <input type="checkbox" id="anchor_event_sold_out" name="anchor_event_sold_out" value="1" <?php checked( $meta['sold_out'] ); ?> />
+                            <?php echo esc_html__( 'Sold out', 'anchor-schema' ); ?>
+                        </label>
+                        <p class="description"><?php echo esc_html__( 'Say the course is full. Use this when there is no seat count to run out — closing registration on its own only means "not bookable here".', 'anchor-schema' ); ?></p>
                     </div>
                     <div class="anchor-event-field anchor-event-registration-fields">
                         <label for="anchor_event_price"><?php echo esc_html__( 'Price (optional)', 'anchor-schema' ); ?></label>
@@ -3498,6 +3533,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
             'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
             'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
+            'sold_out' => ! empty( $_POST['anchor_event_sold_out'] ),
             // Task BC: `registration_type`/`registration_url` are intentionally
             // NOT in this allow-list — the metabox no longer renders those
             // legacy fields (superseded by registration_mode/external_url
@@ -4051,12 +4087,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $date === '' ) {
                 continue;
             }
+            // An occurrence may run longer than a day. Anything earlier than the
+            // start is dropped rather than stored, so a typo cannot create an
+            // occurrence that ends before it begins. Empty means single-day,
+            // which is what every row written before this field existed means.
+            $end_date = $this->sanitize_date( $row['end_date'] ?? '' );
+            if ( $end_date !== '' && $end_date < $date ) {
+                $end_date = '';
+            }
+
             $rows[] = [
                 'date' => $date,
+                'end_date' => $end_date,
                 'start_time' => $this->sanitize_time( $row['start_time'] ?? '' ),
                 'end_time' => $this->sanitize_time( $row['end_time'] ?? '' ),
                 'label' => \sanitize_text_field( $row['label'] ?? '' ),
                 'capacity' => \max( 0, (int) ( $row['capacity'] ?? 0 ) ),
+                // Optional link to one of the event's ticket tiers, so a date
+                // sells its own ticket instead of every tier on the event.
+                'tier_id' => \sanitize_key( (string) ( $row['tier_id'] ?? '' ) ),
             ];
         }
         return $rows;
@@ -5440,6 +5489,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
                     <div class="anchor-event-field anchor-event-registration-fields anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Waitlist', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
+                    <div class="anchor-event-field anchor-event-registration-fields anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Availability', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_sold_out" name="anchor_event_sold_out" value="1" <?php checked( $meta['sold_out'] ); ?> /> <?php echo esc_html__( 'Sold out', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_open"><?php echo esc_html__( 'Registration opens', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_open" name="anchor_event_registration_open" value="<?php echo esc_attr( $meta['registration_open'] ); ?>" /></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_registration_close"><?php echo esc_html__( 'Registration closes', 'anchor-schema' ); ?></label><input type="date" id="anchor_event_registration_close" name="anchor_event_registration_close" value="<?php echo esc_attr( $meta['registration_close'] ); ?>" /></div>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_price"><?php echo esc_html__( 'Price label', 'anchor-schema' ); ?></label><input type="text" id="anchor_event_price" name="anchor_event_price" value="<?php echo esc_attr( $meta['price'] ); ?>" /></div>
@@ -5927,6 +5977,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
             'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
             'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
+            'sold_out' => ! empty( $_POST['anchor_event_sold_out'] ),
             // Task BC: see save_meta()'s matching comment — `registration_type`/
             // `registration_url` are deliberately absent from this front-end
             // form's $input too, for the identical reason (the legacy fields
@@ -6720,19 +6771,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function choose_date_availability_hint( $event_id, array $meta ) {
-        if ( empty( $meta['registration_enabled'] ) ) {
-            return \__( 'Registration closed', 'anchor-schema' );
-        }
-
+        // Full is asked FIRST, before the registration switch. A date that sold
+        // out is normally also closed to registration, and answering "closed"
+        // there tells the visitor less than the truth — they want to know the
+        // seats went, not merely that the button is gone.
         $status = $this->get_registration_status( $event_id, $meta );
         if ( $status === 'full' ) {
             return \__( 'Sold out', 'anchor-schema' );
         }
-        if ( $status === 'closed' ) {
-            return \__( 'Registration closed', 'anchor-schema' );
-        }
         if ( $status === 'waitlist' ) {
             return \__( 'Waitlist only', 'anchor-schema' );
+        }
+
+        if ( empty( $meta['registration_enabled'] ) ) {
+            return \__( 'Registration closed', 'anchor-schema' );
+        }
+
+        if ( $status === 'closed' ) {
+            return \__( 'Registration closed', 'anchor-schema' );
         }
 
         $capacity = (int) ( $meta['capacity'] ?? 0 );

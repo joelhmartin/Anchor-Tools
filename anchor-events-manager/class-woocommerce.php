@@ -734,7 +734,7 @@ class WooCommerce {
 
         $rows = '';
         foreach ( $paid_active as $tier ) {
-            $rows .= $this->render_ticket_row( $event_id, $tier, $waitlist );
+            $rows .= $this->render_ticket_row( $event_id, $tier, $waitlist, count( $paid_active ) === 1 );
         }
 
         $out  = '<div class="anchor-event-registration anchor-event-tickets" data-event="' . \esc_attr( $event_id ) . '">';
@@ -771,7 +771,7 @@ class WooCommerce {
      * @param bool  $waitlist Event-level waitlist toggle.
      * @return string
      */
-    private function render_ticket_row( $event_id, array $tier, $waitlist ) {
+    private function render_ticket_row( $event_id, array $tier, $waitlist, $only_tier = false ) {
         $tier_id = (string) $tier['id'];
         $label   = ( $tier['label'] !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
         $price   = (float) $tier['price'];
@@ -815,7 +815,7 @@ class WooCommerce {
         }
 
         $row .= '<input type="number" class="anchor-event-ticket-qty" min="0" max="' . \esc_attr( $max ) . '"'
-            . ' step="1" value="0" data-tier="' . \esc_attr( $tier_id ) . '"'
+            . ' step="1" value="' . ( $only_tier ? '1' : '0' ) . '" data-tier="' . \esc_attr( $tier_id ) . '"'
             . ' aria-label="' . \esc_attr( \sprintf( /* translators: %s: ticket tier label. */ \__( 'Quantity for %s', 'anchor-schema' ), $label ) ) . '" />';
         $row .= '</div>';
         return $row;
@@ -1076,6 +1076,25 @@ class WooCommerce {
             return $purchasable;
         }
         $meta = $this->module->get_meta( $event_id );
+
+        // Registration switched off means not for sale, by any route. The
+        // storefront filter that renders the ticket UI runs before the mode and
+        // enabled checks, and the managed product's permalink stays reachable
+        // even when hidden from the catalogue, so the gate has to live here too.
+        if ( isset( $meta['registration_enabled'] ) && ! $meta['registration_enabled'] ) {
+            return false;
+        }
+
+        // An event that has already finished is never purchasable, whichever
+        // route the shopper arrived by. The tier sale-window is a separate,
+        // optional control; without this an occurrence stayed on sale forever
+        // once its own date had passed, and the managed product's permalink
+        // remains reachable even though it is hidden from the catalogue.
+        $end_ts = (int) ( $meta['end_ts'] ?? 0 );
+        if ( $end_ts > 0 && $end_ts < \time() ) {
+            return false;
+        }
+
         if ( ! empty( $meta['waitlist'] ) ) {
             return $purchasable; // Waitlist on → always purchasable.
         }

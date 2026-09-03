@@ -324,6 +324,16 @@ class Product_Sync {
             }
         }
 
+        // A group parent is a container, not a bookable event — each of its
+        // occurrences carries its own product. Treating it as having nothing to
+        // sell reuses the demote-to-draft path below, and reverses itself: stop
+        // being a parent and the next sync republishes the product normally.
+        // Done here rather than after the fact because ensure_product_fields()
+        // sets a managed product back to 'publish' on every save.
+        if ( $this->module->occurrences->is_group_parent( $event_id ) ) {
+            $paid_active_map = [];
+        }
+
         $existing_product_id = $this->managed_product_id( $event_id );
 
         // No paid+active tier → demote any existing managed product to draft.

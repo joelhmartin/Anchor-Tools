@@ -247,8 +247,20 @@ class Event_Schema {
             return [];
         }
 
+        // A container runs from its first occurrence to the END of its LAST one.
+        // Taking both ends off the earliest child described a group as finishing
+        // when its first date finished, while its own subEvents ran on for weeks
+        // — contradictory data for anything reading the markup.
+        $end_ts = (int) $ts['end'];
+        foreach ( $live_child_ids as $child_id ) {
+            $child_ts = $this->module->compute_timestamps( $this->module->get_meta( $child_id ) );
+            if ( (int) $child_ts['end'] > $end_ts ) {
+                $end_ts = (int) $child_ts['end'];
+            }
+        }
+
         $parent_meta      = $this->module->get_meta( $event_id );
-        $node             = $this->assemble_node( $event_id, $parent_meta, (int) $ts['start'], (int) $ts['end'] );
+        $node             = $this->assemble_node( $event_id, $parent_meta, (int) $ts['start'], $end_ts );
         $node['subEvent'] = $child_nodes;
         return $node;
     }

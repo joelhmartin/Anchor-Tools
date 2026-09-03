@@ -8464,7 +8464,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $event_id <= 0 ) {
             return 'closed';
         }
-        if ( $this->occurrences && $this->occurrences->is_group_parent( $event_id ) ) {
+        if ( $this->occurrences->is_group_parent( $event_id ) ) {
             return 'parent';
         }
         if ( $this->is_closed_group_child( $event_id ) ) {

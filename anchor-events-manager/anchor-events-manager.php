@@ -11,6 +11,12 @@ require_once __DIR__ . '/template-tags.php';
 class Module {
     const CPT = 'event';
     const REG_CPT = 'anchor_event_reg';
+
+    // Task 7 (COORD-D2): the only get_meta_schema() keys exposed over REST by
+    // default. Everything else defaults to show_in_rest => false unless the
+    // schema entry itself opts back in explicitly (array_merge below puts the
+    // per-key $schema after this default, so an explicit override still wins).
+    const REST_PUBLIC_META = [ 'start_date', 'end_date', 'start_time', 'end_time', 'all_day', 'timezone', 'venue', 'address_city', 'address_state', 'address_country', 'status', 'type', 'price', 'external_display_price' ];
     const OPTION_KEY = 'anchor_events_settings';
 
     /** Per-event attendee questions (see get_registration_questions()). */
@@ -1305,7 +1311,10 @@ class Module {
             ],
             'public' => false,
             'show_ui' => false,
-            'show_in_rest' => true,
+            // Task 7 (COORD-D4/REG-D19): seats are published posts whose title
+            // is the attendee's name — nothing reads this over REST, so it has
+            // no REST route at all.
+            'show_in_rest' => false,
             'supports' => [ 'title' ],
             'capability_type' => 'post',
             'map_meta_cap' => true,
@@ -1327,7 +1336,9 @@ class Module {
         foreach ( $this->get_meta_schema() as $key => $schema ) {
             \register_post_meta( self::CPT, $this->meta_key( $key ), array_merge( [
                 'single' => true,
-                'show_in_rest' => true,
+                // Task 7 (COORD-D2): allow-list, not a blanket true — virtual_url,
+                // organizer_email and every other unlisted key default to hidden.
+                'show_in_rest' => in_array( $key, self::REST_PUBLIC_META, true ),
                 'auth_callback' => $event_auth_callback,
             ], $schema ) );
         }

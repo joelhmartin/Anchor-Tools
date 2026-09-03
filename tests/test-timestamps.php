@@ -49,10 +49,12 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		delete_post_meta( $event, '_anchor_event_ts_version' );
 		$this->reset_backfill_state();
 
-		// The selection clause is a single `!=` on the version key, which
-		// WP_Meta_Query resolves through a NOT EXISTS subquery. Assert the row
-		// is genuinely ABSENT, so this test proves the never-stamped event is
-		// still selected rather than quietly relying on a stale row matching.
+		// The selection clause is an OR: an explicit `NOT EXISTS` arm plus a
+		// `<` comparison on the version key. A value-level `!=` alone would
+		// join only rows that exist and would skip this event entirely.
+		// Assert the row is genuinely ABSENT, so this test proves the
+		// never-stamped event is still selected rather than quietly relying on
+		// a stale row matching.
 		$this->assertSame( [], get_post_meta( $event, '_anchor_event_ts_version' ), 'Precondition: no version row at all.' );
 
 		$this->module()->backfill_timestamps();

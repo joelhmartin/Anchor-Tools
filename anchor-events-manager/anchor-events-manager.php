@@ -4556,11 +4556,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $atts['show_title'] === 'yes' ) {
             $output .= '<h2 class="anchor-event-title">' . esc_html( \get_the_title( $event_id ) ) . '</h2>';
         }
+        if ( $this->occurrences->is_group_parent( $event_id ) ) {
+            // A container is never bookable itself (render_registration_form()
+            // returns '' for it); the picker over its live dates is what a
+            // landing page that names the parent actually wants.
+            $output .= $this->render_choose_date_list( $event_id );
+            return $output;
+        }
         if ( $atts['show_notice'] === 'yes' ) {
             $output .= $this->render_registration_notice();
         }
         $output .= $this->render_registration_form( $event_id );
-
         return $output;
     }
 

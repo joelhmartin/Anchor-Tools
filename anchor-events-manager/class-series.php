@@ -74,10 +74,22 @@ class Series {
             return '';
         }
 
+        // "Hide past events" is a site setting, and the CPT archive
+        // (Module::filter_archive_query()) gates on it — a series archive is
+        // the same kind of list, so it honours the same switch.
+        $meta_query = [ $this->module->build_hide_clause() ];
+        $settings   = $this->module->get_settings();
+        if ( ! empty( $settings['archive_hide_past'] ) ) {
+            $meta_query[] = $this->module->build_visibility_clause();
+        }
+
         $query = new \WP_Query( [
             'post_type'      => Module::CPT,
             'post_status'    => 'publish',
-            'posts_per_page' => -1,
+            // Bounded: a series archive renders every row it fetches, so an
+            // unbounded -1 is an unbounded render. 200 is far past any real
+            // series and stops one runaway term from loading every event.
+            'posts_per_page' => 200,
             'tax_query'      => [
                 [
                     'taxonomy' => self::TAXONOMY,
@@ -85,6 +97,13 @@ class Series {
                     'terms'    => (int) $term->term_id,
                 ],
             ],
+            // The same listing exclusions every other list query applies
+            // (audit RENDER-D15): hidden events and soft-closed occurrences
+            // never reach a public list. representative_id() also collapses
+            // groups and drops closed children, but that runs per-row after
+            // the fact; excluding them in the query is what makes this archive
+            // agree with [events_list], the calendar and the CPT archive.
+            'meta_query'     => $meta_query,
             'meta_key'       => $this->module->meta_key( 'start_ts' ),
             'orderby'        => 'meta_value_num',
             'order'          => 'ASC',

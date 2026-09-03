@@ -458,6 +458,24 @@ class Module {
 
         foreach ( $event_ids as $event_id ) {
             $meta     = $this->get_meta( $event_id );
+
+            // A group parent is a container, never a registration target: its
+            // seats live on the dates (audit REG-D2). compute_email_schedule()
+            // already refuses parents, so without this the sweep and the
+            // "Upcoming sends" panel disagreed about who gets reminded.
+            if ( $this->occurrences->is_group_parent( $event_id ) ) {
+                continue;
+            }
+
+            // Never remind attendees about a date that is off (audit MODEL-D17).
+            // A soft-closed occurrence keeps its future start_ts and its roster,
+            // so it matched the window and mailed "…is coming up" for a date
+            // that had been cancelled.
+            if ( 'cancelled' === $this->get_event_status( $event_id, $meta )
+                || $this->occurrences->is_closed( $event_id ) ) {
+                continue;
+            }
+
             $start_ts = (int) ( $meta['start_ts'] ?? 0 );
             if ( $start_ts <= $now ) {
                 continue; // already started
@@ -7609,17 +7627,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
         $settings = $this->get_settings();
-        // FIX 3 (review round): the plain CPT archive is unaware of Task 2.4's
-        // soft-close state — a soft-closed group child stays post_status=publish
-        // (its roster is preserved) so it was showing up here as a normal "View
-        // Event" card that dead-ends into render_registration_form()'s "no
-        // longer available" notice. Excluded the same way hide_from_archive
-        // already is (build_hide_clause()) — a meta_query addition, not a
-        // template-level filter. The series-taxonomy archive needs no such
-        // guard: Occurrences::reconcile() only assigns the series term to live
-        // children (see assign_series()), so a closed child was never tagged
-        // into a series archive in the first place.
-        $meta_query = [ $this->build_hide_clause(), $this->build_closed_clause() ];
+        // The plain CPT archive leaves out hidden events AND soft-closed group
+        // children (a soft-closed child stays post_status=publish so its roster
+        // survives, and used to show up here as a normal "View Event" card that
+        // dead-ends in render_registration_form()'s "no longer available"
+        // notice). Both facts now live in build_hide_clause(), so every listing
+        // query gets them — see that builder for why they were merged.
+        $meta_query = [ $this->build_hide_clause() ];
         if ( ! empty( $settings['archive_hide_past'] ) ) {
             $meta_query[] = $this->build_visibility_clause();
         }
@@ -8305,7 +8319,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * back-fill (backfill_timestamps()) mints the missing rows; this clause is
      * what stops the gap from hiding events in the meantime.
      */
-    private function build_visibility_clause() {
+    public function build_visibility_clause() {
         return [
             'relation' => 'OR',
             [
@@ -8321,41 +8335,57 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         ];
     }
 
-    private function build_hide_clause() {
-        return [
-            'relation' => 'OR',
-            [
-                'key' => $this->meta_key( 'hide_from_archive' ),
-                'compare' => 'NOT EXISTS',
-            ],
-            [
-                'key' => $this->meta_key( 'hide_from_archive' ),
-                'value' => '1',
-                'compare' => '!=',
-            ],
-        ];
-    }
-
     /**
-     * Excludes soft-closed group children (Task 2.4 FIX 3, review round) —
-     * mirrors build_hide_clause()'s NOT-EXISTS-or-not-truthy shape so a
-     * post that has never had the `occurrence_closed` meta written (i.e.
-     * every non-grouped event, and every group child before its first
-     * soft-close) is unaffected.
+     * The single listing-exclusion clause: everything a public list of events
+     * must leave out, regardless of dates (audit RENDER-D15 / MODEL-D3).
      *
-     * @return array
+     * Two facts hide an event from a listing:
+     *   - `hide_from_archive` — the editor's explicit "keep this off lists".
+     *   - `occurrence_closed` — a soft-closed group child (Occurrences::
+     *     soft_close() preserves the post + its roster but the date is no
+     *     longer bookable).
+     *
+     * These used to be two builders, and the closed half had exactly ONE call
+     * site (filter_archive_query) against the hide half's five, so a cancelled
+     * date still rendered as a bookable card in [events_list], the calendar,
+     * both manager shortcodes and the series archive — each linking to a page
+     * whose only registration UI is "This date is no longer available."
+     * Folding them into one clause makes every existing call site correct and
+     * leaves nothing to forget at the next one.
+     *
+     * Each half keeps the NOT-EXISTS-or-not-truthy shape: a post that has
+     * never had the meta row written (every legacy event, and every group
+     * child before its first soft-close) is unaffected rather than
+     * INNER-JOINed out.
+     *
+     * @return array meta_query clause.
      */
-    private function build_closed_clause() {
+    public function build_hide_clause() {
         return [
-            'relation' => 'OR',
+            'relation' => 'AND',
             [
-                'key' => $this->meta_key( 'occurrence_closed' ),
-                'compare' => 'NOT EXISTS',
+                'relation' => 'OR',
+                [
+                    'key' => $this->meta_key( 'hide_from_archive' ),
+                    'compare' => 'NOT EXISTS',
+                ],
+                [
+                    'key' => $this->meta_key( 'hide_from_archive' ),
+                    'value' => '1',
+                    'compare' => '!=',
+                ],
             ],
             [
-                'key' => $this->meta_key( 'occurrence_closed' ),
-                'value' => '1',
-                'compare' => '!=',
+                'relation' => 'OR',
+                [
+                    'key' => $this->meta_key( 'occurrence_closed' ),
+                    'compare' => 'NOT EXISTS',
+                ],
+                [
+                    'key' => $this->meta_key( 'occurrence_closed' ),
+                    'value' => '1',
+                    'compare' => '!=',
+                ],
             ],
         ];
     }

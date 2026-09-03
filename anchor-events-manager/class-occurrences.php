@@ -1008,12 +1008,16 @@ class Occurrences {
     }
 
     /**
-     * Whether a child is currently soft-closed.
+     * Whether an occurrence is currently soft-closed.
+     *
+     * Public because the listing/notification layer needs the same predicate:
+     * run_reminder_sweep() skips a soft-closed date rather than mailing its
+     * roster "…is coming up" (audit MODEL-D17).
      *
      * @param int $child_id
      * @return bool
      */
-    private function is_closed( $child_id ) {
+    public function is_closed( $child_id ) {
         return (bool) \get_post_meta( $child_id, $this->module->meta_key( 'occurrence_closed' ), true );
     }
 

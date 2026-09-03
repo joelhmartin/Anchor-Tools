@@ -30,6 +30,24 @@ class Module {
     const REST_PUBLIC_META = [ 'start_date', 'end_date', 'start_time', 'end_time', 'all_day', 'timezone', 'venue', 'address_city', 'address_state', 'address_country', 'status', 'price' ];
     const OPTION_KEY = 'anchor_events_settings';
 
+    /**
+     * Version of the derived-timestamp schema (`start_ts`/`end_ts`).
+     *
+     * Bumped whenever calculate_timestamps() would produce DIFFERENT rows for
+     * unchanged authored dates, so backfill_timestamps() knows the stored rows
+     * are stale and recomputes them. Every event carries the version it was
+     * last computed under in `_anchor_event_ts_version`; the site-wide option
+     * `anchor_events_ts_version` records the version the migration has finished.
+     *
+     * 1 — implicit/original: a date-only event ended at 00:00, because
+     *     `end_time` defaulted to '' and end == start.
+     * 2 — a date-only or end-time-less event ends at 23:59 on its end date.
+     *     Version 1 rows must be recomputed or the past-event guard in
+     *     Registrations::capacity_decision() closes such an event at midnight
+     *     on the morning it runs.
+     */
+    const TS_SCHEMA_VERSION = 2;
+
     /** Per-event attendee questions (see get_registration_questions()). */
     const QUESTIONS_META = '_anchor_event_reg_questions';
     const CACHE_OPTION = 'anchor_events_cache_keys';
@@ -181,6 +199,14 @@ class Module {
         \add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
         \add_action( 'transition_post_status', [ $this, 'persist_status_on_transition' ], 10, 3 );
+        // REST/Gutenberg writes the six public date keys (REST_PUBLIC_META)
+        // without going through either save path that maintains the derived
+        // rows — save_meta() bails on the missing metabox nonce, and
+        // transition_post_status fires from wp_update_post() BEFORE the REST
+        // controller saves meta. rest_after_insert_{$post_type} is the hook
+        // that runs after the meta write, so it is the only place the new
+        // dates are visible.
+        \add_action( 'rest_after_insert_' . self::CPT, [ $this, 'persist_after_rest_write' ], 10, 3 );
 
         \add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
         \add_action( 'wp_enqueue_scripts', [ $this, 'frontend_assets' ] );
@@ -349,18 +375,42 @@ class Module {
         // every listing (audit MODEL-D2). Write them here too — before the
         // manual-status bail, because visibility does not depend on status_mode.
         if ( $new_status === 'publish' && ! empty( $meta['start_date'] ) ) {
-            $timestamps = $this->calculate_timestamps( $meta );
-            \update_post_meta( $post->ID, $this->meta_key( 'start_ts' ), $timestamps['start'] );
-            \update_post_meta( $post->ID, $this->meta_key( 'end_ts' ), $timestamps['end'] );
+            $this->persist_timestamps( $post->ID, $meta );
         }
 
-        if ( $meta['status_mode'] === 'manual' ) {
+        $this->persist_auto_status( $post->ID, $meta );
+    }
+
+    /**
+     * Recompute the derived rows after a REST write to an event (audit REST-D1).
+     *
+     * `start_date`, `end_date`, `start_time`, `end_time`, `all_day` and
+     * `timezone` are all in REST_PUBLIC_META, so any client with `edit_post`
+     * can move an event's dates through `/wp/v2/event/<id>` — and nothing
+     * downstream recomputed `start_ts`/`end_ts`/`status` from them. The event
+     * kept sorting, listing and (since the past-event guard in
+     * Registrations::capacity_decision()) opening or closing on its OLD dates.
+     *
+     * Same calculators as every other save path, via persist_timestamps() and
+     * persist_auto_status() — not a second implementation.
+     *
+     * @param \WP_Post         $post
+     * @param \WP_REST_Request $request  Unused; part of the hook signature.
+     * @param bool             $creating Unused; part of the hook signature.
+     */
+    public function persist_after_rest_write( $post, $request = null, $creating = false ) {
+        if ( ! $post instanceof \WP_Post || $post->post_type !== self::CPT ) {
             return;
         }
-        $computed = $this->calculate_status( $meta );
-        if ( $computed !== $meta['status'] ) {
-            \update_post_meta( $post->ID, $this->meta_key( 'status' ), $computed );
+
+        $meta = $this->get_meta( $post->ID );
+        if ( ! empty( $meta['start_date'] ) ) {
+            $this->persist_timestamps( $post->ID, $meta );
         }
+        $this->persist_auto_status( $post->ID, $meta );
+
+        // The rows this just moved are what the listing caches were keyed on.
+        $this->clear_caches();
     }
 
     public function run_status_sweep() {
@@ -3634,7 +3684,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true ) ? $status_raw : 'upcoming';
         }
 
-        $timestamps = $this->calculate_timestamps( $input );
+        // persist_timestamps() is the single writer for the derived rows: it
+        // stamps `ts_version` alongside them, so a just-saved event is already
+        // at the current schema version and backfill_timestamps() skips it.
+        // The values are mirrored back into $input purely so the generic
+        // update_post_meta() loop below (and this method's return value) still
+        // carry them; the loop's writes are then no-ops.
+        $timestamps = $this->persist_timestamps( $post_id, $input );
         $input['start_ts'] = $timestamps['start'];
         $input['end_ts'] = $timestamps['end'];
 
@@ -6076,7 +6132,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true ) ? $status_raw : 'upcoming';
         }
 
-        $timestamps = $this->calculate_timestamps( $input );
+        // persist_timestamps() is the single writer for the derived rows: it
+        // stamps `ts_version` alongside them, so a just-saved event is already
+        // at the current schema version and backfill_timestamps() skips it.
+        // The values are mirrored back into $input purely so the generic
+        // update_post_meta() loop below (and this method's return value) still
+        // carry them; the loop's writes are then no-ops.
+        $timestamps = $this->persist_timestamps( $saved_id, $input );
         $input['start_ts'] = $timestamps['start'];
         $input['end_ts'] = $timestamps['end'];
 
@@ -7956,7 +8018,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * One-time, batched back-fill of start_ts/end_ts (audit MODEL-D2).
+     * Batched, VERSIONED back-fill of start_ts/end_ts (audit MODEL-D2).
      *
      * Legacy events never had the `_ts` keys written — nothing back-filled them
      * — and every listing query orders by `start_ts` (meta_key + orderby =
@@ -7965,10 +8027,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * [event_manager] and [event_registrants_list] entirely, not merely
      * unsorted.
      *
-     * Runs on admin_init in batches of 200, and only declares itself done once a
+     * It is versioned, not one-time, because the rows can go stale without ever
+     * going missing. The first shipped version of calculate_timestamps() left a
+     * date-only event with `end == start` — midnight on its own start date — so
+     * once Registrations::capacity_decision() learned to close an event whose
+     * `end_ts` is in the past, every such event closed at 00:00 on the morning
+     * it ran. A back-fill keyed on "has no start_ts row" cannot see those
+     * events at all: their rows are present, just computed under the old rules.
+     * So selection is by `_anchor_event_ts_version` — missing, or older than
+     * TS_SCHEMA_VERSION — and every event this touches is stamped with the
+     * current version, including one with no `start_date` that can never get
+     * `_ts` rows at all. Stamping the unfillable ones is what keeps them from
+     * occupying the batch window forever and stranding the fillable ones behind
+     * them.
+     *
+     * Runs on admin_init in batches of 200, and only records the option once a
      * batch comes back short — so a site with thousands of events converges over
      * a few admin page loads instead of timing out on one, and a site with no
-     * events at all finishes on the first call.
+     * events at all finishes on the first call. Because every processed event is
+     * stamped, a full batch always makes progress and the migration cannot loop.
      *
      * admin_init is NOT an authenticated hook: wp-admin/admin-post.php fires it
      * before it validates the auth cookie, and this module registers
@@ -7981,7 +8058,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! \current_user_can( 'edit_posts' ) ) {
             return;
         }
-        if ( \get_option( 'anchor_events_ts_backfilled' ) ) {
+        // The pre-versioning boolean flag is deliberately NOT consulted as a
+        // done-marker: a site that set it ran the v1 rules, which is exactly the
+        // state this migration exists to repair. It is deleted below once the
+        // versioned option supersedes it.
+        if ( (int) \get_option( 'anchor_events_ts_version' ) >= self::TS_SCHEMA_VERSION ) {
             return;
         }
 
@@ -7994,13 +8075,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'no_found_rows' => true,
             'suppress_filters' => true,
             'meta_query' => [
-                [ 'key' => $this->meta_key( 'start_ts' ), 'compare' => 'NOT EXISTS' ],
-                // Only events this can actually fill. `!= ''` excludes both the
-                // missing row (no join match) and the present-but-empty one that
-                // EXISTS would have let through — without it a window of 200
-                // dateless posts would come back every pass and strand the older
-                // fillable ones behind them.
-                [ 'key' => $this->meta_key( 'start_date' ), 'value' => '', 'compare' => '!=' ],
+                'relation' => 'OR',
+                // Never computed under a versioned schema — every event that
+                // predates this migration, whether or not it has `_ts` rows.
+                [ 'key' => $this->meta_key( 'ts_version' ), 'compare' => 'NOT EXISTS' ],
+                // Computed, but under older rules than the ones in force now.
+                [ 'key' => $this->meta_key( 'ts_version' ), 'value' => self::TS_SCHEMA_VERSION, 'compare' => '<', 'type' => 'NUMERIC' ],
             ],
         ] );
 
@@ -8016,31 +8096,34 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         foreach ( $ids as $event_id ) {
             $meta = $this->get_meta( $event_id );
             if ( empty( $meta['start_date'] ) ) {
+                // Unfillable, but still stamped — see the docblock. Without the
+                // stamp a window of 200 dateless posts comes back every pass.
+                \update_post_meta( $event_id, $this->meta_key( 'ts_version' ), self::TS_SCHEMA_VERSION );
                 continue;
             }
-            $timestamps = $this->calculate_timestamps( $meta );
-            \update_post_meta( $event_id, $this->meta_key( 'start_ts' ), $timestamps['start'] );
-            \update_post_meta( $event_id, $this->meta_key( 'end_ts' ), $timestamps['end'] );
+            $this->persist_timestamps( $event_id, $meta );
             $written++;
         }
 
-        // Newly-dated events change what every cached listing should contain —
+        // Recomputed events change what every cached listing should contain —
         // an event that was invisible to the start_ts ordering join a moment
-        // ago now sorts into [events_list], the calendar and the archive. The
-        // listing caches are keyed by query args, not by post state, so they
-        // would otherwise keep serving the pre-backfill result until they
-        // expired on their own.
+        // ago now sorts into [events_list], the calendar and the archive, and a
+        // v1 event that read as already-over is bookable again. The listing
+        // caches are keyed by query args, not by post state, so they would
+        // otherwise keep serving the pre-backfill result until they expired on
+        // their own.
         if ( $written > 0 ) {
             $this->clear_caches();
         }
 
-        // A short batch means nothing is left to fill; because the query now
-        // returns only fillable posts, this is the condition that actually ends
-        // the migration. The $written === 0 arm is belt and braces: a full batch
-        // that wrote nothing can only repeat itself forever, so stop rather than
-        // run this query on every admin page load for good.
-        if ( count( $ids ) < $batch || $written === 0 ) {
-            \update_option( 'anchor_events_ts_backfilled', '1', false );
+        // A short batch means nothing is left to process. Every event the query
+        // returns is stamped before the loop ends, so the window always moves
+        // and this condition is always eventually reached.
+        if ( count( $ids ) < $batch ) {
+            \update_option( 'anchor_events_ts_version', self::TS_SCHEMA_VERSION, false );
+            // Superseded by the versioned option; leaving it would only invite a
+            // future reader to treat it as authoritative again.
+            \delete_option( 'anchor_events_ts_backfilled' );
         }
     }
 
@@ -8137,6 +8220,53 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      */
     public function compute_timestamps( array $meta ) {
         return $this->calculate_timestamps( $meta );
+    }
+
+    /**
+     * Compute AND persist an event's derived timestamp rows, stamped with the
+     * schema version they were computed under.
+     *
+     * The single writer for `start_ts`/`end_ts`/`ts_version`. Every path that
+     * has ever minted those rows — the metabox save, the front-end manager
+     * save, the status transition, the REST meta write and the Occurrences
+     * engine (parent roll-up and child creation) — goes through here, so the
+     * version stamp can never drift out of step with the values it describes.
+     * A freshly saved event is therefore already at TS_SCHEMA_VERSION and the
+     * back-fill skips it.
+     *
+     * Public for the same reason compute_timestamps() is: the Occurrences
+     * engine lives in its own class and must not duplicate this.
+     *
+     * @param int   $post_id
+     * @param array $meta Meta array with start_date/end_date/start_time/end_time/timezone/all_day.
+     * @return array{start:int,end:int} The timestamps just written.
+     */
+    public function persist_timestamps( $post_id, array $meta ) {
+        $timestamps = $this->calculate_timestamps( $meta );
+        \update_post_meta( $post_id, $this->meta_key( 'start_ts' ), (int) $timestamps['start'] );
+        \update_post_meta( $post_id, $this->meta_key( 'end_ts' ), (int) $timestamps['end'] );
+        \update_post_meta( $post_id, $this->meta_key( 'ts_version' ), self::TS_SCHEMA_VERSION );
+        return $timestamps;
+    }
+
+    /**
+     * Re-derive and persist an auto-mode event's status. No-op in manual mode —
+     * an author who picked a status by hand owns it.
+     *
+     * Shared by persist_status_on_transition() and the REST after-insert hook
+     * so the two agree on what "auto status" means.
+     *
+     * @param int   $post_id
+     * @param array $meta
+     */
+    private function persist_auto_status( $post_id, array $meta ) {
+        if ( ( $meta['status_mode'] ?? 'auto' ) === 'manual' ) {
+            return;
+        }
+        $computed = $this->calculate_status( $meta );
+        if ( $computed !== ( $meta['status'] ?? '' ) ) {
+            \update_post_meta( $post_id, $this->meta_key( 'status' ), $computed );
+        }
     }
 
     /**

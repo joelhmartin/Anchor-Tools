@@ -1,4 +1,7 @@
 <?php
+
+use Anchor\Events\Module;
+
 /** @group time */
 class Test_Timestamps extends Anchor_Events_TestCase {
 	public function test_date_only_event_ends_at_end_of_day() {
@@ -43,13 +46,14 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		$event = $this->make_event( [ 'title' => 'Legacy Event', 'start_date' => '2030-12-05' ] );
 		delete_post_meta( $event, '_anchor_event_start_ts' );
 		delete_post_meta( $event, '_anchor_event_end_ts' );
-		delete_option( 'anchor_events_ts_backfilled' );
+		$this->reset_backfill_state();
 
 		$this->module()->backfill_timestamps();
 
 		$this->assertNotEmpty( get_post_meta( $event, '_anchor_event_start_ts', true ) );
 		$this->assertNotEmpty( get_post_meta( $event, '_anchor_event_end_ts', true ) );
-		$this->assertSame( '1', get_option( 'anchor_events_ts_backfilled' ) );
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_option( 'anchor_events_ts_version' ) );
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_post_meta( $event, '_anchor_event_ts_version', true ) );
 
 		// The visible symptom: the back-filled event now appears in a listing.
 		$this->module()->clear_caches();
@@ -67,12 +71,12 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 	public function test_backfill_ignores_a_caller_without_edit_posts() {
 		wp_set_current_user( 0 );
 		$event = $this->make_event( [ 'start_date' => '2030-12-05' ] );
-		delete_option( 'anchor_events_ts_backfilled' );
+		$this->reset_backfill_state();
 
 		$this->module()->backfill_timestamps();
 
 		$this->assertSame( '', get_post_meta( $event, '_anchor_event_start_ts', true ) );
-		$this->assertFalse( get_option( 'anchor_events_ts_backfilled' ) );
+		$this->assertFalse( get_option( 'anchor_events_ts_version' ) );
 	}
 
 	/** A quick-edit publish never runs the meta box save, so the transition must write the rows. */
@@ -88,11 +92,11 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		$this->assertNotEmpty( get_post_meta( $event, '_anchor_event_end_ts', true ) );
 	}
 
-	/** Once the flag is set the migration is over: a later call touches nothing. */
-	public function test_backfill_is_idempotent_once_the_flag_is_set() {
+	/** Once the option records the current version the migration is over: a later call touches nothing. */
+	public function test_backfill_is_idempotent_once_the_version_is_recorded() {
 		$this->login_as_admin();
 		$event = $this->make_event( [ 'start_date' => '2030-12-05' ] );
-		delete_option( 'anchor_events_ts_backfilled' );
+		$this->reset_backfill_state();
 
 		$this->module()->backfill_timestamps();
 		$this->assertNotEmpty( get_post_meta( $event, '_anchor_event_start_ts', true ) );
@@ -104,7 +108,7 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 
 		$this->assertSame( '', get_post_meta( $event, '_anchor_event_start_ts', true ) );
 		$this->assertSame( '', get_post_meta( $event, '_anchor_event_end_ts', true ) );
-		$this->assertSame( '1', get_option( 'anchor_events_ts_backfilled' ) );
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_option( 'anchor_events_ts_version' ) );
 	}
 
 	/**
@@ -116,13 +120,16 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		$this->login_as_admin();
 		$dateless = $this->make_event( [ 'title' => 'Dateless', 'start_date' => '' ] );
 		$dated    = $this->make_event( [ 'title' => 'Dated', 'start_date' => '2030-12-05' ] );
-		delete_option( 'anchor_events_ts_backfilled' );
+		$this->reset_backfill_state();
 
 		$this->module()->backfill_timestamps();
 
 		$this->assertSame( '', get_post_meta( $dateless, '_anchor_event_start_ts', true ) );
 		$this->assertNotEmpty( get_post_meta( $dated, '_anchor_event_start_ts', true ) );
-		$this->assertSame( '1', get_option( 'anchor_events_ts_backfilled' ) );
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_option( 'anchor_events_ts_version' ) );
+		// Unfillable, but still stamped — otherwise it holds the batch window
+		// open forever and strands the fillable events behind it.
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_post_meta( $dateless, '_anchor_event_ts_version', true ) );
 	}
 
 	/**
@@ -145,7 +152,7 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		$event = $this->make_event( [ 'title' => 'Legacy Event', 'start_date' => '2030-12-05' ] );
 		delete_post_meta( $event, '_anchor_event_start_ts' );
 		delete_post_meta( $event, '_anchor_event_end_ts' );
-		delete_option( 'anchor_events_ts_backfilled' );
+		$this->reset_backfill_state();
 		$this->module()->clear_caches();
 
 		// Prime the cache while the event is still invisible to the ordering join.
@@ -163,6 +170,108 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 			do_shortcode( '[events_list show_past="yes" limit="50"]' ),
 			'The back-fill must clear the listing cache it just invalidated.'
 		);
+	}
+
+	/**
+	 * MODEL-D2 (shipping regression): the rows can be STALE without being
+	 * missing.
+	 *
+	 * Before this schema version a date-only event ended at `end == start` —
+	 * midnight on its own start date. Those rows are present, so a back-fill
+	 * keyed on "has no start_ts" never sees them, and the past-event guard in
+	 * Registrations::capacity_decision() closes the event at 00:00 on the
+	 * morning it runs. The versioned back-fill has to recompute them.
+	 */
+	public function test_backfill_recomputes_a_stale_date_only_end_ts() {
+		$this->login_as_admin();
+		$event = $this->make_event( [ 'title' => 'Legacy Midnight', 'start_date' => '2030-12-05' ] );
+		$ts    = $this->module()->compute_timestamps( $this->module()->get_meta( $event ) );
+
+		// The pre-versioning shape: both rows written, end == start at midnight.
+		update_post_meta( $event, '_anchor_event_start_ts', $ts['start'] );
+		update_post_meta( $event, '_anchor_event_end_ts', $ts['start'] );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame(
+			23 * 3600 + 59 * 60,
+			(int) get_post_meta( $event, '_anchor_event_end_ts', true ) - $ts['start'],
+			'A stale v1 date-only event must be recomputed to a 23:59 end.'
+		);
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_post_meta( $event, '_anchor_event_ts_version', true ) );
+	}
+
+	/** An event stamped with an OLDER version is re-processed by the next bump. */
+	public function test_a_version_older_than_the_current_schema_is_reprocessed() {
+		$this->login_as_admin();
+		$event = $this->make_event( [ 'title' => 'Stamped v1', 'start_date' => '2030-12-05' ] );
+		update_post_meta( $event, '_anchor_event_start_ts', 1 );
+		update_post_meta( $event, '_anchor_event_end_ts', 1 );
+		update_post_meta( $event, '_anchor_event_ts_version', Module::TS_SCHEMA_VERSION - 1 );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$expected = $this->module()->compute_timestamps( $this->module()->get_meta( $event ) );
+		$this->assertSame( $expected['start'], (int) get_post_meta( $event, '_anchor_event_start_ts', true ) );
+		$this->assertSame( $expected['end'], (int) get_post_meta( $event, '_anchor_event_end_ts', true ) );
+	}
+
+	/**
+	 * A save stamps the current version, so the back-fill has no work to do on
+	 * a freshly saved event — the migration never re-touches current rows.
+	 */
+	public function test_a_saved_event_is_stamped_and_then_skipped() {
+		$this->login_as_admin();
+		$event = $this->make_event( [ 'start_date' => '2030-12-05' ] );
+		wp_update_post( [ 'ID' => $event, 'post_status' => 'draft' ] );
+		wp_update_post( [ 'ID' => $event, 'post_status' => 'publish' ] );
+
+		$this->assertSame(
+			Module::TS_SCHEMA_VERSION,
+			(int) get_post_meta( $event, '_anchor_event_ts_version', true ),
+			'The save path must stamp the schema version alongside the rows it writes.'
+		);
+
+		// A value the calculators would never produce: if the back-fill picked
+		// this event up it would be overwritten.
+		update_post_meta( $event, '_anchor_event_end_ts', 1 );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame( 1, (int) get_post_meta( $event, '_anchor_event_end_ts', true ) );
+	}
+
+	/**
+	 * The pre-versioning boolean flag means "ran under the v1 rules", which is
+	 * precisely the state that needs migrating — it must not read as done, and
+	 * it is cleared once the versioned option supersedes it.
+	 */
+	public function test_the_legacy_boolean_flag_is_treated_as_needing_migration() {
+		$this->login_as_admin();
+		$event = $this->make_event( [ 'title' => 'Flagged Legacy', 'start_date' => '2030-12-05' ] );
+		$ts    = $this->module()->compute_timestamps( $this->module()->get_meta( $event ) );
+		update_post_meta( $event, '_anchor_event_start_ts', $ts['start'] );
+		update_post_meta( $event, '_anchor_event_end_ts', $ts['start'] );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
+
+		delete_option( 'anchor_events_ts_version' );
+		update_option( 'anchor_events_ts_backfilled', '1', false );
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame( $ts['end'], (int) get_post_meta( $event, '_anchor_event_end_ts', true ) );
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_option( 'anchor_events_ts_version' ) );
+		$this->assertFalse( get_option( 'anchor_events_ts_backfilled' ), 'The superseded flag must be deleted.' );
+	}
+
+	/** Both the current option and the flag it replaced, so a run starts from a clean slate. */
+	private function reset_backfill_state() {
+		delete_option( 'anchor_events_ts_version' );
+		delete_option( 'anchor_events_ts_backfilled' );
 	}
 
 	/** backfill_timestamps() is capability-gated, so its tests need a user who could edit events by hand. */

@@ -470,6 +470,23 @@ class Registrations {
      * @return string open|closed|full|waitlist
      */
     public function capacity_decision( $event_id, $meta, $requested = 1, $tier = null ) {
+        // MODEL-D5: an event that has already finished is never bookable, and
+        // this is the FIRST branch so no amount of remaining room can outvote
+        // it. Without it an occurrence with registration_enabled=1, no
+        // registration_close date and unlimited capacity answered 'open'
+        // forever — the picker printed "Open"/"Register" and
+        // handle_registration() minted a real seat on a course that had
+        // already run (production has no event with a registration_close
+        // value, so nothing else stood in the way).
+        //
+        // An event with NO end_ts row is UNDATED, not past (RENDER-D31), so
+        // the check is deliberately gated on the row being present rather
+        // than on `(int) $meta['end_ts'] < time()`, which would close every
+        // legacy event that never had timestamps written.
+        if ( ! empty( $meta['end_ts'] ) && (int) $meta['end_ts'] < \time() ) {
+            return 'closed';
+        }
+
         // Compare the registration window in WordPress site-local time — the
         // open/close dates are admin-entered in the site timezone (CodeRabbit).
         $now = \current_time( 'Y-m-d' );

@@ -200,6 +200,13 @@ class Series {
      * availability hint. All output escaped. A group PARENT renders as a
      * "choose a date" summary row instead (Task 2.4) — see render_group_row().
      *
+     * MODEL-D42: the hint is Module::choose_date_availability_hint(), the same
+     * renderer the choose-a-date picker uses, rather than a local two-line
+     * rule. The old private availability_hint() read remaining_capacity() and
+     * the waitlist flag only — blind to sold_out, registration_enabled, the
+     * registration window and the past — so the archive printed "Open" for
+     * occurrences the picker on the next screen called "Sold out".
+     *
      * @param int $event_id
      * @return string Empty string for a group parent with zero live children
      *                (nothing to book, so no row).
@@ -227,7 +234,7 @@ class Series {
                 <span class="anchor-event-series__date"><?php echo \esc_html( $date_label ); ?></span>
             <?php endif; ?>
             <span class="anchor-event-series__price"><?php echo $this->price_hint( $event_id ); ?></span>
-            <span class="anchor-event-series__availability"><?php echo \esc_html( $this->availability_hint( $event_id, $meta ) ); ?></span>
+            <span class="anchor-event-series__availability"><?php echo \esc_html( $this->module->choose_date_availability_hint( $event_id, $meta ) ); ?></span>
         </li>
         <?php
         return \ob_get_clean();
@@ -325,23 +332,4 @@ class Series {
         return \esc_html( \sprintf( \__( 'from %s', 'anchor-schema' ), \number_format_i18n( $min, 2 ) ) );
     }
 
-    /**
-     * Short availability hint: "Sold out" when the event total is full and the
-     * waitlist is off, otherwise "Open". Capacity is read through the single
-     * seat-layer authority (never Woo stock).
-     *
-     * @param int   $event_id
-     * @param array $meta     Event meta (capacity, waitlist).
-     * @return string
-     */
-    private function availability_hint( $event_id, array $meta ) {
-        $capacity  = (int) ( $meta['capacity'] ?? 0 );
-        $remaining = $this->module->registrations->remaining_capacity( (int) $event_id, $capacity );
-
-        if ( $remaining === 0 && empty( $meta['waitlist'] ) ) {
-            return \__( 'Sold out', 'anchor-schema' );
-        }
-
-        return \__( 'Open', 'anchor-schema' );
-    }
 }

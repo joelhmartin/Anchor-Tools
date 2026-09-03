@@ -701,11 +701,18 @@ class WooCommerce {
      * unchanged so the free inline form (or the legacy escape-hatch product link)
      * renders instead (spec §3 render seam / finding #12).
      *
-     * Per-tier states (spec §6/§7):
+     * Per-tier states (spec §6/§7), every one of them Module::bookability()
+     * for that tier — the same answer is_purchasable() and the add-to-cart
+     * endpoint give, so the storefront never advertises a seat the cart
+     * refuses (WOO-D3):
      *  - outside the sale window → "Sales open <date>" (no qty),
-     *  - tier/event sold out + waitlist off → disabled "Sold out" (no qty),
-     *  - event full + waitlist on → "Join waitlist" note + qty input,
-     *  - otherwise → a quantity input bounded by the remaining seats.
+     *  - 'full' (tier quota, event total, or the sold_out flag, waitlist off)
+     *    → disabled "Sold out" (no qty),
+     *  - 'waitlist' → "Join waitlist" note + qty input,
+     *  - 'closed'/'disabled'/'parent' → "Registration closed" (no qty),
+     *  - 'open' → a quantity input bounded by the remaining seats.
+     * When no tier is sellable the "Register / Add to cart" button is omitted
+     * altogether rather than rendered to fail.
      *
      * @param string $html    Current form HTML ('' = render the free form).
      * @param int    $post_id Event post id.
@@ -759,19 +766,30 @@ class WooCommerce {
             return $html;
         }
 
-        $waitlist = ! empty( $meta['waitlist'] );
-
-        $rows = '';
+        // WOO-D3: each row's state comes from the SAME authority the cart will
+        // consult, per tier — not from tier_remaining() plus the event-level
+        // waitlist flag, which advertised "Join waitlist" on a tier whose own
+        // quota was exhausted and then refused the sale at add-to-cart.
+        $rows         = '';
+        $any_sellable = false;
         foreach ( $paid_active as $tier ) {
-            $rows .= $this->render_ticket_row( $event_id, $tier, $waitlist, count( $paid_active ) === 1 );
+            $state = $this->module->bookability( $event_id, $tier );
+            if ( $this->module->is_bookable( $state ) && $this->module->ticket_types->is_on_sale( $tier ) ) {
+                $any_sellable = true;
+            }
+            $rows .= $this->render_ticket_row( $event_id, $tier, $state, count( $paid_active ) === 1 );
         }
 
         $out  = '<div class="anchor-event-registration anchor-event-tickets" data-event="' . \esc_attr( $event_id ) . '">';
         $out .= '<div class="anchor-event-ticket-rows">' . $rows . '</div>';
-        $out .= '<div class="anchor-event-tickets-actions">';
-        $out .= '<button type="button" class="anchor-event-button anchor-event-register" data-add-to-cart>'
-            . \esc_html__( 'Register / Add to cart', 'anchor-schema' ) . '</button>';
-        $out .= '</div>';
+        // No row can be bought → no button that would only fail. The rows
+        // themselves already say why (sold out / closed / not on sale yet).
+        if ( $any_sellable ) {
+            $out .= '<div class="anchor-event-tickets-actions">';
+            $out .= '<button type="button" class="anchor-event-button anchor-event-register" data-add-to-cart>'
+                . \esc_html__( 'Register / Add to cart', 'anchor-schema' ) . '</button>';
+            $out .= '</div>';
+        }
         $out .= '<div class="anchor-event-cart-msg" aria-live="polite"></div>';
 
         // Mixed free + paid event → also render the lightweight inline free form.
@@ -803,12 +821,16 @@ class WooCommerce {
      * Render one ticket-tier row: label, price, and availability (state-dependent
      * qty input). All dynamic output is escaped; wc_price() returns safe markup.
      *
-     * @param int   $event_id
-     * @param array $tier     Normalized tier array.
-     * @param bool  $waitlist Event-level waitlist toggle.
+     * @param int    $event_id
+     * @param array  $tier     Normalized tier array.
+     * @param string $state    Module::bookability() for THIS tier — the same
+     *                         answer ajax_add_to_cart() and is_purchasable()
+     *                         will give, so the row can never offer a seat the
+     *                         cart then refuses.
+     * @param bool   $only_tier
      * @return string
      */
-    private function render_ticket_row( $event_id, array $tier, $waitlist, $only_tier = false ) {
+    private function render_ticket_row( $event_id, array $tier, $state, $only_tier = false ) {
         $tier_id = (string) $tier['id'];
         $label   = ( $tier['label'] !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
         $price   = (float) $tier['price'];
@@ -832,23 +854,34 @@ class WooCommerce {
             return $row;
         }
 
-        $remaining = (int) $this->registrations->tier_remaining( $event_id, $tier );
-
-        // Sold out (tier quota or event total exhausted) + waitlist off.
-        if ( $remaining <= 0 && ! $waitlist ) {
+        // Sold out — the tier's own quota, the event total, or the hand-set
+        // sold_out flag, with the waitlist toggle already applied.
+        if ( 'full' === $state ) {
             $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-soldout" aria-disabled="true">'
                 . \esc_html__( 'Sold out', 'anchor-schema' ) . '</span>';
             $row .= '</div>';
             return $row;
         }
 
-        if ( $remaining <= 0 && $waitlist ) {
-            // Event full but waitlist on → allow a request beyond capacity.
+        // closed / disabled / parent — the registration window has passed or
+        // not opened, the event has finished, registration is switched off, or
+        // this is a container. Previously invisible here: the row rendered a
+        // quantity box and the sale failed at the cart.
+        if ( ! $this->module->is_bookable( $state ) ) {
+            $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-closed" aria-disabled="true">'
+                . \esc_html__( 'Registration closed', 'anchor-schema' ) . '</span>';
+            $row .= '</div>';
+            return $row;
+        }
+
+        if ( Registrations::STATUS_WAITLIST === $state ) {
+            // Full but waitlist on → allow a request beyond capacity.
             $max  = self::QTY_CAP;
             $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-waitlist">'
                 . \esc_html__( 'Join waitlist', 'anchor-schema' ) . '</span>';
         } else {
-            $max = \max( 1, \min( $remaining, self::QTY_CAP ) );
+            $remaining = (int) $this->registrations->tier_remaining( $event_id, $tier );
+            $max       = \max( 1, \min( $remaining, self::QTY_CAP ) );
         }
 
         $row .= '<input type="number" class="anchor-event-ticket-qty" min="0" max="' . \esc_attr( $max ) . '"'
@@ -995,6 +1028,20 @@ class WooCommerce {
             \wp_send_json_error( [ 'messages' => [ \__( 'Please choose at least one ticket.', 'anchor-schema' ) ] ] );
         }
 
+        // WOO-D37: the endpoint used to check tier active / on-sale / capacity
+        // and nothing else — not registration_enabled, not the event's own end
+        // date, not "is this a group PARENT", not "is this occurrence
+        // soft-closed". It leaned on WC_Cart::add_to_cart() internally calling
+        // is_purchasable() and reported every such rejection as the generic
+        // "Could not add %s to the cart" — and a logged-in admin, for whom
+        // WooCommerce treats a draft product as purchasable, sailed past it
+        // entirely. The event-level answer is now taken once, up front, from
+        // the same authority the storefront rendered from, and it says why.
+        $event_state = $this->module->bookability( $event_id );
+        if ( ! $this->module->is_bookable( $event_state ) ) {
+            \wp_send_json_error( [ 'messages' => [ $this->bookability_message( $event_state ) ] ] );
+        }
+
         $meta              = $this->module->get_meta( $event_id );
         $parent_product_id = (int) $this->module->product_sync->managed_product_id( $event_id );
         if ( $parent_product_id <= 0 ) {
@@ -1026,16 +1073,12 @@ class WooCommerce {
                 continue;
             }
 
-            // Server-side capacity validation (single authority, spec §7).
+            // Server-side capacity validation (single authority, spec §7). The
+            // event-level gate above cannot answer this one: it is per tier AND
+            // per requested quantity ("2 seats left, 3 asked for" is full).
             $decision = $this->registrations->capacity_decision( $event_id, $meta, $qty, $tier );
-            if ( 'closed' === $decision ) {
-                /* translators: %s: ticket tier label. */
-                $messages[] = \sprintf( \__( 'Registration for %s is closed.', 'anchor-schema' ), $label );
-                continue;
-            }
-            if ( 'full' === $decision ) {
-                /* translators: %s: ticket tier label. */
-                $messages[] = \sprintf( \__( '%s is sold out.', 'anchor-schema' ), $label );
+            if ( ! $this->module->is_bookable( $decision ) ) {
+                $messages[] = $this->bookability_message( $decision, $label );
                 continue;
             }
 
@@ -1082,6 +1125,37 @@ class WooCommerce {
         ] );
     }
 
+    /**
+     * Why the cart refused, in the shopper's words — one message per
+     * Module::bookability() state (WOO-D37). Every rejection on the purchase
+     * path used to surface as "Could not add %s to the cart", which told a
+     * buyer nothing and told support less.
+     *
+     * @param string $bookability Non-bookable state from bookability()/capacity_decision().
+     * @param string $label       Ticket-tier label, when the answer is about one tier.
+     * @return string
+     */
+    private function bookability_message( $bookability, $label = '' ) {
+        $tier_scoped = ( $label !== '' );
+
+        switch ( (string) $bookability ) {
+            case 'full':
+                return $tier_scoped
+                    /* translators: %s: ticket tier label. */
+                    ? \sprintf( \__( '%s is sold out.', 'anchor-schema' ), $label )
+                    : \__( 'This event is sold out.', 'anchor-schema' );
+            case 'parent':
+                return \__( 'Please choose a date before registering.', 'anchor-schema' );
+            case 'disabled':
+            case 'closed':
+            default:
+                return $tier_scoped
+                    /* translators: %s: ticket tier label. */
+                    ? \sprintf( \__( 'Registration for %s is closed.', 'anchor-schema' ), $label )
+                    : \__( 'Registration for this event is closed.', 'anchor-schema' );
+        }
+    }
+
     /* ---------------------------------------------------------------------
      * Capacity enforcement layer 1 — purchasability / add-to-cart
      * ------------------------------------------------------------------- */
@@ -1103,8 +1177,9 @@ class WooCommerce {
     }
 
     /**
-     * Block purchase when the linked event is sold out and waitlist is off.
-     * Serves both `woocommerce_is_purchasable` and `woocommerce_variation_is_purchasable`.
+     * Block purchase whenever the linked event cannot take a seat — the single
+     * bookability authority decides, not a local re-implementation. Serves both
+     * `woocommerce_is_purchasable` and `woocommerce_variation_is_purchasable`.
      *
      * @param bool  $purchasable
      * @param mixed $product
@@ -1118,34 +1193,42 @@ class WooCommerce {
         if ( $event_id <= 0 ) {
             return $purchasable;
         }
-        $meta = $this->module->get_meta( $event_id );
 
-        // Registration switched off means not for sale, by any route. The
-        // storefront filter that renders the ticket UI runs before the mode and
-        // enabled checks, and the managed product's permalink stays reachable
-        // even when hidden from the catalogue, so the gate has to live here too.
-        if ( isset( $meta['registration_enabled'] ) && ! $meta['registration_enabled'] ) {
-            return false;
-        }
+        // WOO-D2: one question, one authority. This used to re-implement the
+        // capacity test (waitlist flag + remaining_capacity()), which meant the
+        // hand-set `sold_out` flag and the registration_open/close window were
+        // enforced on NO purchase path — an event marked sold out with
+        // unlimited capacity sold tickets from the managed product's permalink.
+        // The registration_enabled and end_ts gates that used to live here are
+        // now inside bookability()/capacity_decision(), so every other reader
+        // gets them too instead of only this one.
+        return $this->module->is_bookable(
+            $this->module->bookability( $event_id, $this->tier_for_product_object( $product ) )
+        ) ? $purchasable : false;
+    }
 
-        // An event that has already finished is never purchasable, whichever
-        // route the shopper arrived by. The tier sale-window is a separate,
-        // optional control; without this an occurrence stayed on sale forever
-        // once its own date had passed, and the managed product's permalink
-        // remains reachable even though it is hidden from the catalogue.
-        $end_ts = (int) ( $meta['end_ts'] ?? 0 );
-        if ( $end_ts > 0 && $end_ts < \time() ) {
-            return false;
+    /**
+     * The ticket tier a managed product object represents, or null for a
+     * simple product / a variation we don't manage.
+     *
+     * WOO-D3: the storefront row and the purchase path have to ask about the
+     * SAME thing. A tier whose own quota is exhausted while the event still
+     * has room is 'full' for that tier only, and that answer is only
+     * reachable when the tier is passed in.
+     *
+     * @param \WC_Product $product
+     * @return array|null Normalized tier row.
+     */
+    private function tier_for_product_object( $product ) {
+        if ( ! $product->is_type( 'variation' ) || ! $this->module->product_sync || ! $this->module->ticket_types ) {
+            return null;
         }
-
-        if ( ! empty( $meta['waitlist'] ) ) {
-            return $purchasable; // Waitlist on → always purchasable.
+        $map = $this->module->product_sync->tier_for_variation( (int) $product->get_id() );
+        if ( (int) $map['event_id'] <= 0 || (string) $map['tier_id'] === '' ) {
+            return null;
         }
-        $capacity = (int) ( $meta['capacity'] ?? 0 );
-        if ( $capacity <= 0 ) {
-            return $purchasable; // Unlimited.
-        }
-        return $this->registrations->remaining_capacity( $event_id, $capacity ) > 0 ? $purchasable : false;
+        $tier = $this->module->ticket_types->find( (int) $map['event_id'], (string) $map['tier_id'] );
+        return $tier ?: null;
     }
 
     /**

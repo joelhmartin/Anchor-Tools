@@ -6779,7 +6779,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $output .= '</a>';
         $output .= '<span class="anchor-event-choose-date-availability">' . esc_html( $this->choose_date_availability_hint( $event_id, $meta ) ) . '</span>';
-        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $event_id, $meta ) ) . '</a>';
+        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $event_id ) ) . '</a>';
         $output .= '</li>';
 
         return $output;
@@ -6832,37 +6832,51 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * Short availability hint for a choose-date row: "Registration closed"
-     * when the occurrence itself has registration disabled, else the same
-     * open/full/waitlist decision get_registration_status() already computes
-     * for the registration form, rendered as "Sold out" / "Waitlist only" /
-     * "N spot(s) left" / "Open" (unlimited capacity).
+     * Short availability hint for a choose-date row, rendered from
+     * bookability() — the single purchasability authority — as "Sold out" /
+     * "Waitlist only" / "Registration closed" / "N spot(s) left" / "Open"
+     * (unlimited capacity).
+     *
+     * Public because the series archive renders the same hint for the same
+     * question (MODEL-D42): Series::availability_hint() used to re-decide it
+     * from remaining_capacity() alone and got a weaker answer — it printed
+     * "Open" for a hand-flagged sold-out occurrence.
      *
      * @param int   $event_id
-     * @param array $meta
+     * @param array $meta     get_meta( $event_id ) — passed in by callers that
+     *                        already hold it (only the capacity read uses it).
      * @return string
      */
-    private function choose_date_availability_hint( $event_id, array $meta ) {
-        // Full is asked FIRST, before the registration switch. A date that sold
-        // out is normally also closed to registration, and answering "closed"
-        // there tells the visitor less than the truth — they want to know the
-        // seats went, not merely that the button is gone.
-        $status = $this->get_registration_status( $event_id, $meta );
-        if ( $status === 'full' ) {
+    public function choose_date_availability_hint( $event_id, array $meta ) {
+        // RENDER-D32 / MODEL-D42: one call to the single purchasability
+        // authority, not a local re-decision.
+        $state = $this->bookability( $event_id );
+
+        // "The seats went" outranks "the button is gone". A date that sold out
+        // is normally ALSO switched off, and bookability() answers 'disabled'
+        // for that (registration_enabled is the outer gate) — which tells the
+        // visitor less than the truth. So when the switch is off, ask the seat
+        // layer whether capacity was the real story and say so if it was.
+        if ( $state === 'disabled' ) {
+            $seats = $this->get_registration_status( $event_id, $meta );
+            if ( $seats === 'full' || $seats === Registrations::STATUS_WAITLIST ) {
+                $state = $seats;
+            }
+        }
+
+        if ( $state === 'full' ) {
             return \__( 'Sold out', 'anchor-schema' );
         }
-        if ( $status === 'waitlist' ) {
+        if ( $state === Registrations::STATUS_WAITLIST ) {
             return \__( 'Waitlist only', 'anchor-schema' );
         }
-
-        if ( empty( $meta['registration_enabled'] ) ) {
+        if ( $state === 'closed' || $state === 'disabled' ) {
             return \__( 'Registration closed', 'anchor-schema' );
         }
 
-        if ( $status === 'closed' ) {
-            return \__( 'Registration closed', 'anchor-schema' );
-        }
-
+        // 'open' — and 'parent', defensively: render_choose_date_row() is
+        // documented as tolerating the parent itself, which has no capacity
+        // of its own and so reads as unlimited/"Open" here.
         $capacity = (int) ( $meta['capacity'] ?? 0 );
         if ( $capacity <= 0 ) {
             return \__( 'Open', 'anchor-schema' );
@@ -6875,21 +6889,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * CTA label for a choose-date row: "Details" when the occurrence isn't
      * currently accepting new registrations (closed/full/registration
-     * disabled), else "Register".
+     * disabled/a container), else "Register".
      *
-     * @param int   $event_id
-     * @param array $meta
+     * @param int $event_id
      * @return string
      */
-    private function choose_date_cta_label( $event_id, array $meta ) {
-        if ( empty( $meta['registration_enabled'] ) ) {
-            return \__( 'Details', 'anchor-schema' );
-        }
-        $status = $this->get_registration_status( $event_id, $meta );
-        if ( $status === 'full' || $status === 'closed' ) {
-            return \__( 'Details', 'anchor-schema' );
-        }
-        return \__( 'Register', 'anchor-schema' );
+    private function choose_date_cta_label( $event_id ) {
+        // RENDER-D32: same authority as the hint beside it, so the row can
+        // never say "Sold out" and "Register" at once.
+        return $this->is_bookable( $this->bookability( $event_id ) )
+            ? \__( 'Register', 'anchor-schema' )
+            : \__( 'Details', 'anchor-schema' );
     }
 
     public function handle_registration() {
@@ -8424,6 +8434,60 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // Single capacity authority lives in the data layer (spec §9.1). Passing the
         // tier enforces its per-tier quota alongside the event total.
         return $this->registrations->capacity_decision( $event_id, $meta, $party_size, $tier );
+    }
+
+    /**
+     * "Can a seat on this event (optionally on this tier) be sold right now?"
+     * — the ONE predicate every reader asks (WOO-D2/D3/D37, RENDER-D3/D4/D5/
+     * D7/D32, MODEL-D42). The storefront row, `is_purchasable`, the AJAX
+     * add-to-cart endpoint, the choose-a-date picker, the series archive and
+     * the JSON-LD Offer builders all route through here, so one event can no
+     * longer read "Join waitlist" on the page, "sold out" at the cart and
+     * "InStock" in the markup on the same request.
+     *
+     * The branch order mirrors render_registration_form()'s, which is the
+     * canonical statement of what a bookable event is:
+     *   parent   — a group container is never itself a seat,
+     *   closed   — a soft-closed occurrence, still reachable by direct URL,
+     *   disabled — "Enable registration" is unticked,
+     *   then the seat-layer capacity authority (open|waitlist|full|closed),
+     *   which owns the sold_out flag, the registration window, the past-event
+     *   check, the event total and the per-tier quota.
+     *
+     * @param int        $event_id
+     * @param array|null $tier     Normalized ticket-tier row, when the question
+     *                             is about one tier rather than the event.
+     * @return string One of open|waitlist|full|closed|parent|disabled.
+     */
+    public function bookability( $event_id, $tier = null ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 ) {
+            return 'closed';
+        }
+        if ( $this->occurrences && $this->occurrences->is_group_parent( $event_id ) ) {
+            return 'parent';
+        }
+        if ( $this->is_closed_group_child( $event_id ) ) {
+            return 'closed';
+        }
+        $meta = $this->get_meta( $event_id );
+        if ( empty( $meta['registration_enabled'] ) ) {
+            return 'disabled';
+        }
+        return $this->get_registration_status( $event_id, $meta, 1, $tier );
+    }
+
+    /**
+     * Whether a bookability() state can still take a seat. 'waitlist' counts:
+     * a waitlist request is a real, accepted transaction (Registrations::
+     * claim_seats() resolves it at creation), which is exactly why the cart
+     * and the storefront must agree that it is allowed.
+     *
+     * @param string $bookability
+     * @return bool
+     */
+    public function is_bookable( $bookability ) {
+        return \in_array( $bookability, [ 'open', Registrations::STATUS_WAITLIST ], true );
     }
 
     /**

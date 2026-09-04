@@ -191,11 +191,20 @@ class WooCommerce {
         // admin who knows about the "Resync order" button can repair it.
         // reconcile_order() is declarative, so it simply puts the seats back to
         // whatever the restored order's status implies.
+        //
+        // On HPOS this one is a near-no-op by construction — the data store
+        // fires it BEFORE restoring the status, so the reconcile sees 'trash'
+        // and the actual repair arrives via the following
+        // woocommerce_order_status_changed. See on_order_untrashed()'s docblock.
         \add_action( 'woocommerce_untrash_order', [ $this, 'on_order_untrashed' ], 10, 1 );
-        // …and the legacy (posts) twin. woocommerce_untrash_order is fired ONLY
-        // by the HPOS data store, so on CPT storage `untrashed_post` is the only
-        // signal there is. Priority 20 keeps it after WC_Post_Data::untrash_post()
-        // (priority 10), which restores the order's pre-trash status.
+        // …and the legacy (posts) twin, which is where the repair really
+        // happens. woocommerce_untrash_order is fired ONLY by the HPOS data
+        // store, so on CPT storage `untrashed_post` is the only signal there
+        // is — and by then wp_update_post() has already restored the order's
+        // pre-trash status (WC_Post_Data's `wp_untrash_post_status` filter),
+        // so the reconcile has a real target. Priority 20 simply lands after
+        // WC_Post_Data::untrash_post() (priority 10), which restores the
+        // order's refund children and clears its transients.
         \add_action( 'untrashed_post', [ $this, 'on_legacy_order_untrashed' ], 20, 1 );
 
         // Refund DELETED (audit WOO-D53). Deleting a refund drops
@@ -2845,8 +2854,30 @@ class WooCommerce {
 
     /**
      * Order restored from the trash (audit WOO-D17). Hooks:
-     *  - woocommerce_untrash_order( int $order_id, string $previous_status ) — HPOS.
      *  - untrashed_post → on_legacy_order_untrashed() — legacy (posts) storage.
+     *    This is the one that does the repair: WordPress restores the order's
+     *    pre-trash status inside wp_update_post() (via the
+     *    wp_untrash_post_status filter WC_Post_Data adds), so by the time
+     *    `untrashed_post` fires the order already reads e.g. 'processing' and
+     *    the reconcile below has a real target to converge on.
+     *  - woocommerce_untrash_order( int $order_id, string $previous_status ) — HPOS.
+     *
+     * IMPORTANT — on HPOS this method is a deliberate near-no-op.
+     * OrdersTableDataStore::untrash_order() fires `woocommerce_untrash_order`
+     * BEFORE it restores the status ($order->set_status( $previous_status )
+     * and $order->save() come after the do_action), so the order still reads
+     * 'trash' here; map_order_status_to_seat() returns SEAT_TARGET_UNKNOWN for
+     * it and reconcile_order() leaves every seat exactly as-is rather than
+     * sweeping them. That is the correct behaviour for an unknown status, and
+     * the real repair follows one line later: the set_status()+save() fires
+     * `woocommerce_order_status_changed` (trash → processing), which
+     * on_status_changed() turns into the reconcile that confirms the seats.
+     * WC suppresses only the transactional EMAILS during that restore, never
+     * the status-transition actions. The hook is kept registered because it is
+     * the documented HPOS untrash signal and it is harmless — but do not
+     * "fix" it by reading the previous status from the second hook argument:
+     * the order object would still be saved as 'trash' underneath, and the
+     * status-changed pass converges the seats correctly a moment later.
      *
      * Deliberately a plain reconcile rather than an inverse of
      * release_order_capacity(): reconcile_order() is declarative, so it puts

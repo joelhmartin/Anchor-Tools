@@ -229,6 +229,20 @@ class Module {
     private $assets_enqueued = false;
 
     /**
+     * finding-17 — get_meta( $post_id ) as it stood BEFORE a REST write,
+     * captured on the `rest_insert_{$post_type}` hook (fires before the REST
+     * meta fields are persisted) and consumed on `rest_after_insert_` (fires
+     * after) so persist_after_rest_write() can call
+     * maybe_persist_previous_start() with genuine old/new meta, same as the
+     * two authoring save paths. Keyed by post id, not a single scalar, so a
+     * batch REST request touching more than one event in the same process
+     * (unlikely today, but cheap to make safe) can't cross-contaminate.
+     *
+     * @var array<int,array>
+     */
+    private $rest_old_meta_before_write = [];
+
+    /**
      * RENDER-D33: the event id shortcode_event_registration() rendered
      * registration UI for during THIS request, or null. render_single_event_body()
      * resets this to null, runs the post's content through the 'the_content'
@@ -428,6 +442,11 @@ class Module {
         // controller saves meta. rest_after_insert_{$post_type} is the hook
         // that runs after the meta write, so it is the only place the new
         // dates are visible.
+        // finding-17 — fires BEFORE the REST controller writes the request's
+        // meta fields (WP_REST_Posts_Controller calls this, THEN
+        // $this->meta->update_value(), THEN rest_after_insert_), so this is
+        // the only REST-lifecycle hook where the OLD meta is still visible.
+        \add_action( 'rest_insert_' . self::CPT, [ $this, 'capture_meta_before_rest_write' ], 10, 3 );
         \add_action( 'rest_after_insert_' . self::CPT, [ $this, 'persist_after_rest_write' ], 10, 3 );
         // …and a REST WRITE response carries any notice still queued from the
         // author's previous metabox save (audit MODEL-D14) — see
@@ -649,6 +668,26 @@ class Module {
     }
 
     /**
+     * finding-17 — snapshot get_meta() BEFORE the REST controller writes this
+     * request's meta fields (fires on `rest_insert_{$post_type}`, which WP
+     * core calls before `$this->meta->update_value()` — see
+     * class-wp-rest-posts-controller.php). persist_after_rest_write() (on
+     * `rest_after_insert_`, which fires AFTER that write) consumes this to
+     * call maybe_persist_previous_start() with genuine old/new meta, exactly
+     * like the other two save paths.
+     *
+     * @param \WP_Post         $post
+     * @param \WP_REST_Request $request  Unused; part of the hook signature.
+     * @param bool             $creating Unused; part of the hook signature.
+     */
+    public function capture_meta_before_rest_write( $post, $request = null, $creating = false ) {
+        if ( ! $post instanceof \WP_Post || $post->post_type !== self::CPT ) {
+            return;
+        }
+        $this->rest_old_meta_before_write[ (int) $post->ID ] = $this->get_meta( $post->ID );
+    }
+
+    /**
      * Recompute the derived rows after a REST write to an event (audit REST-D1).
      *
      * `start_date`, `end_date`, `start_time`, `end_time`, `all_day` and
@@ -666,6 +705,17 @@ class Module {
      * because in auto mode the dates own the status — a client that wants to
      * set it by hand has to switch the event to manual mode first.
      *
+     * finding-17 — `_anchor_event_status` is ALSO in REST_PUBLIC_META
+     * (show_in_rest, gated only by edit_post), and WordPress's generic
+     * registered-meta REST handling writes it straight via update_post_meta()
+     * — bypassing persist_event_authoring() and its maybe_persist_previous_start()
+     * call entirely. A REST PATCH straight to postponed/moved_online never
+     * captured the date being moved away from, so Event_Schema published
+     * EventPostponed/EventMovedOnline with no previousStartDate. This calls
+     * the SAME capture function the metabox and console saves use, fed by
+     * capture_meta_before_rest_write()'s snapshot — one function, three
+     * entry points, never a second copy of its rules.
+     *
      * @param \WP_Post         $post
      * @param \WP_REST_Request $request  Unused; part of the hook signature.
      * @param bool             $creating Unused; part of the hook signature.
@@ -675,7 +725,11 @@ class Module {
             return;
         }
 
-        $meta = $this->get_meta( $post->ID );
+        $meta     = $this->get_meta( $post->ID );
+        $old_meta = $this->rest_old_meta_before_write[ (int) $post->ID ] ?? [];
+        unset( $this->rest_old_meta_before_write[ (int) $post->ID ] );
+        $this->maybe_persist_previous_start( $post->ID, $old_meta, $meta );
+
         if ( ! empty( $meta['start_date'] ) ) {
             $this->persist_timestamps( $post->ID, $meta );
         }
@@ -5309,7 +5363,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /**
      * The ONE writer of `_anchor_event_previous_start` (RENDER-D9) — called
-     * from persist_event_authoring(), shared by both save surfaces.
+     * from persist_event_authoring() (both authoring save surfaces) and, since
+     * finding-17, from persist_after_rest_write() (a REST PATCH straight to
+     * `_anchor_event_status`, which bypasses persist_event_authoring()
+     * entirely since it is REST-writable on its own via REST_PUBLIC_META).
      *
      * Writes the event's start date as it stood BEFORE this save when either:
      *   - the status is transitioning INTO postponed/moved_online (from

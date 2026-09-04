@@ -90,4 +90,67 @@ class Test_Rest_Writes extends Anchor_Events_TestCase {
 
 		$this->assertSame( 'upcoming', get_post_meta( $event, '_anchor_event_status', true ) );
 	}
+
+	/**
+	 * finding-17 — `_anchor_event_status` is ALSO in REST_PUBLIC_META, so a
+	 * REST PATCH straight to postponed/moved_online used to bypass
+	 * persist_event_authoring() (and its maybe_persist_previous_start() call)
+	 * entirely: WordPress's generic registered-meta REST handling writes the
+	 * meta directly. Event_Schema published EventPostponed with no
+	 * previousStartDate to go with it. persist_after_rest_write() must now
+	 * capture the date being moved away from, exactly like a metabox/console
+	 * save transitioning the same event into postponed would.
+	 */
+	public function test_rest_status_write_to_postponed_captures_previous_start() {
+		$this->login_as_editor();
+		// status_mode is not REST_PUBLIC_META (not REST-writable), so the
+		// event must already be in manual mode — exactly what an author does
+		// in wp-admin before a REST-driven client (e.g. a headless editor)
+		// PATCHes the status itself.
+		$event = $this->make_event( [
+			'start_date'  => '2030-01-01',
+			'status_mode' => 'manual',
+			'status'      => 'upcoming',
+		] );
+		delete_post_meta( $event, '_anchor_event_previous_start' );
+
+		$response = $this->update_meta_over_rest( $event, [ '_anchor_event_status' => 'postponed' ] );
+
+		$this->assertSame( 200, $response->get_status(), 'The REST meta write itself must succeed.' );
+		$this->assertSame( 'postponed', get_post_meta( $event, '_anchor_event_status', true ), 'Precondition: REST wrote the new status.' );
+		$this->assertSame(
+			'2030-01-01',
+			get_post_meta( $event, '_anchor_event_previous_start', true ),
+			'A REST PATCH to postponed must capture the date being moved away from, same as the metabox/console saves.'
+		);
+	}
+
+	/** The companion status, same rule: moved_online also captures the date it is leaving. */
+	public function test_rest_status_write_to_moved_online_captures_previous_start() {
+		$this->login_as_editor();
+		$event = $this->make_event( [
+			'start_date'  => '2030-03-15',
+			'status_mode' => 'manual',
+			'status'      => 'upcoming',
+		] );
+		delete_post_meta( $event, '_anchor_event_previous_start' );
+
+		$this->update_meta_over_rest( $event, [ '_anchor_event_status' => 'moved_online' ] );
+
+		$this->assertSame(
+			'2030-03-15',
+			get_post_meta( $event, '_anchor_event_previous_start', true )
+		);
+	}
+
+	/** A REST write that never touches status at all must not fabricate a previous_start row. */
+	public function test_rest_write_unrelated_to_status_does_not_capture_previous_start() {
+		$this->login_as_editor();
+		$event = $this->make_event( [ 'start_date' => '2030-01-01' ] );
+		delete_post_meta( $event, '_anchor_event_previous_start' );
+
+		$this->update_meta_over_rest( $event, [ '_anchor_event_venue' => 'New venue' ] );
+
+		$this->assertSame( '', get_post_meta( $event, '_anchor_event_previous_start', true ) );
+	}
 }

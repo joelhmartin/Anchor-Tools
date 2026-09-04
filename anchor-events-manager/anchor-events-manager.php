@@ -1796,12 +1796,23 @@ class Module {
             $this->registrations->anonymize_seat( $seat_id );
         }
 
+        // REG-D55 — say WHAT was retained. anonymize_seat() scrubs name, email,
+        // phone and the custom answers but deliberately keeps the seat's
+        // customer id and order id, either of which resolves straight back to
+        // the person through the WP user record or the WooCommerce order's
+        // billing email. Reporting items_retained with no message left the
+        // operator to assume the retained part was anonymous.
+        $messages = [];
+        if ( ! empty( $seat_ids ) ) {
+            $messages[] = \__( 'Event registrations were kept for capacity and audit purposes with the attendee name, email, phone and answers removed. Each seat still records the WordPress customer id and WooCommerce order id it came from; those links are cleared by WooCommerce\'s own eraser.', 'anchor-schema' );
+        }
+
         return [
             // Seats are retained with PII scrubbed (kept for capacity + audit), not
             // physically deleted — so nothing is "removed", everything is "retained".
             'items_removed'  => false,
             'items_retained' => ! empty( $seat_ids ),
-            'messages'       => [],
+            'messages'       => $messages,
             'done'           => \count( $seat_ids ) < $per_page,
         ];
     }

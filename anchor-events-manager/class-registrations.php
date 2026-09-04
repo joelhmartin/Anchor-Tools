@@ -1077,9 +1077,18 @@ class Registrations {
         if ( $email === '' ) {
             return [];
         }
+        // REG-D55 — 'any', and deliberately unlike every other seat query in
+        // this class (see tier_has_seats()). This one feeds the GDPR exporter
+        // and eraser, and a request to erase somebody's data is not answered by
+        // "we only looked at the published rows": a trashed seat kept the
+        // attendee's name, email and phone while the eraser reported done.
+        // Capacity and idempotency are what 'publish' is for; thoroughness is
+        // what this is for. Spelled out rather than 'any', because WP_Query's
+        // 'any' drops every status flagged exclude_from_search — `trash`
+        // included, which is the exact row this fix is about.
         $q = new \WP_Query( [
             'post_type'      => Module::REG_CPT,
-            'post_status'    => 'publish',
+            'post_status'    => [ 'publish', 'pending', 'draft', 'future', 'private', 'trash' ],
             'fields'         => 'ids',
             'posts_per_page' => max( 1, (int) $per_page ),
             'paged'          => max( 1, (int) $paged ),

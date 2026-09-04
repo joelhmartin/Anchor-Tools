@@ -174,4 +174,30 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$this->registrations()->anonymize_seat( $seat_id );
 		$this->assertSame( [], $this->registrations()->seats_by_email( 'find-me@example.test' ) );
 	}
+
+	/**
+	 * REG-D55 — the eraser is exhaustive, and says what it kept. It used to
+	 * match published seats only, so a trashed seat kept the attendee's name,
+	 * email and phone after the eraser reported done; and it reported
+	 * items_retained with no message, leaving the operator to assume the
+	 * retained part carried nothing that resolves back to a person.
+	 */
+	public function test_the_eraser_reaches_a_trashed_seat_and_names_what_it_retained() {
+		$event_id = $this->make_event();
+		$live     = $this->make_seat( $event_id, [ 'email' => 'erase-me@example.test', 'name' => 'Live Seat' ] );
+		$trashed  = $this->make_seat( $event_id, [ 'email' => 'erase-me@example.test', 'name' => 'Trashed Seat', 'order_id' => 99 ] );
+		wp_trash_post( $trashed );
+
+		$found = $this->registrations()->seats_by_email( 'erase-me@example.test' );
+		$this->assertContains( $trashed, $found, 'A trashed seat still holds the attendee PII.' );
+		$this->assertContains( $live, $found );
+
+		$result = $this->module()->privacy_erase( 'erase-me@example.test' );
+
+		$this->assertTrue( $result['items_retained'] );
+		$this->assertNotEmpty( $result['messages'], 'items_retained with no message says nothing about what was kept.' );
+		$this->assertStringContainsString( 'order', strtolower( $result['messages'][0] ) );
+		$this->assertSame( '', get_post_meta( $trashed, '_anchor_event_email', true ) );
+		$this->assertNotSame( 'Trashed Seat', get_post_meta( $trashed, '_anchor_event_name', true ) );
+	}
 }

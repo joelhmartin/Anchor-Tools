@@ -11523,27 +11523,81 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return '<div class="anchor-events-empty">' . esc_html__( 'Calendar template not found.', 'anchor-schema' ) . '</div>';
     }
 
-    private function format_date_time( $meta, $include_range = false ) {
+    /**
+     * The structured facts behind an event's date/time display — the single
+     * source format_date_time() (and any future caller that wants the parts
+     * instead of one pre-joined string) builds on, rather than each
+     * re-deriving its own reading of the raw meta (RENDER-D37).
+     *
+     * Unlike the old format_date_time(), the time-of-day parts are run
+     * through the site's `time_format` option via date_i18n() — the raw
+     * "14:00" meta text used to print next to a localised date verbatim,
+     * unlocalised and inconsistent with every other time WordPress shows.
+     *
+     * @param array $meta get_meta() result: start_date/start_time/end_date/end_time/all_day.
+     * @return array{start_date:string,start_time:string,end_date:string,end_time:string,all_day:bool}
+     *               end_date is '' when the event doesn't span multiple days
+     *               (no end_date, or the same date as start_date).
+     */
+    public function event_date_parts( $meta ) {
+        $all_day = ! empty( $meta['all_day'] );
+        $parts = [
+            'start_date' => '',
+            'start_time' => '',
+            'end_date' => '',
+            'end_time' => '',
+            'all_day' => $all_day,
+        ];
+
         if ( ! $meta['start_date'] ) {
+            return $parts;
+        }
+
+        $time_format = \get_option( 'time_format' );
+        $format_time = function ( $raw ) use ( $time_format ) {
+            if ( $raw === '' ) {
+                return '';
+            }
+            $timestamp = \strtotime( $raw );
+            return $timestamp ? date_i18n( $time_format, $timestamp ) : '';
+        };
+
+        $parts['start_date'] = date_i18n( 'M j, Y', strtotime( $meta['start_date'] ) );
+        $parts['start_time'] = $all_day ? '' : $format_time( $meta['start_time'] );
+
+        if ( ! empty( $meta['end_date'] ) && $meta['end_date'] !== $meta['start_date'] ) {
+            $parts['end_date'] = date_i18n( 'M j, Y', strtotime( $meta['end_date'] ) );
+        }
+        $parts['end_time'] = $all_day ? '' : $format_time( $meta['end_time'] );
+
+        return $parts;
+    }
+
+    /**
+     * Thin formatter over event_date_parts() — see that method for the
+     * actual date/time logic. Kept as the join-into-one-string shape every
+     * existing caller (render_column, the registrants list, the manager
+     * item, the event card, single content, the choose-date row,
+     * occurrence_label) already expects.
+     */
+    private function format_date_time( $meta, $include_range = false ) {
+        $parts = $this->event_date_parts( $meta );
+        if ( $parts['start_date'] === '' ) {
             return '';
         }
-        $start = $meta['start_date'];
-        $start_time = $meta['all_day'] ? '' : $meta['start_time'];
-        $end_date = $meta['end_date'];
-        $end_time = $meta['all_day'] ? '' : $meta['end_time'];
 
-        $output = date_i18n( 'M j, Y', strtotime( $start ) );
-        if ( $start_time ) {
-            $output .= ' ' . $start_time;
+        $output = $parts['start_date'];
+        if ( $parts['start_time'] !== '' ) {
+            $output .= ' ' . $parts['start_time'];
         }
         if ( $include_range ) {
-            if ( $end_date && $end_date !== $start ) {
-                $output .= ' - ' . date_i18n( 'M j, Y', strtotime( $end_date ) );
-                if ( $end_time ) {
-                    $output .= ' ' . $end_time;
+            if ( $parts['end_date'] !== '' ) {
+                $output .= ' - ' . $parts['end_date'];
+                if ( $parts['end_time'] !== '' ) {
+                    $output .= ' ' . $parts['end_time'];
                 }
-            } elseif ( $end_time ) {
-                $output .= ' - ' . $end_time;
+            } elseif ( $parts['end_time'] !== '' ) {
+                $output .= ' - ' . $parts['end_time'];
             }
         }
         return $output;

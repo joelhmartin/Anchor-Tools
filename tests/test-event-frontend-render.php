@@ -470,4 +470,73 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		$this->assertSame( 'meta_value_num', $captured[2]['orderby'] );
 		$this->assertSame( $this->module()->meta_key( 'priority' ), $captured[2]['meta_key'] );
 	}
+
+	/**
+	 * RENDER-D37: format_date_time() used to concatenate the raw `start_time`/
+	 * `end_time` meta TEXT verbatim next to a localised date, so a stored
+	 * "09:00" printed literally instead of running through the site's own
+	 * time_format option. event_date_parts() is the new single source of
+	 * these fields; format_date_time() (exercised here via
+	 * render_single_content(), one of its 7 call sites) must be a thin
+	 * formatter over it.
+	 */
+	public function test_format_date_time_runs_times_through_time_format_option() {
+		update_option( 'time_format', 'g:i A' );
+		$event_id = $this->make_event( [
+			'start_date' => '2026-09-01',
+			'start_time' => '09:00',
+			'end_date'   => '2026-09-02',
+			'end_time'   => '17:00',
+		] );
+
+		$html = $this->module()->render_single_content( $event_id );
+
+		$this->assertStringContainsString( '9:00 AM', $html, 'start_time must be localised via time_format, not printed as raw "09:00".' );
+		$this->assertStringContainsString( '5:00 PM', $html, 'end_time must be localised via time_format, not printed as raw "17:00".' );
+		$this->assertStringContainsString( 'Sep 2, 2026', $html );
+		$this->assertStringNotContainsString( '09:00', $html );
+		$this->assertStringNotContainsString( '17:00', $html );
+	}
+
+	/** event_date_parts() is the single structured source format_date_time() and future callers build on. */
+	public function test_event_date_parts_returns_structured_array() {
+		update_option( 'time_format', 'g:i A' );
+		$meta = $this->module()->get_meta( $this->make_event( [
+			'start_date' => '2026-09-01',
+			'start_time' => '14:00',
+			'end_date'   => '2026-09-01',
+			'end_time'   => '16:30',
+		] ) );
+
+		$parts = $this->module()->event_date_parts( $meta );
+
+		$this->assertSame( 'Sep 1, 2026', $parts['start_date'] );
+		$this->assertSame( '2:00 PM', $parts['start_time'] );
+		$this->assertSame( '', $parts['end_date'], 'Same-day end date must not repeat as a second date part.' );
+		$this->assertSame( '4:30 PM', $parts['end_time'] );
+		$this->assertFalse( $parts['all_day'] );
+	}
+
+	/** An all-day event's parts carry no time-of-day text at all. */
+	public function test_event_date_parts_all_day_event_has_no_times() {
+		$meta = $this->module()->get_meta( $this->make_event( [
+			'start_date' => '2026-09-01',
+			'start_time' => '09:00',
+			'all_day'    => true,
+		] ) );
+
+		$parts = $this->module()->event_date_parts( $meta );
+
+		$this->assertSame( '', $parts['start_time'] );
+		$this->assertTrue( $parts['all_day'] );
+	}
+
+	/** Regression: an event with no start_date at all still formats to '' (unchanged behaviour). */
+	public function test_format_date_time_still_empty_with_no_start_date() {
+		$event_id = $this->make_event( [ 'start_date' => '' ] );
+
+		$html = $this->module()->render_single_content( $event_id );
+
+		$this->assertStringContainsString( '<strong>Date:</strong>', $html );
+	}
 }

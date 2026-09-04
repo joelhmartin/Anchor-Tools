@@ -21,6 +21,8 @@ if ( ! class_exists( 'WPSEO_Frontend' ) ) {
 	class WPSEO_Frontend {}
 }
 
+use Anchor\Events\Series;
+
 /**
  * @group event-frontend-render
  */
@@ -248,5 +250,25 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		unset( $_GET['anchor_events_month'] );
 
 		$this->assertSame( '', $html );
+	}
+
+	/**
+	 * RENDER-D18: frontend_assets() (hooked on wp_enqueue_scripts, so it runs
+	 * before wp_head) must enqueue on a series-taxonomy archive, not just a
+	 * singular event/post-type archive — otherwise the archive's own template
+	 * has to enqueue it later, after wp_head, and WordPress prints it via
+	 * print_late_styles()/print_late_scripts() in the footer instead.
+	 */
+	public function test_frontend_assets_enqueues_on_series_archive() {
+		$term = wp_insert_term( 'RENDER-D18 series', Series::TAXONOMY );
+		$this->assertIsArray( $term, 'wp_insert_term() must succeed for this test to mean anything.' );
+		$this->go_to( get_term_link( (int) $term['term_id'], Series::TAXONOMY ) );
+
+		$this->assertTrue( is_tax( Series::TAXONOMY ), 'go_to() must land on the series archive for this test to mean anything.' );
+
+		$this->module()->frontend_assets();
+
+		$this->assertTrue( wp_style_is( 'anchor-events-frontend', 'enqueued' ) );
+		$this->assertTrue( wp_script_is( 'anchor-events-frontend', 'enqueued' ) );
 	}
 }

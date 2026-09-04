@@ -6448,7 +6448,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( \is_admin() ) {
             return;
         }
-        if ( \is_singular( self::CPT ) || \is_post_type_archive( self::CPT ) ) {
+        // RENDER-D18: a series archive (templates/taxonomy-event_series.php)
+        // was missing from this gate, so frontend.css/.js were enqueued only
+        // from inside that template — after wp_head — and WordPress prints
+        // them via print_late_styles()/print_late_scripts() at wp_footer
+        // instead, leaving the archive unstyled until the footer parses.
+        if ( \is_singular( self::CPT ) || \is_post_type_archive( self::CPT ) || \is_tax( Series::TAXONOMY ) ) {
             $this->enqueue_frontend_assets();
         }
     }

@@ -8590,13 +8590,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $output = '<ul class="anchor-event-labels">';
         foreach ( $labels as $row ) {
-            $output .= '<li class="anchor-event-label anchor-event-label-' . esc_attr( $row['key'] ) . '"'
-                . ' data-label-key="' . esc_attr( $row['key'] ) . '"'
-                . ' data-caption="' . esc_attr( $row['caption'] ) . '">'
-                . esc_html( $row['value'] )
-                . '</li>';
+            $output .= $this->render_label_row( $row, 'badge' );
         }
         $output .= '</ul>';
+
+        return $output;
+    }
+
+    /**
+     * One label row, rendered for either the card ("badge") or the
+     * single-event page ("detail"). RENDER-D39: these used to be two
+     * independently-maintained renderers with different element shapes — the
+     * badge exposed its caption ONLY as a data attribute, the detail row
+     * ONLY as visible text — so a theme selector on .anchor-event-label-<key>
+     * inherited a different internal structure depending on which view it
+     * was in, and adding a third view would have meant a third shape. Both
+     * variants now carry the same data-label-key/data-caption attributes;
+     * only the wrapping element (an <li> inside the badge <ul>, a <div>
+     * inside the detail view's CSS grid — each required by its own parent)
+     * and whether the caption ALSO shows as visible text differ.
+     *
+     * @param array  $row     One row from get_labels(): key, label, value, caption.
+     * @param string $variant 'badge' or 'detail'.
+     * @return string
+     */
+    private function render_label_row( array $row, $variant ) {
+        $is_detail = ( $variant === 'detail' );
+        $tag       = $is_detail ? 'div' : 'li';
+        $key       = (string) $row['key'];
+        $caption   = (string) $row['caption'];
+
+        $class = 'anchor-event-label anchor-event-label--' . ( $is_detail ? 'detail' : 'badge' )
+            . ' anchor-event-label-' . esc_attr( $key );
+
+        $output = '<' . $tag . ' class="' . $class . '"'
+            . ' data-label-key="' . esc_attr( $key ) . '"'
+            . ' data-caption="' . esc_attr( $caption ) . '">';
+        if ( $is_detail && $caption !== '' ) {
+            $output .= '<strong>' . esc_html( $caption ) . ': </strong>';
+        }
+        $output .= esc_html( $row['value'] );
+        $output .= '</' . $tag . '>';
 
         return $output;
     }
@@ -8750,12 +8784,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         // Labels read as "Duration: 2 Day Course" here — the single page has the
         // room for a caption, unlike the card, where the value alone is the badge.
+        // Shares render_label_row() with the card's badges (RENDER-D39).
         foreach ( $this->get_labels( $post_id ) as $label_row ) {
-            $caption = $label_row['caption'] !== '' ? $label_row['caption'] . ': ' : '';
-            $output .= '<div class="anchor-event-label-detail anchor-event-label-' . esc_attr( $label_row['key'] ) . '">'
-                . '<strong>' . esc_html( $caption ) . '</strong>'
-                . esc_html( $label_row['value'] )
-                . '</div>';
+            $output .= $this->render_label_row( $label_row, 'detail' );
         }
         $output .= '<div><strong>' . esc_html__( 'Status', 'anchor-schema' ) . ':</strong> ' . esc_html( ucfirst( $status ) ) . '</div>';
         $output .= '</div>';

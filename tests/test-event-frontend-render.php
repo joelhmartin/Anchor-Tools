@@ -539,4 +539,33 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 
 		$this->assertStringContainsString( '<strong>Date:</strong>', $html );
 	}
+
+	/**
+	 * RENDER-D39: the card ("badge" variant, render_event_card()) and the
+	 * single page ("detail" variant, render_single_content()) rendered the
+	 * same label rows with two different shapes — the card put the caption
+	 * ONLY in a data-attribute, the detail view put it ONLY as visible text.
+	 * A theme selector on .anchor-event-label-<key> inherited a different
+	 * internal structure depending on which view it was in. Both must now
+	 * carry the SAME machine-readable data-caption attribute.
+	 */
+	public function test_label_row_caption_is_machine_readable_in_both_badge_and_detail_variants() {
+		$event_id = $this->make_event( [
+			'labels' => [ [ 'key' => 'duration', 'value' => '2 Day Course' ] ],
+		] );
+
+		$badge_html  = $this->module()->render_event_card( $event_id, 'shortcode' );
+		$detail_html = $this->module()->render_single_content( $event_id );
+
+		$this->assertStringContainsString( 'data-caption="Duration"', $badge_html, 'The badge variant must expose the caption as a data attribute.' );
+		$this->assertStringContainsString( 'data-caption="Duration"', $detail_html, 'The detail variant must ALSO expose the caption as a data attribute, not text-only.' );
+
+		// Both variants keep the per-key class a theme selector targets.
+		$this->assertStringContainsString( 'anchor-event-label-duration', $badge_html );
+		$this->assertStringContainsString( 'anchor-event-label-duration', $detail_html );
+
+		// The detail variant keeps its visible "Caption: value" text (unlike the badge).
+		$this->assertStringContainsString( 'Duration', $detail_html );
+		$this->assertStringContainsString( '2 Day Course', $detail_html );
+	}
 }

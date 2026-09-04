@@ -263,9 +263,8 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 			(bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ),
 			'A date that was bookable before it was closed must be bookable again.'
 		);
-		$this->assertSame(
-			'',
-			get_post_meta( $child, '_anchor_event_occurrence_prev_reg', true ),
+		$this->assertFalse(
+			metadata_exists( 'post', $child, '_anchor_event_occurrence_prev_reg' ),
 			'The snapshot is consumed by the revive, not left to be replayed later.'
 		);
 	}
@@ -292,26 +291,9 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 			(bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ),
 			'Reviving a date must not turn bookings ON for one the author had closed.'
 		);
-	}
-
-	/** A value the author wrote AFTER the close beats the snapshot taken before it. */
-	public function test_a_hand_reopened_closed_date_keeps_the_authors_value() {
-		list( $parent_id, $child ) = $this->soft_closed_child();
-
-		// The author re-opens bookings on the closed date by hand.
-		update_post_meta( $child, '_anchor_event_registration_enabled', true );
-
-		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->two_rows() );
-		$this->occurrences()->reconcile( $parent_id );
-
-		$this->assertTrue(
-			(bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ),
-			'The revive restores what the close overwrote — it does not undo a later edit.'
-		);
-		$this->assertSame(
-			'',
-			get_post_meta( $child, '_anchor_event_occurrence_prev_reg', true ),
-			'…and the spent snapshot is still cleared.'
+		$this->assertFalse(
+			metadata_exists( 'post', $child, '_anchor_event_occurrence_prev_reg' ),
+			'The snapshot is consumed either way.'
 		);
 	}
 

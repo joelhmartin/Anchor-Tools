@@ -1523,6 +1523,14 @@ class Occurrences {
      * form's explicit "apply to all dates" action
      * (apply_registration_to_children(), audit MODEL-D40).
      *
+     * The snapshot is authoritative, unconditionally. There is no "unless
+     * somebody changed it since" guard, because there is no window in which
+     * they could have: reconcile() calls sync_child_from_parent() immediately
+     * before this, and that re-asserts the whole closed quartet on a
+     * still-closed child (audit MODEL-D6) — so the value here is always the
+     * `false` the close wrote. A guard on it would read as caution and be dead
+     * code.
+     *
      * The `occurrence_closed` flag is the ONLY reopening trigger, on purpose.
      * Inferring closure from the status half of the quartet (manual +
      * cancelled + registration off) reads identically to an admin cancelling a
@@ -1549,17 +1557,11 @@ class Occurrences {
         // later, unrelated close cannot replay a stale value.
         $prev_key = $mk( 'occurrence_prev_reg' );
         if ( \metadata_exists( 'post', (int) $child_id, $prev_key ) ) {
-            // Only while the close's own write is still standing. `false` is
-            // what soft_close() wrote; a `true` here means somebody re-opened
-            // this date by hand after it was closed, and their value wins over
-            // a snapshot taken before they did.
-            if ( ! (bool) \get_post_meta( $child_id, $mk( 'registration_enabled' ), true ) ) {
-                \update_post_meta(
-                    $child_id,
-                    $mk( 'registration_enabled' ),
-                    (bool) \get_post_meta( $child_id, $prev_key, true )
-                );
-            }
+            \update_post_meta(
+                $child_id,
+                $mk( 'registration_enabled' ),
+                (bool) \get_post_meta( $child_id, $prev_key, true )
+            );
             \delete_post_meta( $child_id, $prev_key );
         }
 

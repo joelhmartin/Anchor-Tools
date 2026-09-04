@@ -7,6 +7,7 @@
  * @package Anchor\Events\Tests
  */
 
+use Anchor\Events\Events_Log;
 use Anchor\Events\Registrations;
 
 /**
@@ -238,6 +239,51 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 			'mixed',
 			$this->classify_refund( wc_get_order( $order->get_id() ), $refund->get_id() )
 		);
+	}
+
+	/* ------------------------------------------------------------------
+	 * WOO-D43 — an unrecognized order status is a no-op with ONE record.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * A deposit/partial-payment plugin's own custom order status. Before
+	 * WOO-D43, map_order_status_to_seat()'s SEAT_TARGET_UNKNOWN sentinel made
+	 * reconcile_order() return with NO log entry and NO needs-review flag —
+	 * a paid order could sit with zero seats and zero visible signal
+	 * anywhere. It must now be recorded exactly once, not once per pass.
+	 */
+	public function test_unrecognized_order_status_is_flagged_once_not_silently() {
+		add_filter( 'wc_order_statuses', function ( $statuses ) {
+			$statuses['wc-partially-paid'] = 'Partially paid';
+			return $statuses;
+		} );
+
+		$ctx      = $this->paid_event_with_variation();
+		$res      = $this->make_order( $ctx['variation_id'], 1, 'partially-paid' );
+		$order_id = $res['order']->get_id();
+		$this->assertSame( 'partially-paid', wc_get_order( $order_id )->get_status(), 'Precondition: the custom status stuck.' );
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'first pass' );
+
+		$this->assertSame(
+			0,
+			$this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ),
+			'An unrecognized status must not fabricate seats.'
+		);
+
+		$order = wc_get_order( $order_id );
+		$flags = (array) $order->get_meta( Events_Log::ORDER_REVIEW_META );
+		$this->assertCount( 1, $flags );
+		$this->assertSame( 'unknown_order_status', $flags[0]['reason'] );
+
+		$log = (array) $order->get_meta( Events_Log::ORDER_LOG_META );
+		$this->assertCount( 1, $log, 'Exactly one sync-log entry for the first unknown-status pass.' );
+
+		// Re-firing must not spam a second log entry or a second flag.
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'second pass' );
+		$order = wc_get_order( $order_id );
+		$this->assertCount( 1, (array) $order->get_meta( Events_Log::ORDER_REVIEW_META ) );
+		$this->assertCount( 1, (array) $order->get_meta( Events_Log::ORDER_LOG_META ) );
 	}
 
 	/* ------------------------------------------------------------------

@@ -2186,6 +2186,30 @@ class WooCommerce {
     }
 
     /**
+     * WOO-D43 — record the FIRST time an order lands in an unrecognized
+     * status, once, so a paid order stuck under a gateway-specific status
+     * (deposits, subscriptions, fulfillment, partial-payment, …) is not a
+     * complete no-op with no trace anywhere. Deduped by
+     * Events_Log::flag_review()'s own by-reason dedupe (and a matching check
+     * here so the sync log doesn't get one entry per reconcile pass either).
+     *
+     * @param \WC_Order $order
+     * @param string    $order_status
+     */
+    private function flag_unknown_order_status_once( \WC_Order $order, $order_status ) {
+        $flags = $order->get_meta( Events_Log::ORDER_REVIEW_META );
+        $flags = \is_array( $flags ) ? $flags : [];
+        foreach ( $flags as $flag ) {
+            if ( isset( $flag['reason'] ) && $flag['reason'] === 'unknown_order_status' ) {
+                return; // Already recorded for this order.
+            }
+        }
+        $order_id = (int) $order->get_id();
+        Events_Log::order( $order_id, 'Unrecognized order status — seats left untouched.', [ 'status' => (string) $order_status ] );
+        Events_Log::flag_review( $order_id, 'unknown_order_status', 'status: ' . (string) $order_status );
+    }
+
+    /**
      * The single seat-mutation entry point: declarative & idempotent for ALL order
      * statuses, manual edits, and refunds. Computes the desired seat set per line
      * from the order's current state and converges existing seats toward it.
@@ -2239,11 +2263,20 @@ class WooCommerce {
             $target        = $this->map_order_status_to_seat( $order_status );
 
             // M6 — unknown/custom status: leave every seat exactly as-is (do NOT
-            // sweep, do NOT force expected=0). A true no-op for converged passes:
-            // do NOT append a sync-log entry and do NOT save (writing a log entry
-            // every pass would mark the order dirty and save even though nothing
-            // changed). Just release the in-flight guard via the outer finally.
+            // sweep, do NOT force expected=0). A true no-op for CONVERGED passes:
+            // do NOT append a sync-log entry and do NOT save on every re-fire
+            // (that would mark the order dirty and save even though nothing
+            // changed).
+            //
+            // WOO-D43: but the FIRST time an order lands in an unrecognized
+            // status (a deposit/partial-payment plugin's own custom status,
+            // say) it deserves exactly one record — otherwise a paid order can
+            // sit with zero seats and zero visible signal anywhere: not on the
+            // order, not on the event, not in an admin notice. Gated by a flag
+            // already on the order so this fires once per order, not once per
+            // reconcile pass.
             if ( $target === self::SEAT_TARGET_UNKNOWN ) {
+                $this->flag_unknown_order_status_once( $order, $order_status );
                 return;
             }
 

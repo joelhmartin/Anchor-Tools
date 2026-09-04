@@ -388,9 +388,68 @@ class Test_Timezone extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'daylight', strtolower( $printed ) );
 	}
 
+	/**
+	 * NEW-D6: the warning is a standing one — nothing but a human in Settings →
+	 * General can clear it — so it has to be dismissible, per user, or it
+	 * becomes furniture on every event screen and stops being read.
+	 */
+	public function test_the_notice_can_be_dismissed_for_this_user() {
+		$this->site_on_a_bare_offset();
+		$user_id = self::factory()->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $user_id );
+
+		$this->assertStringContainsString( 'is-dismissible', $this->module()->timezone_notice_html() );
+
+		$this->dismiss_timezone_notice();
+
+		$this->assertSame( '', $this->module()->timezone_notice_html(), 'A dismissed notice stays dismissed.' );
+
+		// …for THAT user only.
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertStringContainsString( 'daylight', strtolower( $this->module()->timezone_notice_html() ) );
+	}
+
+	/** A dismissal without a valid nonce records nothing. */
+	public function test_the_dismissal_needs_a_nonce() {
+		$this->site_on_a_bare_offset();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$_GET = [ 'anchor_events_dismiss_tz' => '1', '_wpnonce' => 'not-a-nonce' ];
+		$this->module()->maybe_dismiss_timezone_notice();
+		$_GET = [];
+
+		$this->assertStringContainsString( 'daylight', strtolower( $this->module()->timezone_notice_html() ) );
+	}
+
+	/** Moving the site to a DIFFERENT fixed offset is a fresh decision, so it asks again. */
+	public function test_a_new_offset_asks_again() {
+		$this->site_on_a_bare_offset();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->dismiss_timezone_notice();
+		$this->assertSame( '', $this->module()->timezone_notice_html() );
+
+		update_option( 'gmt_offset', -5 );
+
+		$this->assertStringContainsString( '-05:00', $this->module()->timezone_notice_html() );
+	}
+
 	/* ------------------------------------------------------------------
 	 * Helpers.
 	 * ------------------------------------------------------------------ */
+
+	/** Follow the notice's own dismiss URL, the way its inline script does. */
+	private function dismiss_timezone_notice() {
+		$url = '';
+		if ( preg_match( '/data-anchor-events-tz-dismiss="([^"]+)"/', $this->module()->timezone_notice_html(), $m ) ) {
+			$url = html_entity_decode( $m[1] );
+		}
+		$this->assertNotSame( '', $url, 'The notice must carry its dismiss URL.' );
+
+		parse_str( (string) wp_parse_url( $url, PHP_URL_QUERY ), $query );
+		$_GET = $query;
+		$this->module()->maybe_dismiss_timezone_notice();
+		$_GET = [];
+	}
 
 	/**
 	 * An event with its derived `_ts` rows actually written — make_event()

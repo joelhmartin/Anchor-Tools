@@ -116,6 +116,14 @@ class Module {
      * that a notice can never surface against an unrelated later save.
      */
     const NOTICE_TTL = 60;
+    /**
+     * Per-user record of the DST warning being dismissed
+     * (timezone_notice_html()). Stores the UTC offset it was dismissed FOR, so
+     * a site moved to a different fixed offset asks again.
+     */
+    const TZ_NOTICE_DISMISSED_META = 'anchor_events_tz_notice_dismissed';
+    /** Nonce action for that dismissal (maybe_dismiss_timezone_notice()). */
+    const TZ_NOTICE_DISMISS_ACTION = 'anchor_events_dismiss_tz';
     const REG_NONCE = 'anchor_event_reg_nonce';
 
     /**
@@ -326,6 +334,7 @@ class Module {
         \add_action( 'admin_init', [ $this, 'cleanup_legacy_cache_registry' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
         \add_action( 'admin_notices', [ $this, 'maybe_render_timezone_notice' ] );
+        \add_action( 'admin_init', [ $this, 'maybe_dismiss_timezone_notice' ] );
 
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
         \add_action( 'admin_post_nopriv_anchor_event_register', [ $this, 'handle_registration' ] );
@@ -5021,6 +5030,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * Split from the renderer so the condition is testable without a screen.
      *
+     * DISMISSIBLE, per user (audit NEW-D6): the fix is a decision only a human
+     * with access to Settings → General can make, and until they make it this
+     * printed on every event edit, every event list and the settings tab, for
+     * everyone — a permanent banner is how authors learn to stop reading
+     * notices. The dismissal records the OFFSET it was dismissed for, so
+     * changing the site to a different fixed offset asks again: the notice
+     * names the offset, and a changed setting is a fresh decision.
+     *
      * @return string
      */
     public function timezone_notice_html() {
@@ -5039,8 +5056,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $zone === '+00:00' ) {
             return '';
         }
+        $user_id = \get_current_user_id();
+        if ( $user_id > 0 && (string) \get_user_meta( $user_id, self::TZ_NOTICE_DISMISSED_META, true ) === $zone ) {
+            return '';
+        }
 
-        return '<div class="notice notice-warning"><p><strong>'
+        return '<div class="notice notice-warning is-dismissible" data-anchor-events-tz-dismiss="'
+            . \esc_attr( $this->timezone_notice_dismiss_url() ) . '"><p><strong>'
             . \esc_html__( 'Events: this site has no time zone, only a UTC offset.', 'anchor-schema' )
             . '</strong> '
             . \esc_html(
@@ -5053,6 +5075,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             . ' <a href="' . \esc_url( \admin_url( 'options-general.php#timezone_string' ) ) . '">'
             . \esc_html__( 'Choose a named city in Settings → General', 'anchor-schema' )
             . '</a>.</p></div>';
+    }
+
+    /**
+     * The nonced URL that records "this author has seen the timezone warning".
+     *
+     * A plain admin URL, not an ajax endpoint: it is handled on admin_init
+     * (maybe_dismiss_timezone_notice()) so following it in a browser works
+     * exactly as well as the fetch() the inline script sends — one handler, no
+     * second entry point to keep in step.
+     *
+     * @return string
+     */
+    private function timezone_notice_dismiss_url() {
+        return \wp_nonce_url(
+            \add_query_arg( 'anchor_events_dismiss_tz', '1', \admin_url() ),
+            self::TZ_NOTICE_DISMISS_ACTION
+        );
+    }
+
+    /**
+     * Record the dismissal (audit NEW-D6). Hooked on admin_init, so it also
+     * works for a plain navigation to the URL above; it deliberately does NOT
+     * redirect, because the fetch() that normally calls it wants no page change
+     * and the notice is already suppressed for the render that follows.
+     *
+     * Capability-gated like everything else on this hook — admin_init fires on
+     * admin-post.php before the auth cookie is validated, and this module
+     * registers nopriv handlers there.
+     */
+    public function maybe_dismiss_timezone_notice() {
+        if ( ! isset( $_GET['anchor_events_dismiss_tz'] ) ) {
+            return;
+        }
+        if ( ! \current_user_can( 'edit_posts' ) ) {
+            return;
+        }
+        $nonce = isset( $_GET['_wpnonce'] ) ? \sanitize_text_field( \wp_unslash( $_GET['_wpnonce'] ) ) : '';
+        if ( ! \wp_verify_nonce( $nonce, self::TZ_NOTICE_DISMISS_ACTION ) ) {
+            return;
+        }
+        \update_user_meta( \get_current_user_id(), self::TZ_NOTICE_DISMISSED_META, \wp_timezone_string() );
     }
 
     /**
@@ -5079,7 +5142,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
 
-        echo $this->timezone_notice_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped at build time.
+        $html = $this->timezone_notice_html();
+        if ( $html === '' ) {
+            return;
+        }
+
+        echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped at build time.
+        // `is-dismissible` only hides the notice for this pageload; core's
+        // dismiss button has no idea what to persist. Six lines of listener
+        // send the nonced URL the markup carries, so the X means "and don't
+        // tell me again" rather than "until I reload".
+        echo '<script>(function(){var n=document.querySelector(\'[data-anchor-events-tz-dismiss]\');'
+            . 'if(!n)return;n.addEventListener(\'click\',function(e){'
+            . 'if(!e.target.classList.contains(\'notice-dismiss\'))return;'
+            . 'fetch(n.getAttribute(\'data-anchor-events-tz-dismiss\'),{credentials:\'same-origin\'});});})();</script>';
     }
 
     public function admin_assets( $hook ) {

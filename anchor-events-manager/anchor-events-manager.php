@@ -4766,6 +4766,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 'level' => 'error',
                 'message' => \__( 'Set an end for the recurrence — a number of occurrences or an until date — before saving. No occurrences were generated/updated.', 'anchor-schema' ),
             ],
+            // Inheritance is symmetric on purpose — a value cleared on this
+            // event is cleared on its dates — but when what it clears is
+            // authored content, saying nothing is how a date silently stops
+            // asking a question. Queued by Occurrences::sync_shared_meta().
+            'inherited_child_data_removed' => [
+                'level' => 'warning',
+                'message' => \__( 'One or more dates had their own registration questions or email wording. This event has none of its own, so the dates\' copies were removed — every date now uses this event\'s settings. To keep that wording, set it here on the event and save again.', 'anchor-schema' ),
+            ],
         ];
     }
 
@@ -4796,10 +4804,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Queue an authoring notice for the author who is saving $post_id. Codes
      * accumulate (a save can trip more than one guard) and never repeat.
      *
+     * Public because the reconcile engine queues too (Occurrences::
+     * sync_shared_meta() reports the child rows an inheritance pass deleted).
+     * One queue, one vocabulary — the alternative was a second notice channel
+     * that only the classic editor would have rendered.
+     *
      * @param string $code    A key of group_notice_map().
      * @param int    $post_id
      */
-    private function queue_group_notice( $code, $post_id = 0 ) {
+    public function queue_group_notice( $code, $post_id = 0 ) {
         $post_id = (int) $post_id;
         $user_id = \get_current_user_id();
         if ( $post_id <= 0 || $user_id <= 0 ) {

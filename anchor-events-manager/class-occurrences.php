@@ -1198,20 +1198,7 @@ class Occurrences {
             $keys[] = $this->module->meta_key( $key );
         }
 
-        // Registration questions: a child asks the same questions as its
-        // parent, or a booking on one date collects nothing.
-        $keys[] = Module::QUESTIONS_META;
-
-        // Per-event email overrides. Without these a child sent the site-wide
-        // confirmation while the parent's own wording sat one post away.
-        foreach ( Module::EMAIL_TEMPLATE_TYPES as $type ) {
-            foreach ( self::EMAIL_OVERRIDE_PER_TYPE as $suffix ) {
-                $keys[] = $this->module->meta_key( 'email_' . $suffix . '_' . $type );
-            }
-        }
-        foreach ( self::EMAIL_SENDER_KEYS as $key ) {
-            $keys[] = $this->module->meta_key( $key );
-        }
+        $keys = \array_merge( $keys, $this->authored_child_meta_keys() );
 
         /**
          * Filter the meta keys an occurrence child inherits from its group
@@ -1237,6 +1224,46 @@ class Occurrences {
     }
 
     /**
+     * The inherited keys a CHILD could plausibly have authored for itself: the
+     * registration questions and every per-event email override.
+     *
+     * They are the destructive half of inheritance. The rest of the allow-list
+     * is shared schema fact — a venue, a price — and a date carrying its own is
+     * an anomaly nobody misses. These two families are different: they are
+     * edited on the event screen like any other content, so a child can hold a
+     * question set or an email subject somebody typed ON THAT DATE, and a
+     * parent with no row of its own DELETES it (sync_shared_meta()). That is
+     * the intended semantics — inheritance has to be symmetric or a cleared
+     * parent value could never be cleared on the children — but it must not be
+     * silent, hence the notice.
+     *
+     * Enumerated from Module::EMAIL_TEMPLATE_TYPES rather than written out, so
+     * the list cannot drift from the save handlers, and shared with
+     * inherited_meta_keys() so "what inherits" and "what the notice is about"
+     * are read from one place.
+     *
+     * @return string[] Prefixed meta keys.
+     */
+    private function authored_child_meta_keys() {
+        // Registration questions: a child asks the same questions as its
+        // parent, or a booking on one date collects nothing.
+        $keys = [ Module::QUESTIONS_META ];
+
+        // Per-event email overrides. Without these a child sent the site-wide
+        // confirmation while the parent's own wording sat one post away.
+        foreach ( Module::EMAIL_TEMPLATE_TYPES as $type ) {
+            foreach ( self::EMAIL_OVERRIDE_PER_TYPE as $suffix ) {
+                $keys[] = $this->module->meta_key( 'email_' . $suffix . '_' . $type );
+            }
+        }
+        foreach ( self::EMAIL_SENDER_KEYS as $key ) {
+            $keys[] = $this->module->meta_key( $key );
+        }
+
+        return $keys;
+    }
+
+    /**
      * Copy the inherited meta (see inherited_meta_keys()) from parent to
      * child.
      *
@@ -1257,10 +1284,20 @@ class Occurrences {
      * screen. The child then falls back to the same default its parent reads,
      * which is what "inherited" means.
      *
+     * When that delete takes AUTHORED content — a question set or an email
+     * override somebody typed on one date (authored_child_meta_keys()) — the
+     * author is told once for the save, through the same notice queue every
+     * other save-time message uses. The behaviour is deliberate and stays;
+     * what it must not be is invisible, which is how a date can quietly stop
+     * asking for a licence number.
+     *
      * @param int $parent_id
      * @param int $child_id
      */
     private function sync_shared_meta( $parent_id, $child_id ) {
+        $authored         = \array_flip( $this->authored_child_meta_keys() );
+        $removed_authored = false;
+
         foreach ( $this->inherited_meta_keys( $parent_id, $child_id ) as $key ) {
             if ( \metadata_exists( 'post', (int) $parent_id, $key ) ) {
                 // wp_slash() because update_post_meta() unslashes what it is
@@ -1269,7 +1306,16 @@ class Occurrences {
                 \update_post_meta( $child_id, $key, \wp_slash( \get_post_meta( (int) $parent_id, $key, true ) ) );
             } elseif ( \metadata_exists( 'post', (int) $child_id, $key ) ) {
                 \delete_post_meta( $child_id, $key );
+                if ( isset( $authored[ $key ] ) ) {
+                    $removed_authored = true;
+                }
             }
+        }
+
+        if ( $removed_authored ) {
+            // queue_group_notice() dedupes by code, so a parent with twelve
+            // dates still tells the author once.
+            $this->module->queue_group_notice( 'inherited_child_data_removed', (int) $parent_id );
         }
     }
 

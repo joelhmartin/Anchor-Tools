@@ -194,6 +194,73 @@ class Test_Inheritance extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * …and when the value it clears is AUTHORED content, the author hears
+	 * about it. The delete itself is the intended semantics; being silent
+	 * about it is how a date quietly stopped asking for a licence number.
+	 */
+	public function test_deleting_a_childs_authored_email_override_queues_a_notice() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$parent_id = $this->make_parent();
+		$child_id  = $this->one_child( $parent_id );
+
+		// Authored ON THE DATE: the parent has no subject of its own.
+		update_post_meta( $child_id, '_anchor_event_email_subject_confirmation', 'See you Tuesday' );
+		$this->assertFalse( metadata_exists( 'post', $parent_id, '_anchor_event_email_subject_confirmation' ) );
+
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertFalse(
+			metadata_exists( 'post', $child_id, '_anchor_event_email_subject_confirmation' ),
+			'Inheritance stays symmetric: the parent has none, so the date has none.'
+		);
+		$this->assertContains(
+			'inherited_child_data_removed',
+			wp_list_pluck( $this->module()->queued_group_notices( $parent_id ), 'code' ),
+			'…but the author is told that it went.'
+		);
+	}
+
+	/** A child's own registration questions count too. */
+	public function test_deleting_a_childs_authored_questions_queues_a_notice() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$parent_id = $this->make_parent();
+		$child_id  = $this->one_child( $parent_id );
+		update_post_meta( $child_id, Module::QUESTIONS_META, [
+			[ 'key' => 'license', 'label' => 'License number', 'type' => 'text', 'required' => true ],
+		] );
+
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertFalse( metadata_exists( 'post', $child_id, Module::QUESTIONS_META ) );
+		$this->assertContains(
+			'inherited_child_data_removed',
+			wp_list_pluck( $this->module()->queued_group_notices( $parent_id ), 'code' )
+		);
+	}
+
+	/** An ordinary reconcile that deletes nothing says nothing. */
+	public function test_no_notice_when_the_reconcile_deletes_no_authored_data() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$parent_id = $this->make_parent( [ 'venue' => 'Main Hall' ] );
+		$child_id  = $this->one_child( $parent_id );
+
+		// A SHARED schema fact cleared on the parent still propagates silently:
+		// it is the parent's own value either way, never the date's.
+		delete_post_meta( $parent_id, '_anchor_event_venue' );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertFalse( metadata_exists( 'post', $child_id, '_anchor_event_venue' ) );
+		$this->assertNotContains(
+			'inherited_child_data_removed',
+			wp_list_pluck( $this->module()->queued_group_notices( $parent_id ), 'code' ),
+			'Only authored questions/email wording are worth interrupting a save for.'
+		);
+	}
+
 	/* ------------------------------------------------------------------
 	 * 3b. The save that writes a value is the save that propagates it.
 	 *

@@ -52,8 +52,9 @@
  * historical roster is retained.
  *
  * Idempotency: a child is matched to a desired offering-dates row by a
- * stable `occurrence_key` (the row's normalized date string) stored on the
- * child at creation. reconcile() is a pure function of (parent's
+ * stable `occurrence_key` (the row's normalized "<date>|<start time>"
+ * identity — see occurrence_key()) stored on the child at creation.
+ * reconcile() is a pure function of (parent's
  * offering_dates, existing children keyed by occurrence_key) — an unchanged
  * desired set produces no new posts, no closures, and no meta churn beyond
  * re-writing identical shared-field values.
@@ -95,6 +96,11 @@ class Occurrences {
         // what happened while these were copied down from the parent.
         'registration_enabled',
         'sold_out',
+        // The occurrence's authored label (audit MODEL-D10/MODEL-D27): the
+        // offering row's own text, re-applied from the row on every reconcile
+        // like the other editable fields, and NEVER copied from the parent's
+        // same-named meta — the parent has no occurrence label of its own.
+        'label',
     ];
 
     /**
@@ -156,7 +162,7 @@ class Occurrences {
 
         $desired_map  = [];
         foreach ( $this->get_desired_dates( $parent_id ) as $row ) {
-            $desired_map[ $row['date'] ] = $row;
+            $desired_map[ $this->occurrence_key( $row ) ] = $row;
         }
 
         // Trashed children are included on purpose. Removing a date trashes its
@@ -172,10 +178,20 @@ class Occurrences {
         );
 
         $live_ids = [];
+        // Which existing keys a desired row has taken. An existing child is
+        // matched by its key OR, failing that, by its date alone (see
+        // rekeyed_match()), so "still desired" cannot be re-derived from
+        // $desired_map at retire time — it is recorded as it happens.
+        $matched_keys = [];
 
         foreach ( $desired_map as $key => $row ) {
-            if ( isset( $existing_map[ $key ] ) ) {
-                $child_id = (int) $existing_map[ $key ];
+            $existing_key = isset( $existing_map[ $key ] )
+                ? $key
+                : $this->rekeyed_match( $key, $desired_map, $existing_map, $matched_keys );
+
+            if ( $existing_key !== '' ) {
+                $matched_keys[ $existing_key ] = true;
+                $child_id = (int) $existing_map[ $existing_key ];
                 // A wanted date whose occurrence is in the trash comes back out,
                 // keeping its id, its roster and its history. Every OTHER status
                 // is left exactly as the admin set it: a child moved to
@@ -198,7 +214,7 @@ class Occurrences {
         }
 
         foreach ( $existing_map as $key => $child_id ) {
-            if ( isset( $desired_map[ $key ] ) ) {
+            if ( isset( $matched_keys[ $key ] ) ) {
                 continue; // still desired — handled above.
             }
             // Already in the trash and still unwanted: leave it exactly as it is.
@@ -217,6 +233,76 @@ class Occurrences {
         $this->sync_parent_span( $parent_id, $live_ids );
 
         return $live_ids;
+    }
+
+    /**
+     * The stable identity of one occurrence row: its start DATE plus its start
+     * TIME, joined by a pipe ("2026-11-07|09:00"; "2026-11-07|" when the row
+     * carries no time).
+     *
+     * The key used to be the date alone (audit MODEL-D8), so a parent offering
+     * a morning and an afternoon session on the same day silently kept only
+     * the first row: the metabox showed two live rows and one generated date,
+     * and the second row's tier/capacity/end_date were simply gone. Time is
+     * part of identity because it is the only authored field that distinguishes
+     * two sessions on one day. It is ALSO an editable field, so re-timing a row
+     * must not orphan its occurrence — reconcile() re-keys the existing child
+     * instead (see rekeyed_match()).
+     *
+     * Public because the save path dedupes against the same identity before it
+     * persists a row (Module::sanitize_offering_dates_rows()); two spellings of
+     * "the same occurrence" is exactly the drift this key exists to prevent.
+     *
+     * @param array $row Offering-dates row (or a recurrence-expanded row).
+     * @return string
+     */
+    public function occurrence_key( array $row ) {
+        return $this->normalize_date( (string) ( $row['date'] ?? '' ) )
+            . '|' . $this->normalize_time( (string) ( $row['start_time'] ?? '' ) );
+    }
+
+    /**
+     * Find the existing child of a desired key whose key does not match it
+     * exactly but which is plainly the SAME occurrence, re-timed: same date,
+     * not already claimed by another desired row, and not itself a desired key.
+     *
+     * Start time is identity (occurrence_key()) but is also an editable field
+     * an author can change on an existing row. Without this, editing 09:00 to
+     * 13:00 would retire the 09:00 occurrence — soft-closing it if it holds a
+     * roster — and publish a second post for the same day beside it. It also
+     * absorbs the pre-change storage format on the first reconcile after this
+     * upgrade for any child whose stored date-only key could not be normalized
+     * (existing_children_map() handles the ordinary legacy case exactly).
+     *
+     * Deliberately conservative: it matches ONLY when exactly one candidate is
+     * left for that date. Two rows on one day both re-timed at once is
+     * ambiguous — pairing them by position would risk handing one date's roster
+     * to the other session, so both are treated as new (and the old ones are
+     * retired roster-safely, as before).
+     *
+     * @param string              $key          Desired occurrence key.
+     * @param array<string,array> $desired_map  Every desired key.
+     * @param array<string,int>   $existing_map Existing key => canonical child id.
+     * @param array<string,bool>  $matched_keys Existing keys already claimed.
+     * @return string Existing key to match, or '' for none.
+     */
+    private function rekeyed_match( $key, array $desired_map, array $existing_map, array $matched_keys ) {
+        $date  = (string) \strstr( (string) $key, '|', true );
+        if ( $date === '' ) {
+            return '';
+        }
+
+        $candidates = [];
+        foreach ( \array_keys( $existing_map ) as $existing_key ) {
+            if ( isset( $matched_keys[ $existing_key ] ) || isset( $desired_map[ $existing_key ] ) ) {
+                continue; // Belongs to another row.
+            }
+            if ( \strstr( (string) $existing_key, '|', true ) === $date ) {
+                $candidates[] = (string) $existing_key;
+            }
+        }
+
+        return \count( $candidates ) === 1 ? $candidates[0] : '';
     }
 
     /**
@@ -483,18 +569,23 @@ class Occurrences {
         $rows = [];
         $seen = [];
         foreach ( $date_timestamps as $ts ) {
-            $date = \date( 'Y-m-d', $ts );
-            if ( isset( $seen[ $date ] ) ) {
-                continue;
-            }
-            $seen[ $date ] = true;
-            $rows[]        = [
-                'date'       => $date,
+            $row = [
+                'date'       => \date( 'Y-m-d', $ts ),
                 'start_time' => $start_time,
                 'end_time'   => $end_time,
                 'label'      => $label,
                 'capacity'   => $capacity,
             ];
+            // Keyed the same way offering rows are (occurrence_key()); every
+            // generated row shares one start time, so this is the date dedupe
+            // it has always been — spelled in the one vocabulary reconcile()
+            // matches on.
+            $key = $this->occurrence_key( $row );
+            if ( isset( $seen[ $key ] ) ) {
+                continue;
+            }
+            $seen[ $key ] = true;
+            $rows[]       = $row;
         }
         return $rows;
     }
@@ -646,7 +737,7 @@ class Occurrences {
      *
      * @param int    $parent_id
      * @param array  $row       Normalized offering-dates row (date/start_time/end_time/label/capacity).
-     * @param string $key       occurrence_key (== $row['date']).
+     * @param string $key       occurrence_key (== occurrence_key( $row ), i.e. "<date>|<start time>").
      * @return int New child post id, or 0 on failure.
      */
     private function create_child( $parent_id, array $row, $key ) {
@@ -719,6 +810,17 @@ class Occurrences {
         // identity, status, and seats/roster are never touched here.
         $this->apply_occurrence_editable_fields( $child_id, $row, $parent_meta );
 
+        // Re-stamp the occurrence key of a child that was matched under a
+        // different spelling of the same occurrence — a pre-MODEL-D8 date-only
+        // key, or a row whose start time was just edited (rekeyed_match()). The
+        // write happens HERE, on the parent-save path, and never while a public
+        // request is only reading the map.
+        $key    = $this->occurrence_key( $row );
+        $mk_key = $this->module->meta_key( 'occurrence_key' );
+        if ( (string) \get_post_meta( $child_id, $mk_key, true ) !== $key ) {
+            \update_post_meta( $child_id, $mk_key, $key );
+        }
+
         // A still-closed occurrence gets its four-field closed state re-asserted
         // before anything downstream reads it (audit MODEL-D6 / WOO-D35): the
         // quartet lives in PER_OCCURRENCE_KEYS, so nothing else here would ever
@@ -784,11 +886,20 @@ class Occurrences {
      * apply_occurrence_dates, after the date identity is set) and on every
      * reconcile of an already-matched child (sync_child_from_parent), so
      * editing a row's start_time/end_time/capacity/label later propagates to
-     * an already-materialized child instead of silently no-op'ing. The row's
-     * `label` itself is applied separately, via the post_title suffix
-     * (child_title()) — already re-applied on every sync. Never touches the
-     * child's date identity (occurrence_key/start_date/end_date), status, or
-     * seats/roster.
+     * an already-materialized child instead of silently no-op'ing.
+     *
+     * The row's `label` is one of those fields: it is stored on the child as
+     * its own `label` meta (audit MODEL-D10/MODEL-D27/RENDER-D22). It used to
+     * live ONLY inside the child's post_title, which the renderer then
+     * string-sliced back out against the parent's title prefix — so renaming
+     * the parent (a quick-edit never reaches reconcile()) made every authored
+     * label vanish from "Choose a date". The title still carries the label for
+     * display (child_title()), but display is no longer the storage. An empty
+     * row label writes an empty meta on purpose: clearing a label must clear
+     * it, and the renderer falls back to the formatted date.
+     *
+     * Never touches the child's date identity (occurrence_key/start_date/
+     * end_date), status, or seats/roster.
      *
      * @param int   $child_id
      * @param array $row
@@ -806,6 +917,7 @@ class Occurrences {
         \update_post_meta( $child_id, $mk( 'start_time' ), $start_time );
         \update_post_meta( $child_id, $mk( 'end_time' ), $end_time );
         \update_post_meta( $child_id, $mk( 'capacity' ), $capacity );
+        \update_post_meta( $child_id, $mk( 'label' ), (string) ( $row['label'] ?? '' ) );
 
         // The child's start date is its identity and is read, never written,
         // here. Its end date follows the row, so a one-day occurrence that
@@ -1155,6 +1267,18 @@ class Occurrences {
             if ( $key === '' ) {
                 continue;
             }
+            // Pre-MODEL-D8 children were stamped with the start date alone.
+            // Read them as "<date>|<the child's own start time>" — which is what
+            // the row they came from would mint today, since start_time is
+            // re-applied to the child from the row on every reconcile — so a
+            // legacy occurrence is MATCHED rather than duplicated. Normalized on
+            // read, not migrated here: this map is also built on public
+            // render paths (children()/siblings()), and a read must not write.
+            // The upgraded key is stamped on the parent-save path instead, by
+            // sync_child_from_parent().
+            if ( \strpos( $key, '|' ) === false ) {
+                $key .= '|' . (string) \get_post_meta( $id, $this->module->meta_key( 'start_time' ), true );
+            }
             $map[ $key ][] = $id;
         }
 
@@ -1308,10 +1432,20 @@ class Occurrences {
                 continue;
             }
             $date = $this->normalize_date( (string) ( $row['date'] ?? '' ) );
-            if ( $date === '' || isset( $seen[ $date ] ) ) {
+            if ( $date === '' ) {
                 continue;
             }
-            $seen[ $date ] = true;
+            // Deduped by the OCCURRENCE key, not by the date: two sessions on
+            // one day are two occurrences (audit MODEL-D8). A genuine duplicate
+            // — same date AND same start time — still keeps the first row, but
+            // the save path now rejects one before it can ever be stored (see
+            // Module::sanitize_offering_dates_rows()), so this is the backstop
+            // for rows written before that guard existed.
+            $key = $this->occurrence_key( $row );
+            if ( isset( $seen[ $key ] ) ) {
+                continue;
+            }
+            $seen[ $key ] = true;
 
             // end_date lets one offering span more than a day (a two-day
             // masterclass is one occurrence, not two). '' means same-day, which

@@ -404,7 +404,7 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 		$this->assertNotEmpty( $entries, 'Collapsing a duplicate must never be silent.' );
 		$context = $entries[0]['context'];
 		$this->assertSame( $parent_id, (int) $context['parent_id'] );
-		$this->assertSame( '2027-03-01', (string) $context['occurrence_key'] );
+		$this->assertSame( '2027-03-01|09:00', (string) $context['occurrence_key'] );
 		$this->assertSame( $child, (int) $context['kept'] );
 		$this->assertSame( $clone, (int) $context['retired'] );
 	}

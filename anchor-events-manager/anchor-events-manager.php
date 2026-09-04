@@ -251,6 +251,8 @@ class Module {
         // nopriv handlers registered below — so the method itself is
         // capability-gated as well as flag-guarded and batched.
         \add_action( 'admin_init', [ $this, 'backfill_timestamps' ] );
+        // Same shape, same reasons: capability-gated, flag-guarded, batched.
+        \add_action( 'admin_init', [ $this, 'backfill_occurrence_labels' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
@@ -1722,6 +1724,17 @@ class Module {
             'offering_dates' => [ 'type' => 'array', 'show_in_rest' => false ],
             'occurrence_key' => [ 'type' => 'string', 'show_in_rest' => false ],
             'occurrence_closed' => [ 'type' => 'boolean', 'show_in_rest' => false ],
+            // The occurrence's authored label — the offering-dates row's own
+            // text, written onto the child by Occurrences (audit MODEL-D10 /
+            // MODEL-D27 / RENDER-D22). It used to live only inside the child's
+            // post_title, which occurrence_label() then string-sliced back out
+            // against the parent's title prefix, so renaming the parent erased
+            // every label from "Choose a date". Deliberately NOT in
+            // get_meta_defaults(): get_meta() drives sync_shared_meta()'s
+            // parent->child copy, and a parent has no occurrence label of its
+            // own to copy down (it is also in PER_OCCURRENCE_KEYS as a second
+            // guard). Engine-owned, so show_in_rest=false like its siblings.
+            'label' => [ 'type' => 'string', 'show_in_rest' => false ],
             // Recurrence generator (Phase 2, Task 2.2) — PARENT-only rule
             // ({freq,interval,count?,until?,weekdays?,start_time,end_time,
             // capacity}) that Occurrences::expand_recurrence() expands into
@@ -4269,6 +4282,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      */
     private function sanitize_offering_dates_rows( $raw ) {
         $rows = [];
+        // Two rows that mint the SAME occurrence identity (same date AND same
+        // start time) are one occurrence, and only one child can ever exist for
+        // it. Storing both left the metabox showing two live rows against "1
+        // generated date is currently live", with the second row's
+        // tier/capacity/end_date silently discarded on read (audit MODEL-D8).
+        // The extra row is rejected here, at the only moment an author is
+        // present to be told about it. Same date, DIFFERENT start time is two
+        // legitimate sessions and is kept — see Occurrences::occurrence_key(),
+        // the one place that identity is spelled.
+        $seen      = [];
+        $duplicate = false;
         foreach ( (array) \wp_unslash( $raw ) as $row ) {
             if ( ! is_array( $row ) ) {
                 continue;
@@ -4286,7 +4310,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 $end_date = '';
             }
 
-            $rows[] = [
+            $clean = [
                 'date' => $date,
                 'end_date' => $end_date,
                 'start_time' => $this->sanitize_time( $row['start_time'] ?? '' ),
@@ -4297,7 +4321,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 // sells its own ticket instead of every tier on the event.
                 'tier_id' => \sanitize_key( (string) ( $row['tier_id'] ?? '' ) ),
             ];
+
+            $key = $this->occurrences->occurrence_key( $clean );
+            if ( isset( $seen[ $key ] ) ) {
+                $duplicate = true;
+                continue;
+            }
+            $seen[ $key ] = true;
+
+            $rows[] = $clean;
         }
+
+        if ( $duplicate ) {
+            $this->queue_group_notice( 'offering_duplicate_date' );
+        }
+
         return $rows;
     }
 
@@ -4417,6 +4455,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // events were left exactly as they were before this save.
         if ( $notice === 'offering_incomplete' ) {
             echo '<div class="notice notice-error"><p>' . esc_html__( 'Add at least one offering date before saving — no dates were generated/updated.', 'anchor-schema' ) . '</p></div>';
+        }
+        // Not a guard like the two below: the save DID go through, minus the
+        // rows that repeated an occurrence already in the list (MODEL-D8).
+        if ( $notice === 'offering_duplicate_date' ) {
+            echo '<div class="notice notice-warning"><p>' . esc_html__( 'Two offering dates had the same date and start time — only the first was kept. Give them different start times to run two sessions on one day.', 'anchor-schema' ) . '</p></div>';
         }
         if ( $notice === 'recurrence_incomplete' ) {
             echo '<div class="notice notice-error"><p>' . esc_html__( 'Set an end for the recurrence — a number of occurrences or an until date — before saving. No occurrences were generated/updated.', 'anchor-schema' ) . '</p></div>';
@@ -6937,10 +6980,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $meta     = $this->get_meta( $event_id );
         $label    = $this->occurrence_label( $event_id, $meta );
 
+        $date_text = $this->format_date_time( $meta, true );
+
         $output  = '<li class="anchor-event-choose-date-row">';
         $output .= '<a class="anchor-event-choose-date-link" href="' . esc_url( \get_permalink( $event_id ) ) . '">';
-        $output .= '<span class="anchor-event-choose-date-date">' . esc_html( $this->format_date_time( $meta, true ) ) . '</span>';
-        if ( $label !== '' ) {
+        $output .= '<span class="anchor-event-choose-date-date">' . esc_html( $date_text ) . '</span>';
+        // An occurrence with no authored label resolves to the formatted date
+        // (occurrence_label()'s fallback), which is the line directly above —
+        // print it once, not twice.
+        if ( $label !== '' && $label !== $date_text ) {
             $output .= '<span class="anchor-event-choose-date-label">' . esc_html( $label ) . '</span>';
         }
         $output .= '</a>';
@@ -6954,18 +7002,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Occurrence-specific label for a choose-date row (Task 2.4 FIX 1 —
      * review found the brief's "date + time + label" requirement unmet).
-     * Preference order:
-     *   1. A dedicated `label` occurrence meta value, if a future engine
-     *      variant ever stores the offering-dates row's label directly on
-     *      the child post (defensive — the current engine does not; see
-     *      Occurrences::child_title()).
-     *   2. The occurrence-specific suffix of the post title.
-     *      Occurrences::child_title() bakes the row's label (or a formatted
-     *      date) into the child's post_title as "<parent title> — <label or
-     *      date>"; strip the parent-title prefix to surface just that
-     *      suffix.
-     *   3. The formatted date/time, when neither of the above applies (e.g.
-     *      $event_id isn't a group child at all).
+     *
+     * The authored label is the child's own `label` meta, written from the
+     * offering row by Occurrences::apply_occurrence_editable_fields() — the
+     * only source. When there is none (an unlabelled row, or an event that is
+     * not a group child at all), the formatted date/time stands in.
+     *
+     * It used to prefer a second source: the suffix of the child's post_title,
+     * sliced off against the parent's title prefix. That made a display string
+     * the storage for structured data, and it broke the moment the two drifted
+     * (audit MODEL-D10): quick-editing the parent's title fires save_post but
+     * save_meta() returns early with no nonce, so reconcile() never re-titles
+     * the children — the computed prefix stopped matching and every authored
+     * label silently became a bare date until someone re-saved the parent. The
+     * meta branch was the documented "if a future engine writes one" fallback
+     * that nothing ever wrote (MODEL-D27 / RENDER-D22); it now has a writer,
+     * and the slicing branch is gone. Occurrences::child_title() still bakes
+     * the label into the title — for display only.
      *
      * @param int   $event_id
      * @param array $meta get_meta( $event_id ) — passed in to avoid a
@@ -6973,25 +7026,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function occurrence_label( $event_id, array $meta ) {
-        $event_id = (int) $event_id;
-
-        $meta_label = \get_post_meta( $event_id, $this->meta_key( 'label' ), true );
+        $meta_label = \get_post_meta( (int) $event_id, $this->meta_key( 'label' ), true );
         if ( \is_string( $meta_label ) && $meta_label !== '' ) {
             return $meta_label;
-        }
-
-        if ( $this->occurrences->is_group_child( $event_id ) ) {
-            $parent_id = $this->occurrences->parent_of( $event_id );
-            if ( $parent_id > 0 ) {
-                $prefix = (string) \get_the_title( $parent_id ) . ' — ';
-                $title  = (string) \get_the_title( $event_id );
-                if ( $prefix !== ' — ' && \strpos( $title, $prefix ) === 0 ) {
-                    $suffix = \substr( $title, \strlen( $prefix ) );
-                    if ( $suffix !== '' ) {
-                        return $suffix;
-                    }
-                }
-            }
         }
 
         return $this->format_date_time( $meta, true );
@@ -8211,6 +8248,89 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // Superseded by the versioned option; leaving it would only invite a
             // future reader to treat it as authoritative again.
             \delete_option( 'anchor_events_ts_backfilled' );
+        }
+    }
+
+    /**
+     * One-time back-fill of the occurrence `label` meta on children created
+     * before it existed (audit MODEL-D10 / MODEL-D27).
+     *
+     * occurrence_label() now reads that meta and nothing else. Every child
+     * created or re-synced from here on gets it written by
+     * Occurrences::apply_occurrence_editable_fields(), but an ALREADY
+     * materialized child carries its authored label only in the parent's
+     * offering_dates row (and, for display, inside its own post_title). Without
+     * this pass, every published group would show a bare date in "Choose a
+     * date" until somebody happened to re-save its parent — including DEKA's
+     * FACE CODE dates ("October 23-24, 2026"), which no one would think to
+     * re-save. Reconciling every parent instead would create/trash posts as a
+     * side effect of an upgrade; this only writes one meta row per child.
+     *
+     * Idempotent and self-terminating: it selects children that have NO label
+     * row at all and always writes one (an unlabelled row writes ''), so the
+     * window always moves, a hand-edited label is never clobbered, and a second
+     * pass is a no-op. Batched at 200 per admin request, and capability-gated
+     * for the same reason backfill_timestamps() is — admin_init fires before
+     * auth on admin-post.php.
+     */
+    public function backfill_occurrence_labels() {
+        if ( ! \current_user_can( 'edit_posts' ) ) {
+            return;
+        }
+        if ( \get_option( 'anchor_events_occurrence_labels_backfilled' ) ) {
+            return;
+        }
+
+        $batch = 200;
+        $ids = \get_posts( [
+            'post_type' => self::CPT,
+            'post_status' => 'any',
+            'posts_per_page' => $batch,
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'suppress_filters' => true,
+            'meta_query' => [
+                'relation' => 'AND',
+                [ 'key' => $this->meta_key( 'group_role' ), 'value' => 'child', 'compare' => '=' ],
+                [ 'key' => $this->meta_key( 'label' ), 'compare' => 'NOT EXISTS' ],
+            ],
+        ] );
+
+        if ( ! empty( $ids ) ) {
+            \update_meta_cache( 'post', $ids );
+        }
+
+        $rows_by_parent = [];
+        foreach ( $ids as $child_id ) {
+            $child_id  = (int) $child_id;
+            $parent_id = (int) \get_post_meta( $child_id, $this->meta_key( 'group_id' ), true );
+
+            if ( $parent_id > 0 && ! isset( $rows_by_parent[ $parent_id ] ) ) {
+                $raw   = \get_post_meta( $parent_id, $this->meta_key( 'offering_dates' ), true );
+                $rows  = [];
+                foreach ( ( \is_array( $raw ) ? $raw : [] ) as $row ) {
+                    if ( \is_array( $row ) ) {
+                        $rows[ $this->occurrences->occurrence_key( $row ) ] = (string) ( $row['label'] ?? '' );
+                    }
+                }
+                $rows_by_parent[ $parent_id ] = $rows;
+            }
+
+            // The child's own key, spelled the way the parent's rows are — a
+            // pre-MODEL-D8 child still carries the date alone.
+            $key = (string) \get_post_meta( $child_id, $this->meta_key( 'occurrence_key' ), true );
+            if ( $key !== '' && \strpos( $key, '|' ) === false ) {
+                $key .= '|' . (string) \get_post_meta( $child_id, $this->meta_key( 'start_time' ), true );
+            }
+
+            // An orphaned child (no parent, or a key its parent no longer
+            // offers) is still stamped with '' — the row must leave the query's
+            // window or the batch would return it for ever.
+            \update_post_meta( $child_id, $this->meta_key( 'label' ), $rows_by_parent[ $parent_id ][ $key ] ?? '' );
+        }
+
+        if ( count( $ids ) < $batch ) {
+            \update_option( 'anchor_events_occurrence_labels_backfilled', 1, false );
         }
     }
 

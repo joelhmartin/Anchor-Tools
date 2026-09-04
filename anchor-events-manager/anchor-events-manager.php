@@ -136,9 +136,10 @@ class Module {
     const REG_NONCE = 'anchor_event_reg_nonce';
 
     /**
-     * Task 3.1 — editable lifecycle-email types. Each has a global default
-     * option (`anchor_events_email_tpl_{type}`) and a per-event override meta
-     * key (`_anchor_event_email_tpl_{type}`). Orientation found that ALL FOUR
+     * Task 3.1 — editable lifecycle-email types. Each has a per-event override
+     * meta key (`_anchor_event_email_tpl_{type}`); REG-D12 retired the
+     * never-written global `anchor_events_email_tpl_{type}` option tier that
+     * used to sit between it and the default. Orientation found that ALL FOUR
      * currently render through the exact same shared shell in
      * build_registration_email_html() — including the roster digest, which
      * was hypothesized to differ but does not — so all four DEFAULT templates
@@ -4259,7 +4260,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * pattern already used for other engine/UI-owned fields): every posted
      * value here goes through an email-safe wp_kses() allowlist before it is
      * ever written, and content that matches the event's override-less
-     * resolved default (global option, else the default constant — i.e.
+     * resolved default (the default constant — i.e.
      * resolve_email_template( $type, 0 )) is stored as '' instead of a
      * redundant literal copy, exactly like clicking "Reset to default" and
      * saving without further edits would produce. Called from save_meta()
@@ -4285,7 +4286,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // comparison as well; otherwise a template that is the default plus
             // a pasted doctype would be stored as a redundant literal override.
             $raw      = self::strip_email_doctype( (string) \wp_unslash( $src[ $field ] ) );
-            $fallback = $this->resolve_email_template( $type, 0 ); // global option -> default constant, no per-event lookup.
+            $fallback = $this->resolve_email_template( $type, 0 ); // default constant, no per-event lookup.
 
             if ( \trim( $raw ) === \trim( $fallback ) ) {
                 // Unmodified (or explicitly reset by the JS "Reset to default"
@@ -12304,16 +12305,15 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         return self::default_email_shell();
     }
 
-    /** Global per-type default option, or empty string if unset. */
-    public function get_email_template_option( $type ) {
-        $type = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? (string) $type : 'confirmation';
-        $value = \get_option( 'anchor_events_email_tpl_' . $type, '' );
-        return \is_string( $value ) ? $value : '';
-    }
-
     /**
      * Resolve the effective template for $type on $event_id: per-event
-     * override meta -> global default option -> default constant.
+     * override meta -> default constant.
+     *
+     * REG-D12 — there used to be a middle "site-wide default" tier reading the
+     * option `anchor_events_email_tpl_{type}`. No UI, saver or migration ever
+     * wrote that option, so the tier could never be populated by an
+     * administrator and only ever added an unreachable branch. It is gone;
+     * per-event overrides and the shipped default are the whole story.
      *
      * @param string $type     One of EMAIL_TEMPLATE_TYPES.
      * @param int    $event_id 0 = no per-event override lookup.
@@ -12340,9 +12340,6 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         $template = '';
         if ( $event_id > 0 ) {
             $template = (string) \get_post_meta( $event_id, '_anchor_event_email_tpl_' . $type, true );
-        }
-        if ( $template === '' ) {
-            $template = $this->get_email_template_option( $type );
         }
         if ( $template === '' ) {
             $template = $this->default_email_template( $type );

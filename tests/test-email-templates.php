@@ -169,8 +169,10 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 	}
 
 	/* ---------------------------------------------------------------------
-	 * resolve_email_template() precedence: per-event override > global
-	 * option > default constant.
+	 * resolve_email_template() precedence: per-event override > default
+	 * constant. REG-D12 retired the middle "global option" tier: nothing in
+	 * the plugin ever wrote anchor_events_email_tpl_{type}, so the option is
+	 * now ignored outright rather than honoured as an unreachable tier.
 	 * ------------------------------------------------------------------- */
 
 	public function test_resolve_falls_back_to_default_constant_when_nothing_is_set() {
@@ -179,39 +181,37 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 		$this->assertSame( $this->module()->default_email_template( 'confirmation' ), $resolved );
 	}
 
-	public function test_resolve_prefers_global_option_over_default() {
+	/** REG-D12 — the retired global tier is not consulted, even when the option exists. */
+	public function test_resolve_ignores_the_retired_global_template_option() {
 		$event_id = $this->make_event();
 		update_option( 'anchor_events_email_tpl_confirmation', '<p>Global default: {event_title}</p>', false );
 		try {
 			$resolved = $this->module()->resolve_email_template( 'confirmation', $event_id );
-			$this->assertSame( '<p>Global default: {event_title}</p>', $resolved );
+			$this->assertSame( $this->module()->default_email_template( 'confirmation' ), $resolved );
+			$this->assertSame( $this->module()->default_email_template( 'confirmation' ), $this->module()->resolve_email_template( 'confirmation', 0 ) );
 		} finally {
 			delete_option( 'anchor_events_email_tpl_confirmation' );
 		}
 	}
 
-	public function test_resolve_prefers_per_event_override_over_global_option() {
+	public function test_resolve_prefers_per_event_override_over_default() {
 		$event_id = $this->make_event();
-		update_option( 'anchor_events_email_tpl_confirmation', '<p>Global default: {event_title}</p>', false );
 		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '<p>Per-event override: {event_title}</p>' );
 		try {
 			$resolved = $this->module()->resolve_email_template( 'confirmation', $event_id );
 			$this->assertSame( '<p>Per-event override: {event_title}</p>', $resolved );
 		} finally {
-			delete_option( 'anchor_events_email_tpl_confirmation' );
 			delete_post_meta( $event_id, '_anchor_event_email_tpl_confirmation' );
 		}
 	}
 
 	public function test_resolve_falls_back_when_per_event_override_meta_is_empty_string() {
 		$event_id = $this->make_event();
-		update_option( 'anchor_events_email_tpl_confirmation', '<p>Global default: {event_title}</p>', false );
 		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '' ); // explicit empty = no override
 		try {
 			$resolved = $this->module()->resolve_email_template( 'confirmation', $event_id );
-			$this->assertSame( '<p>Global default: {event_title}</p>', $resolved );
+			$this->assertSame( $this->module()->default_email_template( 'confirmation' ), $resolved );
 		} finally {
-			delete_option( 'anchor_events_email_tpl_confirmation' );
 			delete_post_meta( $event_id, '_anchor_event_email_tpl_confirmation' );
 		}
 	}

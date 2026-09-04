@@ -275,7 +275,7 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 - `for_event( $event_id ): array` — schema.org/Event JSON-LD node (no `@context`), dispatching on type: group child/parent, `multisession`, or plain single. See "JSON-LD" below.
 
 **`Module`**
-- `resolve_email_template( string $type, int $event_id ): string` — per-event override → global option → default constant.
+- `resolve_email_template( string $type, int $event_id ): string` — per-event override → default constant (REG-D12 retired the never-written global-option tier).
 - `compute_email_schedule( int $event_id ): array` — read-only upcoming reminder/roster schedule (see `EMAILS.md`).
 - `event_type( $event_id )`, `registration_mode( $event_id )`, `get_meta( $event_id )`, `meta_key( $key )`, `get_sessions( $event_id )`.
 - `get_labels( $event_id )`, `get_label( $event_id, $key )`, `labels_vocabulary()` — see "Event Labels" below.

@@ -94,14 +94,16 @@ effective template for a type on a given event, in order:
 
 1. **Per-event override** — post meta `_anchor_event_email_tpl_{type}` on the event
    (registered via `register_post_meta()` for all four types), when non-empty.
-2. **Global default** — the site-wide option `anchor_events_email_tpl_{type}`
-   (`Module::get_email_template_option( $type )`), when non-empty.
-3. **Default constant** — `Module::default_email_template( $type )`, currently the
+2. **Default constant** — `Module::default_email_template( $type )`, currently the
    same shared shell for every type.
 
 `resolve_email_template( $type, 0 )` (no event id) skips step 1 and resolves the
-global-or-default fallback only — this is also what a per-event save compares against
-to decide whether to store an override at all (see below).
+default only — this is also what a per-event save compares against to decide whether
+to store an override at all (see below).
+
+> REG-D12 — an earlier revision documented a middle "site-wide default" tier backed by
+> the option `anchor_events_email_tpl_{type}`. Nothing in the plugin ever wrote that
+> option, so the tier was unreachable; it has been removed rather than given a UI.
 
 ### Per-event Emails builder metabox
 

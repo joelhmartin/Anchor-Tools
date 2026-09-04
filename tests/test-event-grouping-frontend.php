@@ -257,6 +257,42 @@ class Test_Event_Grouping_Frontend extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'No sessions found in this series.', $html );
 	}
 
+	/**
+	 * MODEL-D36 — Occurrences::assign_series() mints a "group-{parent_id}"
+	 * term for every group parent with no opt-out, giving each one a public,
+	 * indexable archive URL nobody asked for. The taxonomy stays public (this
+	 * archive is a real, tested feature for a genuinely curated series), but
+	 * an AUTO-MINTED term is flagged with term meta and noindexed via the
+	 * wp_robots filter — proven here by exercising it directly, not just
+	 * asserting the meta row exists, since the meta alone doesn't prove the
+	 * archive request would actually carry the directive.
+	 */
+	public function test_auto_minted_series_term_is_flagged_and_noindexed() {
+		[ $parent_id ] = $this->make_offering( $this->three_rows() );
+
+		$terms = wp_get_object_terms( $parent_id, Series::TAXONOMY );
+		$this->assertNotEmpty( $terms );
+		$term_id = (int) $terms[0]->term_id;
+
+		$this->assertSame( 1, (int) get_term_meta( $term_id, \Anchor\Events\Series::AUTO_TERM_META_KEY, true ), 'An auto-minted term must carry the flag.' );
+
+		$this->go_to_series_archive( $parent_id );
+		$robots = $this->module()->series->noindex_auto_series( [] );
+		$this->assertTrue( $robots['noindex'] ?? false, 'The auto-minted series archive must be noindexed.' );
+
+		// The archive itself still renders normally — noindexing is not the
+		// same as de-registering or de-queryable-ing the taxonomy.
+		$this->assertTrue( is_tax( Series::TAXONOMY ) );
+		$this->assertNotSame( '', $this->module()->series->render_archive() );
+	}
+
+	/** A term the filter has no reason to touch (not the series archive at all) passes through unchanged. */
+	public function test_noindex_auto_series_is_a_no_op_off_the_series_archive() {
+		$this->go_to( home_url( '/' ) );
+		$robots = [ 'index' => true ];
+		$this->assertSame( $robots, $this->module()->series->noindex_auto_series( $robots ) );
+	}
+
 	/* ------------------------------------------------------------------
 	 * D. Review-round fixes: FIX 1 (occurrence label on date rows), FIX 2
 	 * (guard the sibling "See all dates" link against a trashed parent),

@@ -1788,6 +1788,10 @@ class Occurrences {
                 return;
             }
             $term_id = (int) $result['term_id'];
+            // MODEL-D36: flag this term as auto-minted (never a hand-created
+            // series) so Series::noindex_auto_series() can noindex its
+            // archive without touching a genuinely curated series term.
+            \update_term_meta( $term_id, Series::AUTO_TERM_META_KEY, 1 );
         } else {
             $term_id = (int) $term->term_id;
             if ( $term->name !== $name ) {

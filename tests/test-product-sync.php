@@ -181,4 +181,35 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		$this->assertSame( 0, $this->product_sync()->sync_event( $event_id ) );
 		$this->assertSame( 0, $this->product_sync()->managed_product_id( $event_id ) );
 	}
+
+	/**
+	 * WOO-D6: an event with NO authored tier list — only a legacy `price`
+	 * meta — syncs a product from the synthesized implicit-primary tier, but
+	 * must NOT materialize `_anchor_event_ticket_types` in the process. Once
+	 * that meta exists, Ticket_Types::get() stops re-reading `price` on every
+	 * load, so editing the event's price field would silently do nothing.
+	 */
+	public function test_sync_does_not_materialize_ticket_types_meta_for_a_legacy_priced_event() {
+		$event_id = $this->make_event( [ 'title' => 'Legacy Priced', 'price' => '500' ] );
+
+		$product_id = $this->product_sync()->sync_event( $event_id );
+
+		$this->assertGreaterThan( 0, $product_id );
+		$this->assertSame(
+			'',
+			get_post_meta( $event_id, Anchor\Events\Ticket_Types::META_KEY, true ),
+			'The implicit primary tier must not become real stored tier meta.'
+		);
+
+		// The variation is still discoverable via variation_for_tier()'s
+		// fallback scan, so nothing that reads it is broken by the skip.
+		$vid = (int) $this->product_sync()->variation_for_tier( $event_id, Anchor\Events\Ticket_Types::PRIMARY_ID );
+		$this->assertGreaterThan( 0, $vid );
+
+		// Changing the legacy price still takes effect — proof the price
+		// field was not shadowed by a frozen stored tier row.
+		update_post_meta( $event_id, '_anchor_event_price', '750' );
+		$tiers = $this->ticket_types()->get( $event_id );
+		$this->assertSame( 750.0, $tiers[0]['price'] );
+	}
 }

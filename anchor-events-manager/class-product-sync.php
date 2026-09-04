@@ -868,6 +868,22 @@ class Product_Sync {
      * @param array $tier_variation_map tier_id => variation_id
      */
     private function write_back_variation_ids( $event_id, array $all_tiers, array $tier_variation_map ) {
+        // WOO-D6: an event with NO authored tier list gets $all_tiers from
+        // Ticket_Types::get()'s synthesized implicit-primary fallback, not
+        // real stored meta. Writing a wc_variation_id back through
+        // Ticket_Types::save() for that synthesized row materializes
+        // `_anchor_event_ticket_types` for the first time — and from then on
+        // get() stops re-reading the legacy `price` meta, so editing the
+        // event's "Price label" field silently stops doing anything. The
+        // variation is still discoverable without this: variation_for_tier()
+        // falls back to scanning the product's variations by tier-id meta
+        // when the cached id doesn't validate, so nothing is lost by skipping
+        // the write-back here.
+        $stored = \get_post_meta( $event_id, Ticket_Types::META_KEY, true );
+        if ( ! \is_array( $stored ) || empty( $stored ) ) {
+            return;
+        }
+
         $changed = false;
         $rows    = [];
         foreach ( $all_tiers as $tier ) {

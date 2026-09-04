@@ -6886,10 +6886,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'post_status' => [ 'publish', 'draft', 'future', 'private' ],
             'posts_per_page' => max( 1, min( 200, (int) $atts['limit'] ) ),
             'meta_query' => $meta_query,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
             'order' => strtoupper( $atts['order'] ) === 'DESC' ? 'DESC' : 'ASC',
-        ];
+        ] + $this->resolve_list_orderby( $atts['orderby'] ); // RENDER-D23: `orderby` used to be declared and never read.
         $events = \get_posts( $args );
 
         if ( empty( $events ) ) {
@@ -8400,6 +8398,41 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         exit;
     }
 
+    /**
+     * Turn a shortcode's `orderby` attribute into the orderby/meta_key pair a
+     * WP_Query args array needs — the one place render_events_list() and
+     * shortcode_event_registrants_list() decide this, instead of each having
+     * its own copy that can silently drift out of agreement.
+     *
+     * 'date'/'start' (the vocabulary these shortcodes document) and 'title'
+     * get their historical mapping; 'priority' maps to a meta key only when
+     * $priority_meta names one (only [featured_events]/[events_list] support
+     * it — RENDER-D23's registrants list never did and still doesn't).
+     * Anything else is passed straight through to WP_Query's OWN `orderby`
+     * vocabulary ('modified', 'rand', 'menu_order', ...) rather than being
+     * silently swallowed into start-date order (RENDER-D24).
+     *
+     * @param string      $orderby       Raw attribute value.
+     * @param string|null $priority_meta Unprefixed meta key name to special-case
+     *                                   for 'priority' (see meta_key()), or null.
+     * @return array{orderby: string, meta_key?: string} Merge into a WP_Query args array.
+     */
+    private function resolve_list_orderby( $orderby, $priority_meta = null ) {
+        $orderby = strtolower( (string) $orderby );
+
+        if ( $orderby === 'title' ) {
+            return [ 'orderby' => 'title' ];
+        }
+        if ( $priority_meta !== null && $orderby === 'priority' ) {
+            return [ 'orderby' => 'meta_value_num', 'meta_key' => $this->meta_key( $priority_meta ) ];
+        }
+        if ( $orderby === 'date' || $orderby === 'start' || $orderby === '' ) {
+            return [ 'orderby' => 'meta_value_num', 'meta_key' => $this->meta_key( 'start_ts' ) ];
+        }
+
+        return [ 'orderby' => $orderby ];
+    }
+
     public function render_events_list( $atts, $context ) {
         $atts = \wp_parse_args( $atts, [
             'limit' => 10,
@@ -8457,7 +8490,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             ];
         }
 
-        $orderby = strtolower( $atts['orderby'] );
         $order = strtoupper( $atts['order'] ) === 'DESC' ? 'DESC' : 'ASC';
 
         $limit = (int) $atts['limit'];
@@ -8469,20 +8501,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'post_type' => self::CPT,
             'post_status' => 'publish',
             'posts_per_page' => $limit,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
             'order' => $order,
             'meta_query' => $meta_query,
             'tax_query' => $tax_query,
-        ];
-
-        if ( $orderby === 'title' ) {
-            $query_args['orderby'] = 'title';
-            unset( $query_args['meta_key'] );
-        } elseif ( $orderby === 'priority' ) {
-            $query_args['meta_key'] = $this->meta_key( 'priority' );
-            $query_args['orderby'] = 'meta_value_num';
-        }
+        ] + $this->resolve_list_orderby( $atts['orderby'], 'priority' );
 
         $query_args = \apply_filters( 'anchor_events_query_args', $query_args, $atts );
         $ids = $this->get_cached_ids( $query_args );

@@ -395,4 +395,79 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 
 		$this->assertSame( '', $html );
 	}
+
+	/**
+	 * RENDER-D23: [event_registrants_list] declared an `orderby` attribute
+	 * that was never read — the query was hardcoded to start-date order, so
+	 * `orderby="title"` silently sorted by start date instead.
+	 */
+	public function test_registrants_list_shortcode_honours_orderby_title() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		// Start dates deliberately REVERSED vs. title order, so a test that
+		// still sorts by start_ts (the pre-fix bug) fails instead of passing
+		// by coincidence.
+		$zebra = $this->make_event( [ 'start_date' => '2026-01-01' ] );
+		wp_update_post( [ 'ID' => $zebra, 'post_title' => 'Zebra Course' ] );
+		$apple = $this->make_event( [ 'start_date' => '2027-01-01' ] );
+		wp_update_post( [ 'ID' => $apple, 'post_title' => 'Apple Course' ] );
+
+		$html = $this->module()->shortcode_event_registrants_list( [ 'orderby' => 'title', 'order' => 'ASC' ] );
+
+		$apple_pos = strpos( $html, 'Apple Course' );
+		$zebra_pos = strpos( $html, 'Zebra Course' );
+		$this->assertNotFalse( $apple_pos );
+		$this->assertNotFalse( $zebra_pos );
+		$this->assertLessThan( $zebra_pos, $apple_pos, 'orderby="title" must sort by title, not by start date.' );
+	}
+
+	/**
+	 * RENDER-D24: [events_list orderby="..."] only special-cased 'title' and
+	 * 'priority' — every other value, including WP_Query's own vocabulary
+	 * ('modified', 'rand', ...), silently fell through to start-date order
+	 * with no notice. Unrecognised values must now pass straight through to
+	 * WP_Query instead of being swallowed.
+	 */
+	public function test_events_list_shortcode_passes_unrecognised_orderby_through_to_wp_query() {
+		$older = $this->make_event( [ 'start_date' => '2026-01-01' ] );
+		wp_update_post( [ 'ID' => $older, 'post_modified' => '2020-01-01 00:00:00', 'post_modified_gmt' => '2020-01-01 00:00:00' ] );
+		$newer = $this->make_event( [ 'start_date' => '2027-01-01' ] );
+		wp_update_post( [ 'ID' => $newer, 'post_modified' => '2030-01-01 00:00:00', 'post_modified_gmt' => '2030-01-01 00:00:00' ] );
+
+		$captured = null;
+		$capture = function ( $args ) use ( &$captured ) {
+			$captured = $args;
+			return $args;
+		};
+		add_filter( 'anchor_events_query_args', $capture, 20 );
+		$this->module()->shortcode_events_list( [ 'orderby' => 'modified', 'show_past' => 'yes' ] );
+		remove_filter( 'anchor_events_query_args', $capture, 20 );
+
+		$this->assertIsArray( $captured );
+		$this->assertSame( 'modified', $captured['orderby'], 'An unrecognised orderby value must reach WP_Query verbatim, not fall back to start_ts.' );
+		$this->assertArrayNotHasKey( 'meta_key', $captured, 'A non-meta orderby must not carry a stale meta_key along with it.' );
+	}
+
+	/** Regression: the documented default ('date'/unset) still orders by start_ts, and 'title'/'priority' still map as before. */
+	public function test_events_list_shortcode_still_maps_date_title_priority_as_before() {
+		$captured = [];
+		$capture = function ( $args ) use ( &$captured ) {
+			$captured[] = $args;
+			return $args;
+		};
+		add_filter( 'anchor_events_query_args', $capture, 20 );
+		$this->module()->shortcode_events_list( [ 'orderby' => 'date' ] );
+		$this->module()->shortcode_events_list( [ 'orderby' => 'title' ] );
+		$this->module()->shortcode_featured_events( [] ); // default orderby=priority
+		remove_filter( 'anchor_events_query_args', $capture, 20 );
+
+		$this->assertSame( 'meta_value_num', $captured[0]['orderby'] );
+		$this->assertSame( $this->module()->meta_key( 'start_ts' ), $captured[0]['meta_key'] );
+
+		$this->assertSame( 'title', $captured[1]['orderby'] );
+		$this->assertArrayNotHasKey( 'meta_key', $captured[1] );
+
+		$this->assertSame( 'meta_value_num', $captured[2]['orderby'] );
+		$this->assertSame( $this->module()->meta_key( 'priority' ), $captured[2]['meta_key'] );
+	}
 }

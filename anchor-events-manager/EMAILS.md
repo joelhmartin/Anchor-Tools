@@ -303,8 +303,12 @@ longer `confirmed` at flush time is dropped. `flush_cancellation_emails()` is
 kept as a forwarder to the same method — the flush point older callers know.
 
 **Waitlist promotion** (`waitlist -> confirmed`, only ever operator-driven from
-the roster) reuses the confirmation sender, so it answers to `notify_user` and
-the per-event confirmation switch like any other confirmation. On a site that
+the roster) reuses the ATTENDEE confirmation sender —
+`Module::send_confirmation_email()`, the second half of
+`send_registration_emails()` — so it answers to `notify_user` and the per-event
+confirmation switch like any other confirmation. It deliberately does not send
+the organizer's "New registration" notice: the seat already exists, and its
+creation sent that notice once. On a site that
 has not customised **Confirmation subject**, a waitlisted send falls back to
 "You are on the waitlist for {event_title}" instead of the shipped "You are
 registered for…"; wording an author has typed is used for both outcomes.

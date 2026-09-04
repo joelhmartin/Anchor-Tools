@@ -916,6 +916,39 @@ class Test_Roster extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * A promotion is not a registration. The seat already exists — its creation
+	 * sent the organizer's "New registration" notice — so the promotion mails
+	 * the attendee and nobody else. It used to call the pair sender, and the
+	 * site was told a second time that somebody had signed up.
+	 */
+	public function test_a_promotion_does_not_re_announce_the_registration() {
+		$this->set_notifications( true, true );
+		$settings                  = $this->module()->get_settings();
+		$settings['admin_email']   = 'organizer@example.org';
+		update_option( Module::OPTION_KEY, $settings, false );
+
+		$event_id = $this->make_event( [ 'capacity' => 5, 'waitlist' => true ] );
+		$seat_id  = $this->make_seat(
+			$event_id,
+			[
+				'status' => Registrations::STATUS_WAITLIST,
+				'email'  => 'promoted@example.org',
+			]
+		);
+
+		$this->sent = []; // Ignore anything the seat's own creation sent.
+		$this->registrations()->change_status_with_capacity( $seat_id, Registrations::STATUS_CONFIRMED, '', 'user:1' );
+		$this->module()->flush_seat_emails();
+
+		$this->assertCount( 1, $this->sent, 'The promotion sent more than the attendee confirmation.' );
+		$this->assertNotNull( $this->mail_to( 'promoted@example.org' ) );
+		$this->assertNull(
+			$this->mail_to( 'organizer@example.org' ),
+			'The promotion told the organizer somebody had registered — they registered once, earlier.'
+		);
+	}
+
 	/** One queue: the historical flush name still drains promotions too. */
 	public function test_the_legacy_flush_name_still_drains_the_queue() {
 		$this->set_notifications( true );

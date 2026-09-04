@@ -12194,38 +12194,72 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                 disabled, no_address) | failed (wp_mail).
      */
     public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
-        $settings = $this->get_settings();
-        $event_title = \get_the_title( $event_id );
-        $event_link = \get_permalink( $event_id );
-        $guests = max( 0, (int) $guests );
-
-        if ( ! empty( $settings['notify_admin'] ) ) {
-            $admin_email = $settings['admin_email'] ?: \get_option( 'admin_email' );
-            $subject = sprintf( __( 'New registration for %s', 'anchor-schema' ), $event_title );
-            $message = sprintf(
-                __( "Name: %s\nEmail: %s\nStatus: %s\nGuests: %d\nParty size: %d\nEvent: %s", 'anchor-schema' ),
-                $name,
-                $email,
-                $status,
-                $guests,
-                1 + $guests,
-                $event_link
-            );
-            // Plain-text email, but still carry the configured sender identity.
-            $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
-            if ( ! $sent ) {
-                Events_Log::error( 'email_send_returned_false', [
-                    'event'   => (int) $event_id,
-                    'to'      => $admin_email,
-                    'subject' => $subject,
-                ] );
-            }
-        }
+        $this->send_registration_admin_notice( $event_id, $name, $email, $status, $guests );
 
         // The ATTENDEE half is what the return value describes: the caller needs
         // to know whether it may promise "check your email" (REG-D24). The
         // organizer copy above is a different recipient with a different switch
         // and is deliberately not folded into this answer.
+        return $this->send_confirmation_email( $event_id, $name, $email, $status, $guests );
+    }
+
+    /**
+     * The site's own "somebody registered" notice. Split out of
+     * send_registration_emails() so the one path that must NOT re-send it — a
+     * waitlist promotion, where the seat's creation already sent it — can call
+     * the attendee half alone instead of the pair.
+     *
+     * Governed by `notify_admin` alone — REG-D8: an organizer who unticked the
+     * event's Confirmation switch because they were mailing attendees by hand
+     * did not thereby ask to stop being told anyone had registered.
+     *
+     * @return void The organizer copy is never what a caller reports to a user.
+     */
+    private function send_registration_admin_notice( $event_id, $name, $email, $status, $guests = 0 ) {
+        $settings = $this->get_settings();
+        if ( empty( $settings['notify_admin'] ) ) {
+            return;
+        }
+        $guests      = max( 0, (int) $guests );
+        $admin_email = $settings['admin_email'] ?: \get_option( 'admin_email' );
+        $subject     = sprintf( __( 'New registration for %s', 'anchor-schema' ), \get_the_title( $event_id ) );
+        $message     = sprintf(
+            __( "Name: %s\nEmail: %s\nStatus: %s\nGuests: %d\nParty size: %d\nEvent: %s", 'anchor-schema' ),
+            $name,
+            $email,
+            $status,
+            $guests,
+            1 + $guests,
+            \get_permalink( $event_id )
+        );
+        // Plain-text email, but still carry the configured sender identity.
+        $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
+        if ( ! $sent ) {
+            Events_Log::error( 'email_send_returned_false', [
+                'event'   => (int) $event_id,
+                'to'      => $admin_email,
+                'subject' => $subject,
+            ] );
+        }
+    }
+
+    /**
+     * The attendee's confirmation, and nothing else.
+     *
+     * The whole of send_registration_emails()' second half, called directly by
+     * the waitlist promotion: that seat's original creation already told the
+     * organizer somebody had registered, so announcing it a second time when
+     * the seat moves off the waitlist reports a registration that did not
+     * happen. One builder, two entry points — the pair, and the attendee alone.
+     *
+     * @return Outcome sent | skipped (notifications_off, disabled, no_address)
+     *                 | failed (wp_mail).
+     */
+    public function send_confirmation_email( $event_id, $name, $email, $status, $guests = 0 ) {
+        $settings   = $this->get_settings();
+        $event_link = \get_permalink( $event_id );
+        $guests     = max( 0, (int) $guests );
+
         if ( empty( $settings['notify_user'] ) ) {
             return Outcome::skipped( 'notifications_off' );
         }
@@ -12288,9 +12322,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // has to hear about (audit REG-D38). It is the module's ONLY promotion
         // — there is no automatic one — and it used to send nothing at all, so
         // somebody who had been told "you are on the waitlist" got a seat and
-        // was never told. Reuses the confirmation sender, which owns both
-        // switches (notify_user and the per-event confirmation toggle), rather
-        // than growing a fifth template.
+        // was never told. Reuses the attendee confirmation sender, which owns
+        // both switches (notify_user and the per-event confirmation toggle),
+        // rather than growing a fifth template — and ONLY that sender: see the
+        // flush, where the organizer's copy is deliberately not repeated.
         if ( $from === Registrations::STATUS_WAITLIST && $to === Registrations::STATUS_CONFIRMED ) {
             // QUEUED, not sent here: this hook fires from update_status(), and
             // the promotion's own caller (change_status_with_capacity()) is
@@ -12335,7 +12370,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 if ( ! \is_array( $seat ) || ( $seat['status'] ?? '' ) !== Registrations::STATUS_CONFIRMED ) {
                     continue; // cancelled again before the flush — nothing to announce.
                 }
-                $this->send_registration_emails(
+                // The ATTENDEE half only. The seat already exists — its
+                // creation sent the organizer's "New registration" notice — so
+                // sending the pair here told the site a second time that
+                // somebody had registered, for a registration that happened
+                // once. Same builder, same switches, one recipient.
+                $this->send_confirmation_email(
                     (int) \get_post_meta( (int) $seat_id, '_anchor_event_id', true ),
                     (string) ( $seat['name'] ?? '' ),
                     (string) ( $seat['email'] ?? '' ),

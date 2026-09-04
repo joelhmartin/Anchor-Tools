@@ -88,6 +88,9 @@ Events Manager — emails:
 * The `{join_button}` token is retired: it drew a second button no field
   controlled. It now expands to nothing, so an old saved template that still
   contains it renders cleanly instead of printing the literal token.
+* Moving a seat off the waitlist now emails the attendee their confirmation —
+  it previously told nobody. The organizer's "New registration" notice is not
+  repeated: that seat registered once, when it was created.
 * New filter `anchor_events_default_email_template( $html, $type )` — override
   the shipped default body for one email type (`confirmation`, `reminder`,
   `cancellation`, `roster`) without touching the other three.

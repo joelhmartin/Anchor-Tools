@@ -515,10 +515,26 @@ class Roster {
     /** "Allow over capacity" override checkbox for the manual add form (spec §10). */
     private function override_row() {
         echo '<tr><th scope="row">' . \esc_html__( 'Capacity', 'anchor-schema' ) . '</th><td>';
-        echo '<label><input type="checkbox" name="roster_allow_over" value="1" /> '
+        echo $this->override_check(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside.
+        echo '</td></tr>';
+    }
+
+    /**
+     * The "Allow over capacity" control itself, without the wp-admin table row
+     * around it — the front-end console lays its fields out in divs.
+     *
+     * One source for the field name and the label: handle_add() and
+     * handle_edit() both read `roster_allow_over`, and both refusals tell the
+     * operator to tick a box by that name. The console's EDIT form had no such
+     * box at all, so its refusal ("tick “Allow over capacity”") named a control
+     * that was not on the page.
+     *
+     * @return string Escaped markup.
+     */
+    private function override_check() {
+        return '<label><input type="checkbox" name="roster_allow_over" value="1" /> '
             . \esc_html__( 'Allow over capacity (bypass the event capacity and tier quota)', 'anchor-schema' )
             . '</label>';
-        echo '</td></tr>';
     }
 
     /**
@@ -1419,7 +1435,7 @@ class Roster {
 
                 <input type="hidden" name="roster_notify_control" value="1" />
                 <p class="anchor-roster-fe-check"><label><input type="checkbox" name="roster_notify" value="1" checked /> <?php \esc_html_e( 'Send the confirmation email', 'anchor-schema' ); ?></label></p>
-                <p class="anchor-roster-fe-check"><label><input type="checkbox" name="roster_allow_over" value="1" /> <?php \esc_html_e( 'Allow over capacity (bypass the event capacity and tier quota)', 'anchor-schema' ); ?></label></p>
+                <p class="anchor-roster-fe-check"><?php echo $this->override_check(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?></p>
 
                 <button type="submit" class="anchor-event-button"><?php \esc_html_e( 'Add attendee', 'anchor-schema' ); ?></button>
             </form>
@@ -1516,6 +1532,15 @@ class Roster {
                         </select>
                     </div>
                 </div>
+
+                <?php
+                // REG-D38 — the console's refusal tells the operator to tick
+                // "Allow over capacity", so the console has to offer it. The
+                // wp-admin edit form has had it since the revive started
+                // consulting capacity; this one did not, and its refusal named
+                // a control that was nowhere on the page.
+                ?>
+                <p class="anchor-roster-fe-check"><?php echo $this->override_check(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?></p>
 
                 <button type="submit" class="anchor-event-button"><?php \esc_html_e( 'Save seat', 'anchor-schema' ); ?></button>
                 <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $self_url ); ?>"><?php \esc_html_e( 'Cancel', 'anchor-schema' ); ?></a>

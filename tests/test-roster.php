@@ -319,6 +319,32 @@ class Test_Roster extends Anchor_Events_TestCase {
 		}
 	}
 
+	/**
+	 * Both edit forms offer "Allow over capacity". handle_edit()'s refusal tells
+	 * the operator to tick it, and the console's edit form did not have it — the
+	 * message named a control that was nowhere on the page, so a console
+	 * operator had no way to complete the action at all.
+	 */
+	public function test_both_edit_forms_offer_the_capacity_override() {
+		$event_id = $this->make_event( [ 'capacity' => 1 ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CANCELLED ] );
+
+		$admin_m = new ReflectionMethod( $this->module()->roster, 'render_edit_form' );
+		$admin_m->setAccessible( true );
+		ob_start();
+		$admin_m->invoke( $this->module()->roster, $event_id, $seat_id );
+		$admin = (string) ob_get_clean();
+
+		$console_m = new ReflectionMethod( $this->module()->roster, 'frontend_edit_form' );
+		$console_m->setAccessible( true );
+		$console = (string) $console_m->invoke( $this->module()->roster, $event_id, $seat_id, home_url( '/console/' ) );
+
+		foreach ( [ $admin, $console ] as $html ) {
+			$this->assertStringContainsString( 'name="roster_allow_over"', $html );
+			$this->assertStringContainsString( 'Allow over capacity', $html );
+		}
+	}
+
 	/** One tier resolver, so both forms offer the same choices. */
 	public function test_both_add_forms_offer_the_same_ticket_tiers() {
 		$event_id = $this->make_event();

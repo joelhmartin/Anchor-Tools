@@ -772,6 +772,42 @@ class Test_Schema_Availability extends Anchor_Events_TestCase {
 		$this->assertArrayNotHasKey( 'remainingAttendeeCapacity', $node );
 	}
 
+	/**
+	 * finding-5 (bot review, PR #20): a group PARENT is a container, never a
+	 * registration target (audit REG-D2) — it carries no seats of its own,
+	 * so remaining_capacity() against the PARENT's own capacity meta always
+	 * reports that capacity fully available, wrongly claiming full
+	 * availability for an event whose children may be sold out. Both fields
+	 * must be omitted on the parent node even when the parent post carries
+	 * its own (unused) capacity meta.
+	 */
+	public function test_capacity_pair_omitted_on_group_parent_node() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 5 ],
+		] );
+		update_post_meta( $parent, '_anchor_event_capacity', 10 );
+
+		$node = $this->schema()->for_event( $parent );
+
+		$this->assertArrayNotHasKey( 'maximumAttendeeCapacity', $node );
+		$this->assertArrayNotHasKey( 'remainingAttendeeCapacity', $node );
+	}
+
+	/** The child keeps its own real capacity pair — only the parent node is suppressed. */
+	public function test_capacity_pair_still_present_on_group_child_node() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 5 ],
+		] );
+		$children = $this->module()->occurrences->children( $parent );
+		$child_id = (int) $children[0];
+		$this->make_seat( $child_id );
+
+		$node = $this->schema()->for_event( $child_id );
+
+		$this->assertSame( 5, $node['maximumAttendeeCapacity'] );
+		$this->assertSame( 4, $node['remainingAttendeeCapacity'] );
+	}
+
 	public function test_is_accessible_for_free_true_on_free_offer() {
 		$event = $this->make_event( [
 			'registration_enabled' => true,

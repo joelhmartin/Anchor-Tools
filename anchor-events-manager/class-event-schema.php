@@ -466,8 +466,16 @@ class Event_Schema {
         // not a second decision. Capacity 0 means "unlimited" throughout this
         // module, so — same as an omitted `availability` — no capacity claim
         // is published rather than a false one.
+        //
+        // finding-5 (bot review, PR #20): a group PARENT is a container, never
+        // a registration target (audit REG-D2) — it carries no seats of its
+        // own, so remaining_capacity() against ITS meta always reports the
+        // parent's full capacity back as remaining, wrongly claiming an event
+        // with fully-booked children is wide open. The children (whose nodes
+        // carry their own $meta['capacity']) already publish the real
+        // numbers; the parent publishes neither field rather than a false one.
         $capacity = (int) ( $meta['capacity'] ?? 0 );
-        if ( $capacity > 0 ) {
+        if ( $capacity > 0 && ! $this->module->occurrences->is_group_parent( $event_id ) ) {
             $node['maximumAttendeeCapacity']   = $capacity;
             $node['remainingAttendeeCapacity'] = (int) $this->module->registrations->remaining_capacity( $event_id, $capacity );
         }

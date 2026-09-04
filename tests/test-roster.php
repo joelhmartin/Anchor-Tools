@@ -266,6 +266,18 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'status=cancelled', $html );
 	}
 
+	/** REG-D14 — no row checkbox, because nothing consumes seat[]. */
+	public function test_the_roster_table_has_no_checkbox_column_without_a_bulk_action() {
+		$event_id = $this->make_event();
+		$this->make_seat( $event_id, [ 'name' => 'Jane Doe', 'email' => 'jane@example.org' ] );
+
+		$html = $this->render_roster_screen( $event_id );
+
+		$this->assertStringNotContainsString( 'name="seat[]"', $html );
+		$this->assertStringNotContainsString( 'check-column', $html );
+		$this->assertStringContainsString( 'Jane Doe', $html );
+	}
+
 	/* -----------------------------------------------------------------
 	 * REG-D39 — the manual add asks the event's own questions
 	 * --------------------------------------------------------------- */

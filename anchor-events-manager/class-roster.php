@@ -1440,9 +1440,15 @@ function load_roster_list_table() {
                 return $cols;
             }
 
+            /**
+             * REG-D14 — no 'cb' column. The table used to render a row
+             * checkbox posting `seat[]`, but there is no get_bulk_actions()
+             * and no handler reads `seat[]`, so ticking ten seats and looking
+             * for a bulk cancel found nothing to submit to. The checkbox is
+             * gone until the bulk action that would consume it ships.
+             */
             public function get_columns() {
                 return \array_merge( [
-                    'cb'       => '<input type="checkbox" />',
                     'attendee' => \__( 'Attendee', 'anchor-schema' ),
                     'email'    => \__( 'Email', 'anchor-schema' ),
                     'phone'    => \__( 'Phone', 'anchor-schema' ),
@@ -1516,10 +1522,6 @@ function load_roster_list_table() {
                     $views[ $key ] = '<a href="' . \esc_url( $url ) . '"' . $cls . '>' . \esc_html( $label ) . '</a>';
                 }
                 return $views;
-            }
-
-            public function column_cb( $item ) {
-                return '<input type="checkbox" name="seat[]" value="' . (int) $item['id'] . '" />';
             }
 
             public function column_attendee( $item ) {

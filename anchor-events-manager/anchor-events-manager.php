@@ -9862,13 +9862,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // and the locked claim below.
         $tier = $this->ticket_types->find( $event_id, $tier_id );
 
-        // A hand-cancelled course takes no seats (THEME-D25). The form has not
-        // rendered for one since bookability() started answering 'closed' for
-        // it, but REG_NONCE is a bare action nonce, so a POST can still arrive
-        // from a stale page — the same reasoning as the external-mode guard
-        // above. Not folded into the decision below because that one carries
-        // the party size and the tier; this is a property of the event.
-        if ( $this->get_event_status( $event_id, $meta ) === 'cancelled' ) {
+        // A hand-cancelled or postponed course takes no seats (THEME-D25 /
+        // finding-16). The form has not rendered for one since bookability()
+        // started answering 'closed' for either status, but REG_NONCE is a
+        // bare action nonce, so a POST can still arrive from a stale page —
+        // the same reasoning as the external-mode guard above. Not folded
+        // into the decision below because that one carries the party size
+        // and the tier; this is a property of the event. status_is_closed()
+        // is the one place this rule is spelled out — see its docblock.
+        if ( $this->status_is_closed( $this->get_event_status( $event_id, $meta ) ) ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
             exit;
         }
@@ -12194,6 +12196,26 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Does a `get_event_status()` value mean "sells nothing" (THEME-D25 /
+     * finding-16)?
+     *
+     * The ONE place `cancelled` and `postponed` are named together as the
+     * closed set. bookability() and the two status guards that pre-empt it —
+     * Roster::handle_add()'s manual-add refusal and handle_registration()'s
+     * stale-POST guard — all call this rather than each spelling out its own
+     * status list, which is exactly how postponed slipped through both guards
+     * after it was added to bookability() alone. `moved_online` is
+     * deliberately NOT in this set: the event still happens, on the same
+     * date, just virtually, so it stays bookable (see bookability()).
+     *
+     * @param string $status A get_event_status() return value.
+     * @return bool
+     */
+    public function status_is_closed( $status ) {
+        return $status === 'cancelled' || $status === 'postponed';
+    }
+
+    /**
      * "Hide past events" without treating a missing `end_ts` as PAST
      * (audit RENDER-D31).
      *
@@ -12411,7 +12433,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // with. 'moved_online' is deliberately NOT included: the event still
         // happens, on the SAME date, just virtually — it stays bookable.
         $status = $this->get_event_status( $event_id, $meta );
-        if ( $status === 'cancelled' || $status === 'postponed' ) {
+        if ( $this->status_is_closed( $status ) ) {
             return 'closed';
         }
 

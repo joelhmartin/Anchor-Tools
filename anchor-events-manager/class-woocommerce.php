@@ -1544,30 +1544,29 @@ class WooCommerce {
                 // Whatever else this event asks its attendees. Answers land on the
                 // seat in _anchor_event_reg_fields, which the roster and the CSV
                 // export already turn into columns.
-                foreach ( $this->module->get_registration_questions( (int) $line['event_id'] ) as $q ) {
-                    $q_name  = $base . '[fields][' . $q['key'] . ']';
-                    $q_value = isset( $posted[ $cart_item_key ][ $i ]['fields'][ $q['key'] ] )
-                        ? \sanitize_text_field( $posted[ $cart_item_key ][ $i ]['fields'][ $q['key'] ] )
-                        : '';
-                    $req_attr = $q['required'] ? ' required' : '';
+                // One question model, one validator, one control renderer across
+                // the free form, this checkout and the roster's manual add
+                // (REG-D39). The redisplay values go through the SAME sanitizer
+                // the writer uses, so a textarea answer keeps its newlines here
+                // too instead of being flattened on the way back to the screen.
+                $q_rows   = $this->module->get_registration_questions( (int) $line['event_id'] );
+                $q_values = $this->module->sanitize_registration_answers(
+                    (int) $line['event_id'],
+                    $posted[ $cart_item_key ][ $i ]['fields'] ?? [],
+                    $q_rows
+                )['answers'];
+                foreach ( $q_rows as $q ) {
                     $req_mark = $q['required'] ? ' <abbr class="required" title="required">*</abbr>' : '';
 
                     echo '<p class="form-row ' . \esc_attr( $row_class( $q['type'] === 'textarea' ) ) . '">';
                     echo '<label>' . \esc_html( $q['label'] ) . $req_mark . '</label>'; // phpcs:ignore WordPress.Security.EscapeOutput -- $req_mark is a literal.
-                    if ( $q['type'] === 'textarea' ) {
-                        echo '<textarea class="input-text" rows="3" name="' . \esc_attr( $q_name ) . '"' . $req_attr . '>' . \esc_textarea( $q_value ) . '</textarea>'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.
-                    } elseif ( $q['type'] === 'select' ) {
-                        echo '<select class="select" name="' . \esc_attr( $q_name ) . '"' . $req_attr . '>'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.
-                        echo '<option value="">' . \esc_html__( '— Select —', 'anchor-schema' ) . '</option>';
-                        foreach ( $q['options'] as $opt ) {
-                            echo '<option value="' . \esc_attr( $opt ) . '"' . \selected( $q_value, $opt, false ) . '>' . \esc_html( $opt ) . '</option>';
-                        }
-                        echo '</select>';
-                    } elseif ( $q['type'] === 'checkbox' ) {
-                        echo '<label class="anchor-event-attendee-check"><input type="checkbox" value="yes" name="' . \esc_attr( $q_name ) . '"' . \checked( $q_value, 'yes', false ) . $req_attr . ' /> ' . \esc_html__( 'Yes', 'anchor-schema' ) . '</label>'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.
-                    } else {
-                        echo '<input type="text" class="input-text" name="' . \esc_attr( $q_name ) . '" value="' . \esc_attr( $q_value ) . '"' . $req_attr . ' />'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.
-                    }
+                    echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
+                        'name'           => $base . '[fields][' . $q['key'] . ']',
+                        'value'          => (string) ( $q_values[ $q['key'] ] ?? '' ),
+                        'class'          => $q['type'] === 'select' ? 'select' : 'input-text',
+                        'checkbox_label' => \__( 'Yes', 'anchor-schema' ),
+                        'checkbox_class' => 'anchor-event-attendee-check',
+                    ] );
                     echo '</p>';
                 }
 
@@ -1632,24 +1631,20 @@ class WooCommerce {
 
                 // Required event questions, checked server-side. The inputs carry
                 // `required` too, but that only covers a browser that runs it.
-                foreach ( $this->module->get_registration_questions( $event_id ) as $q ) {
-                    if ( empty( $q['required'] ) ) {
-                        continue;
-                    }
-                    $answer = isset( $posted[ $cart_item_key ][ $i ]['fields'][ $q['key'] ] )
-                        ? \trim( \sanitize_text_field( $posted[ $cart_item_key ][ $i ]['fields'][ $q['key'] ] ) )
-                        : '';
-                    if ( $answer === '' ) {
-                        $errors->add(
-                            'anchor_attendee_' . $cart_item_key . '_' . $i . '_' . $q['key'],
-                            \sprintf(
-                                /* translators: 1: question label, 2: attendee descriptor. */
-                                \__( 'Please answer “%1$s” for %2$s.', 'anchor-schema' ),
-                                $q['label'],
-                                $who
-                            )
-                        );
-                    }
+                $missing = $this->module->sanitize_registration_answers(
+                    $event_id,
+                    $posted[ $cart_item_key ][ $i ]['fields'] ?? []
+                )['missing'];
+                foreach ( $missing as $q ) {
+                    $errors->add(
+                        'anchor_attendee_' . $cart_item_key . '_' . $i . '_' . $q['key'],
+                        \sprintf(
+                            /* translators: 1: question label, 2: attendee descriptor. */
+                            \__( 'Please answer “%1$s” for %2$s.', 'anchor-schema' ),
+                            $q['label'],
+                            $who
+                        )
+                    );
                 }
 
                 if ( $name === '' ) {
@@ -1765,15 +1760,19 @@ class WooCommerce {
             }
             $fields = [];
             if ( isset( $raw[ $i ]['fields'] ) && \is_array( $raw[ $i ]['fields'] ) ) {
-                foreach ( $this->module->get_registration_questions( $event_id ) as $q ) {
-                    $val = $raw[ $i ]['fields'][ $q['key'] ] ?? '';
-                    // Keyed by the question's stable KEY, never its label
-                    // (REG-D10/D11): the free path stores the same shape, and
-                    // renaming a question must not orphan answers already
-                    // collected. Readers resolve the heading at render time via
-                    // Module::registration_answer_label().
-                    $fields[ $q['key'] ] = \sanitize_text_field( (string) $val );
-                }
+                // Keyed by the question's stable KEY, never its label
+                // (REG-D10/D11): the free path stores the same shape, and
+                // renaming a question must not orphan answers already
+                // collected. Readers resolve the heading at render time via
+                // Module::registration_answer_label().
+                //
+                // Through the shared validator (REG-D39), so this writer keeps
+                // a textarea's newlines and normalizes select/checkbox exactly
+                // as handle_registration() does — three call sites, one rule.
+                $fields = $this->module->sanitize_registration_answers(
+                    $event_id,
+                    $raw[ $i ]['fields']
+                )['answers'];
             }
             $attendees[ $i ] = [
                 'name'   => \sanitize_text_field( $raw[ $i ]['name'] ?? '' ),

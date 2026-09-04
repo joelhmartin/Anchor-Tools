@@ -1186,10 +1186,20 @@ class Module {
      * @return Outcome sent | skipped (disabled, no_address) | failed (wp_mail).
      */
     public function send_reminder_email( array $seat, $event_id, $offset, $settings = null ) {
+        // REG-D40 — three different refusals used to leave the same silence.
+        // The reason string tells the CALLER them apart; these codes tell the
+        // OPERATOR, who otherwise reads an unsent reminder as a mail failure.
+        // 'disabled' is deliberately not logged: it is the organizer's own
+        // setting, not a defect (see Outcome), and logging it would fill the
+        // error log with every seat of every event that switched reminders off.
         if ( ! $this->is_email_enabled( $event_id, 'reminder' ) ) {
             return Outcome::skipped( 'disabled' );
         }
         if ( empty( $seat['email'] ) ) {
+            Events_Log::error( 'reminder_no_address', [
+                'event' => (int) $event_id,
+                'seat'  => (int) ( $seat['id'] ?? 0 ),
+            ] );
             return Outcome::skipped( 'no_address' );
         }
         if ( ! \is_array( $settings ) ) {
@@ -1240,6 +1250,9 @@ class Module {
                 ] );
             }
         }
+        // A delivery failure is NOT logged here: send_html_email() already
+        // records email_send_returned_false for it. What was missing was a
+        // record of the refusals ABOVE, which never reached a send at all.
         return Outcome::from_bool( $sent, 'wp_mail' );
     }
 
@@ -1255,11 +1268,15 @@ class Module {
         }
         $event_id = (int) $event_id;
         if ( \get_post_type( $event_id ) !== self::CPT ) {
+            // REG-D40 — each refusal names itself, so "the roster never arrived"
+            // can be told apart from "the roster bounced" without guesswork.
+            Events_Log::error( 'roster_invalid_event', [ 'event' => $event_id ] );
             return Outcome::failed( 'invalid_event' );
         }
         $settings = $this->get_settings();
         $to       = $this->resolve_organizer_email( $event_id, $settings );
         if ( $to === '' ) {
+            Events_Log::error( 'roster_no_address', [ 'event' => $event_id ] );
             return Outcome::failed( 'no_address' );
         }
         $summary = $this->registrations->get_event_summary( $event_id );
@@ -1307,6 +1324,7 @@ class Module {
             'type'          => 'roster',
         ];
         $html = $this->build_registration_email_html( $ctx );
+        // Delivery failure is send_html_email()'s to log (email_send_returned_false).
         return Outcome::from_bool( $this->send_html_email( $to, $subject, $html, [], $event_id ), 'wp_mail' );
     }
 
@@ -6569,8 +6587,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         foreach ( $events as $event ) {
             $meta = $this->get_meta( $event->ID );
             $registrations = $this->get_registrations( $event->ID, 0 );
-            $count = count( $registrations );
-            $attendees = $this->get_attendee_count( $event->ID );
             $waitlist = $this->get_registration_count( $event->ID, 'waitlist' );
             $edit_link = \get_edit_post_link( $event->ID );
             $export_url = \wp_nonce_url(
@@ -6585,14 +6601,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $date_label ) {
                 $output .= ' <span class="anchor-event-admin-date">' . esc_html( $date_label ) . '</span>';
             }
-            $output .= ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
-                \_n( '%d registrant', '%d registrants', $count, 'anchor-schema' ),
-                $count
-            ) );
-            if ( $attendees !== $count ) {
-                $output .= ' <span class="anchor-event-admin-attendees">(' . esc_html( sprintf( __( '%d total attendees', 'anchor-schema' ), $attendees ) ) . ')</span>';
-            }
-            $output .= '</span>';
+            $output .= $this->render_registrant_counts( $event->ID );
             $output .= '</summary>';
             $output .= '<div class="anchor-event-admin-body">';
             $output .= '<p class="anchor-event-admin-meta">';
@@ -7040,8 +7049,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     private function render_event_manager_item( $event ) {
         $meta = $this->get_meta( $event->ID );
         $registrations = $this->get_registrations( $event->ID, 0 );
-        $count = count( $registrations );
-        $attendees = $this->get_attendee_count( $event->ID );
         $waitlist = $this->get_registration_count( $event->ID, 'waitlist' );
 
         $base_url = \remove_query_arg( [ 'event_action', 'event_id', 'event_manager_notice' ] );
@@ -7073,14 +7080,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $event->post_status !== 'publish' ) {
             $output .= ' <span class="anchor-event-admin-date">[' . esc_html( $event->post_status ) . ']</span>';
         }
-        $output .= ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
-            \_n( '%d registrant', '%d registrants', $count, 'anchor-schema' ),
-            $count
-        ) );
-        if ( $attendees !== $count ) {
-            $output .= ' <span class="anchor-event-admin-attendees">(' . esc_html( sprintf( __( '%d total attendees', 'anchor-schema' ), $attendees ) ) . ')</span>';
-        }
-        $output .= '</span>';
+        $output .= $this->render_registrant_counts( $event->ID );
         $output .= '</summary>';
 
         $output .= '<div class="anchor-event-admin-body">';
@@ -8233,13 +8233,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $output;
     }
 
+    /**
+     * The on-screen answer to a registration POST (audit REG-D24).
+     *
+     * Two things used to be wrong here at once. A waitlisted registration and a
+     * confirmed one came back under the SAME key, so somebody who had just been
+     * put on a waitlist read "Registration received. Check your email for
+     * confirmation." and had no way to learn otherwise until (or unless) the
+     * email arrived. And that sentence promised an email unconditionally — it
+     * was shown just the same when `notify_user` was off or the event's
+     * confirmation email was switched off, i.e. when no email would ever come.
+     *
+     * So the outcome and the promise are now two separate facts: the key says
+     * WHAT HAPPENED (received / waitlisted), and the `event_registration_email`
+     * flag — set by handle_registration() only when the sender reported an
+     * actual send — decides whether "check your email" is appended.
+     */
     public function render_registration_notice() {
         if ( empty( $_GET['event_registration'] ) ) {
             return '';
         }
-        $key = sanitize_text_field( $_GET['event_registration'] );
+        $key = sanitize_text_field( \wp_unslash( $_GET['event_registration'] ) );
         $messages = [
-            'registration_success' => __( 'Registration received. Check your email for confirmation.', 'anchor-schema' ),
+            'registration_success' => __( 'Registration received.', 'anchor-schema' ),
+            'registration_waitlisted' => __( 'This event is full — you have been added to the waitlist. We will be in touch if a seat opens up.', 'anchor-schema' ),
             'registration_closed' => __( 'Registration is closed for this event.', 'anchor-schema' ),
             'registration_invalid' => __( 'Please complete all required registration fields.', 'anchor-schema' ),
             'registration_error' => __( 'Registration could not be processed. Please try again.', 'anchor-schema' ),
@@ -8247,7 +8264,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! isset( $messages[ $key ] ) ) {
             return '';
         }
-        return '<div class="anchor-event-notice">' . esc_html( $messages[ $key ] ) . '</div>';
+        $message = $messages[ $key ];
+        if ( ! empty( $_GET['event_registration_email'] ) ) {
+            $message .= ' ' . __( 'Check your email for confirmation.', 'anchor-schema' );
+        }
+        return '<div class="anchor-event-notice">' . esc_html( $message ) . '</div>';
     }
 
     /**
@@ -8595,28 +8616,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // answers under the same keys. `required` is asserted here for the
         // browser and re-checked in handle_registration() for everything else.
         foreach ( $questions as $q ) {
-            $name     = 'anchor_event_field[' . $q['key'] . ']';
             $id       = 'anchor_event_field_' . $q['key'];
-            $required = ! empty( $q['required'] );
-            $req_attr = $required ? ' required' : '';
-            $req_mark = $required ? ' <span class="anchor-event-required" aria-hidden="true">*</span>' : '';
+            $req_mark = ! empty( $q['required'] ) ? ' <span class="anchor-event-required" aria-hidden="true">*</span>' : '';
 
             $output .= '<div class="anchor-event-field">';
             $output .= '<label for="' . esc_attr( $id ) . '">' . esc_html( $q['label'] ) . $req_mark . '</label>';
-            if ( $q['type'] === 'textarea' ) {
-                $output .= '<textarea id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '" rows="3"' . $req_attr . '></textarea>';
-            } elseif ( $q['type'] === 'select' ) {
-                $output .= '<select id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '"' . $req_attr . '>';
-                $output .= '<option value="">' . esc_html__( '— Select —', 'anchor-schema' ) . '</option>';
-                foreach ( $q['options'] as $opt ) {
-                    $output .= '<option value="' . esc_attr( $opt ) . '">' . esc_html( $opt ) . '</option>';
-                }
-                $output .= '</select>';
-            } elseif ( $q['type'] === 'checkbox' ) {
-                $output .= '<input type="checkbox" id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '" value="yes"' . $req_attr . ' />';
-            } else {
-                $output .= '<input type="text" id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '"' . $req_attr . ' />';
-            }
+            $output .= $this->render_registration_question_control( $q, [
+                'name' => 'anchor_event_field[' . $q['key'] . ']',
+                'id'   => $id,
+            ] );
             $output .= '</div>';
         }
 
@@ -8968,25 +8976,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $posted_answers = ( ! empty( $_POST['anchor_event_field'] ) && is_array( $_POST['anchor_event_field'] ) )
             ? wp_unslash( $_POST['anchor_event_field'] ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- sanitized per answer below.
             : [];
-        $extra_fields   = [];
-        $missing_answer = false;
-        foreach ( $this->get_registration_questions( $event_id ) as $q ) {
-            $answer = isset( $posted_answers[ $q['key'] ] ) && is_scalar( $posted_answers[ $q['key'] ] )
-                ? sanitize_text_field( (string) $posted_answers[ $q['key'] ] )
-                : '';
-            if ( $q['type'] === 'checkbox' ) {
-                $answer = ( $answer !== '' && $answer !== '0' ) ? 'yes' : '';
-            } elseif ( $q['type'] === 'select' && $answer !== '' && ! in_array( $answer, $q['options'], true ) ) {
-                $answer = ''; // not one of the offered choices
-            }
-            if ( ! empty( $q['required'] ) && trim( $answer ) === '' ) {
-                $missing_answer = true;
-            }
-            $extra_fields[ $q['key'] ] = $answer;
-        }
+        $validated    = $this->sanitize_registration_answers( $event_id, $posted_answers );
+        $extra_fields = $validated['answers'];
         // Required answers are enforced server-side too: the inputs carry
         // `required`, but that only covers a browser that runs it.
-        if ( $missing_answer ) {
+        if ( ! empty( $validated['missing'] ) ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_invalid' ) );
             exit;
         }
@@ -9067,10 +9061,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             Events_Log::error( 'capacity_lock_unavailable', [ 'event' => $event_id, 'source' => 'internal' ] );
         }
 
-        $reg_status = ( $waitlisted && ! $created ) ? 'waitlist' : 'confirmed';
-        $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
+        // REG-D24 — the seat that was actually minted decides what the visitor
+        // is told, and whether an email was actually sent decides whether one
+        // is promised. Both used to be assumed.
+        $is_waitlist = ( $waitlisted && ! $created );
+        $reg_status  = $is_waitlist ? Registrations::STATUS_WAITLIST : Registrations::STATUS_CONFIRMED;
+        $emailed     = $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
 
-        \wp_safe_redirect( $this->with_message( $redirect, 'registration_success' ) );
+        $url = $this->with_message( $redirect, $is_waitlist ? 'registration_waitlisted' : 'registration_success' );
+        if ( $emailed->is_sent() ) {
+            $url = \add_query_arg( 'event_registration_email', '1', $url );
+        }
+        \wp_safe_redirect( $url );
         exit;
     }
 
@@ -11430,6 +11432,200 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * The registrant breakdown behind every "N registrants" headline (REG-D22).
+     *
+     * `count( get_registrations( $id, 0 ) )` counted RECORDS OF EVERY STATUS —
+     * cancelled, refunded and failed seats included — so an event with three
+     * live registrations and seven cancellations announced "10 registrants
+     * (3 total attendees)": two numbers computed on different axes, with the
+     * wrong one in the headline. The live count and the cancelled count are now
+     * two separate, named facts drawn from the SAME source the roster header
+     * uses (get_event_summary()), so the two screens cannot disagree.
+     *
+     * `active` is records, not weighted seats — it answers "how many people
+     * signed up" — while `attendees` stays the weighted confirmed figure
+     * (registrant + guests) the parenthetical has always meant.
+     *
+     * @param int $event_id
+     * @return array{active:int,confirmed:int,pending:int,waitlist:int,cancelled:int,attendees:int}
+     */
+    public function registrant_counts( $event_id ) {
+        $summary = $this->registrations->get_event_summary( (int) $event_id );
+        $per     = isset( $summary['per_status'] ) && \is_array( $summary['per_status'] ) ? $summary['per_status'] : [];
+        $records = function ( $status ) use ( $per ) {
+            return (int) ( $per[ $status ]['records'] ?? 0 );
+        };
+
+        $confirmed = $records( Registrations::STATUS_CONFIRMED );
+        $pending   = $records( Registrations::STATUS_PENDING );
+        $waitlist  = $records( Registrations::STATUS_WAITLIST );
+        $cancelled = $records( Registrations::STATUS_CANCELLED )
+            + $records( Registrations::STATUS_REFUNDED )
+            + $records( Registrations::STATUS_FAILED );
+
+        return [
+            'active'    => $confirmed + $pending + $waitlist,
+            'confirmed' => $confirmed,
+            'pending'   => $pending,
+            'waitlist'  => $waitlist,
+            'cancelled' => $cancelled,
+            'attendees' => (int) ( $summary['confirmed'] ?? 0 ),
+        ];
+    }
+
+    /**
+     * The headline + breakdown markup for one event's registrant counts. One
+     * implementation for both admin list surfaces ([event_registrants_list] and
+     * the [event_manager] item), which used to carry identical copies of the
+     * wrong sum (REG-D22).
+     *
+     * @param int $event_id
+     * @return string
+     */
+    private function render_registrant_counts( $event_id ) {
+        $c   = $this->registrant_counts( $event_id );
+        $out = ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
+            \_n( '%d registrant', '%d registrants', $c['active'], 'anchor-schema' ),
+            $c['active']
+        ) );
+        if ( $c['attendees'] !== $c['active'] ) {
+            $out .= ' <span class="anchor-event-admin-attendees">(' . esc_html( sprintf( __( '%d total attendees', 'anchor-schema' ), $c['attendees'] ) ) . ')</span>';
+        }
+        if ( $c['cancelled'] > 0 ) {
+            $out .= ' <span class="anchor-event-admin-cancelled">' . esc_html( sprintf(
+                /* translators: %d: number of cancelled/refunded/failed seats, which are NOT in the headline count. */
+                __( '+%d cancelled', 'anchor-schema' ),
+                $c['cancelled']
+            ) ) . '</span>';
+        }
+        $out .= '</span>';
+        return $out;
+    }
+
+    /**
+     * Sanitize one posted answer set against an event's OWN question model —
+     * the single validator every write path uses (REG-D9/D39).
+     *
+     * There used to be three copies of this loop: the free handler, the
+     * WooCommerce checkout validator and the WooCommerce item writer. Copies
+     * that have to AGREE to be correct drift, and these had: two of them ran
+     * every answer through sanitize_text_field(), which strips newlines, so a
+     * textarea answer ("no nuts, and I use a wheelchair") arrived on the roster
+     * as one run-on line while the third path kept it intact. One
+     * implementation, three call sites.
+     *
+     * Answers come back keyed by the question's stable key — never its label
+     * (REG-D10) — with select values constrained to the offered options and a
+     * checkbox normalized to 'yes' | ''. `missing` lists the required questions
+     * that were left blank, so each caller can phrase its own refusal.
+     *
+     * @param int        $event_id
+     * @param mixed      $posted    Raw posted answers, keyed by question key.
+     * @param array|null $questions Pre-fetched question set (loop hoist).
+     * @return array{answers:array<string,string>,missing:array<int,array>}
+     */
+    public function sanitize_registration_answers( $event_id, $posted, $questions = null ) {
+        $questions = \is_array( $questions ) ? $questions : $this->get_registration_questions( (int) $event_id );
+        $posted    = \is_array( $posted ) ? $posted : [];
+
+        $answers = [];
+        $missing = [];
+        foreach ( $questions as $q ) {
+            $raw    = $posted[ $q['key'] ] ?? '';
+            $answer = '';
+            if ( \is_scalar( $raw ) ) {
+                // A textarea is the one type whose newlines are part of the
+                // answer; sanitize_text_field() would flatten them.
+                $answer = ( $q['type'] === 'textarea' )
+                    ? \sanitize_textarea_field( (string) $raw )
+                    : \sanitize_text_field( (string) $raw );
+            }
+            if ( $q['type'] === 'checkbox' ) {
+                $answer = ( $answer !== '' && $answer !== '0' ) ? 'yes' : '';
+            } elseif ( $q['type'] === 'select' && $answer !== '' && ! \in_array( $answer, $q['options'], true ) ) {
+                $answer = ''; // not one of the offered choices
+            }
+            if ( ! empty( $q['required'] ) && \trim( $answer ) === '' ) {
+                $missing[] = $q;
+            }
+            $answers[ $q['key'] ] = $answer;
+        }
+
+        return [
+            'answers' => $answers,
+            'missing' => $missing,
+        ];
+    }
+
+    /**
+     * The form control for ONE attendee question — the single renderer behind
+     * the free registration form, the WooCommerce checkout attendee block and
+     * the roster's manual add form (REG-D39).
+     *
+     * Only the control is rendered, never the wrapper or the label: the three
+     * surfaces put their fields in a `.anchor-event-field` div, a Woo
+     * `.form-row` paragraph and a `.form-table` row respectively, and that is
+     * their business. What must not vary is which types exist, what a select
+     * offers, and what a checkbox posts — those are the question model, and
+     * they now have one implementation.
+     *
+     * @param array $q    Normalized question row.
+     * @param array $args {
+     *     @type string $name           Input name attribute (required).
+     *     @type string $id             Input id, omitted when ''.
+     *     @type string $value          Current value (redisplay).
+     *     @type string $class          class attribute, omitted when ''.
+     *     @type bool   $required       Defaults to the question's own flag.
+     *     @type string $checkbox_label Text beside a checkbox; when non-empty the
+     *                                  input is wrapped in a <label>.
+     *     @type string $checkbox_class class for that wrapping <label>.
+     * }
+     * @return string
+     */
+    public function render_registration_question_control( array $q, array $args = [] ) {
+        $args = \array_merge( [
+            'name'           => '',
+            'id'             => '',
+            'value'          => '',
+            'class'          => '',
+            'required'       => ! empty( $q['required'] ),
+            'checkbox_label' => '',
+            'checkbox_class' => '',
+        ], $args );
+
+        $id    = $args['id'] !== '' ? ' id="' . \esc_attr( $args['id'] ) . '"' : '';
+        $class = $args['class'] !== '' ? ' class="' . \esc_attr( $args['class'] ) . '"' : '';
+        $name  = ' name="' . \esc_attr( $args['name'] ) . '"';
+        $req   = $args['required'] ? ' required' : '';
+        $value = (string) $args['value'];
+        $type  = isset( $q['type'] ) ? (string) $q['type'] : 'text';
+
+        if ( $type === 'textarea' ) {
+            return '<textarea' . $id . $class . $name . ' rows="3"' . $req . '>' . \esc_textarea( $value ) . '</textarea>';
+        }
+
+        if ( $type === 'select' ) {
+            $out = '<select' . $id . $class . $name . $req . '>';
+            $out .= '<option value="">' . \esc_html__( '— Select —', 'anchor-schema' ) . '</option>';
+            foreach ( (array) ( $q['options'] ?? [] ) as $opt ) {
+                $out .= '<option value="' . \esc_attr( $opt ) . '"' . \selected( $value, $opt, false ) . '>' . \esc_html( $opt ) . '</option>';
+            }
+            return $out . '</select>';
+        }
+
+        if ( $type === 'checkbox' ) {
+            $input = '<input type="checkbox"' . $id . $class . $name . ' value="yes"' . \checked( $value, 'yes', false ) . $req . ' />';
+            if ( $args['checkbox_label'] === '' ) {
+                return $input;
+            }
+            $wrap = $args['checkbox_class'] !== '' ? ' class="' . \esc_attr( $args['checkbox_class'] ) . '"' : '';
+            return '<label' . $wrap . '>' . $input . ' ' . \esc_html( $args['checkbox_label'] ) . '</label>';
+        }
+
+        return '<input type="text"' . $id . $class . $name . ' value="' . \esc_attr( $value ) . '"' . $req . ' />';
+    }
+
+    /**
      * Map a seat's stored answers onto the event's CURRENT question set
      * (REG-D10 / REG-D11).
      *
@@ -11709,6 +11905,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * they previously reached only the WooCommerce sender, which meant "Preview
      * with real data" showed copy a free registration never sent (REG-D1/D45).
      */
+    /**
+     * @return Outcome The ATTENDEE email: sent | skipped (notifications_off,
+     *                 disabled, no_address) | failed (wp_mail).
+     */
     public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
         $settings = $this->get_settings();
         $event_title = \get_the_title( $event_id );
@@ -11738,49 +11938,60 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
         }
 
-        if ( ! empty( $settings['notify_user'] ) && $this->is_email_enabled( $event_id, 'confirmation' ) ) {
-            $tokens = $this->email_tokens( [
-                'event_id' => $event_id,
-                'seat'     => [ 'name' => $name, 'email' => $email, 'status' => $status ],
-            ] );
-            // Per-event override -> site setting -> the default this path has
-            // always used. Same three-step resolution, and the same fallbacks,
-            // as every other sender: nothing changes for an event with no
-            // override saved.
-            $subject = $this->expand_email_tokens(
-                $this->get_email_field(
-                    $event_id,
-                    'confirmation',
-                    'subject',
-                    sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title )
-                ),
-                $tokens
-            );
-            $intro = $this->expand_email_tokens(
-                $this->get_email_field(
-                    $event_id,
-                    'confirmation',
-                    'intro',
-                    $this->default_confirmation_intro( $settings )
-                ),
-                $tokens
-            );
-            // The $ctx form of the builder, not the positional shim: the shim
-            // resolves the intro from the settings alone, which is the bug.
-            $html = $this->build_registration_email_html( [
-                'event_id'      => (int) $event_id,
-                'name'          => (string) $name,
-                'status'        => (string) $status,
-                'intro_message' => $intro,
-                'guests'        => $guests,
-                'detail_rows'   => [],
-                'seat_list'     => [],
-                'cta_label'     => __( 'View event details', 'anchor-schema' ),
-                'cta_url'       => $event_link,
-                'type'          => 'confirmation',
-            ] );
-            $this->send_html_email( $email, $subject, $html, [], $event_id );
+        // The ATTENDEE half is what the return value describes: the caller needs
+        // to know whether it may promise "check your email" (REG-D24). The
+        // organizer copy above is a different recipient with a different switch
+        // and is deliberately not folded into this answer.
+        if ( empty( $settings['notify_user'] ) ) {
+            return Outcome::skipped( 'notifications_off' );
         }
+        if ( ! $this->is_email_enabled( $event_id, 'confirmation' ) ) {
+            return Outcome::skipped( 'disabled' );
+        }
+        if ( \sanitize_email( (string) $email ) === '' ) {
+            return Outcome::skipped( 'no_address' );
+        }
+        $tokens = $this->email_tokens( [
+            'event_id' => $event_id,
+            'seat'     => [ 'name' => $name, 'email' => $email, 'status' => $status ],
+        ] );
+        // Per-event override -> site setting -> the default this path has
+        // always used. Same three-step resolution, and the same fallbacks,
+        // as every other sender: nothing changes for an event with no
+        // override saved.
+        $subject = $this->expand_email_tokens(
+            $this->get_email_field(
+                $event_id,
+                'confirmation',
+                'subject',
+                sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title )
+            ),
+            $tokens
+        );
+        $intro = $this->expand_email_tokens(
+            $this->get_email_field(
+                $event_id,
+                'confirmation',
+                'intro',
+                $this->default_confirmation_intro( $settings )
+            ),
+            $tokens
+        );
+        // The $ctx form of the builder, not the positional shim: the shim
+        // resolves the intro from the settings alone, which is the bug.
+        $html = $this->build_registration_email_html( [
+            'event_id'      => (int) $event_id,
+            'name'          => (string) $name,
+            'status'        => (string) $status,
+            'intro_message' => $intro,
+            'guests'        => $guests,
+            'detail_rows'   => [],
+            'seat_list'     => [],
+            'cta_label'     => __( 'View event details', 'anchor-schema' ),
+            'cta_url'       => $event_link,
+            'type'          => 'confirmation',
+        ] );
+        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id ), 'wp_mail' );
     }
 
     // -------------------------------------------------------------------------
@@ -11789,6 +12000,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /** Enqueue (do not send) on a live→cancelled/refunded transition (spec §7.2). */
     public function on_seat_status_changed( $seat_id, $from, $to, $actor ) {
+        // A waitlist promotion is the one non-terminal transition an attendee
+        // has to hear about (audit REG-D38). It is the module's ONLY promotion
+        // — there is no automatic one — and it used to send nothing at all, so
+        // somebody who had been told "you are on the waitlist" got a seat and
+        // was never told. Reuses the confirmation sender, which owns both
+        // switches (notify_user and the per-event confirmation toggle), rather
+        // than growing a fifth template.
+        if ( $from === Registrations::STATUS_WAITLIST && $to === Registrations::STATUS_CONFIRMED ) {
+            $seat = $this->registrations->get_seat( (int) $seat_id );
+            if ( \is_array( $seat ) ) {
+                $this->send_registration_emails(
+                    (int) \get_post_meta( (int) $seat_id, '_anchor_event_id', true ),
+                    (string) ( $seat['name'] ?? '' ),
+                    (string) ( $seat['email'] ?? '' ),
+                    Registrations::STATUS_CONFIRMED,
+                    (int) ( $seat['guests'] ?? 0 )
+                );
+            }
+            return;
+        }
+
         $live = [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_WAITLIST ];
         if ( ! \in_array( $to, Registrations::TERMINAL_STATUSES, true ) || ! \in_array( $from, $live, true ) ) {
             return;

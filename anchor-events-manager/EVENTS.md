@@ -168,9 +168,14 @@ unchanged after upgrade.
 
 An event can ask anything on top of name/email/phone: rows in
 `_anchor_event_reg_questions` (`key`, `label`, `type` = text|textarea|select|checkbox,
-`options`, `required`), read through `Module::get_registration_questions()`. **Both**
-registration paths render them — the free form and the WooCommerce checkout's attendee
-fieldset — and both enforce `required` client- and server-side.
+`options`, `required`), read through `Module::get_registration_questions()`. **All three**
+seat-creating paths render them — the free form, the WooCommerce checkout's attendee
+fieldset, and the roster's manual add (both the wp-admin form and the front-end console)
+— and all three enforce `required` client- and server-side. One control renderer
+(`Module::render_registration_question_control()`) and one validator
+(`Module::sanitize_registration_answers()`) serve all of them, so the types on offer,
+the select constraint, the checkbox normalization and the textarea's newlines cannot
+differ by path.
 
 Answers live on the seat in `_anchor_event_reg_fields`, **keyed by the question's
 stable `key`, never by its label**, so renaming a question keeps its answers. The label

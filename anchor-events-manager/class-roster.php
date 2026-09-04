@@ -296,7 +296,7 @@ class Roster {
     private function render_add_form( $event_id ) {
         $event_id = (int) $event_id;
         echo '<h2>' . \esc_html__( 'Add attendee', 'anchor-schema' ) . '</h2>';
-        echo '<p class="description">' . \esc_html__( 'Manually added seats honor capacity (waitlisted if full and the waitlist is enabled, otherwise blocked). Use “Allow over capacity” to deliberately exceed the event capacity and tier quota (recorded in the seat history).', 'anchor-schema' ) . '</p>';
+        echo '<p class="description">' . \esc_html__( 'Manually added seats go through the same capacity decision as a public sign-up: a closed registration window, a sold-out flag or a full event blocks the add (or waitlists it, when the waitlist is on). Use “Allow over capacity” to override all of that deliberately — it is recorded in the seat history and the error log.', 'anchor-schema' ) . '</p>';
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:24px;">';
         echo '<input type="hidden" name="action" value="anchor_roster_add" />';
         echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
@@ -307,6 +307,7 @@ class Roster {
         $this->text_row( 'roster_phone', \__( 'Phone', 'anchor-schema' ), '' );
         $this->text_row( 'roster_guests', \__( 'Additional guests', 'anchor-schema' ), '0', false, 'number' );
         $this->tier_row( $event_id );
+        $this->question_rows( $event_id );
         $this->override_row();
         echo '</tbody></table>';
         \submit_button( \__( 'Add attendee', 'anchor-schema' ) );
@@ -360,6 +361,10 @@ class Roster {
             echo ' <span class="description">' . \esc_html__( 'Managed by WooCommerce — cancel/refund in the order to keep seats in sync.', 'anchor-schema' ) . '</span>';
             echo '</td></tr>';
         }
+        // REG-D38 — a revive to confirmed now consults capacity, so the edit form
+        // needs the same explicit "I know, do it anyway" the add form has. It is
+        // never the default: an unticked box refuses rather than overbooking.
+        $this->override_row();
         echo '</tbody></table>';
         \submit_button( \__( 'Save seat', 'anchor-schema' ) );
         echo ' <a class="button" href="' . \esc_url( $this->roster_url( $event_id ) ) . '">' . \esc_html__( 'Cancel', 'anchor-schema' ) . '</a>';
@@ -422,6 +427,32 @@ class Roster {
         echo '</td></tr>';
     }
 
+    /**
+     * The event's own attendee questions, as form-table rows (audit REG-D39).
+     *
+     * The manual add form used to collect none of them, so an event asking two
+     * required questions got a hand-added seat with an empty answer set: its
+     * roster row and its CSV cells were blank, with nothing to say the answers
+     * had never been asked for. Same question model, same answer keys, same
+     * control renderer as the free form and the WooCommerce checkout — this is
+     * a third CALL SITE, not a third implementation.
+     *
+     * @param int $event_id
+     */
+    private function question_rows( $event_id ) {
+        foreach ( $this->module_questions( $event_id ) as $q ) {
+            $id       = 'roster_field_' . $q['key'];
+            $req_mark = ! empty( $q['required'] ) ? ' <span class="description">*</span>' : '';
+            echo '<tr><th scope="row"><label for="' . \esc_attr( $id ) . '">' . \esc_html( $q['label'] ) . $req_mark . '</label></th><td>'; // phpcs:ignore WordPress.Security.EscapeOutput -- $req_mark is a literal.
+            echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
+                'name'  => 'roster_field[' . $q['key'] . ']',
+                'id'    => $id,
+                'class' => $q['type'] === 'select' ? '' : 'regular-text',
+            ] );
+            echo '</td></tr>';
+        }
+    }
+
     /** "Allow over capacity" override checkbox for the manual add form (spec §10). */
     private function override_row() {
         echo '<tr><th scope="row">' . \esc_html__( 'Capacity', 'anchor-schema' ) . '</th><td>';
@@ -478,12 +509,33 @@ class Roster {
      * Manual seat actions (delegate to the data layer)
      * ------------------------------------------------------------------- */
 
+    /**
+     * Add one seat by hand (audit REG-D39).
+     *
+     * This is a seat-creating path like any other, and it used to be the only
+     * one that never asked the capacity authority. capacity_decision() owns the
+     * registration window, the hand-set `sold_out` flag, the past-event check,
+     * the event total and the per-tier quota; claim_seats() below owns only the
+     * numeric capacity and the quota. So an event whose registration had closed,
+     * or one an organizer had marked sold out, quietly accepted a roster add
+     * with nobody ticking "Allow over capacity" — the checkbox that exists to
+     * mean exactly "I know, do it anyway".
+     *
+     * The order is: is this a real event → is the submission usable → may a seat
+     * be sold → mint it. Each refusal returns its own code (see redirect()).
+     */
     public function handle_add() {
         $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
         $this->guard( 'anchor_roster_add_' . $event_id );
 
+        // Nonce, capability, THEN the object — the order every handler uses.
+        if ( \get_post_type( $event_id ) !== Module::CPT ) {
+            $this->redirect( $event_id, 'error', \__( 'That is not an event.', 'anchor-schema' ), 'invalid' );
+        }
+
         $name   = \sanitize_text_field( \wp_unslash( $_POST['roster_name'] ?? '' ) );
-        $email  = \sanitize_email( \wp_unslash( $_POST['roster_email'] ?? '' ) );
+        $raw_email = \sanitize_text_field( \wp_unslash( $_POST['roster_email'] ?? '' ) );
+        $email  = \sanitize_email( $raw_email );
         $phone  = \sanitize_text_field( \wp_unslash( $_POST['roster_phone'] ?? '' ) );
         $guests = max( 0, (int) \wp_unslash( $_POST['roster_guests'] ?? 0 ) );
 
@@ -508,8 +560,9 @@ class Roster {
             $tier_id = 'primary';
         }
 
-        // Over-capacity override (spec §10). Bypasses both the event capacity and
-        // the per-tier quota in the seat layer; recorded in the seat history note.
+        // Over-capacity override (spec §10). Bypasses the registration window,
+        // the sold-out flag, the event capacity and the per-tier quota; recorded
+        // in the seat history note and in the error log.
         $allow_over = ! empty( $_POST['roster_allow_over'] );
 
         // Whether this manual add emails the attendee. The wp-admin form has no
@@ -518,17 +571,51 @@ class Roster {
         // where somebody is being added after they were told in person.
         $notify = ! isset( $_POST['roster_notify_control'] ) || ! empty( $_POST['roster_notify'] );
 
-        if ( $name === '' ) {
-            $this->redirect( $event_id, 'error', \__( 'A name is required.', 'anchor-schema' ) );
+        /* --- Is the submission usable? (code: invalid) --- */
+        if ( \trim( $name ) === '' ) {
+            $this->redirect( $event_id, 'error', \__( 'A name is required.', 'anchor-schema' ), 'invalid' );
+        }
+        if ( $raw_email !== '' && $email === '' ) {
+            $this->redirect( $event_id, 'error', \__( 'That email address is not usable — correct it or leave the field blank.', 'anchor-schema' ), 'invalid' );
         }
 
-        $meta   = $this->module->get_meta( $event_id );
+        // The event's own attendee questions (REG-D39), through the one
+        // validator the free form and the WooCommerce checkout use.
+        $posted_answers = ( ! empty( $_POST['roster_field'] ) && \is_array( $_POST['roster_field'] ) )
+            ? \wp_unslash( $_POST['roster_field'] ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- sanitized per answer in the validator.
+            : [];
+        $validated = $this->module->sanitize_registration_answers( $event_id, $posted_answers );
+        if ( ! empty( $validated['missing'] ) ) {
+            $labels = [];
+            foreach ( $validated['missing'] as $q ) {
+                $labels[] = $q['label'];
+            }
+            $this->redirect( $event_id, 'error', \sprintf(
+                /* translators: %s: comma-separated list of question labels. */
+                \__( 'This event requires an answer to: %s', 'anchor-schema' ),
+                \implode( ', ', $labels )
+            ), 'invalid' );
+        }
+
+        /* --- May a seat be sold at all? (codes: closed | full) --- */
+        $meta     = $this->module->get_meta( $event_id );
+        $decision = $this->registrations->capacity_decision( $event_id, $meta, 1 + $guests, $tier );
+        if ( ! $allow_over ) {
+            if ( $decision === 'closed' ) {
+                $this->redirect( $event_id, 'error', \__( 'Registration is closed for this event — tick “Allow over capacity” to add anyway.', 'anchor-schema' ), 'closed' );
+            }
+            if ( $decision === 'full' ) {
+                $this->redirect( $event_id, 'error', \__( 'This event is full and its waitlist is off — tick “Allow over capacity” to add anyway.', 'anchor-schema' ), 'full' );
+            }
+        }
+
         $result = $this->registrations->claim_seats( $event_id, $meta, 1, [
             'source'         => 'manual',
             'name'           => $name,
             'email'          => $email,
             'phone'          => $phone,
             'guests'         => $guests,
+            'reg_fields'     => $validated['answers'],
             'ticket_type_id' => $tier_id,
             'actor'          => 'user:' . \get_current_user_id(),
             'note'           => $allow_over ? 'manual add (capacity override)' : 'manual roster add',
@@ -541,20 +628,37 @@ class Roster {
             Events_Log::error( 'capacity_lock_unavailable', [ 'event' => $event_id, 'source' => 'manual' ] );
         }
 
+        // A deliberate oversell is recorded the same way the paid path records
+        // one — never as the default, always because somebody ticked the box,
+        // and only when the box actually changed the answer (an override on an
+        // event with room is not an overfill).
+        if ( $allow_over && $decision !== 'open' && ! empty( $result['created'] ) ) {
+            Events_Log::error( 'capacity_overfill', [
+                'event'  => $event_id,
+                'source' => 'manual',
+                'from'   => $decision,
+            ] );
+        }
+
         if ( ! empty( $result['created'] ) ) {
-            if ( $notify ) {
-                $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_CONFIRMED, $guests );
-            }
-            $this->redirect( $event_id, 'success', $notify
+            $emailed = $notify
+                ? $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_CONFIRMED, $guests )
+                : Outcome::skipped( 'notify_off' );
+            // "and emailed" is only true when an email actually went (REG-D24):
+            // notify_user, the per-event confirmation switch and a blank address
+            // each silently stop it, and the notice used to claim it anyway.
+            $this->redirect( $event_id, 'success', $emailed->is_sent()
                 ? \__( 'Attendee added and emailed.', 'anchor-schema' )
                 : \__( 'Attendee added (no confirmation email sent).', 'anchor-schema' ) );
         } elseif ( ! empty( $result['waitlisted'] ) ) {
-            if ( $notify ) {
-                $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_WAITLIST, $guests );
-            }
-            $this->redirect( $event_id, 'success', \__( 'Attendee added to the waitlist (event is full).', 'anchor-schema' ) );
+            $emailed = $notify
+                ? $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_WAITLIST, $guests )
+                : Outcome::skipped( 'notify_off' );
+            $this->redirect( $event_id, 'success', $emailed->is_sent()
+                ? \__( 'Attendee added to the waitlist (event is full) and emailed.', 'anchor-schema' )
+                : \__( 'Attendee added to the waitlist (event is full); no email sent.', 'anchor-schema' ) );
         } else {
-            $this->redirect( $event_id, 'error', \__( 'Could not add attendee — the event is full and the waitlist is disabled.', 'anchor-schema' ) );
+            $this->redirect( $event_id, 'error', \__( 'Could not add attendee — the event is full and the waitlist is disabled.', 'anchor-schema' ), 'full' );
         }
     }
 
@@ -570,23 +674,45 @@ class Roster {
             $this->redirect( $event_id, 'error', \__( 'Seat not found.', 'anchor-schema' ) );
         }
 
-        $name   = \sanitize_text_field( \wp_unslash( $_POST['roster_name'] ?? '' ) );
-        $email  = \sanitize_email( \wp_unslash( $_POST['roster_email'] ?? '' ) );
-        $phone  = \sanitize_text_field( \wp_unslash( $_POST['roster_phone'] ?? '' ) );
-        $status = \sanitize_text_field( \wp_unslash( $_POST['roster_status'] ?? '' ) );
+        $name       = \sanitize_text_field( \wp_unslash( $_POST['roster_name'] ?? '' ) );
+        $email      = \sanitize_email( \wp_unslash( $_POST['roster_email'] ?? '' ) );
+        $phone      = \sanitize_text_field( \wp_unslash( $_POST['roster_phone'] ?? '' ) );
+        $status     = \sanitize_text_field( \wp_unslash( $_POST['roster_status'] ?? '' ) );
+        $allow_over = ! empty( $_POST['roster_allow_over'] );
 
         // Contact fields (name/email/phone) are not order-derived, so they are
         // editable for any seat — delegated to the data layer (no direct writes).
-        $this->registrations->update_contact( $seat_id, [
+        // REG-D34: a blank name is a REFUSAL now, not a silent no-op that still
+        // reported "Seat updated." while the old name stayed on the roster.
+        $saved = $this->registrations->update_contact( $seat_id, [
             'name'  => $name,
             'email' => $email,
             'phone' => $phone,
         ] );
+        if ( $saved->is_failed() ) {
+            $message = $saved->reason() === 'empty_name'
+                ? \__( 'A name is required — nothing was saved.', 'anchor-schema' )
+                : \__( 'That seat could not be updated.', 'anchor-schema' );
+            $this->redirect( $event_id, 'error', $message, 'invalid' );
+        }
 
         // Status change routed through the data layer (transition rules + history).
+        // REG-D38: a revive to a capacity-consuming status goes through the
+        // capacity-checked path — cancelled -> confirmed and waitlist ->
+        // confirmed used to skip the recount entirely and silently overbook.
         $current = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
         if ( $status !== '' && $status !== $current ) {
-            if ( $this->registrations->update_status( $seat_id, $status, 'roster edit', 'user:' . \get_current_user_id() )->is_failed() ) {
+            $changed = $this->registrations->change_status_with_capacity(
+                $seat_id,
+                $status,
+                'roster edit',
+                'user:' . \get_current_user_id(),
+                $allow_over
+            );
+            if ( $changed->is_failed() ) {
+                if ( $changed->reason() === 'capacity_full' ) {
+                    $this->redirect( $event_id, 'error', \__( 'Contact details saved, but this event is full — tick “Allow over capacity” to confirm the seat anyway.', 'anchor-schema' ), 'full' );
+                }
                 // Illegal transition — contact fields were still saved, but surface
                 // the rejected status change instead of reporting full success (CodeRabbit).
                 $this->redirect( $event_id, 'error', \sprintf(
@@ -594,7 +720,10 @@ class Roster {
                     \__( 'Contact details saved, but the status change from “%1$s” to “%2$s” is not allowed.', 'anchor-schema' ),
                     $current,
                     $status
-                ) );
+                ), 'invalid' );
+            }
+            if ( $changed->reason() === 'waitlisted' ) {
+                $this->redirect( $event_id, 'success', \__( 'Seat updated — the event was full, so this seat went to the waitlist rather than being confirmed.', 'anchor-schema' ) );
             }
         }
 
@@ -662,11 +791,36 @@ class Roster {
         }
     }
 
-    private function redirect( $event_id, $type, $message ) {
+    /**
+     * Send the operator back with a notice — and, for a refusal, with the CODE
+     * that says which refusal it was (audit REG-D39/D34).
+     *
+     * "Could not add attendee" used to be the single answer to three different
+     * situations: the registration window has closed, the seats are gone, and
+     * the form was not filled in properly. They need different actions from the
+     * operator, so they now carry different codes:
+     *
+     *   closed  — the registration window has passed, or the event is cancelled
+     *             or hand-flagged sold out; tick "Allow over capacity" to add
+     *             anyway.
+     *   full    — capacity (or the tier quota) is reached and no waitlist is
+     *             running; tick the override, or turn on the waitlist.
+     *   invalid — the submission itself is unusable (no name, an unusable email,
+     *             a required question left blank). Nothing to override.
+     *
+     * @param int    $event_id
+     * @param string $type    'success' | 'error'.
+     * @param string $message Human notice.
+     * @param string $code    Machine refusal code, '' for success.
+     */
+    private function redirect( $event_id, $type, $message, $code = '' ) {
         $args = [
             'roster_msg'  => \rawurlencode( $message ),
             'roster_type' => ( $type === 'error' ? 'error' : 'success' ),
         ];
+        if ( $code !== '' ) {
+            $args['roster_code'] = $code;
+        }
 
         // The front-end console posts the page it wants to come back to. Anything
         // off-site is dropped by wp_validate_redirect() and we fall back to the
@@ -686,7 +840,7 @@ class Roster {
                 'event_action' => 'roster',
                 'event_id'     => (int) $event_id,
             ] );
-            $url = \add_query_arg( $args, \remove_query_arg( [ 'roster_msg', 'roster_type', 'seat_id' ], $return ) );
+            $url = \add_query_arg( $args, \remove_query_arg( [ 'roster_msg', 'roster_type', 'roster_code', 'seat_id' ], $return ) );
         } else {
             $url = $this->roster_url( (int) $event_id, $args );
         }
@@ -1097,6 +1251,18 @@ class Roster {
                         </select>
                     </div>
                     <?php endif; ?>
+                    <?php // REG-D39 — the same questions the public form asks. ?>
+                    <?php foreach ( $this->module_questions( $event_id ) as $q ) : ?>
+                    <div class="anchor-event-field">
+                        <label for="<?php echo \esc_attr( 'roster_field_' . $q['key'] ); ?>"><?php echo \esc_html( $q['label'] ); ?><?php echo empty( $q['required'] ) ? '' : ' *'; ?></label>
+                        <?php
+                        echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
+                            'name' => 'roster_field[' . $q['key'] . ']',
+                            'id'   => 'roster_field_' . $q['key'],
+                        ] );
+                        ?>
+                    </div>
+                    <?php endforeach; ?>
                 </div>
 
                 <input type="hidden" name="roster_notify_control" value="1" />

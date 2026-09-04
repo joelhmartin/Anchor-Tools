@@ -256,21 +256,39 @@ class Registrations {
      * with the attendee name. Used by the roster manual-edit action so callers
      * never write seat meta directly.
      *
+     * A blank name is REFUSED, not quietly dropped (audit REG-D34). The old
+     * code wrapped the name write in `if ( $name !== '' )` and still returned
+     * true, so an operator who cleared the field to blank out a mistaken entry
+     * was told "Seat updated." while the old name stayed on the roster and in
+     * the export. Every seat has a name — create_seat() falls back to a
+     * placeholder rather than storing nothing — so "" is not a value here, it
+     * is a mistake, and the caller has to be able to say so.
+     *
+     * Validation happens BEFORE the first write, so a refused edit changes
+     * nothing at all: half-saving the email while rejecting the name would be
+     * the same lie in a smaller place.
+     *
      * @param int   $seat_id
      * @param array $fields {name?, email?, phone?}
-     * @return bool
+     * @return Outcome sent | skipped (nothing_to_change) | failed (not_a_seat, empty_name)
      */
     public function update_contact( $seat_id, array $fields ) {
         $seat_id = (int) $seat_id;
         if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
-            return false;
+            return Outcome::failed( 'not_a_seat' );
         }
+
+        $name = null;
         if ( \array_key_exists( 'name', $fields ) ) {
             $name = \sanitize_text_field( (string) $fields['name'] );
-            if ( $name !== '' ) {
-                \wp_update_post( [ 'ID' => $seat_id, 'post_title' => $name ] );
-                \update_post_meta( $seat_id, '_anchor_event_name', $name );
+            if ( \trim( $name ) === '' ) {
+                return Outcome::failed( 'empty_name' );
             }
+        }
+
+        if ( null !== $name ) {
+            \wp_update_post( [ 'ID' => $seat_id, 'post_title' => $name ] );
+            \update_post_meta( $seat_id, '_anchor_event_name', $name );
         }
         if ( \array_key_exists( 'email', $fields ) ) {
             \update_post_meta( $seat_id, '_anchor_event_email', \sanitize_email( (string) $fields['email'] ) );
@@ -280,7 +298,109 @@ class Registrations {
         }
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
-        return true;
+
+        if ( null === $name && ! \array_key_exists( 'email', $fields ) && ! \array_key_exists( 'phone', $fields ) ) {
+            return Outcome::skipped( 'nothing_to_change' );
+        }
+        return Outcome::sent();
+    }
+
+
+    /**
+     * A status change that would CONSUME a seat, decided under the event lock
+     * (audit REG-D38).
+     *
+     * `cancelled -> confirmed` and `waitlist -> confirmed` are legal
+     * transitions, and both are reachable from the roster edit form. They used
+     * to go straight to update_status(), which takes no lock, recounts nothing
+     * and asks no capacity question — so an event at capacity 20 with 20
+     * confirmed went to 21 the moment an operator revived a cancelled seat,
+     * silently, with no overbooked warning at the moment of the change. This is
+     * also the module's ONLY waitlist promotion (there is no automatic one), so
+     * it is the place the promotion has to be told about.
+     *
+     * Anything that does not consume a seat — a cancel, a refund, a check-in,
+     * or a revive on an event with no capacity — falls straight through to
+     * update_status(); this method never becomes a second transition authority.
+     *
+     * @param int    $seat_id
+     * @param string $to
+     * @param string $note
+     * @param string $actor
+     * @param bool   $allow_over Explicit operator override ("Allow over capacity").
+     * @return Outcome sent | sent('waitlisted') | skipped | failed('capacity_full', ...)
+     */
+    public function change_status_with_capacity( $seat_id, $to, $note = '', $actor = 'system', $allow_over = false ) {
+        $seat_id = (int) $seat_id;
+        if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return Outcome::failed( 'not_a_seat' );
+        }
+        $from = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
+        if ( $from === '' ) {
+            $from = self::STATUS_CONFIRMED;
+        }
+        $consumes = \in_array( $to, self::RESERVING_STATUSES, true )
+            && ! \in_array( $from, self::RESERVING_STATUSES, true );
+        if ( ! $consumes ) {
+            return $this->update_status( $seat_id, $to, $note, $actor );
+        }
+
+        $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
+        $meta     = $this->module->get_meta( $event_id );
+
+        return $this->with_event_lock( $event_id, function ( $locked ) use ( $seat_id, $event_id, $meta, $from, $to, $note, $actor, $allow_over ) {
+            $capacity = (int) ( $meta['capacity'] ?? 0 );
+            $weight   = 1 + max( 0, (int) \get_post_meta( $seat_id, '_anchor_event_guests', true ) );
+
+            // Fresh recount INSIDE the lock — never the cache, the same rule
+            // claim_seats() follows.
+            $fits = ( $capacity <= 0 ) || ( ( $this->count_reserved_seats( $event_id, true ) + $weight ) <= $capacity );
+
+            if ( $fits ) {
+                $tier_id = \sanitize_key( (string) \get_post_meta( $seat_id, '_anchor_event_ticket_type_id', true ) );
+                if ( $tier_id === '' ) {
+                    $tier_id = 'primary';
+                }
+                $tier = $this->module->ticket_types ? $this->module->ticket_types->find( $event_id, $tier_id ) : null;
+                $quota = \is_array( $tier ) ? (int) ( $tier['quota'] ?? 0 ) : 0;
+                if ( $quota > 0 && ( $this->count_reserved_for_tier( $event_id, $tier_id, true ) + $weight ) > $quota ) {
+                    $fits = false;
+                }
+            }
+
+            if ( ! $fits && ! $allow_over ) {
+                // A seat coming back from cancelled can go somewhere honest —
+                // the waitlist — when the event runs one. A seat that is ALREADY
+                // waitlisted has nowhere to go, so that is a refusal.
+                if ( $from !== self::STATUS_WAITLIST && ! empty( $meta['waitlist'] ) ) {
+                    $note_full = \trim( $note . ' ' . \__( '(event full — waitlisted instead)', 'anchor-schema' ) );
+                    $out = $this->update_status( $seat_id, self::STATUS_WAITLIST, $note_full, $actor );
+                    return $out->is_sent() ? Outcome::sent( 'waitlisted' ) : $out;
+                }
+                Events_Log::error( 'capacity_refused', [
+                    'event' => $event_id,
+                    'seat'  => $seat_id,
+                    'from'  => $from,
+                ] );
+                return Outcome::failed( 'capacity_full' );
+            }
+
+            if ( ! $fits ) {
+                // The operator ticked the box. Recorded the same way the paid
+                // path records a deliberate oversell, never as the default.
+                Events_Log::error( 'capacity_overfill', [
+                    'event'  => $event_id,
+                    'seat'   => $seat_id,
+                    'source' => 'roster',
+                ] );
+                $note = \trim( $note . ' ' . \__( '(capacity override)', 'anchor-schema' ) );
+            }
+            if ( ! $locked ) {
+                Events_Log::error( 'capacity_lock_unavailable', [ 'event' => $event_id, 'source' => 'roster' ] );
+            }
+
+            return $this->update_status( $seat_id, $to, $note, $actor );
+        } );
     }
 
     /* ---------------------------------------------------------------------

@@ -421,6 +421,45 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 		$this->assertCount( 2, $rows, 'Two events, two rows — not one row counted twice.' );
 		$this->assertSame( $event_a, (int) $rows[0]['context']['event'] );
 		$this->assertSame( $event_b, (int) $rows[1]['context']['event'] );
+
+		// REG-D63 — and no second row under a second code for the same two
+		// failures. The wp_mail_failed hook used to log `email_failed` beside
+		// send_html_email()'s `email_send_returned_false`, so the capped log
+		// filled twice as fast and an operator counting failures double-counted.
+		$this->assertSame( [], array_values( array_filter( $this->error_log_rows(), function ( $row ) {
+			return 'email_failed' === $row['code'];
+		} ) ) );
+	}
+
+	/**
+	 * REG-D63 — one spelling for a degraded capacity lock. with_event_lock()
+	 * used to log `lock_unavailable` while the callers that also record the
+	 * degradation logged `capacity_lock_unavailable`, so a search for either
+	 * found half the incidents.
+	 */
+	public function test_a_degraded_capacity_lock_is_logged_under_one_code() {
+		$event_id = $this->make_event();
+
+		// Hold the same named lock on a second connection so GET_LOCK fails.
+		global $wpdb;
+		$reflect = new ReflectionMethod( $this->registrations(), 'lock_name' );
+		$reflect->setAccessible( true );
+		$name = $reflect->invoke( $this->registrations(), $event_id );
+
+		$other = new wpdb( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
+		$other->get_var( $other->prepare( 'SELECT GET_LOCK(%s, %d)', $name, 5 ) );
+		try {
+			$this->registrations()->with_event_lock( $event_id, function ( $locked ) {
+				$this->assertFalse( $locked, 'The lock is held elsewhere for this assertion.' );
+				return null;
+			} );
+		} finally {
+			$other->get_var( $other->prepare( 'SELECT RELEASE_LOCK(%s)', $name ) );
+		}
+
+		$codes = array_column( $this->error_log_rows(), 'code' );
+		$this->assertContains( 'capacity_lock_unavailable', $codes );
+		$this->assertNotContains( 'lock_unavailable', $codes );
 	}
 
 	/** A failure that returns after the window is news, not a repeat. */

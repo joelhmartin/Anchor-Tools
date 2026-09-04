@@ -80,7 +80,8 @@ class Events_Log {
      * and always appends to the capped site-wide option log so failures are
      * inspectable without enabling global debug.
      *
-     * @param string $code    Short machine code, e.g. 'email_failed', 'lock_unavailable'.
+     * @param string $code    Short machine code, e.g. 'email_send_returned_false',
+     *                        'capacity_lock_unavailable'.
      * @param array  $context Arbitrary context (kept small; not escaped).
      */
     public static function error( $code, array $context = [] ) {

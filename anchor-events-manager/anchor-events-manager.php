@@ -209,6 +209,20 @@ class Module {
      */
     private $sending_event_id = 0;
 
+    /**
+     * The mailer's own reason for the send in progress, captured from the
+     * `wp_mail_failed` action (REG-D63). The hook used to log a row of its own
+     * (`email_failed`) while send_html_email() logged a second one
+     * (`email_send_returned_false`) for the same failure, so the 200-entry log
+     * filled at twice the rate and an operator counting failures counted each
+     * one twice. The hook now only hands over what it knows — the mailer
+     * message and data — and the ONE row is written where the recipient, the
+     * subject and the event are also known.
+     *
+     * @var array{message:string,data:mixed}|null
+     */
+    private $last_mail_error = null;
+
     /** @var Registrations Seat data-access layer (always loaded). */
     public $registrations = null;
 
@@ -1554,16 +1568,18 @@ class Module {
      * @param \WP_Error $error
      */
     public function capture_mail_failure( $error ) {
-        if ( \is_wp_error( $error ) ) {
-            Events_Log::error( 'email_failed', [
-                // REG-D46 — name the event the send belonged to, so failures for
-                // two different events stay two rows instead of collapsing into
-                // one counted row keyed on the code alone.
-                'event'   => (int) $this->sending_event_id,
-                'message' => $error->get_error_message(),
-                'data'    => $error->get_error_data(),
-            ] );
+        if ( ! \is_wp_error( $error ) ) {
+            return;
         }
+        // REG-D63 — record, do not log. send_html_email() writes the single row
+        // for this failure and folds this detail into it. (This is a global
+        // wp_mail_failed listener, so it also used to log every OTHER plugin's
+        // mail failure into the events error log; now an unrelated failure just
+        // leaves a note nobody reads.)
+        $this->last_mail_error = [
+            'message' => $error->get_error_message(),
+            'data'    => $error->get_error_data(),
+        ];
     }
 
     /**
@@ -1597,19 +1613,31 @@ class Module {
         // (a wp_mail_failed handler, which is handed nothing but the WP_Error)
         // can name the same subject this call site does.
         $previous_event         = $this->sending_event_id;
+        $previous_error         = $this->last_mail_error;
         $this->sending_event_id = (int) $event_id;
+        $this->last_mail_error  = null;
         try {
             $sent = \wp_mail( $to, $subject, $html, $headers );
         } finally {
             $this->sending_event_id = $previous_event;
         }
         if ( ! $sent ) {
-            Events_Log::error( 'email_send_returned_false', [
+            // REG-D63 — ONE row per failed send, carrying the mailer's own
+            // reason when there is one. wp_mail() can answer false without ever
+            // firing wp_mail_failed (a pre_wp_mail short-circuit, say), which is
+            // why this side is the one that logs.
+            $context = [
                 'event'   => (int) $event_id,
                 'to'      => $to,
                 'subject' => $subject,
-            ] );
+            ];
+            if ( \is_array( $this->last_mail_error ) ) {
+                $context['message'] = $this->last_mail_error['message'];
+                $context['data']    = $this->last_mail_error['data'];
+            }
+            Events_Log::error( 'email_send_returned_false', $context );
         }
+        $this->last_mail_error = $previous_error;
         return (bool) $sent;
     }
 

@@ -808,7 +808,12 @@ class Registrations {
         $got    = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $name, 5 ) );
         $locked = ( 1 === $got );
         if ( ! $locked ) {
-            Events_Log::error( 'lock_unavailable', [ 'event' => (int) $event_id ] );
+            // REG-D63 — one spelling. This used to be `lock_unavailable` while
+            // the callers that also record the degradation used
+            // `capacity_lock_unavailable`, so a search for either found half
+            // the incidents. The callers' rows carry a `source`, which is an
+            // error-identity key, so they still stay separate rows.
+            Events_Log::error( 'capacity_lock_unavailable', [ 'event' => (int) $event_id, 'source' => 'lock' ] );
         }
         try {
             return $fn( $locked );

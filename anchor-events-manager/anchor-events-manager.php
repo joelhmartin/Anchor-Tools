@@ -6745,6 +6745,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $atts = shortcode_atts( [
             'category' => '',
             'tag' => '',
+            // MODEL-D30: `type` was ambiguous — [events_list type="offering"]
+            // reads as "the pick-one offerings" but silently ran a tax_query
+            // against the event_type TAXONOMY, an entirely different
+            // vocabulary from the `_anchor_event_type` meta enum
+            // (single|offering|recurring) the admin "Event Type" metabox
+            // select and the event_type() resolver use — and returned
+            // nothing for a term that does not exist. `event_type` is the
+            // explicit name for the taxonomy filter; `type` is kept as a
+            // deprecated alias below so an existing
+            // [events_list type="..."] shortcode keeps working.
+            'event_type' => '',
             'type' => '',
             'status' => '',
             'start_date' => '',
@@ -6754,6 +6765,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'limit' => 10,
             'show_past' => 'no',
         ], $atts );
+
+        // Deprecated alias: only takes effect when `event_type` itself was
+        // not also given (which wins on conflict, since it is the one this
+        // attribute is actually named after).
+        if ( $atts['event_type'] === '' && $atts['type'] !== '' ) {
+            $atts['event_type'] = $atts['type'];
+        }
 
         return $this->render_events_list( $atts, 'shortcode' );
     }
@@ -8606,11 +8624,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 'terms' => array_map( 'sanitize_title', explode( ',', $atts['tag'] ) ),
             ];
         }
-        if ( ! empty( $atts['type'] ) ) {
+        // MODEL-D30: the attribute is `event_type` — `type` was ambiguous
+        // (it silently meant this taxonomy, not the unrelated
+        // `_anchor_event_type` meta enum single|offering|recurring the admin
+        // "Event Type" metabox select and event_type() resolve). The
+        // deprecated-alias fallback lives in shortcode_events_list(), the
+        // only caller that ever sets either key, so this stays the one place
+        // that reads the resolved value.
+        if ( ! empty( $atts['event_type'] ) ) {
             $tax_query[] = [
                 'taxonomy' => 'event_type',
                 'field' => 'slug',
-                'terms' => array_map( 'sanitize_title', explode( ',', $atts['type'] ) ),
+                'terms' => array_map( 'sanitize_title', explode( ',', $atts['event_type'] ) ),
             ];
         }
 
@@ -10208,7 +10233,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     public function render_tab_content() {
         echo '<p>' . \esc_html__( 'Display events with these shortcodes:', 'anchor-schema' ) . '</p>';
         echo '<ul style="margin-left:18px;list-style:disc;">';
-        echo '<li><code>[events_list]</code> ' . \esc_html__( 'List events. Attributes: category, tag, type, status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[events_list]</code> ' . \esc_html__( 'List events. Attributes: category, tag, event_type (event_type taxonomy term slug — "type" also works, as a deprecated alias), status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[featured_events]</code> ' . \esc_html__( 'Show featured events. Attributes: limit, orderby (priority|date), order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_calendar]</code> ' . \esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_registration]</code> ' . \esc_html__( 'Registration form for an event. Attributes: id=POST_ID, slug=event-slug, show_title (yes|no), show_notice (yes|no). Auto-appended to an event\'s content when you enable registration, so it survives page builders like Divi.', 'anchor-schema' ) . '</li>';

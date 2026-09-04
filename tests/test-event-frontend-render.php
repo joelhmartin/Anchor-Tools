@@ -472,6 +472,78 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * MODEL-D30 — [events_list type=] was ambiguous: it read as "the
+	 * _anchor_event_type meta enum" (single|offering|recurring) but silently
+	 * ran a tax_query against the UNRELATED event_type taxonomy instead.
+	 * `event_type` is the new, explicit attribute name for that tax_query.
+	 */
+	public function test_events_list_shortcode_event_type_attribute_filters_the_taxonomy() {
+		$captured = null;
+		$capture = function ( $args ) use ( &$captured ) {
+			$captured = $args;
+			return $args;
+		};
+		add_filter( 'anchor_events_query_args', $capture, 20 );
+		$this->module()->shortcode_events_list( [ 'event_type' => 'course,elite' ] );
+		remove_filter( 'anchor_events_query_args', $capture, 20 );
+
+		$this->assertIsArray( $captured );
+		$this->assertNotEmpty( $captured['tax_query'] );
+		$clause = null;
+		foreach ( $captured['tax_query'] as $c ) {
+			if ( ( $c['taxonomy'] ?? '' ) === 'event_type' ) {
+				$clause = $c;
+			}
+		}
+		$this->assertNotNull( $clause, 'event_type= must produce an event_type tax_query clause.' );
+		$this->assertSame( [ 'course', 'elite' ], $clause['terms'] );
+	}
+
+	/**
+	 * `type=` is kept as a deprecated alias for `event_type=` so an existing
+	 * [events_list type="..."] shortcode in a page/widget keeps working.
+	 */
+	public function test_events_list_shortcode_type_attribute_is_a_deprecated_alias_for_event_type() {
+		$captured = null;
+		$capture = function ( $args ) use ( &$captured ) {
+			$captured = $args;
+			return $args;
+		};
+		add_filter( 'anchor_events_query_args', $capture, 20 );
+		$this->module()->shortcode_events_list( [ 'type' => 'course' ] );
+		remove_filter( 'anchor_events_query_args', $capture, 20 );
+
+		$clause = null;
+		foreach ( $captured['tax_query'] as $c ) {
+			if ( ( $c['taxonomy'] ?? '' ) === 'event_type' ) {
+				$clause = $c;
+			}
+		}
+		$this->assertNotNull( $clause, 'The deprecated type= alias must still filter the taxonomy.' );
+		$this->assertSame( [ 'course' ], $clause['terms'] );
+	}
+
+	/** event_type= wins when both attributes are given on the same shortcode. */
+	public function test_events_list_shortcode_event_type_wins_over_deprecated_type_alias() {
+		$captured = null;
+		$capture = function ( $args ) use ( &$captured ) {
+			$captured = $args;
+			return $args;
+		};
+		add_filter( 'anchor_events_query_args', $capture, 20 );
+		$this->module()->shortcode_events_list( [ 'type' => 'course', 'event_type' => 'elite' ] );
+		remove_filter( 'anchor_events_query_args', $capture, 20 );
+
+		$clause = null;
+		foreach ( $captured['tax_query'] as $c ) {
+			if ( ( $c['taxonomy'] ?? '' ) === 'event_type' ) {
+				$clause = $c;
+			}
+		}
+		$this->assertSame( [ 'elite' ], $clause['terms'] );
+	}
+
+	/**
 	 * RENDER-D37: format_date_time() used to concatenate the raw `start_time`/
 	 * `end_time` meta TEXT verbatim next to a localised date, so a stored
 	 * "09:00" printed literally instead of running through the site's own

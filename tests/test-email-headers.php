@@ -828,6 +828,69 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		$this->assertSame( [], $this->review_reasons( $order_id ), 'Nothing went wrong, so nothing needs review.' );
 	}
 
+	/**
+	 * "Resend confirmation" on a mixed order (one event's confirmation
+	 * switched off, one left on) must resend only the enabled event,
+	 * while still settling and logging BOTH — the manual resend path
+	 * follows the same per-event rule dispatch_emails() does (finding-1),
+	 * so it needed its own direct coverage of handle_resend_confirmation()
+	 * rather than only the reconcile-path tests above.
+	 */
+	public function test_resend_on_a_mixed_order_sends_only_the_enabled_events_confirmation() {
+		$this->require_wc();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$this->place_order( $order );
+
+		$order_id = $order->get_id();
+		$this->assertSame( 1, $this->count_seats( $a['event_id'], Registrations::STATUS_CONFIRMED ) );
+		$this->assertSame( 1, $this->count_seats( $b['event_id'], Registrations::STATUS_CONFIRMED ) );
+
+		$disabled = (int) $a['event_id'];
+		$enabled  = (int) $b['event_id'];
+		$this->switch_email_off( $disabled, 'confirmation' );
+
+		$this->mails = []; // Isolate from WooCommerce's own order-status-change emails.
+
+		$_POST    = [ 'order_id' => $order_id, '_wpnonce' => wp_create_nonce( 'anchor_events_resend_' . $order_id ) ];
+		$_REQUEST = $_POST;
+
+		$this->capture_redirect(
+			function () {
+				$this->woocommerce()->handle_resend_confirmation();
+			}
+		);
+
+		$this->assertTrue(
+			$this->log_contains( $order_id, 'Customer confirmation re-send skipped.' ),
+			'The disabled event must log a skip.'
+		);
+		$this->assertTrue(
+			$this->log_contains( $order_id, 'Customer confirmation re-sent (manual).' ),
+			'The enabled event must log a send.'
+		);
+
+		$gate = $this->customer_gate( $order_id );
+		$this->assertArrayHasKey( 'customer:' . $disabled, $gate, 'The disabled event still settles its own gate.' );
+		$this->assertArrayHasKey( 'customer:' . $enabled, $gate, 'The enabled event stamps its own gate.' );
+
+		$this->assertCount( 1, $this->mails, 'Only the enabled event actually sends a confirmation.' );
+		$this->assertSame( [], $this->review_reasons( $order_id ), 'Neither outcome is a defect.' );
+	}
+
 	/** Roster cancel: changed, already-cancelled and rejected each get their own notice. */
 	public function test_roster_cancel_notice_says_which_of_the_three_happened() {
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );

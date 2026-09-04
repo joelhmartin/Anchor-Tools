@@ -1,0 +1,409 @@
+<?php
+/**
+ * Self-correcting needs-review flags + a log that stops eating itself.
+ *
+ * Wave 3 / Task 30 — WOO-D33, WOO-D16, REG-D31, REG-D46, WOO-D13.
+ *
+ * The five behaviours under test:
+ *  - WOO-D33 a reconcile pass that re-evaluates a flag's condition and finds it
+ *            satisfied drops the flag; a flag with no condition never clears.
+ *  - WOO-D16 Events_Log::flag_review()/clear_review() bust the same notice
+ *            transient apply_review_flags() busts, so a cached count of 0 can
+ *            not hide a freshly flagged order for five minutes.
+ *  - REG-D31 clearing the error log archives it instead of destroying it.
+ *  - REG-D46 repeats collapse into one counted entry per (code, subject) within
+ *            24h, a genuinely new failure after the window gets its own entry,
+ *            and one noisy code can not evict every other code.
+ *  - WOO-D13 a throw inside the product sync is caught, logged and flagged
+ *            rather than aborting the save with a fatal.
+ *
+ * @package Anchor\Events\Tests
+ */
+
+use Anchor\Events\Events_Log;
+use Anchor\Events\Product_Sync;
+use Anchor\Events\Registrations;
+use Anchor\Events\WooCommerce;
+
+/**
+ * @group events-log
+ */
+class Test_Events_Log extends Anchor_Events_TestCase {
+
+	public function set_up() {
+		parent::set_up();
+		delete_option( Events_Log::ERROR_OPTION );
+		delete_option( Events_Log::ERROR_ARCHIVE_OPTION );
+		delete_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT );
+	}
+
+	public function tear_down() {
+		delete_option( Events_Log::ERROR_OPTION );
+		delete_option( Events_Log::ERROR_ARCHIVE_OPTION );
+		parent::tear_down();
+	}
+
+	/* -----------------------------------------------------------------
+	 * Helpers
+	 * --------------------------------------------------------------- */
+
+	/** The raw site-wide error log rows. @return array[] */
+	private function error_log_rows() {
+		$log = get_option( Events_Log::ERROR_OPTION, [] );
+		return is_array( $log ) ? $log : [];
+	}
+
+	/** Error-log codes, oldest first. @return string[] */
+	private function error_codes() {
+		return array_column( $this->error_log_rows(), 'code' );
+	}
+
+	/** Needs-review reasons on an order. @return string[] */
+	private function review_reasons( $order_id ) {
+		$flags = wc_get_order( $order_id )->get_meta( Events_Log::ORDER_REVIEW_META );
+		return is_array( $flags ) ? array_column( $flags, 'reason' ) : [];
+	}
+
+	/**
+	 * A paid single-tier event plus its managed variation.
+	 *
+	 * @return array{event_id:int,tier_id:string,variation_id:int}
+	 */
+	private function paid_event_with_variation() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Log Event', 'capacity' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		$tiers        = $this->ticket_types()->get( $event_id );
+		$tier_id      = (string) $tiers[0]['id'];
+		$variation_id = (int) $this->product_sync()->variation_for_tier( $event_id, $tier_id );
+		$this->assertGreaterThan( 0, $variation_id );
+
+		return [
+			'event_id'     => $event_id,
+			'tier_id'      => $tier_id,
+			'variation_id' => $variation_id,
+		];
+	}
+
+	/**
+	 * An order with one event line. Attendee meta is deliberately optional so a
+	 * test can reproduce the "paid line, no attendees" flag.
+	 *
+	 * @return array{order_id:int,item_id:int}
+	 */
+	private function make_order( $variation_id, $qty, $with_attendees = true, $status = 'processing' ) {
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $variation_id ) );
+		$item->set_quantity( $qty );
+		$item->set_subtotal( 10 * $qty );
+		$item->set_total( 10 * $qty );
+		if ( $with_attendees ) {
+			$item->add_meta_data( '_anchor_attendees', $this->attendee_rows( $qty ), true );
+		}
+
+		$order = new WC_Order();
+		$order->add_item( $item );
+		$order->set_billing_email( 'buyer@example.test' );
+		$order->set_billing_first_name( 'Buyer' );
+		$order->calculate_totals( false );
+		$order->save();
+		$order->set_status( $status );
+		$order->save();
+
+		return [ 'order_id' => (int) $order->get_id(), 'item_id' => (int) $item->get_id() ];
+	}
+
+	/** Per-seat attendee payload keyed 1..qty. */
+	private function attendee_rows( $qty ) {
+		$rows = [];
+		for ( $i = 1; $i <= $qty; $i++ ) {
+			$rows[ $i ] = [
+				'name'  => 'Attendee ' . $i,
+				'email' => 'attendee' . $i . '@example.test',
+				'phone' => '555-000' . $i,
+			];
+		}
+		return $rows;
+	}
+
+	/* -----------------------------------------------------------------
+	 * WOO-D16 — the notice transient follows the flag
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * flag_review() raises a flag outside reconcile. If the cached notice count
+	 * (written moments earlier, legitimately 0) survives, render_needs_review_notice
+	 * returns early and the order is invisible for five minutes.
+	 */
+	public function test_flag_review_busts_the_needs_review_notice_transient() {
+		$this->require_wc();
+		$ctx = $this->paid_event_with_variation();
+		$res = $this->make_order( $ctx['variation_id'], 1 );
+
+		set_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT, [ 'count' => 0, 'first' => 0, 'capped' => false ], 300 );
+
+		Events_Log::flag_review( $res['order_id'], 'amount_only_refund', 'refund #1' );
+
+		$this->assertFalse(
+			get_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT ),
+			'Raising a flag must invalidate the cached needs-review count.'
+		);
+		$this->assertContains( 'amount_only_refund', $this->review_reasons( $res['order_id'] ) );
+	}
+
+	/** …and the same for the clearing side, so the notice drops the order promptly. */
+	public function test_clear_review_busts_the_needs_review_notice_transient() {
+		$this->require_wc();
+		$ctx = $this->paid_event_with_variation();
+		$res = $this->make_order( $ctx['variation_id'], 1 );
+
+		Events_Log::flag_review( $res['order_id'], 'amount_only_refund', 'refund #1' );
+		set_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT, [ 'count' => 1, 'first' => $res['order_id'], 'capped' => false ], 300 );
+
+		Events_Log::clear_review( $res['order_id'] );
+
+		$this->assertFalse( get_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT ) );
+		$this->assertSame( [], $this->review_reasons( $res['order_id'] ) );
+	}
+
+	/** A duplicate flag changes nothing, so it must not churn the cache either. */
+	public function test_a_duplicate_flag_leaves_the_cached_count_alone() {
+		$this->require_wc();
+		$ctx = $this->paid_event_with_variation();
+		$res = $this->make_order( $ctx['variation_id'], 1 );
+
+		Events_Log::flag_review( $res['order_id'], 'amount_only_refund', 'refund #1' );
+		set_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT, [ 'count' => 1, 'first' => $res['order_id'], 'capped' => false ], 300 );
+
+		Events_Log::flag_review( $res['order_id'], 'amount_only_refund', 'refund #1 again' );
+
+		$this->assertIsArray(
+			get_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT ),
+			'A no-op re-flag must not throw away a still-correct cached count.'
+		);
+	}
+
+	/* -----------------------------------------------------------------
+	 * WOO-D33 — flags clear when their condition passes
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * The concrete failure from the audit: an order flagged attendees_missing has
+	 * its attendees added, and nothing re-evaluates the flag.
+	 */
+	public function test_attendees_missing_clears_once_the_attendees_arrive() {
+		$this->require_wc();
+		$ctx = $this->paid_event_with_variation();
+		$res = $this->make_order( $ctx['variation_id'], 2, false );
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'placed' );
+		$this->assertContains(
+			'attendees_missing',
+			$this->review_reasons( $res['order_id'] ),
+			'Precondition: a paid line with no attendee data is flagged.'
+		);
+		$this->assertSame( 0, $this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ) );
+
+		// Staff add the attendees to the line (roster / order editor).
+		$order = wc_get_order( $res['order_id'] );
+		$item  = $order->get_item( $res['item_id'] );
+		$item->add_meta_data( '_anchor_attendees', $this->attendee_rows( 2 ), true );
+		$item->save();
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'resync' );
+
+		$this->assertSame( 2, $this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ) );
+		$this->assertNotContains(
+			'attendees_missing',
+			$this->review_reasons( $res['order_id'] ),
+			'The flag must clear once the condition that raised it passes.'
+		);
+	}
+
+	/** A flag with no condition records a historical fact — only a human clears it. */
+	public function test_a_condition_less_flag_survives_a_clean_pass() {
+		$this->require_wc();
+		$ctx = $this->paid_event_with_variation();
+		$res = $this->make_order( $ctx['variation_id'], 1 );
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'paid' );
+		Events_Log::flag_review( $res['order_id'], 'amount_only_refund', 'refund #7' );
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'resync' );
+
+		$this->assertContains(
+			'amount_only_refund',
+			$this->review_reasons( $res['order_id'] ),
+			'An amount-only refund happened; no later pass can un-happen it.'
+		);
+	}
+
+	/** A pass that never evaluated the condition leaves the flag where it is. */
+	public function test_a_flag_is_not_cleared_by_a_pass_that_could_not_check_it() {
+		$this->require_wc();
+		$ctx = $this->paid_event_with_variation();
+		$res = $this->make_order( $ctx['variation_id'], 2, false );
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'placed' );
+		$this->assertContains( 'attendees_missing', $this->review_reasons( $res['order_id'] ) );
+
+		// Cancelled: the line now expects no seats, so the attendee condition is
+		// never evaluated. The flag must survive rather than silently vanish.
+		$order = wc_get_order( $res['order_id'] );
+		$order->set_status( 'cancelled' );
+		$order->save();
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'cancelled' );
+
+		$this->assertContains( 'attendees_missing', $this->review_reasons( $res['order_id'] ) );
+	}
+
+	/* -----------------------------------------------------------------
+	 * REG-D46 — the log stops filling with duplicates
+	 * --------------------------------------------------------------- */
+
+	/** The same failure about the same subject collapses into one counted row. */
+	public function test_repeat_errors_collapse_into_one_counted_entry() {
+		Events_Log::error( 'capacity_lock_unavailable', [ 'event' => 41 ] );
+		Events_Log::error( 'capacity_lock_unavailable', [ 'event' => 41 ] );
+		Events_Log::error( 'capacity_lock_unavailable', [ 'event' => 41 ] );
+
+		$rows = $this->error_log_rows();
+		$this->assertCount( 1, $rows );
+		$this->assertSame( 3, (int) $rows[0]['count'] );
+		$this->assertArrayHasKey( 'first_time', $rows[0] );
+		$this->assertGreaterThanOrEqual( (int) $rows[0]['first_time'], (int) $rows[0]['time'] );
+	}
+
+	/** …but two different subjects are two different failures. */
+	public function test_the_same_code_about_different_subjects_stays_separate() {
+		Events_Log::error( 'capacity_lock_unavailable', [ 'event' => 41 ] );
+		Events_Log::error( 'capacity_lock_unavailable', [ 'event' => 42 ] );
+		Events_Log::error( 'email_retry_abandoned', [ 'seat' => 9, 'type' => 'confirmation' ] );
+		Events_Log::error( 'email_retry_abandoned', [ 'seat' => 9, 'type' => 'cancellation' ] );
+
+		$this->assertCount( 4, $this->error_log_rows() );
+	}
+
+	/** A failure that returns after the window is news, not a repeat. */
+	public function test_a_repeat_after_the_window_starts_a_new_entry() {
+		Events_Log::error( 'seat_insert_failed', [ 'event' => 7 ] );
+
+		$rows                 = $this->error_log_rows();
+		$rows[0]['time']      = time() - ( 25 * HOUR_IN_SECONDS );
+		$rows[0]['first_time'] = $rows[0]['time'];
+		update_option( Events_Log::ERROR_OPTION, $rows, false );
+
+		Events_Log::error( 'seat_insert_failed', [ 'event' => 7 ] );
+
+		$rows = $this->error_log_rows();
+		$this->assertCount( 2, $rows, 'A recurrence a day later must not be swallowed by the old row.' );
+		$this->assertSame( 1, (int) $rows[1]['count'] );
+	}
+
+	/** One noisy code must not evict every other code from the ring. */
+	public function test_one_noisy_code_cannot_evict_every_other_entry() {
+		Events_Log::error( 'seat_insert_failed', [ 'event' => 1 ] );
+		for ( $i = 0; $i < Events_Log::ERROR_CODE_CAP + 10; $i++ ) {
+			Events_Log::error( 'email_send_returned_false', [ 'order' => 1000 + $i ] );
+		}
+
+		$codes = $this->error_codes();
+		$this->assertContains( 'seat_insert_failed', $codes, 'The rare entry an operator needs must survive the flood.' );
+		$this->assertSame(
+			Events_Log::ERROR_CODE_CAP,
+			count( array_keys( $codes, 'email_send_returned_false', true ) ),
+			'The noisy code is capped per code, not globally.'
+		);
+	}
+
+	/* -----------------------------------------------------------------
+	 * REG-D31 — clearing the log archives it
+	 * --------------------------------------------------------------- */
+
+	public function test_clearing_the_error_log_keeps_an_archived_copy() {
+		Events_Log::error( 'seat_insert_failed', [ 'event' => 3 ] );
+		Events_Log::error( 'illegal_transition', [ 'seat' => 4, 'from' => 'refunded', 'to' => 'confirmed' ] );
+
+		$archived = Events_Log::archive_and_clear();
+
+		$this->assertSame( 2, $archived );
+		$this->assertSame( [], $this->error_log_rows(), 'The live log is emptied.' );
+		$archive = get_option( Events_Log::ERROR_ARCHIVE_OPTION, [] );
+		$this->assertCount( 2, $archive );
+		$this->assertSame(
+			[ 'seat_insert_failed', 'illegal_transition' ],
+			array_column( $archive, 'code' ),
+			'The evidence survives the tidy-up.'
+		);
+	}
+
+	/** Clearing twice appends rather than overwriting the archive. */
+	public function test_archives_accumulate_across_clears() {
+		Events_Log::error( 'seat_insert_failed', [ 'event' => 3 ] );
+		Events_Log::archive_and_clear();
+		Events_Log::error( 'illegal_transition', [ 'seat' => 4 ] );
+		Events_Log::archive_and_clear();
+
+		$this->assertCount( 2, get_option( Events_Log::ERROR_ARCHIVE_OPTION, [] ) );
+	}
+
+	/* -----------------------------------------------------------------
+	 * WOO-D13 — a mid-sync throw is captured, not fatal
+	 * --------------------------------------------------------------- */
+
+	public function test_a_throw_inside_the_product_sync_is_logged_and_flagged() {
+		$this->require_wc();
+
+		$boom = function () {
+			throw new RuntimeException( 'variation save exploded' );
+		};
+		add_action( 'woocommerce_new_product_variation', $boom, 1 );
+
+		$event_id = $this->make_event(
+			[ 'title' => 'Exploding Sync', 'capacity' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		delete_option( Events_Log::ERROR_OPTION );
+
+		$product_id = $this->product_sync()->sync_event( $event_id );
+
+		remove_action( 'woocommerce_new_product_variation', $boom, 1 );
+
+		$this->assertIsInt( $product_id, 'The sync must return rather than fatal.' );
+		$this->assertContains( 'product_sync_failed', $this->error_codes() );
+
+		$failure = get_post_meta( $event_id, Product_Sync::SYNC_FAILED_META, true );
+		$this->assertIsArray( $failure );
+		$this->assertSame( 'RuntimeException', $failure['exception'] );
+		$this->assertSame( $event_id, (int) $failure['event'] );
+		$this->assertStringContainsString( 'exploded', (string) $failure['message'] );
+	}
+
+	/** …and the marker clears itself the moment a sync completes. */
+	public function test_the_sync_failure_marker_clears_on_the_next_good_sync() {
+		$this->require_wc();
+
+		$boom = function () {
+			throw new RuntimeException( 'variation save exploded' );
+		};
+		add_action( 'woocommerce_new_product_variation', $boom, 1 );
+		$event_id = $this->make_event(
+			[ 'title' => 'Recovering Sync', 'capacity' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		remove_action( 'woocommerce_new_product_variation', $boom, 1 );
+
+		$this->assertIsArray( get_post_meta( $event_id, Product_Sync::SYNC_FAILED_META, true ) );
+
+		$this->product_sync()->sync_event( $event_id );
+
+		$this->assertSame(
+			'',
+			get_post_meta( $event_id, Product_Sync::SYNC_FAILED_META, true ),
+			'A clean pass is the condition that clears the marker.'
+		);
+	}
+}

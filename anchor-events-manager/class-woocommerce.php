@@ -1992,6 +1992,9 @@ class WooCommerce {
         // Local accumulators flushed once at end of pass.
         $log_entries  = [];
         $review_flags = $seed_flags; // M4: seed threaded flags into the batched save.
+        // WOO-D33: evaluation tokens this pass actually reached, so
+        // apply_review_flags() can tell "checked and clean" from "never checked".
+        $evaluated    = [];
         // Per-event seat-change tally for Phase 6 emails: [ event_id => [confirmed, waitlist, released] ].
         $email_events = [];
 
@@ -2061,7 +2064,8 @@ class WooCommerce {
                     (string) $reason,
                     $log_entries,
                     $review_flags,
-                    $email_events
+                    $email_events,
+                    $evaluated
                 );
             }
 
@@ -2081,12 +2085,12 @@ class WooCommerce {
                 // Phase 6: send buyer/organizer emails for this pass's seat changes.
                 // Appends to $log_entries/$review_flags + writes the emails-sent gate
                 // onto $save_order; everything rides the SINGLE batched save below.
-                $emails_dirty = $this->dispatch_emails( $save_order, $email_events, $log_entries, $review_flags );
+                $emails_dirty = $this->dispatch_emails( $save_order, $email_events, $log_entries, $review_flags, $evaluated );
 
                 // Flush accumulators onto the order meta, then a SINGLE batched save —
                 // only when something actually changed (H2: no-op passes never save).
                 $logged  = $this->apply_order_log( $save_order, $log_entries );
-                $flagged = $this->apply_review_flags( $save_order, $review_flags, (bool) $clear_review );
+                $flagged = $this->apply_review_flags( $save_order, $review_flags, (bool) $clear_review, $evaluated );
 
                 if ( $logged || $flagged || $emails_dirty ) {
                     // L8 — a persistence error in a gateway/payment callback must not
@@ -2228,7 +2232,7 @@ class WooCommerce {
      * @param array     $review_flags  (by ref)
      * @param array     $email_events  (by ref) per-event seat-change tally (Phase 6).
      */
-    private function reconcile_line( $order, $order_id, $item, $item_id, $event_id, $active_target, $removal_status, array $billing, $reason, array &$log_entries, array &$review_flags, array &$email_events ) {
+    private function reconcile_line( $order, $order_id, $item, $item_id, $event_id, $active_target, $removal_status, array $billing, $reason, array &$log_entries, array &$review_flags, array &$email_events, array &$evaluated = [] ) {
         // Expected active seat count for this line. Terminal/null target ⇒ 0.
         // Refund-safe: get_qty_refunded_for_item sign is version-dependent ⇒ abs()
         // (finding #1). Cumulative across all refunds ⇒ re-fire safe.
@@ -2273,6 +2277,13 @@ class WooCommerce {
             // through to the standard missing-attendee handling below so the
             // seat-less paid renewal is flagged needs-review + noted on the order
             // rather than silently skipped (finding M-renewal-3).
+        }
+
+        // WOO-D33 — the attendee condition is only meaningful on a line that
+        // still expects seats. A cancelled order asks for none, so a pass over
+        // it has not re-checked anything and must not clear the flag.
+        if ( $expected > 0 ) {
+            $evaluated['line_attendees'] = true;
         }
 
         if ( $expected > 0 && ! $has_attendees ) {
@@ -2646,6 +2657,14 @@ class WooCommerce {
             ];
         } );
 
+        // WOO-D33 — the seat-level conditions (overfill, retired tier, duplicate,
+        // lock degradation) are only re-checked on a pass that was in a position
+        // to satisfy this line's seats. A line the pass refuses to create for
+        // (no attendees, nothing expected) has told us nothing about them.
+        if ( $can_create ) {
+            $evaluated['line_seats'] = true;
+        }
+
         // Translate the locked result into sync-log entries + needs-review flags.
         $changed = \count( $result['created'] ) + \count( $result['revived'] )
             + \count( $result['removed'] ) + \count( $result['flipped'] ) + \count( $result['moved_out'] );
@@ -2732,6 +2751,40 @@ class WooCommerce {
         ];
     }
 
+    /**
+     * WOO-D33 — the flag → condition table. ONE place that says which
+     * needs-review reasons a reconcile pass is able to re-check, and what the
+     * pass has to have evaluated for the answer to mean anything.
+     *
+     * A reason maps to the evaluation TOKEN whose condition raised it. When a
+     * pass records that token (it looked) and does not re-raise the reason (it
+     * found nothing), the flag has been fixed and is dropped. When the pass
+     * never reached that check — a cancelled order expects no seats, a settled
+     * confirmation is never re-attempted — the token is absent and the flag is
+     * left exactly where it is.
+     *
+     * A reason ABSENT from this table has no condition: it records a historical
+     * fact ("an amount-only refund was taken against this order") that no later
+     * pass can re-derive or un-happen, so only "Mark reviewed" clears it.
+     *
+     * Tokens:
+     *  - line_attendees  the pass checked a line that expects seats for attendee data.
+     *  - line_seats      the pass was in a position to create/verify this line's seats.
+     *  - customer_email  the pass actually attempted the buyer confirmation.
+     *
+     * @return array<string,string> reason => evaluation token.
+     */
+    private static function review_clear_conditions() {
+        return [
+            'attendees_missing'         => 'line_attendees',
+            'retired_tier'              => 'line_seats',
+            'capacity_overfill'         => 'line_seats',
+            'duplicate_seat_prevented'  => 'line_seats',
+            'capacity_lock_unavailable' => 'line_seats',
+            'customer_email_failed'     => 'customer_email',
+        ];
+    }
+
     /** Build a needs-review flag in the Events_Log::flag_review() shape. */
     private function make_flag( $reason, $detail = '' ) {
         return [
@@ -2772,10 +2825,10 @@ class WooCommerce {
      *
      * @return bool Whether the review meta changed (drives the dirty-flag save — H2).
      */
-    private function apply_review_flags( \WC_Order $order, array $flags, $clear ) {
+    private function apply_review_flags( \WC_Order $order, array $flags, $clear, array $evaluated = [] ) {
         $had      = $order->get_meta( Events_Log::ORDER_REVIEW_META );
         $had      = \is_array( $had ) ? $had : [];
-        $existing = $clear ? [] : $had;
+        $existing = $clear ? [] : $this->drop_satisfied_flags( $had, $flags, $evaluated );
         foreach ( $flags as $flag ) {
             $dupe = false;
             foreach ( $existing as $e ) {
@@ -2799,6 +2852,43 @@ class WooCommerce {
         }
         $order->update_meta_data( Events_Log::ORDER_REVIEW_META, $existing );
         return true;
+    }
+
+    /**
+     * WOO-D33 — drop the flags this pass re-checked and found satisfied.
+     *
+     * Before this, a flag survived until a human pressed "Mark reviewed" or
+     * "Resync order", even after the underlying condition was fixed: attendees
+     * added from the roster left the order in the needs-review count forever.
+     * Now every pass re-evaluates, not just a manual resync.
+     *
+     * @param array $had       Flags already on the order.
+     * @param array $raised    Flags this pass raised.
+     * @param array $evaluated Evaluation tokens this pass actually reached.
+     * @return array Flags to keep.
+     */
+    private function drop_satisfied_flags( array $had, array $raised, array $evaluated ) {
+        if ( empty( $had ) || empty( $evaluated ) ) {
+            return $had;
+        }
+        $conditions = self::review_clear_conditions();
+        $re_raised  = [];
+        foreach ( $raised as $flag ) {
+            if ( isset( $flag['reason'] ) ) {
+                $re_raised[ (string) $flag['reason'] ] = true;
+            }
+        }
+
+        $keep = [];
+        foreach ( $had as $flag ) {
+            $reason = \is_array( $flag ) && isset( $flag['reason'] ) ? (string) $flag['reason'] : '';
+            $token  = $reason !== '' && isset( $conditions[ $reason ] ) ? $conditions[ $reason ] : '';
+            if ( $token !== '' && ! empty( $evaluated[ $token ] ) && empty( $re_raised[ $reason ] ) ) {
+                continue; // Condition re-evaluated this pass and it now passes.
+            }
+            $keep[] = $flag;
+        }
+        return $keep;
     }
 
     /**
@@ -3106,7 +3196,7 @@ class WooCommerce {
      * @param array     $review_flags (by ref)
      * @return bool Whether the EMAILS_SENT gate was modified (dirty-flag save — H2).
      */
-    private function dispatch_emails( \WC_Order $order, array $email_events, array &$log_entries, array &$review_flags ) {
+    private function dispatch_emails( \WC_Order $order, array $email_events, array &$log_entries, array &$review_flags, array &$evaluated = [] ) {
         if ( empty( $email_events ) ) {
             return false;
         }
@@ -3148,6 +3238,13 @@ class WooCommerce {
             if ( $uncovered ) {
                 $primary_id = 0;
                 $result     = $this->send_customer_confirmation( $order, $settings, $primary_id );
+                // WOO-D33 — only a real attempt re-decides customer_email_failed.
+                // A skip (disabled, nothing to confirm) and a pass that never gets
+                // here at all both leave a previous failure standing: the buyer
+                // still has not received the confirmation that failed.
+                if ( ! $result->is_skipped() ) {
+                    $evaluated['customer_email'] = true;
+                }
                 if ( $result->is_sent() ) {
                     // The email lists every active seat on the order, so every
                     // event it covered is covered for good.

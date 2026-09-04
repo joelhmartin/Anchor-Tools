@@ -9509,39 +9509,78 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         echo '<h2>' . \esc_html__( 'Event error log', 'anchor-schema' ) . '</h2>';
         echo '<p class="description">' . \esc_html__( 'Recent registration/email/sync failures. Most recent first.', 'anchor-schema' ) . '</p>';
 
-        if ( isset( $_GET['anchor_events_log_cleared'] ) ) {
-            echo '<div class="notice notice-success inline"><p>' . \esc_html__( 'Error log cleared.', 'anchor-schema' ) . '</p></div>';
+        $archive = \get_option( Events_Log::ERROR_ARCHIVE_OPTION, [] );
+        $archive = \is_array( $archive ) ? $archive : [];
+
+        if ( isset( $_GET['anchor_events_log_cleared'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            $moved = (int) $_GET['anchor_events_log_cleared']; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            echo '<div class="notice notice-success inline"><p>' . \esc_html( \sprintf(
+                /* translators: %d: number of entries moved to the archive. */
+                \_n( 'Error log cleared. %d entry kept in the archive.', 'Error log cleared. %d entries kept in the archive.', $moved, 'anchor-schema' ),
+                $moved
+            ) ) . '</p></div>';
         }
 
         if ( empty( $log ) ) {
             echo '<p>' . \esc_html__( 'No errors logged.', 'anchor-schema' ) . '</p>';
-            return;
+        } else {
+            echo '<table class="widefat striped" style="max-width:840px;">';
+            echo '<thead><tr>';
+            echo '<th>' . \esc_html__( 'Last seen', 'anchor-schema' ) . '</th>';
+            echo '<th>' . \esc_html__( 'Code', 'anchor-schema' ) . '</th>';
+            echo '<th>' . \esc_html__( 'Count', 'anchor-schema' ) . '</th>';
+            echo '<th>' . \esc_html__( 'Context', 'anchor-schema' ) . '</th>';
+            echo '</tr></thead><tbody>';
+            foreach ( \array_slice( \array_reverse( $log ), 0, 100 ) as $entry ) {
+                $time    = isset( $entry['time'] ) ? (int) $entry['time'] : 0;
+                $first   = isset( $entry['first_time'] ) ? (int) $entry['first_time'] : $time;
+                $count   = isset( $entry['count'] ) ? max( 1, (int) $entry['count'] ) : 1;
+                $code    = isset( $entry['code'] ) ? (string) $entry['code'] : '';
+                $context = isset( $entry['context'] ) ? $entry['context'] : [];
+                $when    = $time ? \date_i18n( 'Y-m-d H:i:s', $time ) : '';
+                $ctx_str = \is_scalar( $context ) ? (string) $context : \wp_json_encode( $context );
+                $tally   = $count > 1 && $first
+                    ? \sprintf(
+                        /* translators: 1: repeat count, 2: first-seen timestamp. */
+                        \__( '%1$d× since %2$s', 'anchor-schema' ),
+                        $count,
+                        \date_i18n( 'Y-m-d H:i:s', $first )
+                    )
+                    : (string) $count;
+                echo '<tr>';
+                echo '<td>' . \esc_html( $when ) . '</td>';
+                echo '<td><code>' . \esc_html( $code ) . '</code></td>';
+                echo '<td>' . \esc_html( $tally ) . '</td>';
+                echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
+                echo '</tr>';
+            }
+            echo '</tbody></table>';
         }
 
-        echo '<table class="widefat striped" style="max-width:840px;">';
-        echo '<thead><tr>';
-        echo '<th>' . \esc_html__( 'Time', 'anchor-schema' ) . '</th>';
-        echo '<th>' . \esc_html__( 'Code', 'anchor-schema' ) . '</th>';
-        echo '<th>' . \esc_html__( 'Context', 'anchor-schema' ) . '</th>';
-        echo '</tr></thead><tbody>';
-        foreach ( \array_slice( \array_reverse( $log ), 0, 100 ) as $entry ) {
-            $time    = isset( $entry['time'] ) ? (int) $entry['time'] : 0;
-            $code    = isset( $entry['code'] ) ? (string) $entry['code'] : '';
-            $context = isset( $entry['context'] ) ? $entry['context'] : [];
-            $when    = $time ? \date_i18n( 'Y-m-d H:i:s', $time ) : '';
-            $ctx_str = \is_scalar( $context ) ? (string) $context : \wp_json_encode( $context );
-            echo '<tr>';
-            echo '<td>' . \esc_html( $when ) . '</td>';
-            echo '<td><code>' . \esc_html( $code ) . '</code></td>';
-            echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
-            echo '</tr>';
+        if ( ! empty( $archive ) ) {
+            echo '<p class="description">' . \esc_html( \sprintf(
+                /* translators: %d: number of archived entries. */
+                \_n( '%d cleared entry is kept in the archive.', '%d cleared entries are kept in the archive.', \count( $archive ), 'anchor-schema' ),
+                \count( $archive )
+            ) ) . '</p>';
         }
-        echo '</tbody></table>';
+
+        if ( empty( $log ) ) {
+            return;
+        }
 
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-top:12px;">';
         echo '<input type="hidden" name="action" value="anchor_events_clear_error_log" />';
         \wp_nonce_field( 'anchor_events_clear_error_log' );
-        \submit_button( \__( 'Clear error log', 'anchor-schema' ), 'delete', 'submit', false );
+        // REG-D31 — a confirm step, and the copy says the entries are archived
+        // rather than destroyed so nobody presses this expecting either outcome.
+        \submit_button(
+            \__( 'Clear error log', 'anchor-schema' ),
+            'delete',
+            'submit',
+            false,
+            [ 'onclick' => 'return confirm(' . \wp_json_encode( \__( 'Clear the error log? The entries move to the archive and stay recoverable.', 'anchor-schema' ) ) . ');' ]
+        );
         echo '</form>';
     }
 
@@ -9555,13 +9594,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
         }
         \check_admin_referer( 'anchor_events_clear_error_log' );
-        \delete_option( Events_Log::ERROR_OPTION );
+        // REG-D31 — archive rather than destroy. These entries are the ONLY
+        // record of email_send_returned_false / capacity_lock_unavailable /
+        // illegal_transition / seat_insert_failed; the seat history does not
+        // carry them and Events_Log::event() is a no-op.
+        $archived = Events_Log::archive_and_clear();
 
         $redirect = \wp_get_referer();
         if ( ! $redirect ) {
             $redirect = \admin_url();
         }
-        \wp_safe_redirect( \add_query_arg( 'anchor_events_log_cleared', '1', $redirect ) );
+        \wp_safe_redirect( \add_query_arg( 'anchor_events_log_cleared', (string) $archived, $redirect ) );
         exit;
     }
 

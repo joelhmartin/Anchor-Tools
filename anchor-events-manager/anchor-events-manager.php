@@ -2807,6 +2807,7 @@ class Module {
         \ob_start();
         ?>
         <div class="anchor-event-tickets anchor-event-conditional" id="anchor-event-tickets" data-when-mode="wc">
+            <input type="hidden" name="anchor_event_tiers_present" value="1" />
             <p class="description">
                 <?php echo esc_html__( 'Define one or more ticket tiers for this event. Each tier has its own price and optional per-tier quota and sale window. Leave the table empty to use the single "Price" field above as the default registration tier.', 'anchor-schema' ); ?>
             </p>
@@ -5149,10 +5150,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // assigns stable ids, drops empty rows, and persists. An empty table
         // clears the meta so the legacy single `price` field stays the
         // implicit-primary fallback.
-        $ticket_rows = isset( $src['anchor_event_tickets'] ) && is_array( $src['anchor_event_tickets'] )
-            ? \wp_unslash( $src['anchor_event_tickets'] )
-            : [];
-        $this->ticket_types->save( $post_id, $ticket_rows );
+        //
+        // finding-9 — mirrors save_registration_questions()'s marker guard:
+        // "the table was on screen and is now empty" and "this form never
+        // rendered the table at all" post the SAME thing, no
+        // anchor_event_tickets rows. Ticket_Types::save() cannot tell those
+        // apart on its own (an empty array means "clear the tiers" to it), so
+        // the caller must not call it at all for a save whose form never
+        // rendered the repeater. render_ticket_types_fields() (both surfaces
+        // share it) ships a hidden anchor_event_tiers_present marker; rows
+        // without the marker are still honoured, so an older cached form (or
+        // a direct call) keeps working.
+        if ( isset( $src['anchor_event_tickets'] ) || ! empty( $src['anchor_event_tiers_present'] ) ) {
+            $ticket_rows = isset( $src['anchor_event_tickets'] ) && is_array( $src['anchor_event_tickets'] )
+                ? \wp_unslash( $src['anchor_event_tickets'] )
+                : [];
+            $this->ticket_types->save( $post_id, $ticket_rows );
+        }
 
         $this->maybe_append_registration_shortcode( $post_id, $input );
 

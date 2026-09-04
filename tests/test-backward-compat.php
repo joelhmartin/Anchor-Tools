@@ -680,6 +680,63 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * finding-9 — Ticket_Types::save() cannot tell "the table was on screen
+	 * and is now empty" from "this form never posted the table at all"; both
+	 * arrive as no anchor_event_tickets rows. Mirrors the questions marker: a
+	 * save carrying neither the marker nor any ticket rows must not wipe
+	 * tiers authored elsewhere.
+	 */
+	public function test_a_save_without_the_tiers_marker_leaves_console_authored_tiers_untouched() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			'anchor_event_tiers_present' => '1',
+			'anchor_event_tickets' => [
+				[ 'label' => 'General Admission', 'price' => '25', 'active' => '1' ],
+			],
+		];
+		$this->save_via_console( $event_id );
+		$this->assertSame( 'General Admission', $this->ticket_types()->get( $event_id )[0]['label'] );
+
+		// A save that posts neither the marker nor any ticket rows.
+		$_POST = [
+			Module::NONCE => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-01',
+		];
+		$this->module()->save_meta( $event_id );
+
+		$saved = $this->ticket_types()->get( $event_id );
+		$this->assertSame(
+			'General Admission',
+			$saved[0]['label'],
+			'A save whose form never posted the ticket table must not be read as "no tiers".'
+		);
+	}
+
+	/** ...and the console can still clear every tier: it posts the marker even when every row has been removed. */
+	public function test_console_save_can_still_clear_every_ticket_tier() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			'anchor_event_tiers_present' => '1',
+			'anchor_event_tickets' => [
+				[ 'label' => 'General Admission', 'price' => '25', 'active' => '1' ],
+			],
+		];
+		$this->save_via_console( $event_id );
+		$this->assertNotEmpty( get_post_meta( $event_id, \Anchor\Events\Ticket_Types::META_KEY, true ) );
+
+		$_POST = [ 'anchor_event_tiers_present' => '1' ]; // repeater rendered, every row removed.
+		$this->save_via_console( $event_id );
+
+		$this->assertSame(
+			'',
+			get_post_meta( $event_id, \Anchor\Events\Ticket_Types::META_KEY, true ),
+			'The console must still be able to clear every tier when it posts the marker.'
+		);
+	}
+
+	/**
 	 * The cross-surface round trip the two spec entries are really about: a
 	 * question authored in wp-admin is editable from the console afterwards,
 	 * and keeps its stable key across the hand-off so existing answers stay

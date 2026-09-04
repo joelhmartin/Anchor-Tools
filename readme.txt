@@ -73,7 +73,7 @@ Events Manager — breaking change for custom code:
   positionally must drop the now-absent fourth argument.
 * The `anchor_events_registration_fields` filter is gone. The free registration
   form now asks the event's own Attendee questions and keys each answer by its
-  question id, so extra fields are added in that UI rather than in code. Custom
+  question key, so extra fields are added in that UI rather than in code. Custom
   code hooking the filter no longer runs and must be re-created as questions.
 
 Events Manager — emails:

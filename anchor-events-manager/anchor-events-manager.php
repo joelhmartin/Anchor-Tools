@@ -3064,6 +3064,13 @@ class Module {
             'start_time' => '',
             'end_time' => '',
             'capacity' => '',
+            // MODEL-D35 — no input posts these yet (no admin UI exists for
+            // them), but they round-trip through the front-end console's
+            // hidden fields below like every other rule key, so a stored
+            // value (set via REST or a filter) survives a front-end re-save.
+            'label' => '',
+            'span_days' => '',
+            'tier_id' => '',
         ] );
     }
 
@@ -3289,7 +3296,7 @@ class Module {
             // interactive builder) so saving this form again does not
             // overwrite it with a blank/incomplete rule — sanitize_recurrence_rule()
             // reads these back into the exact same shape it was stored in.
-            foreach ( [ 'freq', 'interval', 'start_time', 'end_time', 'capacity', 'count', 'until' ] as $rk ) :
+            foreach ( [ 'freq', 'interval', 'start_time', 'end_time', 'capacity', 'count', 'until', 'label', 'span_days', 'tier_id' ] as $rk ) :
             ?>
                 <input type="hidden" name="anchor_event_recurrence[<?php echo esc_attr( $rk ); ?>]" value="<?php echo esc_attr( $recurrence[ $rk ] ); ?>" />
             <?php endforeach; ?>
@@ -5955,10 +5962,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * date; `weekdays` only for freq=weekly and only when at least one valid
      * 0..6 value was checked — omitting all three when unset/invalid (rather
      * than writing 0/''/[]) is what lets persist_group_authoring()'s
-     * has_terminator check with a plain empty()/isset() read cleanly.
+     * has_terminator check with a plain empty()/isset() read cleanly. `label`/
+     * `span_days`/`tier_id` follow the same optional-key convention (MODEL-D35
+     * — no admin UI posts these yet, but the rule/builder now carry them so a
+     * generated occurrence is no longer structurally poorer than a
+     * hand-authored offering row; see expand_recurrence()'s docblock).
      *
      * @param mixed $raw Raw anchor_event_recurrence[] map from $_POST (NOT yet unslashed).
-     * @return array{freq:string,interval:int,start_time:string,end_time:string,capacity:int,count?:int,until?:string,weekdays?:array<int,int>}
+     * @return array{freq:string,interval:int,start_time:string,end_time:string,capacity:int,count?:int,until?:string,weekdays?:array<int,int>,label?:string,span_days?:int,tier_id?:string}
      */
     private function sanitize_recurrence_rule( $raw ) {
         $raw = is_array( $raw ) ? \wp_unslash( $raw ) : [];
@@ -5982,6 +5993,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $until = $this->sanitize_date( $raw['until'] ?? '' );
         if ( $until !== '' ) {
             $rule['until'] = $until;
+        }
+
+        $label = \sanitize_text_field( $raw['label'] ?? '' );
+        if ( $label !== '' ) {
+            $rule['label'] = $label;
+        }
+
+        $span_days = \max( 0, (int) ( $raw['span_days'] ?? 0 ) );
+        if ( $span_days > 0 ) {
+            $rule['span_days'] = $span_days;
+        }
+
+        $tier_id = \sanitize_key( (string) ( $raw['tier_id'] ?? '' ) );
+        if ( $tier_id !== '' ) {
+            $rule['tier_id'] = $tier_id;
         }
 
         if ( $freq === 'weekly' && isset( $raw['weekdays'] ) && is_array( $raw['weekdays'] ) ) {

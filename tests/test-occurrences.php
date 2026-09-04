@@ -356,6 +356,46 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 		return $parent_id;
 	}
 
+	/**
+	 * MODEL-D35 — a generated recurrence row must not be structurally poorer
+	 * than a hand-authored offering row: span_days becomes a real end_date,
+	 * tier_id and label are copied onto every row (a single rule generates
+	 * the whole series, so unlike an offering row, every generated row shares
+	 * ONE tier link and ONE label).
+	 */
+	public function test_expand_recurrence_applies_span_days_tier_id_and_label_to_every_row() {
+		$rule = [
+			'freq'      => 'weekly',
+			'interval'  => 1,
+			'count'     => 2,
+			'span_days' => 2,
+			'tier_id'   => 'general',
+			'label'     => 'Weekend Intensive',
+		];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' ); // a Monday.
+
+		$this->assertSame( [ '2027-03-01', '2027-03-08' ], \array_column( $rows, 'date' ) );
+		foreach ( $rows as $row ) {
+			// span_days=2: the occurrence runs date -> date+2.
+			$this->assertSame( \date( 'Y-m-d', \strtotime( $row['date'] ) + 2 * DAY_IN_SECONDS ), $row['end_date'] );
+			$this->assertSame( 'general', $row['tier_id'] );
+			$this->assertSame( 'Weekend Intensive', $row['label'] );
+		}
+	}
+
+	/** span_days=0 (the default) means single-day — same convention offering rows use: empty end_date. */
+	public function test_expand_recurrence_omits_end_date_when_span_days_is_zero() {
+		$rule = [ 'freq' => 'weekly', 'interval' => 1, 'count' => 2 ];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' );
+
+		foreach ( $rows as $row ) {
+			$this->assertSame( '', $row['end_date'] );
+			$this->assertSame( '', $row['tier_id'] );
+		}
+	}
+
 	public function test_expand_weekly_interval_1_count_4_yields_consecutive_mondays() {
 		$rule = [
 			'freq'     => 'weekly',

@@ -968,8 +968,23 @@ class Occurrences {
      *               given, every listed weekday within each active week is
      *               included (chronological order); when omitted, only
      *               $anchor_date's own weekday is used.
-     *   start_time/end_time/capacity : copied onto every generated row as-is
-     *               (same normalization as get_offering_dates()'s rows).
+     *   start_time/end_time/capacity/label : copied onto every generated row
+     *               as-is (same normalization as get_offering_dates()'s rows).
+     *   span_days : optional int >= 0 (default 0). Each generated row's
+     *               `end_date` is `date + span_days` when > 0, else '' — the
+     *               same "empty means single-day" convention offering rows
+     *               use (audit MODEL-D35: before this, a generated row had no
+     *               end_date at all, so apply_occurrence_editable_fields()
+     *               could never give a recurring occurrence a multi-day span).
+     *   tier_id   : optional ticket-tier id, copied onto every generated row
+     *               as-is. One rule generates the whole series, so — unlike
+     *               an offering row, which can link a DIFFERENT tier per
+     *               date — every occurrence this rule produces links the
+     *               SAME tier (or none, the default: every tier). Without
+     *               this, sync_ticket_types() falls back to copying every
+     *               tier onto every generated occurrence — the exact
+     *               December-occurrence-sells-an-October-ticket bug the
+     *               tier_id link exists to prevent for offerings.
      *
      * Monthly semantics: same day-of-month as $anchor_date, every `interval`
      * months. SHORT-MONTH HANDLING (documented choice): when the target month
@@ -989,7 +1004,7 @@ class Occurrences {
      * @param array  $rule        Recurrence rule (see above).
      * @param string $anchor_date The first occurrence date (Y-m-d) — normally
      *                            the parent's start_date.
-     * @return array<int,array{date:string,start_time:string,end_time:string,label:string,capacity:int}>
+     * @return array<int,array{date:string,end_date:string,start_time:string,end_time:string,label:string,capacity:int,tier_id:string}>
      *         Ordered ascending, deduped by date.
      */
     public function expand_recurrence( array $rule, $anchor_date ) {
@@ -1027,16 +1042,22 @@ class Occurrences {
         $end_time   = $this->normalize_time( (string) ( $rule['end_time'] ?? '' ) );
         $label      = \sanitize_text_field( (string) ( $rule['label'] ?? '' ) );
         $capacity   = \max( 0, (int) ( $rule['capacity'] ?? 0 ) );
+        $span_days  = \max( 0, (int) ( $rule['span_days'] ?? 0 ) );
+        $tier_id    = \sanitize_key( (string) ( $rule['tier_id'] ?? '' ) );
 
         $rows = [];
         $seen = [];
         foreach ( $date_timestamps as $ts ) {
             $row = [
                 'date'       => \date( 'Y-m-d', $ts ),
+                // Empty means single-day — the same convention offering rows
+                // use (sanitize_offering_dates_rows()/get_offering_dates()).
+                'end_date'   => $span_days > 0 ? \date( 'Y-m-d', $ts + $span_days * \DAY_IN_SECONDS ) : '',
                 'start_time' => $start_time,
                 'end_time'   => $end_time,
                 'label'      => $label,
                 'capacity'   => $capacity,
+                'tier_id'    => $tier_id,
             ];
             // Keyed the same way offering rows are (occurrence_key()); every
             // generated row shares one start time, so this is the date dedupe

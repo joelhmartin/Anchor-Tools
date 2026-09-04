@@ -513,4 +513,65 @@ class Test_Group_Authoring_Save extends Anchor_Events_TestCase {
 		$this->assertSame( 3, $stored_rule['count'], 'The recurrence rule must round-trip unchanged, not be reset to an incomplete default.' );
 		$this->assertCount( 3, $this->occurrences()->children( $event_id ), 'Children must still be reconciled/preserved, not orphaned by the save.' );
 	}
+
+	/**
+	 * MODEL-D35 — label/span_days/tier_id are new, optional rule keys with no
+	 * admin UI input of their own yet, but they must round-trip through the
+	 * front-end console's hidden fields exactly like every other rule key
+	 * (recurrence_display_defaults() / the hidden-field loop in
+	 * render_group_authoring_sections()) — otherwise a value set any other
+	 * way (REST, a filter, direct meta edit) would be silently dropped the
+	 * next time this locked front-end form is saved.
+	 */
+	public function test_front_end_form_round_trips_label_span_days_and_tier_id() {
+		$event_id = $this->make_event( [
+			'type' => 'recurring',
+			'start_date' => '2027-03-01',
+		] );
+		update_post_meta( $event_id, '_anchor_event_recurrence', [
+			'freq' => 'weekly',
+			'interval' => 1,
+			'count' => 2,
+			'start_time' => '09:00',
+			'end_time' => '10:00',
+			'capacity' => 8,
+			'label' => 'Weekend Intensive',
+			'span_days' => 2,
+			'tier_id' => 'general',
+		] );
+
+		$html = $this->render_front_end_form( $event_id );
+
+		$this->assertStringContainsString( 'name="anchor_event_recurrence[label]" value="Weekend Intensive"', $html );
+		$this->assertStringContainsString( 'name="anchor_event_recurrence[span_days]" value="2"', $html );
+		$this->assertStringContainsString( 'name="anchor_event_recurrence[tier_id]" value="general"', $html );
+
+		// Now actually resave with exactly what those hidden fields produce.
+		$_POST = [
+			'anchor_event_type' => 'recurring',
+			'anchor_event_registration_mode' => 'free',
+			'anchor_event_recurrence' => [
+				'freq' => 'weekly',
+				'interval' => 1,
+				'start_time' => '09:00',
+				'end_time' => '10:00',
+				'capacity' => 8,
+				'count' => 2,
+				'until' => '',
+				'label' => 'Weekend Intensive',
+				'span_days' => 2,
+				'tier_id' => 'general',
+			],
+		];
+
+		$fallback = $this->module()->registration_mode( $event_id );
+		$method = new ReflectionMethod( Module::class, 'save_event_manager_fields' );
+		$method->setAccessible( true );
+		$method->invoke( $this->module(), $event_id, '2027-03-01', $fallback );
+
+		$stored_rule = get_post_meta( $event_id, '_anchor_event_recurrence', true );
+		$this->assertSame( 'Weekend Intensive', $stored_rule['label'] );
+		$this->assertSame( 2, $stored_rule['span_days'] );
+		$this->assertSame( 'general', $stored_rule['tier_id'] );
+	}
 }

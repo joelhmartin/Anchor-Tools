@@ -172,6 +172,37 @@ class WooCommerce {
         \add_action( 'woocommerce_before_delete_order', [ $this, 'on_order_trashed_or_deleted' ], 10, 1 );
         // Legacy (posts) order storage delete — guard the post type inside.
         \add_action( 'before_delete_post', [ $this, 'on_legacy_order_deleted' ], 10, 1 );
+        // Legacy (posts) order storage TRASH (audit WOO-D52). The three hooks
+        // above are fired by the WC order data store, i.e. only by
+        // $order->delete(); the classic Orders list table trashes a legacy
+        // order with a bare wp_trash_post(), which fires none of them. Without
+        // this the order vanishes from the admin while its seats keep
+        // consuming the event's capacity for ever — and no reconcile entry
+        // point can ever run for it again. HPOS orders are not posts, so the
+        // post-type guard makes this inert there (and the double-fire when
+        // $order->delete() does route through wp_trash_post() is harmless:
+        // release_order_capacity() skips terminal seats).
+        \add_action( 'wp_trash_post', [ $this, 'on_legacy_order_trashed' ], 10, 1 );
+
+        // Order UNTRASH — the mirror of the four hooks above (audit WOO-D17).
+        // Restoring a trashed paid order otherwise leaves every seat cancelled
+        // and the capacity released while the order reads "processing": the
+        // roster shows nothing, nothing is flagged for review, and only an
+        // admin who knows about the "Resync order" button can repair it.
+        // reconcile_order() is declarative, so it simply puts the seats back to
+        // whatever the restored order's status implies.
+        \add_action( 'woocommerce_untrash_order', [ $this, 'on_order_untrashed' ], 10, 1 );
+        // …and the legacy (posts) twin. woocommerce_untrash_order is fired ONLY
+        // by the HPOS data store, so on CPT storage `untrashed_post` is the only
+        // signal there is. Priority 20 keeps it after WC_Post_Data::untrash_post()
+        // (priority 10), which restores the order's pre-trash status.
+        \add_action( 'untrashed_post', [ $this, 'on_legacy_order_untrashed' ], 20, 1 );
+
+        // Refund DELETED (audit WOO-D53). Deleting a refund drops
+        // get_qty_refunded_for_item back down, so the line expects its seats
+        // again — without this the seat stays refunded and its capacity stays
+        // released, and the order and the roster silently disagree.
+        \add_action( 'woocommerce_refund_deleted', [ $this, 'on_refund_deleted' ], 10, 2 );
 
         // Manual "Resync order" button + per-order seat metabox.
         \add_action( 'admin_post_anchor_event_resync_order', [ $this, 'handle_resync_order' ] );
@@ -2791,6 +2822,92 @@ class WooCommerce {
             return;
         }
         $this->release_order_capacity( $post_id, 'order deleted' );
+    }
+
+    /**
+     * wp_trash_post( int $post_id ) — legacy (posts) order storage only (audit
+     * WOO-D52), the trash counterpart of on_legacy_order_deleted(). The
+     * woocommerce_*_order lifecycle hooks come from the WC order data store, so
+     * the classic Orders list table's plain wp_trash_post() fires none of them
+     * and the order's seats would keep holding capacity for ever. Guard the
+     * post type — this action fires for every post type, and HPOS orders are
+     * not posts at all.
+     *
+     * @param int $post_id
+     */
+    public function on_legacy_order_trashed( $post_id ) {
+        $post_id = (int) $post_id;
+        if ( \get_post_type( $post_id ) !== 'shop_order' ) {
+            return;
+        }
+        $this->release_order_capacity( $post_id, 'order trashed' );
+    }
+
+    /**
+     * Order restored from the trash (audit WOO-D17). Hooks:
+     *  - woocommerce_untrash_order( int $order_id, string $previous_status ) — HPOS.
+     *  - untrashed_post → on_legacy_order_untrashed() — legacy (posts) storage.
+     *
+     * Deliberately a plain reconcile rather than an inverse of
+     * release_order_capacity(): reconcile_order() is declarative, so it puts
+     * the seats back to whatever the RESTORED order's status implies (a
+     * processing order confirms them, a cancelled one leaves them released)
+     * instead of blanket-reviving whatever the trash happened to cancel. It is
+     * idempotent, so the HPOS and legacy paths double-firing is harmless.
+     *
+     * @param int $order_id
+     */
+    public function on_order_untrashed( $order_id ) {
+        $order = \wc_get_order( (int) $order_id );
+        if ( ! $order instanceof \WC_Order ) {
+            return;
+        }
+        $this->reconcile_order( $order, 'order untrashed' );
+    }
+
+    /**
+     * untrashed_post( int $post_id ) — legacy (posts) order storage only.
+     * woocommerce_untrash_order is fired by the HPOS data store alone, so on a
+     * CPT-storage store this is the only untrash signal there is.
+     *
+     * @param int $post_id
+     */
+    public function on_legacy_order_untrashed( $post_id ) {
+        $post_id = (int) $post_id;
+        if ( \get_post_type( $post_id ) !== 'shop_order' ) {
+            return;
+        }
+        $this->on_order_untrashed( $post_id );
+    }
+
+    /**
+     * woocommerce_refund_deleted( int $refund_id, int $order_id ) — audit
+     * WOO-D53. Deleting a refund undoes it: get_qty_refunded_for_item() drops
+     * back, so the line's expected active seat count rises again and the
+     * capacity the refund released has to be re-taken. Nothing else reacts to
+     * refund deletion (on_legacy_order_deleted's post-type guard excludes
+     * shop_order_refund), so without this the order and the roster disagree
+     * until somebody presses "Resync order".
+     *
+     * The refund post is already gone by the time WC fires this, which is why
+     * the order is re-fetched rather than passed through: reconcile_order()
+     * must see the post-deletion refund totals.
+     *
+     * NOTE: `refunded` is a terminal seat status by design (Registrations
+     * ::$transitions, and reconcile's revivable set is cancelled|failed only),
+     * so the reconcile satisfies the restored count with a NEW seat rather
+     * than un-refunding the old row. The refunded row stays as the audit trail
+     * of a refund that was made and withdrawn.
+     *
+     * @param int $refund_id
+     * @param int $order_id
+     */
+    public function on_refund_deleted( $refund_id, $order_id ) {
+        $order = \wc_get_order( (int) $order_id );
+        if ( ! $order instanceof \WC_Order ) {
+            return;
+        }
+        $this->reconcile_order( $order, 'refund deleted' );
     }
 
     /**

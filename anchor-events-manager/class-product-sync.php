@@ -71,6 +71,14 @@ class Product_Sync {
         // Trash / delete → demote the managed product to draft (never delete).
         \add_action( 'wp_trash_post', [ $this, 'on_event_trashed_or_deleted' ], 10, 1 );
         \add_action( 'before_delete_post', [ $this, 'on_event_trashed_or_deleted' ], 10, 1 );
+        // NO `untrashed_post` mirror is needed, and adding one would just run a
+        // second full sync per restore (audit WOO-D34, checked against core):
+        // wp_untrash_post() restores the status THROUGH wp_update_post(), so
+        // save_post_event fires with the event already out of the trash and
+        // on_event_saved() below republishes the product. The trash half needs
+        // its own hook only because save_post fires there too — with the status
+        // already 'trash', which on_event_saved() skips.
+        // tests/test-untrash.php pins that round trip.
 
         // Managed-field lock (Task 2.2): re-assert on a direct managed-product edit.
         \add_action( 'woocommerce_update_product', [ $this, 'on_product_updated' ], 30, 1 );

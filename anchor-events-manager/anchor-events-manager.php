@@ -151,6 +151,18 @@ class Module {
      */
     private static $retiring_children = false;
 
+    /**
+     * Re-entrancy guard for restore_children_on_parent_untrash() (audit
+     * MODEL-D15), the mirror of self::$retiring_children above.
+     * Occurrences::reconcile() calls wp_untrash_post() on a wanted date's
+     * trashed occurrence, which re-fires the generic `untrashed_post` action
+     * for that child post id. A child is never itself a group parent, so the
+     * re-entrant call is a no-op regardless — this flag is defense-in-depth.
+     *
+     * @var bool
+     */
+    private static $restoring_children = false;
+
     public function __construct() {
         self::$instance = $this;
 
@@ -267,6 +279,15 @@ class Module {
         // the front-end manager form's delete handler, or any other caller of
         // wp_trash_post(). See retire_children_on_parent_trash()'s docblock.
         \add_action( 'wp_trash_post', [ $this, 'retire_children_on_parent_trash' ] );
+        // …and its mirror (audit MODEL-D15). Restoring the parent from the
+        // trash must undo the retirement, or the state is one-way: seated
+        // children stay soft-closed, unseated ones stay trashed, and the
+        // parent's page says "No dates currently scheduled" until somebody
+        // knows to open and re-save it. wp_untrash_post() does fire save_post
+        // (it restores the status through wp_update_post), but save_meta()
+        // bails there without the metabox nonce, so `untrashed_post` is the
+        // only hook that can drive the reconcile.
+        \add_action( 'untrashed_post', [ $this, 'restore_children_on_parent_untrash' ] );
 
         // SEO: Add canonical URL for calendar month parameter pages
         \add_action( 'wp_head', [ $this, 'output_canonical_url' ], 1 );
@@ -4156,10 +4177,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * below — self::$retiring_children is additional defense-in-depth,
      * matching the self::$reconciling pattern used elsewhere in this class.
      *
-     * SCOPE: trash only. untrash/restore of a group parent is NOT handled
-     * here — a previously soft-closed child stays soft-closed and a
-     * previously trashed child stays trashed. Flagged as a follow-up, not
-     * required by this fix.
+     * SCOPE: trash only. The restore half lives in
+     * restore_children_on_parent_untrash() (audit MODEL-D15).
      *
      * @param int $post_id
      */
@@ -4180,6 +4199,58 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $this->occurrences->retire_all_children( $post_id );
         } finally {
             self::$retiring_children = false;
+        }
+    }
+
+    /**
+     * The mirror of retire_children_on_parent_trash(), hooked on the generic
+     * `untrashed_post` action (audit MODEL-D15). Restoring a group parent from
+     * the trash has to undo the retirement, or the trash is a one-way door:
+     * every seated child stays soft-closed (manual/cancelled, registration
+     * off), every unseated child stays in the trash, and the parent's page
+     * renders "No dates currently scheduled" with no visible way back.
+     *
+     * The repair is just reconcile(): its matched branch already untrashes +
+     * republishes a wanted date's occurrence and revives a soft-closed one,
+     * which is precisely the state retire_all_children() left behind. Reusing
+     * it rather than writing an inverse of retire_child() means restore can
+     * never drift from retire.
+     *
+     * WHY NOT save_post: wp_untrash_post() restores the status via
+     * wp_update_post(), so save_post_event DOES fire — but save_meta() bails
+     * without the metabox nonce and persist_group_authoring() therefore never
+     * runs, so nothing reconciles. `untrashed_post` is the hook that can.
+     *
+     * Runs through run_reconcile() for the same save_post_event suppression
+     * every other reconcile entry point uses.
+     *
+     * RE-ENTRANCY: reconcile() calls wp_untrash_post() on a wanted date's
+     * trashed occurrence, re-firing this action for the CHILD post id. A child
+     * is never a group parent, so the is_group_parent() guard already makes
+     * that a no-op; self::$restoring_children is defense-in-depth, matching
+     * self::$retiring_children on the trash side.
+     *
+     * @param int $post_id
+     */
+    public function restore_children_on_parent_untrash( $post_id ) {
+        if ( self::$restoring_children || self::$reconciling ) {
+            return;
+        }
+        $post_id = (int) $post_id;
+        if ( $post_id <= 0 || \get_post_type( $post_id ) !== self::CPT ) {
+            return;
+        }
+        // is_group_parent() is a stamped-meta check, so an ordinary event that
+        // was never group-authored is never turned into one by a restore.
+        if ( ! $this->occurrences->is_group_parent( $post_id ) ) {
+            return;
+        }
+
+        self::$restoring_children = true;
+        try {
+            $this->run_reconcile( $post_id );
+        } finally {
+            self::$restoring_children = false;
         }
     }
 

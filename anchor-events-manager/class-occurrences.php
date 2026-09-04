@@ -163,7 +163,13 @@ class Occurrences {
         // occurrence; adding the same date back must revive THAT occurrence, not
         // build a second one beside it. Without this the original stays in the
         // trash for ever and the date silently acquires a duplicate post.
-        $existing_map = $this->existing_children_map( $parent_id, true ); // occurrence_key => child_id (live + closed + trashed)
+        // Duplicates (two children on one occurrence_key) are collapsed to a
+        // single canonical child here, so everything below still works with a
+        // plain occurrence_key => child_id map.
+        $existing_map = $this->collapse_duplicate_children(
+            $parent_id,
+            $this->existing_children_map( $parent_id, true ) // any status + trash
+        );
 
         $live_ids = [];
 
@@ -171,7 +177,11 @@ class Occurrences {
             if ( isset( $existing_map[ $key ] ) ) {
                 $child_id = (int) $existing_map[ $key ];
                 // A wanted date whose occurrence is in the trash comes back out,
-                // keeping its id, its roster and its history.
+                // keeping its id, its roster and its history. Every OTHER status
+                // is left exactly as the admin set it: a child moved to
+                // draft/pending/private is matched and synced like any other
+                // occurrence (MODEL-D9) but is not force-published, so hiding one
+                // date sticks. children() is what keeps it off the picker.
                 if ( \get_post_status( $child_id ) === 'trash' ) {
                     \wp_untrash_post( $child_id );
                     \wp_update_post( [ 'ID' => $child_id, 'post_status' => 'publish' ] );
@@ -286,14 +296,18 @@ class Occurrences {
         if ( $parent_id <= 0 ) {
             return;
         }
-        foreach ( $this->existing_children_map( $parent_id ) as $child_id ) {
-            $this->retire_child( (int) $child_id );
+        foreach ( $this->existing_children_map( $parent_id ) as $ids ) {
+            foreach ( $ids as $child_id ) {
+                $this->retire_child( (int) $child_id );
+            }
         }
     }
 
     /**
      * Live (or all, incl. soft-closed) child post ids for a group parent.
-     * Never includes trashed children.
+     * PUBLISHED children only — never trashed, and never one an admin has
+     * unpublished (draft/pending/private): those stay occurrences of the
+     * group, reconcile() still syncs them, but they are not on offer.
      *
      * @param int  $parent_id
      * @param bool $include_closed
@@ -306,8 +320,19 @@ class Occurrences {
         }
 
         $ids = [];
-        foreach ( $this->existing_children_map( $parent_id ) as $child_id ) {
-            $child_id = (int) $child_id;
+        foreach ( $this->existing_children_map( $parent_id ) as $group ) {
+            // One occurrence per key: the canonical child. Any extra is a
+            // duplicate, and reconcile() — the write path — retires it.
+            $child_id = (int) $group[0];
+            // The map is now status-agnostic on purpose (MODEL-D9), but this
+            // list is the OFFERED set: it feeds the "choose a date" picker,
+            // the schema emitter and the archive exclusions. A child an admin
+            // unpublished is still an occurrence of the group — it is simply
+            // not on offer — so it is filtered out here rather than by the
+            // query, which is what reconcile() needs to see it at all.
+            if ( \get_post_status( $child_id ) !== 'publish' ) {
+                continue;
+            }
             if ( ! $include_closed && $this->is_closed( $child_id ) ) {
                 continue;
             }
@@ -1069,17 +1094,42 @@ class Occurrences {
     }
 
     /**
-     * occurrence_key => child post id map for ALL of a parent's children
-     * (live + soft-closed; trashed posts are excluded because they're
-     * queried out by post_status=publish).
+     * occurrence_key => child post ids for ALL of a parent's children, found
+     * by GROUP IDENTITY (group_role + group_id meta) rather than by post
+     * status (audit MODEL-D9).
      *
-     * @param int $parent_id
-     * @return array<string,int>
+     * The query used to ask for post_status=publish, so a child an admin had
+     * set to Draft/Pending/Private — to hide one date without deleting it —
+     * was invisible to reconcile(): the date was still desired, the map did
+     * not contain it, and create_child() inserted a SECOND published post for
+     * the same date, with its own product and its own seat count, while the
+     * hidden original was never retired and never appeared in children().
+     * `any` is every status except trash and auto-draft, so the trash is still
+     * opted into explicitly by the one caller that needs it (reconcile, which
+     * revives a wanted date's trashed occurrence).
+     *
+     * The value is a LIST, not a single id (audit MODEL-D39): `$map[$key] =
+     * $id` silently kept the last row when two children carried the same
+     * occurrence_key (what any duplicate-post plugin produces), and the loser
+     * became an invisible orphan — never matched, never retired, never listed,
+     * but still published with its own product and seats. Every list is sorted
+     * canonical-first (see child_rank()); reconcile() keeps the head and
+     * retires the tail, and the read-only callers use the head.
+     *
+     * @param int  $parent_id
+     * @param bool $include_trashed Also return trashed children.
+     * @return array<string,int[]> occurrence_key => child ids, canonical first.
      */
     private function existing_children_map( $parent_id, $include_trashed = false ) {
+        // 'any' is exactly get_post_stati( [ 'exclude_from_search' => false ] );
+        // spelling it out is the only way to ADD trash to it.
+        $statuses = $include_trashed
+            ? \array_merge( \array_values( \get_post_stati( [ 'exclude_from_search' => false ] ) ), [ 'trash' ] )
+            : 'any';
+
         $ids = \get_posts( [
             'post_type'      => Module::CPT,
-            'post_status'    => $include_trashed ? [ 'publish', 'trash' ] : 'publish',
+            'post_status'    => $statuses,
             'posts_per_page' => -1,
             'fields'         => 'ids',
             'no_found_rows'  => true,
@@ -1090,6 +1140,14 @@ class Occurrences {
             ],
         ] );
 
+        // fields=>ids skips WP_Query's own cache priming, and every consumer of
+        // this map immediately asks each child for its occurrence_key and its
+        // post_status. One prime here is the difference between two queries and
+        // two per child.
+        if ( ! empty( $ids ) ) {
+            \_prime_post_caches( $ids, false, true );
+        }
+
         $map = [];
         foreach ( $ids as $id ) {
             $id  = (int) $id;
@@ -1097,9 +1155,77 @@ class Occurrences {
             if ( $key === '' ) {
                 continue;
             }
-            $map[ $key ] = $id;
+            $map[ $key ][] = $id;
         }
+
+        foreach ( $map as $key => $group ) {
+            if ( \count( $group ) < 2 ) {
+                continue;
+            }
+            \usort( $group, function ( $a, $b ) {
+                return [ $this->child_rank( $a ), $a ] <=> [ $this->child_rank( $b ), $b ];
+            } );
+            $map[ $key ] = $group;
+        }
+
         return $map;
+    }
+
+    /**
+     * Ordering rank for picking the canonical child of an occurrence_key when
+     * more than one exists: the live published occurrence first (it is the one
+     * the public is already looking at), then a published-but-soft-closed one,
+     * then an unpublished one, then the trash. Ties break on the lowest id, so
+     * the original beats a later copy.
+     *
+     * @param int $child_id
+     * @return int
+     */
+    private function child_rank( $child_id ) {
+        $status = \get_post_status( $child_id );
+        if ( $status === 'trash' ) {
+            return 3;
+        }
+        if ( $status !== 'publish' ) {
+            return 2;
+        }
+        return $this->is_closed( $child_id ) ? 1 : 0;
+    }
+
+    /**
+     * Reduce an existing_children_map() to one canonical child per
+     * occurrence_key, retiring and reporting every extra (audit MODEL-D39).
+     *
+     * A duplicate is retired with the SAME retire_child() the no-longer-wanted
+     * branch of reconcile() uses, so a duplicate holding a roster is
+     * soft-closed rather than trashed. One already retired (trashed, or
+     * soft-closed) is left exactly as it is — otherwise a preserved seated
+     * duplicate would be re-reported on every single parent save.
+     *
+     * @param int                 $parent_id
+     * @param array<string,int[]> $map
+     * @return array<string,int> occurrence_key => canonical child id.
+     */
+    private function collapse_duplicate_children( $parent_id, array $map ) {
+        $canonical = [];
+        foreach ( $map as $key => $ids ) {
+            $canonical[ $key ] = (int) \array_shift( $ids );
+            foreach ( $ids as $duplicate_id ) {
+                $duplicate_id = (int) $duplicate_id;
+                if ( \get_post_status( $duplicate_id ) === 'trash' || $this->is_closed( $duplicate_id ) ) {
+                    continue; // Already retired — nothing to do, nothing to report.
+                }
+                $this->retire_child( $duplicate_id );
+                Events_Log::error( 'duplicate_occurrence', [
+                    'parent_id'      => (int) $parent_id,
+                    'occurrence_key' => (string) $key,
+                    'kept'           => $canonical[ $key ],
+                    'retired'        => $duplicate_id,
+                    'result'         => \get_post_status( $duplicate_id ) === 'trash' ? 'trashed' : 'soft_closed',
+                ] );
+            }
+        }
+        return $canonical;
     }
 
     /**

@@ -236,4 +236,260 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 		$this->assertSame( $seats, $this->count_seats( $child ), 'Re-closing must not touch the roster.' );
 		$this->assertSame( $status, get_post_status( $child ) );
 	}
+
+	/* ------------------------------------------------------------------
+	 * (d) Children are found by GROUP IDENTITY, not by post_status
+	 *     (MODEL-D9) — and two children sharing one occurrence_key no longer
+	 *     collapse silently (MODEL-D39).
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * Every child post of a parent, in ANY status including trash — the raw
+	 * truth the map is supposed to describe.
+	 *
+	 * @param int $parent_id
+	 * @return int[]
+	 */
+	protected function all_child_posts( $parent_id ) {
+		return get_posts( [
+			'post_type'      => \Anchor\Events\Module::CPT,
+			'post_status'    => 'any',
+			'posts_per_page' => -1,
+			'fields'         => 'ids',
+			'no_found_rows'  => true,
+			'meta_query'     => [
+				[ 'key' => '_anchor_event_group_role', 'value' => 'child' ],
+				[ 'key' => '_anchor_event_group_id', 'value' => (int) $parent_id, 'type' => 'NUMERIC' ],
+			],
+		] );
+	}
+
+	/** Error-log entries recorded under one code. */
+	protected function log_entries( $code ) {
+		$log = get_option( \Anchor\Events\Events_Log::ERROR_OPTION, [] );
+		if ( ! is_array( $log ) ) {
+			return [];
+		}
+		return array_values( array_filter( $log, function ( $entry ) use ( $code ) {
+			return isset( $entry['code'] ) && $entry['code'] === $code;
+		} ) );
+	}
+
+	/**
+	 * Clone an existing child the way a duplicate-post plugin does: same
+	 * group_id, same occurrence_key, its own post id.
+	 *
+	 * @param int $child_id
+	 * @return int
+	 */
+	protected function clone_child( $child_id ) {
+		$clone_id = self::factory()->post->create( [
+			'post_type'   => \Anchor\Events\Module::CPT,
+			'post_status' => 'publish',
+			'post_title'  => get_the_title( $child_id ) . ' (copy)',
+		] );
+		foreach ( get_post_meta( $child_id ) as $key => $values ) {
+			update_post_meta( $clone_id, $key, maybe_unserialize( $values[0] ) );
+		}
+		return $clone_id;
+	}
+
+	/**
+	 * MODEL-D9: an admin hides one occurrence by setting it to Draft. The date
+	 * is still offered, so the next reconcile must MATCH that child — not walk
+	 * past it and insert a second published post for the same date.
+	 */
+	public function test_drafted_child_is_matched_not_duplicated() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		wp_update_post( [ 'ID' => $child, 'post_status' => 'draft' ] );
+
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertCount(
+			2,
+			$this->all_child_posts( $parent_id ),
+			'A drafted occurrence must be matched by its group identity, not duplicated.'
+		);
+		$this->assertContains( $child, $live2, 'The drafted child is still the occurrence for its date.' );
+		$this->assertSame(
+			'draft',
+			get_post_status( $child ),
+			"reconcile() must leave a matched child's post_status alone — the admin chose it."
+		);
+	}
+
+	/** ...and the drafted child is still SYNCED like any other live child. */
+	public function test_drafted_child_is_still_synced_from_the_parent() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		wp_update_post( [ 'ID' => $child, 'post_status' => 'draft' ] );
+		update_post_meta( $parent_id, '_anchor_event_venue', 'Annex' );
+
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame( 'Annex', get_post_meta( $child, '_anchor_event_venue', true ) );
+		$this->assertSame( 'draft', get_post_status( $child ) );
+	}
+
+	/** ...but it is NOT offered to the public: children() stays published-only. */
+	public function test_drafted_child_is_not_offered_by_children() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		wp_update_post( [ 'ID' => $child, 'post_status' => 'draft' ] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertNotContains(
+			$child,
+			$this->occurrences()->children( $parent_id, false ),
+			'An unpublished occurrence must not reach the public date picker.'
+		);
+		$this->assertNotContains(
+			$child,
+			$this->occurrences()->children( $parent_id, true ),
+			'…including the include-closed listing, which feeds schema + archive exclusions.'
+		);
+	}
+
+	/** A drafted child whose date is dropped is retired like any other child. */
+	public function test_drafted_child_is_retired_when_its_date_is_dropped() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		wp_update_post( [ 'ID' => $child, 'post_status' => 'draft' ] );
+		$this->drop_first_date( $parent_id );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame(
+			'trash',
+			get_post_status( $child ),
+			'An unseated, no-longer-offered occurrence is trashed whatever status it was hidden in.'
+		);
+	}
+
+	/**
+	 * MODEL-D39: two children carrying the same occurrence_key. One is kept as
+	 * the canonical occurrence, the other is RETIRED (trashed, having no
+	 * seats) and reported — instead of surviving as an invisible published
+	 * orphan with its own product and its own seats.
+	 */
+	public function test_duplicate_occurrence_key_is_retired_and_logged() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		$clone = $this->clone_child( $child );
+		$this->assertGreaterThan( $child, $clone, 'Precondition: the copy is the newer post.' );
+
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertContains( $child, $live2, 'The original occurrence stays canonical.' );
+		$this->assertNotContains( $clone, $live2 );
+		$this->assertSame( 'trash', get_post_status( $clone ), 'An unseated duplicate is trashed, not left published.' );
+		$this->assertSame( 'publish', get_post_status( $child ) );
+		$this->assertNotContains(
+			$clone,
+			$this->occurrences()->children( $parent_id, true ),
+			'A retired duplicate is not an occurrence of the group any more.'
+		);
+
+		$entries = $this->log_entries( 'duplicate_occurrence' );
+		$this->assertNotEmpty( $entries, 'Collapsing a duplicate must never be silent.' );
+		$context = $entries[0]['context'];
+		$this->assertSame( $parent_id, (int) $context['parent_id'] );
+		$this->assertSame( '2027-03-01', (string) $context['occurrence_key'] );
+		$this->assertSame( $child, (int) $context['kept'] );
+		$this->assertSame( $clone, (int) $context['retired'] );
+	}
+
+	/** A SEATED duplicate is soft-closed rather than trashed — roster-safe. */
+	public function test_seated_duplicate_is_soft_closed_not_trashed() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		$clone = $this->clone_child( $child );
+		$this->make_seat( $clone, [ 'status' => Registrations::STATUS_CONFIRMED ] );
+
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertNotContains( $clone, $live2 );
+		$this->assertSame( 'publish', get_post_status( $clone ), 'A duplicate holding a roster is preserved.' );
+		$this->assertSoftClosed( $clone, 'A seated duplicate is soft-closed, exactly like a dropped seated date.' );
+		$this->assertSame( 1, $this->count_seats( $clone ), 'The duplicate keeps its roster.' );
+		$this->assertNotEmpty( $this->log_entries( 'duplicate_occurrence' ) );
+	}
+
+	/**
+	 * A published child outranks an unpublished one for the same key, whichever
+	 * id is lower — the live occurrence is the one the public already sees, so
+	 * it is the one that survives. The loser is retired exactly like any other
+	 * duplicate (trashed here, having no seats — recoverable, and logged).
+	 */
+	public function test_published_child_is_canonical_over_an_unpublished_duplicate() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		$clone = $this->clone_child( $child );          // newer, published
+		wp_update_post( [ 'ID' => $child, 'post_status' => 'draft' ] ); // older, drafted
+
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertContains( $clone, $live2, 'The published copy is the canonical occurrence.' );
+		$this->assertSame( 'publish', get_post_status( $clone ) );
+		$this->assertSame( 'trash', get_post_status( $child ), 'The unpublished duplicate is retired like any other.' );
+
+		$entries = $this->log_entries( 'duplicate_occurrence' );
+		$this->assertNotEmpty( $entries );
+		$this->assertSame( $clone, (int) $entries[0]['context']['kept'] );
+		$this->assertSame( $child, (int) $entries[0]['context']['retired'] );
+	}
+
+	/** Re-running reconcile after a collapse is quiet: nothing left to report. */
+	public function test_duplicate_collapse_is_not_re_reported_on_every_save() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$this->clone_child( (int) $live[0] );
+
+		$this->occurrences()->reconcile( $parent_id );
+		$first = count( $this->log_entries( 'duplicate_occurrence' ) );
+
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame(
+			$first,
+			count( $this->log_entries( 'duplicate_occurrence' ) ),
+			'An already-retired duplicate must not re-log on every parent save.'
+		);
+	}
+
+	/**
+	 * Regression guard for the trash inclusion the reconcile path depends on:
+	 * a removed date's trashed occurrence still comes back — with its id — when
+	 * the date returns, rather than acquiring a second post.
+	 */
+	public function test_trashed_child_is_still_revived_when_its_date_returns() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		$this->drop_first_date( $parent_id );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertSame( 'trash', get_post_status( $child ), 'Precondition: the unseated dropped date is trashed.' );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->two_rows() );
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertContains( $child, $live2, 'The same occurrence must come back out of the trash.' );
+		$this->assertSame( 'publish', get_post_status( $child ) );
+		$this->assertCount( 2, $this->all_child_posts( $parent_id ), 'No second post for a revived date.' );
+	}
 }

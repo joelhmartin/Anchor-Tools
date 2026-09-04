@@ -105,11 +105,27 @@ class Test_Assets extends Anchor_Events_TestCase {
 	/**
 	 * checkout-attendees.js used to be pinned at the literal '1.0.0'
 	 * (WOO-D46) as well.
+	 *
+	 * WOO-D45 gated the enqueue on the cart actually holding an event line
+	 * (a laser-accessory-only order used to load this script too, as a
+	 * harmless but unconditional extra request on the checkout page), so
+	 * this test now needs a real event line in the cart to exercise it.
 	 */
 	public function test_checkout_attendees_asset_uses_asset_version_not_literal() {
 		$this->require_wc();
 		$woocommerce = $this->woocommerce();
 		$this->assertNotNull( $woocommerce, 'WooCommerce class did not instantiate.' );
+
+		$event_id = $this->make_event(
+			[ 'title' => 'Asset Version Event', 'timezone' => 'UTC' ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		$tiers        = $this->ticket_types()->get( $event_id );
+		$variation_id = (int) $this->product_sync()->variation_for_tier( $event_id, $tiers[0]['id'] );
+		$this->assertGreaterThan( 0, $variation_id );
+		WC()->cart->empty_cart();
+		WC()->cart->add_to_cart( (int) wc_get_product( $variation_id )->get_parent_id(), 1, $variation_id );
 
 		add_filter( 'woocommerce_is_checkout', '__return_true' );
 		try {
@@ -130,5 +146,26 @@ class Test_Assets extends Anchor_Events_TestCase {
 			$this->module()->asset_version( 'anchor-events-manager/assets/checkout-attendees.js' ),
 			$ver
 		);
+	}
+
+	/**
+	 * WOO-D45: a cart with NO event line must not load
+	 * checkout-attendees.js at all — an unconditional extra request on the
+	 * highest-value page on the site for every non-event order.
+	 */
+	public function test_checkout_attendees_asset_is_not_enqueued_without_an_event_cart_line() {
+		$this->require_wc();
+		wp_dequeue_script( 'anchor-event-checkout-attendees' );
+		wp_deregister_script( 'anchor-event-checkout-attendees' );
+		WC()->cart->empty_cart();
+
+		add_filter( 'woocommerce_is_checkout', '__return_true' );
+		try {
+			$this->woocommerce()->enqueue_checkout_assets();
+		} finally {
+			remove_filter( 'woocommerce_is_checkout', '__return_true' );
+		}
+
+		$this->assertArrayNotHasKey( 'anchor-event-checkout-attendees', wp_scripts()->registered );
 	}
 }

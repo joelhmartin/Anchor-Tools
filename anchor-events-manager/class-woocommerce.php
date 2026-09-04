@@ -2094,6 +2094,14 @@ class WooCommerce {
         if ( ! \function_exists( 'is_checkout' ) || ! \is_checkout() ) {
             return;
         }
+        // WOO-D45: an unconditional extra request on the highest-value page on
+        // the site — a laser-accessory-only order (no event line at all) used
+        // to load this too. It was a harmless no-op (the script early-returns
+        // on a missing #anchor-event-attendees), but a no-op is still a
+        // request every checkout view paid for regardless of its cart.
+        if ( empty( $this->get_event_cart_lines() ) ) {
+            return;
+        }
         \wp_enqueue_script(
             'anchor-event-checkout-attendees',
             \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/checkout-attendees.js' ),

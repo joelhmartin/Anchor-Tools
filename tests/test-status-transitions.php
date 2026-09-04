@@ -88,6 +88,31 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$this->assertArrayNotHasKey( 'no_show', $summary['per_status'] );
 	}
 
+	/**
+	 * REG-D50 — the attendee name lives in the meta; post_title is a derived
+	 * display copy. Whichever one is written, the other follows, so a bulk
+	 * edit or an import can no longer leave the roster and the REST listing
+	 * naming two different people.
+	 */
+	public function test_the_seat_title_follows_the_attendee_name_meta() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Jane Doe' ] );
+		$this->assertSame( 'Jane Doe', get_post_field( 'post_title', $seat_id ) );
+
+		// The data layer's own edit path.
+		$this->assertTrue( $this->registrations()->update_contact( $seat_id, [ 'name' => 'Jane Roe' ] )->is_sent() );
+		$this->assertSame( 'Jane Roe', get_post_meta( $seat_id, '_anchor_event_name', true ) );
+		$this->assertSame( 'Jane Roe', get_post_field( 'post_title', $seat_id ) );
+
+		// A write that reaches around it — an import, a bulk edit — is corrected.
+		wp_update_post( [ 'ID' => $seat_id, 'post_title' => 'Somebody Else' ] );
+		$this->assertSame( 'Jane Roe', get_post_field( 'post_title', get_post( $seat_id ) ) );
+
+		// And a direct meta write carries the title with it.
+		update_post_meta( $seat_id, '_anchor_event_name', 'Jane Q. Roe' );
+		$this->assertSame( 'Jane Q. Roe', get_post_field( 'post_title', $seat_id ) );
+	}
+
 	/** anonymize_seat scrubs name/email/phone + custom reg fields, keeps status. */
 	public function test_anonymize_seat_scrubs_pii() {
 		$event_id = $this->make_event();

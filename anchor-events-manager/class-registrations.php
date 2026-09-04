@@ -81,6 +81,71 @@ class Registrations {
 
     public function __construct( Module $module ) {
         $this->module = $module;
+
+        // REG-D50 — the attendee name is stored twice: as `_anchor_event_name`
+        // (what get_registrations() and every reader use) and as the seat's
+        // post_title (what the REST listing and seat_dto()'s fallback use).
+        // They used to be kept in step only by whichever writer remembered to
+        // write both, so anything else that touched one — a bulk edit, an
+        // import, a direct wp_update_post() — drifted them apart invisibly.
+        // The meta is the source of truth and the title is a derived display
+        // copy, so ONE place derives it, in both directions: whenever the meta
+        // is written, and whenever the seat post is saved by anybody.
+        \add_action( 'added_post_meta', [ $this, 'sync_seat_title' ], 10, 4 );
+        \add_action( 'updated_post_meta', [ $this, 'sync_seat_title' ], 10, 4 );
+        \add_action( 'save_post_' . Module::REG_CPT, [ $this, 'sync_seat_title_on_save' ], 10, 1 );
+    }
+
+    /** The post_title a seat should carry for $name (never empty). */
+    private static function seat_title_for( $name ) {
+        $name = \trim( (string) $name );
+        return $name !== '' ? $name : \__( '(attendee)', 'anchor-schema' );
+    }
+
+    /**
+     * Keep a seat's post_title equal to its `_anchor_event_name` meta.
+     * Fires on added_post_meta/updated_post_meta; a no-op for every other key
+     * and every other post type, so a site that never used events pays nothing.
+     *
+     * @param int    $meta_id
+     * @param int    $post_id
+     * @param string $meta_key
+     * @param mixed  $meta_value
+     */
+    public function sync_seat_title( $meta_id, $post_id, $meta_key, $meta_value ) {
+        if ( '_anchor_event_name' !== $meta_key ) {
+            return;
+        }
+        $this->write_seat_title( (int) $post_id, self::seat_title_for( $meta_value ) );
+    }
+
+    /**
+     * The other direction: a seat saved by any path gets its title re-derived
+     * from the meta, so a wp_update_post() that renamed the post alone cannot
+     * leave the roster and the REST listing disagreeing about who this is.
+     *
+     * @param int $post_id
+     */
+    public function sync_seat_title_on_save( $post_id ) {
+        if ( \defined( 'DOING_AUTOSAVE' ) && \DOING_AUTOSAVE ) {
+            return;
+        }
+        $name = \get_post_meta( (int) $post_id, '_anchor_event_name', true );
+        if ( '' === $name || null === $name ) {
+            return; // No stored name yet (create_seat() writes the post first).
+        }
+        $this->write_seat_title( (int) $post_id, self::seat_title_for( $name ) );
+    }
+
+    /** Write $title onto a seat post, but only when it is actually different. */
+    private function write_seat_title( $post_id, $title ) {
+        if ( $post_id <= 0 || \get_post_type( $post_id ) !== Module::REG_CPT ) {
+            return;
+        }
+        if ( (string) \get_post_field( 'post_title', $post_id ) === $title ) {
+            return; // Already in step — and this is what stops save_post recursing.
+        }
+        \wp_update_post( [ 'ID' => $post_id, 'post_title' => $title ] );
     }
 
     /* ---------------------------------------------------------------------
@@ -263,8 +328,8 @@ class Registrations {
 
     /**
      * Update a seat's editable contact fields (name/email/phone). Status is NOT
-     * touched here — use update_status() for that. Keeps the post_title in sync
-     * with the attendee name. Used by the roster manual-edit action so callers
+     * touched here — use update_status() for that. The post_title follows the
+     * name meta on its own (REG-D50). Used by the roster manual-edit action so callers
      * never write seat meta directly.
      *
      * A blank name is REFUSED, not quietly dropped (audit REG-D34). The old
@@ -298,7 +363,7 @@ class Registrations {
         }
 
         if ( null !== $name ) {
-            \wp_update_post( [ 'ID' => $seat_id, 'post_title' => $name ] );
+            // The post_title follows the meta through sync_seat_title().
             \update_post_meta( $seat_id, '_anchor_event_name', $name );
         }
         if ( \array_key_exists( 'email', $fields ) ) {
@@ -1023,7 +1088,6 @@ class Registrations {
         \update_post_meta( $seat_id, '_anchor_event_phone', '' );
         // D: attendee-provided custom registration fields may hold PII too — clear them.
         \update_post_meta( $seat_id, '_anchor_event_reg_fields', [] );
-        \wp_update_post( [ 'ID' => $seat_id, 'post_title' => $anon ] );
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
         return true;

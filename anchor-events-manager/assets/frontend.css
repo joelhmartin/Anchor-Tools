@@ -785,6 +785,14 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   color:#991b1b;
 }
 
+/* The save went through, but not all of it — e.g. a duplicated offering date
+   was dropped (audit MODEL-D8). Not an error and not a success. */
+.anchor-event-manager-notice.is-warning{
+  background:#fffbeb;
+  border:1px solid #f59e0b;
+  color:#92400e;
+}
+
 .anchor-event-manager-form .anchor-event-section{
   border:1px solid var(--anchor-event-border);
   border-radius:8px;

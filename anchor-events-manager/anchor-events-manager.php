@@ -87,6 +87,13 @@ class Module {
      */
     const CACHE_VERSION_OPTION = 'anchor_events_cache_ver';
     const NONCE = 'anchor_event_meta_nonce';
+    /**
+     * How long a queued authoring notice (queue_group_notice()) waits for a
+     * request that can render it. One redirect, not one session: long enough
+     * for the save's own redirect or the next admin page load, short enough
+     * that a notice can never surface against an unrelated later save.
+     */
+    const NOTICE_TTL = 60;
     const REG_NONCE = 'anchor_event_reg_nonce';
 
     /**
@@ -254,6 +261,9 @@ class Module {
         // that runs after the meta write, so it is the only place the new
         // dates are visible.
         \add_action( 'rest_after_insert_' . self::CPT, [ $this, 'persist_after_rest_write' ], 10, 3 );
+        // …and the block editor has no redirect to hang a notice on, so a REST
+        // WRITE response carries whatever the save queued (audit MODEL-D14).
+        \add_filter( 'rest_prepare_' . self::CPT, [ $this, 'attach_notices_to_rest_response' ], 10, 3 );
 
         \add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
         \add_action( 'wp_enqueue_scripts', [ $this, 'frontend_assets' ] );
@@ -2319,15 +2329,15 @@ class Module {
         ?>
         <?php
         // Inline validation surfacing (Task 2.3 notice fix): the Gutenberg
-        // block editor saves via REST with NO redirect, so the classic
-        // add_query_arg()/admin_notices() notice queued by
-        // persist_group_authoring()'s guard never reaches the admin editor —
-        // it only ever surfaced on the front-end classic manager form's
-        // full-page redirect. Rendering the SAME validation inline here,
+        // block editor saves via REST with NO redirect, so a notice queued by
+        // persist_group_authoring()'s guard has no post-save redirect to ride
+        // in the block editor. Rendering the SAME validation inline here,
         // driven off the STORED meta, survives a block-editor save because
         // this metabox regenerates via Gutenberg's metabox iframe on every
-        // save. The redirect-notice path (queue_group_notice()/
-        // admin_notices()) is left in place unchanged for the front-end form.
+        // save. It complements — it does not replace — the queued notice,
+        // which since MODEL-D14 lives in a per-user/per-post transient that
+        // admin_notices(), the front-end form's redirect and the REST write
+        // response all read (see queue_group_notice()).
         $offering_invalid = ( $event_type === 'offering' && empty( $offering_dates ) );
         ?>
         <div class="anchor-event-section anchor-event-conditional" data-step="2" data-when-type="offering">
@@ -3845,9 +3855,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $input = array_merge( $input, $this->sanitize_event_type_input( $_POST, $current_registration_mode ) );
 
         if ( ! $input['start_date'] ) {
-            \add_filter( 'redirect_post_location', function( $location ) {
-                return \add_query_arg( 'anchor_event_notice', 'missing_start_date', $location );
-            } );
+            $this->queue_group_notice( 'missing_start_date', $post_id );
         }
 
         $status_raw = sanitize_text_field( $_POST['anchor_event_status'] ?? 'auto' );
@@ -4273,15 +4281,33 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $was_parent = $this->occurrences->is_group_parent( $post_id );
 
         if ( $type === 'offering' ) {
-            $rows = $this->sanitize_offering_dates_rows( $_POST['anchor_event_offering_dates'] ?? [] );
+            $rows = $this->sanitize_offering_dates_rows( $_POST['anchor_event_offering_dates'] ?? [], $post_id );
+
+            if ( empty( $rows ) && $this->offering_has_dates_to_protect( $post_id ) ) {
+                // Guard (audit MODEL-D14): an offering that ALREADY has dates
+                // and comes back with none is an accident — a cleared repeater,
+                // a JS failure that posted no rows at all — not an instruction.
+                // Persisting the empty list destroyed the authored dates while
+                // the children (skipped by the reconcile guard below) stayed
+                // published and bookable with nothing pointing at them, and
+                // every later save repeated the no-op because the list was
+                // still empty. So keep the stored rows, skip reconcile, and
+                // tell the author. Clearing an offering FOR REAL is an explicit
+                // action: change the event's type away from "offering", which
+                // clears both keys and retires the children (the $was_parent
+                // branch at the bottom of this method).
+                $this->queue_group_notice( 'offering_incomplete', $post_id );
+                return;
+            }
+
             \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), $rows );
             \update_post_meta( $post_id, $this->meta_key( 'recurrence' ), [] );
 
             if ( empty( $rows ) ) {
-                // Guard: never reconcile an offering with zero valid dates —
-                // that would trash/soft-close every existing child. Leave any
-                // existing children exactly as they are.
-                $this->queue_group_notice( 'offering_incomplete' );
+                // Nothing authored yet and nothing to protect (a brand-new
+                // offering saved empty): the empty list is the truth, but it
+                // must still never reach reconcile().
+                $this->queue_group_notice( 'offering_incomplete', $post_id );
                 return;
             }
 
@@ -4299,7 +4325,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 // Guard: never reconcile an unterminated rule — expand_recurrence()
                 // would otherwise expand it to the RECURRENCE_MAX_ROWS (104) safety
                 // cap, i.e. up to 104 child posts from one incomplete save.
-                $this->queue_group_notice( 'recurrence_incomplete' );
+                $this->queue_group_notice( 'recurrence_incomplete', $post_id );
                 return;
             }
 
@@ -4316,6 +4342,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $this->run_reconcile( $post_id ); // Empty desired set -> retires every existing child (soft-close seated, trash unseated).
             \update_post_meta( $post_id, $this->meta_key( 'group_role' ), '' ); // reconcile() always stamps 'parent'; not correct once the type has changed away.
         }
+    }
+
+    /**
+     * Does this offering parent have authored dates that an empty save would
+     * destroy (audit MODEL-D14)? Either stored rows or live children counts:
+     * the rows are what an author typed, and the children are what visitors
+     * can book — a parent with either has something a zero-row save should
+     * never be allowed to silently take away.
+     *
+     * @param int $post_id
+     * @return bool
+     */
+    private function offering_has_dates_to_protect( $post_id ) {
+        $stored = \get_post_meta( $post_id, $this->meta_key( 'offering_dates' ), true );
+        if ( ! empty( $stored ) && is_array( $stored ) ) {
+            return true;
+        }
+        return ! empty( $this->occurrences->children( $post_id, true ) );
     }
 
     /**
@@ -4471,10 +4515,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * H:i regex — matches the <input type="date">/<input type="time"> the
      * repeater renders).
      *
-     * @param mixed $raw Raw anchor_event_offering_dates[] rows from $_POST (NOT yet unslashed).
+     * @param mixed $raw     Raw anchor_event_offering_dates[] rows from $_POST (NOT yet unslashed).
+     * @param int   $post_id The event being saved — the notice queue is per post.
      * @return array<int,array{date:string,start_time:string,end_time:string,label:string,capacity:int}>
      */
-    private function sanitize_offering_dates_rows( $raw ) {
+    private function sanitize_offering_dates_rows( $raw, $post_id = 0 ) {
         $rows = [];
         // Two rows that mint the SAME occurrence identity (same date AND same
         // start time) are one occurrence, and only one child can ever exist for
@@ -4527,7 +4572,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         if ( $duplicate ) {
-            $this->queue_group_notice( 'offering_duplicate_date' );
+            $this->queue_group_notice( 'offering_duplicate_date', $post_id );
         }
 
         return $rows;
@@ -4589,16 +4634,188 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * Queue an admin-notice query arg on the post-save redirect, same idiom
-     * as save_meta()'s existing missing_start_date guard — see
-     * admin_notices() for the rendered copy.
+     * The ONE vocabulary of save-time authoring notices (audit MODEL-D14, and
+     * the notice half of MODEL-D8). Every renderer — admin_notices() for the
+     * classic editor, render_event_manager_notice() for the front-end manager
+     * form, attach_notices_to_rest_response() for a block-editor consumer —
+     * reads its copy from here, so a code can never mean two things or exist
+     * on one path only.
      *
-     * @param string $code
+     * @return array<string,array{level:string,message:string}>
      */
-    private function queue_group_notice( $code ) {
-        \add_filter( 'redirect_post_location', function ( $location ) use ( $code ) {
-            return \add_query_arg( 'anchor_event_notice', $code, $location );
-        } );
+    private function group_notice_map() {
+        return [
+            'missing_start_date' => [
+                'level' => 'error',
+                'message' => \__( 'Event start date is required.', 'anchor-schema' ),
+            ],
+            // Guard: this save never reached reconcile(). Any existing dates
+            // were left exactly as they were — including the authored rows,
+            // which are NOT overwritten with the empty list (MODEL-D14).
+            'offering_incomplete' => [
+                'level' => 'error',
+                'message' => \__( 'Add at least one offering date — nothing was generated or updated, and any dates already on this event were left exactly as they were. To remove them all, change the event type away from "Offering".', 'anchor-schema' ),
+            ],
+            // Not a guard: the save DID go through, minus the rows that
+            // repeated an occurrence already in the list (MODEL-D8).
+            'offering_duplicate_date' => [
+                'level' => 'warning',
+                'message' => \__( 'Two offering dates had the same date and start time — only the first was kept. Give them different start times to run two sessions on one day.', 'anchor-schema' ),
+            ],
+            'recurrence_incomplete' => [
+                'level' => 'error',
+                'message' => \__( 'Set an end for the recurrence — a number of occurrences or an until date — before saving. No occurrences were generated/updated.', 'anchor-schema' ),
+            ],
+        ];
+    }
+
+    /**
+     * Where a queued notice lives: a short-lived per-user, per-post transient.
+     *
+     * This replaced a redirect_post_location filter, which only ever fired on
+     * ONE of the three save paths (audit MODEL-D14). The block editor saves
+     * over REST and through a hidden metabox iframe — no redirect — and
+     * handle_event_manager_save() does its own wp_safe_redirect() with its own
+     * `event_manager_notice` arg, so two thirds of authors were told nothing
+     * while their save was silently refused. A transient is readable from
+     * whichever request happens to render next, which is the property the
+     * filter lacked. Per user so two editors never see each other's notices,
+     * per post so a notice cannot follow the author to an unrelated screen,
+     * and 60s so a stale one can never surface a page-load later.
+     *
+     * @param int $post_id
+     * @param int $user_id 0 = the current user.
+     * @return string
+     */
+    private function group_notice_key( $post_id, $user_id = 0 ) {
+        $user_id = $user_id ?: \get_current_user_id();
+        return 'anchor_events_notice_' . (int) $user_id . '_' . (int) $post_id;
+    }
+
+    /**
+     * Queue an authoring notice for the author who is saving $post_id. Codes
+     * accumulate (a save can trip more than one guard) and never repeat.
+     *
+     * @param string $code    A key of group_notice_map().
+     * @param int    $post_id
+     */
+    private function queue_group_notice( $code, $post_id = 0 ) {
+        $post_id = (int) $post_id;
+        $user_id = \get_current_user_id();
+        if ( $post_id <= 0 || $user_id <= 0 ) {
+            // Nothing to key on — a cron/CLI write with no author present has
+            // nobody to tell.
+            return;
+        }
+        $codes = $this->queued_group_notice_codes( $post_id );
+        if ( in_array( $code, $codes, true ) ) {
+            return;
+        }
+        $codes[] = $code;
+        \set_transient( $this->group_notice_key( $post_id ), $codes, self::NOTICE_TTL );
+    }
+
+    /**
+     * The queued codes for a post, WITHOUT consuming them.
+     *
+     * @param int $post_id
+     * @return string[]
+     */
+    private function queued_group_notice_codes( $post_id ) {
+        $codes = \get_transient( $this->group_notice_key( (int) $post_id ) );
+        if ( ! is_array( $codes ) ) {
+            return [];
+        }
+        $map = $this->group_notice_map();
+        return \array_values( \array_filter( $codes, function ( $code ) use ( $map ) {
+            return isset( $map[ $code ] );
+        } ) );
+    }
+
+    /**
+     * The queued codes for a post, consuming them: a notice is delivered
+     * exactly once, by whichever renderer gets there first.
+     *
+     * @param int $post_id
+     * @return string[]
+     */
+    private function take_group_notices( $post_id ) {
+        $codes = $this->queued_group_notice_codes( $post_id );
+        if ( ! empty( $codes ) ) {
+            \delete_transient( $this->group_notice_key( (int) $post_id ) );
+        }
+        return $codes;
+    }
+
+    /**
+     * Public read of the notices queued for the current user on $post_id, as
+     * rendered payloads. Read-only — it never consumes the queue — so a
+     * caller that only wants to LOOK (the REST response, a test) cannot rob
+     * the admin notice of its one delivery.
+     *
+     * @param int $post_id
+     * @return array<int,array{code:string,level:string,message:string}>
+     */
+    public function queued_group_notices( $post_id ) {
+        $map = $this->group_notice_map();
+        $out = [];
+        foreach ( $this->queued_group_notice_codes( $post_id ) as $code ) {
+            $out[] = [
+                'code' => $code,
+                'level' => $map[ $code ]['level'],
+                'message' => $map[ $code ]['message'],
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * The front-end manager form's `event_manager_notice` value: the outcome
+     * code this save is reporting plus any authoring notice queued during it,
+     * comma-separated. render_event_manager_notice() renders each in turn.
+     *
+     * @param string $base_code 'saved' / 'created' / …
+     * @param int    $post_id
+     * @return string
+     */
+    private function event_manager_notice_arg( $base_code, $post_id ) {
+        $codes = \array_filter( \array_merge( [ $base_code ], $this->take_group_notices( $post_id ) ) );
+        return \implode( ',', \array_unique( $codes ) );
+    }
+
+    /**
+     * Expose the queued notices on a REST WRITE response for the block editor
+     * (audit MODEL-D14). Gutenberg's metabox iframe posts to post.php with no
+     * redirect and its output is never shown, so the classic notice cannot be
+     * the block editor's only channel: the codes ride the REST save response
+     * as `anchor_event_notices` for a future editor-side plugin to render, and
+     * — because this read does NOT consume the queue — admin_notices() still
+     * prints them on the next real admin page load either way. Write requests
+     * only; a public GET of an event is untouched.
+     *
+     * @param \WP_REST_Response $response
+     * @param \WP_Post          $post
+     * @param \WP_REST_Request  $request
+     * @return \WP_REST_Response
+     */
+    public function attach_notices_to_rest_response( $response, $post, $request ) {
+        if ( ! $response instanceof \WP_REST_Response || ! $post instanceof \WP_Post ) {
+            return $response;
+        }
+        if ( ! $request instanceof \WP_REST_Request || \strtoupper( $request->get_method() ) === 'GET' ) {
+            return $response;
+        }
+        $notices = $this->queued_group_notices( $post->ID );
+        if ( empty( $notices ) ) {
+            return $response;
+        }
+        $data = $response->get_data();
+        if ( ! is_array( $data ) ) {
+            return $response;
+        }
+        $data['anchor_event_notices'] = $notices;
+        $response->set_data( $data );
+        return $response;
     }
 
     private function sanitize_gallery_ids( $raw ) {
@@ -4636,27 +4853,33 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
     }
 
+    /**
+     * Render the authoring notices queued by this user's last save of the post
+     * on screen, then consume them (one delivery — see queue_group_notice()).
+     * The copy itself is group_notice_map()'s, shared with the front-end
+     * manager form so the two can never say different things.
+     */
     public function admin_notices() {
-        if ( ! isset( $_GET['anchor_event_notice'] ) ) {
+        // Gutenberg posts the metaboxes to post.php in a hidden iframe whose
+        // output nobody ever sees. Consuming the queue there would eat the
+        // notice before the editor could show it, so that request is left to
+        // pass through untouched.
+        if ( ! empty( $_REQUEST['meta-box-loader'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
             return;
         }
-        $notice = sanitize_text_field( $_GET['anchor_event_notice'] );
-        if ( $notice === 'missing_start_date' ) {
-            echo '<div class="notice notice-error"><p>' . esc_html__( 'Event start date is required.', 'anchor-schema' ) . '</p></div>';
+
+        $post_id = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        if ( ! $post_id && isset( $GLOBALS['post'] ) && $GLOBALS['post'] instanceof \WP_Post ) {
+            $post_id = (int) $GLOBALS['post']->ID;
         }
-        // Group authoring validation guards (Phase 2, Task 2.3) — see
-        // persist_group_authoring(). Neither ever reaches reconcile(); child
-        // events were left exactly as they were before this save.
-        if ( $notice === 'offering_incomplete' ) {
-            echo '<div class="notice notice-error"><p>' . esc_html__( 'Add at least one offering date before saving — no dates were generated/updated.', 'anchor-schema' ) . '</p></div>';
+        if ( ! $post_id ) {
+            return;
         }
-        // Not a guard like the two below: the save DID go through, minus the
-        // rows that repeated an occurrence already in the list (MODEL-D8).
-        if ( $notice === 'offering_duplicate_date' ) {
-            echo '<div class="notice notice-warning"><p>' . esc_html__( 'Two offering dates had the same date and start time — only the first was kept. Give them different start times to run two sessions on one day.', 'anchor-schema' ) . '</p></div>';
-        }
-        if ( $notice === 'recurrence_incomplete' ) {
-            echo '<div class="notice notice-error"><p>' . esc_html__( 'Set an end for the recurrence — a number of occurrences or an until date — before saving. No occurrences were generated/updated.', 'anchor-schema' ) . '</p></div>';
+
+        $map = $this->group_notice_map();
+        foreach ( $this->take_group_notices( $post_id ) as $code ) {
+            $class = $map[ $code ]['level'] === 'warning' ? 'notice-warning' : 'notice-error';
+            echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( $map[ $code ]['message'] ) . '</p></div>';
         }
     }
 
@@ -5308,11 +5531,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $output;
     }
 
+    /**
+     * Render the `event_manager_notice` arg. It carries a COMMA-SEPARATED list
+     * (event_manager_notice_arg()): the outcome of the request plus any
+     * authoring notice queued during the save — an offering whose rows came
+     * back empty, a duplicated date — which used to reach only the classic
+     * admin editor (audit MODEL-D14). The authoring copy comes from
+     * group_notice_map(), the same map admin_notices() renders.
+     */
     private function render_event_manager_notice() {
         if ( empty( $_GET['event_manager_notice'] ) ) {
             return '';
         }
-        $notice = sanitize_text_field( wp_unslash( $_GET['event_manager_notice'] ) );
         $map = [
             'saved'   => [ 'ok',  __( 'Event saved.', 'anchor-schema' ) ],
             'created' => [ 'ok',  __( 'Event created.', 'anchor-schema' ) ],
@@ -5327,11 +5557,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'lostpass_error' => [ 'err', __( 'We could not find an account matching that username or email.', 'anchor-schema' ) ],
             'lostpass_empty' => [ 'err', __( 'Please enter your username or email address.', 'anchor-schema' ) ],
         ];
-        if ( ! isset( $map[ $notice ] ) ) {
-            return '';
+        foreach ( $this->group_notice_map() as $code => $notice ) {
+            $map[ $code ] = [ $notice['level'] === 'warning' ? 'warn' : 'err', $notice['message'] ];
         }
-        $class = $map[ $notice ][0] === 'ok' ? 'is-ok' : 'is-error';
-        return '<div class="anchor-event-manager-notice ' . esc_attr( $class ) . '">' . esc_html( $map[ $notice ][1] ) . '</div>';
+
+        $raw = sanitize_text_field( wp_unslash( $_GET['event_manager_notice'] ) );
+        $out = '';
+        foreach ( array_unique( array_filter( array_map( 'trim', explode( ',', $raw ) ) ) ) as $notice ) {
+            if ( ! isset( $map[ $notice ] ) ) {
+                continue;
+            }
+            $class = 'is-error';
+            if ( $map[ $notice ][0] === 'ok' ) {
+                $class = 'is-ok';
+            } elseif ( $map[ $notice ][0] === 'warn' ) {
+                $class = 'is-warning';
+            }
+            $out .= '<div class="anchor-event-manager-notice ' . esc_attr( $class ) . '">' . esc_html( $map[ $notice ][1] ) . '</div>';
+        }
+        return $out;
     }
 
     private function get_event_manager_page_url() {
@@ -6368,7 +6612,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $this->save_event_manager_fields( $saved_id, $start_date, $current_registration_mode );
 
-        \wp_safe_redirect( \add_query_arg( 'event_manager_notice', $is_edit ? 'saved' : 'created', $redirect ) );
+        // The save may have queued an authoring notice (offering rows that came
+        // back empty, a duplicated date). It rides the SAME query arg as the
+        // outcome code so the front-end form reports it too — before MODEL-D14
+        // this path redirected with a bare "saved" and the author was told
+        // nothing at all.
+        \wp_safe_redirect( \add_query_arg(
+            'event_manager_notice',
+            \rawurlencode( $this->event_manager_notice_arg( $is_edit ? 'saved' : 'created', $saved_id ) ),
+            $redirect
+        ) );
         exit;
     }
 

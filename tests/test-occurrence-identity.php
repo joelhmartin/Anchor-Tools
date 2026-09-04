@@ -511,8 +511,13 @@ class Test_Occurrence_Identity extends Anchor_Events_TestCase {
 		$this->assertCount( 1, $stored, 'The duplicate key must be rejected at save time, not dropped on read.' );
 		$this->assertSame( 'Session A', $stored[0]['label'] );
 
-		$location = apply_filters( 'redirect_post_location', 'http://example.org/wp-admin/post.php?post=' . $event_id );
-		$this->assertStringContainsString( 'anchor_event_notice=offering_duplicate_date', $location );
+		// The author is told, on whichever save path they used: the notice is
+		// queued against this post for this user (MODEL-D14 replaced the
+		// redirect_post_location filter, which fired on the classic save only).
+		$this->assertContains(
+			'offering_duplicate_date',
+			wp_list_pluck( $this->module()->queued_group_notices( $event_id ), 'code' )
+		);
 
 		$this->assertCount( 1, $this->occurrences()->children( $event_id ) );
 		unset( $_POST );

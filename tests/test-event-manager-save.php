@@ -255,6 +255,51 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 		$this->module()->handle_event_manager_save();
 	}
 
+	/**
+	 * finding-10 — post_title/post_content are built via an unslash+sanitize
+	 * pass and then handed straight to wp_insert_post(), which unslashes its
+	 * postarr AGAIN internally (the same mechanism as update_post_meta()) —
+	 * so a literal backslash was silently eaten (`Room A\B` stored as
+	 * `Room AB`). Drives the REAL entry point (not the extracted
+	 * save_event_manager_fields()), since the post itself is inserted in
+	 * handle_event_manager_save() before that method is even called.
+	 */
+	public function test_handle_event_manager_save_preserves_a_literal_backslash_in_title_and_content() {
+		$_POST = wp_slash( [
+			'anchor_event_manager_nonce' => wp_create_nonce( 'anchor_event_manager_save' ),
+			'event_id'                => 0,
+			'redirect_to'             => 'https://example.org/manager/',
+			'anchor_event_title'      => 'Room A\B',
+			'anchor_event_content'    => '<p>Suite C:\Rooms</p>',
+			'anchor_event_start_date' => '2026-09-01',
+		] );
+		$_REQUEST = $_POST;
+
+		$trap = function ( $location ) {
+			throw new Anchor_Lostpass_Redirected( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		try {
+			$this->module()->handle_event_manager_save();
+			$this->fail( 'handle_event_manager_save() did not redirect.' );
+		} catch ( Anchor_Lostpass_Redirected $e ) {
+			// Expected — the success path redirects.
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+		}
+
+		$events = get_posts( [
+			'post_type'      => Module::CPT,
+			'post_status'    => 'any',
+			'orderby'        => 'ID',
+			'order'          => 'DESC',
+			'posts_per_page' => 1,
+		] );
+		$this->assertNotEmpty( $events, 'The save must have created an event.' );
+		$this->assertSame( 'Room A\B', $events[0]->post_title, 'The event title must round-trip a literal backslash.' );
+		$this->assertStringContainsString( 'Suite C:\Rooms', $events[0]->post_content );
+	}
+
 	/* ------------------------------------------------------------------
 	 * REG-D47 — the lost-password form answers the same way every time
 	 * ------------------------------------------------------------------ */

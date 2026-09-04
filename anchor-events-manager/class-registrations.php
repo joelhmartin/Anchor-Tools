@@ -294,10 +294,18 @@ class Registrations {
         $actor  = (string) ( $args['actor'] ?? 'system' );
         $note   = (string) ( $args['note'] ?? '' );
 
+        // finding-10 — $name above is already unslashed-and-sanitized (every
+        // caller's contract: Module::handle_registration(), Roster::handle_add(),
+        // the WooCommerce attendee capture), and wp_insert_post() unslashes its
+        // postarr AGAIN internally (same mechanism as update_post_meta() below) —
+        // so passing it straight through ate a literal backslash (`Room A\B`
+        // stored as `Room AB`). wp_slash() puts it back in the slashed domain
+        // right before the call, same contract Module::persist_event_authoring()
+        // documents for event meta.
         $seat_id = \wp_insert_post( [
             'post_type'   => Module::REG_CPT,
             'post_status' => 'publish',
-            'post_title'  => $name !== '' ? $name : \__( '(attendee)', 'anchor-schema' ),
+            'post_title'  => \wp_slash( $name !== '' ? $name : \__( '(attendee)', 'anchor-schema' ) ),
         ], true );
 
         if ( \is_wp_error( $seat_id ) || ! $seat_id ) {
@@ -328,7 +336,13 @@ class Registrations {
                 [ 'status' => $status, 'time' => \time(), 'note' => $note, 'actor' => $actor ],
             ],
         ];
-        foreach ( $meta as $key => $value ) {
+        // finding-10 — same contract as above: these values are already
+        // unslashed-and-sanitized, and update_post_meta() unslashes AGAIN, so
+        // a literal backslash in the name/phone/reg_fields answers was eaten
+        // silently. wp_slash() maps over arrays (reg_fields) and leaves
+        // non-strings (the int fields) alone, so it is safe to apply to the
+        // whole row in one call.
+        foreach ( \wp_slash( $meta ) as $key => $value ) {
             \update_post_meta( $seat_id, $key, $value );
         }
 

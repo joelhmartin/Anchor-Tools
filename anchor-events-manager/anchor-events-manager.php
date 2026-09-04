@@ -8384,10 +8384,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $post_status = 'pending';
         }
 
+        // finding-10 — wp_insert_post()/wp_update_post() unslash their postarr
+        // internally (same contract as update_post_meta(), documented on
+        // persist_event_authoring()); $title/$content above are already
+        // unslashed-and-sanitized, so passing them straight through here means
+        // a SECOND unslash at the write and a title like `Room A\B` is stored
+        // as `Room AB`. wp_slash() puts them back in the slashed domain right
+        // before the call, exactly like every meta write already does.
         $postarr = [
             'post_type' => self::CPT,
-            'post_title' => $title,
-            'post_content' => $content,
+            'post_title' => \wp_slash( $title ),
+            'post_content' => \wp_slash( $content ),
             'post_status' => $post_status,
         ];
         if ( $is_edit ) {

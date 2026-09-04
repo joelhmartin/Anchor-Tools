@@ -198,6 +198,43 @@ class Test_Registration_Questions extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * finding-10 — handle_registration() unslashes+sanitizes the attendee
+	 * name and the answer text, and both create_seat()'s wp_insert_post()
+	 * (post_title) and its update_post_meta() loop (name/reg_fields) unslash
+	 * AGAIN internally — so a literal backslash in either was silently eaten
+	 * (`a\b` stored as `ab`) unless the value is put back in the slashed
+	 * domain right before those writes. Posted through wp_slash(), exactly
+	 * the shape a real request arrives in.
+	 */
+	public function test_a_literal_backslash_survives_the_free_registration_path() {
+		$event_id = $this->event_with_questions();
+
+		$_POST = \wp_slash( [
+			Module::REG_NONCE    => wp_create_nonce( Module::REG_NONCE ),
+			'event_id'           => $event_id,
+			'redirect_to'        => 'https://example.org/events/',
+			'anchor_event_name'  => 'a\b',
+			'anchor_event_email' => 'jane@example.org',
+			'anchor_event_field' => [ 'practice_name' => 'a\b', 'dietary' => 'a\b' ],
+		] );
+		$_REQUEST = $_POST;
+
+		try {
+			$this->module()->handle_registration();
+		} catch ( Anchor_Questions_Redirected $e ) {
+			// Expected — the handler redirects on success.
+		}
+
+		$seat = $this->only_seat( $event_id );
+		$this->assertSame( 'a\b', $seat['name'], 'The attendee name meta must round-trip a literal backslash.' );
+		$this->assertSame( 'a\b', get_the_title( (int) $seat['id'] ), 'The seat post_title must round-trip a literal backslash.' );
+
+		$stored = get_post_meta( (int) $seat['id'], '_anchor_event_reg_fields', true );
+		$this->assertSame( 'a\b', $stored['practice_name'] );
+		$this->assertSame( 'a\b', $stored['dietary'] );
+	}
+
+	/**
 	 * REG-D35 — the free path reads the question set, never the POST's own key
 	 * list. An unasked key used to be sanitize_key()'d and stored, which put an
 	 * attacker-chosen column header into the CSV an organizer opens; a

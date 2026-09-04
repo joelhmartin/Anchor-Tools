@@ -1148,7 +1148,11 @@ class WooCommerce {
         $requested = [];
         foreach ( $raw as $tid => $qty ) {
             $tid = \sanitize_key( (string) $tid );
-            $qty = \max( 0, (int) $qty );
+            // WOO-D22: QTY_CAP was only ever an HTML `max` attribute — a direct
+            // POST to this nonce-verified endpoint had no server-side upper
+            // bound at all, so tiers[abc]=9999 against an unlimited-capacity
+            // event (every DEKA event has capacity 0) put 9999 seats in the cart.
+            $qty = \min( self::QTY_CAP, \max( 0, (int) $qty ) );
             if ( $tid !== '' && $qty > 0 ) {
                 $requested[ $tid ] = ( $requested[ $tid ] ?? 0 ) + $qty;
             }

@@ -199,4 +199,24 @@ class Test_Add_To_Cart_Ajax extends WP_Ajax_UnitTestCase {
 		$this->assertSame( 2, (int) $decoded['data']['added'] );
 		$this->assertSame( 2, WC()->cart->get_cart_contents_count() );
 	}
+
+	/**
+	 * WOO-D22: QTY_CAP (20) used to be enforced ONLY by the HTML input's `max`
+	 * attribute. A direct POST past it on an unlimited-capacity event (every
+	 * DEKA event has capacity 0, so capacity_decision() alone never refuses)
+	 * must still be clamped server-side.
+	 */
+	public function test_posted_quantity_is_capped_server_side() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [ 'capacity' => 0 ] );
+
+		$decoded = $this->post( $event, [ $tiers[0]['id'] => 9999 ] );
+
+		$this->assertTrue( $decoded['success'], 'Response: ' . wp_json_encode( $decoded ) );
+		$this->assertSame(
+			\Anchor\Events\WooCommerce::QTY_CAP,
+			(int) $decoded['data']['added'],
+			'The posted quantity must be clamped to QTY_CAP, not honored verbatim.'
+		);
+		$this->assertSame( \Anchor\Events\WooCommerce::QTY_CAP, WC()->cart->get_cart_contents_count() );
+	}
 }

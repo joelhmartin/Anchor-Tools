@@ -161,8 +161,12 @@ class Roster {
             'page'      => self::SLUG,
             'event_id'  => (int) $event_id,
         ], $args );
-        $url = \add_query_arg( $args, \admin_url( 'edit.php' ) );
-        return \wp_nonce_url( $url, 'anchor_roster_view_' . (int) $event_id );
+        // No nonce: the roster screen is a read-only view gated by
+        // current_user_can_manage(), and render_page() never verified the
+        // `anchor_roster_view_{id}` nonce this used to mint. A nonce nobody checks
+        // reads like authorization that is not there — and it broke every hand-typed
+        // or bookmarked roster URL into a link that merely looked protected.
+        return \add_query_arg( $args, \admin_url( 'edit.php' ) );
     }
 
     /* ---------------------------------------------------------------------
@@ -312,7 +316,12 @@ class Roster {
     private function render_edit_form( $event_id, $seat_id ) {
         $event_id = (int) $event_id;
         $seat_id  = (int) $seat_id;
-        if ( \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+        // REG-D48 — the read side needs the same scoping as handle_edit(): the seat
+        // id arrives in $_GET, and rendering another event's seat here would print
+        // that event's attendee name, email and phone under this event's heading.
+        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
+            echo '<div class="notice notice-error inline"><p>'
+                . \esc_html__( 'Seat not found.', 'anchor-schema' ) . '</p></div>';
             return;
         }
         // Reads only — never written from here.
@@ -682,12 +691,12 @@ class Roster {
             $url = $this->roster_url( (int) $event_id, $args );
         }
 
-        // roster_url() ends in wp_nonce_url(), which HTML-escapes its result for
-        // use in a link — so the separators come back as `&amp;`. In a Location
-        // header that is not a separator at all: every argument after the first
-        // arrives as `amp;roster_msg`, and maybe_render_notice() (which reads
-        // $_GET['roster_msg']) never fires. Decode before redirecting, so the
-        // notice this handler just chose actually reaches the operator.
+        // Kept from when roster_url() ended in wp_nonce_url(), which HTML-escapes
+        // its result for use in a link — the separators came back as `&amp;`, and
+        // in a Location header that is not a separator at all: every argument after
+        // the first arrived as `amp;roster_msg` and maybe_render_notice() (which
+        // reads $_GET['roster_msg']) never fired. roster_url() no longer escapes,
+        // but $return comes from the request, so the decode still earns its place.
         \wp_safe_redirect( \wp_specialchars_decode( $url, ENT_QUOTES ) );
         exit;
     }
@@ -710,6 +719,9 @@ class Roster {
      * ------------------------------------------------------------------- */
 
     public function handle_export() {
+        // NOTE: `anchor_event_export` is a GLOBAL nonce — it says the request came
+        // from this site, not which event it may read. Nothing else scopes the id,
+        // so is_exportable_event() below is the whole of that check (REG-D16).
         \check_admin_referer( 'anchor_event_export' );
         if ( ! self::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
@@ -957,9 +969,13 @@ class Roster {
                 <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'This event is overbooked — reserved seats exceed capacity.', 'anchor-schema' ); ?></p>
             <?php endif; ?>
 
-            <?php if ( $seat_id > 0 && \get_post_type( $seat_id ) === Module::REG_CPT ) : ?>
+            <?php // REG-D48 — ?seat_id= only opens a seat that belongs to THIS event. ?>
+            <?php if ( $seat_id > 0 && self::seat_belongs_to_event( $seat_id, $event_id ) ) : ?>
                 <?php echo $this->frontend_edit_form( $event_id, $seat_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
             <?php else : ?>
+                <?php if ( $seat_id > 0 ) : ?>
+                    <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'Seat not found.', 'anchor-schema' ); ?></p>
+                <?php endif; ?>
                 <?php echo $this->frontend_add_form( $event_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
             <?php endif; ?>
 
@@ -1098,6 +1114,11 @@ class Roster {
     private function frontend_edit_form( $event_id, $seat_id, $self_url ) {
         $event_id = (int) $event_id;
         $seat_id  = (int) $seat_id;
+        // REG-D48 — checked at the call site too; repeated here so the method can
+        // never be the one that prints a foreign event's attendee details.
+        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
+            return '<p class="anchor-roster-fe-warn">' . \esc_html__( 'Seat not found.', 'anchor-schema' ) . '</p>';
+        }
 
         $name   = (string) \get_post_meta( $seat_id, '_anchor_event_name', true );
         $email  = (string) \get_post_meta( $seat_id, '_anchor_event_email', true );

@@ -1786,15 +1786,33 @@ class Module {
      * @return string Capability slug.
      */
     public static function events_capability() {
-        $cap = \class_exists( 'WooCommerce' ) ? self::CAP_STORE : self::CAP_BASE;
+        return self::capability_for( \class_exists( 'WooCommerce' ) );
+    }
+
+    /**
+     * The store-aware half of events_capability(), with the runtime taken as an
+     * argument rather than read from class_exists().
+     *
+     * Split out so both answers are reachable in one process: CI installs
+     * WooCommerce for every run, so without this the `edit_others_posts` branch —
+     * the one every non-store site in the fleet resolves to — would be exercised
+     * by nothing at all.
+     *
+     * @param bool $wc_active Whether WooCommerce is active.
+     * @return string Capability slug.
+     */
+    public static function capability_for( $wc_active ) {
+        $wc_active = (bool) $wc_active;
+        $cap       = $wc_active ? self::CAP_STORE : self::CAP_BASE;
 
         /**
          * Filter the capability required to manage events (rosters, exports,
          * resends, the front-end console).
          *
-         * @param string $cap Default: manage_woocommerce on a store, else edit_others_posts.
+         * @param string $cap       Default: manage_woocommerce on a store, else edit_others_posts.
+         * @param bool   $wc_active Whether WooCommerce is active.
          */
-        $filtered = \apply_filters( 'anchor_events_capability', $cap );
+        $filtered = \apply_filters( 'anchor_events_capability', $cap, $wc_active );
 
         return ( \is_string( $filtered ) && $filtered !== '' ) ? $filtered : $cap;
     }
@@ -3524,11 +3542,11 @@ class Module {
         }
         ?>
         <p>
-            <?php if ( Roster::current_user_can_manage() ) : // REG-D21 — the handler would refuse it. ?>
+            <?php if ( Roster::current_user_can_manage() ) : // REG-D21 — both handlers would refuse these. ?>
                 <a class="button" href="<?php echo esc_url( $export_url ); ?>"><?php echo esc_html__( 'Export CSV', 'anchor-schema' ); ?></a>
-            <?php endif; ?>
-            <?php if ( $this->roster ) : ?>
-                <a class="button button-primary" href="<?php echo esc_url( $this->roster->roster_url( $post->ID ) ); ?>"><?php echo esc_html__( 'Open full roster', 'anchor-schema' ); ?></a>
+                <?php if ( $this->roster ) : ?>
+                    <a class="button button-primary" href="<?php echo esc_url( $this->roster->roster_url( $post->ID ) ); ?>"><?php echo esc_html__( 'Open full roster', 'anchor-schema' ); ?></a>
+                <?php endif; ?>
             <?php endif; ?>
         </p>
         <div class="anchor-event-registrants">
@@ -7817,9 +7835,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $event_id = (int) ( $_POST['event_id'] ?? 0 );
         $is_edit = $event_id > 0;
 
-        $capability_ok = $is_edit
+        // Nonce (above), then the module capability, then the per-post check. The
+        // console that posts this form is gated on events_capability(); without
+        // the same gate here a user who cannot open the console could still POST
+        // to it and create or edit events.
+        $capability_ok = Roster::current_user_can_manage() && ( $is_edit
             ? \current_user_can( 'edit_post', $event_id )
-            : \current_user_can( 'edit_others_posts' );
+            : \current_user_can( self::CAP_BASE ) );
         if ( ! $capability_ok ) {
             \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'denied', $redirect ) );
             exit;

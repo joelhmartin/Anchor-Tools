@@ -130,12 +130,42 @@ class Test_Capabilities extends Anchor_Events_TestCase {
 		$this->assertSame( $expected, Module::events_capability() );
 	}
 
-	public function test_events_capability_resolves_without_woocommerce() {
-		// The no-WooCommerce answer must exist even in a WC run: it is the value
-		// a site that never installed a store resolves to, and a site without a
-		// store must still get a usable capability rather than an empty string.
+	public function test_capability_for_covers_both_arms_in_one_process() {
+		// CI installs WooCommerce for every run, so class_exists('WooCommerce') is
+		// always true here and events_capability() alone can never reach the
+		// no-store answer — which is the value every non-store site in the fleet
+		// resolves to. capability_for() takes the runtime as an argument so both
+		// arms are exercised regardless of what this process has loaded.
+		$this->assertSame( 'manage_woocommerce', Module::capability_for( true ) );
+		$this->assertSame( 'edit_others_posts', Module::capability_for( false ) );
+		$this->assertSame( Module::CAP_STORE, Module::capability_for( true ) );
+		$this->assertSame( Module::CAP_BASE, Module::capability_for( false ) );
 		$this->assertSame( 'edit_others_posts', Roster::CAP );
-		$this->assertNotSame( '', Module::events_capability() );
+
+		// events_capability() is capability_for() with the runtime filled in.
+		$this->assertSame(
+			Module::capability_for( class_exists( 'WooCommerce' ) ),
+			Module::events_capability()
+		);
+	}
+
+	public function test_capability_for_tells_the_filter_which_arm_it_is_on() {
+		$seen = [];
+		add_filter( 'anchor_events_capability', function ( $cap, $wc ) use ( &$seen ) {
+			$seen[] = [ $cap, $wc ];
+			return $cap;
+		}, 10, 2 );
+
+		Module::capability_for( true );
+		Module::capability_for( false );
+
+		$this->assertSame( [ [ 'manage_woocommerce', true ], [ 'edit_others_posts', false ] ], $seen );
+	}
+
+	public function test_both_arms_reject_a_useless_filter_value() {
+		add_filter( 'anchor_events_capability', '__return_empty_string' );
+		$this->assertSame( 'manage_woocommerce', Module::capability_for( true ) );
+		$this->assertSame( 'edit_others_posts', Module::capability_for( false ) );
 	}
 
 	public function test_events_capability_is_filterable() {
@@ -368,6 +398,80 @@ class Test_Capabilities extends Anchor_Events_TestCase {
 			Registrations::STATUS_CANCELLED,
 			(string) get_post_meta( $seat_a, '_anchor_event_reg_status', true )
 		);
+	}
+
+	public function test_roster_edit_panel_will_not_render_a_foreign_seat() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_a ) = $this->event_with_seat( 'a-panel@example.org' );
+		list( , $seat_b ) = $this->event_with_seat( 'b-panel@example.org' );
+
+		// The wp-admin screen's edit panel, driven the way ?edit_seat= drives it.
+		// Called directly because the rest of render_page() needs WP_List_Table,
+		// which only exists inside a real admin request.
+		$method = new ReflectionMethod( Roster::class, 'render_edit_form' );
+		$method->setAccessible( true );
+
+		ob_start();
+		$method->invoke( $this->module()->roster, $event_a, $seat_b );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringNotContainsString(
+			'b-panel@example.org',
+			$html,
+			'REG-D48: the edit panel rendered another event\'s attendee PII under this event\'s heading.'
+		);
+		$this->assertStringContainsString( 'Seat not found.', $html );
+
+		// Positive control: its own seat still opens.
+		list( $event_c, $seat_c ) = $this->event_with_seat( 'c-panel@example.org' );
+		ob_start();
+		$method->invoke( $this->module()->roster, $event_c, $seat_c );
+		$this->assertStringContainsString( 'c-panel@example.org', (string) ob_get_clean() );
+	}
+
+	public function test_frontend_console_will_not_open_a_foreign_seat() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_a ) = $this->event_with_seat( 'a-fe@example.org' );
+		list( , $seat_b ) = $this->event_with_seat( 'b-fe@example.org' );
+
+		$_GET     = [ 'seat_id' => $seat_b ];
+		$_REQUEST = $_GET;
+
+		$html = (string) $this->module()->roster->render_frontend( $event_a, home_url( '/manage/' ) );
+
+		$this->assertStringNotContainsString( 'b-fe@example.org', $html );
+		$this->assertStringContainsString( 'Seat not found.', $html );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* The console save answers to the same capability as the console      */
+	/* ------------------------------------------------------------------ */
+
+	public function test_console_save_requires_the_events_capability() {
+		$this->force_test_cap();
+		// An administrator holds edit_others_posts but not the events capability.
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$before = (int) wp_count_posts( Module::CPT )->publish;
+
+		$_POST = [
+			'anchor_event_manager_nonce' => wp_create_nonce( 'anchor_event_manager_save' ),
+			'redirect_to'                => home_url( '/manage/' ),
+			'event_id'                   => 0,
+			'anchor_event_title'         => 'Smuggled event',
+			'post_status'                => 'publish',
+		];
+		$_REQUEST = $_POST;
+
+		$location = null;
+		try {
+			$this->module()->handle_event_manager_save();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			$location = $e->getMessage();
+		}
+		$this->assertNotNull( $location, 'The save handler must refuse and redirect.' );
+		$this->assertStringContainsString( 'event_manager_notice=denied', (string) $location );
+		$this->assertSame( $before, (int) wp_count_posts( Module::CPT )->publish, 'No event may be created.' );
 	}
 
 	/* ------------------------------------------------------------------ */

@@ -3749,7 +3749,18 @@ class Module {
             <?php endif; ?>
         </p>
         <div class="anchor-event-registrants">
-            <?php if ( empty( $registrations ) ) : ?>
+            <?php
+            // finding-5 — the metabox itself only requires edit_post (WordPress'
+            // own add_meta_box() gate), which on a WooCommerce store is looser
+            // than the roster/export/console's manage_woocommerce gate. The
+            // buttons above were already gated on Roster::current_user_can_manage();
+            // the attendee table itself — name/email/guests PII — was not, so an
+            // Editor denied the roster could still read every attendee's contact
+            // details straight off this metabox.
+            ?>
+            <?php if ( ! Roster::current_user_can_manage() ) : ?>
+                <p class="description"><?php echo esc_html__( 'The attendee roster is available in the Events console.', 'anchor-schema' ); ?></p>
+            <?php elseif ( empty( $registrations ) ) : ?>
                 <p class="description"><?php echo esc_html__( 'No registrations yet.', 'anchor-schema' ); ?></p>
             <?php else : ?>
                 <table class="widefat">

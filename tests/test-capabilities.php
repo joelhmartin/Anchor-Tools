@@ -235,6 +235,45 @@ class Test_Capabilities extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( $email, (string) $this->module()->shortcode_event_manager( [] ) );
 	}
 
+	/**
+	 * finding-5 — render_registrants_metabox() itself only requires
+	 * edit_post (WordPress' own add_meta_box() gate). The Export/roster
+	 * BUTTONS were already gated on Roster::current_user_can_manage(), but the
+	 * attendee TABLE (name/email/guests) rendered unconditionally underneath
+	 * — an Editor denied the roster could still read every attendee's PII
+	 * straight off the order-adjacent event edit screen's metabox.
+	 */
+	public function test_registrants_metabox_hides_attendee_pii_from_a_denied_editor() {
+		$this->require_wc();
+		list( $event_id, , $email ) = $this->event_with_seat( 'metabox-denied@example.org' );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'editor' ] ) );
+		$this->assertFalse( Roster::current_user_can_manage(), 'M2: an Editor has no manage_woocommerce, so the roster is closed.' );
+
+		ob_start();
+		$this->module()->render_registrants_metabox( get_post( $event_id ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringNotContainsString( $email, $html, 'The metabox leaked attendee email to a user without the events capability.' );
+		$this->assertStringNotContainsString( 'Pat Attendee', $html, 'The metabox leaked an attendee name to a user without the events capability.' );
+		$this->assertStringContainsString( 'Events console', $html, 'A denied user must still see where the roster lives.' );
+	}
+
+	/** The holder of the events capability still sees the attendee table in the metabox. */
+	public function test_registrants_metabox_shows_attendee_pii_to_the_capability_holder() {
+		$this->require_wc();
+		list( $event_id, , $email ) = $this->event_with_seat( 'metabox-allowed@example.org' );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertTrue( Roster::current_user_can_manage() );
+
+		ob_start();
+		$this->module()->render_registrants_metabox( get_post( $event_id ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringContainsString( $email, $html, 'The capability holder must still see the attendee table.' );
+	}
+
 	/* ------------------------------------------------------------------ */
 	/* REG-D21 — no Export link a user cannot use                          */
 	/* ------------------------------------------------------------------ */

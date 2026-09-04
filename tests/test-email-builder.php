@@ -677,6 +677,51 @@ class Test_Email_Builder extends Anchor_Events_TestCase {
 	}
 
 	/** A hand-built template that opts in gets the palette and the logo. */
+	/**
+	 * REG-D59 — the palette and the map that runs cannot disagree.
+	 *
+	 * There used to be four overlapping lists describing one vocabulary
+	 * (wording_email_tokens, template_email_tokens, documented_email_tokens and
+	 * the two maps that actually build the values), with nothing tying a list
+	 * to its map — and they already had: {join_button} was produced and listed
+	 * nowhere, {order_number}/{order_url} were listed and produced nowhere. The
+	 * palettes are derived now; this renders every button the palette offers
+	 * and fails if any of them reaches the inbox as literal text.
+	 */
+	public function test_every_palette_token_actually_resolves_in_a_template() {
+		$method = new ReflectionMethod( $this->module(), 'documented_email_tokens' );
+		$method->setAccessible( true );
+		$tokens = $method->invoke( $this->module() );
+		$this->assertNotEmpty( $tokens );
+
+		$event_id = $this->make_event( [ 'title' => 'Palette Event' ] );
+		$template = '';
+		foreach ( $tokens as $token ) {
+			$template .= '<div>{' . $token . '}</div>';
+		}
+		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', $template );
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id'    => $event_id,
+			'name'        => 'Jane',
+			'status'      => 'confirmed',
+			'detail_rows' => [ [ 'label' => 'Date', 'value' => 'March 1, 2027' ] ],
+			'cta_label'   => 'View',
+			'cta_url'     => 'https://example.test/e/',
+			'type'        => 'confirmation',
+		] );
+
+		foreach ( $tokens as $token ) {
+			$this->assertStringNotContainsString(
+				'{' . $token . '}',
+				$html,
+				'The palette offers {' . $token . '}, but the body map never builds it.'
+			);
+		}
+
+		delete_post_meta( $event_id, '_anchor_event_email_tpl_confirmation' );
+	}
+
 	public function test_brand_tokens_resolve_from_the_appearance_settings() {
 		$this->set_appearance();
 		$event_id = $this->make_event( [ 'title' => 'Token Branding Event' ] );

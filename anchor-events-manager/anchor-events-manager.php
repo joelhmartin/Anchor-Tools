@@ -3777,30 +3777,48 @@ class Module {
      * four silently expanded to nothing.
      */
     private function wording_email_tokens() {
-        return [
-            'event_title', 'event_date', 'event_time', 'venue', 'days_until',
-            'attendee_name', 'join_link', 'event_url', 'site_name',
-            'remaining', 'seat_count', 'status', 'order_number', 'order_url',
-        ];
+        // REG-D59 — read off the map that actually runs, not re-typed beside
+        // it. email_tokens() is what expand_email_tokens() is handed for every
+        // subject and every opening line, so its keys ARE this vocabulary; a
+        // token added or removed there can no longer leave a stale palette
+        // button that expands to nothing. The empty context is deliberate: no
+        // event, no seat, no order — it costs no query and the VALUES are
+        // irrelevant here, only the key set.
+        return \array_keys( $this->email_tokens( [] ) );
     }
 
     /**
      * Tokens that resolve inside the raw HTML template — the scalars plus the
-     * pre-rendered block regions. Mirrors the $tokens map built in
-     * build_registration_email_html(); every name here is a real key there.
+     * pre-rendered block regions.
+     *
+     * REG-D59 — assembled from the three sources build_registration_email_html()
+     * actually builds the body map from, rather than re-typed as a fourth list:
+     * the subject/intro scalars it carries over, EMAIL_BLOCK_TOKENS, and the
+     * Email Appearance palette from email_brand_map(). Test_Email_Builder
+     * renders a template made of every name this returns and fails if any of
+     * them survives unexpanded.
      */
     private function template_email_tokens() {
-        return [
-            'event_title', 'event_date', 'event_time', 'venue', 'days_until',
-            'attendee_name', 'status', 'join_link', 'event_url', 'site_name', 'event_id',
-            'preheader', 'intro', 'greeting', 'header_image', 'guests_line', 'waitlist_notice',
-            'detail_rows', 'seat_list', 'cta_button', 'cta_button_2',
+        // Four subject/intro scalars are NOT carried into the body map: the two
+        // order fields belong to a WooCommerce context the body builder is not
+        // given, and remaining/seat_count are roster-digest counts the digest
+        // puts in its detail rows. Listing them here is what made {order_number}
+        // expand to nothing when an author typed it into a template.
+        $body_scalars = \array_diff(
+            $this->wording_email_tokens(),
+            [ 'order_number', 'order_url', 'remaining', 'seat_count' ]
+        );
+
+        return \array_values( \array_unique( \array_merge(
+            $body_scalars,
+            [ 'event_id' ], // built by the body map only.
+            self::EMAIL_BLOCK_TOKENS,
             // REG-D27 — the Email Appearance palette, so a hand-built template
             // can opt into the site's colours and logo instead of silently
             // ignoring them.
-            'brand_bg', 'brand_surface', 'brand_heading', 'brand_text',
-            'brand_button', 'brand_button_text', 'logo',
-        ];
+            \array_keys( $this->email_brand_map() ),
+            [ 'logo' ]
+        ) ) );
     }
 
     /**

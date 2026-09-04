@@ -286,6 +286,56 @@ class Test_Event_Grouping_Frontend extends Anchor_Events_TestCase {
 		$this->assertNotSame( '', $this->module()->series->render_archive() );
 	}
 
+	/**
+	 * finding-4 (bot review, PR #20): AUTO_TERM_META_KEY used to be stamped
+	 * only on the branch that MINTS a brand-new "group-{parent_id}" term.
+	 * A term that already exists under that exact deterministic slug —
+	 * created before AUTO_TERM_META_KEY existed, or missing the flag some
+	 * other way — was resolved by assign_series() every reconcile without
+	 * ever getting stamped, so it stayed indexable forever.
+	 */
+	public function test_pre_existing_unstamped_group_term_gets_stamped_on_reconcile() {
+		$parent_id = $this->make_event( [ 'title' => 'Workshop', 'venue' => 'Main Hall', 'timezone' => 'UTC' ] );
+
+		$slug   = 'group-' . $parent_id;
+		$result = \wp_insert_term( 'Workshop', Series::TAXONOMY, [ 'slug' => $slug ] );
+		$this->assertIsArray( $result, 'Sanity: the pre-existing term must be created.' );
+		$term_id = (int) $result['term_id'];
+		$this->assertSame(
+			'',
+			\get_term_meta( $term_id, Series::AUTO_TERM_META_KEY, true ),
+			'Sanity: the pre-existing term starts unstamped.'
+		);
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->three_rows() );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame(
+			1,
+			(int) \get_term_meta( $term_id, Series::AUTO_TERM_META_KEY, true ),
+			'A pre-existing term resolved through the group-{id} slug pattern must be stamped, idempotently.'
+		);
+	}
+
+	/**
+	 * finding-4: a term under a slug assign_series() never looks up (a
+	 * genuinely hand-created series, or any other unrelated term) must never
+	 * be touched by a reconcile pass for a completely different parent.
+	 */
+	public function test_custom_slug_term_is_never_stamped_by_reconcile() {
+		$custom = \wp_insert_term( 'Hand curated series', Series::TAXONOMY, [ 'slug' => 'hand-curated-series' ] );
+		$this->assertIsArray( $custom );
+		$term_id = (int) $custom['term_id'];
+
+		$this->make_offering( $this->three_rows() );
+
+		$this->assertSame(
+			'',
+			\get_term_meta( $term_id, Series::AUTO_TERM_META_KEY, true ),
+			'A manually created term under a different slug must never be stamped.'
+		);
+	}
+
 	/** A term the filter has no reason to touch (not the series archive at all) passes through unchanged. */
 	public function test_noindex_auto_series_is_a_no_op_off_the_series_archive() {
 		$this->go_to( home_url( '/' ) );

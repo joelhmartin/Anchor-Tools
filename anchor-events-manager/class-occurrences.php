@@ -1848,16 +1848,27 @@ class Occurrences {
                 return;
             }
             $term_id = (int) $result['term_id'];
-            // MODEL-D36: flag this term as auto-minted (never a hand-created
-            // series) so Series::noindex_auto_series() can noindex its
-            // archive without touching a genuinely curated series term.
-            \update_term_meta( $term_id, Series::AUTO_TERM_META_KEY, 1 );
         } else {
             $term_id = (int) $term->term_id;
             if ( $term->name !== $name ) {
                 \wp_update_term( $term_id, Series::TAXONOMY, [ 'name' => $name ] );
             }
         }
+
+        // MODEL-D36: flag this term as auto-minted (never a hand-created
+        // series) so Series::noindex_auto_series() can noindex its archive
+        // without touching a genuinely curated series term.
+        //
+        // finding-4 (bot review, PR #20): stamped unconditionally here, not
+        // only on the newly-created branch above — a term resolved through
+        // get_term_by( 'slug', 'group-{parent_id}', ... ) is by construction
+        // one this method itself mints, so a pre-upgrade term created before
+        // AUTO_TERM_META_KEY existed (or one that lost its meta some other
+        // way) gets stamped the next time it's resolved instead of staying
+        // indexable forever. update_term_meta() is idempotent, and this can
+        // never reach a manually created term under a different slug — the
+        // lookup above only ever matches this exact deterministic pattern.
+        \update_term_meta( $term_id, Series::AUTO_TERM_META_KEY, 1 );
 
         \wp_set_object_terms( $parent_id, [ $term_id ], Series::TAXONOMY, false );
         foreach ( $live_child_ids as $child_id ) {

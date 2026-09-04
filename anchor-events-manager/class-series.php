@@ -248,11 +248,19 @@ class Series {
      * "Choose a date" summary row for a group PARENT in the series archive
      * (Task 2.4): title link to the parent's own page (its choose-a-date
      * picker — see Module::render_choose_date_list()), a date-range label
-     * spanning its LIVE children (earliest–latest; children() already
-     * excludes soft-closed occurrences and returns them date-ascending), the
-     * parent's own "from $X"/"Free" price hint (ticket tiers are copied
-     * parent->child so the parent's own copy is representative), and an
-     * "N dates available" count in place of a single-date availability hint.
+     * spanning the dates it still OFFERS (earliest–latest), the parent's own
+     * "from $X"/"Free" price hint (ticket tiers are copied parent->child so
+     * the parent's own copy is representative), and an "N dates available"
+     * count in place of a single-date availability hint.
+     *
+     * The range used to span children($parent_id, false) — the raw live set,
+     * which includes dates that have been and gone (audit MODEL-D4), so a
+     * course running in November was advertised as "Sep 2026 – Dec 2026" off
+     * a September date nobody could still attend, and counted it as
+     * "available". It reads Occurrences::upcoming_children() instead, and
+     * only falls back to the raw live set when NOTHING is upcoming: a site
+     * with "Archive past events" switched off is asking for finished groups
+     * on purpose, and their row should say when they ran rather than nothing.
      *
      * @param int $parent_id
      * @return string Empty string when the parent currently has zero live
@@ -260,13 +268,19 @@ class Series {
      */
     private function render_group_row( $parent_id ) {
         $parent_id = (int) $parent_id;
-        $live      = $this->module->occurrences->children( $parent_id, false );
+        $occ       = $this->module->occurrences;
+        $live      = $occ->children( $parent_id, false );
         if ( empty( $live ) ) {
             return '';
         }
 
-        $first_meta = $this->module->get_meta( $live[0] );
-        $last_meta  = $this->module->get_meta( $live[ \count( $live ) - 1 ] );
+        $offered = $occ->upcoming_children( $parent_id );
+        if ( empty( $offered ) ) {
+            $offered = $live;
+        }
+
+        $first_meta = $this->module->get_meta( $offered[0] );
+        $last_meta  = $this->module->get_meta( $offered[ \count( $offered ) - 1 ] );
 
         $date_label = '';
         if ( ! empty( $first_meta['start_date'] ) ) {
@@ -276,7 +290,7 @@ class Series {
             }
         }
 
-        $count = \count( $live );
+        $count = \count( $offered );
 
         \ob_start();
         ?>

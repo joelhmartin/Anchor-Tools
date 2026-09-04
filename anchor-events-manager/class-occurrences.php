@@ -220,6 +220,23 @@ class Occurrences {
     /** @var Module */
     private $module;
 
+    /**
+     * Per-request memo for upcoming_children()/bookable_children(), keyed
+     * "<bucket>:<parent id>:<listing cache generation>".
+     *
+     * Both lists are asked several times over on a single listing render (the
+     * card's date, its state ribbon, its CTA, its sort key) and every bookable
+     * answer costs one capacity decision per child, so they are computed once.
+     * The generation counter (Module::CACHE_VERSION_OPTION, bumped by
+     * Registrations::bust_cache() and by every event/seat status transition) is
+     * part of the key, so a seat sold mid-request invalidates the memo rather
+     * than being papered over; reconcile() drops it explicitly on top, because
+     * soft-closing a date is a pure meta write and bumps no counter.
+     *
+     * @var array<string,int[]>
+     */
+    private $child_lists = [];
+
     public function __construct( Module $module ) {
         $this->module = $module;
     }
@@ -315,6 +332,8 @@ class Occurrences {
         } );
 
         $this->sync_parent_span( $parent_id, $live_ids );
+
+        $this->flush_child_lists();
 
         return $live_ids;
     }
@@ -567,6 +586,7 @@ class Occurrences {
                 $this->retire_child( (int) $child_id );
             }
         }
+        $this->flush_child_lists();
     }
 
     /**
@@ -603,6 +623,7 @@ class Occurrences {
         foreach ( $children as $child_id ) {
             \update_post_meta( (int) $child_id, $this->module->meta_key( 'registration_enabled' ), $enabled );
         }
+        $this->flush_child_lists();
 
         return \count( $children );
     }
@@ -664,6 +685,164 @@ class Occurrences {
             return [];
         }
         return \array_values( \array_diff( $this->children( $parent_id, $include_closed ), [ $child_id ] ) );
+    }
+
+    /**
+     * Live children that have not already finished (audit MODEL-D4).
+     *
+     * children() is the RAW live set: it filters on the soft-closed flag and
+     * sorts on start_ts, and never compares a date to now. Nine callers read
+     * it as "the upcoming dates" and its head as "the next date", so any
+     * parent whose earliest live child is in the past advertised a date that
+     * had been and gone — and only a manual close avoided it. That set is
+     * still the right one for the parent's own span and for admin counts, so
+     * it is left alone; this is the narrower one the date readers want.
+     *
+     * "Not finished" is `end_ts >= now`, the same comparison against the same
+     * meta row Module::build_visibility_clause() makes, so a listing query and
+     * this list can never disagree about which dates are still to come. An
+     * occurrence with NO end_ts row is UNDATED rather than past (RENDER-D31)
+     * and is kept — is_past() owns that rule for every reader.
+     *
+     * @param int $parent_id
+     * @return int[] Child post ids, earliest first.
+     */
+    public function upcoming_children( $parent_id ) {
+        return $this->cached_child_list( 'upcoming', $parent_id, function ( array $ids ) {
+            return \array_filter( $ids, function ( $id ) {
+                return ! $this->is_past( $id );
+            } );
+        } );
+    }
+
+    /**
+     * Live children a visitor can actually book right now — the ones whose
+     * Module::bookability() is open or waitlist (audit NEW-D1).
+     *
+     * The past axis (MODEL-D4) is only half of "advertise a date somebody can
+     * act on": production parent 7258 offered a September date that was sold
+     * out and a November one that was open, and every reader pointed at
+     * September. bookability() already folds in the soft-closed occurrence,
+     * the registration window, the sold_out flag, the seat count, the
+     * waitlist and — first of all — the event having finished, so a past date
+     * can never appear here either and this list is always a subset of
+     * upcoming_children().
+     *
+     * The DEKA theme grew its own copy of this loop (deka_event_bookable_
+     * children()) because the engine had no answer; this is that answer, in
+     * the one place that owns the question.
+     *
+     * @param int $parent_id
+     * @return int[] Child post ids, earliest first.
+     */
+    public function bookable_children( $parent_id ) {
+        return $this->cached_child_list( 'bookable', $parent_id, function ( array $ids ) {
+            return \array_filter( $ids, function ( $id ) {
+                return $this->module->is_bookable( $this->module->bookability( (int) $id ) );
+            } );
+        } );
+    }
+
+    /**
+     * Whether an event has already finished: it HAS an `end_ts` row and that
+     * row is in the past.
+     *
+     * Gated on the row being present rather than on `end_ts < time()`, which
+     * would call every legacy event that never had timestamps written
+     * finished (RENDER-D31) — the same gate Registrations::capacity_decision()
+     * and Module::build_visibility_clause() apply to the same meta.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function is_past( $event_id ) {
+        $end_ts = (int) \get_post_meta( (int) $event_id, $this->module->meta_key( 'end_ts' ), true );
+        return $end_ts > 0 && $end_ts < \time();
+    }
+
+    /**
+     * Which block of a date picker an occurrence belongs in:
+     *   'bookable'    — a seat can be taken on it now,
+     *   'unavailable' — still to come, but closed/sold out/registration off,
+     *   'past'        — it has been and gone.
+     *
+     * One definition, two readers: order_by_bookability() ranks on it and the
+     * picker rows are marked with it, so the order and the label can never
+     * describe a date differently.
+     *
+     * @param int $child_id
+     * @return string
+     */
+    public function picker_state( $child_id ) {
+        $child_id = (int) $child_id;
+        if ( $this->module->is_bookable( $this->module->bookability( $child_id ) ) ) {
+            return 'bookable';
+        }
+        return $this->is_past( $child_id ) ? 'past' : 'unavailable';
+    }
+
+    /**
+     * Re-order a list of occurrences for a picker: bookable dates first, then
+     * upcoming-but-unbookable ones, then past ones, each block earliest-first.
+     *
+     * Every live date stays in the list — a visitor looking for the date they
+     * already booked has to be able to find it — but the one they can act on
+     * is the one they are offered first (MODEL-D4 / NEW-D1). Stable within a
+     * block: equal start times keep the incoming order.
+     *
+     * @param int[] $ids Occurrence ids, normally already date-ascending.
+     * @return int[]
+     */
+    public function order_by_bookability( array $ids ) {
+        $rank = [ 'bookable' => 0, 'unavailable' => 1, 'past' => 2 ];
+
+        $rows = [];
+        foreach ( \array_values( $ids ) as $index => $id ) {
+            $id     = (int) $id;
+            $rows[] = [ $rank[ $this->picker_state( $id ) ], $this->start_ts( $id ), $index, $id ];
+        }
+
+        \usort( $rows, function ( $a, $b ) {
+            return [ $a[0], $a[1], $a[2] ] <=> [ $b[0], $b[1], $b[2] ];
+        } );
+
+        return \array_column( $rows, 3 );
+    }
+
+    /**
+     * Memoised derived view over children($parent_id, false).
+     *
+     * @param string   $bucket    Memo namespace ('upcoming'|'bookable').
+     * @param int      $parent_id
+     * @param callable $filter    fn(int[] $live): iterable
+     * @return int[]
+     */
+    private function cached_child_list( $bucket, $parent_id, callable $filter ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 ) {
+            return [];
+        }
+
+        $key = $bucket . ':' . $parent_id . ':' . (int) \get_option( Module::CACHE_VERSION_OPTION, 1 );
+        if ( ! isset( $this->child_lists[ $key ] ) ) {
+            $this->child_lists[ $key ] = \array_values( $filter( $this->children( $parent_id, false ) ) );
+        }
+
+        return $this->child_lists[ $key ];
+    }
+
+    /**
+     * Drop the memo above.
+     *
+     * Called by every engine write that changes which dates are live or
+     * bookable. The generation counter in the memo key covers seat and status
+     * transitions, but a soft-close (and "apply registration to all dates") is
+     * a pure meta write that bumps nothing, so those flush by hand.
+     *
+     * @return void
+     */
+    private function flush_child_lists() {
+        $this->child_lists = [];
     }
 
     /**

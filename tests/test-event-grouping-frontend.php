@@ -324,4 +324,109 @@ class Test_Event_Grouping_Frontend extends Anchor_Events_TestCase {
 
 		$this->assertNotContains( $closed, $ids, 'A soft-closed occurrence must not appear as its own "View Event" card on the plain archive.' );
 	}
+
+	/* ------------------------------------------------------------------
+	 * E. The picker advertises a date somebody can act on (MODEL-D4 /
+	 * NEW-D1). Every live date is still LISTED — a visitor looking for the
+	 * date they already booked has to find it — but the order is bookable
+	 * first, then upcoming-but-unbookable, then past, and each row says
+	 * which it is.
+	 * ------------------------------------------------------------------ */
+
+	/** Position of a child's permalink inside a rendered list. */
+	protected function row_position( $html, $child_id ) {
+		$pos = strpos( $html, esc_url( get_permalink( $child_id ) ) );
+		$this->assertNotFalse( $pos, 'Expected the occurrence to be listed at all.' );
+		return $pos;
+	}
+
+	public function test_choose_date_list_puts_a_bookable_date_before_an_earlier_sold_out_one() {
+		[ $parent_id, $live ] = $this->make_offering( [
+			[ 'date' => '2027-08-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Full session', 'capacity' => 1 ],
+			[ 'date' => '2027-08-08', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Open session', 'capacity' => 5 ],
+		] );
+		$this->make_seat( $live[0] );
+
+		$html = $this->module()->render_choose_date_list( $parent_id );
+
+		$this->assertLessThan(
+			$this->row_position( $html, $live[0] ),
+			$this->row_position( $html, $live[1] ),
+			'The bookable date must be offered before the sold-out one that precedes it.'
+		);
+		$this->assertStringContainsString( 'Sold out', $html, 'The sold-out date is still listed, and still says so.' );
+	}
+
+	public function test_choose_date_list_lists_a_past_date_last_and_marks_it() {
+		[ $parent_id, $live ] = $this->make_offering( [
+			[ 'date' => '2020-01-06', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Gone', 'capacity' => 5 ],
+			[ 'date' => '2027-09-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Ahead', 'capacity' => 5 ],
+		] );
+		$this->assertCount( 2, $live, 'A past date is live until somebody closes it — that is the defect being fixed.' );
+
+		$html = $this->module()->render_choose_date_list( $parent_id );
+
+		$this->assertLessThan(
+			$this->row_position( $html, $live[0] ),
+			$this->row_position( $html, $live[1] ),
+			'A date that has been and gone must never lead the picker.'
+		);
+		$this->assertStringContainsString( 'anchor-event-choose-date-row--past', $html, 'The past row must be marked as past.' );
+		$this->assertStringContainsString( 'Date passed', $html, 'And say so, rather than "Registration closed".' );
+	}
+
+	public function test_sibling_dates_also_lead_with_a_bookable_date() {
+		[ , $live ] = $this->make_offering( [
+			[ 'date' => '2027-10-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Mine', 'capacity' => 5 ],
+			[ 'date' => '2027-10-08', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Full session', 'capacity' => 1 ],
+			[ 'date' => '2027-10-15', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Open session', 'capacity' => 5 ],
+		] );
+		$this->make_seat( $live[1] );
+
+		$html = $this->module()->render_sibling_dates( $live[0] );
+
+		$this->assertLessThan(
+			$this->row_position( $html, $live[1] ),
+			$this->row_position( $html, $live[2] ),
+			'The bookable sibling comes first.'
+		);
+	}
+
+	public function test_series_group_row_range_starts_at_the_next_upcoming_date() {
+		[ $parent_id ] = $this->make_offering( [
+			[ 'date' => '2020-01-06', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Gone', 'capacity' => 5 ],
+			[ 'date' => '2027-11-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Ahead', 'capacity' => 5 ],
+			[ 'date' => '2027-12-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Later', 'capacity' => 5 ],
+		] );
+
+		$this->go_to_series_archive( $parent_id );
+		$html = $this->module()->series->render_archive();
+
+		$this->assertStringContainsString( 'Nov 1, 2027 – Dec 1, 2027', $html, 'The range spans the dates still to come.' );
+		$this->assertStringNotContainsString( 'Jan 6, 2020', $html, 'A date that has been and gone is not part of what the group offers.' );
+		$this->assertStringContainsString( '2 dates available', $html, 'Only the upcoming dates are "available".' );
+	}
+
+	/**
+	 * A site that has switched "Archive past events" OFF asks for finished
+	 * events on purpose. Narrowing the group row's range to the upcoming
+	 * dates must not blank the row of a group that has none — it falls back
+	 * to the dates the group actually ran.
+	 */
+	public function test_series_group_row_survives_a_group_whose_dates_have_all_passed() {
+		$settings                      = get_option( Module::OPTION_KEY, [] );
+		$settings                      = is_array( $settings ) ? $settings : [];
+		$settings['archive_hide_past'] = false;
+		update_option( Module::OPTION_KEY, $settings );
+
+		[ $parent_id ] = $this->make_offering( [
+			[ 'date' => '2020-01-06', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Gone', 'capacity' => 5 ],
+		] );
+
+		$this->go_to_series_archive( $parent_id );
+		$html = $this->module()->series->render_archive();
+
+		$this->assertStringContainsString( 'href="' . esc_url( get_permalink( $parent_id ) ) . '"', $html );
+		$this->assertStringContainsString( 'Jan 6, 2020', $html );
+	}
 }

@@ -7664,8 +7664,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * "Choose a date" picker for a group PARENT single-event page (Task 2.4):
      * lists the parent's LIVE children — Occurrences::children($parent_id,
      * false), which already excludes soft-closed occurrences via the
-     * engine's own bookkeeping (never a meta-value check) — ordered by date
-     * ascending (children() itself returns them pre-sorted), each with a
+     * engine's own bookkeeping (never a meta-value check) — ordered by
+     * Occurrences::order_by_bookability(): the dates a visitor can act on
+     * first, then upcoming-but-unbookable ones, then the ones that have been
+     * and gone, each block earliest-first. Every live date is still listed
+     * (somebody looking for the date they booked has to find it) and each row
+     * says which kind it is (MODEL-D4 / NEW-D1) — the picker used to lead
+     * with a sold-out or finished date and put a live Register CTA on it.
+     * Each row carries a
      * date/time label, an availability hint sourced from the same seat-layer
      * capacity authority the registration form uses, and a link to that
      * child's own page. The parent is a container, never directly bookable,
@@ -7677,7 +7683,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      */
     public function render_choose_date_list( $parent_id ) {
         $parent_id = (int) $parent_id;
-        $children  = $this->occurrences->children( $parent_id, false );
+        $children  = $this->occurrences->order_by_bookability(
+            $this->occurrences->children( $parent_id, false )
+        );
 
         $output  = '<section class="anchor-event-choose-date">';
         $output .= '<h2 class="anchor-event-choose-date-title">' . esc_html__( 'Choose a date', 'anchor-schema' ) . '</h2>';
@@ -7721,7 +7729,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $parent_id <= 0 ) {
             return '';
         }
-        $siblings = $this->occurrences->siblings( $child_id, false );
+        $siblings = $this->occurrences->order_by_bookability(
+            $this->occurrences->siblings( $child_id, false )
+        );
 
         $output  = '<section class="anchor-event-other-dates">';
         $output .= '<h2 class="anchor-event-other-dates-title">' . esc_html__( 'Other dates', 'anchor-schema' ) . '</h2>';
@@ -7768,7 +7778,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $date_text = $this->format_date_time( $meta, true );
 
-        $output  = '<li class="anchor-event-choose-date-row">';
+        // Same predicate the ordering above ranks on, so the row's mark and
+        // its position can never describe the date differently.
+        $state   = $this->occurrences->picker_state( $event_id );
+        $output  = '<li class="anchor-event-choose-date-row anchor-event-choose-date-row--' . esc_attr( $state ) . '">';
         $output .= '<a class="anchor-event-choose-date-link" href="' . esc_url( \get_permalink( $event_id ) ) . '">';
         $output .= '<span class="anchor-event-choose-date-date">' . esc_html( $date_text ) . '</span>';
         // An occurrence with no authored label resolves to the formatted date
@@ -7779,7 +7792,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $output .= '</a>';
         $output .= '<span class="anchor-event-choose-date-availability">' . esc_html( $this->choose_date_availability_hint( $event_id, $meta ) ) . '</span>';
-        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $event_id ) ) . '</a>';
+        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $state ) ) . '</a>';
         $output .= '</li>';
 
         return $output;
@@ -7823,8 +7836,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Short availability hint for a choose-date row, rendered from
      * bookability() — the single purchasability authority — as "Sold out" /
-     * "Waitlist only" / "Registration closed" / "N spot(s) left" / "Open"
-     * (unlimited capacity).
+     * "Waitlist only" / "Date passed" / "Registration closed" / "N spot(s)
+     * left" / "Open" (unlimited capacity).
      *
      * Public because the series archive renders the same hint for the same
      * question (MODEL-D42): Series::availability_hint() used to re-decide it
@@ -7851,7 +7864,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return \__( 'Waitlist only', 'anchor-schema' );
         }
         if ( $state === 'closed' || $state === 'disabled' ) {
-            return \__( 'Registration closed', 'anchor-schema' );
+            // MODEL-D4: a date that has been and gone is still LISTED — the
+            // picker no longer leads with it, but somebody looking for the
+            // date they attended has to find it — so it gets the word for what
+            // it actually is rather than "Registration closed", which reads
+            // like a date you just missed the deadline for.
+            return $this->occurrences->is_past( $event_id )
+                ? \__( 'Date passed', 'anchor-schema' )
+                : \__( 'Registration closed', 'anchor-schema' );
         }
 
         // 'open' — and 'parent', defensively: render_choose_date_row() is
@@ -7869,15 +7889,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * CTA label for a choose-date row: "Details" when the occurrence isn't
      * currently accepting new registrations (closed/full/registration
-     * disabled/a container), else "Register".
+     * disabled/a container/a date that has been and gone), else "Register".
      *
-     * @param int $event_id
+     * Takes the row's already-resolved Occurrences::picker_state() rather than
+     * re-asking bookability() — RENDER-D32's point is that the CTA, the hint
+     * beside it and the row's position in the picker are one answer, so the
+     * row can never say "Sold out" and "Register" at once, or rank a date as
+     * bookable and then label it "Details".
+     *
+     * @param string $picker_state 'bookable'|'unavailable'|'past'.
      * @return string
      */
-    private function choose_date_cta_label( $event_id ) {
-        // RENDER-D32: same authority as the hint beside it, so the row can
-        // never say "Sold out" and "Register" at once.
-        return $this->is_bookable( $this->bookability( $event_id ) )
+    private function choose_date_cta_label( $picker_state ) {
+        return $picker_state === 'bookable'
             ? \__( 'Register', 'anchor-schema' )
             : \__( 'Details', 'anchor-schema' );
     }
@@ -10120,7 +10144,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * The branch order says WHAT THE EVENT IS before it says whether the
      * button is on, and render_registration_form() mirrors it:
-     *   parent    — a group container is never itself a seat,
+     *   parent    — a group container is never itself a seat, but only while
+     *                it still has a date somebody can take (parent_bookability()),
      *   closed    — a soft-closed occurrence, still reachable by direct URL,
      *   cancelled — the author's own word, via get_event_status(),
      *   then the seat-layer capacity authority (open|waitlist|full|closed),
@@ -10155,7 +10180,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return 'closed';
         }
         if ( $this->occurrences->is_group_parent( $event_id ) ) {
-            return 'parent';
+            return $this->parent_bookability( $event_id );
         }
         if ( $this->is_closed_group_child( $event_id ) ) {
             return 'closed';
@@ -10184,6 +10209,79 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return 'disabled';
         }
         return $seats;
+    }
+
+    /**
+     * A group container's own bookability (audit MODEL-D4 / NEW-D1).
+     *
+     * 'parent' used to be unconditional, which said only "this is a
+     * container" and never "there is nothing left in it": a parent whose
+     * every date was sold out, and one whose every date had passed, both read
+     * exactly like one with November wide open. Every reader that wanted the
+     * difference had to compute it — the DEKA theme derived "sold out" and
+     * "closed" for containers itself, from its own copy of the bookable-child
+     * loop, and the picker/archive simply did not show it.
+     *
+     * The vocabulary is unchanged, which is the point: 'parent' still means
+     * "choose a date" (WooCommerce::bookability_message() says exactly that,
+     * and Event_Schema::omits_offer() still withholds the container's Offer),
+     * and a container with nothing left now borrows the two words the rest of
+     * the module already uses for it — 'full' when a date is sold out and
+     * 'closed' when there is simply nothing on offer. A past date can never
+     * report 'full' (capacity_decision() answers 'closed' for a finished
+     * event first), so a container whose dates have all run reads 'closed'
+     * rather than "sold out".
+     *
+     * @param int $parent_id
+     * @return string parent|full|closed
+     */
+    private function parent_bookability( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        if ( ! empty( $this->occurrences->bookable_children( $parent_id ) ) ) {
+            return 'parent';
+        }
+        foreach ( $this->occurrences->children( $parent_id, false ) as $child_id ) {
+            if ( $this->bookability( (int) $child_id ) === 'full' ) {
+                return 'full';
+            }
+        }
+        return 'closed';
+    }
+
+    /**
+     * The occurrence a group parent currently advertises — its soonest
+     * BOOKABLE date, falling back to its soonest date still to come, and 0
+     * when it is not a container or has nothing ahead of it (MODEL-D4 /
+     * NEW-D1).
+     *
+     * The one answer to "which date does this container show", so the card's
+     * date, its city, its sort key and its CTA cannot each pick a different
+     * one. Bookable first because that is the date a visitor can act on
+     * (production parent 7258 advertised a sold-out September while its own
+     * picker offered November); upcoming second so a fully-booked offering
+     * still shows a date rather than nothing.
+     *
+     * 0 is deliberate for "every date has passed": the parent's own
+     * start_date already spans its live children (Occurrences::
+     * sync_parent_span()), so a caller falling back to the parent id gets
+     * that span rather than a wrong "next" date.
+     *
+     * @param int $parent_id
+     * @return int Occurrence post id, or 0.
+     */
+    public function next_occurrence( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 || ! $this->occurrences->is_group_parent( $parent_id ) ) {
+            return 0;
+        }
+
+        $bookable = $this->occurrences->bookable_children( $parent_id );
+        if ( ! empty( $bookable ) ) {
+            return (int) $bookable[0];
+        }
+
+        $upcoming = $this->occurrences->upcoming_children( $parent_id );
+        return empty( $upcoming ) ? 0 : (int) $upcoming[0];
     }
 
     /**

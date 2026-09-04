@@ -146,6 +146,60 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		$this->assertNull( get_post( $vip_vid ), 'The removed no-sales tier variation should be hard-deleted.' );
 	}
 
+	/**
+	 * WOO-D12: a hand-added variation with NO tier-id meta is an orphan the
+	 * sync used to never see again (never in $specs, never deleted, never
+	 * reconciled) — it stays published and sellable under the managed
+	 * product forever. A sync must now deactivate it.
+	 */
+	public function test_sync_deactivates_a_hand_added_variation_with_no_tier_meta() {
+		list( $event_id, $ga ) = $this->make_two_tier_event();
+		$product_id = $this->product_sync()->sync_event( $event_id );
+
+		$orphan = new WC_Product_Variation();
+		$orphan->set_parent_id( $product_id );
+		$orphan->set_regular_price( '999' );
+		$orphan_id = $orphan->save();
+		$this->assertSame( 'publish', get_post_status( $orphan_id ) );
+
+		$this->product_sync()->sync_event( $event_id );
+
+		$this->assertSame(
+			'private',
+			get_post_status( $orphan_id ),
+			'A variation with no tier-id meta must be swept (deactivated), not left published and invisible to future syncs.'
+		);
+	}
+
+	/**
+	 * WOO-D12: a SECOND variation sharing an already-indexed tier id (a
+	 * failed half-sync, or a manual duplicate) is otherwise invisible to the
+	 * sync forever — kept alive, sellable, with its own stale price.
+	 */
+	public function test_sync_deactivates_a_duplicate_variation_for_the_same_tier_id() {
+		list( $event_id, $ga ) = $this->make_two_tier_event();
+		$product_id = $this->product_sync()->sync_event( $event_id );
+		$real_vid   = (int) $this->product_sync()->variation_for_tier( $event_id, $ga['id'] );
+		$this->assertGreaterThan( 0, $real_vid );
+
+		$duplicate = new WC_Product_Variation();
+		$duplicate->set_parent_id( $product_id );
+		$duplicate->set_regular_price( '999' );
+		$duplicate->update_meta_data( Product_Sync::VARIATION_TIER_META, $ga['id'] );
+		$duplicate_id = $duplicate->save();
+		$this->assertSame( 'publish', get_post_status( $duplicate_id ) );
+
+		$this->product_sync()->sync_event( $event_id );
+
+		$this->assertSame(
+			'private',
+			get_post_status( $duplicate_id ),
+			'A duplicate variation for an already-claimed tier id must be swept, not left published forever.'
+		);
+		// The original, already-indexed variation is untouched.
+		$this->assertSame( 'publish', get_post_status( $real_vid ) );
+	}
+
 	/** Trashing the event demotes the managed product to draft (never deleted). */
 	public function test_trash_event_drafts_product() {
 		list( $event_id ) = $this->make_two_tier_event();

@@ -587,22 +587,49 @@ class Product_Sync {
             }
 
             // Index existing variations by tier id (all statuses).
-            $existing = []; // tier_id => WC_Product_Variation
-            foreach ( $this->variation_ids_for_product( $product_id ) as $vid ) {
+            $mutated      = false; // tracks whether any variation was created/changed/deleted
+            $existing     = []; // tier_id => WC_Product_Variation
+            $existing_ids = $this->variation_ids_for_product( $product_id );
+            foreach ( $existing_ids as $vid ) {
                 $variation = \wc_get_product( $vid );
                 if ( ! $variation ) {
                     continue;
                 }
                 $tier_id = (string) $variation->get_meta( self::VARIATION_TIER_META );
-                if ( $tier_id !== '' ) {
+                if ( $tier_id !== '' && ! isset( $existing[ $tier_id ] ) ) {
                     $existing[ $tier_id ] = $variation;
+                }
+            }
+
+            // WOO-D12: a variation with BLANK tier-id meta (hand-added), or a
+            // second variation sharing a tier id already indexed above (a
+            // failed half-sync, or a manual duplicate), is never added to
+            // $existing — the indexing loop keeps only the first match per
+            // tier id. Left alone, that orphan is never added to $specs,
+            // never deleted, and never reconciled again: it stays published
+            // under the managed product, sellable, with its stale price and
+            // link meta, invisible to every future sync. Deactivate it now
+            // (never delete — we cannot know here whether an order
+            // references it) the same way a retired tier's variation is.
+            $accounted_for = [];
+            foreach ( $existing as $variation ) {
+                $accounted_for[ $variation->get_id() ] = true;
+            }
+            foreach ( $existing_ids as $vid ) {
+                if ( isset( $accounted_for[ $vid ] ) ) {
+                    continue;
+                }
+                $orphan = \wc_get_product( $vid );
+                if ( $orphan && $orphan->get_status() !== 'private' ) {
+                    $orphan->set_status( 'private' );
+                    $orphan->save();
+                    $mutated = true;
                 }
             }
 
             // Plan the resulting variation set + delete removed-with-no-seats.
             $specs    = []; // ordered list of variation specs to write
             $used_opt = [];
-            $mutated  = false; // tracks whether any variation was created/changed/deleted
 
             // 1) Paid+active tiers (preserve $all_tiers order).
             foreach ( $all_tiers as $tier ) {

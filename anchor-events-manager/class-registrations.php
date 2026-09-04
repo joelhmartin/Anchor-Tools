@@ -158,11 +158,12 @@ class Registrations {
      * Change a seat's status with transition validation + history append.
      *
      * Answers the tri-state (audit REG-D37): `sent` when the status actually
-     * changed, `skipped` for a same-status call with no note — nothing was
-     * written, no history entry exists, and a caller that reports "Seat
-     * cancelled." for it is asserting a change that did not happen — and
-     * `failed` for an id that is not a seat, an unknown status, or a
-     * transition the table forbids. Never fatal.
+     * changed, `skipped` for every same-status call — with no note nothing is
+     * written at all, and with a note the note is still recorded, but the
+     * STATUS did not move, so a caller reporting "Seat cancelled." for it is
+     * asserting a change that did not happen — and `failed` for an id that is
+     * not a seat, an unknown status, or a transition the table forbids. Never
+     * fatal.
      *
      * @param int    $seat_id Seat post ID.
      * @param string $to      Target status.
@@ -185,10 +186,12 @@ class Registrations {
             $from = self::STATUS_CONFIRMED;
         }
 
-        // Same status: no-op unless a note is supplied (then just record the note).
+        // Same status: no-op unless a note is supplied (then just record the
+        // note). Either way this is not a change — see the return below.
         if ( $from === $to && $note === '' ) {
             return Outcome::skipped( 'same_status' );
         }
+        $changed = ( $from !== $to );
 
         if ( $from !== $to ) {
             $allowed = self::$transitions[ $from ] ?? [];
@@ -238,7 +241,13 @@ class Registrations {
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
         \do_action( 'anchor_events_seat_status_changed', $seat_id, $from, $to, (string) $actor );
-        return Outcome::sent();
+
+        // The roster's Cancel action passes a note, so a click on an
+        // already-cancelled row reaches this far: the note is recorded, the
+        // status is exactly where it was. Reporting that as a change is what
+        // put "Seat cancelled." on screen for a click that cancelled nothing
+        // (audit REG-D37).
+        return $changed ? Outcome::sent() : Outcome::skipped( 'same_status' );
     }
 
     /**

@@ -3146,20 +3146,28 @@ class WooCommerce {
                 }
             }
             if ( $uncovered ) {
-                $result = $this->send_customer_confirmation( $order, $settings );
-                if ( $result->is_sent() || ( $result->is_skipped() && 'disabled' === $result->reason() ) ) {
-                    // The gate records "this event is settled", not "mail left
-                    // the building": a switch-off the organizer chose is just
-                    // as settled as a send, and stamping it is what stops the
-                    // next reconcile re-deciding it (audit REG-D6). A skip with
-                    // nothing to confirm is NOT settled and is deliberately
-                    // absent from this branch (audit WOO-D15).
+                $primary_id = 0;
+                $result     = $this->send_customer_confirmation( $order, $settings, $primary_id );
+                if ( $result->is_sent() ) {
+                    // The email lists every active seat on the order, so every
+                    // event it covered is covered for good.
                     $now = \time();
                     foreach ( $email_events as $eid => $ev ) {
                         if ( ! empty( $ev['confirmed'] ) || ! empty( $ev['waitlist'] ) ) {
                             $sent[ 'customer:' . (int) $eid ] = $now;
                         }
                     }
+                } elseif ( $result->is_skipped() && 'disabled' === $result->reason() && $primary_id > 0 ) {
+                    // The gate records "this event is settled", not "mail left
+                    // the building": a switch-off the organizer chose is just
+                    // as settled as a send, and stamping it stops the next
+                    // reconcile re-deciding it (audit REG-D6). Only the event
+                    // whose switch was actually consulted, though — an order
+                    // carrying a disabled event AND an enabled one must leave
+                    // the enabled one's gate open, or it could never send.
+                    // A skip with nothing to confirm settles nothing at all and
+                    // is deliberately absent from both branches (audit WOO-D15).
+                    $sent[ 'customer:' . (int) $primary_id ] = \time();
                 }
                 if ( $result->is_sent() ) {
                     $log_entries[] = $this->make_log_entry( 'Customer confirmation email sent.', [ 'to' => $order->get_billing_email() ] );
@@ -3186,21 +3194,34 @@ class WooCommerce {
             $gate_key    = 'organizer:' . $event_id;
 
             if ( $notify_organizer && $has_confirm && empty( $sent[ $gate_key ] ) ) {
-                if ( $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed' ) ) {
+                $notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed' );
+                if ( $notice->is_sent() || ( $notice->is_skipped() && 'disabled' === $notice->reason() ) ) {
+                    // Same rule as the buyer confirmation: a type the organizer
+                    // switched off is settled, not failed. This gate is already
+                    // per event, so there is nothing to narrow.
                     $sent[ $gate_key ] = \time();
-                    $log_entries[]     = $this->make_log_entry( 'Organizer notice sent.', [ 'event' => $event_id ] );
+                }
+                if ( $notice->is_sent() ) {
+                    $log_entries[] = $this->make_log_entry( 'Organizer notice sent.', [ 'event' => $event_id ] );
+                } elseif ( $notice->is_skipped() ) {
+                    $log_entries[] = $this->make_log_entry( 'Organizer notice skipped.', [ 'event' => $event_id, 'reason' => $notice->reason() ] );
                 } else {
-                    $log_entries[] = $this->make_log_entry( 'Organizer notice FAILED.', [ 'event' => $event_id ] );
+                    $log_entries[] = $this->make_log_entry( 'Organizer notice FAILED.', [ 'event' => $event_id, 'reason' => $notice->reason() ] );
                 }
             }
 
             // Seats-released organizer notice (cancelled/refunded). Not gated by
             // emails_sent: idempotent because reconcile only releases seats once.
             if ( $notify_organizer && $has_release ) {
-                if ( $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released' ) ) {
+                $released_notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released' );
+                if ( $released_notice->is_sent() ) {
                     $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice sent.', [ 'event' => $event_id, 'released' => (int) $ev['released'] ] );
+                } elseif ( $released_notice->is_skipped() ) {
+                    // Ungated by design (reconcile releases seats once), so
+                    // there is no gate to stamp — only a log line to get right.
+                    $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice skipped.', [ 'event' => $event_id, 'reason' => $released_notice->reason() ] );
                 } else {
-                    $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice FAILED.', [ 'event' => $event_id ] );
+                    $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice FAILED.', [ 'event' => $event_id, 'reason' => $released_notice->reason() ] );
                 }
             }
         }
@@ -3255,10 +3276,17 @@ class WooCommerce {
      * the order for review on every reconcile for ever.
      *
      * @param \WC_Order $order
-     * @param array     $settings Module settings.
+     * @param array     $settings   Module settings.
+     * @param int       $primary_id (out) The event whose on/off switch and copy
+     *                              this email was resolved from — 0 when the
+     *                              method bailed before that was known. The
+     *                              caller may only stamp the gate for THIS
+     *                              event on a `disabled` skip: the order can
+     *                              carry a second event whose confirmation is
+     *                              still switched on.
      * @return Outcome sent | skipped (nothing_to_send, disabled) | failed.
      */
-    private function send_customer_confirmation( \WC_Order $order, array $settings ) {
+    private function send_customer_confirmation( \WC_Order $order, array $settings, &$primary_id = 0 ) {
         $to = (string) $order->get_billing_email();
         if ( $to === '' ) {
             return Outcome::failed( 'no_address' );
@@ -3271,7 +3299,7 @@ class WooCommerce {
         $detail_rows  = [];
         $any_waitlist = false;
         $total_seats  = 0;
-        $primary_id   = 0;
+        $primary_id   = 0; // out-param: reset for this call, filled in below.
         foreach ( $by_event as $event_id => $seats ) {
             $event_id = (int) $event_id;
             if ( $primary_id === 0 ) {
@@ -3360,7 +3388,7 @@ class WooCommerce {
      * @param int       $event_id
      * @param array     $ev       [confirmed,waitlist,released] tally for this event.
      * @param string    $kind     'confirmed'|'released'.
-     * @return bool
+     * @return Outcome sent | skipped (disabled) | failed (no_address, wp_mail).
      */
     private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind ) {
         $event_id = (int) $event_id;
@@ -3371,11 +3399,11 @@ class WooCommerce {
         // The type mapping matches the $ctx built at the bottom of this method.
         $ctx_type = ( $kind === 'released' ) ? 'cancellation' : 'confirmation';
         if ( ! $this->module->is_email_enabled( $event_id, $ctx_type ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         $to = $this->organizer_recipient( $event_id, $settings );
         if ( $to === '' ) {
-            return false;
+            return Outcome::failed( 'no_address' );
         }
         $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
         if ( $buyer === '' ) {
@@ -3464,7 +3492,7 @@ class WooCommerce {
             'type'          => $ctx_type,
         ];
         $html = $this->module->build_registration_email_html( $ctx );
-        return $this->module->send_html_email( $to, $subject, $html, [], $event_id );
+        return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id ), 'wp_mail' );
     }
 
     /**

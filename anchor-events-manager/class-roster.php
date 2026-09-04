@@ -569,9 +569,10 @@ class Roster {
         if ( $result->is_sent() ) {
             $this->redirect( $event_id, 'success', \__( 'Roster sent to organizer.', 'anchor-schema' ) );
         } elseif ( $result->is_skipped() ) {
-            // Nothing was sent and nothing went wrong: say which it is rather
-            // than pointing the operator at an error log with nothing in it.
-            $this->redirect( $event_id, 'error', \__( 'Roster not sent — the roster email is switched off for this event.', 'anchor-schema' ) );
+            // Nothing was sent and nothing went wrong. The error channel would
+            // send the operator to an error log with nothing in it, so this
+            // goes to the ordinary notice channel and says which it is.
+            $this->redirect( $event_id, 'success', \__( 'Roster not sent — the roster email is switched off for this event.', 'anchor-schema' ) );
         } else {
             $this->redirect( $event_id, 'error', \__( 'Roster could not be sent — check the error log.', 'anchor-schema' ) );
         }
@@ -614,7 +615,13 @@ class Roster {
             $url = $this->roster_url( (int) $event_id, $args );
         }
 
-        \wp_safe_redirect( $url );
+        // roster_url() ends in wp_nonce_url(), which HTML-escapes its result for
+        // use in a link — so the separators come back as `&amp;`. In a Location
+        // header that is not a separator at all: every argument after the first
+        // arrives as `amp;roster_msg`, and maybe_render_notice() (which reads
+        // $_GET['roster_msg']) never fires. Decode before redirecting, so the
+        // notice this handler just chose actually reaches the operator.
+        \wp_safe_redirect( \wp_specialchars_decode( $url, ENT_QUOTES ) );
         exit;
     }
 

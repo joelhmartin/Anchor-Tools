@@ -286,17 +286,19 @@ Both are executed by a single recurring cron hook (`anchor_events_reminder_sweep
 
 ### Dispatch results
 
-Every sender — the WooCommerce buyer confirmation, the reminder, the roster digest, the cancellation — and `Registrations::update_status()` return an `Outcome`, not a boolean:
+Every sender — the WooCommerce buyer confirmation, the WooCommerce organizer notices, the reminder, the roster digest, the cancellation — and `Registrations::update_status()` return an `Outcome`, not a boolean:
 
 | state | meaning | what a caller does with it |
 | --- | --- | --- |
 | `sent` | the mail left (or the status changed) | mark the gate/marker, log the send |
-| `skipped` | deliberately not done — the type is switched off for the event, there is nothing to describe, the seat holds that status already | never flag review, never queue a retry, never log it as a send |
+| `skipped` | deliberately not done — the type is switched off for the event, there is nothing to describe, the seat holds that status already (a same-status write records its note but still reports `skipped` — the status did not move) | never flag review, never queue a retry, never log it as a send |
 | `failed` | attempted and rejected (`wp_mail()` said no, an illegal transition) | flag review / queue the retry |
 
 `reason()` carries the detail (`disabled`, `nothing_to_send`, `already_sent`, `no_address`, `wp_mail`, `same_status`, `illegal_transition`, …) and goes in the log line.
 
-Two skips are handled differently by the order dispatcher: a `disabled` confirmation **stamps** the per-event emails-sent gate (the organizer's choice is settled; the next reconcile must not re-decide it), while `nothing_to_send` deliberately leaves the gate open, because seats the pass could not see may exist on the next one.
+> **Breaking change for custom code (3.26.0).** `Registrations::update_status()` and the senders used to return a bool. An `Outcome` is always truthy, so `if ( $reg->update_status( ... ) )` now always takes the true branch — use `->is_sent()` / `->is_failed()`. (Related 3.26.0 note: event meta saved before 3.26.0 could lose backslashes; those are not recoverable, but values round-trip from the next save.)
+
+Two skips are handled differently by the order dispatcher: a `disabled` confirmation **stamps** the per-event emails-sent gate (the organizer's choice is settled; the next reconcile must not re-decide it), while `nothing_to_send` deliberately leaves the gate open, because seats the pass could not see may exist on the next one. The buyer confirmation resolves its switch from ONE event (the order's primary), so a `disabled` skip stamps **only that event's** gate — an order carrying a disabled event and an enabled one must leave the enabled one's gate open. The organizer notice's gate is already per event, so there is nothing to narrow.
 
 ### Retry queue
 

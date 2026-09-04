@@ -21,3 +21,24 @@ Usage:
 1. Enable the module in Anchor Tools Settings > Modules.
 2. Add events under the new Events menu.
 3. Use [events_list] or [event_calendar] in pages or posts.
+
+== Changelog ==
+
+= 3.26.0 (unreleased) =
+
+Events Manager — breaking change for custom code:
+
+* `Anchor\Events\Registrations::update_status()` and the email senders
+  (`send_reminder_email()`, `send_roster_email()`, `send_cancellation_email()`,
+  and the WooCommerce buyer/organizer senders) now return an
+  `Anchor\Events\Outcome` object instead of a bool. An Outcome is always truthy,
+  so `if ( $reg->update_status( ... ) )` will now always take the true branch —
+  custom code must use `->is_sent()` / `->is_skipped()` / `->is_failed()`.
+  `sent` = it happened, `skipped` = deliberately not done (an email type
+  switched off, nothing to send, a status a seat already holds), `failed` = it
+  was attempted and rejected. Only `failed` flags an order for review or queues
+  a retry.
+* Event meta saved before 3.26.0 could lose backslashes (the values were passed
+  to `update_post_meta()` already unslashed). Backslashes eaten by those earlier
+  saves are not recoverable; values round-trip correctly from the next save.
+

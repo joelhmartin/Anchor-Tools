@@ -21,6 +21,9 @@ use Anchor\Events\Events_Log;
 use Anchor\Events\Outcome;
 use Anchor\Events\Registrations;
 
+/** Thrown from the wp_redirect filter so a handler's exit() never runs. */
+class Anchor_Dispatch_Redirected extends \Exception {}
+
 /**
  * @group email
  */
@@ -48,6 +51,8 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		remove_filter( 'wp_mail', [ $this, 'capture_wp_mail_args' ] );
 		remove_filter( 'pre_wp_mail', [ $this, 'record_or_fail_mail' ], 10 );
 		delete_option( Module::OPTION_KEY );
+		$_POST    = [];
+		$_REQUEST = [];
 		parent::tear_down();
 	}
 
@@ -81,6 +86,43 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 	/** Turn one email type off for one event, the way the Emails builder does. */
 	private function switch_email_off( $event_id, $type ) {
 		update_post_meta( $event_id, '_anchor_event_email_off_' . $type, '1' );
+	}
+
+	/**
+	 * Run an admin-post handler and return the notice it redirected with.
+	 * The handlers exit after redirecting, so the filter throws instead.
+	 *
+	 * @param callable $handler
+	 * @return array{type:string,message:string,url:string}
+	 */
+	private function capture_redirect( callable $handler ) {
+		$trap = static function ( $location ) {
+			throw new Anchor_Dispatch_Redirected( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		try {
+			$handler();
+			$this->fail( 'The handler did not redirect.' );
+		} catch ( Anchor_Dispatch_Redirected $e ) {
+			$url = $e->getMessage();
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+		}
+
+		$this->assertStringNotContainsString(
+			'&amp;',
+			$url,
+			'An HTML-escaped separator in a Location header hides every argument after the first.'
+		);
+
+		$query = [];
+		parse_str( (string) wp_parse_url( $url, PHP_URL_QUERY ), $query );
+
+		return [
+			'type'    => (string) ( $query['roster_type'] ?? '' ),
+			'message' => rawurldecode( (string) ( $query['roster_msg'] ?? '' ) ),
+			'url'     => $url,
+		];
 	}
 
 	/** Call one of the WooCommerce integration's private senders. */
@@ -256,6 +298,8 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 
 		$this->assertTrue( $failed->is_failed() );
 		$this->assertFalse( $failed->is_sent() );
+		$this->assertSame( 'wp_mail', $failed->reason() );
+		$this->assertSame( 'failed:wp_mail', (string) $failed );
 		$this->assertSame( 'skipped:disabled', (string) $skipped );
 	}
 
@@ -397,6 +441,12 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 			'A no-op appends no history, so it cannot honestly be reported as a change.'
 		);
 
+		$noted = $reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'roster cancel' );
+		$this->assertTrue(
+			$noted->is_skipped(),
+			'A note is recorded, but the status did not move — the roster passes a note on every click.'
+		);
+
 		$changed = $reg->update_status( $seat_id, Registrations::STATUS_CANCELLED );
 		$this->assertTrue( $changed->is_sent(), 'A real transition is a change.' );
 
@@ -506,5 +556,237 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 			get_post_meta( $seat_id, '_anchor_event_email_retry', true ),
 			'A skip must not enqueue a retry.'
 		);
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Fix round 1 — the organizer notice answers the same tri-state
+	 * ------------------------------------------------------------------- */
+
+	/** A switched-off organizer notice is logged as a skip and settles its gate. */
+	public function test_disabled_organizer_notice_is_skipped_not_flagged() {
+		$this->require_wc();
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => true, 'organizer_email' => 'organizer@example.org' ] );
+		$ctx = $this->paid_event();
+		$this->switch_email_off( $ctx['event_id'], 'confirmation' );
+		$order    = $this->make_order( $ctx['variation_id'] );
+		$order_id = $order->get_id();
+
+		$this->place_order( $order );
+
+		$this->assertTrue( $this->log_contains( $order_id, 'Organizer notice skipped.' ) );
+		$this->assertFalse(
+			$this->log_contains( $order_id, 'Organizer notice FAILED.' ),
+			'A type the organizer switched off is not a failed send.'
+		);
+		$this->assertSame( [], $this->review_reasons( $order_id ) );
+		$this->assertArrayHasKey(
+			'organizer:' . $ctx['event_id'],
+			$this->customer_gate( $order_id ),
+			'The switch-off is settled — the next reconcile must not re-decide it.'
+		);
+	}
+
+	/** A wp_mail() failure on the organizer notice still logs FAILED and leaves the gate open. */
+	public function test_failed_organizer_notice_still_logs_failed() {
+		$this->require_wc();
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => true, 'organizer_email' => 'organizer@example.org' ] );
+		$ctx      = $this->paid_event();
+		$order    = $this->make_order( $ctx['variation_id'] );
+		$order_id = $order->get_id();
+
+		$this->fail_mail = true;
+		$this->place_order( $order );
+		$this->fail_mail = false;
+
+		$this->assertTrue( $this->log_contains( $order_id, 'Organizer notice FAILED.' ) );
+		$this->assertArrayNotHasKey(
+			'organizer:' . $ctx['event_id'],
+			$this->customer_gate( $order_id ),
+			'A failed send must leave the gate open so a later pass can try again.'
+		);
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Fix round 1 — the disabled stamp follows the switch that was consulted
+	 * ------------------------------------------------------------------- */
+
+	/** Disabled event A must not gate enabled event B on the same order. */
+	public function test_a_mixed_order_leaves_the_enabled_events_gate_open() {
+		$this->require_wc();
+		// Place the order with every notification off, so the seats exist before
+		// anything is decided about emails.
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$this->place_order( $order );
+
+		$order_id = $order->get_id();
+		$this->assertSame( 1, $this->count_seats( $a['event_id'], Registrations::STATUS_CONFIRMED ) );
+		$this->assertSame( 1, $this->count_seats( $b['event_id'], Registrations::STATUS_CONFIRMED ) );
+
+		// The confirmation resolves its copy and its switch from ONE event; find
+		// out which, and switch that one off.
+		$by_event = $this->invoke_wc( 'collect_order_seats', [ $order_id ] );
+		$ids      = array_map( 'intval', array_keys( $by_event ) );
+		$this->assertCount( 2, $ids );
+		$primary = $ids[0];
+		$other   = $ids[1];
+		$this->switch_email_off( $primary, 'confirmation' );
+
+		$this->set_settings( [ 'wc_notify_customer' => true, 'wc_notify_organizer' => false ] );
+		$fresh = wc_get_order( $order_id );
+		$fresh->update_meta_data( '_anchor_event_emails_sent', [] );
+		$fresh->save();
+
+		$log   = [];
+		$flags = [];
+		$args  = [
+			$fresh,
+			[ $primary => [ 'confirmed' => 1 ], $other => [ 'confirmed' => 1 ] ],
+			&$log,
+			&$flags,
+		];
+		$this->invoke_wc( 'dispatch_emails', $args );
+
+		$sent = $fresh->get_meta( '_anchor_event_emails_sent' );
+		$sent = is_array( $sent ) ? $sent : [];
+		$this->assertArrayHasKey( 'customer:' . $primary, $sent, 'The event whose switch was read is settled.' );
+		$this->assertArrayNotHasKey(
+			'customer:' . $other,
+			$sent,
+			'The other event never had its switch consulted — gating it would make its confirmation unsendable for ever.'
+		);
+		$this->assertSame( [], $flags );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Fix round 1 — the remaining caller-side wording
+	 * ------------------------------------------------------------------- */
+
+	/** A seat with no address is recorded as superseded (0), not left to retry every sweep. */
+	public function test_sweep_marks_a_seat_with_no_address_as_superseded() {
+		$this->set_settings( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->make_event(
+			[
+				'title'      => 'No-address course',
+				'timezone'   => 'UTC',
+				'start_date' => gmdate( 'Y-m-d', $start_ts ),
+				'start_time' => gmdate( 'H:i', $start_ts ),
+			]
+		);
+		update_post_meta( $event_id, '_anchor_event_start_ts', $start_ts );
+		$seat_id = $this->make_seat( $event_id, [ 'email' => '' ] );
+
+		$this->module()->run_reminder_sweep();
+
+		$markers = get_post_meta( $seat_id, '_anchor_event_reminders_sent', true );
+		$this->assertIsArray( $markers );
+		$this->assertArrayHasKey( $start_ts, $markers );
+		$this->assertArrayHasKey( 1, $markers[ $start_ts ], 'The offset must be recorded, or every sweep re-attempts it.' );
+		$this->assertSame( 0, (int) $markers[ $start_ts ][1], 'Superseded is 0 — recorded, never reported as sent.' );
+		$this->assertSame(
+			'',
+			get_post_meta( $seat_id, '_anchor_event_email_retry', true ),
+			'A skip earns no retry job.'
+		);
+	}
+
+	/** "Resend confirmation" on an order with nothing active logs a skip, not a send. */
+	public function test_resend_on_an_order_with_nothing_active_logs_a_skip() {
+		$this->require_wc();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$order = new WC_Order();
+		$order->set_billing_email( 'buyer@example.test' );
+		$order->save();
+		$order_id = $order->get_id();
+
+		$_POST    = [ 'order_id' => $order_id, '_wpnonce' => wp_create_nonce( 'anchor_events_resend_' . $order_id ) ];
+		$_REQUEST = $_POST;
+
+		$this->capture_redirect(
+			function () {
+				$this->woocommerce()->handle_resend_confirmation();
+			}
+		);
+
+		$this->assertTrue( $this->log_contains( $order_id, 'Customer confirmation re-send skipped.' ) );
+		$this->assertFalse(
+			$this->log_contains( $order_id, 're-sent (manual)' ),
+			'A fully refunded order has nothing to confirm — the log must not claim a send.'
+		);
+		$this->assertSame( [], $this->review_reasons( $order_id ), 'Nothing went wrong, so nothing needs review.' );
+	}
+
+	/** Roster cancel: changed, already-cancelled and rejected each get their own notice. */
+	public function test_roster_cancel_notice_says_which_of_the_three_happened() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id );
+
+		$cancel = function () use ( $event_id, $seat_id ) {
+			$_REQUEST = [
+				'event_id' => $event_id,
+				'seat_id'  => $seat_id,
+				'_wpnonce' => wp_create_nonce( 'anchor_roster_cancel_' . $event_id ),
+			];
+			$_POST = $_REQUEST;
+			return $this->capture_redirect(
+				function () {
+					$this->module()->roster->handle_cancel();
+				}
+			);
+		};
+
+		$changed = $cancel();
+		$this->assertSame( 'success', $changed['type'] );
+		$this->assertSame( 'Seat cancelled.', $changed['message'] );
+
+		$noop = $cancel();
+		$this->assertSame( 'success', $noop['type'], 'Nothing went wrong — it was already cancelled.' );
+		$this->assertStringContainsString( 'already cancelled', $noop['message'] );
+		$this->assertStringNotContainsString(
+			'Seat cancelled.',
+			$noop['message'],
+			'Reporting a cancellation that did not happen is the defect (audit REG-D37).'
+		);
+
+		// Refunded is terminal with no way out, so the cancel is rejected.
+		$this->registrations()->update_status( $seat_id, Registrations::STATUS_CONFIRMED );
+		$this->registrations()->update_status( $seat_id, Registrations::STATUS_REFUNDED );
+		$rejected = $cancel();
+		$this->assertSame( 'error', $rejected['type'] );
+		$this->assertStringContainsString( 'Could not cancel', $rejected['message'] );
+	}
+
+	/** A switched-off roster digest is not an error the operator should hunt in a log. */
+	public function test_roster_send_skip_uses_the_ordinary_notice_channel() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$event_id = $this->make_event();
+		$this->switch_email_off( $event_id, 'roster' );
+
+		$_POST    = [ 'event_id' => $event_id, '_wpnonce' => wp_create_nonce( 'anchor_events_send_roster_' . $event_id ) ];
+		$_REQUEST = $_POST;
+
+		$notice = $this->capture_redirect(
+			function () {
+				$this->module()->roster->handle_send_roster();
+			}
+		);
+
+		$this->assertSame( 'success', $notice['type'], 'Nothing went wrong, so this is not the error channel.' );
+		$this->assertStringContainsString( 'switched off', $notice['message'] );
 	}
 }

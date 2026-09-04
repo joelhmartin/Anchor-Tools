@@ -694,6 +694,18 @@ class Occurrences {
         // identity, status, and seats/roster are never touched here.
         $this->apply_occurrence_editable_fields( $child_id, $row, $parent_meta );
 
+        // A still-closed occurrence gets its four-field closed state re-asserted
+        // before anything downstream reads it (audit MODEL-D6 / WOO-D35): the
+        // quartet lives in PER_OCCURRENCE_KEYS, so nothing else here would ever
+        // repair a row whose `status` a later save recomputed while the flag
+        // stayed set — and Product_Sync below would then see a "closed" date
+        // still advertising registration. reconcile()'s matched branch calls
+        // revive_if_closed() straight after this, so a date that IS back on the
+        // parent still reopens; this only normalises the state on the way.
+        if ( $this->is_closed( $child_id ) ) {
+            $this->soft_close( $child_id );
+        }
+
         $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
         $this->sync_ticket_types( $parent_id, $child_id, $row );
         $this->sync_product( $child_id, $parent_meta );
@@ -891,9 +903,13 @@ class Occurrences {
             return;
         }
         if ( $this->is_closed( $child_id ) ) {
-            // Already soft-closed with (now) no seats — leave the closed
-            // state as-is rather than surprise-trashing a previously
-            // preserved occurrence.
+            // Already soft-closed with (now) no seats — keep the preserved
+            // occurrence rather than surprise-trashing it, but re-assert the
+            // four-field closed state so a row that only carries part of it
+            // (audit MODEL-D6: production child 7530 kept occurrence_closed=1
+            // while a later save recomputed status to 'past') is repaired here
+            // too. soft_close() is idempotent, so a complete row is untouched.
+            $this->soft_close( $child_id );
             return;
         }
         \wp_trash_post( $child_id );
@@ -902,14 +918,20 @@ class Occurrences {
     /**
      * Soft-close a child: preserve the post + roster, mark it closed via the
      * existing status vocabulary (manual/cancelled + registration disabled)
-     * plus the engine's own closed flag. Idempotent (no-op if already closed).
+     * plus the engine's own closed flag.
+     *
+     * All FOUR fields are written unconditionally, every time (audit MODEL-D6 /
+     * WOO-D35). The old `is_closed()` early return made the flag the guard for
+     * its own three companions, so a row carrying only part of the state — a
+     * later save recomputing `status`, a hand-edited meta row, a restore — could
+     * never be repaired by anything: soft_close() saw "already closed" and did
+     * nothing. update_post_meta() is a no-op when the stored value already
+     * matches, so re-asserting the state is genuinely idempotent: no extra meta
+     * rows, no extra revisions, no roster side effects.
      *
      * @param int $child_id
      */
     private function soft_close( $child_id ) {
-        if ( $this->is_closed( $child_id ) ) {
-            return;
-        }
         $mk = function ( $k ) {
             return $this->module->meta_key( $k );
         };
@@ -927,12 +949,17 @@ class Occurrences {
      * from the parent by sync_child_from_parent() (called first, in
      * reconcile()'s matched branch), so a parent with registration disabled
      * stays disabled on the revived child instead of being force-enabled.
-     * No-op if the child isn't currently closed.
+     *
+     * Runs on the flag OR on the mirror-image partial — the status half of the
+     * closed quartet surviving after the flag was cleared by hand (audit
+     * MODEL-D6). Guarding on the flag alone left that row permanently stuck at
+     * manual/cancelled: nothing closed it (the flag was gone) and nothing
+     * revived it either. No-op for a child that shows neither.
      *
      * @param int $child_id
      */
     private function revive_if_closed( $child_id ) {
-        if ( ! $this->is_closed( $child_id ) ) {
+        if ( ! $this->is_closed( $child_id ) && ! $this->has_closed_signature( $child_id ) ) {
             return;
         }
         $mk = function ( $k ) {
@@ -1014,6 +1041,43 @@ class Occurrences {
      */
     public function is_closed( $child_id ) {
         return (bool) \get_post_meta( $child_id, $this->module->meta_key( 'occurrence_closed' ), true );
+    }
+
+    /**
+     * Whether a child still carries the OTHER three quarters of what
+     * soft_close() writes — status_mode=manual, status=cancelled and
+     * registration explicitly off — while its `occurrence_closed` flag has
+     * been cleared (audit MODEL-D6's mirror-image partial).
+     *
+     * Deliberately narrow: all three must match, so an admin who merely
+     * cancels a still-offered date from the metabox (leaving registration
+     * alone) is NOT mistaken for a broken soft-close and does not get their
+     * manual status overwritten on the next reconcile. `registration_enabled`
+     * is checked for EXISTENCE and then for falsiness, never for `=== false`:
+     * WordPress stores a boolean false meta value as an empty string, so a
+     * missing row and a stored `false` read back identically — and a missing
+     * row means "enabled" (the schema default). Every child gets the row at
+     * creation, so its absence marks a post that is not an occurrence at all.
+     *
+     * @param int $child_id
+     * @return bool
+     */
+    private function has_closed_signature( $child_id ) {
+        $mk = function ( $k ) {
+            return $this->module->meta_key( $k );
+        };
+
+        if ( \get_post_meta( $child_id, $mk( 'status_mode' ), true ) !== 'manual' ) {
+            return false;
+        }
+        if ( \get_post_meta( $child_id, $mk( 'status' ), true ) !== 'cancelled' ) {
+            return false;
+        }
+        if ( ! \metadata_exists( 'post', $child_id, $mk( 'registration_enabled' ) ) ) {
+            return false;
+        }
+
+        return ! (bool) \get_post_meta( $child_id, $mk( 'registration_enabled' ), true );
     }
 
     /**

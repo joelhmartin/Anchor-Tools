@@ -362,6 +362,33 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		$this->assertSame( 1, substr_count( $html, '<form class="anchor-event-registration"' ) );
 	}
 
+	/**
+	 * NEW-D6 (plugin half): the shortcode renders at most once per event per
+	 * request. A theme rendering its own registration UI for an event AND
+	 * the auto-appended shortcode both firing (or any other double-copy of
+	 * the tag) must not double the picker/form — the second call renders ''.
+	 */
+	public function test_shortcode_event_registration_renders_once_per_event_per_request() {
+		$event_id = $this->make_event();
+
+		$first  = do_shortcode( '[event_registration id="' . $event_id . '"]' );
+		$second = do_shortcode( '[event_registration id="' . $event_id . '"]' );
+
+		$this->assertStringContainsString( '<form class="anchor-event-registration"', $first );
+		$this->assertSame( '', $second, 'A second render of the same event this request must be suppressed.' );
+	}
+
+	/** A DIFFERENT event's shortcode still renders normally — the guard is per event, not global. */
+	public function test_shortcode_event_registration_render_once_guard_is_per_event() {
+		$event_a = $this->make_event();
+		$event_b = $this->make_event();
+
+		do_shortcode( '[event_registration id="' . $event_a . '"]' );
+		$other = do_shortcode( '[event_registration id="' . $event_b . '"]' );
+
+		$this->assertStringContainsString( '<form class="anchor-event-registration"', $other );
+	}
+
 	/** With no [event_registration] shortcode anywhere, the flag stays false so the template still renders its own form. */
 	public function test_render_single_event_body_flag_false_with_no_registration_shortcode() {
 		$event_id = $this->make_event();

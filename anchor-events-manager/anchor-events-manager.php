@@ -216,6 +216,16 @@ class Module {
     private $registration_shortcode_rendered_for = null;
 
     /**
+     * NEW-D6 (plugin half): event ids [event_registration] has already
+     * rendered the picker/form for THIS request, so a second invocation for
+     * the SAME event — from a theme template part, a widget, a builder, or a
+     * second copy of the shortcode anywhere on the page — renders nothing
+     * instead of a duplicate. Grows only for the life of one request; a
+     * fresh request starts with an empty list.
+     */
+    private $registration_shortcode_rendered_ids = [];
+
+    /**
      * True only while a preview is rendering. Makes build_registration_email_html()
      * substitute preview_sample_scalars() for tokens the event has no value for,
      * and render the conditional regions that would otherwise be empty. Never
@@ -6285,8 +6295,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $ids;
     }
 
+    /**
+     * Append `[event_registration]` to a newly-registration-enabled event's
+     * content — unless the active theme owns rendering the registration UI
+     * itself. NEW-D6 (plugin half): a theme that renders its own picker/form
+     * for the event content would otherwise get it a second time from this
+     * auto-appended shortcode. A theme opts out with
+     * `add_theme_support( 'anchor-events-registration' )`; anything that
+     * cannot add theme support (a must-use plugin, a child theme functions
+     * file) can use the `anchor_events_auto_append_registration` filter
+     * instead. Documented in EVENTS.md.
+     */
     private function maybe_append_registration_shortcode( $post_id, $input ) {
         if ( empty( $input['registration_enabled'] ) ) {
+            return;
+        }
+        if ( \current_theme_supports( 'anchor-events-registration' ) ) {
+            return;
+        }
+        if ( ! \apply_filters( 'anchor_events_auto_append_registration', true, $post_id ) ) {
             return;
         }
         $post = \get_post( $post_id );
@@ -6834,6 +6861,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 . esc_html__( 'No event specified for registration.', 'anchor-schema' )
                 . '</div>';
         }
+
+        // NEW-D6 (plugin half) — render once per event per request. A theme
+        // that also renders its own registration UI for this event (or a
+        // second copy of the shortcode anywhere on the page) must not get a
+        // duplicate picker/form; the first render wins.
+        if ( \in_array( $event_id, $this->registration_shortcode_rendered_ids, true ) ) {
+            return '';
+        }
+        $this->registration_shortcode_rendered_ids[] = $event_id;
 
         // RENDER-D33: mark THIS event as "the registration shortcode already
         // rendered for it" the moment we resolve a real target, regardless of

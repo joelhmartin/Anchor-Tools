@@ -148,4 +148,55 @@ class Test_Event_Save extends Anchor_Events_TestCase {
 
 		$this->assertSame( '', get_post_meta( $event_id, '_anchor_event_type', true ) );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * NEW-D6 (plugin half) — the auto-append shortcode respects the theme's
+	 * own registration UI
+	 * ------------------------------------------------------------------- */
+
+	/** Baseline: registration enabled + no theme support declared still auto-appends. */
+	public function test_save_meta_appends_registration_shortcode_when_enabled() {
+		$event_id = $this->make_event();
+		wp_update_post( [ 'ID' => $event_id, 'post_content' => 'Course description.' ] );
+
+		$_POST = $this->post_payload( [ 'anchor_event_registration_enabled' => '1' ] );
+		$this->module()->save_meta( $event_id );
+
+		$this->assertStringContainsString( '[event_registration]', get_post( $event_id )->post_content );
+	}
+
+	/** A theme declaring add_theme_support( 'anchor-events-registration' ) suppresses the auto-append entirely. */
+	public function test_save_meta_skips_auto_append_when_theme_declares_support() {
+		$event_id = $this->make_event();
+		wp_update_post( [ 'ID' => $event_id, 'post_content' => 'Course description.' ] );
+
+		add_theme_support( 'anchor-events-registration' );
+		try {
+			$_POST = $this->post_payload( [ 'anchor_event_registration_enabled' => '1' ] );
+			$this->module()->save_meta( $event_id );
+		} finally {
+			remove_theme_support( 'anchor-events-registration' );
+		}
+
+		$this->assertStringNotContainsString( '[event_registration]', get_post( $event_id )->post_content );
+	}
+
+	/** anchor_events_auto_append_registration returning false is the escape hatch for anything that can't add theme support. */
+	public function test_save_meta_skips_auto_append_when_filter_returns_false() {
+		$event_id = $this->make_event();
+		wp_update_post( [ 'ID' => $event_id, 'post_content' => 'Course description.' ] );
+
+		$suppress = static function () {
+			return false;
+		};
+		add_filter( 'anchor_events_auto_append_registration', $suppress );
+		try {
+			$_POST = $this->post_payload( [ 'anchor_event_registration_enabled' => '1' ] );
+			$this->module()->save_meta( $event_id );
+		} finally {
+			remove_filter( 'anchor_events_auto_append_registration', $suppress );
+		}
+
+		$this->assertStringNotContainsString( '[event_registration]', get_post( $event_id )->post_content );
+	}
 }

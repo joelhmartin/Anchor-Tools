@@ -231,6 +231,17 @@ key for an answer whose question has been deleted.
   "Other dates" list of a child's live siblings plus a link back to the parent's
   choose-a-date page. A directly-visited soft-closed child shows a
   "no longer available" notice instead of a booking form, alongside this sibling list.
+- **`[event_registration]` auto-append**: saving an event with registration
+  enabled appends `[event_registration]` to its content once, unless it's
+  already there (`Module::maybe_append_registration_shortcode()`). A theme
+  that renders its own registration UI for the event content declares
+  `add_theme_support( 'anchor-events-registration' )` to suppress the
+  auto-append entirely (NEW-D6); the `anchor_events_auto_append_registration`
+  filter (`$should_append, $post_id`, default `true`) is the escape hatch for
+  anything that can't add theme support. The shortcode itself also renders at
+  most once per event per request — a second invocation for the same event
+  anywhere on the page (theme template part, widget, a stray second copy of
+  the tag) renders nothing rather than a duplicate picker/form.
 - **Series archive grouping**: `Anchor\Events\Series` registers the public
   `event_series` taxonomy (rewrite slug `series`) and renders its archive
   (`render_archive()`). Because a group parent shares its series term with every one
@@ -436,6 +447,7 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 | `anchor_events_emit_event_schema` | `$should_emit, $event_id` | Suppress/force JSON-LD emission for an event. |
 | `anchor_events_should_send_reminder` | `true, $seat, $offset` | Per-recipient reminder-email suppression. |
 | `anchor_events_query_args` | `$query_args, $atts` | Adjust the `WP_Query` args behind event listing shortcodes. |
+| `anchor_events_auto_append_registration` | `true, $post_id` | Return `false` to suppress the automatic `[event_registration]` append on save (NEW-D6) — checked independently of, and after, the `add_theme_support( 'anchor-events-registration' )` theme opt-out (either one suppresses it). |
 | `anchor_events_event_classes` | `$classes, $post_id, $context` | Extra CSS classes on a rendered event card/row. |
 | `anchor_events_registration_form` | `'', $post_id, $meta` | Override seam — return non-empty HTML to replace the registration form entirely (used by the WooCommerce integration for the ticketed buy UI). |
 | `anchor_events_registration_email_html` | `$html, $ctx` | Final filter on any built registration/lifecycle email HTML. |

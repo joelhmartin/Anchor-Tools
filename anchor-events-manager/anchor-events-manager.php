@@ -12410,12 +12410,37 @@ ANCHOR_EVENTS_EMAIL_SHELL;
     }
 
     /**
-     * Default template constant for $type — the ultimate fallback (Task 3.1
-     * orientation: all four share the same shell today). Public so the
-     * Task 3.2 builder UI can offer a "reset to default" preview.
+     * Default template for $type — the ultimate fallback. Public so the
+     * builder UI can offer a "reset to default" preview.
+     *
+     * REG-D60 — the body used to be a bare `return self::default_email_shell();`
+     * with $type unused, so the signature and EMAILS.md both promised a
+     * per-type default that did not exist: "Reset to default" on the
+     * cancellation tab restored the confirmation-shaped shell, and any attempt
+     * to diverge the four would have silently done nothing until this method
+     * was rewritten. All four still map to the same shell today — that is a
+     * decision, and it is written down here — but the seam is where the name
+     * says it is.
+     *
+     * @param string $type One of EMAIL_TEMPLATE_TYPES.
+     * @return string
      */
     public function default_email_template( $type ) {
-        return self::default_email_shell();
+        $type = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? (string) $type : 'confirmation';
+
+        // One arm per type on purpose: diverging one of the four is an edit to
+        // its own line, not a rewrite of this method.
+        switch ( $type ) {
+            case 'reminder':
+                return self::default_email_shell();
+            case 'cancellation':
+                return self::default_email_shell();
+            case 'roster':
+                return self::default_email_shell();
+            case 'confirmation':
+            default:
+                return self::default_email_shell();
+        }
     }
 
     /**

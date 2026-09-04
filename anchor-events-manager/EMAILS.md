@@ -94,8 +94,9 @@ effective template for a type on a given event, in order:
 
 1. **Per-event override** — post meta `_anchor_event_email_tpl_{type}` on the event
    (registered via `register_post_meta()` for all four types), when non-empty.
-2. **Default constant** — `Module::default_email_template( $type )`, currently the
-   same shared shell for every type.
+2. **Default constant** — `Module::default_email_template( $type )`. It dispatches on
+   `$type` (REG-D60 — the parameter used to be ignored), with all four types currently
+   answering with the same shared shell; diverging one is an edit to its own arm.
 
 `resolve_email_template( $type, 0 )` (no event id) skips step 1 and resolves the
 default only — this is also what a per-event save compares against to decide whether

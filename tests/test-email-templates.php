@@ -180,6 +180,27 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 		$this->assertSame( $this->module()->default_email_template( 'confirmation' ), $resolved );
 	}
 
+	/**
+	 * REG-D60 — default_email_template() dispatches on $type. The parameter was
+	 * unused, so "Reset to default" on the cancellation tab restored the
+	 * confirmation-shaped shell and a future divergence would have done nothing.
+	 */
+	public function test_the_default_template_is_resolved_per_type() {
+		foreach ( Module::EMAIL_TEMPLATE_TYPES as $type ) {
+			$this->assertNotSame( '', $this->module()->default_email_template( $type ) );
+			$this->assertSame(
+				$this->module()->default_email_template( $type ),
+				$this->module()->resolve_email_template( $type, 0 ),
+				$type . ' must resolve to its own default.'
+			);
+		}
+		// An unknown type is answered as a confirmation rather than with nothing.
+		$this->assertSame(
+			$this->module()->default_email_template( 'confirmation' ),
+			$this->module()->default_email_template( 'not-a-type' )
+		);
+	}
+
 	/** REG-D12 — the retired global tier is not consulted, even when the option exists. */
 	public function test_resolve_ignores_the_retired_global_template_option() {
 		$event_id = $this->make_event();

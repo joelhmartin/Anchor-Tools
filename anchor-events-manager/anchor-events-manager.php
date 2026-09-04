@@ -95,6 +95,24 @@ class Module {
     const STATUS_SCHEMA_VERSION = 1;
 
     /**
+     * Version of the `_anchor_event_registration_mode` back-compat back-fill.
+     *
+     * Same shape as STATUS_SCHEMA_VERSION: the site-wide option
+     * `anchor_events_regmode_version` records the version the migration has
+     * finished, and there is no per-event stamp because the selection
+     * predicate (registration_mode meta NOT EXISTS) is self-clearing — every
+     * row the pass writes removes itself from the window.
+     *
+     * Supersedes the pre-versioning boolean `anchor_events_regmode_migrated`
+     * flag (audit MODEL-D41), which this back-fill deletes once the versioned
+     * option is set.
+     *
+     * 1 — original back-fill: derive registration_mode from legacy signals
+     *     and, for external events, copy registration_url -> external_url.
+     */
+    const REGMODE_SCHEMA_VERSION = 1;
+
+    /**
      * Statuses whose old spelling still exists in the wild, mapped to the
      * current one. Read through normalize_status(); rewritten on disk by
      * backfill_status_values().
@@ -417,6 +435,10 @@ class Module {
         \add_action( 'admin_init', [ $this, 'backfill_occurrence_labels' ] );
         // Same shape again: the 'draft' -> 'undated' status rename (MODEL-D19).
         \add_action( 'admin_init', [ $this, 'backfill_status_values' ] );
+        // Same shape again: derive registration_mode for pre-upgrade events
+        // (MODEL-D41). Was on `init` (every front-end pageload); now batched
+        // and versioned like the back-fills above.
+        \add_action( 'admin_init', [ $this, 'backfill_registration_mode' ] );
         \add_action( 'admin_init', [ $this, 'cleanup_legacy_cache_registry' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
         \add_action( 'admin_notices', [ $this, 'maybe_render_timezone_notice' ] );
@@ -2256,9 +2278,11 @@ class Module {
     }
 
     public function register_meta() {
-        // One-time back-compat migration (Task 1.1+1.2): derives registration_mode
-        // for events that predate the key. Flag-guarded, safe on every init.
-        $this->migrate_registration_mode();
+        // The registration_mode back-compat back-fill used to run here, on
+        // every init including the front end (MODEL-D41: an unbounded
+        // posts_per_page=>-1 query on every page load until the flag write
+        // succeeded). It is now backfill_registration_mode(), hooked on
+        // admin_init below alongside the module's other versioned back-fills.
 
         // Protected (underscore-prefixed) meta keys require an explicit auth_callback
         // for REST writes, otherwise Gutenberg's meta save path fails with
@@ -10447,7 +10471,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // pre-filled "External URL" field) through the single external_url()
         // accessor so they all resolve the same way. See that method's
         // docblock for why this is belt-and-suspenders with the
-        // registration_url -> external_url copy in migrate_registration_mode().
+        // registration_url -> external_url copy in backfill_registration_mode().
         $defaults['external_url'] = $this->external_url( $post_id );
 
         return $defaults;
@@ -10479,7 +10503,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * The event's registration mode. An explicit stored value wins; otherwise
      * it's derived from legacy signals for back-compat with pre-existing events
-     * (mirrors the logic in migrate_registration_mode()).
+     * (mirrors the logic in backfill_registration_mode()).
      *
      * @param int $event_id
      * @return string One of wc|free|external.
@@ -10503,7 +10527,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * the legacy `_anchor_event_registration_url` meta. This is the live-read
      * half of the BC fix: a pre-upgrade external event only ever wrote the
      * legacy key, and this fallback means its link resolves correctly even on
-     * a site where the one-time migrate_registration_mode() migration below
+     * a site where the one-time backfill_registration_mode() migration below
      * has NOT run yet (first page load after upgrade). The migration's own
      * registration_url -> external_url copy is the belt-and-suspenders half,
      * for any OTHER code that might read `_anchor_event_external_url` meta
@@ -10544,7 +10568,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Derive a registration mode for an event that has no explicit stored
      * value, from legacy registration-type/url meta and ticket-tier/product
-     * signals. Shared by registration_mode() and migrate_registration_mode().
+     * signals. Shared by registration_mode() and backfill_registration_mode().
      *
      * @param int $event_id
      * @return string One of wc|free|external.
@@ -10611,9 +10635,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * One-time back-compat migration: derives and persists registration_mode
-     * for events that predate the key. Idempotent — guarded by an option flag,
-     * so it's safe to call on every request.
+     * One-time back-compat back-fill: derives and persists registration_mode
+     * for events that predate the key.
      *
      * Task BC extension: for an event this derives as `external`, also copies
      * the legacy `registration_url` into the new `external_url` key (only
@@ -10621,25 +10644,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * external-URL BC fix (see external_url()'s docblock for the live-read
      * fallback half). The legacy `registration_url`/`registration_type` meta
      * is intentionally left in place, never cleared — other code (and this
-     * migration itself, if ever re-run) still reads it.
+     * back-fill itself, if ever re-run) still reads it.
+     *
+     * MODEL-D41: this used to run unconditionally from register_meta() on
+     * `init` — an unbounded posts_per_page=>-1 WP_Query on every single page
+     * load, front end included, until the site's very first migrated request
+     * managed to write the option. It is now shaped like the module's other
+     * versioned admin_init back-fills (backfill_timestamps(),
+     * backfill_status_values()): capability-gated, batched at 200, and keyed
+     * off `anchor_events_regmode_version` rather than the boolean
+     * `anchor_events_regmode_migrated` flag it deletes once that version is
+     * recorded — no per-event stamp needed, because the NOT-EXISTS selection
+     * predicate is self-clearing (every row this writes leaves the window).
+     *
+     * admin_init is NOT an authenticated hook — admin-post.php fires it before
+     * validating the auth cookie, and this module registers
+     * admin_post_nopriv_anchor_event_register and ..._manager_login — so the
+     * capability check is what keeps this from running inline on a
+     * logged-out visitor's POST.
      */
-    public function migrate_registration_mode() {
-        if ( \get_option( 'anchor_events_regmode_migrated' ) ) {
+    public function backfill_registration_mode() {
+        if ( ! \current_user_can( 'edit_posts' ) ) {
+            return;
+        }
+        if ( (int) \get_option( 'anchor_events_regmode_version' ) >= self::REGMODE_SCHEMA_VERSION ) {
             return;
         }
 
-        $query = new \WP_Query( [
+        $batch = 200;
+        $ids = \get_posts( [
             'post_type' => self::CPT,
             'post_status' => 'any',
+            'posts_per_page' => $batch,
             'fields' => 'ids',
-            'posts_per_page' => -1,
             'no_found_rows' => true,
+            'suppress_filters' => true,
             'meta_query' => [
                 [ 'key' => $this->meta_key( 'registration_mode' ), 'compare' => 'NOT EXISTS' ],
             ],
         ] );
 
-        foreach ( $query->posts as $event_id ) {
+        foreach ( $ids as $event_id ) {
             $mode = $this->derive_registration_mode( $event_id );
             \update_post_meta( $event_id, $this->meta_key( 'registration_mode' ), $mode );
 
@@ -10654,7 +10699,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
         }
 
-        \update_option( 'anchor_events_regmode_migrated', true, false );
+        if ( ! empty( $ids ) ) {
+            $this->clear_caches();
+        }
+
+        // A short batch means nothing is left to process — every event the
+        // query returns is stamped (it now has a registration_mode row, which
+        // is what the predicate matches on), so the window always moves and
+        // this condition is always eventually reached.
+        if ( count( $ids ) < $batch ) {
+            \update_option( 'anchor_events_regmode_version', self::REGMODE_SCHEMA_VERSION, false );
+            // Superseded by the versioned option; leaving it would only invite
+            // a future reader to treat it as authoritative again.
+            \delete_option( 'anchor_events_regmode_migrated' );
+        }
     }
 
     /**

@@ -19,7 +19,7 @@
  * Every fixture below is built with Anchor_Events_TestCase::make_event(),
  * passing ONLY legacy keys (plus make_event()'s own registration_enabled/
  * capacity/waitlist defaults, which are themselves legacy-model fields) and
- * NEVER calling migrate_registration_mode() unless a test is specifically
+ * NEVER calling backfill_registration_mode() unless a test is specifically
  * exercising the migration — so most of these tests hit the resolvers'
  * live-read (un-migrated) code path, exactly like a real pre-upgrade site's
  * very first page load after the plugin update.
@@ -34,7 +34,7 @@
  * would have gone unnoticed until a customer complained a "Register" button
  * had vanished. The fix is Module::external_url() (a live-read fallback to
  * the legacy key, wired into get_meta()) plus a matching mapping in
- * migrate_registration_mode() — see those methods' docblocks.
+ * backfill_registration_mode() — see those methods' docblocks.
  *
  * @package Anchor\Events\Tests
  */
@@ -180,6 +180,7 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	 * ------------------------------------------------------------------ */
 
 	public function test_migration_backfills_registration_mode_and_maps_external_url_for_a_batch_of_old_events() {
+		delete_option( 'anchor_events_regmode_version' );
 		delete_option( 'anchor_events_regmode_migrated' );
 
 		$free_id = $this->make_event( [ 'registration_type' => 'internal' ] );
@@ -197,12 +198,12 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 			$this->assertSame( '', get_post_meta( $id, '_anchor_event_registration_mode', true ) );
 		}
 
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame( 'free', get_post_meta( $free_id, '_anchor_event_registration_mode', true ) );
 		$this->assertSame( 'external', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 		$this->assertSame( 'wc', get_post_meta( $wc_id, '_anchor_event_registration_mode', true ) );
-		$this->assertTrue( (bool) get_option( 'anchor_events_regmode_migrated' ) );
+		$this->assertTrue( (int) get_option( 'anchor_events_regmode_version' ) >= 1 );
 
 		// The Task BC mapping: registration_url -> external_url, ONLY for the
 		// external event, and the legacy key is left in place (not cleared).
@@ -219,7 +220,7 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 		// a migrated value and confirm a second run doesn't revisit that post.
 		update_post_meta( $external_id, '_anchor_event_registration_mode', 'free' );
 		update_post_meta( $external_id, '_anchor_event_external_url', 'https://ext.example/hand-edited' );
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame( 'free', get_post_meta( $external_id, '_anchor_event_registration_mode', true ), 'Idempotent: already-migrated posts must not be revisited.' );
 		$this->assertSame( 'https://ext.example/hand-edited', get_post_meta( $external_id, '_anchor_event_external_url', true ), 'Idempotent: already-migrated posts must not be revisited.' );
@@ -233,6 +234,7 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	 * survives untouched.
 	 */
 	public function test_migration_external_url_mapping_never_overwrites_an_existing_value() {
+		delete_option( 'anchor_events_regmode_version' );
 		delete_option( 'anchor_events_regmode_migrated' );
 
 		$event_id = $this->make_event( [
@@ -244,7 +246,7 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 		// before the migration query would otherwise pick it up.
 		update_post_meta( $event_id, '_anchor_event_external_url', 'https://ext.example/already-explicit' );
 
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame(
 			'https://ext.example/already-explicit',
@@ -259,14 +261,13 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	 * ------------------------------------------------------------------ */
 
 	/**
-	 * These fixtures are created fresh in THIS test and migrate_registration_mode()
+	 * These fixtures are created fresh in THIS test and backfill_registration_mode()
 	 * is never called on them — proving the live-read fallback (not the
 	 * migration) is what makes an un-migrated site work correctly on its very
-	 * first page load after upgrade. (The site-wide 'anchor_events_regmode_migrated'
-	 * option may already be true from the module's own init-time call in
-	 * bootstrap — that's irrelevant here, since a no-op run over an empty DB
-	 * cannot have touched posts that didn't exist yet; each assertion below
-	 * confirms THIS event's own registration_mode meta is still unset.)
+	 * first page load after upgrade. (MODEL-D41 moved the back-fill off `init`
+	 * onto `admin_init`, so — unlike before — nothing in the WP test bootstrap
+	 * runs it automatically; each assertion below confirms THIS event's own
+	 * registration_mode meta is still unset.)
 	 */
 	public function test_resolvers_work_correctly_before_migration_has_touched_these_events() {
 		$free_id = $this->make_event( [ 'registration_type' => 'internal' ] );

@@ -239,8 +239,15 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		);
 	}
 
-	/** The one-time migration derives registration_mode for legacy events and is idempotent. */
+	/**
+	 * The one-time back-fill derives registration_mode for legacy events and
+	 * is idempotent. backfill_registration_mode() is capability-gated
+	 * (MODEL-D41: it now runs on admin_init, which fires unauthenticated on
+	 * admin-post.php), so this needs a user who could edit events by hand.
+	 */
 	public function test_migration_derives_registration_mode_for_legacy_events_and_is_idempotent() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		delete_option( 'anchor_events_regmode_version' );
 		delete_option( 'anchor_events_regmode_migrated' );
 
 		$external_id = $this->make_event( [ 'registration_type' => 'external' ] );
@@ -253,15 +260,15 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertSame( '', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 		$this->assertSame( '', get_post_meta( $wc_id, '_anchor_event_registration_mode', true ) );
 
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame( 'external', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 		$this->assertSame( 'wc', get_post_meta( $wc_id, '_anchor_event_registration_mode', true ) );
-		$this->assertTrue( (bool) get_option( 'anchor_events_regmode_migrated' ) );
+		$this->assertTrue( (int) get_option( 'anchor_events_regmode_version' ) >= 1 );
 
 		// Idempotency: hand-edit a migrated value, re-run, and confirm it's left untouched.
 		update_post_meta( $external_id, '_anchor_event_registration_mode', 'free' );
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame( 'free', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 	}

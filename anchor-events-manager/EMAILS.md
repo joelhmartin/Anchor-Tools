@@ -222,13 +222,22 @@ both disabled site-wide, and no start date/time set yet.
 ### Reminders & Scheduled Roster
 
 Both are executed by a single recurring cron hook (`anchor_events_reminder_sweep`) on the **hourly** schedule. This cron:
-- Runs once per hour and identifies events whose reminders or roster digests are due based on event start time and configured offsets.
-- Uses idempotency markers to ensure each email sends exactly once per offset (reminders) or per event (roster), even if cron overlaps or the event date is moved.
+- Drains the lifecycle-email retry queue (below) before anything else.
+- Identifies events whose reminders or roster digests are due based on event start time and configured offsets.
+- Uses idempotency markers to ensure each email sends exactly once per offset per date (reminders) or once per date (roster), even if cron overlaps.
 - Respects event timezones via the pre-computed `start_ts` Unix timestamp (no extra timezone math needed).
 
-**Reminder marker:** Per-seat `_anchor_event_reminders_sent` meta (array of `offset_days => sent_unix`). Each offset fires at most once.
+**One reminder per seat per sweep.** When several offsets are due at once — a registration taken inside the shortest window, or reminders switched on late — only the offset **closest to the event** is sent; the wider ones are marked superseded so they cannot fire an hour later. Without this, offsets `7,1` mailed a 12-hours-before registrant twice in the same minute.
 
-**Scheduled roster marker:** Per-event `_anchor_event_roster_sent` meta (Unix timestamp of send, or 0 if not sent). Fires once per event.
+**Reminder marker:** Per-seat `_anchor_event_reminders_sent` meta, keyed by the event start it was sent **about**: `[ start_ts => [ offset_days => sent_unix ] ]`. `sent_unix` of `0` means the offset was superseded, not sent. Rescheduling the event changes `start_ts`, which re-arms every offset for the new date; moving it back onto a date already mailed about finds that date's markers still standing, so it does not re-send. The pre-upgrade flat `[ offset_days => sent_unix ]` shape reads as "sent for the date the event is on now" and is rewritten on the next sweep.
+
+**Scheduled roster marker:** Per-event `_anchor_event_roster_sent` meta, `[ start_ts => sent_unix ]`, with the same re-arm-on-reschedule behaviour. A pre-upgrade bare timestamp is read and rewritten the same way.
+
+**Cancellation marker:** Per-seat `_anchor_event_cancel_emailed` — the Unix time that cancellation was emailed about. `Registrations::update_status()` deletes it whenever a seat leaves a terminal status, so a seat restored by a roster edit and cancelled again emails the attendee again. `send_cancellation_email()` returns `true` only when `wp_mail()` accepted the message; a skip returns `false`.
+
+### Retry queue
+
+A lifecycle email whose `wp_mail()` returns false leaves a job on the seat in `_anchor_event_email_retry` (`{type, attempts, next_at, …}`). The hourly sweep drains it — before its own sends, and regardless of whether reminders or roster digests are switched on at all, because a queued cancellation is governed by `notify_cancellation`. Jobs are retried hourly up to `Module::MAX_EMAIL_ATTEMPTS` (3 attempts including the original send), then abandoned with an `email_retry_abandoned` entry in the events error log. A job the sender can never satisfy (email type switched off, no address, seat gone) is retired immediately with `email_retry_undeliverable`.
 
 ### Manual Roster Send
 

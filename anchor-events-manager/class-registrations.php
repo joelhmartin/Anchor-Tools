@@ -36,6 +36,25 @@ class Registrations {
     /** Statuses counted as waitlist (never toward capacity). */
     const WAITLIST_STATUSES = [ self::STATUS_WAITLIST ];
 
+    /**
+     * The statuses a cancellation/refund email is sent ABOUT (audit REG-D4).
+     *
+     * One definition for the whole module: Module::on_seat_status_changed()
+     * decides whether to enqueue from it, and update_status() below clears the
+     * "already emailed" marker from it, so "terminal" can never come to mean
+     * two different things in the enqueue path and the clear path.
+     */
+    const TERMINAL_STATUSES = [ self::STATUS_CANCELLED, self::STATUS_REFUNDED ];
+
+    /**
+     * Seat meta keys for the lifecycle-email markers. Named here — the seat
+     * data layer owns seat storage — so the sweep, the senders and the clear
+     * path in update_status() all spell them the same way.
+     */
+    const META_REMINDERS_SENT = '_anchor_event_reminders_sent';
+    const META_CANCEL_EMAILED = '_anchor_event_cancel_emailed';
+    const META_EMAIL_RETRY    = '_anchor_event_email_retry';
+
     /** Allowed status transitions (spec §4.3). Illegal transitions are logged + no-oped. */
     protected static $transitions = [
         self::STATUS_PENDING   => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED, self::STATUS_WAITLIST ],
@@ -194,6 +213,22 @@ class Registrations {
         \update_post_meta( $seat_id, '_anchor_event_reg_status', $to );
         $history[] = [ 'status' => $to, 'time' => \time(), 'note' => (string) $note, 'actor' => (string) $actor ];
         \update_post_meta( $seat_id, '_anchor_event_history', $history );
+
+        // Leaving a terminal status re-arms the cancellation email (audit
+        // REG-D4). The marker used to be a write-once boolean with no clear
+        // path, so a seat cancelled → restored by a roster edit → cancelled
+        // again never told the attendee about the second cancellation. It is
+        // now a per-transition timestamp, and this is the one place it is
+        // cleared: the seat is live again, so whatever was emailed about the
+        // last cancellation no longer describes it. Any cancellation email
+        // still queued for retry is dropped for the same reason.
+        if ( \in_array( $from, self::TERMINAL_STATUSES, true ) && ! \in_array( $to, self::TERMINAL_STATUSES, true ) ) {
+            \delete_post_meta( $seat_id, self::META_CANCEL_EMAILED );
+            $job = \get_post_meta( $seat_id, self::META_EMAIL_RETRY, true );
+            if ( \is_array( $job ) && ( $job['type'] ?? '' ) === 'cancellation' ) {
+                \delete_post_meta( $seat_id, self::META_EMAIL_RETRY );
+            }
+        }
 
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
@@ -1077,6 +1112,26 @@ class Registrations {
         }
 
         return [ 'items' => $items, 'total' => (int) $q->found_posts ];
+    }
+
+    /**
+     * One seat as the SAME DTO query_seats() returns.
+     *
+     * The lifecycle-email retry drain (audit REG-D5) has a seat id and needs
+     * the record every sender already takes; without this it would have to
+     * rebuild the DTO by hand and drift from seat_dto() the moment a field is
+     * added. Returns null for anything that is not a seat post.
+     *
+     * @param int $seat_id
+     * @return array|null
+     */
+    public function get_seat( $seat_id ) {
+        $seat_id = (int) $seat_id;
+        if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return null;
+        }
+        $post = \get_post( $seat_id );
+        return $post ? $this->seat_dto( $post ) : null;
     }
 
     /**

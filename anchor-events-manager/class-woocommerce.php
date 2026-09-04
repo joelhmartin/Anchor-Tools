@@ -2324,7 +2324,15 @@ class WooCommerce {
         $tier_from_variation = false;
         if ( $this->module->product_sync && $variation_id > 0 ) {
             $resolved = $this->module->product_sync->tier_for_variation( $variation_id );
-            if ( ! empty( $resolved['tier_id'] ) ) {
+            // …and only when the variation belongs to THIS event. A tier id is
+            // unique within an event, not across the site, so a variation whose
+            // product was re-pointed at another event (the link metabox, a
+            // duplicated product) hands back an id that names one of the OTHER
+            // event's tiers. Used here it is a tier this event does not have —
+            // which is indistinguishable from a deleted one, and would report a
+            // retirement nobody performed. The line falls back to the
+            // event-level path instead: not variation-owned, not retired.
+            if ( ! empty( $resolved['tier_id'] ) && (int) ( $resolved['event_id'] ?? 0 ) === (int) $event_id ) {
                 $tier_id             = (string) $resolved['tier_id'];
                 $tier_from_variation = true;
             }

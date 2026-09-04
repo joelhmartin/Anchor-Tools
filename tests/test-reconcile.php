@@ -333,4 +333,48 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 		$this->assertNotContains( 'retired_tier', $this->review_reasons( $order_id ) );
 		$this->assertNotContains( 'retired_tier', $this->error_codes() );
 	}
+
+	/**
+	 * …and neither is a variation that belongs to a DIFFERENT event. Tier ids
+	 * are unique within an event, not across the site, so a product re-pointed
+	 * at another event (the link metabox, a duplicated product) hands back an id
+	 * naming the other event's tier — a tier this event has never had, which is
+	 * indistinguishable from a deleted one. The line falls back to the
+	 * event-level path.
+	 */
+	public function test_a_variation_owned_by_another_event_is_not_a_retired_tier() {
+		// The event the ORDER is for, with its own live tier.
+		$host_id = $this->make_event(
+			[ 'title' => 'Host Event', 'capacity' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$host_tier = $this->ticket_types()->get( $host_id )[0]['id'];
+
+		// A DIFFERENT event's managed product, whose variation carries that
+		// event's tier id.
+		$other      = $this->two_tier_event();
+		$other_tier = $other['tiers'][1];
+		$other_vid  = (int) $this->product_sync()->variation_for_tier( $other['event_id'], $other_tier['id'] );
+		$this->assertGreaterThan( 0, $other_vid );
+		$this->assertNull(
+			$this->ticket_types()->find( $host_id, $other_tier['id'] ),
+			'Precondition: the host event has never had that tier.'
+		);
+
+		// Somebody points that variation's line at the host event.
+		update_post_meta( $other_vid, \Anchor\Events\WooCommerce::META_EVENT_ID, $host_id );
+
+		delete_option( \Anchor\Events\Events_Log::ERROR_OPTION );
+		$res      = $this->make_order( $other_vid, 2 );
+		$order_id = (int) $res['order']->get_id();
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'test' );
+
+		$this->assertSame(
+			2,
+			$this->count_seats( $host_id, Registrations::STATUS_CONFIRMED, $host_tier ),
+			'The line reconciles against the host event\'s own primary tier.'
+		);
+		$this->assertNotContains( 'retired_tier', $this->review_reasons( $order_id ) );
+		$this->assertNotContains( 'retired_tier', $this->error_codes() );
+	}
 }

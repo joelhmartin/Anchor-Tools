@@ -1729,11 +1729,11 @@ class Module {
             // MODEL-D27 / RENDER-D22). It used to live only inside the child's
             // post_title, which occurrence_label() then string-sliced back out
             // against the parent's title prefix, so renaming the parent erased
-            // every label from "Choose a date". Deliberately NOT in
-            // get_meta_defaults(): get_meta() drives sync_shared_meta()'s
-            // parent->child copy, and a parent has no occurrence label of its
-            // own to copy down (it is also in PER_OCCURRENCE_KEYS as a second
-            // guard). Engine-owned, so show_in_rest=false like its siblings.
+            // every label from "Choose a date". Deliberately absent from
+            // Occurrences::INHERITED_KEYS (and named in PER_OCCURRENCE_KEYS as
+            // a second guard): a parent has no occurrence label of its own to
+            // copy down. Engine-owned, so show_in_rest=false like its
+            // siblings.
             'label' => [ 'type' => 'string', 'show_in_rest' => false ],
             // Recurrence generator (Phase 2, Task 2.2) — PARENT-only rule
             // ({freq,interval,count?,until?,weekdays?,start_time,end_time,
@@ -4063,11 +4063,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Every label row for an event, each with a resolved display `caption`.
      *
-     * Occurrence children inherit `labels` from their parent automatically —
-     * Occurrences::sync_shared_meta() copies every parent key not named in
-     * PER_OCCURRENCE_KEYS/NEVER_COPY_KEYS, and `labels` is in neither. A
-     * "2 Day Course" describes each date of a pick-one offering, so inheriting
-     * is the correct default.
+     * Occurrence children inherit `labels` from their parent —
+     * Occurrences::INHERITED_KEYS names it explicitly, and
+     * sync_shared_meta() copies the parent's row down (and removes the
+     * child's when the parent has none). A "2 Day Course" describes each date
+     * of a pick-one offering, so inheriting is the correct default.
      *
      * @param int $post_id
      * @return array<int,array{key:string,label:string,value:string,caption:string}>

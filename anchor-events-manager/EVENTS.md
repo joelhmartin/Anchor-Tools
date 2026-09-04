@@ -86,13 +86,32 @@ downstream is identical.
     on every reconcile, with `start_ts`/`end_ts` recomputed. Seats/roster and the
     managed WooCommerce product are implicitly per-occurrence and never copied.
   - *Shared* (copied from parent → child at creation AND re-synced on every reconcile
-    of a still-live child): everything else — title/content, location, ticket types,
-    `registration_mode`, `external_*` fields, the capacity default, timezone, and the
-    remaining registration-policy fields. A child's own `type` meta is force-set to
-    `single`.
-  - *Never copied*: engine-owned/product-owned keys (`linked_products`, `roster_sent`,
-    `activity`, `type`, `sessions`, `group_role`, `group_id`, `offering_dates`,
-    `recurrence`, `occurrence_key`, `occurrence_closed`).
+    of a still-live child): an **explicit allow-list**, not "everything else" —
+    `Occurrences::INHERITED_KEYS` (location fields, `timezone`, `all_day`, the
+    registration-policy fields, `price`, `gallery`, `labels`, `registration_mode`,
+    `external_*`, `organizer_email`, `reminder_offsets`) **plus** the event meta
+    that lives outside the meta schema: `_anchor_event_reg_questions` and every
+    `_anchor_event_email_*` override (per-type template/on-off/subject/preheader/
+    intro/CTA, and the From / Reply-To / Cc / Bcc sender identity). Title/content
+    and ticket tiers are copied by their own code paths. A child's own `type` meta
+    is force-set to `single`.
+    Two rules apply to everything on that list:
+    - Only a key the parent has a **real meta row** for is copied — never a value
+      `get_meta()` defaulted at read time, so a child is never handed a
+      `registration_type=internal` or `timezone=UTC-6` row nobody authored.
+    - Inheritance is **authoritative and symmetric**: a value authored directly on
+      a child is overwritten by the parent's on the next reconcile, and **deleted**
+      when the parent has no row for it (so clearing a venue — or a custom
+      confirmation subject — on the parent propagates instead of stranding the old
+      value on every date). Customise these on the parent, never on a child.
+    Single-value only: each key is read with `get_post_meta( …, true )` and written
+    as one row, so a genuinely multi-row key cannot be inherited.
+  - *Per-occurrence, never copied*: `PER_OCCURRENCE_KEYS` — the date identity,
+    `status`/`status_mode`, `registration_enabled`, `sold_out`, and the occurrence
+    `label`.
+  - *Never copied at all*: engine-owned/product-owned keys (`linked_products`,
+    `roster_sent`, `activity`, `type`, `sessions`, `group_role`, `group_id`,
+    `offering_dates`, `recurrence`, `occurrence_key`, `occurrence_closed`).
 - **Roster-safe soft-close**: when a previously-desired date is removed from the
   parent, its child is never deleted outright. If it has ANY seats (any status), it is
   *soft-closed*: `status_mode=manual`, `status=cancelled`,
@@ -290,10 +309,10 @@ Values are **plain text** — always escape at the point of output.
   theme can position one badge specifically rather than styling a blob.
 - **Single** — `Caption: value` rows inside `.anchor-event-detail-meta`, matching
   the existing Date / Venue / Status shape.
-- **Occurrence children inherit labels automatically.** `Occurrences::sync_shared_meta()`
-  copies every parent key not named in `PER_OCCURRENCE_KEYS` / `NEVER_COPY_KEYS`,
-  and `labels` is in neither — a "2 Day Course" describes each date of a pick-one
-  offering, so inheriting is the correct default. No engine change was required.
+- **Occurrence children inherit labels.** `labels` is named in
+  `Occurrences::INHERITED_KEYS`, so `sync_shared_meta()` copies the parent's row
+  down — a "2 Day Course" describes each date of a pick-one offering, so
+  inheriting is the correct default.
 
 ### Not in JSON-LD
 
@@ -349,6 +368,7 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 
 | Filter | Args | Purpose |
 |---|---|---|
+| `anchor_events_inherited_meta_keys` | `$keys, $parent_id, $child_id` | The full (prefixed) meta keys an occurrence child inherits from its group parent. Single-value keys only — each is copied with `get_post_meta( …, true )` and deleted wholesale when the parent has none, so a multi-row key (the DEKA theme's `_deka_event_speaker_ids`, say) must NOT be added here. |
 | `anchor_events_labels` | `$rows, $post_id` | Resolved event label rows (`{key, label, value, caption}`) — inject or rewrite a label before render. |
 | `anchor_events_labels_vocabulary` | `$vocabulary` | The label `key => caption` map. Add a site-specific key here instead of overloading `custom`. |
 | `anchor_events_embed_allowed_html` | `$default_allowed` | `wp_kses()` allowlist for the External-mode `external_embed` field. |

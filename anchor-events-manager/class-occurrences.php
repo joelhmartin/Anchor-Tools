@@ -1184,6 +1184,13 @@ class Occurrences {
          * child's stale row for it is removed — so adding a key here is safe
          * for a parent that never used it.
          *
+         * SINGLE-VALUE KEYS ONLY: each key is read with
+         * get_post_meta( ..., true ) and written as one row, and a key the
+         * parent lacks is deleted from the child wholesale. A genuinely
+         * multi-row key — the DEKA theme's `_deka_event_speaker_ids`, which
+         * stores one row per speaker, is the live example — would collapse to
+         * its first row on the child and lose the rest. Do not filter one in.
+         *
          * @param string[] $keys      Prefixed meta keys.
          * @param int      $parent_id Group parent post id.
          * @param int      $child_id  Occurrence child post id.

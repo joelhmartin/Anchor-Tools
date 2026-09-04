@@ -87,6 +87,46 @@ class Test_Email_Senders extends Anchor_Events_TestCase {
 	}
 
 	// -------------------------------------------------------------------------
+	// REG-D58 — one confirmation subject, saved on every site.
+	// -------------------------------------------------------------------------
+
+	/**
+	 * The subject the Emails builder offers as the placeholder is the subject
+	 * that actually goes out. It used to be `wc_customer_subject`, which
+	 * sanitize_settings() only persists when WooCommerce is active — so a free
+	 * site was shown "Your event registration is confirmed" as the string it
+	 * was overriding while the send used a hard-coded third one.
+	 */
+	public function test_the_confirmation_subject_setting_is_the_one_that_is_sent() {
+		$this->set_settings( [
+			'notify_admin'         => false,
+			'notify_user'          => true,
+			'confirmation_subject' => 'Your place at {event_title} is booked',
+		] );
+		$event_id = $this->make_event( [ 'title' => 'Suture Level III' ] );
+
+		$this->assertSame(
+			'Your place at {event_title} is booked',
+			$this->module()->email_field_default( 'confirmation', 'subject' )
+		);
+
+		$this->module()->send_registration_emails( $event_id, 'Jane Doe', 'jane@example.org', 'confirmed' );
+
+		$this->assertCount( 1, $this->sent );
+		$this->assertSame( 'Your place at Suture Level III is booked', $this->sent[0]['subject'] );
+	}
+
+	/** Cleared back to blank, it falls back to the shipped default, not to nothing. */
+	public function test_a_blank_confirmation_subject_falls_back_to_the_shipped_default() {
+		$this->set_settings( [ 'notify_admin' => false, 'notify_user' => true, 'confirmation_subject' => '' ] );
+		$event_id = $this->make_event( [ 'title' => 'Suture Level III' ] );
+
+		$this->module()->send_registration_emails( $event_id, 'Jane Doe', 'jane@example.org', 'confirmed' );
+
+		$this->assertSame( 'You are registered for Suture Level III', $this->sent[0]['subject'] );
+	}
+
+	// -------------------------------------------------------------------------
 	// REG-D51 — a refund has its own wording, not the cancellation copy with a
 	// word swapped inside it.
 	// -------------------------------------------------------------------------

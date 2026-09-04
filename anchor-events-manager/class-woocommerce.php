@@ -3455,7 +3455,12 @@ class WooCommerce {
                 $primary_id,
                 'confirmation',
                 'subject',
-                $settings['wc_customer_subject'] !== '' ? $settings['wc_customer_subject'] : \__( 'Your event registration is confirmed', 'anchor-schema' )
+                // REG-D58 — the store's own subject when it has one, otherwise
+                // the site-wide confirmation subject every other send resolves
+                // through (never a third literal that only lives here).
+                $settings['wc_customer_subject'] !== ''
+                    ? $settings['wc_customer_subject']
+                    : $this->module->default_confirmation_subject( $settings )
             ),
             $tokens
         );

@@ -3745,8 +3745,14 @@ class Module {
      */
     public function email_field_default( $type, $field ) {
         $s = $this->get_settings();
+        // REG-D58 — the confirmation subject resolves through the one place
+        // both senders resolve it, so the placeholder an author is told they
+        // are overriding is the string that would actually go out.
+        if ( 'confirmation' === $type && 'subject' === $field ) {
+            return $this->default_confirmation_subject( $s );
+        }
         $map = [
-            'confirmation' => [ 'subject' => 'wc_customer_subject', 'intro' => 'confirmation_message' ],
+            'confirmation' => [ 'subject' => 'confirmation_subject', 'intro' => 'confirmation_message' ],
             'reminder'     => [ 'subject' => 'reminder_subject',     'intro' => 'reminder_intro' ],
             'cancellation' => [ 'subject' => 'cancellation_subject', 'intro' => 'cancellation_intro' ],
             'roster'       => [ 'subject' => 'roster_subject',       'intro' => 'roster_intro' ],
@@ -9337,6 +9343,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <?php
         }, 'anchor_events_settings', 'anchor_events_registration' );
 
+        \add_settings_field( 'confirmation_subject', __( 'Confirmation subject', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[confirmation_subject]" value="<?php echo esc_attr( $opts['confirmation_subject'] ); ?>" class="regular-text" />
+            <p class="description"><?php echo esc_html__( 'Subject line for the attendee confirmation. Tokens: {event_title}, {attendee_name}, {event_date}, {site_name}.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_emails' );
+
         \add_settings_field( 'confirmation_message', __( 'Confirmation message', 'anchor-schema' ), function() {
             $opts = $this->get_settings();
             ?>
@@ -9561,6 +9575,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),
             'notify_user' => ! empty( $input['notify_user'] ),
+            'confirmation_subject' => sanitize_text_field( $input['confirmation_subject'] ?? '' ) ?: $defaults['confirmation_subject'],
             'confirmation_message' => isset( $input['confirmation_message'] ) ? sanitize_textarea_field( $input['confirmation_message'] ) : $defaults['confirmation_message'],
             'max_guests' => max( 0, min( 50, (int) ( $input['max_guests'] ?? 0 ) ) ),
             'register_button_label' => sanitize_text_field( $input['register_button_label'] ?? '' ),
@@ -11937,6 +11952,29 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param array $settings Module settings.
      * @return string
      */
+    /**
+     * The subject a confirmation falls back to when the event saved no
+     * override (audit REG-D58).
+     *
+     * There used to be three strings for one concept: the free path hard-coded
+     * "You are registered for %s", the WooCommerce path used
+     * `wc_customer_subject`, and the Emails builder showed that same WC setting
+     * to the author as the placeholder they were told they were overriding.
+     * `wc_customer_subject` is only ever persisted inside
+     * `if ( class_exists( 'WooCommerce' ) )`, so on a free site the builder
+     * offered a placeholder nobody could change that no send ever used.
+     * `confirmation_subject` is the concept, it is saved on every site, and the
+     * store's own subject (when a store has set one) overrides it in the
+     * WooCommerce sender only.
+     *
+     * @param array $settings Module settings.
+     * @return string
+     */
+    public function default_confirmation_subject( array $settings ) {
+        $subject = (string) ( $settings['confirmation_subject'] ?? '' );
+        return $subject !== '' ? $subject : __( 'You are registered for {event_title}', 'anchor-schema' );
+    }
+
     private function default_confirmation_intro( array $settings ) {
         return ( isset( $settings['confirmation_message'] ) && $settings['confirmation_message'] !== '' )
             ? (string) $settings['confirmation_message']
@@ -12018,7 +12056,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 $event_id,
                 'confirmation',
                 'subject',
-                sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title )
+                $this->default_confirmation_subject( $settings )
             ),
             $tokens
         );
@@ -13136,6 +13174,10 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'admin_email' => '',
             'notify_admin' => true,
             'notify_user' => true,
+            // The one confirmation subject (audit REG-D58). Site-wide and
+            // WooCommerce-independent; `wc_customer_subject` below is the
+            // store's optional override of it, not a second concept.
+            'confirmation_subject' => __( 'You are registered for {event_title}', 'anchor-schema' ),
             'confirmation_message' => __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' ),
             'max_guests' => 0,
             'register_button_label' => '',

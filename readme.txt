@@ -65,6 +65,12 @@ Events Manager — breaking change for custom code:
 * Event meta saved before 3.26.0 could lose backslashes (the values were passed
   to `update_post_meta()` already unslashed). Backslashes eaten by those earlier
   saves are not recoverable; values round-trip correctly from the next save.
+* `Anchor\Events\WooCommerce::reconcile_order()` has lost its `$clear_review`
+  parameter — "Resync order" no longer wipes an order's needs-review flags, it
+  re-evaluates them like every other pass and drops only what it re-checked and
+  found satisfied, so a refund discrepancy nobody has read survives a resync.
+  ("Mark reviewed" still clears everything.) Custom code passing `$seed_flags`
+  positionally must drop the now-absent fourth argument.
 * The `anchor_events_registration_fields` filter is gone. The free registration
   form now asks the event's own Attendee questions and keys each answer by its
   question id, so extra fields are added in that UI rather than in code. Custom

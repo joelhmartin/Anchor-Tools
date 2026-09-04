@@ -1982,14 +1982,12 @@ class WooCommerce {
      * @param string $surplus_status Status applied to surplus active seats on a
      *                               non-terminal order ('cancelled' normally,
      *                               'refunded' from the refund path).
-     * @param bool   $clear_review   Clear stale needs-review flags first (manual
-     *                               resync) so a clean pass leaves none.
      * @param array  $seed_flags     Needs-review flags to thread into the single
      *                               batched save (finding M4 — e.g. the mixed-refund
      *                               extra-amount flag, so a separate stale-instance
      *                               save can't clobber it).
      */
-    public function reconcile_order( $order, $reason = '', $surplus_status = Registrations::STATUS_CANCELLED, $clear_review = false, array $seed_flags = [] ) {
+    public function reconcile_order( $order, $reason = '', $surplus_status = Registrations::STATUS_CANCELLED, array $seed_flags = [] ) {
         if ( ! $order instanceof \WC_Order ) {
             return;
         }
@@ -2108,7 +2106,7 @@ class WooCommerce {
                 // Flush accumulators onto the order meta, then a SINGLE batched save —
                 // only when something actually changed (H2: no-op passes never save).
                 $logged  = $this->apply_order_log( $save_order, $log_entries );
-                $flagged = $this->apply_review_flags( $save_order, $review_flags, (bool) $clear_review, $evaluated );
+                $flagged = $this->apply_review_flags( $save_order, $review_flags, $evaluated );
 
                 if ( $logged || $flagged || $emails_dirty ) {
                     // L8 — a persistence error in a gateway/payment callback must not
@@ -2872,16 +2870,24 @@ class WooCommerce {
     }
 
     /**
-     * Merge accumulated needs-review flags (deduped by reason). When $clear is true
-     * (manual resync) the existing flags are dropped first so a clean pass leaves
-     * none and only genuinely-still-failing reasons are re-added. Does NOT save.
+     * Merge accumulated needs-review flags (deduped by reason). Does NOT save.
+     *
+     * There is no blanket clear. A manual resync used to pass $clear=true and
+     * replace the whole set with [], which destroyed flags this pass never
+     * looked at — `amount_only_refund` and `mixed_refund_extra_amount` are
+     * seeded by the refund path and evaluated by nothing here, so pressing
+     * "Resync order" silently retired a refund discrepancy nobody had read.
+     * Every pass now drops exactly what it re-checked and found satisfied
+     * (drop_satisfied_flags(), WOO-D33) and keeps the rest. "Mark reviewed"
+     * (handle_clear_review()) is the button that clears everything, and it is
+     * a deliberate human act.
      *
      * @return bool Whether the review meta changed (drives the dirty-flag save — H2).
      */
-    private function apply_review_flags( \WC_Order $order, array $flags, $clear, array $evaluated = [] ) {
+    private function apply_review_flags( \WC_Order $order, array $flags, array $evaluated = [] ) {
         $had      = $order->get_meta( Events_Log::ORDER_REVIEW_META );
         $had      = \is_array( $had ) ? $had : [];
-        $existing = $clear ? [] : $this->drop_satisfied_flags( $had, $flags, $evaluated );
+        $existing = $this->drop_satisfied_flags( $had, $flags, $evaluated );
         foreach ( $flags as $flag ) {
             $dupe = false;
             foreach ( $existing as $e ) {
@@ -3205,8 +3211,9 @@ class WooCommerce {
      * admin-post handler for the manual "Resync order" button. Verifies the
      * per-order nonce, then the module capability (WOO-D41: this used to be a
      * hard-coded edit_others_posts, so a shop manager who could open the roster was
-     * refused here and an Editor who could not was allowed), clears stale
-     * needs-review on a clean pass, runs the identical reconcile, and redirects back.
+     * refused here and an Editor who could not was allowed), runs the identical
+     * reconcile — which re-evaluates the needs-review flags like any other pass,
+     * rather than clearing them wholesale — and redirects back.
      */
     public function handle_resync_order() {
         $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
@@ -3217,8 +3224,11 @@ class WooCommerce {
 
         $order = \wc_get_order( $order_id );
         if ( $order ) {
-            // surplus_status = cancelled; clear_review = true (clean pass clears stale flags).
-            $this->reconcile_order( $order, 'manual resync', Registrations::STATUS_CANCELLED, true );
+            // surplus_status = cancelled. NOT a blanket flag clear: a resync
+            // re-evaluates like every other pass and drops only what it
+            // re-checked and found satisfied. "Mark reviewed" is the button
+            // that clears everything, and it is a separate handler.
+            $this->reconcile_order( $order, 'manual resync' );
         }
 
         $redirect = \wp_get_referer();
@@ -4056,7 +4066,7 @@ class WooCommerce {
         // line | mixed → surplus active seats become 'refunded' (count-based,
         // newest-first). expected already subtracts abs(get_qty_refunded_for_item)
         // so cumulative partials monotonically lower expected and re-fire is a no-op.
-        $this->reconcile_order( $order, 'refund', Registrations::STATUS_REFUNDED, false, $seed_flags );
+        $this->reconcile_order( $order, 'refund', Registrations::STATUS_REFUNDED, $seed_flags );
     }
 
     /**

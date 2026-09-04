@@ -25,6 +25,9 @@ use Anchor\Events\Product_Sync;
 use Anchor\Events\Registrations;
 use Anchor\Events\WooCommerce;
 
+/** Thrown from the wp_redirect filter so an admin-post handler's exit never runs. */
+class Anchor_Events_Log_Redirect_Signal extends \Exception {}
+
 /**
  * @group events-log
  */
@@ -377,6 +380,70 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 			$this->review_reasons( $res['order_id'] ),
 			'A revive that broke the tier quota was recorded nowhere.'
 		);
+	}
+
+	/* -----------------------------------------------------------------
+	 * "Resync order" re-evaluates; only "Mark reviewed" clears
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * "Resync order" used to replace the whole flag set with [], so it
+	 * destroyed flags the pass never looked at — an `amount_only_refund`
+	 * seeded by the refund path is evaluated by nothing in a reconcile, and
+	 * pressing Resync silently retired a refund discrepancy nobody had read.
+	 */
+	public function test_a_manual_resync_keeps_a_flag_it_never_evaluated() {
+		$this->require_wc();
+		$ctx = $this->paid_event_with_variation();
+		$res = $this->make_order( $ctx['variation_id'], 1 );
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'paid' );
+		Events_Log::flag_review( $res['order_id'], 'amount_only_refund', 'refund #7' );
+
+		$this->press_order_action( 'handle_resync_order', 'anchor_event_resync_', $res['order_id'] );
+
+		$this->assertContains(
+			'amount_only_refund',
+			$this->review_reasons( $res['order_id'] ),
+			'"Resync order" destroyed a refund discrepancy nobody had read.'
+		);
+	}
+
+	/** "Mark reviewed" is the button that clears everything — deliberately. */
+	public function test_mark_reviewed_clears_every_flag() {
+		$this->require_wc();
+		$ctx = $this->paid_event_with_variation();
+		$res = $this->make_order( $ctx['variation_id'], 1 );
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'paid' );
+		Events_Log::flag_review( $res['order_id'], 'amount_only_refund', 'refund #7' );
+
+		$this->press_order_action( 'handle_clear_review', 'anchor_events_clear_review_', $res['order_id'] );
+
+		$this->assertSame( [], $this->review_reasons( $res['order_id'] ) );
+	}
+
+	/**
+	 * Drive one order-action admin-post handler for real — capability, nonce
+	 * and all — and swallow the redirect it ends on.
+	 */
+	private function press_order_action( $method, $nonce_prefix, $order_id ) {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST    = [ 'order_id' => $order_id, '_wpnonce' => wp_create_nonce( $nonce_prefix . $order_id ) ];
+		$_REQUEST = $_POST;
+
+		$trap = function ( $location ) {
+			throw new Anchor_Events_Log_Redirect_Signal( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		try {
+			$this->woocommerce()->$method();
+			$this->fail( $method . '() did not redirect.' );
+		} catch ( Anchor_Events_Log_Redirect_Signal $e ) {
+			// Expected: the handler finished and tried to send the operator back.
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+			$_POST    = [];
+			$_REQUEST = [];
+		}
 	}
 
 	/** …and the scenario the audit actually describes still clears. */

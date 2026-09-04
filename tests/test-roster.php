@@ -224,6 +224,40 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertContains( 'capacity_overfill', $this->error_codes() );
 	}
 
+	/**
+	 * finding-6 — capacity_decision() never consults the event's status, so a
+	 * hand-cancelled event with room left decided 'open' and a manual add
+	 * went straight through with nobody ticking "Allow over capacity".
+	 */
+	public function test_manual_add_to_a_cancelled_event_is_refused_as_closed() {
+		$event_id = $this->make_event( [ 'status_mode' => 'manual', 'status' => 'cancelled' ] );
+
+		$location = $this->post_add( $event_id );
+
+		$this->assertSame( 'closed', $this->code_of( $location ) );
+		$this->assertSame( 0, $this->count_seats( $event_id ), 'A cancelled event took a manual seat.' );
+	}
+
+	/** The override checkbox still forces the add through, logged distinctly from a plain capacity overfill. */
+	public function test_the_override_checkbox_forces_an_add_to_a_cancelled_event_and_records_status_cancelled() {
+		$event_id = $this->make_event( [ 'status_mode' => 'manual', 'status' => 'cancelled' ] );
+
+		$location = $this->post_add( $event_id, [ 'roster_allow_over' => '1' ] );
+
+		$this->assertSame( '', $this->code_of( $location ), 'The override add must not refuse.' );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+
+		$log = get_option( Events_Log::ERROR_OPTION, [] );
+		$overfill = null;
+		foreach ( (array) $log as $row ) {
+			if ( ( $row['code'] ?? '' ) === 'capacity_overfill' ) {
+				$overfill = $row;
+			}
+		}
+		$this->assertNotNull( $overfill, 'The override must still be recorded.' );
+		$this->assertSame( 'status_cancelled', $overfill['context']['from'] ?? null );
+	}
+
 	public function test_a_full_event_with_a_waitlist_still_waitlists_a_manual_add() {
 		$event_id = $this->make_event(
 			[

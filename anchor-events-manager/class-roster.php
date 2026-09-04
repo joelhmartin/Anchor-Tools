@@ -596,6 +596,14 @@ class Roster {
      * with nobody ticking "Allow over capacity" — the checkbox that exists to
      * mean exactly "I know, do it anyway".
      *
+     * finding-6 — capacity_decision() ALSO never consults the event's status
+     * (it is purely a seat-count/window authority), so a hand-cancelled event
+     * with room left decided 'open' and slipped through the same gap. This
+     * method reads get_event_status() itself, alongside capacity_decision(),
+     * and refuses with `closed` for a cancelled event exactly like a closed
+     * registration window — same "Allow over capacity" escape hatch, logged
+     * as `capacity_overfill` with reason `status_cancelled` when used.
+     *
      * The order is: is this a real event → is the submission usable → may a seat
      * be sold → mint it. Each refusal returns its own code (see redirect()).
      */
@@ -687,7 +695,21 @@ class Roster {
         /* --- May a seat be sold at all? (codes: closed | full) --- */
         $meta     = $this->module->get_meta( $event_id );
         $decision = $this->registrations->capacity_decision( $event_id, $meta, 1 + $guests, $tier );
+        // finding-6 — capacity_decision() (Registrations) never consults the
+        // event's status; it only reasons about the registration window and
+        // seat counts. A hand-cancelled event with room left (or unlimited
+        // capacity) decided 'open' and a manual add went straight through
+        // with nobody ticking "Allow over capacity" — the checkbox that
+        // exists to mean exactly "I know, do it anyway". Checked here,
+        // alongside capacity_decision(), rather than folded into that method
+        // (kept — see the "Interfaces to keep" note on this task): the same
+        // read `get_event_status()` gives bookability() for the exact same
+        // judgement (THEME-D25).
+        $is_cancelled = ( $this->module->get_event_status( $event_id, $meta ) === 'cancelled' );
         if ( ! $allow_over ) {
+            if ( $is_cancelled ) {
+                $this->redirect( $event_id, 'error', \__( 'This event is cancelled — tick “Allow over capacity” to add anyway.', 'anchor-schema' ), 'closed' );
+            }
             if ( $decision === 'closed' ) {
                 $this->redirect( $event_id, 'error', \__( 'Registration is closed for this event — tick “Allow over capacity” to add anyway.', 'anchor-schema' ), 'closed' );
             }
@@ -718,12 +740,15 @@ class Roster {
         // A deliberate oversell is recorded the same way the paid path records
         // one — never as the default, always because somebody ticked the box,
         // and only when the box actually changed the answer (an override on an
-        // event with room is not an overfill).
-        if ( $allow_over && $decision !== 'open' && ! empty( $result['created'] ) ) {
+        // event with room is not an overfill). finding-6: a cancelled event is
+        // reported as `status_cancelled` even when capacity_decision() itself
+        // still says 'open' — the override that mattered here was the
+        // cancellation, not a seat count.
+        if ( $allow_over && ( $is_cancelled || $decision !== 'open' ) && ! empty( $result['created'] ) ) {
             Events_Log::error( 'capacity_overfill', [
                 'event'  => $event_id,
                 'source' => 'manual',
-                'from'   => $decision,
+                'from'   => $is_cancelled ? 'status_cancelled' : $decision,
             ] );
         }
 

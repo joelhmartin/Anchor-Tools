@@ -431,6 +431,17 @@ class Product_Sync {
             $tiers,
             \array_fill_keys( \array_map( 'strval', \wp_list_pluck( $tiers, 'id' ) ), 0 )
         );
+
+        // …and the denormalized linked-products mirror, which event_is_linked()
+        // reads instead of the live query. Its own rebuild rides on
+        // `woocommerce_update_product`, which a variation save does not fire and
+        // an ALREADY-draft product does not fire either — so an event demoted by
+        // an older build (live: 7909) would keep a mirror listing three
+        // unsellable variations forever. Rebuilding here makes the demote whole
+        // whichever sub-save happened to run.
+        if ( $this->module->woocommerce ) {
+            $this->module->woocommerce->rebuild_event_mirror( $event_id );
+        }
     }
 
     /**

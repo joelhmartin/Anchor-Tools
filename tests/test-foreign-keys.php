@@ -258,6 +258,10 @@ class Test_Foreign_Keys extends Anchor_Events_TestCase {
 		$stored = $this->ticket_types()->find( $event_id, $tier['id'] );
 		$this->assertSame( 0, (int) $stored['wc_variation_id'], 'The tier must stop advertising a variation.' );
 		$this->assertSame( [], $this->woocommerce()->products_for_event( $event_id ) );
+		$this->assertFalse(
+			$this->woocommerce()->event_is_linked( $event_id ),
+			'…and the denormalized mirror agrees with the live query.'
+		);
 
 		// Re-activating republishes and repoints — the demote is reversible.
 		$this->ticket_types()->save(

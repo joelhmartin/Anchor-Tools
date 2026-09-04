@@ -571,6 +571,15 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $this->log_count( 'email_retry_abandoned' ), 'Giving up must leave a trace an operator can find.' );
 	}
 
+	/**
+	 * finding-12 (carry-over) — a job no retry can ever satisfy (a switch
+	 * flipped off since it was queued) must still be retired so it does not
+	 * sit in the queue being re-read for ever, but retiring a SKIP is not a
+	 * defect: this used to be inferred from the attempt counter not moving
+	 * and logged as `email_retry_undeliverable`, an error-level entry for a
+	 * deliberate site setting. drain_email_retry_queue() now consumes the
+	 * sender's own Outcome instead, so the retirement is silent.
+	 */
 	public function test_a_retry_no_send_can_ever_satisfy_is_retired_not_left_in_the_queue() {
 		$this->configure( [ 'notify_cancellation' => true, 'reminder_enabled' => false, 'organizer_roster_email' => false ] );
 
@@ -589,7 +598,11 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->module()->run_reminder_sweep();
 
 		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ), 'A job no send can satisfy must leave the queue.' );
-		$this->assertSame( 1, $this->log_count( 'email_retry_undeliverable' ) );
+		$this->assertSame(
+			0,
+			$this->log_count( 'email_retry_undeliverable' ),
+			'A deliberate site setting is a skip, not a defect — retiring it must not raise an error-level log.'
+		);
 	}
 
 	/**
@@ -777,5 +790,37 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( [ 'blip@example.com' ], $sent, 'The drain sends it once — not once from the drain and once from the sweep.' );
 		$this->assertGreaterThan( 0, (int) ( $this->markers( $seat_id, $start_ts )[1] ?? 0 ) );
 		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ) );
+	}
+
+	/**
+	 * finding-12 (carry-over) — a queued reminder retry that no longer
+	 * applies (the event moved off the date the job was queued for) is a
+	 * retry_reminder() skip, retired without an error-level log — same rule
+	 * as the cancellation side above.
+	 */
+	public function test_a_reminder_retry_rescheduled_away_is_retired_without_an_error_log() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 20 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'moved@example.com' ] );
+
+		$fail = $this->fail_mail();
+		$this->module()->run_reminder_sweep(); // queues the retry job.
+		remove_filter( 'pre_wp_mail', $fail, 10 );
+		$this->assertIsArray( get_post_meta( $seat_id, '_anchor_event_email_retry', true ) );
+
+		// The event moves to a different start before the retry comes due —
+		// the queued job's start_ts no longer matches.
+		$this->reschedule( $event_id, $start_ts + 30 * DAY_IN_SECONDS );
+		$this->make_retry_due( $seat_id );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ), 'A retry the reschedule invalidated must not sit in the queue.' );
+		$this->assertSame(
+			0,
+			$this->log_count( 'email_retry_undeliverable' ),
+			'The event moving on is not a mailer defect — retiring the stale job must not raise an error-level log.'
+		);
 	}
 }

@@ -1237,26 +1237,30 @@ class Module {
             // success clears the job and a mail failure re-queues it with one
             // more attempt spent.
             if ( 'cancellation' === $job['type'] ) {
-                $this->send_cancellation_email( $seat_id );
+                $result = $this->send_cancellation_email( $seat_id );
             } elseif ( 'reminder' === $job['type'] ) {
-                $this->retry_reminder( (int) $seat_id, $job, $now );
+                $result = $this->retry_reminder( (int) $seat_id, $job, $now );
             } else {
                 $this->clear_email_retry( $seat_id );
                 continue;
             }
 
-            // A job whose attempt count did not move is one the sender never
-            // got as far as mailing: the email type is switched off, the seat
-            // has no address, the record is gone. An hourly retry cannot
-            // change any of those, so retire it rather than let it sit in the
-            // queue being re-read for ever.
-            $after = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
-            if ( \is_array( $after ) && (int) ( $after['attempts'] ?? 0 ) === (int) ( $job['attempts'] ?? 0 ) ) {
+            // finding-12 — this used to INFER what happened by comparing the
+            // job's attempt counter before/after this call, and logged
+            // EVERY unchanged counter as `email_retry_undeliverable` — an
+            // error-level entry for a switched-off email type, a blank
+            // address, or an already-gone seat, none of which is a defect
+            // (see send_reminder_email()'s own 'disabled' comment). The
+            // sender's own Outcome already says exactly which case this is:
+            // `skipped` retires the job quietly (an hourly retry cannot
+            // change any of those reasons, so it must not sit in the queue
+            // being re-read for ever, but it earns no error log); `failed`
+            // needs nothing further here — the sender already bumped the
+            // attempt count AND logged its own failure
+            // (email_send_returned_false via send_html_email()); `sent`
+            // already cleared the job.
+            if ( $result->is_skipped() ) {
                 $this->clear_email_retry( $seat_id, (string) $job['type'] );
-                Events_Log::error( 'email_retry_undeliverable', [
-                    'seat' => (int) $seat_id,
-                    'type' => (string) $job['type'],
-                ] );
             }
         }
     }
@@ -1266,9 +1270,14 @@ class Module {
      * reminder no longer applies — the event has started, been cancelled, or
      * been rescheduled away from the date the job was queued for.
      *
+     * finding-12: returns an Outcome (like every other sender) so
+     * drain_email_retry_queue() can retire an undeliverable job from what
+     * actually happened, not from an attempt-counter proxy.
+     *
      * @param int   $seat_id
      * @param array $job
      * @param int   $now
+     * @return Outcome sent | skipped (seat_no_longer_eligible, event_no_longer_applies) | failed.
      */
     private function retry_reminder( $seat_id, array $job, $now ) {
         $seat     = $this->registrations->get_seat( $seat_id );
@@ -1276,7 +1285,7 @@ class Module {
         $offset   = (int) ( $job['offset'] ?? 0 );
         if ( ! $seat || $seat['status'] !== Registrations::STATUS_CONFIRMED || $event_id <= 0 || $offset <= 0 ) {
             $this->clear_email_retry( $seat_id, 'reminder' );
-            return;
+            return Outcome::skipped( 'seat_no_longer_eligible' );
         }
         $meta     = $this->get_meta( $event_id );
         $start_ts = (int) ( $meta['start_ts'] ?? 0 );
@@ -1285,9 +1294,9 @@ class Module {
             || 'cancelled' === $this->get_event_status( $event_id, $meta )
             || $this->occurrences->is_closed( $event_id ) ) {
             $this->clear_email_retry( $seat_id, 'reminder' );
-            return;
+            return Outcome::skipped( 'event_no_longer_applies' );
         }
-        $this->deliver_reminder( $seat, $event_id, $offset, $start_ts, $this->get_settings() );
+        return $this->deliver_reminder( $seat, $event_id, $offset, $start_ts, $this->get_settings() );
     }
 
     /**

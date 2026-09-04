@@ -1146,6 +1146,7 @@ class Registrations {
             return \get_post_meta( $id, $k, true );
         };
         $status = (string) $g( '_anchor_event_reg_status' );
+        $stored = $g( '_anchor_event_reg_fields' );
         return [
             'id'            => $id,
             'name'          => (string) ( $g( '_anchor_event_name' ) ?: \get_the_title( $post ) ),
@@ -1162,7 +1163,15 @@ class Registrations {
             'seat_index'    => (int) $g( '_anchor_event_seat_index' ),
             // Pre-tier seats have no meta — default to the primary tier id.
             'ticket_type_id' => (string) ( $g( '_anchor_event_ticket_type_id' ) ?: 'primary' ),
-            'reg_fields'    => \is_array( $g( '_anchor_event_reg_fields' ) ) ? $g( '_anchor_event_reg_fields' ) : [],
+            // Resolved against the event's CURRENT questions (REG-D10/D11): the
+            // one place stored answers become question-keyed, so the roster
+            // table, the roster list table and the CSV export all read the same
+            // key and a legacy label-keyed answer (every pre-fix WooCommerce
+            // seat) lands in its own column instead of a second one.
+            'reg_fields'    => $this->module->resolve_registration_answers(
+                (int) $g( '_anchor_event_id' ),
+                \is_array( $stored ) ? $stored : []
+            ),
             'date'          => \get_the_date( 'Y-m-d', $post ),
         ];
     }

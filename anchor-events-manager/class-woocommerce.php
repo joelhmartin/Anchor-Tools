@@ -1767,10 +1767,12 @@ class WooCommerce {
             if ( isset( $raw[ $i ]['fields'] ) && \is_array( $raw[ $i ]['fields'] ) ) {
                 foreach ( $this->module->get_registration_questions( $event_id ) as $q ) {
                     $val = $raw[ $i ]['fields'][ $q['key'] ] ?? '';
-                    // Keyed by the question LABEL: these become the CSV column
-                    // headings, and "Practice or organization" is what the
-                    // organizer needs to read, not "practice_or_organization".
-                    $fields[ $q['label'] ] = \sanitize_text_field( (string) $val );
+                    // Keyed by the question's stable KEY, never its label
+                    // (REG-D10/D11): the free path stores the same shape, and
+                    // renaming a question must not orphan answers already
+                    // collected. Readers resolve the heading at render time via
+                    // Module::registration_answer_label().
+                    $fields[ $q['key'] ] = \sanitize_text_field( (string) $val );
                 }
             }
             $attendees[ $i ] = [

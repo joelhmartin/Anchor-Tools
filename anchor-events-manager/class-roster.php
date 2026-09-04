@@ -670,7 +670,14 @@ class Roster {
             \__( 'Order Item ID', 'anchor-schema' ),
             \__( 'Seat Index', 'anchor-schema' ),
         ];
-        $header = \array_merge( $base_cols, $field_keys );
+        // The answer columns are keyed by question id; the heading is resolved
+        // from the event's current questions, falling back to the stored key for
+        // a question that has since been deleted (REG-D10).
+        $question_headings = [];
+        foreach ( $field_keys as $k ) {
+            $question_headings[] = $this->question_label( $event_id, $k );
+        }
+        $header = \array_merge( $base_cols, $question_headings );
         fputcsv( $out, \array_map( [ $this, 'csv_safe' ], $header ) );
 
         foreach ( $data['rows'] as $row ) {
@@ -733,6 +740,13 @@ class Roster {
         return \method_exists( $this->module, 'get_registration_questions' )
             ? $this->module->get_registration_questions( (int) $event_id )
             : [];
+    }
+
+    /** Display heading for a stored answer key — delegates to the one resolver. */
+    public function question_label( $event_id, $key ) {
+        return \method_exists( $this->module, 'registration_answer_label' )
+            ? $this->module->registration_answer_label( (int) $event_id, $key )
+            : (string) $key;
     }
 
     public function status_options() {
@@ -904,7 +918,7 @@ class Roster {
                                 <td><?php echo (int) ( 1 + (int) $seat['guests'] ); ?></td>
                                 <?php $answers = isset( $seat['reg_fields'] ) && \is_array( $seat['reg_fields'] ) ? $seat['reg_fields'] : []; ?>
                                 <?php foreach ( $questions as $q ) : ?>
-                                    <td><?php echo \esc_html( (string) ( $answers[ $q['label'] ] ?? '' ) ); ?></td>
+                                    <td><?php echo \esc_html( (string) ( $answers[ $q['key'] ] ?? '' ) ); ?></td>
                                 <?php endforeach; ?>
                                 <td>
                                     <?php echo \esc_html( $seat['source'] ); ?>
@@ -1261,9 +1275,12 @@ if ( \is_admin() ) {
 
             public function column_default( $item, $column_name ) {
                 if ( \strpos( $column_name, 'q_' ) === 0 ) {
-                    $label  = $this->question_columns()[ $column_name ] ?? '';
+                    // The column id IS the question key (question_columns()), and
+                    // seat_dto() hands the answers back keyed the same way — the
+                    // label is a heading only (REG-D10/D11).
+                    $key    = \substr( $column_name, 2 );
                     $fields = isset( $item['reg_fields'] ) && \is_array( $item['reg_fields'] ) ? $item['reg_fields'] : [];
-                    return \esc_html( (string) ( $fields[ $label ] ?? '' ) );
+                    return \esc_html( (string) ( $fields[ $key ] ?? '' ) );
                 }
                 switch ( $column_name ) {
                     case 'email':

@@ -164,6 +164,23 @@ unchanged after upgrade.
   - When both `external_embed` and `external_url` are set, the embed renders and the
     plain link does not.
 
+### Attendee questions
+
+An event can ask anything on top of name/email/phone: rows in
+`_anchor_event_reg_questions` (`key`, `label`, `type` = text|textarea|select|checkbox,
+`options`, `required`), read through `Module::get_registration_questions()`. **Both**
+registration paths render them — the free form and the WooCommerce checkout's attendee
+fieldset — and both enforce `required` client- and server-side.
+
+Answers live on the seat in `_anchor_event_reg_fields`, **keyed by the question's
+stable `key`, never by its label**, so renaming a question keeps its answers. The label
+is a display value only: every reader (roster table, roster list table, CSV header,
+privacy export) resolves it at render time via
+`Module::registration_answer_label()`, and `Module::resolve_registration_answers()` —
+called once, in `Registrations::seat_dto()` — maps a seat's stored answers onto the
+current question set, lazily migrating pre-fix label-keyed rows and keeping the stored
+key for an answer whose question has been deleted.
+
 ---
 
 ## Authoring
@@ -386,5 +403,4 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 | `anchor_events_query_args` | `$query_args, $atts` | Adjust the `WP_Query` args behind event listing shortcodes. |
 | `anchor_events_event_classes` | `$classes, $post_id, $context` | Extra CSS classes on a rendered event card/row. |
 | `anchor_events_registration_form` | `'', $post_id, $meta` | Override seam — return non-empty HTML to replace the registration form entirely (used by the WooCommerce integration for the ticketed buy UI). |
-| `anchor_events_registration_fields` | `$fields` | Extra custom fields on the free registration form. |
 | `anchor_events_registration_email_html` | `$html, $ctx` | Final filter on any built registration/lifecycle email HTML. |

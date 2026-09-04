@@ -1571,15 +1571,21 @@ class Module {
 
             // C: attendee-provided custom registration fields can themselves be PII,
             // so include them in the export (one row per field).
-            $reg_fields = \get_post_meta( $seat_id, '_anchor_event_reg_fields', true );
-            if ( \is_array( $reg_fields ) ) {
-                foreach ( $reg_fields as $field_key => $field_value ) {
-                    $value = \is_scalar( $field_value ) ? (string) $field_value : \wp_json_encode( $field_value );
-                    $data[] = [
-                        'name'  => (string) $field_key,
-                        'value' => (string) $value,
-                    ];
-                }
+            // Resolved against the event's current questions (REG-D10), so a
+            // label-keyed legacy answer exports once, under the heading the
+            // organizer sees everywhere else.
+            $questions  = $this->get_registration_questions( $event_id );
+            $reg_fields = $this->resolve_registration_answers(
+                $event_id,
+                \get_post_meta( $seat_id, '_anchor_event_reg_fields', true ),
+                $questions
+            );
+            foreach ( $reg_fields as $field_key => $field_value ) {
+                $value  = \is_scalar( $field_value ) ? (string) $field_value : \wp_json_encode( $field_value );
+                $data[] = [
+                    'name'  => $this->registration_answer_label( $event_id, $field_key, $questions ),
+                    'value' => (string) $value,
+                ];
             }
 
             $items[] = [
@@ -7954,8 +7960,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $notice = '<div class="anchor-event-notice">' . esc_html__( 'This event is full. You will be added to the waitlist.', 'anchor-schema' ) . '</div>';
         }
 
-        $fields = $this->get_registration_fields();
-        $redirect = \get_permalink( $post_id );
+        $questions = $this->get_registration_questions( $post_id );
+        $redirect  = \get_permalink( $post_id );
 
         $output = $notice;
         $output .= '<form class="anchor-event-registration" method="post" action="' . esc_url( \admin_url( 'admin-post.php' ) ) . '">';
@@ -8008,14 +8014,34 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $output .= '</div>';
         }
 
-        foreach ( $fields as $field ) {
-            $field_id = sanitize_key( $field['id'] );
-            $label = $field['label'] ?? $field_id;
-            $type = $field['type'] ?? 'text';
-            $required = ! empty( $field['required'] );
+        // Whatever else this event asks its attendees (REG-D9). The SAME question
+        // model the WooCommerce checkout renders and the roster/CSV column onto,
+        // so a free course and a ticketed one ask the same things and store the
+        // answers under the same keys. `required` is asserted here for the
+        // browser and re-checked in handle_registration() for everything else.
+        foreach ( $questions as $q ) {
+            $name     = 'anchor_event_field[' . $q['key'] . ']';
+            $id       = 'anchor_event_field_' . $q['key'];
+            $required = ! empty( $q['required'] );
+            $req_attr = $required ? ' required' : '';
+            $req_mark = $required ? ' <span class="anchor-event-required" aria-hidden="true">*</span>' : '';
+
             $output .= '<div class="anchor-event-field">';
-            $output .= '<label for="anchor_event_field_' . esc_attr( $field_id ) . '">' . esc_html( $label ) . '</label>';
-            $output .= '<input type="' . esc_attr( $type ) . '" id="anchor_event_field_' . esc_attr( $field_id ) . '" name="anchor_event_field[' . esc_attr( $field_id ) . ']"' . ( $required ? ' required' : '' ) . ' />';
+            $output .= '<label for="' . esc_attr( $id ) . '">' . esc_html( $q['label'] ) . $req_mark . '</label>';
+            if ( $q['type'] === 'textarea' ) {
+                $output .= '<textarea id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '" rows="3"' . $req_attr . '></textarea>';
+            } elseif ( $q['type'] === 'select' ) {
+                $output .= '<select id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '"' . $req_attr . '>';
+                $output .= '<option value="">' . esc_html__( '— Select —', 'anchor-schema' ) . '</option>';
+                foreach ( $q['options'] as $opt ) {
+                    $output .= '<option value="' . esc_attr( $opt ) . '">' . esc_html( $opt ) . '</option>';
+                }
+                $output .= '</select>';
+            } elseif ( $q['type'] === 'checkbox' ) {
+                $output .= '<input type="checkbox" id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '" value="yes"' . $req_attr . ' />';
+            } else {
+                $output .= '<input type="text" id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '"' . $req_attr . ' />';
+            }
             $output .= '</div>';
         }
 
@@ -8360,11 +8386,34 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             exit;
         }
 
-        $extra_fields = [];
-        if ( ! empty( $_POST['anchor_event_field'] ) && is_array( $_POST['anchor_event_field'] ) ) {
-            foreach ( wp_unslash( $_POST['anchor_event_field'] ) as $key => $value ) {
-                $extra_fields[ sanitize_key( $key ) ] = sanitize_text_field( $value );
+        // The event's own attendee questions (REG-D9/D10). Read from the question
+        // model rather than from whatever the POST happened to carry, so the
+        // stored answer set is exactly this event's questions, keyed by their
+        // stable ids — the same shape the WooCommerce checkout writes.
+        $posted_answers = ( ! empty( $_POST['anchor_event_field'] ) && is_array( $_POST['anchor_event_field'] ) )
+            ? wp_unslash( $_POST['anchor_event_field'] ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- sanitized per answer below.
+            : [];
+        $extra_fields   = [];
+        $missing_answer = false;
+        foreach ( $this->get_registration_questions( $event_id ) as $q ) {
+            $answer = isset( $posted_answers[ $q['key'] ] ) && is_scalar( $posted_answers[ $q['key'] ] )
+                ? sanitize_text_field( (string) $posted_answers[ $q['key'] ] )
+                : '';
+            if ( $q['type'] === 'checkbox' ) {
+                $answer = ( $answer !== '' && $answer !== '0' ) ? 'yes' : '';
+            } elseif ( $q['type'] === 'select' && $answer !== '' && ! in_array( $answer, $q['options'], true ) ) {
+                $answer = ''; // not one of the offered choices
             }
+            if ( ! empty( $q['required'] ) && trim( $answer ) === '' ) {
+                $missing_answer = true;
+            }
+            $extra_fields[ $q['key'] ] = $answer;
+        }
+        // Required answers are enforced server-side too: the inputs carry
+        // `required`, but that only covers a browser that runs it.
+        if ( $missing_answer ) {
+            \wp_safe_redirect( $this->with_message( $redirect, 'registration_invalid' ) );
+            exit;
         }
 
         $max_guests = (int) ( $settings['max_guests'] ?? 0 );
@@ -10743,6 +10792,83 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Map a seat's stored answers onto the event's CURRENT question set
+     * (REG-D10 / REG-D11).
+     *
+     * Answers are keyed by the question's stable key on every write path. Seats
+     * booked before that was true — every WooCommerce seat up to it — hold
+     * LABEL-keyed answers, so a stored key that matches a current question's
+     * label is migrated onto that question's key HERE, on read: no data
+     * rewrite, and a rename can never orphan an answer because the label is
+     * only ever a display value.
+     *
+     * An answer whose question no longer exists keeps the key it was stored
+     * under, so it still reaches the roster and the CSV instead of vanishing.
+     *
+     * @param int        $event_id
+     * @param mixed      $stored    Raw _anchor_event_reg_fields value.
+     * @param array|null $questions Pre-fetched question set (loop hoist).
+     * @return array<string,mixed> Answers keyed by question key.
+     */
+    public function resolve_registration_answers( $event_id, $stored, $questions = null ) {
+        if ( ! \is_array( $stored ) || empty( $stored ) ) {
+            return [];
+        }
+        $questions = \is_array( $questions ) ? $questions : $this->get_registration_questions( $event_id );
+        if ( empty( $questions ) ) {
+            return $stored;
+        }
+
+        $keys     = [];
+        $by_label = [];
+        foreach ( $questions as $q ) {
+            $keys[ $q['key'] ] = true;
+            $by_label[ $this->registration_answer_index( $q['label'] ) ] = $q['key'];
+        }
+
+        $out = [];
+        foreach ( $stored as $stored_key => $value ) {
+            $key = (string) $stored_key;
+            if ( ! isset( $keys[ $key ] ) ) {
+                $index = $this->registration_answer_index( $key );
+                // Only migrate when the question does not ALSO have an id-keyed
+                // answer on this seat — that one is the current spelling and wins.
+                if ( isset( $by_label[ $index ] ) && ! \array_key_exists( $by_label[ $index ], $stored ) ) {
+                    $key = $by_label[ $index ];
+                }
+            }
+            $out[ $key ] = $value;
+        }
+        return $out;
+    }
+
+    /**
+     * Display label for a stored answer key: the current question's label, or
+     * the stored key itself once that question is gone (REG-D10). The one place
+     * the roster table, the roster list table, the CSV header and the privacy
+     * export ask, so a heading cannot mean two things in two readers.
+     *
+     * @param int        $event_id
+     * @param string     $key
+     * @param array|null $questions Pre-fetched question set (loop hoist).
+     * @return string
+     */
+    public function registration_answer_label( $event_id, $key, $questions = null ) {
+        $questions = \is_array( $questions ) ? $questions : $this->get_registration_questions( $event_id );
+        foreach ( $questions as $q ) {
+            if ( $q['key'] === (string) $key ) {
+                return $q['label'];
+            }
+        }
+        return (string) $key;
+    }
+
+    /** Comparison form for matching a stored key against a question label. */
+    private function registration_answer_index( $value ) {
+        return \strtolower( \trim( (string) $value ) );
+    }
+
+    /**
      * Normalize question rows. Drops rows with no label, derives a stable key from
      * the label when one is not supplied, and guarantees key uniqueness — the key
      * identifies the answer on every seat, so a duplicate would merge two
@@ -10870,12 +10996,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         </tr>
         <?php
         return (string) \ob_get_clean();
-    }
-
-    private function get_registration_fields() {
-        $fields = [];
-        // Allow developers to extend registration fields with custom inputs.
-        return \apply_filters( 'anchor_events_registration_fields', $fields );
     }
 
     public function ajax_calendar() {

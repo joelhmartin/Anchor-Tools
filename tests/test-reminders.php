@@ -831,4 +831,91 @@ class Test_Reminders extends Anchor_Events_TestCase {
 			'The event moving on is not a mailer defect — retiring the stale job must not raise an error-level log.'
 		);
 	}
+
+	/* ------------------------------------------------------------------
+	 * MODEL-D17 (widened) — `postponed` is as closed as `cancelled`
+	 *
+	 * The sweep's date-is-off guard and the queued-retry eligibility guard
+	 * both checked `'cancelled' === get_event_status()` only, so a postponed
+	 * event with confirmed seats kept sending/retrying "…is coming up" for a
+	 * date that was off. Both now call status_is_closed(), the same
+	 * cancelled|postponed set bookability() and the registration guards
+	 * already agreed on; `moved_online` stays out of that set on purpose.
+	 * ------------------------------------------------------------------ */
+
+	/** Force an event's manual status, the way the admin "Event Status" field would. */
+	private function set_manual_status( $event_id, $status ) {
+		update_post_meta( $event_id, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event_id, '_anchor_event_status', $status );
+	}
+
+	public function test_a_postponed_event_sends_no_reminders() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$this->set_manual_status( $event_id, 'postponed' );
+		$seat_id = $this->make_seat( $event_id, [ 'email' => 'postponed@example.com' ] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( [], $sent, 'A postponed event must not remind attendees about a date that is off.' );
+		$this->assertSame(
+			[],
+			$this->markers( $seat_id, $start_ts ),
+			'The guard is a bare continue, same as the cancelled path — it writes no offset marker while closed.'
+		);
+	}
+
+	/**
+	 * Nothing is marked while an event is closed, so the 1-day offset that
+	 * never fired is still due the moment the event stops being postponed.
+	 */
+	public function test_un_postponing_an_event_resumes_reminders_on_the_next_sweep() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$this->set_manual_status( $event_id, 'postponed' );
+		$seat_id = $this->make_seat( $event_id, [ 'email' => 'resumed@example.com' ] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+		$this->assertSame( [], $sent, 'Still postponed on the first sweep — nothing goes out.' );
+
+		// Un-postpone: back to auto status, which computes 'upcoming' for a
+		// future start_date, same as clearing the manual override in the admin.
+		update_post_meta( $event_id, '_anchor_event_status_mode', 'auto' );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame(
+			[ 'resumed@example.com' ],
+			$sent,
+			'Un-postponing must let the still-unfired 1-day offset send on the next sweep.'
+		);
+		$this->assertGreaterThan( 0, (int) ( $this->markers( $seat_id, $start_ts )[1] ?? 0 ) );
+	}
+
+	/**
+	 * The control: `moved_online` is deliberately NOT in status_is_closed()
+	 * — the event still happens, on the same date, just virtually — so it
+	 * must keep sending, unlike cancelled/postponed above.
+	 */
+	public function test_a_moved_online_event_still_sends_reminders() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$this->set_manual_status( $event_id, 'moved_online' );
+		$this->make_seat( $event_id, [ 'email' => 'online@example.com' ] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( [ 'online@example.com' ], $sent, 'moved_online is not a closed status — reminders keep going out.' );
+	}
 }

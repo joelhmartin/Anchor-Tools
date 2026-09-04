@@ -904,8 +904,14 @@ class Module {
             // Never remind attendees about a date that is off (audit MODEL-D17).
             // A soft-closed occurrence keeps its future start_ts and its roster,
             // so it matched the window and mailed "…is coming up" for a date
-            // that had been cancelled.
-            if ( 'cancelled' === $this->get_event_status( $event_id, $meta )
+            // that had been cancelled — and the same was true of `postponed`
+            // until this guard was widened to status_is_closed(): the status
+            // list bookability() and the registration guards already agreed
+            // on. `moved_online` deliberately stays out of that set, so it
+            // keeps sending. Nothing is marked here either way — the
+            // `continue` just skips this sweep, so an offset that has not
+            // fired yet is still due once the event is un-closed.
+            if ( $this->status_is_closed( $this->get_event_status( $event_id, $meta ) )
                 || $this->occurrences->is_closed( $event_id ) ) {
                 continue;
             }
@@ -1340,8 +1346,9 @@ class Module {
 
     /**
      * One queued reminder retry. Abandons the job (without sending) when the
-     * reminder no longer applies — the event has started, been cancelled, or
-     * been rescheduled away from the date the job was queued for.
+     * reminder no longer applies — the event has started, been closed
+     * (cancelled or postponed, per status_is_closed()), or been rescheduled
+     * away from the date the job was queued for.
      *
      * finding-12: returns an Outcome (like every other sender) so
      * drain_email_retry_queue() can retire an undeliverable job from what
@@ -1364,7 +1371,7 @@ class Module {
         $start_ts = (int) ( $meta['start_ts'] ?? 0 );
         if ( $start_ts <= $now
             || $start_ts !== (int) ( $job['start_ts'] ?? 0 )
-            || 'cancelled' === $this->get_event_status( $event_id, $meta )
+            || $this->status_is_closed( $this->get_event_status( $event_id, $meta ) )
             || $this->occurrences->is_closed( $event_id ) ) {
             $this->clear_email_retry( $seat_id, 'reminder' );
             return Outcome::skipped( 'event_no_longer_applies' );

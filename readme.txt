@@ -149,6 +149,14 @@ Events Manager — emails & reminders:
   (filterable via `anchor_events_reminder_override_scan_limit`), with a
   `reminder_scan_truncated` log entry when the cap is hit, instead of
   running an unbounded query every hour.
+* A **postponed** event no longer sends or retries reminders for its seats.
+  The hourly sweep's "date is off" guard and the queued-retry eligibility
+  guard both checked `cancelled` only, so a postponed event with confirmed
+  seats kept mailing "…is coming up" for a date that was no longer happening;
+  both now call the same `status_is_closed()` check `bookability()` and the
+  registration guards already use. Reminders resume automatically once the
+  event is no longer postponed. **Moved online** is unaffected — it keeps
+  sending, since the event still happens on the same date.
 
 Events Manager — front-end assets:
 

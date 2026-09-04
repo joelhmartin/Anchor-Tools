@@ -2318,10 +2318,15 @@ class WooCommerce {
         // null product_sync / unlinked-or-non-variation line / legacy data).
         $variation_id = (int) $item->get_variation_id();
         $tier_id      = '';
+        // Whether the id names the tier this line actually BOUGHT (the
+        // variation's own stamp) or is the event-level fallback below. Only the
+        // former can be "retired" — see $tier_retired.
+        $tier_from_variation = false;
         if ( $this->module->product_sync && $variation_id > 0 ) {
             $resolved = $this->module->product_sync->tier_for_variation( $variation_id );
             if ( ! empty( $resolved['tier_id'] ) ) {
-                $tier_id = (string) $resolved['tier_id'];
+                $tier_id             = (string) $resolved['tier_id'];
+                $tier_from_variation = true;
             }
         }
         if ( $tier_id === '' && $this->module->ticket_types ) {
@@ -2346,7 +2351,17 @@ class WooCommerce {
         // consuming the event capacity, but the reconcile refuses to mint more
         // and says so (logged + flagged needs-review below) rather than
         // overselling in silence.
-        $tier_retired = ( $this->module->ticket_types && ! $tier );
+        //
+        // Only an id resolved from the LINE'S OWN VARIATION can say that. The
+        // fallback id above is the event's primary tier, and primary_id()
+        // returns the SYNTHETIC 'primary' id whenever no row is active — an id
+        // find() can never match while authored rows exist. Reading that as a
+        // retirement told an organizer who had merely closed sales that a tier
+        // was gone, and refused seats to a buyer who had already paid, on an
+        // event where nothing had been deleted. A fallback id that matches no
+        // row means "no per-tier quota to enforce": the line is bounded by the
+        // event capacity, exactly as it was before WOO-D58.
+        $tier_retired = ( $this->module->ticket_types && ! $tier && $tier_from_variation );
 
         $result = $this->registrations->with_event_lock( $event_id, function ( $locked ) use (
             $event_id, $item_id, $expected, $active_target, $removal_status, $capacity, $unlimited,

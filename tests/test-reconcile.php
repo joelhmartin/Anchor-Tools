@@ -44,11 +44,15 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * Create a processing order with one event line of $qty seats + attendee meta.
+	 * Create an order with one event line of $qty seats + attendee meta.
 	 *
+	 * @param int    $variation_id Variation (or plain product) the line buys.
+	 * @param int    $qty
+	 * @param string $status       Order status to leave it in ('pending' = placed
+	 *                             but unpaid, so the reconcile creates no seats).
 	 * @return array{order:WC_Order,item_id:int}
 	 */
-	private function make_order( $variation_id, $qty ) {
+	private function make_order( $variation_id, $qty, $status = 'processing' ) {
 		$variation = wc_get_product( $variation_id );
 
 		$item = new WC_Order_Item_Product();
@@ -77,8 +81,9 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 		$order->calculate_totals( false );
 		$order->save();
 
-		// Move to processing AFTER the items (incl. attendee meta) are persisted.
-		$order->set_status( 'processing' );
+		// Move to the target status AFTER the items (incl. attendee meta) are
+		// persisted.
+		$order->set_status( $status );
 		$order->save();
 
 		return [ 'order' => $order, 'item_id' => $item->get_id() ];
@@ -265,5 +270,67 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 			(int) $this->registrations()->count_reserved_seats( $event_id, true ),
 			'…and they still consume the event capacity.'
 		);
+	}
+
+	/**
+	 * WOO-D58 false positive: "the tier was retired" is only true when the id
+	 * came from the LINE's own variation. A line with no variation resolves its
+	 * tier through primary_id(), which returns the SYNTHETIC 'primary' id once
+	 * every authored row is deactivated — an id find() can never match while
+	 * rows exist. Reading that as a retirement refused seats to a buyer who had
+	 * already paid, on an event where nobody had deleted anything.
+	 */
+	public function test_all_tiers_inactive_is_not_a_retired_tier() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Linked Product Event', 'capacity' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$tier_id = $this->ticket_types()->get( $event_id )[0]['id'];
+
+		// A manually LINKED simple product: its order line carries no variation,
+		// so the reconcile resolves the tier through primary_id().
+		$product = new WC_Product_Simple();
+		$product->set_name( 'Course Seat' );
+		$product->set_regular_price( '10' );
+		$product->save();
+		$product_id = (int) $product->get_id();
+		update_post_meta( $product_id, \Anchor\Events\WooCommerce::META_ENABLED, '1' );
+		update_post_meta( $product_id, \Anchor\Events\WooCommerce::META_EVENT_ID, $event_id );
+
+		// The order is placed and sits awaiting payment — no seats yet.
+		$res      = $this->make_order( $product_id, 2, 'pending' );
+		$order_id = (int) $res['order']->get_id();
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'placed' );
+		$this->assertSame( 0, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+
+		// The organizer closes sales by deactivating every tier row. Nothing is
+		// retired: the rows are all still there, and primary_id() now falls
+		// through to the implicit-primary id.
+		$this->ticket_types()->save(
+			$event_id,
+			[ [ 'id' => $tier_id, 'label' => 'General', 'price' => '10', 'active' => 0 ] ]
+		);
+		$this->assertSame(
+			\Anchor\Events\Ticket_Types::PRIMARY_ID,
+			$this->ticket_types()->primary_id( $event_id ),
+			'Precondition: with no active tier the primary id is the synthetic one.'
+		);
+		$this->assertNull( $this->ticket_types()->find( $event_id, \Anchor\Events\Ticket_Types::PRIMARY_ID ) );
+
+		delete_option( \Anchor\Events\Events_Log::ERROR_OPTION );
+
+		// Payment lands.
+		$paid = wc_get_order( $order_id );
+		$paid->set_status( 'processing' );
+		$paid->save();
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'paid' );
+
+		$this->assertSame(
+			2,
+			$this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ),
+			'A paid line must still get its seats when no tier was ever retired.'
+		);
+		$this->assertNotContains( 'retired_tier', $this->review_reasons( $order_id ) );
+		$this->assertNotContains( 'retired_tier', $this->error_codes() );
 	}
 }

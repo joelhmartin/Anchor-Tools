@@ -409,3 +409,5 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 | `anchor_events_event_classes` | `$classes, $post_id, $context` | Extra CSS classes on a rendered event card/row. |
 | `anchor_events_registration_form` | `'', $post_id, $meta` | Override seam — return non-empty HTML to replace the registration form entirely (used by the WooCommerce integration for the ticketed buy UI). |
 | `anchor_events_registration_email_html` | `$html, $ctx` | Final filter on any built registration/lifecycle email HTML. |
+| `anchor_events_default_email_template` | `$html, $type` | The shipped default body for one email type (`confirmation` \| `reminder` \| `cancellation` \| `roster`) — the fallback behind "Reset to default". Override one type without touching the other three. |
+| `anchor_events_capability` | `$cap, $wc_active` | The single capability every roster / export / resend / console surface resolves. Default: `manage_woocommerce` on a WooCommerce site, else `edit_others_posts`. A non-string or empty return is ignored. |

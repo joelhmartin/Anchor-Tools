@@ -65,4 +65,39 @@ Events Manager — breaking change for custom code:
 * Event meta saved before 3.26.0 could lose backslashes (the values were passed
   to `update_post_meta()` already unslashed). Backslashes eaten by those earlier
   saves are not recoverable; values round-trip correctly from the next save.
+* The `anchor_events_registration_fields` filter is gone. The free registration
+  form now asks the event's own Attendee questions and keys each answer by its
+  question id, so extra fields are added in that UI rather than in code. Custom
+  code hooking the filter no longer runs and must be re-created as questions.
+
+Events Manager — emails:
+
+* The organizer notices (new registration, seats released) now obey the event's
+  own Confirmation and Cancellation switches, exactly as the buyer's
+  confirmation already did. Turning Confirmation off on an event previously
+  silenced the attendee but still mailed the organizer.
+* New settings: **Confirmation subject** (`confirmation_subject`), **Refund
+  subject** (`refund_subject`) and **Refund email intro** (`refund_intro`). The
+  unused `notify_attendee` setting has been retired.
+* The shipped default email template now uses the `{brand_bg}`,
+  `{brand_surface}`, `{brand_heading}`, `{brand_text}`, `{brand_button}`,
+  `{brand_button_text}` and `{logo}` tokens, so the Email Appearance colours and
+  logo reach installs that never edited a template. A template you have already
+  customised is untouched — the builder shows a notice telling you which tokens
+  to add if you want to opt back in.
+* The `{join_button}` token is retired: it drew a second button no field
+  controlled. It now expands to nothing, so an old saved template that still
+  contains it renders cleanly instead of printing the literal token.
+* New filter `anchor_events_default_email_template( $html, $type )` — override
+  the shipped default body for one email type (`confirmation`, `reminder`,
+  `cancellation`, `roster`) without touching the other three.
+
+Events Manager — seats and reminders:
+
+* The seat status transitions `cancelled → waitlist` and `failed → waitlist` are
+  now legal. Reviving a seat on an event that is full and has a waitlist puts it
+  on the waitlist instead of refusing the transition outright.
+* Reminder offsets are capped at 366 days. A stored offset larger than that is
+  clamped when the settings are saved, so a scan can no longer be asked to look
+  further ahead than the reminder horizon it actually walks.
 

@@ -90,13 +90,32 @@ class Ticket_Types {
                 continue;
             }
 
-            $label      = isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '';
-            $price_raw  = isset( $row['price'] ) ? (string) $row['price'] : '';
-            $sale_start = isset( $row['sale_start'] ) ? $this->sanitize_date( (string) $row['sale_start'] ) : '';
-            $sale_end   = isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '';
+            $label           = isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '';
+            $price_raw       = isset( $row['price'] ) ? (string) $row['price'] : '';
+            $sale_start      = isset( $row['sale_start'] ) ? $this->sanitize_date( (string) $row['sale_start'] ) : '';
+            $sale_end        = isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '';
+            $quota           = isset( $row['quota'] ) ? \max( 0, (int) $row['quota'] ) : 0;
+            $active          = ! empty( $row['active'] );
+            $wc_variation_id = isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0;
 
-            // Drop fully-empty rows (no label, no price, no dates).
-            if ( $label === '' && $price_raw === '' && $sale_start === '' && $sale_end === '' ) {
+            // WOO-D29: a reversed sale window (sale_end before sale_start)
+            // made the tier permanently unsellable — is_on_sale() is false for
+            // every timestamp — while the storefront still advertised it as
+            // "opening" on sale_start. Swap rather than reject: both values
+            // were deliberately entered, just in the wrong boxes.
+            if ( $sale_start !== '' && $sale_end !== '' && $sale_start > $sale_end ) {
+                [ $sale_start, $sale_end ] = [ $sale_end, $sale_start ];
+            }
+
+            // WOO-D28: a row can carry real, save-worthy data (a quota, an
+            // active flag, a synced wc_variation_id) with no label/price/dates
+            // at all — an admin who sets a quota but forgets the label used to
+            // have the whole row vanish silently. Only a row with NONE of
+            // these fields set is truly empty.
+            if (
+                $label === '' && $price_raw === '' && $sale_start === '' && $sale_end === ''
+                && $quota === 0 && ! $active && $wc_variation_id === 0
+            ) {
                 continue;
             }
 
@@ -114,11 +133,11 @@ class Ticket_Types {
                 'id'              => $id,
                 'label'          => $label !== '' ? $label : \__( 'Registration', 'anchor-schema' ),
                 'price'           => $this->to_price( $price_raw ),
-                'quota'           => isset( $row['quota'] ) ? \max( 0, (int) $row['quota'] ) : 0,
+                'quota'           => $quota,
                 'sale_start'      => $sale_start,
                 'sale_end'        => $sale_end,
-                'active'          => ! empty( $row['active'] ),
-                'wc_variation_id' => isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0,
+                'active'          => $active,
+                'wc_variation_id' => $wc_variation_id,
                 'attendee_fields' => $this->sanitize_attendee_fields( $row['attendee_fields'] ?? null ),
             ];
 

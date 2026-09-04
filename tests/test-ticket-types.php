@@ -99,6 +99,84 @@ class Test_Ticket_Types extends Anchor_Events_TestCase {
 		$this->assertSame( '', get_post_meta( $event_id, Ticket_Types::META_KEY, true ) );
 	}
 
+	/**
+	 * WOO-D28: a row with a quota but no label/price/dates must NOT be
+	 * dropped as "empty" — the old emptiness test only looked at
+	 * label/price/sale_start/sale_end, so an admin who set a quota and
+	 * forgot the label lost the row (and the quota) silently.
+	 */
+	public function test_save_keeps_a_row_with_only_a_quota() {
+		$event_id = $this->make_event();
+
+		$saved = $this->ticket_types()->save( $event_id, [ [ 'quota' => 25 ] ] );
+
+		$this->assertCount( 1, $saved );
+		$this->assertSame( 25, $saved[0]['quota'] );
+	}
+
+	/** Same, for a row whose only real content is the active flag. */
+	public function test_save_keeps_a_row_with_only_the_active_flag_set() {
+		$event_id = $this->make_event();
+
+		$saved = $this->ticket_types()->save( $event_id, [ [ 'active' => 1 ] ] );
+
+		$this->assertCount( 1, $saved );
+		$this->assertTrue( $saved[0]['active'] );
+	}
+
+	/** …and for a row whose only real content is a synced wc_variation_id. */
+	public function test_save_keeps_a_row_with_only_a_wc_variation_id() {
+		$event_id = $this->make_event();
+
+		$saved = $this->ticket_types()->save( $event_id, [ [ 'wc_variation_id' => 42 ] ] );
+
+		$this->assertCount( 1, $saved );
+		$this->assertSame( 42, $saved[0]['wc_variation_id'] );
+	}
+
+	/** A row with truly nothing set is still dropped. */
+	public function test_save_still_drops_a_truly_empty_row() {
+		$event_id = $this->make_event();
+
+		$saved = $this->ticket_types()->save(
+			$event_id,
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ], [] ]
+		);
+
+		$this->assertCount( 1, $saved );
+	}
+
+	/**
+	 * WOO-D29: a reversed sale window (sale_end before sale_start) made a
+	 * tier permanently unsellable while still advertising "Sales open
+	 * <sale_start>" forever. save() swaps the pair rather than storing a
+	 * window that can never open.
+	 */
+	public function test_save_swaps_a_reversed_sale_window() {
+		$event_id = $this->make_event();
+
+		$saved = $this->ticket_types()->save(
+			$event_id,
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1, 'sale_start' => '2026-12-01', 'sale_end' => '2026-11-01' ] ]
+		);
+
+		$this->assertSame( '2026-11-01', $saved[0]['sale_start'] );
+		$this->assertSame( '2026-12-01', $saved[0]['sale_end'] );
+	}
+
+	/** A correctly-ordered window is left alone. */
+	public function test_save_does_not_touch_a_correctly_ordered_window() {
+		$event_id = $this->make_event();
+
+		$saved = $this->ticket_types()->save(
+			$event_id,
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1, 'sale_start' => '2026-01-01', 'sale_end' => '2026-02-01' ] ]
+		);
+
+		$this->assertSame( '2026-01-01', $saved[0]['sale_start'] );
+		$this->assertSame( '2026-02-01', $saved[0]['sale_end'] );
+	}
+
 	/** is_on_sale() respects the optional [sale_start, sale_end] window. */
 	public function test_is_on_sale_window() {
 		$tt  = $this->ticket_types();

@@ -104,8 +104,9 @@ downstream is identical.
       when the parent has no row for it (so clearing a venue — or a custom
       confirmation subject — on the parent propagates instead of stranding the old
       value on every date). Customise these on the parent, never on a child.
-      When the delete takes AUTHORED content — a date's own registration questions
-      or email wording — the save queues one `inherited_child_data_removed`
+      When the delete takes AUTHORED content — registration questions or email
+      wording held on a date, whether typed there or left over from a value just
+      cleared on the parent — the save queues one `inherited_child_data_removed`
       warning so the author is told once, rather than finding out from a booking.
     Single-value only: each key is read with `get_post_meta( …, true )` and written
     as one row, so a genuinely multi-row key cannot be inherited.

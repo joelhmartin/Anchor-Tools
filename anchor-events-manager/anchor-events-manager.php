@@ -4602,6 +4602,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * empty previous status (a row written by something that did not record
      * one) falls back to WordPress's default rather than to a guess.
      *
+     * DEPLOY NOTE: a `future` (scheduled) event is restored as `future` too,
+     * and WordPress does not re-check a schedule on restore — so an event whose
+     * publish date passed while it sat in the trash comes back scheduled rather
+     * than published, and stays unpublished until it is saved again. That is
+     * the same behaviour WooCommerce orders get from the identical filter, and
+     * it is still strictly better than the blanket `draft`; if it bites, the
+     * fix is to re-publish that event, not to drop the filter.
+     *
      * @param string $new_status      The status wp_untrash_post() would use.
      * @param int    $post_id
      * @param string $previous_status The status the post was trashed in.
@@ -4779,9 +4787,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // event is cleared on its dates — but when what it clears is
             // authored content, saying nothing is how a date silently stops
             // asking a question. Queued by Occurrences::sync_shared_meta().
+            // Worded for BOTH ways a date ends up holding a row this event does
+            // not: somebody typed it on the date, or somebody cleared it here
+            // (save_registration_questions()/save_email_fields() delete the row
+            // on an empty field) — much the commoner case, and the one where
+            // claiming the dates authored it would be plain wrong.
             'inherited_child_data_removed' => [
                 'level' => 'warning',
-                'message' => \__( 'One or more dates had their own registration questions or email wording. This event has none of its own, so the dates\' copies were removed — every date now uses this event\'s settings. To keep that wording, set it here on the event and save again.', 'anchor-schema' ),
+                'message' => \__( 'Registration questions or email wording were removed from this event\'s dates, because the event itself no longer has them — every date follows the event. To keep them, set them here on the event and save again.', 'anchor-schema' ),
             ],
         ];
     }
@@ -5154,7 +5167,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // tell me again" rather than "until I reload".
         echo '<script>(function(){var n=document.querySelector(\'[data-anchor-events-tz-dismiss]\');'
             . 'if(!n)return;n.addEventListener(\'click\',function(e){'
-            . 'if(!e.target.classList.contains(\'notice-dismiss\'))return;'
+            . 'if(!e.target||!e.target.closest||!e.target.closest(\'.notice-dismiss\'))return;'
             . 'fetch(n.getAttribute(\'data-anchor-events-tz-dismiss\'),{credentials:\'same-origin\'});});})();</script>';
     }
 

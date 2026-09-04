@@ -428,7 +428,7 @@ class Test_Timezone extends Anchor_Events_TestCase {
 		$this->dismiss_timezone_notice();
 		$this->assertSame( '', $this->module()->timezone_notice_html() );
 
-		update_option( 'gmt_offset', -5 );
+		update_option( 'gmt_offset', -5, false );
 
 		$this->assertStringContainsString( '-05:00', $this->module()->timezone_notice_html() );
 	}

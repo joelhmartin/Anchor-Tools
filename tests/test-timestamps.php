@@ -321,8 +321,8 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 	 */
 	public function test_backfill_keeps_a_fixed_offset_on_a_single_event() {
 		$this->login_as_admin();
-		update_option( 'timezone_string', '' );
-		update_option( 'gmt_offset', -6 );
+		update_option( 'timezone_string', '', false );
+		update_option( 'gmt_offset', -6, false );
 
 		$event = $this->make_event( [ 'title' => 'Authored Offset', 'start_date' => '2030-12-05', 'timezone' => 'UTC-6' ] );
 		delete_post_meta( $event, '_anchor_event_ts_version' );
@@ -340,8 +340,8 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 	/** …and on a group child it goes, which is the row the v3 pass exists for. */
 	public function test_backfill_deletes_the_minted_offset_on_a_group_child() {
 		$this->login_as_admin();
-		update_option( 'timezone_string', '' );
-		update_option( 'gmt_offset', -6 );
+		update_option( 'timezone_string', '', false );
+		update_option( 'gmt_offset', -6, false );
 
 		$parent = $this->make_event( [ 'title' => 'Offering', 'start_date' => '2030-12-05' ] );
 		update_post_meta(
@@ -378,7 +378,7 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 	 */
 	public function test_changing_the_site_timezone_recomputes_stored_timestamps() {
 		$this->login_as_admin();
-		update_option( 'timezone_string', 'America/Chicago' );
+		update_option( 'timezone_string', 'America/Chicago', false );
 
 		$event = $this->make_event( [ 'title' => 'Zone Move', 'start_date' => '2030-12-05', 'start_time' => '09:00' ] );
 		$this->module()->persist_timestamps( $event, $this->module()->get_meta( $event ) );
@@ -389,7 +389,7 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		update_option( 'anchor_events_ts_version', Module::TS_SCHEMA_VERSION, false );
 		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_post_meta( $event, '_anchor_event_ts_version', true ) );
 
-		update_option( 'timezone_string', 'America/New_York' );
+		update_option( 'timezone_string', 'America/New_York', false );
 
 		$this->assertFalse(
 			get_option( 'anchor_events_ts_version' ),
@@ -409,11 +409,11 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 	/** The gmt_offset half of the same setting does it too. */
 	public function test_changing_the_site_gmt_offset_reruns_the_backfill() {
 		$this->login_as_admin();
-		update_option( 'timezone_string', '' );
-		update_option( 'gmt_offset', -6 );
+		update_option( 'timezone_string', '', false );
+		update_option( 'gmt_offset', -6, false );
 		update_option( 'anchor_events_ts_version', Module::TS_SCHEMA_VERSION, false );
 
-		update_option( 'gmt_offset', -5 );
+		update_option( 'gmt_offset', -5, false );
 
 		$this->assertFalse( get_option( 'anchor_events_ts_version' ) );
 	}

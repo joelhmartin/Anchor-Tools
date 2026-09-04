@@ -568,4 +568,89 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'Duration', $detail_html );
 		$this->assertStringContainsString( '2 Day Course', $detail_html );
 	}
+
+	/**
+	 * RENDER-D27/D28/D29: every class the templates/renderers below actually
+	 * emit must have at least one rule in frontend.css. Before this fix, the
+	 * six single/archive template containers, ten .anchor-event-series__*
+	 * parts, and the WooCommerce ticket/checkout wrapper + state classes had
+	 * NONE — this test parses frontend.css for `.classname` occurrences so a
+	 * future emitter change without a matching rule fails the suite, instead
+	 * of silently shipping unstyled markup again.
+	 *
+	 * List assembled by grepping the actual emitters at HEAD (not just the
+	 * audit's list, which missed .anchor-event-ticket-closed in
+	 * class-woocommerce.php and the .anchor-event-cart-msg--error/--success/
+	 * -list / .anchor-event-cart-links classes emitted by
+	 * assets/event-storefront.js) — see task-36-report.md for the full
+	 * emitted-vs-styled inventory and why each group is included.
+	 */
+	public function test_frontend_css_has_baseline_rules_for_container_series_and_ticket_classes() {
+		$css = file_get_contents( ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-events-manager/assets/frontend.css' );
+		$this->assertNotFalse( $css, 'Could not read anchor-events-manager/assets/frontend.css.' );
+		// Strip comments first — a class name mentioned only in a /* ... */
+		// note (as several of the new baseline blocks below do, documenting
+		// why a rule exists) must not satisfy this test in place of a rule.
+		$css = (string) preg_replace( '#/\*.*?\*/#s', '', $css );
+
+		$classes = [
+			// RENDER-D27 — templates/single-event.php + templates/archive-event.php.
+			'anchor-event-single',
+			'anchor-event-hero',
+			'anchor-event-hero-media',
+			'anchor-event-content',
+			'anchor-events-archive',
+			'anchor-events-header',
+
+			// RENDER-D28 — class-series.php render_archive()/render_session_row()/render_group_row().
+			'anchor-event-series__header',
+			'anchor-event-series__title',
+			'anchor-event-series__desc',
+			'anchor-event-series__list',
+			'anchor-event-series__item',
+			'anchor-event-series__link',
+			'anchor-event-series__date',
+			'anchor-event-series__price',
+			'anchor-event-series__availability',
+			'anchor-event-series__empty',
+
+			// RENDER-D29 — class-woocommerce.php filter_registration_form()/render_ticket_row().
+			'anchor-event-tickets',
+			'anchor-event-ticket-rows',
+			'anchor-event-ticket-price',
+			'anchor-event-ticket-availability',
+			'anchor-event-ticket-soldout',
+			'anchor-event-ticket-waitlist',
+			'anchor-event-ticket-upcoming',
+			'anchor-event-ticket-closed', // Emitted alongside soldout/waitlist/upcoming; missing from the audit's list.
+			'anchor-event-tickets-actions',
+			'anchor-event-cart-msg',
+			'anchor-event-free-registration',
+			'anchor-event-registration-woocommerce',
+
+			// RENDER-D29 continued — assets/event-storefront.js toggles/injects these onto .anchor-event-cart-msg.
+			'anchor-event-cart-msg--error',
+			'anchor-event-cart-msg--success',
+			'anchor-event-cart-msg-list',
+			'anchor-event-cart-links',
+		];
+
+		$missing = [];
+		foreach ( $classes as $class ) {
+			// A selector boundary, not just substring containment — otherwise
+			// `.anchor-event-tickets` would be satisfied by a rule for
+			// `.anchor-event-tickets-actions` alone, which was exactly the
+			// gap this test exists to catch.
+			$pattern = '/\.' . preg_quote( $class, '/' ) . '(?![A-Za-z0-9_-])/';
+			if ( ! preg_match( $pattern, $css ) ) {
+				$missing[] = $class;
+			}
+		}
+
+		$this->assertSame(
+			[],
+			$missing,
+			"frontend.css has no rule for: " . implode( ', ', $missing )
+		);
+	}
 }

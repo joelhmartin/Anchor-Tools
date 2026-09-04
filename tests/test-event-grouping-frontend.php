@@ -407,6 +407,34 @@ class Test_Event_Grouping_Frontend extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( '2 dates available', $html, 'Only the upcoming dates are "available".' );
 	}
 
+	public function test_series_group_row_counts_only_the_dates_that_can_be_booked() {
+		[ $parent_id, $live ] = $this->make_offering( [
+			[ 'date' => '2027-11-05', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Full session', 'capacity' => 1 ],
+			[ 'date' => '2027-11-12', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Open session', 'capacity' => 5 ],
+		] );
+		$this->make_seat( $live[0] );
+
+		$this->go_to_series_archive( $parent_id );
+		$html = $this->module()->series->render_archive();
+
+		$this->assertStringContainsString( '1 date available', $html, 'A sold-out date is not a date somebody can have.' );
+		// The range still answers "when", so it keeps both upcoming dates.
+		$this->assertStringContainsString( 'Nov 5, 2027 – Nov 12, 2027', $html );
+	}
+
+	public function test_series_group_row_says_sold_out_rather_than_zero_dates_available() {
+		[ $parent_id, $live ] = $this->make_offering( [
+			[ 'date' => '2027-11-19', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Full session', 'capacity' => 1 ],
+		] );
+		$this->make_seat( $live[0] );
+
+		$this->go_to_series_archive( $parent_id );
+		$html = $this->module()->series->render_archive();
+
+		$this->assertStringNotContainsString( '0 dates available', $html );
+		$this->assertStringContainsString( 'Sold out', $html, 'The container borrows the same hint every other row on this archive uses.' );
+	}
+
 	/**
 	 * A site that has switched "Archive past events" OFF asks for finished
 	 * events on purpose. Narrowing the group row's range to the upcoming

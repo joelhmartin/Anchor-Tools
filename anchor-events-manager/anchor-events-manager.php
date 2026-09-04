@@ -7874,9 +7874,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 : \__( 'Registration closed', 'anchor-schema' );
         }
 
-        // 'open' — and 'parent', defensively: render_choose_date_row() is
-        // documented as tolerating the parent itself, which has no capacity
-        // of its own and so reads as unlimited/"Open" here.
+        // 'open' — and 'parent', which is now the ONE container state that
+        // reaches this line: a group with nothing left to book answers
+        // 'full'/'disabled'/'closed' above and gets that word, and a group
+        // that still has a bookable date has no capacity of its own, so it
+        // reads as unlimited/"Open". render_choose_date_row() is documented
+        // as tolerating a parent id for exactly this reason.
         $capacity = (int) ( $meta['capacity'] ?? 0 );
         if ( $capacity <= 0 ) {
             return \__( 'Open', 'anchor-schema' );
@@ -10225,25 +10228,43 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * The vocabulary is unchanged, which is the point: 'parent' still means
      * "choose a date" (WooCommerce::bookability_message() says exactly that,
      * and Event_Schema::omits_offer() still withholds the container's Offer),
-     * and a container with nothing left now borrows the two words the rest of
-     * the module already uses for it — 'full' when a date is sold out and
-     * 'closed' when there is simply nothing on offer. A past date can never
-     * report 'full' (capacity_decision() answers 'closed' for a finished
-     * event first), so a container whose dates have all run reads 'closed'
-     * rather than "sold out".
+     * and a container with nothing left borrows the words the rest of the
+     * module already uses for one date, in the same order bookability()
+     * itself resolves them:
+     *   'full'     — a date is sold out (the seats going outranks the button
+     *                being gone, NEW-D2),
+     *   'disabled' — registration is simply switched off on every date,
+     *   'closed'   — finished, cancelled, outside its window, or no dates.
+     *
+     * The 'disabled' rung is not cosmetic. Registration off is the DEFAULT
+     * state of an event and the PERMANENT state of every display-only site,
+     * and Event_Schema::omits_offer() deliberately keeps publishing an Offer
+     * for it while withholding one for 'closed' — collapsing it into 'closed'
+     * would have stripped the price out of the markup of every offering on
+     * every site that has never switched registration on. A past date can
+     * never report 'full' or 'disabled' (capacity_decision() answers 'closed'
+     * for a finished event before it looks at anything else), so a container
+     * whose dates have all run still reads 'closed'.
      *
      * @param int $parent_id
-     * @return string parent|full|closed
+     * @return string parent|full|disabled|closed
      */
     private function parent_bookability( $parent_id ) {
         $parent_id = (int) $parent_id;
         if ( ! empty( $this->occurrences->bookable_children( $parent_id ) ) ) {
             return 'parent';
         }
+
+        $states = [];
         foreach ( $this->occurrences->children( $parent_id, false ) as $child_id ) {
-            if ( $this->bookability( (int) $child_id ) === 'full' ) {
-                return 'full';
-            }
+            $states[ $this->bookability( (int) $child_id ) ] = true;
+        }
+
+        if ( isset( $states['full'] ) ) {
+            return 'full';
+        }
+        if ( isset( $states['disabled'] ) ) {
+            return 'disabled';
         }
         return 'closed';
     }

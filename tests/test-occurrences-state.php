@@ -746,9 +746,21 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 		$parent_id = $this->make_parent( $this->two_rows() );
 		$live      = $this->occurrences()->reconcile( $parent_id );
 
-		$this->assertSame( [ (int) $live[0], (int) $live[1] ], $this->occurrences()->bookable_children( $parent_id ) );
-
+		// Seated BEFORE the first read on purpose. Creating a seat bumps the
+		// listing cache generation, which is part of the memo key — so a seat
+		// created BETWEEN the two reads would invalidate the memo by itself
+		// and the test would pass with no flush in reconcile() at all. Doing
+		// it first means the only thing that can change the second answer is
+		// reconcile() dropping the memo by hand, which is the whole point:
+		// soft-closing a date is a pure meta write and bumps no counter.
 		$this->make_seat( (int) $live[0], [ 'status' => Registrations::STATUS_CONFIRMED ] );
+
+		$this->assertSame(
+			[ (int) $live[0], (int) $live[1] ],
+			$this->occurrences()->bookable_children( $parent_id ),
+			'Fixture: both dates are still live and bookable (the seat does not fill a capacity-0 date).'
+		);
+
 		$this->drop_first_date( $parent_id );
 		$this->occurrences()->reconcile( $parent_id );
 
@@ -839,6 +851,42 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 		$this->occurrences()->reconcile( $parent_id );
 
 		$this->assertSame( 'closed', $this->module()->bookability( $parent_id ) );
+	}
+
+	/**
+	 * Registration off on every date is 'disabled', NOT 'closed'.
+	 *
+	 * Registration off is the default state of an event and the permanent
+	 * state of every display-only site, and Event_Schema::omits_offer() keeps
+	 * publishing an Offer for 'disabled' while withholding one for 'closed'
+	 * (NEW-D2). Collapsing the two would have stripped the price out of the
+	 * markup of every offering on every site that never switched registration
+	 * on.
+	 */
+	public function test_parent_whose_every_date_has_registration_off_reads_disabled() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-08-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'One', 'capacity' => 10 ],
+			[ 'date' => '2030-08-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Two', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		foreach ( $live as $child_id ) {
+			update_post_meta( (int) $child_id, '_anchor_event_registration_enabled', false );
+		}
+
+		$this->assertSame( 'disabled', $this->module()->bookability( $parent_id ) );
+	}
+
+	/** A sold-out date outranks a switched-off one, exactly as it does on one event. */
+	public function test_parent_with_a_sold_out_and_a_switched_off_date_reads_full() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-09-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Full', 'capacity' => 1 ],
+			[ 'date' => '2030-09-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Off', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		$this->make_seat( (int) $live[0] );
+		update_post_meta( (int) $live[1], '_anchor_event_registration_enabled', false );
+
+		$this->assertSame( 'full', $this->module()->bookability( $parent_id ) );
 	}
 
 	public function test_parent_with_no_dates_at_all_reads_closed() {

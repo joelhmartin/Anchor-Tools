@@ -253,6 +253,17 @@ class Series {
      * the parent's own copy is representative), and an "N dates available"
      * count in place of a single-date availability hint.
      *
+     * "Available" counts the BOOKABLE dates, not merely the upcoming ones:
+     * two sold-out dates in November are not two dates a visitor can have,
+     * and saying so here contradicted the picker on the very next screen,
+     * which called both of them "Sold out". With none bookable the count is
+     * replaced by the container's own availability hint — Module::
+     * choose_date_availability_hint(), the same renderer every other row on
+     * this archive uses (MODEL-D42) — which reads the parent's bookability
+     * and so says "Sold out" / "Registration closed" / "Date passed" rather
+     * than "0 dates available". The RANGE stays on the upcoming dates: it
+     * answers "when", which is a different question from "how many are left".
+     *
      * The range used to span children($parent_id, false) — the raw live set,
      * which includes dates that have been and gone (audit MODEL-D4), so a
      * course running in November was advertised as "Sep 2026 – Dec 2026" off
@@ -290,7 +301,14 @@ class Series {
             }
         }
 
-        $count = \count( $offered );
+        $bookable = \count( $occ->bookable_children( $parent_id ) );
+        $summary  = $bookable > 0
+            ? \sprintf(
+                /* translators: %d: number of bookable dates available for this group. */
+                \_n( '%d date available', '%d dates available', $bookable, 'anchor-schema' ),
+                $bookable
+            )
+            : $this->module->choose_date_availability_hint( $parent_id, $this->module->get_meta( $parent_id ) );
 
         \ob_start();
         ?>
@@ -302,15 +320,7 @@ class Series {
                 <span class="anchor-event-series__date"><?php echo \esc_html( $date_label ); ?></span>
             <?php endif; ?>
             <span class="anchor-event-series__price"><?php echo $this->price_hint( $parent_id ); ?></span>
-            <span class="anchor-event-series__availability">
-                <?php
-                echo \esc_html( \sprintf(
-                    /* translators: %d: number of live dates available for this group. */
-                    \_n( '%d date available', '%d dates available', $count, 'anchor-schema' ),
-                    $count
-                ) );
-                ?>
-            </span>
+            <span class="anchor-event-series__availability"><?php echo \esc_html( $summary ); ?></span>
         </li>
         <?php
         return \ob_get_clean();

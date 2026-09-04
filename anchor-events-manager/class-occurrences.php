@@ -698,11 +698,14 @@ class Occurrences {
      * still the right one for the parent's own span and for admin counts, so
      * it is left alone; this is the narrower one the date readers want.
      *
-     * "Not finished" is `end_ts >= now`, the same comparison against the same
-     * meta row Module::build_visibility_clause() makes, so a listing query and
-     * this list can never disagree about which dates are still to come. An
-     * occurrence with NO end_ts row is UNDATED rather than past (RENDER-D31)
-     * and is kept — is_past() owns that rule for every reader.
+     * "Not finished" is `end_ts >= now` against the same meta row
+     * Module::build_visibility_clause() compares, so a listing query and this
+     * list agree for every row the timestamp back-fill writes. They are not
+     * identical predicates at the edges: the query keeps a row that does not
+     * EXIST, is_past() also keeps one that exists but is 0 or unparseable —
+     * an occurrence with no usable end_ts is UNDATED rather than past
+     * (RENDER-D31), the same gate capacity_decision() applies to the same
+     * value. is_past() owns that rule for every reader.
      *
      * @param int $parent_id
      * @return int[] Child post ids, earliest first.
@@ -819,7 +822,12 @@ class Occurrences {
      */
     private function cached_child_list( $bucket, $parent_id, callable $filter ) {
         $parent_id = (int) $parent_id;
-        if ( $parent_id <= 0 ) {
+        // Gated on the group_role stamp (one meta read) rather than on
+        // children() returning []: both lists are asked of every card in a
+        // listing, and the overwhelming majority of events are not containers
+        // at all — without this each of them pays a get_posts() to be told it
+        // has no children. Same guard Module::next_occurrence() applies.
+        if ( $parent_id <= 0 || ! $this->is_group_parent( $parent_id ) ) {
             return [];
         }
 

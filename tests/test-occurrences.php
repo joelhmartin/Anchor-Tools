@@ -66,7 +66,9 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 
 			$meta = $this->module()->get_meta( $child_id );
 			$this->assertContains( $meta['start_date'], [ '2027-03-01', '2027-03-08' ] );
-			$this->assertSame( $meta['start_date'], get_post_meta( $child_id, '_anchor_event_occurrence_key', true ) );
+			// Identity is the date AND the start time (MODEL-D8) — two sessions
+			// on one day are two occurrences, so the date alone cannot be the key.
+			$this->assertSame( $meta['start_date'] . '|09:00', get_post_meta( $child_id, '_anchor_event_occurrence_key', true ) );
 			$this->assertGreaterThan( 0, $meta['start_ts'] );
 
 			// Inherited shared fields.
@@ -249,7 +251,12 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 		// Date identity untouched.
 		$this->assertSame( $before_meta['start_date'], $after_meta['start_date'] );
 		$this->assertSame( '2027-03-01', $after_meta['start_date'] );
-		$this->assertSame( $before_key, get_post_meta( $child_id, '_anchor_event_occurrence_key', true ) );
+		// The DATE identity is untouched; the key follows the row's new start
+		// time, because the start time is part of the identity now (MODEL-D8).
+		// The child is re-keyed in place — the point of the assertions above is
+		// that it is the same post, with the same roster, not a replacement.
+		$this->assertSame( '2027-03-01|09:00', $before_key );
+		$this->assertSame( '2027-03-01|14:00', get_post_meta( $child_id, '_anchor_event_occurrence_key', true ) );
 
 		// Seat preserved.
 		$result = $this->registrations()->query_seats( [ 'event_id' => $child_id, 'status' => 'all' ] );

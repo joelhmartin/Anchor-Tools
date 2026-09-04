@@ -366,7 +366,7 @@ class Event_Schema {
             'name'                => (string) \get_the_title( $event_id ),
             'startDate'           => $this->format_iso( $start_ts, $tz, $all_day ),
             'endDate'             => $this->format_iso( $end_ts, $tz, $all_day ),
-            'eventStatus'         => $this->event_status( $meta ),
+            'eventStatus'         => $this->event_status( $event_id, $meta ),
             'eventAttendanceMode' => $loc['mode'],
             'location'            => $loc['location'],
             'url'                 => (string) \get_permalink( $event_id ),
@@ -406,45 +406,46 @@ class Event_Schema {
     }
 
     /**
-     * Resolve the DateTimeZone an event's wall-clock start/end times were
-     * interpreted in. Deliberately mirrors Module::calculate_timestamps()'s
-     * (private) timezone_mode resolution exactly, so the ISO string we
-     * render always matches the wall-clock time that produced the event's
-     * own start_ts/end_ts (same known limitation: a site with only a
-     * floating gmt_offset — no timezone_string — falls back to UTC, same as
-     * the existing save path).
+     * The DateTimeZone an event's wall-clock start/end times were interpreted
+     * in — ASKED of the module, never re-derived (audit RENDER-D2 / MODEL-D20).
+     *
+     * This used to be a second copy of the resolution: `get_option(
+     * 'timezone_string') ?: 'UTC'`. That option is empty on any site
+     * configured with a raw gmt_offset instead of a named zone, and it cannot
+     * translate WordPress's own "UTC-6" form either — so on exactly the sites
+     * Module::normalize_timezone() was written to fix, the module computed
+     * every timestamp at -06:00 while this rendered the same instants at
+     * +00:00. Production published `"startDate":"2026-12-11T14:00:00+00:00"`
+     * for an 08:00 local course, and an all-day node — which collapses to
+     * `Y-m-d` in the RENDERED zone — named the wrong day on a UTC+ site.
      *
      * @param array $meta
      * @return \DateTimeZone
      */
     private function resolve_timezone( array $meta ) {
-        $settings = $this->module->get_settings();
-        $mode     = $settings['timezone_mode'] ?? 'site';
-
-        if ( $mode === 'site' ) {
-            $tz_name = \get_option( 'timezone_string' ) ?: 'UTC';
-        } else {
-            $tz_name = ! empty( $meta['timezone'] ) ? (string) $meta['timezone'] : ( \get_option( 'timezone_string' ) ?: 'UTC' );
-        }
-
-        try {
-            return new \DateTimeZone( $tz_name );
-        } catch ( \Exception $e ) {
-            return new \DateTimeZone( 'UTC' );
-        }
+        return $this->module->event_timezone( $meta );
     }
 
     /**
      * eventStatus: EventCancelled when the event/occurrence status is
      * 'cancelled' (this already covers a soft-closed group-offering child —
-     * Occurrences::soft_close() sets status=cancelled), EventScheduled
-     * otherwise.
+     * Occurrences::soft_close() sets status_mode=manual + status=cancelled),
+     * EventScheduled otherwise.
      *
-     * @param array $meta
+     * RENDER-D11: the status comes from Module::get_event_status(), the one
+     * accessor every other renderer uses, not from the raw `$meta['status']`
+     * row. The row is only refreshed on save, on transition_post_status and by
+     * the daily sweep, so reading it directly made the JSON-LD and the visible
+     * "Status: …" on the same page derive one fact from two sources — and a
+     * stale 'cancelled' row on an AUTO-mode event (auto never computes
+     * 'cancelled') published EventCancelled for an event nobody had cancelled.
+     *
+     * @param int   $event_id
+     * @param array $meta     get_meta( $event_id ).
      * @return string
      */
-    private function event_status( array $meta ) {
-        $status = (string) ( $meta['status'] ?? '' );
+    private function event_status( $event_id, array $meta ) {
+        $status = (string) $this->module->get_event_status( $event_id, $meta );
         return $status === 'cancelled' ? 'https://schema.org/EventCancelled' : 'https://schema.org/EventScheduled';
     }
 
@@ -786,6 +787,12 @@ class Event_Schema {
      * shape), from the event's registration_open date (midnight, event
      * timezone), or '' when unset.
      *
+     * The wall-clock -> instant step is Module::to_timestamp()'s, not a local
+     * `createFromFormat()` of its own: a second construction is a second place
+     * for the format, the zone and the seconds rule to drift out of step with
+     * the save path — which is exactly how resolve_timezone() came to render
+     * every date in a zone the module never computed in.
+     *
      * @param array $meta
      * @return string
      */
@@ -795,7 +802,11 @@ class Event_Schema {
             return '';
         }
         $tz = $this->resolve_timezone( $meta );
-        $dt = \DateTime::createFromFormat( 'Y-m-d H:i', $raw . ' 00:00', $tz );
-        return $dt ? $dt->format( 'c' ) : '';
+        $ts = $this->module->to_timestamp( $raw, '00:00', $tz );
+        // to_timestamp() answers 0 for both "no date" and "unparseable". Only
+        // exactly the epoch is ambiguous, and a registration_open of
+        // 1970-01-01T00:00Z is not a date anyone sets; a pre-1970 one still
+        // renders, as it did before.
+        return $ts !== 0 ? $this->format_iso( $ts, $tz, false ) : '';
     }
 }

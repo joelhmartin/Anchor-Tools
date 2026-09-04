@@ -71,6 +71,14 @@ class Product_Sync {
         // Trash / delete → demote the managed product to draft (never delete).
         \add_action( 'wp_trash_post', [ $this, 'on_event_trashed_or_deleted' ], 10, 1 );
         \add_action( 'before_delete_post', [ $this, 'on_event_trashed_or_deleted' ], 10, 1 );
+        // NO `untrashed_post` mirror is needed, and adding one would just run a
+        // second full sync per restore (audit WOO-D34, checked against core):
+        // wp_untrash_post() restores the status THROUGH wp_update_post(), so
+        // save_post_event fires with the event already out of the trash and
+        // on_event_saved() below republishes the product. The trash half needs
+        // its own hook only because save_post fires there too — with the status
+        // already 'trash', which on_event_saved() skips.
+        // tests/test-untrash.php pins that round trip.
 
         // Managed-field lock (Task 2.2): re-assert on a direct managed-product edit.
         \add_action( 'woocommerce_update_product', [ $this, 'on_product_updated' ], 30, 1 );
@@ -115,7 +123,19 @@ class Product_Sync {
     }
 
     /**
-     * The managed variation id for a tier (0 if none).
+     * The managed variation id for a tier (0 if none) — VALIDATED.
+     *
+     * The tier row's `wc_variation_id` is a cache written by the last sync and
+     * nothing invalidates it when the variation is deleted, re-parented or
+     * deactivated in the Woo editor (audit WOO-D24). Returning a stale id sent
+     * ajax_add_to_cart() into WC_Cart::add_to_cart() with a combination Woo
+     * rejects, and the buyer got the generic "Could not add … to the cart".
+     *
+     * A returned id is guaranteed to be a published `product_variation` whose
+     * parent is THIS event's validated managed product, so the sole caller can
+     * treat a 0 as "this tier is not on sale" and say so. The cached id and the
+     * fallback scan are held to the same bar — otherwise the scan would just
+     * hand back the same private/foreign variation the cache check rejected.
      *
      * @param int    $event_id
      * @param string $tier_id
@@ -128,12 +148,7 @@ class Product_Sync {
             return 0;
         }
 
-        $tier = $this->ticket_types->find( $event_id, $tier_id );
-        if ( $tier && (int) $tier['wc_variation_id'] > 0 ) {
-            return (int) $tier['wc_variation_id'];
-        }
-
-        // Fallback: scan the managed product's variations by tier-id meta.
+        // Fallback (and validation) both need the owning product.
         if ( ! \function_exists( 'wc_get_product' ) ) {
             return 0;
         }
@@ -141,13 +156,44 @@ class Product_Sync {
         if ( $product_id <= 0 ) {
             return 0;
         }
+
+        $tier = $this->ticket_types->find( $event_id, $tier_id );
+        if ( $tier && $this->is_live_variation( (int) $tier['wc_variation_id'], $product_id, $tier_id ) ) {
+            return (int) $tier['wc_variation_id'];
+        }
+
+        // Fallback: scan the managed product's variations by tier-id meta.
         foreach ( $this->variation_ids_for_product( $product_id ) as $vid ) {
-            $variation = \wc_get_product( $vid );
-            if ( $variation && (string) $variation->get_meta( self::VARIATION_TIER_META ) === $tier_id ) {
+            if ( $this->is_live_variation( $vid, $product_id, $tier_id ) ) {
                 return (int) $vid;
             }
         }
         return 0;
+    }
+
+    /**
+     * Whether $variation_id is a published `product_variation` of $product_id
+     * mapped to $tier_id. The single validation both branches of
+     * variation_for_tier() apply.
+     *
+     * @param int    $variation_id
+     * @param int    $product_id Validated managed product id.
+     * @param string $tier_id
+     * @return bool
+     */
+    private function is_live_variation( $variation_id, $product_id, $tier_id ) {
+        $variation_id = (int) $variation_id;
+        if ( $variation_id <= 0 || \get_post_type( $variation_id ) !== 'product_variation' ) {
+            return false;
+        }
+        if ( \get_post_status( $variation_id ) !== 'publish' ) {
+            return false; // Deactivated (private) or drafted.
+        }
+        if ( (int) \wp_get_post_parent_id( $variation_id ) !== (int) $product_id ) {
+            return false; // Another event's product, or re-parented.
+        }
+        $variation = \wc_get_product( $variation_id );
+        return $variation && (string) $variation->get_meta( self::VARIATION_TIER_META ) === (string) $tier_id;
     }
 
     /**
@@ -179,17 +225,80 @@ class Product_Sync {
     }
 
     /**
-     * The managed product id stored on the event (0 if none).
+     * The event's managed product id — VALIDATED (0 when there isn't one).
+     *
+     * The one accessor every caller uses, so "the event's product" means the
+     * same thing everywhere (audit WOO-D23). The stored pointer is a bare int
+     * with no referential integrity behind it, and it survives all three of:
+     *
+     *  - the product being permanently deleted (WordPress may later reissue
+     *    the id to an unrelated post, which the event would then "own"),
+     *  - the product being trashed,
+     *  - the event being DUPLICATED — a duplicate-post plugin copies this meta
+     *    verbatim, so two events point at one product. The product's own
+     *    back-pointer (PRODUCT_EVENT_META) still names exactly one owner, so
+     *    that is the tiebreak: a product whose back-pointer names a different,
+     *    still-existing event is not this event's, and do_sync_event() below
+     *    gives the copy its own product instead of stealing the original's.
+     *    (Occurrences::disown_foreign_product() clears the borrowed pointer on
+     *    the trash path; this rejects it on every read.)
+     *
+     * A `draft` product IS still the event's managed product — the demote path
+     * drafts it on purpose and the untrash path republishes that same product.
+     * Callers that need "can this be sold right now?" ask
+     * managed_product_is_sellable() instead.
      *
      * @param int $event_id
      * @return int
      */
     public function managed_product_id( $event_id ) {
+        $event_id   = (int) $event_id;
+        $product_id = $this->stored_product_id( $event_id );
+        if ( $product_id <= 0 ) {
+            return 0;
+        }
+        if ( \get_post_type( $product_id ) !== 'product' ) {
+            return 0; // Deleted, or an id reissued to something else.
+        }
+        if ( \get_post_status( $product_id ) === 'trash' ) {
+            return 0;
+        }
+        $owner = (int) \get_post_meta( $product_id, self::PRODUCT_EVENT_META, true );
+        if ( $owner !== $event_id && \get_post_type( $owner ) === Module::CPT ) {
+            return 0; // Belongs to another live event — a copied pointer.
+        }
+        return $product_id;
+    }
+
+    /**
+     * The RAW stored pointer, unvalidated — for the caller whose job is to
+     * clear it (Occurrences::disown_foreign_product()) rather than to use the
+     * product it names, and for managed_product_id() itself to validate.
+     * Everything else wants managed_product_id().
+     *
+     * @param int $event_id
+     * @return int
+     */
+    public function stored_product_id( $event_id ) {
         $event_id = (int) $event_id;
         if ( $event_id <= 0 ) {
             return 0;
         }
         return (int) \get_post_meta( $event_id, self::EVENT_PRODUCT_META, true );
+    }
+
+    /**
+     * Whether the event's managed product is currently sellable — i.e. it is a
+     * valid managed product AND published (audit WOO-D23). Demoted-to-draft is
+     * the plugin's own "this event has nothing to sell" state, so it must not
+     * read as sellable even though the pointer is still correct.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function managed_product_is_sellable( $event_id ) {
+        $product_id = $this->managed_product_id( $event_id );
+        return $product_id > 0 && \get_post_status( $product_id ) === 'publish';
     }
 
     /* ---------------------------------------------------------------------
@@ -239,16 +348,113 @@ class Product_Sync {
         if ( $product_id <= 0 ) {
             return;
         }
+        $this->demote_product( $product_id, $post_id );
+    }
 
-        self::$in_flight['product'][ $product_id ] = true;
-        try {
-            $product = \wc_get_product( $product_id );
-            if ( $product && $product->get_status() !== 'draft' ) {
-                $product->set_status( 'draft' );
-                $product->save();
+    /**
+     * Take an event's managed product out of circulation, whole.
+     *
+     * Drafting the PARENT alone was never enough (audit WOO-D50): its
+     * variations stayed `publish` with `_anchor_evt_link_event_id` intact, so
+     * they still qualified for the linked-products mirror, still resolved as
+     * event lines on an order, and stayed purchasable for anyone with
+     * edit_post on the drafted parent (WooCommerce lets an editor through an
+     * unpublished parent). Meanwhile the event's tier list still advertised a
+     * `wc_variation_id` for each of them.
+     *
+     * So the demote does all three, in the vocabulary the rest of the module
+     * already uses for a retired variation — `private` + VARIATION_ACTIVE_META
+     * '0', exactly what write_variation()'s deactivate branch writes:
+     *
+     *  1. product      → draft
+     *  2. variations   → private + inactive
+     *  3. tier rows    → wc_variation_id 0
+     *
+     * (3) clears the CACHE, not the author's tier rows — the alternative
+     * ("mark the tiers inactive") would rewrite authored data to record a
+     * derived state, and could not be undone by the code that set it: a group
+     * parent is demoted on EVERY save, so its authored tiers would be
+     * permanently deactivated the first time it grew an occurrence. Clearing
+     * the pointer is what write_back_variation_ids() already owns and what the
+     * next sync re-derives, so the whole demotion reverses itself: re-activate
+     * a tier (or stop being a group parent) and the next sync republishes the
+     * product, republishes its variations and re-writes the ids.
+     *
+     * Never deletes: orders reference these posts.
+     *
+     * Steps 2 and 3 run even when there is no product to demote ($product_id 0:
+     * deleted, trashed, or a pointer that turned out to belong to another
+     * event). The event-side state is the half we can always fix, and leaving
+     * its tier rows naming variations that no longer resolve — or a mirror
+     * listing a product that is gone — is the same stale-pointer defect one
+     * level up. Guarded on the event ever having HAD a pointer, so an event
+     * that never sold anything (much the commonest case, and re-synced on
+     * every save) does no work at all.
+     *
+     * @param int $product_id Validated managed product id, or 0 when there is none.
+     * @param int $event_id
+     */
+    private function demote_product( $product_id, $event_id ) {
+        $product_id = (int) $product_id;
+        $event_id   = (int) $event_id;
+        if ( $event_id <= 0 ) {
+            return;
+        }
+        if ( $product_id <= 0 && $this->stored_product_id( $event_id ) <= 0 ) {
+            return; // Never had a managed product — nothing to take out of circulation.
+        }
+
+        if ( $product_id > 0 ) {
+            self::$in_flight['product'][ $product_id ] = true;
+            try {
+                $product = \wc_get_product( $product_id );
+                if ( $product && $product->get_status() !== 'draft' ) {
+                    $product->set_status( 'draft' );
+                    $product->save();
+                }
+
+                foreach ( $this->variation_ids_for_product( $product_id ) as $vid ) {
+                    $variation = \wc_get_product( $vid );
+                    if ( ! $variation ) {
+                        continue;
+                    }
+                    $dirty = false;
+                    if ( $variation->get_status() !== 'private' ) {
+                        $variation->set_status( 'private' );
+                        $dirty = true;
+                    }
+                    if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '0' ) {
+                        $variation->update_meta_data( self::VARIATION_ACTIVE_META, '0' );
+                        $dirty = true;
+                    }
+                    if ( $dirty ) {
+                        $variation->save();
+                    }
+                }
+            } finally {
+                unset( self::$in_flight['product'][ $product_id ] );
             }
-        } finally {
-            unset( self::$in_flight['product'][ $product_id ] );
+        }
+
+        // Stop the tier list advertising variations nothing can sell. Reuses the
+        // same write-back the live path uses, so it stays a no-op when the ids
+        // are already 0 (idempotency).
+        $tiers = $this->ticket_types->get( $event_id );
+        $this->write_back_variation_ids(
+            $event_id,
+            $tiers,
+            \array_fill_keys( \array_map( 'strval', \wp_list_pluck( $tiers, 'id' ) ), 0 )
+        );
+
+        // …and the denormalized linked-products mirror, which event_is_linked()
+        // reads instead of the live query. Its own rebuild rides on
+        // `woocommerce_update_product`, which a variation save does not fire and
+        // an ALREADY-draft product does not fire either — so an event demoted by
+        // an older build (live: 7909) would keep a mirror listing three
+        // unsellable variations forever. Rebuilding here makes the demote whole
+        // whichever sub-save happened to run.
+        if ( $this->module->woocommerce ) {
+            $this->module->woocommerce->rebuild_event_mirror( $event_id );
         }
     }
 
@@ -336,20 +542,10 @@ class Product_Sync {
 
         $existing_product_id = $this->managed_product_id( $event_id );
 
-        // No paid+active tier → demote any existing managed product to draft.
+        // No paid+active tier → demote any existing managed product (product to
+        // draft, variations to private+inactive, tier variation ids cleared).
         if ( empty( $paid_active_map ) ) {
-            if ( $existing_product_id > 0 ) {
-                self::$in_flight['product'][ $existing_product_id ] = true;
-                try {
-                    $product = \wc_get_product( $existing_product_id );
-                    if ( $product && $product->get_status() !== 'draft' ) {
-                        $product->set_status( 'draft' );
-                        $product->save();
-                    }
-                } finally {
-                    unset( self::$in_flight['product'][ $existing_product_id ] );
-                }
-            }
+            $this->demote_product( $existing_product_id, $event_id );
             return 0;
         }
 

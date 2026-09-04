@@ -27,18 +27,21 @@
  *     (`_anchor_event_managed_product`) — both are per-post already and are
  *     never copied from the parent.
  *   - SHARED meta (copied at child creation AND re-synced on every reconcile
- *     of a still-live child, so editing the parent propagates): everything
- *     else in the event meta schema except the per-occurrence keys above and
- *     the NEVER_COPY_KEYS below (product/engine-owned mirrors + fields that
- *     don't make sense to copy). This covers title-ish/content, location
- *     fields, ticket_types, registration_mode, external_*, the capacity
- *     *default*, timezone, and the remaining registration-policy fields
- *     (registration_enabled, waitlist, registration_open/close,
- *     registration_type, registration_url, price, hide_from_archive,
- *     featured, priority, organizer_email, reminder_offsets, gallery,
- *     all_day). A child's `type` meta is force-set to 'single' (never
- *     inherits 'offering'/'recurring') because each occurrence is itself a
- *     plain single event.
+ *     of a still-live child, so editing the parent propagates): an EXPLICIT
+ *     allow-list — INHERITED_KEYS (the shared schema facts: location fields,
+ *     timezone, all_day, registration policy, price, gallery, labels,
+ *     external_*, organizer_email, reminder_offsets) plus the event meta that
+ *     lives outside the schema and so was invisible to the old
+ *     "schema minus exclusions" definition: the registration questions and
+ *     every per-event email override. inherited_meta_keys() assembles the
+ *     full list and `anchor_events_inherited_meta_keys` filters it.
+ *     Only keys the parent has a REAL row for are copied — never a default
+ *     get_meta() synthesized at read time — and a key the parent no longer
+ *     has is deleted from the child, so clearing a value propagates too
+ *     (audit MODEL-D7 / MODEL-D37). Ticket tiers and the product are synced
+ *     separately (sync_ticket_types()/sync_product()). A child's `type` meta
+ *     is force-set to 'single' (never inherits 'offering'/'recurring')
+ *     because each occurrence is itself a plain single event.
  *
  * Soft-close representation: a removed-but-seated occurrence is NEVER
  * deleted. It is marked with the existing status vocabulary
@@ -48,12 +51,14 @@
  * with $include_closed=false) while its post + roster survive untouched and
  * remain reachable via children($include_closed=true). Re-adding the same
  * occurrence_key later REVIVES the same child (clears the closed flag,
- * restores auto status/registration) instead of creating a duplicate, so its
- * historical roster is retained.
+ * restores auto status, and puts back the registration_enabled value the
+ * close overwrote — snapshotted in `_anchor_event_occurrence_prev_reg`)
+ * instead of creating a duplicate, so its historical roster is retained.
  *
  * Idempotency: a child is matched to a desired offering-dates row by a
- * stable `occurrence_key` (the row's normalized date string) stored on the
- * child at creation. reconcile() is a pure function of (parent's
+ * stable `occurrence_key` (the row's normalized "<date>|<start time>"
+ * identity — see occurrence_key()) stored on the child at creation.
+ * reconcile() is a pure function of (parent's
  * offering_dates, existing children keyed by occurrence_key) — an unchanged
  * desired set produces no new posts, no closures, and no meta churn beyond
  * re-writing identical shared-field values.
@@ -95,6 +100,11 @@ class Occurrences {
         // what happened while these were copied down from the parent.
         'registration_enabled',
         'sold_out',
+        // The occurrence's authored label (audit MODEL-D10/MODEL-D27): the
+        // offering row's own text, re-applied from the row on every reconcile
+        // like the other editable fields, and NEVER copied from the parent's
+        // same-named meta — the parent has no occurrence label of its own.
+        'label',
     ];
 
     /**
@@ -114,6 +124,89 @@ class Occurrences {
         'recurrence',
         'occurrence_key',
         'occurrence_closed',
+        // soft_close()'s snapshot of the registration_enabled value it
+        // overwrote, consumed by revive_if_closed(). Engine-owned, per date.
+        'occurrence_prev_reg',
+    ];
+
+    /**
+     * The SHARED event facts an occurrence child inherits from its parent —
+     * schema keys, WITHOUT the `_anchor_event_` prefix (audit MODEL-D7).
+     *
+     * This is an explicit allow-list, not "the schema minus the two exclusion
+     * lists above". The subtraction definition had two failure modes:
+     *
+     *   - Every event meta key OUTSIDE get_meta_defaults() was invisible to
+     *     it, so the registration questions and the whole per-event email
+     *     override set never reached a child (they are enumerated in
+     *     inherited_meta_keys() below, which is what the copy actually
+     *     iterates).
+     *   - A new schema key silently became inherited the moment it was added,
+     *     with nobody deciding that it should be.
+     *
+     * The membership here is exactly what the old subtraction produced, so
+     * behaviour for schema keys is unchanged: everything in
+     * get_meta_defaults() that is in neither PER_OCCURRENCE_KEYS nor
+     * NEVER_COPY_KEYS. Adding a schema key now means deciding, here, whether
+     * an occurrence shares it with its siblings.
+     */
+    const INHERITED_KEYS = [
+        'timezone',
+        'all_day',
+        'venue',
+        'address_street',
+        'address_city',
+        'address_state',
+        'address_zip',
+        'address_country',
+        'virtual',
+        'virtual_url',
+        'registration_open',
+        'registration_close',
+        'waitlist',
+        'registration_type',
+        'registration_url',
+        'price',
+        'hide_from_archive',
+        'featured',
+        'priority',
+        'gallery',
+        'organizer_email',
+        'reminder_offsets',
+        'labels',
+        'registration_mode',
+        'external_url',
+        'external_embed',
+        'external_display_price',
+    ];
+
+    /**
+     * The `_anchor_event_` suffixes of the per-event email overrides, one set
+     * per EMAIL_TEMPLATE_TYPES entry. Assembled in inherited_meta_keys() from
+     * the module's own type list rather than written out, so a fifth email
+     * type inherits the day it is added.
+     *
+     * Sender identity (From / Reply-To / Cc / Bcc) is per event, not per
+     * type, so it is listed separately.
+     */
+    const EMAIL_OVERRIDE_PER_TYPE = [
+        'tpl',
+        'off',
+        'subject',
+        'preheader',
+        'intro',
+        'cta_label',
+        'cta_url',
+        'cta2_label',
+        'cta2_url',
+    ];
+    const EMAIL_SENDER_KEYS = [
+        'email_from_name',
+        'email_from_address',
+        'email_reply_to_name',
+        'email_reply_to_address',
+        'email_cc',
+        'email_bcc',
     ];
 
     /**
@@ -154,24 +247,41 @@ class Occurrences {
 
         $this->set_group_role( $parent_id, 'parent' );
 
-        $desired_map  = [];
-        foreach ( $this->get_desired_dates( $parent_id ) as $row ) {
-            $desired_map[ $row['date'] ] = $row;
-        }
+        $desired_map = $this->desired_rows_by_key( $parent_id );
 
         // Trashed children are included on purpose. Removing a date trashes its
         // occurrence; adding the same date back must revive THAT occurrence, not
         // build a second one beside it. Without this the original stays in the
         // trash for ever and the date silently acquires a duplicate post.
-        $existing_map = $this->existing_children_map( $parent_id, true ); // occurrence_key => child_id (live + closed + trashed)
+        // Duplicates (two children on one occurrence_key) are collapsed to a
+        // single canonical child here, so everything below still works with a
+        // plain occurrence_key => child_id map.
+        $existing_map = $this->collapse_duplicate_children(
+            $parent_id,
+            $this->existing_children_map( $parent_id, true ) // any status + trash
+        );
 
         $live_ids = [];
+        // Which existing keys a desired row has taken. An existing child is
+        // matched by its key OR, failing that, by its date alone (see
+        // rekeyed_match()), so "still desired" cannot be re-derived from
+        // $desired_map at retire time — it is recorded as it happens.
+        $matched_keys = [];
 
         foreach ( $desired_map as $key => $row ) {
-            if ( isset( $existing_map[ $key ] ) ) {
-                $child_id = (int) $existing_map[ $key ];
+            $existing_key = isset( $existing_map[ $key ] )
+                ? $key
+                : $this->rekeyed_match( $key, $desired_map, $existing_map, $matched_keys );
+
+            if ( $existing_key !== '' ) {
+                $matched_keys[ $existing_key ] = true;
+                $child_id = (int) $existing_map[ $existing_key ];
                 // A wanted date whose occurrence is in the trash comes back out,
-                // keeping its id, its roster and its history.
+                // keeping its id, its roster and its history. Every OTHER status
+                // is left exactly as the admin set it: a child moved to
+                // draft/pending/private is matched and synced like any other
+                // occurrence (MODEL-D9) but is not force-published, so hiding one
+                // date sticks. children() is what keeps it off the picker.
                 if ( \get_post_status( $child_id ) === 'trash' ) {
                     \wp_untrash_post( $child_id );
                     \wp_update_post( [ 'ID' => $child_id, 'post_status' => 'publish' ] );
@@ -188,7 +298,7 @@ class Occurrences {
         }
 
         foreach ( $existing_map as $key => $child_id ) {
-            if ( isset( $desired_map[ $key ] ) ) {
+            if ( isset( $matched_keys[ $key ] ) ) {
                 continue; // still desired — handled above.
             }
             // Already in the trash and still unwanted: leave it exactly as it is.
@@ -207,6 +317,162 @@ class Occurrences {
         $this->sync_parent_span( $parent_id, $live_ids );
 
         return $live_ids;
+    }
+
+    /**
+     * The stable identity of one occurrence row: its start DATE plus its start
+     * TIME, joined by a pipe ("2026-11-07|09:00"; "2026-11-07|" when the row
+     * carries no time).
+     *
+     * The key used to be the date alone (audit MODEL-D8), so a parent offering
+     * a morning and an afternoon session on the same day silently kept only
+     * the first row: the metabox showed two live rows and one generated date,
+     * and the second row's tier/capacity/end_date were simply gone. Time is
+     * part of identity because it is the only authored field that distinguishes
+     * two sessions on one day. It is ALSO an editable field, so re-timing a row
+     * must not orphan its occurrence — reconcile() re-keys the existing child
+     * instead (see rekeyed_match()).
+     *
+     * Public because the save path dedupes against the same identity before it
+     * persists a row (Module::sanitize_offering_dates_rows()); two spellings of
+     * "the same occurrence" is exactly the drift this key exists to prevent.
+     *
+     * @param array $row Offering-dates row (or a recurrence-expanded row).
+     * @return string
+     */
+    public function occurrence_key( array $row ) {
+        return $this->normalize_date( (string) ( $row['date'] ?? '' ) )
+            . '|' . $this->normalize_time( (string) ( $row['start_time'] ?? '' ) );
+    }
+
+    /**
+     * A parent's desired occurrence rows, keyed by occurrence_key() — the one
+     * answer to "which occurrences should this parent have?", for BOTH group
+     * types (get_desired_dates() picks the source: offering rows or an expanded
+     * recurrence rule).
+     *
+     * Public so nothing has to re-derive it from `offering_dates` alone and
+     * quietly miss recurring parents, which is exactly what the label back-fill
+     * (Module::backfill_occurrence_labels()) would otherwise have done.
+     *
+     * @param int $parent_id
+     * @return array<string,array> occurrence key => row.
+     */
+    public function desired_rows_by_key( $parent_id ) {
+        $map = [];
+        foreach ( $this->get_desired_dates( $parent_id ) as $row ) {
+            $map[ $this->occurrence_key( $row ) ] = $row;
+        }
+        return $map;
+    }
+
+    /**
+     * A child's occurrence key as the current engine spells it: its stored
+     * `occurrence_key` meta, or — for a child stamped before the key carried a
+     * time (audit MODEL-D8) — that date plus the child's own start time, which
+     * is what its row mints today (start_time is re-applied to the child from
+     * the row on every reconcile).
+     *
+     * The one place the stored side is normalized, so the map, the reconcile
+     * re-stamp and the label back-fill can never disagree about what a legacy
+     * child's key means. Read-only: the upgraded spelling is written on the
+     * parent-save path (sync_child_from_parent()), never from a render.
+     *
+     * @param int $child_id
+     * @return string '' when the child carries no key at all.
+     */
+    public function stored_occurrence_key( $child_id ) {
+        $key = (string) \get_post_meta( (int) $child_id, $this->module->meta_key( 'occurrence_key' ), true );
+        if ( $key === '' || \strpos( $key, '|' ) !== false ) {
+            return $key;
+        }
+        return $key . '|' . $this->normalize_time(
+            (string) \get_post_meta( (int) $child_id, $this->module->meta_key( 'start_time' ), true )
+        );
+    }
+
+    /**
+     * Find the existing child of a desired key whose key does not match it
+     * exactly but which is plainly the SAME occurrence, re-timed: same date,
+     * not already claimed by another desired row, and not itself a desired key.
+     *
+     * Start time is identity (occurrence_key()) but is also an editable field
+     * an author can change on an existing row. Without this, editing 09:00 to
+     * 13:00 would retire the 09:00 occurrence — soft-closing it if it holds a
+     * roster — and publish a second post for the same day beside it. It also
+     * absorbs the pre-change storage format on the first reconcile after this
+     * upgrade for any child whose stored date-only key could not be normalized
+     * (existing_children_map() handles the ordinary legacy case exactly).
+     *
+     * Deliberately conservative: the re-key has to be unambiguous from BOTH
+     * sides of the date. Exactly one existing child of that date may be
+     * unclaimed (one candidate), AND exactly one desired row of that date may
+     * still need a child (one claimant). Either count above one means the
+     * pairing would be a guess:
+     *
+     *   - Two rows on one day both re-timed at once — two candidates, two
+     *     claimants — could only be paired by position.
+     *   - One 09:00 child re-timed to 10:00 while an 11:00 row is ADDED the
+     *     same day is one candidate but TWO claimants: whichever row the loop
+     *     reached first would take the existing child, and with it a roster
+     *     that belongs to the other session. This is why the candidate count
+     *     alone is not enough.
+     *
+     * An ambiguous date falls back to the ordinary rules: every claimant gets a
+     * new child, and the unmatched existing children are retired roster-safely
+     * (a seated one is soft-closed, keeping its post and its roster, and is
+     * never silently re-pointed at a different session).
+     *
+     * Deterministic regardless of iteration order: the claimant count is
+     * computed from the desired set itself, not from what has been matched so
+     * far, so every row of an ambiguous date reaches the same verdict.
+     *
+     * @param string              $key          Desired occurrence key.
+     * @param array<string,array> $desired_map  Every desired key.
+     * @param array<string,int>   $existing_map Existing key => canonical child id.
+     * @param array<string,bool>  $matched_keys Existing keys already claimed.
+     * @return string Existing key to match, or '' for none.
+     */
+    private function rekeyed_match( $key, array $desired_map, array $existing_map, array $matched_keys ) {
+        $date = $this->key_date( $key );
+        if ( $date === '' ) {
+            return '';
+        }
+
+        // Desired rows of this date that no existing child matches exactly, and
+        // so are competing for a re-key.
+        $claimants = 0;
+        foreach ( \array_keys( $desired_map ) as $desired_key ) {
+            if ( $this->key_date( $desired_key ) !== $date || isset( $existing_map[ $desired_key ] ) ) {
+                continue;
+            }
+            $claimants++;
+        }
+        if ( $claimants !== 1 ) {
+            return '';
+        }
+
+        $candidates = [];
+        foreach ( \array_keys( $existing_map ) as $existing_key ) {
+            if ( isset( $matched_keys[ $existing_key ] ) || isset( $desired_map[ $existing_key ] ) ) {
+                continue; // Belongs to another row.
+            }
+            if ( $this->key_date( $existing_key ) === $date ) {
+                $candidates[] = (string) $existing_key;
+            }
+        }
+
+        return \count( $candidates ) === 1 ? $candidates[0] : '';
+    }
+
+    /**
+     * The date half of an occurrence key ('' when it carries none).
+     *
+     * @param string $key
+     * @return string
+     */
+    private function key_date( $key ) {
+        return (string) \strstr( (string) $key, '|', true );
     }
 
     /**
@@ -236,6 +502,15 @@ class Occurrences {
      * Earliest start to latest end across live children. Left untouched when
      * there are none, so an event that has stopped being a container keeps the
      * dates it had rather than being blanked.
+     *
+     * The parent's derived STATUS moves with its span (audit MODEL-D32). A
+     * container whose only date had passed carries status='past'; the author
+     * adds a 2027 date and the span moves forward, but the status row used to
+     * sit stale until the daily sweep ran — up to 24 hours in which every
+     * reader called the parent finished and the admin "Past" quick filter
+     * still counted it. Mirrors what the save paths do, through the same
+     * writer, so manual mode is untouched: a hand-pinned status is the
+     * author's.
      *
      * @param int   $parent_id
      * @param int[] $live_ids Live children, already sorted earliest-first.
@@ -279,6 +554,7 @@ class Occurrences {
         $meta['end_date']   = $end_date;
 
         $this->module->persist_timestamps( $parent_id, $meta );
+        $this->module->persist_auto_status( $parent_id, $meta );
     }
 
     public function retire_all_children( $parent_id ) {
@@ -286,14 +562,56 @@ class Occurrences {
         if ( $parent_id <= 0 ) {
             return;
         }
-        foreach ( $this->existing_children_map( $parent_id ) as $child_id ) {
-            $this->retire_child( (int) $child_id );
+        foreach ( $this->existing_children_map( $parent_id ) as $ids ) {
+            foreach ( $ids as $child_id ) {
+                $this->retire_child( (int) $child_id );
+            }
         }
     }
 
     /**
+     * Write one registration_enabled value down onto every LIVE child of a
+     * group parent — the engine half of the parent form's explicit
+     * "apply to all dates" action (audit MODEL-D40).
+     *
+     * This is deliberately NOT a sync. `registration_enabled` is a
+     * PER_OCCURRENCE key: reconcile() never copies it from the parent, so
+     * closing the September date cannot close November and cannot be silently
+     * undone by the next parent save. What was missing was the other half — a
+     * way to say "this applies to the whole offering" ON PURPOSE — and this is
+     * it: one explicit, admin-initiated write, never reached from reconcile().
+     *
+     * SOFT-CLOSED children are excluded (children() with $include_closed
+     * false). registration_enabled=false is one quarter of the soft-closed
+     * quartet soft_close() asserts; re-opening a retired date here would both
+     * contradict that state and put a "Register" CTA on an occurrence the
+     * parent no longer offers.
+     *
+     * @param int  $parent_id
+     * @param bool $enabled
+     * @return int Number of live children written (0 when $parent_id is not a
+     *             group parent, so a plain single event is a safe no-op).
+     */
+    public function apply_registration_to_children( $parent_id, $enabled ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 || ! $this->is_group_parent( $parent_id ) ) {
+            return 0;
+        }
+
+        $enabled  = (bool) $enabled;
+        $children = $this->children( $parent_id, false );
+        foreach ( $children as $child_id ) {
+            \update_post_meta( (int) $child_id, $this->module->meta_key( 'registration_enabled' ), $enabled );
+        }
+
+        return \count( $children );
+    }
+
+    /**
      * Live (or all, incl. soft-closed) child post ids for a group parent.
-     * Never includes trashed children.
+     * PUBLISHED children only — never trashed, and never one an admin has
+     * unpublished (draft/pending/private): those stay occurrences of the
+     * group, reconcile() still syncs them, but they are not on offer.
      *
      * @param int  $parent_id
      * @param bool $include_closed
@@ -306,8 +624,19 @@ class Occurrences {
         }
 
         $ids = [];
-        foreach ( $this->existing_children_map( $parent_id ) as $child_id ) {
-            $child_id = (int) $child_id;
+        foreach ( $this->existing_children_map( $parent_id ) as $group ) {
+            // One occurrence per key: the canonical child. Any extra is a
+            // duplicate, and reconcile() — the write path — retires it.
+            $child_id = (int) $group[0];
+            // The map is now status-agnostic on purpose (MODEL-D9), but this
+            // list is the OFFERED set: it feeds the "choose a date" picker,
+            // the schema emitter and the archive exclusions. A child an admin
+            // unpublished is still an occurrence of the group — it is simply
+            // not on offer — so it is filtered out here rather than by the
+            // query, which is what reconcile() needs to see it at all.
+            if ( \get_post_status( $child_id ) !== 'publish' ) {
+                continue;
+            }
             if ( ! $include_closed && $this->is_closed( $child_id ) ) {
                 continue;
             }
@@ -361,7 +690,22 @@ class Occurrences {
     }
 
     /**
-     * The parent event post id for a child (0 when not a child).
+     * The parent event post id for a child (0 when not a child, and 0 when the
+     * id it stores no longer names a live event).
+     *
+     * The plugin has no cascade: permanently deleting a group parent leaves its
+     * seated, soft-closed children with `group_role`='child' and a `group_id`
+     * pointing at a dead id (audit MODEL-D22). Five callers then read fields
+     * off that id — Series::representative_id() renders a session row from it,
+     * the DEKA theme reads its meta, title and permalink — and if WordPress has
+     * reissued the id to an unrelated post, the child silently inherits that
+     * post's fields.
+     *
+     * So the pointer is validated here once, for every caller, rather than
+     * five times (and only one of the five did it). Callers that LINK to the
+     * parent keep their own `publish` check on top — a trashed parent is not a
+     * parent at all now, but a private/draft one is still real and still must
+     * not be linked (render_sibling_dates()).
      *
      * @param int $child_id
      * @return int
@@ -371,7 +715,14 @@ class Occurrences {
         if ( $child_id <= 0 || ! $this->is_group_child( $child_id ) ) {
             return 0;
         }
-        return (int) \get_post_meta( $child_id, $this->module->meta_key( 'group_id' ), true );
+        $parent_id = (int) \get_post_meta( $child_id, $this->module->meta_key( 'group_id' ), true );
+        if ( $parent_id <= 0 || \get_post_type( $parent_id ) !== Module::CPT ) {
+            return 0; // Deleted, or an id reissued to something else.
+        }
+        if ( \get_post_status( $parent_id ) === 'trash' ) {
+            return 0;
+        }
+        return $parent_id;
     }
 
     /**
@@ -458,18 +809,23 @@ class Occurrences {
         $rows = [];
         $seen = [];
         foreach ( $date_timestamps as $ts ) {
-            $date = \date( 'Y-m-d', $ts );
-            if ( isset( $seen[ $date ] ) ) {
-                continue;
-            }
-            $seen[ $date ] = true;
-            $rows[]        = [
-                'date'       => $date,
+            $row = [
+                'date'       => \date( 'Y-m-d', $ts ),
                 'start_time' => $start_time,
                 'end_time'   => $end_time,
                 'label'      => $label,
                 'capacity'   => $capacity,
             ];
+            // Keyed the same way offering rows are (occurrence_key()); every
+            // generated row shares one start time, so this is the date dedupe
+            // it has always been — spelled in the one vocabulary reconcile()
+            // matches on.
+            $key = $this->occurrence_key( $row );
+            if ( isset( $seen[ $key ] ) ) {
+                continue;
+            }
+            $seen[ $key ] = true;
+            $rows[]       = $row;
         }
         return $rows;
     }
@@ -621,7 +977,7 @@ class Occurrences {
      *
      * @param int    $parent_id
      * @param array  $row       Normalized offering-dates row (date/start_time/end_time/label/capacity).
-     * @param string $key       occurrence_key (== $row['date']).
+     * @param string $key       occurrence_key (== occurrence_key( $row ), i.e. "<date>|<start time>").
      * @return int New child post id, or 0 on failure.
      */
     private function create_child( $parent_id, array $row, $key ) {
@@ -662,7 +1018,7 @@ class Occurrences {
 
         // Shared fields (title[+suffix] handled above already; everything
         // else copied here), ticket tiers, and product sync.
-        $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
+        $this->sync_shared_meta( $parent_id, $child_id );
         $this->sync_ticket_types( $parent_id, $child_id, $row );
         $this->sync_product( $child_id, $parent_meta );
 
@@ -694,7 +1050,30 @@ class Occurrences {
         // identity, status, and seats/roster are never touched here.
         $this->apply_occurrence_editable_fields( $child_id, $row, $parent_meta );
 
-        $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
+        // Re-stamp the occurrence key of a child that was matched under a
+        // different spelling of the same occurrence — a pre-MODEL-D8 date-only
+        // key, or a row whose start time was just edited (rekeyed_match()). The
+        // write happens HERE, on the parent-save path, and never while a public
+        // request is only reading the map.
+        $key    = $this->occurrence_key( $row );
+        $mk_key = $this->module->meta_key( 'occurrence_key' );
+        if ( (string) \get_post_meta( $child_id, $mk_key, true ) !== $key ) {
+            \update_post_meta( $child_id, $mk_key, $key );
+        }
+
+        // A still-closed occurrence gets its four-field closed state re-asserted
+        // before anything downstream reads it (audit MODEL-D6 / WOO-D35): the
+        // quartet lives in PER_OCCURRENCE_KEYS, so nothing else here would ever
+        // repair a row whose `status` a later save recomputed while the flag
+        // stayed set, and nothing downstream should read a half-written row.
+        // reconcile()'s matched branch calls
+        // revive_if_closed() straight after this, so a date that IS back on the
+        // parent still reopens; this only normalises the state on the way.
+        if ( $this->is_closed( $child_id ) ) {
+            $this->soft_close( $child_id );
+        }
+
+        $this->sync_shared_meta( $parent_id, $child_id );
         $this->sync_ticket_types( $parent_id, $child_id, $row );
         $this->sync_product( $child_id, $parent_meta );
     }
@@ -747,11 +1126,20 @@ class Occurrences {
      * apply_occurrence_dates, after the date identity is set) and on every
      * reconcile of an already-matched child (sync_child_from_parent), so
      * editing a row's start_time/end_time/capacity/label later propagates to
-     * an already-materialized child instead of silently no-op'ing. The row's
-     * `label` itself is applied separately, via the post_title suffix
-     * (child_title()) — already re-applied on every sync. Never touches the
-     * child's date identity (occurrence_key/start_date/end_date), status, or
-     * seats/roster.
+     * an already-materialized child instead of silently no-op'ing.
+     *
+     * The row's `label` is one of those fields: it is stored on the child as
+     * its own `label` meta (audit MODEL-D10/MODEL-D27/RENDER-D22). It used to
+     * live ONLY inside the child's post_title, which the renderer then
+     * string-sliced back out against the parent's title prefix — so renaming
+     * the parent (a quick-edit never reaches reconcile()) made every authored
+     * label vanish from "Choose a date". The title still carries the label for
+     * display (child_title()), but display is no longer the storage. An empty
+     * row label writes an empty meta on purpose: clearing a label must clear
+     * it, and the renderer falls back to the formatted date.
+     *
+     * Never touches the child's date identity (occurrence_key/start_date/
+     * end_date), status, or seats/roster.
      *
      * @param int   $child_id
      * @param array $row
@@ -769,6 +1157,7 @@ class Occurrences {
         \update_post_meta( $child_id, $mk( 'start_time' ), $start_time );
         \update_post_meta( $child_id, $mk( 'end_time' ), $end_time );
         \update_post_meta( $child_id, $mk( 'capacity' ), $capacity );
+        \update_post_meta( $child_id, $mk( 'label' ), (string) ( $row['label'] ?? '' ) );
 
         // The child's start date is its identity and is read, never written,
         // here. Its end date follows the row, so a one-day occurrence that
@@ -790,21 +1179,143 @@ class Occurrences {
     }
 
     /**
-     * Copy every SHARED meta key (parent meta minus PER_OCCURRENCE_KEYS minus
-     * NEVER_COPY_KEYS) from parent to child.
+     * The full meta keys (WITH the `_anchor_event_` prefix) an occurrence
+     * child inherits from its parent: the shared schema facts
+     * (INHERITED_KEYS) plus the event meta that lives outside
+     * get_meta_defaults() and therefore never used to be copied at all —
+     * the registration questions and every per-event email override.
      *
-     * @param int        $parent_id
-     * @param int        $child_id
-     * @param array|null $parent_meta Pre-fetched parent meta (avoids a re-read).
+     * The email keys are enumerated from Module::EMAIL_TEMPLATE_TYPES rather
+     * than written out, so the list cannot drift from the save handlers.
+     *
+     * @param int $parent_id
+     * @param int $child_id
+     * @return string[] Unique, prefixed meta keys.
      */
-    private function sync_shared_meta( $parent_id, $child_id, ?array $parent_meta = null ) {
-        $parent_meta = $parent_meta ?? $this->module->get_meta( $parent_id );
+    private function inherited_meta_keys( $parent_id, $child_id ) {
+        $keys = [];
+        foreach ( self::INHERITED_KEYS as $key ) {
+            $keys[] = $this->module->meta_key( $key );
+        }
 
-        $excluded = \array_flip( \array_merge( self::PER_OCCURRENCE_KEYS, self::NEVER_COPY_KEYS ) );
-        $shared   = \array_diff_key( $parent_meta, $excluded );
+        $keys = \array_merge( $keys, $this->authored_child_meta_keys() );
 
-        foreach ( $shared as $key => $value ) {
-            \update_post_meta( $child_id, $this->module->meta_key( $key ), $value );
+        /**
+         * Filter the meta keys an occurrence child inherits from its group
+         * parent. Keys are full meta keys (including the `_anchor_event_`
+         * prefix). A key the parent has no row for is not written — and a
+         * child's stale row for it is removed — so adding a key here is safe
+         * for a parent that never used it.
+         *
+         * SINGLE-VALUE KEYS ONLY: each key is read with
+         * get_post_meta( ..., true ) and written as one row, and a key the
+         * parent lacks is deleted from the child wholesale. A genuinely
+         * multi-row key — the DEKA theme's `_deka_event_speaker_ids`, which
+         * stores one row per speaker, is the live example — would collapse to
+         * its first row on the child and lose the rest. Do not filter one in.
+         *
+         * @param string[] $keys      Prefixed meta keys.
+         * @param int      $parent_id Group parent post id.
+         * @param int      $child_id  Occurrence child post id.
+         */
+        $keys = (array) \apply_filters( 'anchor_events_inherited_meta_keys', $keys, (int) $parent_id, (int) $child_id );
+
+        return \array_values( \array_unique( \array_filter( \array_map( 'strval', $keys ) ) ) );
+    }
+
+    /**
+     * The inherited keys a CHILD could plausibly have authored for itself: the
+     * registration questions and every per-event email override.
+     *
+     * They are the destructive half of inheritance. The rest of the allow-list
+     * is shared schema fact — a venue, a price — and a date carrying its own is
+     * an anomaly nobody misses. These two families are different: they are
+     * edited on the event screen like any other content, so a child can hold a
+     * question set or an email subject somebody typed ON THAT DATE, and a
+     * parent with no row of its own DELETES it (sync_shared_meta()). That is
+     * the intended semantics — inheritance has to be symmetric or a cleared
+     * parent value could never be cleared on the children — but it must not be
+     * silent, hence the notice.
+     *
+     * Enumerated from Module::EMAIL_TEMPLATE_TYPES rather than written out, so
+     * the list cannot drift from the save handlers, and shared with
+     * inherited_meta_keys() so "what inherits" and "what the notice is about"
+     * are read from one place.
+     *
+     * @return string[] Prefixed meta keys.
+     */
+    private function authored_child_meta_keys() {
+        // Registration questions: a child asks the same questions as its
+        // parent, or a booking on one date collects nothing.
+        $keys = [ Module::QUESTIONS_META ];
+
+        // Per-event email overrides. Without these a child sent the site-wide
+        // confirmation while the parent's own wording sat one post away.
+        foreach ( Module::EMAIL_TEMPLATE_TYPES as $type ) {
+            foreach ( self::EMAIL_OVERRIDE_PER_TYPE as $suffix ) {
+                $keys[] = $this->module->meta_key( 'email_' . $suffix . '_' . $type );
+            }
+        }
+        foreach ( self::EMAIL_SENDER_KEYS as $key ) {
+            $keys[] = $this->module->meta_key( $key );
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Copy the inherited meta (see inherited_meta_keys()) from parent to
+     * child.
+     *
+     * Reads the parent's RAW rows, not get_meta(): get_meta() fills every
+     * missing key with the schema default, and this method then wrote that
+     * default down as a real row on the child. That is how the seven
+     * production children became the only posts on the site carrying
+     * `_anchor_event_registration_type = internal`, and how eight events
+     * acquired a `_anchor_event_timezone = "UTC-6"` string nobody authored
+     * (audit MODEL-D7 / MODEL-D37). On a child, "never authored" and "equal
+     * to the shipped default" then became indistinguishable, and a later
+     * change to a default could never reach them.
+     *
+     * A key the parent has no row for is not merely skipped: an existing
+     * child row for it is DELETED. Inheritance has to be symmetric or
+     * clearing a venue on the parent would leave the old venue showing on
+     * every occurrence for ever, with no way to remove it from the parent
+     * screen. The child then falls back to the same default its parent reads,
+     * which is what "inherited" means.
+     *
+     * When that delete takes AUTHORED content — a question set or an email
+     * override somebody typed on one date (authored_child_meta_keys()) — the
+     * author is told once for the save, through the same notice queue every
+     * other save-time message uses. The behaviour is deliberate and stays;
+     * what it must not be is invisible, which is how a date can quietly stop
+     * asking for a licence number.
+     *
+     * @param int $parent_id
+     * @param int $child_id
+     */
+    private function sync_shared_meta( $parent_id, $child_id ) {
+        $authored         = \array_flip( $this->authored_child_meta_keys() );
+        $removed_authored = false;
+
+        foreach ( $this->inherited_meta_keys( $parent_id, $child_id ) as $key ) {
+            if ( \metadata_exists( 'post', (int) $parent_id, $key ) ) {
+                // wp_slash() because update_post_meta() unslashes what it is
+                // given: handing it a raw DB value would eat a backslash out
+                // of every venue name and every email subject on every sync.
+                \update_post_meta( $child_id, $key, \wp_slash( \get_post_meta( (int) $parent_id, $key, true ) ) );
+            } elseif ( \metadata_exists( 'post', (int) $child_id, $key ) ) {
+                \delete_post_meta( $child_id, $key );
+                if ( isset( $authored[ $key ] ) ) {
+                    $removed_authored = true;
+                }
+            }
+        }
+
+        if ( $removed_authored ) {
+            // queue_group_notice() dedupes by code, so a parent with twelve
+            // dates still tells the author once.
+            $this->module->queue_group_notice( 'inherited_child_data_removed', (int) $parent_id );
         }
     }
 
@@ -891,28 +1402,103 @@ class Occurrences {
             return;
         }
         if ( $this->is_closed( $child_id ) ) {
-            // Already soft-closed with (now) no seats — leave the closed
-            // state as-is rather than surprise-trashing a previously
-            // preserved occurrence.
+            // Already soft-closed with (now) no seats — keep the preserved
+            // occurrence rather than surprise-trashing it, but re-assert the
+            // four-field closed state so a row that only carries part of it
+            // (audit MODEL-D6: production child 7530 kept occurrence_closed=1
+            // while a later save recomputed status to 'past') is repaired here
+            // too. soft_close() is idempotent, so a complete row is untouched.
+            $this->soft_close( $child_id );
             return;
         }
+        // The trash is what demotes a managed product, so a child that does not
+        // own the product it points at must let go of it first.
+        $this->disown_foreign_product( $child_id );
         \wp_trash_post( $child_id );
+    }
+
+    /**
+     * Drop a child's managed-product pointer when the product it names belongs
+     * to a DIFFERENT event.
+     *
+     * A duplicate produced by a duplicate-post plugin copies
+     * `_anchor_event_managed_product` along with everything else, so two child
+     * posts point at one product — but the product's own back-pointer
+     * (Product_Sync::PRODUCT_EVENT_META) still names exactly one owner. Trashing
+     * the copy fires Product_Sync::on_event_trashed_or_deleted(), which reads
+     * only the forward pointer and would set the CANONICAL child's product to
+     * draft: the live date silently stops being purchasable. Clearing the
+     * borrowed pointer first makes that trash a no-op for the product, and also
+     * stops a preserved (soft-closed) duplicate from later adopting — and
+     * re-owning — a product that is not its own.
+     *
+     * A child that genuinely owns its product keeps the pointer, so trashing a
+     * real occurrence still drafts its product exactly as before.
+     *
+     * @param int $child_id
+     */
+    private function disown_foreign_product( $child_id ) {
+        $child_id = (int) $child_id;
+        if ( ! $this->module->product_sync || ! \function_exists( 'wc_get_product' ) ) {
+            return;
+        }
+        // The RAW pointer on purpose: managed_product_id() now REJECTS a
+        // borrowed pointer (WOO-D23), which is the very row this method exists
+        // to delete. Reading the validated accessor here would make the read
+        // safe and leave the stale meta on the post forever.
+        $product_id = (int) $this->module->product_sync->stored_product_id( $child_id );
+        if ( $product_id <= 0 ) {
+            return;
+        }
+        $product = \wc_get_product( $product_id );
+        if ( ! $product ) {
+            return; // Dangling pointer: there is no product to demote or steal.
+        }
+        if ( (int) $product->get_meta( Product_Sync::PRODUCT_EVENT_META ) === $child_id ) {
+            return; // This child owns it.
+        }
+        \delete_post_meta( $child_id, Product_Sync::EVENT_PRODUCT_META );
     }
 
     /**
      * Soft-close a child: preserve the post + roster, mark it closed via the
      * existing status vocabulary (manual/cancelled + registration disabled)
-     * plus the engine's own closed flag. Idempotent (no-op if already closed).
+     * plus the engine's own closed flag.
+     *
+     * All FOUR fields are written unconditionally, every time (audit MODEL-D6 /
+     * WOO-D35). The old `is_closed()` early return made the flag the guard for
+     * its own three companions, so a row carrying only part of the state — a
+     * later save recomputing `status`, a hand-edited meta row, a restore — could
+     * never be repaired by anything: soft_close() saw "already closed" and did
+     * nothing. Re-asserting the state changes no VALUE — update_post_meta()
+     * short-circuits when the stored string already matches (the two boolean
+     * keys still issue their UPDATE, since `true`/`false` do not compare equal
+     * to the stored '1'/'') — so there are no extra meta rows, no extra
+     * revisions and no roster side effects.
+     *
+     * The one value the close DESTROYS is `registration_enabled`, so it is
+     * snapshotted first, on the transition only. Without it a parent
+     * trash/untrash round trip — or any drop-and-re-add of a seated date —
+     * handed the author back an occurrence that was listed on the picker and
+     * refused every booking, because revive_if_closed() had nothing to put
+     * back. The snapshot is taken ONLY while the child is not already closed:
+     * re-asserting the quartet on an already-closed row (the MODEL-D6 repair
+     * above) must not overwrite the real pre-close value with the `false` the
+     * first close wrote, and must stay a no-op meta-wise.
      *
      * @param int $child_id
      */
     private function soft_close( $child_id ) {
-        if ( $this->is_closed( $child_id ) ) {
-            return;
-        }
         $mk = function ( $k ) {
             return $this->module->meta_key( $k );
         };
+        if ( ! $this->is_closed( $child_id ) ) {
+            \update_post_meta(
+                $child_id,
+                $mk( 'occurrence_prev_reg' ),
+                (bool) \get_post_meta( $child_id, $mk( 'registration_enabled' ), true )
+            );
+        }
         \update_post_meta( $child_id, $mk( 'status_mode' ), 'manual' );
         \update_post_meta( $child_id, $mk( 'status' ), 'cancelled' );
         \update_post_meta( $child_id, $mk( 'registration_enabled' ), false );
@@ -921,13 +1507,40 @@ class Occurrences {
 
     /**
      * Revive a previously soft-closed child whose occurrence_key has been
-     * re-added to the parent's offering_dates: clear the closed flag and
-     * restore auto status, WITHOUT touching its date or seats. Does NOT
-     * force registration_enabled — that's a SHARED field already re-synced
-     * from the parent by sync_child_from_parent() (called first, in
-     * reconcile()'s matched branch), so a parent with registration disabled
-     * stays disabled on the revived child instead of being force-enabled.
-     * No-op if the child isn't currently closed.
+     * re-added to the parent's offering_dates: clear the closed flag, restore
+     * auto status and put back the `registration_enabled` value the close
+     * overwrote, WITHOUT touching its date or seats. No-op if the child isn't
+     * currently closed.
+     *
+     * The registration value is restored from soft_close()'s own snapshot
+     * (`occurrence_prev_reg`), never from the parent: the key is PER-OCCURRENCE
+     * (PER_OCCURRENCE_KEYS), so nothing here re-applies the group's default,
+     * and a date the author had deliberately closed to bookings before it was
+     * dropped comes back closed. This is not "revive forces registration ON" —
+     * it is the close undoing exactly what it did. A child with no snapshot (one
+     * closed before this existed) is left alone for the same reason, and is
+     * opened deliberately: on the child itself, or group-wide via the parent
+     * form's explicit "apply to all dates" action
+     * (apply_registration_to_children(), audit MODEL-D40).
+     *
+     * The snapshot is authoritative, unconditionally. There is no "unless
+     * somebody changed it since" guard, because there is no window in which
+     * they could have: reconcile() calls sync_child_from_parent() immediately
+     * before this, and that re-asserts the whole closed quartet on a
+     * still-closed child (audit MODEL-D6) — so the value here is always the
+     * `false` the close wrote. A guard on it would read as caution and be dead
+     * code.
+     *
+     * The `occurrence_closed` flag is the ONLY reopening trigger, on purpose.
+     * Inferring closure from the status half of the quartet (manual +
+     * cancelled + registration off) reads identically to an admin cancelling a
+     * still-offered date and unchecking registration — and on a parent whose
+     * own registration is off, every hand-cancelled child looks like that from
+     * birth (create_child() seeds the flag from the parent). Reviving on that
+     * signature would silently flip a deliberate cancellation back to
+     * auto/upcoming on the next parent save. A row whose flag was cleared by
+     * hand is instead repaired by the CLOSING side: retire_child() /
+     * soft_close() re-assert all four keys unconditionally (audit MODEL-D6).
      *
      * @param int $child_id
      */
@@ -938,6 +1551,20 @@ class Occurrences {
         $mk = function ( $k ) {
             return $this->module->meta_key( $k );
         };
+
+        // Before get_meta(): the restored availability is part of the state the
+        // status is recomputed against, and the snapshot is consumed here so a
+        // later, unrelated close cannot replay a stale value.
+        $prev_key = $mk( 'occurrence_prev_reg' );
+        if ( \metadata_exists( 'post', (int) $child_id, $prev_key ) ) {
+            \update_post_meta(
+                $child_id,
+                $mk( 'registration_enabled' ),
+                (bool) \get_post_meta( $child_id, $prev_key, true )
+            );
+            \delete_post_meta( $child_id, $prev_key );
+        }
+
         $meta = $this->module->get_meta( $child_id );
 
         \update_post_meta( $child_id, $mk( 'occurrence_closed' ), false );
@@ -1034,17 +1661,39 @@ class Occurrences {
     }
 
     /**
-     * occurrence_key => child post id map for ALL of a parent's children
-     * (live + soft-closed; trashed posts are excluded because they're
-     * queried out by post_status=publish).
+     * occurrence_key => child post ids for ALL of a parent's children, found
+     * by GROUP IDENTITY (group_role + group_id meta) rather than by post
+     * status (audit MODEL-D9).
      *
-     * @param int $parent_id
-     * @return array<string,int>
+     * The query used to ask for post_status=publish, so a child an admin had
+     * set to Draft/Pending/Private — to hide one date without deleting it —
+     * was invisible to reconcile(): the date was still desired, the map did
+     * not contain it, and create_child() inserted a SECOND published post for
+     * the same date, with its own product and its own seat count, while the
+     * hidden original was never retired and never appeared in children().
+     * `any` is every status except trash and auto-draft, so the trash is still
+     * opted into explicitly by the one caller that needs it (reconcile, which
+     * revives a wanted date's trashed occurrence).
+     *
+     * The value is a LIST, not a single id (audit MODEL-D39): `$map[$key] =
+     * $id` silently kept the last row when two children carried the same
+     * occurrence_key (what any duplicate-post plugin produces), and the loser
+     * became an invisible orphan — never matched, never retired, never listed,
+     * but still published with its own product and seats. Every list is sorted
+     * canonical-first (see child_rank()); reconcile() keeps the head and
+     * retires the tail, and the read-only callers use the head.
+     *
+     * @param int  $parent_id
+     * @param bool $include_trashed Also return trashed children.
+     * @return array<string,int[]> occurrence_key => child ids, canonical first.
      */
     private function existing_children_map( $parent_id, $include_trashed = false ) {
+        // 'any' means every status that isn't excluded from search — i.e.
+        // everything but trash and auto-draft — and WP_Query drops an exclusion
+        // that is ALSO listed explicitly, so [ 'any', 'trash' ] is "any + trash".
         $ids = \get_posts( [
             'post_type'      => Module::CPT,
-            'post_status'    => $include_trashed ? [ 'publish', 'trash' ] : 'publish',
+            'post_status'    => $include_trashed ? [ 'any', 'trash' ] : 'any',
             'posts_per_page' => -1,
             'fields'         => 'ids',
             'no_found_rows'  => true,
@@ -1055,16 +1704,103 @@ class Occurrences {
             ],
         ] );
 
+        // fields=>ids skips WP_Query's own cache priming, and every consumer of
+        // this map immediately asks each child for its occurrence_key and its
+        // post_status. One prime here is the difference between two queries and
+        // two per child.
+        if ( ! empty( $ids ) ) {
+            \_prime_post_caches( $ids, false, true );
+        }
+
         $map = [];
         foreach ( $ids as $id ) {
             $id  = (int) $id;
-            $key = (string) \get_post_meta( $id, $this->module->meta_key( 'occurrence_key' ), true );
+            // Pre-MODEL-D8 children were stamped with the start date alone;
+            // stored_occurrence_key() reads them as "<date>|<the child's own
+            // start time>" so a legacy occurrence is MATCHED rather than
+            // duplicated. Normalized on read, never migrated here: this map is
+            // also built on public render paths (children()/siblings()), and a
+            // read must not write. The upgraded key is stamped on the
+            // parent-save path instead, by sync_child_from_parent().
+            $key = $this->stored_occurrence_key( $id );
             if ( $key === '' ) {
                 continue;
             }
-            $map[ $key ] = $id;
+            $map[ $key ][] = $id;
         }
+
+        foreach ( $map as $key => $group ) {
+            if ( \count( $group ) < 2 ) {
+                continue;
+            }
+            \usort( $group, function ( $a, $b ) {
+                return [ $this->child_rank( $a ), $a ] <=> [ $this->child_rank( $b ), $b ];
+            } );
+            $map[ $key ] = $group;
+        }
+
         return $map;
+    }
+
+    /**
+     * Ordering rank for picking the canonical child of an occurrence_key when
+     * more than one exists: the live published occurrence first (it is the one
+     * the public is already looking at), then a published-but-soft-closed one,
+     * then an unpublished one, then the trash. Ties break on the lowest id, so
+     * the original beats a later copy.
+     *
+     * @param int $child_id
+     * @return int
+     */
+    private function child_rank( $child_id ) {
+        $status = \get_post_status( $child_id );
+        if ( $status === 'trash' ) {
+            return 3;
+        }
+        if ( $status !== 'publish' ) {
+            return 2;
+        }
+        return $this->is_closed( $child_id ) ? 1 : 0;
+    }
+
+    /**
+     * Reduce an existing_children_map() to one canonical child per
+     * occurrence_key, retiring and reporting every extra (audit MODEL-D39).
+     *
+     * A duplicate is retired with the SAME retire_child() the no-longer-wanted
+     * branch of reconcile() uses, so a duplicate holding a roster is
+     * soft-closed rather than trashed. One already retired (trashed, or
+     * soft-closed) is left exactly as it is — otherwise a preserved seated
+     * duplicate would be re-reported on every single parent save.
+     *
+     * @param int                 $parent_id
+     * @param array<string,int[]> $map
+     * @return array<string,int> occurrence_key => canonical child id.
+     */
+    private function collapse_duplicate_children( $parent_id, array $map ) {
+        $canonical = [];
+        foreach ( $map as $key => $ids ) {
+            $canonical[ $key ] = (int) \array_shift( $ids );
+            foreach ( $ids as $duplicate_id ) {
+                $duplicate_id = (int) $duplicate_id;
+                if ( \get_post_status( $duplicate_id ) === 'trash' || $this->is_closed( $duplicate_id ) ) {
+                    continue; // Already retired — nothing to do, nothing to report.
+                }
+                // Both retirement outcomes: a soft-closed duplicate must not
+                // keep a borrowed product pointer either (it would let a later
+                // sync re-own the canonical child's product).
+                $this->disown_foreign_product( $duplicate_id );
+                $this->retire_child( $duplicate_id );
+                Events_Log::error( 'duplicate_occurrence', [
+                    'parent_id'      => (int) $parent_id,
+                    'occurrence_key' => (string) $key,
+                    'kept'           => $canonical[ $key ],
+                    'retired'        => $duplicate_id,
+                    'result'         => \get_post_status( $duplicate_id ) === 'trash' ? 'trashed' : 'soft_closed',
+                ] );
+            }
+        }
+        return $canonical;
     }
 
     /**
@@ -1129,7 +1865,9 @@ class Occurrences {
      * Normalized, deduped list of the parent's desired offering-date rows.
      * Each row: date (Y-m-d), start_time (H:i or ''), end_time (H:i or ''),
      * label (string), capacity (int, 0 = use the parent's default). Rows with
-     * no parseable date are dropped; a duplicate date keeps the FIRST row.
+     * no parseable date are dropped; a duplicate OCCURRENCE KEY (same date AND
+     * same start time — two sessions on one day are two occurrences, audit
+     * MODEL-D8) keeps the FIRST row.
      *
      * @param int $parent_id
      * @return array<int,array>
@@ -1147,10 +1885,20 @@ class Occurrences {
                 continue;
             }
             $date = $this->normalize_date( (string) ( $row['date'] ?? '' ) );
-            if ( $date === '' || isset( $seen[ $date ] ) ) {
+            if ( $date === '' ) {
                 continue;
             }
-            $seen[ $date ] = true;
+            // Deduped by the OCCURRENCE key, not by the date: two sessions on
+            // one day are two occurrences (audit MODEL-D8). A genuine duplicate
+            // — same date AND same start time — still keeps the first row, but
+            // the save path now rejects one before it can ever be stored (see
+            // Module::sanitize_offering_dates_rows()), so this is the backstop
+            // for rows written before that guard existed.
+            $key = $this->occurrence_key( $row );
+            if ( isset( $seen[ $key ] ) ) {
+                continue;
+            }
+            $seen[ $key ] = true;
 
             // end_date lets one offering span more than a day (a two-day
             // masterclass is one occurrence, not two). '' means same-day, which

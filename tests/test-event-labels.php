@@ -269,9 +269,9 @@ class Test_Event_Labels extends Anchor_Events_TestCase {
 	 * ------------------------------------------------------------------ */
 
 	/**
-	 * Occurrences::sync_shared_meta() is a deny-list, so `labels` propagates to
-	 * every offering child with no engine change. "2 Day Course" describes each
-	 * date of a pick-one offering, so inheriting is the correct default.
+	 * `labels` is named in Occurrences::INHERITED_KEYS, so it propagates to
+	 * every offering child. "2 Day Course" describes each date of a pick-one
+	 * offering, so inheriting is the correct default.
 	 */
 	public function test_offering_children_inherit_parent_labels() {
 		$event_id = $this->make_event();

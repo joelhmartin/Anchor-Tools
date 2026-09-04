@@ -268,6 +268,97 @@ class Test_Capacity extends Anchor_Events_TestCase {
 		$this->assertSame( 'disabled', $this->module()->bookability( $event ) );
 	}
 
+	/* ------------------------------------------------------------------
+	 * NEW-D2 — what the event IS outranks whether the button is on.
+	 *
+	 * bookability() used to answer 'disabled' the moment
+	 * `registration_enabled` was unticked, before it had asked the seat layer
+	 * anything. Production child 7528 (sold_out=1, registration_enabled=0)
+	 * therefore emitted a JSON-LD Offer with a price and no availability while
+	 * its own page said "Sold out", and the DEKA theme grew a SECOND capacity
+	 * accessor to work around it. A sold-out / finished / cancelled course
+	 * says so regardless of the switch; only an otherwise-bookable event
+	 * reports 'disabled'.
+	 * ------------------------------------------------------------------ */
+
+	/** The hand-set sold_out flag outranks the registration switch. */
+	public function test_bookability_reports_sold_out_before_disabled() {
+		$event = $this->make_event( [
+			'registration_enabled' => false,
+			'capacity'             => 0,
+			'sold_out'             => true,
+			'start_date'           => '2030-01-01',
+		] );
+
+		$this->assertSame( 'full', $this->module()->bookability( $event ) );
+	}
+
+	/** So does the event having already finished. */
+	public function test_bookability_reports_a_finished_event_before_disabled() {
+		$event = $this->make_past_event( [ 'registration_enabled' => false, 'capacity' => 10 ] );
+
+		$this->assertSame( 'closed', $this->module()->bookability( $event ) );
+	}
+
+	/** And so does a closed registration window. */
+	public function test_bookability_reports_a_closed_window_before_disabled() {
+		$event = $this->make_event( [
+			'registration_enabled' => false,
+			'start_date'           => '2030-01-01',
+			'registration_close'   => gmdate( 'Y-m-d', time() - DAY_IN_SECONDS * 2 ),
+		] );
+
+		$this->assertSame( 'closed', $this->module()->bookability( $event ) );
+	}
+
+	/** A hand-cancelled event is closed even with registration switched ON. */
+	public function test_bookability_reports_a_manual_cancellation_as_closed() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'status_mode'          => 'manual',
+			'status'               => 'cancelled',
+			'start_date'           => '2030-01-01',
+		] );
+
+		$this->assertSame( 'closed', $this->module()->bookability( $event ) );
+	}
+
+	/**
+	 * ...but a stale 'cancelled' row on an AUTO-mode event is not a
+	 * cancellation — auto mode owns that row and recomputes it, which is
+	 * exactly why the status is read through get_event_status().
+	 */
+	public function test_bookability_ignores_a_stale_cancelled_row_in_auto_mode() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'status_mode'          => 'auto',
+			'status'               => 'cancelled',
+			'start_date'           => '2030-01-01',
+		] );
+
+		$this->assertSame( 'open', $this->module()->bookability( $event ) );
+	}
+
+	/**
+	 * The waitlist is a BOOKABLE state (is_bookable() accepts it, and the cart
+	 * mints a real waitlist seat from it), so a sold-out event whose switch is
+	 * off reports 'full', not 'waitlist' — nothing can be taken on an event
+	 * with registration disabled, and 'waitlist' would make one purchasable
+	 * from the managed product's permalink.
+	 */
+	public function test_bookability_does_not_offer_the_waitlist_when_registration_is_off() {
+		$event = $this->make_event( [
+			'registration_enabled' => false,
+			'capacity'             => 0,
+			'sold_out'             => true,
+			'waitlist'             => true,
+			'start_date'           => '2030-01-01',
+		] );
+
+		$this->assertSame( 'full', $this->module()->bookability( $event ) );
+		$this->assertFalse( $this->module()->is_bookable( $this->module()->bookability( $event ) ) );
+	}
+
 	/** bookability(): a finished event is 'closed' on every route. */
 	public function test_bookability_reports_past_event_as_closed() {
 		$event = $this->make_past_event( [ 'capacity' => 10 ] );

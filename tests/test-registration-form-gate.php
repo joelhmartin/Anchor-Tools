@@ -114,4 +114,54 @@ class Test_Registration_Form_Gate extends Anchor_Events_TestCase {
 
 		$this->assertStringContainsString( 'Tickets are not available right now.', $html );
 	}
+
+	/* ------------------------------------------------------------------
+	 * NEW-D2 — the switch suppresses the FORM, not the fact.
+	 *
+	 * `registration_enabled = false` still means no booking UI of any kind.
+	 * But a course that is sold out or over is sold out or over whether or not
+	 * the switch is on, and rendering nothing at all told the visitor less
+	 * than the truth (production child 7528). The form now mirrors
+	 * bookability()'s branch order: the seat-layer verdict is stated first,
+	 * and only an otherwise-bookable disabled event renders nothing.
+	 * ------------------------------------------------------------------ */
+
+	/** Sold out with the switch off says so rather than rendering nothing. */
+	public function test_sold_out_event_says_so_even_with_registration_off() {
+		$event = $this->make_event( [
+			'registration_enabled' => false,
+			'sold_out'             => true,
+			'start_date'           => '2030-10-23',
+		] );
+
+		$html = $this->module()->render_registration_form( $event );
+
+		$this->assertStringContainsString( 'This event is full.', $html );
+		$this->assertStringNotContainsString( 'anchor_event_reg_nonce', $html, 'The free form stays suppressed.' );
+	}
+
+	/** A finished event with the switch off says registration is closed. */
+	public function test_finished_event_with_registration_off_says_closed() {
+		$event = $this->make_event( [
+			'registration_enabled' => false,
+			'start_date'           => '2020-01-01',
+			'end_date'             => '2020-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$ts = $this->module()->compute_timestamps( $this->module()->get_meta( $event ) );
+		update_post_meta( $event, '_anchor_event_start_ts', $ts['start'] );
+		update_post_meta( $event, '_anchor_event_end_ts', $ts['end'] );
+
+		$html = $this->module()->render_registration_form( $event );
+
+		$this->assertStringContainsString( 'Registration is closed.', $html );
+		$this->assertStringNotContainsString( 'anchor_event_reg_nonce', $html );
+	}
+
+	/** An otherwise-bookable disabled event still renders nothing at all. */
+	public function test_a_bookable_event_with_the_switch_off_still_renders_nothing() {
+		$event = $this->make_event( [ 'registration_enabled' => false, 'start_date' => '2030-10-23' ] );
+
+		$this->assertSame( '', $this->module()->render_registration_form( $event ) );
+	}
 }

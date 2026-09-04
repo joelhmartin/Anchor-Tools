@@ -172,6 +172,46 @@ class WooCommerce {
         \add_action( 'woocommerce_before_delete_order', [ $this, 'on_order_trashed_or_deleted' ], 10, 1 );
         // Legacy (posts) order storage delete — guard the post type inside.
         \add_action( 'before_delete_post', [ $this, 'on_legacy_order_deleted' ], 10, 1 );
+        // Legacy (posts) order storage TRASH (audit WOO-D52). The three hooks
+        // above are fired by the WC order data store, i.e. only by
+        // $order->delete(); the classic Orders list table trashes a legacy
+        // order with a bare wp_trash_post(), which fires none of them. Without
+        // this the order vanishes from the admin while its seats keep
+        // consuming the event's capacity for ever — and no reconcile entry
+        // point can ever run for it again. HPOS orders are not posts, so the
+        // post-type guard makes this inert there (and the double-fire when
+        // $order->delete() does route through wp_trash_post() is harmless:
+        // release_order_capacity() skips terminal seats).
+        \add_action( 'wp_trash_post', [ $this, 'on_legacy_order_trashed' ], 10, 1 );
+
+        // Order UNTRASH — the mirror of the four hooks above (audit WOO-D17).
+        // Restoring a trashed paid order otherwise leaves every seat cancelled
+        // and the capacity released while the order reads "processing": the
+        // roster shows nothing, nothing is flagged for review, and only an
+        // admin who knows about the "Resync order" button can repair it.
+        // reconcile_order() is declarative, so it simply puts the seats back to
+        // whatever the restored order's status implies.
+        //
+        // On HPOS this one is a near-no-op by construction — the data store
+        // fires it BEFORE restoring the status, so the reconcile sees 'trash'
+        // and the actual repair arrives via the following
+        // woocommerce_order_status_changed. See on_order_untrashed()'s docblock.
+        \add_action( 'woocommerce_untrash_order', [ $this, 'on_order_untrashed' ], 10, 1 );
+        // …and the legacy (posts) twin, which is where the repair really
+        // happens. woocommerce_untrash_order is fired ONLY by the HPOS data
+        // store, so on CPT storage `untrashed_post` is the only signal there
+        // is — and by then wp_update_post() has already restored the order's
+        // pre-trash status (WC_Post_Data's `wp_untrash_post_status` filter),
+        // so the reconcile has a real target. Priority 20 simply lands after
+        // WC_Post_Data::untrash_post() (priority 10), which restores the
+        // order's refund children and clears its transients.
+        \add_action( 'untrashed_post', [ $this, 'on_legacy_order_untrashed' ], 20, 1 );
+
+        // Refund DELETED (audit WOO-D53). Deleting a refund drops
+        // get_qty_refunded_for_item back down, so the line expects its seats
+        // again — without this the seat stays refunded and its capacity stays
+        // released, and the order and the roster silently disagree.
+        \add_action( 'woocommerce_refund_deleted', [ $this, 'on_refund_deleted' ], 10, 2 );
 
         // Manual "Resync order" button + per-order seat metabox.
         \add_action( 'admin_post_anchor_event_resync_order', [ $this, 'handle_resync_order' ] );
@@ -316,7 +356,15 @@ class WooCommerce {
         ] );
         foreach ( $variations as $vid ) {
             $parent = (int) \wp_get_post_parent_id( $vid );
-            if ( $parent > 0 && $this->product_link_enabled( $parent ) ) {
+            // The parent's STATUS as well as its toggle (audit WOO-D48). The
+            // simple-product branch above filters on post_status='publish'; this
+            // branch filtered the variation but never its parent, so a demoted
+            // (draft) managed product whose variations were left publish still
+            // counted as "linked". Live: event 7909 listed all three variations
+            // of drafted product 7910, so event_is_linked() said true, and
+            // can_view_virtual_link() gated the "Join here" link behind a
+            // confirmed seat that nothing could sell.
+            if ( $parent > 0 && \get_post_status( $parent ) === 'publish' && $this->product_link_enabled( $parent ) ) {
                 $out[] = [ 'product_id' => $parent, 'variation_id' => (int) $vid ];
             }
         }
@@ -1051,7 +1099,13 @@ class WooCommerce {
         }
 
         $meta              = $this->module->get_meta( $event_id );
-        $parent_product_id = (int) $this->module->product_sync->managed_product_id( $event_id );
+        // Sellable, not merely pointed-at (WOO-D23/D50): a demoted product is
+        // still THE managed product, and adding a draft parent to the cart
+        // succeeds for an editor and fails silently for everyone else. Asking
+        // the sellable question here turns that into one honest message.
+        $parent_product_id = $this->module->product_sync->managed_product_is_sellable( $event_id )
+            ? (int) $this->module->product_sync->managed_product_id( $event_id )
+            : 0;
         if ( $parent_product_id <= 0 ) {
             \wp_send_json_error( [ 'messages' => [ \__( 'Registration is not available for this event.', 'anchor-schema' ) ] ] );
         }
@@ -1200,6 +1254,19 @@ class WooCommerce {
         $event_id = $this->event_for_product_object( $product );
         if ( $event_id <= 0 ) {
             return $purchasable;
+        }
+
+        // WOO-D50: a variation is only as sellable as its parent. WooCommerce's
+        // own is_purchasable() lets anyone with edit_post through an unpublished
+        // parent, so an editor could buy a seat off a DEMOTED product — the very
+        // state the plugin uses to mean "this event has nothing to sell". Same
+        // rule products_for_event() applies when it qualifies a variation, so
+        // the storefront mirror and the cart agree.
+        if ( $product->is_type( 'variation' ) ) {
+            $parent_id = (int) $product->get_parent_id();
+            if ( $parent_id > 0 && \get_post_status( $parent_id ) !== 'publish' ) {
+                return false;
+            }
         }
 
         // WOO-D2: one question, one authority. This used to re-implement the
@@ -2251,10 +2318,23 @@ class WooCommerce {
         // null product_sync / unlinked-or-non-variation line / legacy data).
         $variation_id = (int) $item->get_variation_id();
         $tier_id      = '';
+        // Whether the id names the tier this line actually BOUGHT (the
+        // variation's own stamp) or is the event-level fallback below. Only the
+        // former can be "retired" — see $tier_retired.
+        $tier_from_variation = false;
         if ( $this->module->product_sync && $variation_id > 0 ) {
             $resolved = $this->module->product_sync->tier_for_variation( $variation_id );
-            if ( ! empty( $resolved['tier_id'] ) ) {
-                $tier_id = (string) $resolved['tier_id'];
+            // …and only when the variation belongs to THIS event. A tier id is
+            // unique within an event, not across the site, so a variation whose
+            // product was re-pointed at another event (the link metabox, a
+            // duplicated product) hands back an id that names one of the OTHER
+            // event's tiers. Used here it is a tier this event does not have —
+            // which is indistinguishable from a deleted one, and would report a
+            // retirement nobody performed. The line falls back to the
+            // event-level path instead: not variation-owned, not retired.
+            if ( ! empty( $resolved['tier_id'] ) && (int) ( $resolved['event_id'] ?? 0 ) === (int) $event_id ) {
+                $tier_id             = (string) $resolved['tier_id'];
+                $tier_from_variation = true;
             }
         }
         if ( $tier_id === '' && $this->module->ticket_types ) {
@@ -2269,17 +2349,40 @@ class WooCommerce {
         // under the lock below.
         $tier        = ( $this->module->ticket_types ) ? $this->module->ticket_types->find( $event_id, $tier_id ) : null;
         $tier_quota  = $tier ? (int) ( $tier['quota'] ?? 0 ) : 0;
+        // WOO-D58 (quota half): a tier row the organizer DELETED from the Tickets
+        // metabox resolves to null here, and null used to collapse into quota 0 —
+        // which the block below reads as "unlimited". A tier with twelve sold
+        // seats therefore became the one tier nothing could bind, and a late
+        // order on it minted seats no quota, and no roster column, accounted for.
+        // A tier that no longer exists is treated as EXHAUSTED for new seats
+        // instead: seats already sold on it stay, keep their tag and keep
+        // consuming the event capacity, but the reconcile refuses to mint more
+        // and says so (logged + flagged needs-review below) rather than
+        // overselling in silence.
+        //
+        // Only an id resolved from the LINE'S OWN VARIATION can say that. The
+        // fallback id above is the event's primary tier, and primary_id()
+        // returns the SYNTHETIC 'primary' id whenever no row is active — an id
+        // find() can never match while authored rows exist. Reading that as a
+        // retirement told an organizer who had merely closed sales that a tier
+        // was gone, and refused seats to a buyer who had already paid, on an
+        // event where nothing had been deleted. A fallback id that matches no
+        // row means "no per-tier quota to enforce": the line is bounded by the
+        // event capacity, exactly as it was before WOO-D58.
+        $tier_retired = ( $this->module->ticket_types && ! $tier && $tier_from_variation );
 
         $result = $this->registrations->with_event_lock( $event_id, function ( $locked ) use (
             $event_id, $item_id, $expected, $active_target, $removal_status, $capacity, $unlimited,
             $waitlist_enabled, $terminal_set, $attendees, $can_create, $billing, $payload_base, $order_id,
-            $tier_id, $tier_quota
+            $tier_id, $tier_quota, $tier_retired
         ) {
             $created   = [];
             $revived   = [];
             $removed   = [];
             $flipped   = [];
             $overfill  = false;
+            // WOO-D58 — a create refused because the line's tier row is gone.
+            $retired_blocked = false;
             $moved_out = [];
             // L7 — count only removed seats that actually consumed capacity
             // (confirmed/pending); waitlist seats never did, so they must not be
@@ -2369,7 +2472,10 @@ class WooCommerce {
                 // P4 — per-tier remaining quota, recounted FRESH under the same lock
                 // (folds in the old claim_woo_seats tier logic). quota<=0 ⇒ the tier
                 // is bounded only by the event total.
-                $tier_unlimited = ( $tier_quota <= 0 );
+                // A RETIRED tier is never unlimited — quota 0 means "bounded only
+                // by the event total" for a tier that exists, and "no more seats"
+                // for one that does not (WOO-D58).
+                $tier_unlimited = ( ! $tier_retired && $tier_quota <= 0 );
                 $tier_left      = $tier_unlimited
                     ? PHP_INT_MAX
                     : max( 0, $tier_quota - $this->registrations->count_reserved_for_tier( $event_id, $tier_id, true ) );
@@ -2435,8 +2541,16 @@ class WooCommerce {
                                 // tier quota is exhausted while the event still has
                                 // room (and we're not waitlisting): buyer paid but no
                                 // tier seat can be created → leave uncreated and flag
-                                // overfill so it surfaces in needs-review (spec §7/§9.3).
-                                $overfill = true;
+                                // so it surfaces in needs-review (spec §7/§9.3).
+                                // A retired tier gets its OWN reason: "capacity
+                                // overfill" would send the organizer to look for
+                                // seats that do not exist, when the fix is to put
+                                // the tier row back (or re-tag the seats).
+                                if ( $tier_retired && $event_has_room ) {
+                                    $retired_blocked = true;
+                                } else {
+                                    $overfill = true;
+                                }
                                 break;
                             }
                             // Seat-index identity stays max+1 (stable idempotency key).
@@ -2523,6 +2637,7 @@ class WooCommerce {
                 'flipped'           => $flipped,
                 'moved_out'         => $moved_out,
                 'overfill'          => $overfill,
+                'retired_tier'      => $retired_blocked,
                 'released_capacity' => $released_capacity,
                 'dup_prevented'     => $dup_prevented,
                 'lock_unavailable'  => ! $locked,
@@ -2547,6 +2662,24 @@ class WooCommerce {
         }
         if ( ! empty( $result['overfill'] ) ) {
             $review_flags[] = $this->make_flag( 'capacity_overfill', 'event ' . $event_id . ' item ' . $item_id );
+        }
+        if ( ! empty( $result['retired_tier'] ) ) {
+            // WOO-D58: the buyer paid for a tier the event no longer offers. Nothing
+            // here can guess what the organizer meant, so the pass refuses to mint
+            // seats and hands the decision back — flag, order-visible sync-log line,
+            // and the site-wide error log so it is inspectable without the order.
+            $detail         = 'event ' . $event_id . ' item ' . $item_id . ' tier ' . $tier_id;
+            $review_flags[] = $this->make_flag( 'retired_tier', $detail );
+            $log_entries[]  = $this->make_log_entry(
+                'Ticket tier no longer exists on the event; no seats created.',
+                [ 'item' => $item_id, 'event' => $event_id, 'tier' => $tier_id ]
+            );
+            Events_Log::error( 'retired_tier', [
+                'order' => $order_id,
+                'item'  => $item_id,
+                'event' => $event_id,
+                'tier'  => $tier_id,
+            ] );
         }
         if ( ! empty( $result['dup_prevented'] ) ) {
             $review_flags[] = $this->make_flag( 'duplicate_seat_prevented', 'event ' . $event_id . ' item ' . $item_id );
@@ -2791,6 +2924,114 @@ class WooCommerce {
             return;
         }
         $this->release_order_capacity( $post_id, 'order deleted' );
+    }
+
+    /**
+     * wp_trash_post( int $post_id ) — legacy (posts) order storage only (audit
+     * WOO-D52), the trash counterpart of on_legacy_order_deleted(). The
+     * woocommerce_*_order lifecycle hooks come from the WC order data store, so
+     * the classic Orders list table's plain wp_trash_post() fires none of them
+     * and the order's seats would keep holding capacity for ever. Guard the
+     * post type — this action fires for every post type, and HPOS orders are
+     * not posts at all.
+     *
+     * @param int $post_id
+     */
+    public function on_legacy_order_trashed( $post_id ) {
+        $post_id = (int) $post_id;
+        if ( \get_post_type( $post_id ) !== 'shop_order' ) {
+            return;
+        }
+        $this->release_order_capacity( $post_id, 'order trashed' );
+    }
+
+    /**
+     * Order restored from the trash (audit WOO-D17). Hooks:
+     *  - untrashed_post → on_legacy_order_untrashed() — legacy (posts) storage.
+     *    This is the one that does the repair: WordPress restores the order's
+     *    pre-trash status inside wp_update_post() (via the
+     *    wp_untrash_post_status filter WC_Post_Data adds), so by the time
+     *    `untrashed_post` fires the order already reads e.g. 'processing' and
+     *    the reconcile below has a real target to converge on.
+     *  - woocommerce_untrash_order( int $order_id, string $previous_status ) — HPOS.
+     *
+     * IMPORTANT — on HPOS this method is a deliberate near-no-op.
+     * OrdersTableDataStore::untrash_order() fires `woocommerce_untrash_order`
+     * BEFORE it restores the status ($order->set_status( $previous_status )
+     * and $order->save() come after the do_action), so the order still reads
+     * 'trash' here; map_order_status_to_seat() returns SEAT_TARGET_UNKNOWN for
+     * it and reconcile_order() leaves every seat exactly as-is rather than
+     * sweeping them. That is the correct behaviour for an unknown status, and
+     * the real repair follows one line later: the set_status()+save() fires
+     * `woocommerce_order_status_changed` (trash → processing), which
+     * on_status_changed() turns into the reconcile that confirms the seats.
+     * WC suppresses only the transactional EMAILS during that restore, never
+     * the status-transition actions. The hook is kept registered because it is
+     * the documented HPOS untrash signal and it is harmless — but do not
+     * "fix" it by reading the previous status from the second hook argument:
+     * the order object would still be saved as 'trash' underneath, and the
+     * status-changed pass converges the seats correctly a moment later.
+     *
+     * Deliberately a plain reconcile rather than an inverse of
+     * release_order_capacity(): reconcile_order() is declarative, so it puts
+     * the seats back to whatever the RESTORED order's status implies (a
+     * processing order confirms them, a cancelled one leaves them released)
+     * instead of blanket-reviving whatever the trash happened to cancel. It is
+     * idempotent, so the HPOS and legacy paths double-firing is harmless.
+     *
+     * @param int $order_id
+     */
+    public function on_order_untrashed( $order_id ) {
+        $order = \wc_get_order( (int) $order_id );
+        if ( ! $order instanceof \WC_Order ) {
+            return;
+        }
+        $this->reconcile_order( $order, 'order untrashed' );
+    }
+
+    /**
+     * untrashed_post( int $post_id ) — legacy (posts) order storage only.
+     * woocommerce_untrash_order is fired by the HPOS data store alone, so on a
+     * CPT-storage store this is the only untrash signal there is.
+     *
+     * @param int $post_id
+     */
+    public function on_legacy_order_untrashed( $post_id ) {
+        $post_id = (int) $post_id;
+        if ( \get_post_type( $post_id ) !== 'shop_order' ) {
+            return;
+        }
+        $this->on_order_untrashed( $post_id );
+    }
+
+    /**
+     * woocommerce_refund_deleted( int $refund_id, int $order_id ) — audit
+     * WOO-D53. Deleting a refund undoes it: get_qty_refunded_for_item() drops
+     * back, so the line's expected active seat count rises again and the
+     * capacity the refund released has to be re-taken. Nothing else reacts to
+     * refund deletion (on_legacy_order_deleted's post-type guard excludes
+     * shop_order_refund), so without this the order and the roster disagree
+     * until somebody presses "Resync order".
+     *
+     * The refund post is already gone by the time WC fires this, which is why
+     * the order is re-fetched rather than passed through: reconcile_order()
+     * must see the post-deletion refund totals.
+     *
+     * NOTE: `refunded` is a terminal seat status by design (Registrations
+     * ::$transitions, and reconcile's revivable set is cancelled|failed only),
+     * so the reconcile satisfies the restored count with a NEW seat rather
+     * than un-refunding the old row. The refunded row stays as the audit trail
+     * of a refund that was made and withdrawn.
+     *
+     * @param int $refund_id
+     * @param int $order_id
+     */
+    public function on_refund_deleted( $refund_id, $order_id ) {
+        $order = \wc_get_order( (int) $order_id );
+        if ( ! $order instanceof \WC_Order ) {
+            return;
+        }
+        $this->reconcile_order( $order, 'refund deleted' );
     }
 
     /**

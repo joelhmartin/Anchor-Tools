@@ -277,6 +277,147 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		$this->assertFalse( get_option( 'anchor_events_ts_backfilled' ), 'The superseded flag must be deleted.' );
 	}
 
+	/** A zone an author actually picked survives the pass untouched. */
+	public function test_backfill_keeps_an_authored_named_timezone() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', '' );
+		update_option( 'gmt_offset', -6 );
+
+		$event = $this->make_event( [ 'title' => 'Authored Zone', 'start_date' => '2030-12-05', 'timezone' => 'America/Chicago' ] );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame( 'America/Chicago', get_post_meta( $event, '_anchor_event_timezone', true ) );
+	}
+
+	/**
+	 * An offset row that is NOT the site's own offset cannot have come from
+	 * gmt_offset, so somebody chose it — deleting it would silently move the
+	 * event.
+	 */
+	public function test_backfill_keeps_an_offset_that_is_not_the_sites_own() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', '' );
+		update_option( 'gmt_offset', -6 );
+
+		$event = $this->make_event( [ 'title' => 'Elsewhere', 'start_date' => '2030-12-05', 'timezone' => 'UTC-5' ] );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame( 'UTC-5', get_post_meta( $event, '_anchor_event_timezone', true ) );
+	}
+
+	/**
+	 * The minted row is deleted on group CHILDREN only. sync_shared_meta() is
+	 * what wrote it — the parent's read-time default, copied down as real data
+	 * — so a child is the one post whose "UTC-6" provably nobody typed. On a
+	 * single event or a parent the same string is an author's own pick from the
+	 * timezone field, and deleting it would quietly hand that event to whatever
+	 * the site setting becomes next.
+	 */
+	public function test_backfill_keeps_a_fixed_offset_on_a_single_event() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', '', false );
+		update_option( 'gmt_offset', -6, false );
+
+		$event = $this->make_event( [ 'title' => 'Authored Offset', 'start_date' => '2030-12-05', 'timezone' => 'UTC-6' ] );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame(
+			'UTC-6',
+			get_post_meta( $event, '_anchor_event_timezone', true ),
+			'A single event\'s fixed offset is an authored choice, not a minted row.'
+		);
+	}
+
+	/** …and on a group child it goes, which is the row the v3 pass exists for. */
+	public function test_backfill_deletes_the_minted_offset_on_a_group_child() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', '', false );
+		update_option( 'gmt_offset', -6, false );
+
+		$parent = $this->make_event( [ 'title' => 'Offering', 'start_date' => '2030-12-05' ] );
+		update_post_meta(
+			$parent,
+			'_anchor_event_offering_dates',
+			[ [ 'date' => '2030-12-05', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => '', 'capacity' => 0 ] ]
+		);
+		$children = $this->module()->occurrences->reconcile( $parent );
+		$child    = (int) $children[0];
+
+		// The row sync_shared_meta() used to write down from the parent's
+		// read-time default.
+		update_post_meta( $child, '_anchor_event_timezone', 'UTC-6' );
+		delete_post_meta( $child, '_anchor_event_ts_version' );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame(
+			[],
+			get_post_meta( $child, '_anchor_event_timezone' ),
+			'A child\'s offset row was minted by the inheritance copy, never typed.'
+		);
+		$this->assertNotEmpty( get_post_meta( $child, '_anchor_event_start_ts', true ) );
+	}
+
+	/**
+	 * Changing the site's timezone changes what every stored timestamp SHOULD
+	 * be, and nothing recomputed them: an event authored at 09:00 kept the UTC
+	 * instant of its old zone, so it sorted, reminded, closed registration and
+	 * emitted JSON-LD an hour (or six) away from the time on its own page. The
+	 * option write drops the migration's finished-marker AND the per-event
+	 * stamps, so the next capability-gated admin load re-runs the pass.
+	 */
+	public function test_changing_the_site_timezone_recomputes_stored_timestamps() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', 'America/Chicago', false );
+
+		$event = $this->make_event( [ 'title' => 'Zone Move', 'start_date' => '2030-12-05', 'start_time' => '09:00' ] );
+		$this->module()->persist_timestamps( $event, $this->module()->get_meta( $event ) );
+		$before = (int) get_post_meta( $event, '_anchor_event_start_ts', true );
+		$this->assertGreaterThan( 0, $before );
+
+		// The migration has finished: nothing would run again on its own.
+		update_option( 'anchor_events_ts_version', Module::TS_SCHEMA_VERSION, false );
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_post_meta( $event, '_anchor_event_ts_version', true ) );
+
+		update_option( 'timezone_string', 'America/New_York', false );
+
+		$this->assertFalse(
+			get_option( 'anchor_events_ts_version' ),
+			'The finished-marker must be dropped, or the pass never runs again.'
+		);
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame(
+			$before - HOUR_IN_SECONDS,
+			(int) get_post_meta( $event, '_anchor_event_start_ts', true ),
+			'09:00 in Chicago and 09:00 in New York are an hour apart.'
+		);
+		$this->assertSame( Module::TS_SCHEMA_VERSION, (int) get_option( 'anchor_events_ts_version' ) );
+	}
+
+	/** The gmt_offset half of the same setting does it too. */
+	public function test_changing_the_site_gmt_offset_reruns_the_backfill() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', '', false );
+		update_option( 'gmt_offset', -6, false );
+		update_option( 'anchor_events_ts_version', Module::TS_SCHEMA_VERSION, false );
+
+		update_option( 'gmt_offset', -5, false );
+
+		$this->assertFalse( get_option( 'anchor_events_ts_version' ) );
+	}
+
 	/** Both the current option and the flag it replaced, so a run starts from a clean slate. */
 	private function reset_backfill_state() {
 		delete_option( 'anchor_events_ts_version' );

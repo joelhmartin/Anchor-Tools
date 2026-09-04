@@ -269,6 +269,72 @@ class Test_Schema_Availability extends Anchor_Events_TestCase {
 		$this->assertSame( 495, $node['offers'][0]['price'] );
 	}
 
+	/* ------------------------------------------------------------------
+	 * NEW-D2 — "not for sale" is not the same as "sold out" or "over".
+	 *
+	 * The disabled rulings above only hold for an event that is otherwise
+	 * bookable. A sold-out or finished event whose switch is ALSO off (the
+	 * normal shape: production child 7528) used to read 'disabled' and emit a
+	 * priced Offer with no availability, while its own page said "Sold out".
+	 * ------------------------------------------------------------------ */
+
+	/** Sold out with the switch off is still SoldOut, not a bare price. */
+	public function test_sold_out_with_registration_off_is_soldout() {
+		$event = $this->make_event(
+			[
+				'registration_enabled' => false,
+				'registration_mode'    => 'wc',
+				'sold_out'             => true,
+				'start_date'           => '2030-01-01',
+				'timezone'             => 'UTC',
+			],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/SoldOut', $node['offers'][0]['availability'] );
+		$this->assertSame( 25, $node['offers'][0]['price'] );
+	}
+
+	/** A finished event with the switch off advertises nothing at all. */
+	public function test_finished_event_with_registration_off_emits_no_offer() {
+		$event = $this->make_event( [
+			'registration_enabled' => false,
+			'registration_mode'    => 'free',
+			'start_date'           => '2020-01-01',
+			'end_date'             => '2020-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$ts = $this->module()->compute_timestamps( $this->module()->get_meta( $event ) );
+		update_post_meta( $event, '_anchor_event_start_ts', $ts['start'] );
+		update_post_meta( $event, '_anchor_event_end_ts', $ts['end'] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertArrayNotHasKey( 'offers', $node );
+	}
+
+	/** A hand-cancelled event is cancelled AND unbookable in the same node. */
+	public function test_manual_cancellation_emits_no_offer() {
+		$event = $this->make_event(
+			[
+				'registration_enabled' => true,
+				'registration_mode'    => 'wc',
+				'status_mode'          => 'manual',
+				'status'               => 'cancelled',
+				'start_date'           => '2030-01-01',
+				'timezone'             => 'UTC',
+			],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventCancelled', $node['eventStatus'] );
+		$this->assertArrayNotHasKey( 'offers', $node, 'A cancelled course has nothing to advertise.' );
+	}
+
 	/**
 	 * The states that DO still omit the Offer entirely stay omitted — this is
 	 * the line between "no availability claim" and "nothing to advertise".

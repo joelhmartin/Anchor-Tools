@@ -184,7 +184,12 @@ class Test_Group_Authoring_Save extends Anchor_Events_TestCase {
 			$this->occurrences()->children( $event_id ),
 			'The guard must skip reconcile() entirely rather than trash/soft-close every existing child.'
 		);
-		$this->assertSame( [], get_post_meta( $event_id, '_anchor_event_offering_dates', true ) );
+		// The empty list is NOT persisted either (audit MODEL-D14): the rows an
+		// author typed survive a save that comes back with none, so the parent
+		// never advertises zero dates while its children are still bookable.
+		// Clearing them for real means changing the type away from offering —
+		// see Test_Group_Notices for the whole rule.
+		$this->assertCount( 2, get_post_meta( $event_id, '_anchor_event_offering_dates', true ) );
 	}
 
 	/* ------------------------------------------------------------------

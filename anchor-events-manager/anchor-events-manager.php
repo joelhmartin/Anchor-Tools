@@ -1691,6 +1691,34 @@ class Module {
         return $out;
     }
 
+    /**
+     * The entries of a Cc/Bcc list that email_address_list() would drop.
+     *
+     * The drop itself is deliberate — see email_address_list() — but silence
+     * about it is not (audit REG-D61): "compliance@exampl,e.com" splits into
+     * two fragments, both are discarded, and the field comes back empty with
+     * nothing said. Same split, same trim, so what this reports is exactly
+     * what the saver threw away.
+     *
+     * @param string $raw
+     * @return string[]
+     */
+    public function rejected_email_addresses( $raw ) {
+        $parts = \preg_split( '/[,;\r\n]+/', (string) $raw, -1, PREG_SPLIT_NO_EMPTY );
+        $out   = [];
+        foreach ( (array) $parts as $part ) {
+            $part = \trim( $part );
+            if ( $part === '' ) {
+                continue;
+            }
+            $address = \sanitize_email( $part );
+            if ( $address === '' || ! \is_email( $address ) ) {
+                $out[] = $part;
+            }
+        }
+        return $out;
+    }
+
     /** Quote a display name for an email header if it contains characters that need it. */
     private function encode_email_name( $name ) {
         if ( preg_match( '/[",:;<>@()\[\]\\\\]/', $name ) ) {
@@ -4000,10 +4028,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( ! isset( $src[ $form ] ) ) {
                 continue;
             }
-            $raw   = \wp_unslash( $src[ $form ] );
-            $value = ( $clean === 'list' )
-                ? \implode( ', ', $this->email_address_list( $raw ) )
-                : \call_user_func( '\\' . $clean, $raw );
+            $raw = \wp_unslash( $src[ $form ] );
+            if ( $clean === 'list' ) {
+                $kept  = $this->email_address_list( $raw );
+                $value = \implode( ', ', $kept );
+                // REG-D61 — the drop stays (a malformed Cc can bounce the whole
+                // message), but the person who typed it is told which entries
+                // did not survive instead of watching the field empty itself.
+                $dropped = $this->rejected_email_addresses( $raw );
+                if ( ! empty( $dropped ) ) {
+                    $this->queue_group_notice(
+                        $key === 'email_bcc' ? 'email_bcc_invalid' : 'email_cc_invalid',
+                        $post_id,
+                        \implode( ', ', $dropped )
+                    );
+                }
+            } else {
+                $value = \call_user_func( '\\' . $clean, $raw );
+            }
             // wp_slash(): see persist_event_authoring()'s docblock — a From
             // name is free text and may legitimately contain a backslash.
             \update_post_meta( $post_id, '_anchor_event_' . $key, \wp_slash( $value ) );
@@ -5811,6 +5853,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 'level' => 'warning',
                 'message' => \__( 'Registration questions or email wording were removed from this event\'s dates, because the event itself no longer has them — every date follows the event. To keep them, set them here on the event and save again.', 'anchor-schema' ),
             ],
+            // REG-D61 — email_address_list() drops anything that is not an
+            // address on purpose (one typo must not cost an event its
+            // confirmation emails), but the field then silently came back
+            // shorter than it was typed. The detail names what was dropped.
+            'email_cc_invalid' => [
+                'level' => 'warning',
+                'message' => \__( 'Some Cc addresses were not valid email addresses and were not saved.', 'anchor-schema' ),
+            ],
+            'email_bcc_invalid' => [
+                'level' => 'warning',
+                'message' => \__( 'Some Bcc addresses were not valid email addresses and were not saved.', 'anchor-schema' ),
+            ],
         ];
     }
 
@@ -5849,7 +5903,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param string $code    A key of group_notice_map().
      * @param int    $post_id
      */
-    public function queue_group_notice( $code, $post_id = 0 ) {
+    public function queue_group_notice( $code, $post_id = 0, $detail = '' ) {
         $post_id = (int) $post_id;
         $user_id = \get_current_user_id();
         if ( $post_id <= 0 || $user_id <= 0 ) {
@@ -5857,12 +5911,41 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // nobody to tell.
             return;
         }
-        $codes = $this->queued_group_notice_codes( $post_id );
-        if ( in_array( $code, $codes, true ) ) {
+        $entries = $this->queued_group_notice_entries( $post_id );
+        if ( \array_key_exists( $code, $entries ) ) {
             return;
         }
-        $codes[] = $code;
-        \set_transient( $this->group_notice_key( $post_id ), $codes, self::NOTICE_TTL );
+        $entries[ $code ] = \sanitize_text_field( (string) $detail );
+        \set_transient( $this->group_notice_key( $post_id ), $entries, self::NOTICE_TTL );
+    }
+
+    /**
+     * The queued notices for a post as code => detail, WITHOUT consuming them.
+     *
+     * REG-D61 — the queue used to be a bare list of codes, which is all a
+     * fixed sentence needs. A notice that has to name the thing it is about
+     * (the Cc entries that were dropped) needs somewhere to put it, so the
+     * stored shape is a map now. A transient written before this change is
+     * still a list; both shapes read.
+     *
+     * @param int $post_id
+     * @return array<string,string>
+     */
+    private function queued_group_notice_entries( $post_id ) {
+        $stored = \get_transient( $this->group_notice_key( (int) $post_id ) );
+        if ( ! is_array( $stored ) ) {
+            return [];
+        }
+        $map = $this->group_notice_map();
+        $out = [];
+        foreach ( $stored as $key => $value ) {
+            $code   = \is_int( $key ) ? (string) $value : (string) $key;
+            $detail = \is_int( $key ) ? '' : (string) $value;
+            if ( isset( $map[ $code ] ) ) {
+                $out[ $code ] = $detail;
+            }
+        }
+        return $out;
     }
 
     /**
@@ -5872,14 +5955,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string[]
      */
     private function queued_group_notice_codes( $post_id ) {
-        $codes = \get_transient( $this->group_notice_key( (int) $post_id ) );
-        if ( ! is_array( $codes ) ) {
-            return [];
+        return \array_keys( $this->queued_group_notice_entries( $post_id ) );
+    }
+
+    /** One notice's copy, with the detail it names appended when there is one. */
+    private function group_notice_message( $code, $detail ) {
+        $map     = $this->group_notice_map();
+        $message = (string) ( $map[ $code ]['message'] ?? '' );
+        $detail  = \trim( (string) $detail );
+        if ( $detail !== '' ) {
+            /* translators: %s: comma-separated list of the entries that were rejected. */
+            $message .= ' ' . \sprintf( \__( 'Rejected: %s', 'anchor-schema' ), $detail );
         }
-        $map = $this->group_notice_map();
-        return \array_values( \array_filter( $codes, function ( $code ) use ( $map ) {
-            return isset( $map[ $code ] );
-        } ) );
+        return $message;
     }
 
     /**
@@ -5890,11 +5978,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string[]
      */
     private function take_group_notices( $post_id ) {
-        $codes = $this->queued_group_notice_codes( $post_id );
-        if ( ! empty( $codes ) ) {
+        $entries = $this->queued_group_notice_entries( $post_id );
+        if ( ! empty( $entries ) ) {
             \delete_transient( $this->group_notice_key( (int) $post_id ) );
         }
-        return $codes;
+        return $entries;
     }
 
     /**
@@ -5909,11 +5997,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     public function queued_group_notices( $post_id ) {
         $map = $this->group_notice_map();
         $out = [];
-        foreach ( $this->queued_group_notice_codes( $post_id ) as $code ) {
+        foreach ( $this->queued_group_notice_entries( $post_id ) as $code => $detail ) {
             $out[] = [
                 'code' => $code,
                 'level' => $map[ $code ]['level'],
-                'message' => $map[ $code ]['message'],
+                'message' => $this->group_notice_message( $code, $detail ),
             ];
         }
         return $out;
@@ -5929,7 +6017,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function event_manager_notice_arg( $base_code, $post_id ) {
-        $codes = \array_filter( \array_merge( [ $base_code ], $this->take_group_notices( $post_id ) ) );
+        $codes = \array_filter( \array_merge( [ $base_code ], \array_keys( $this->take_group_notices( $post_id ) ) ) );
         return \implode( ',', \array_unique( $codes ) );
     }
 
@@ -6034,9 +6122,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         $map = $this->group_notice_map();
-        foreach ( $this->take_group_notices( $post_id ) as $code ) {
+        foreach ( $this->take_group_notices( $post_id ) as $code => $detail ) {
             $class = $map[ $code ]['level'] === 'warning' ? 'notice-warning' : 'notice-error';
-            echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( $map[ $code ]['message'] ) . '</p></div>';
+            echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( $this->group_notice_message( $code, $detail ) ) . '</p></div>';
         }
     }
 

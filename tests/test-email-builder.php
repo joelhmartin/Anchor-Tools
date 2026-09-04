@@ -754,4 +754,178 @@ class Test_Email_Builder extends Anchor_Events_TestCase {
 		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '<div id="own">{intro}</div>' );
 		$this->assertStringContainsString( 'anchor-event-email-appearance-warning', $method->invoke( $this->module(), $event_id ) );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Fix round 1 — the preview answers the "is this authored?" question the
+	 * same way the save path does, and the loosened sanitizer is still a
+	 * sanitizer.
+	 * ------------------------------------------------------------------- */
+
+	/** Run ajax_email_preview() and return the rendered HTML. */
+	private function preview_via_ajax( array $data ) {
+		$this->ensure_ajax_die_is_catchable();
+		$this->set_ajax_post( array_merge( [ 'nonce' => wp_create_nonce( 'anchor_events_email_preview' ) ], $data ) );
+
+		ob_start();
+		try {
+			$this->module()->ajax_email_preview();
+		} catch ( WPDieException $e ) {
+			// Expected — wp_send_json_success() ends in wp_die().
+		}
+		$response = json_decode( ob_get_clean(), true );
+
+		$this->assertIsArray( $response );
+		$this->assertTrue( $response['success'] );
+		return (string) $response['data']['html'];
+	}
+
+	/**
+	 * The builder posts its CTA fields on every preview. With the default now
+	 * rendered as a PLACEHOLDER those fields are empty on an untouched event,
+	 * and taking that literally previewed no button while the send had one —
+	 * whereupon the author re-types the default into the field and re-freezes
+	 * exactly what REG-D26 unfroze.
+	 */
+	public function test_preview_shows_the_default_button_for_untouched_cta_fields() {
+		$event_id = $this->make_event( [
+			'title'       => 'Preview Default CTA Event',
+			'virtual'     => true,
+			'virtual_url' => 'https://zoom.test/room-one',
+		] );
+
+		$html = $this->preview_via_ajax( [
+			'event_id'  => $event_id,
+			'type'      => 'confirmation',
+			'template'  => '{cta_button}',
+			'cta_label' => '',
+			'cta_url'   => '',
+		] );
+
+		$this->assertStringContainsString( 'href="https://zoom.test/room-one"', $html );
+		$this->assertStringContainsString( 'Join the event', $html );
+	}
+
+	/** A deliberately emptied (stored '') CTA previews as no button — the other half of the same rule. */
+	public function test_preview_shows_no_button_when_the_cta_is_deliberately_empty() {
+		$event_id = $this->make_event( [
+			'title'       => 'Preview Empty CTA Event',
+			'virtual'     => true,
+			'virtual_url' => 'https://zoom.test/room-one',
+		] );
+		update_post_meta( $event_id, '_anchor_event_email_cta_label_confirmation', '' );
+		update_post_meta( $event_id, '_anchor_event_email_cta_url_confirmation', '' );
+
+		$html = $this->preview_via_ajax( [
+			'event_id'  => $event_id,
+			'type'      => 'confirmation',
+			'template'  => '{cta_button}',
+			'cta_label' => '',
+			'cta_url'   => '',
+		] );
+
+		$this->assertStringNotContainsString( 'https://zoom.test/room-one', $html );
+		$this->assertStringNotContainsString( 'Join the event', $html );
+	}
+
+	/** A CTA the author actually typed still wins over both meta and the default. */
+	public function test_preview_honours_a_typed_cta() {
+		$event_id = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://zoom.test/room-one' ] );
+
+		$html = $this->preview_via_ajax( [
+			'event_id'  => $event_id,
+			'type'      => 'confirmation',
+			'template'  => '{cta_button}',
+			'cta_label' => 'Take me there',
+			'cta_url'   => 'https://example.test/typed',
+		] );
+
+		$this->assertStringContainsString( 'https://example.test/typed', $html );
+		$this->assertStringContainsString( 'Take me there', $html );
+		$this->assertStringNotContainsString( 'https://zoom.test/room-one', $html );
+	}
+
+	/** Invoke the private email-template sanitizer. */
+	private function sanitize_template( $html ) {
+		$method = new ReflectionMethod( Module::class, 'sanitize_email_template_html' );
+		$method->setAccessible( true );
+		return (string) $method->invoke( $this->module(), $html );
+	}
+
+	/**
+	 * The safecss_filter_attr_allow_css hook only ever RE-ASKS WordPress's own
+	 * question with the `{token}` placeholders removed. Everything that check
+	 * rejects for any other reason must still be rejected.
+	 *
+	 * @dataProvider unsafe_css_provider
+	 */
+	public function test_loosened_sanitizer_still_strips_unsafe_css( $declaration, $needle ) {
+		$out = $this->sanitize_template( '<div style="' . $declaration . '">x</div>' );
+		$this->assertStringNotContainsString( $needle, $out, $declaration . ' must not survive the email sanitizer.' );
+	}
+
+	public function unsafe_css_provider() {
+		return [
+			'token plus javascript url' => [ 'background:{x} url(javascript:alert(1))', 'javascript:' ],
+			'expression'                => [ 'width:expression(1)', 'expression(' ],
+			'brace injection'           => [ 'color:red}', 'color:red}' ],
+			'lone brace'                => [ '}', 'style="}"' ],
+			'css comment'               => [ 'color:red/*x*/', '/*' ],
+		];
+	}
+
+	/** The brand tokens are the one thing the hook rescues — and only in a declaration that is otherwise clean. */
+	public function test_loosened_sanitizer_keeps_brand_tokens() {
+		$out = $this->sanitize_template( '<div style="background:{brand_bg};color:{brand_text}">x</div>' );
+
+		$this->assertStringContainsString( 'background:{brand_bg}', $out );
+		$this->assertStringContainsString( 'color:{brand_text}', $out );
+	}
+
+	/** The hook is scoped to that one call: kses everywhere else is untouched afterwards. */
+	public function test_sanitizer_hook_is_removed_again() {
+		$this->sanitize_template( '<div style="background:{brand_bg}">x</div>' );
+
+		$this->assertFalse( has_filter( 'safecss_filter_attr_allow_css' ) );
+		$this->assertStringNotContainsString( 'color:red}', wp_kses_post( '<p style="color:red}">x</p>' ) );
+		// And a token in a style attribute is NOT rescued outside the email path.
+		$this->assertStringNotContainsString( '{brand_bg}', wp_kses_post( '<p style="background:{brand_bg}">x</p>' ) );
+	}
+
+	/** A UTF-8 BOM in front of the doctype does not leave a second one in the sent email. */
+	public function test_doctype_strip_tolerates_a_utf8_bom() {
+		$event_id = $this->make_event();
+		update_post_meta(
+			$event_id,
+			'_anchor_event_email_tpl_confirmation',
+			"\xEF\xBB\xBF<!DOCTYPE html>\n<html><body><p>{event_title}</p></body></html>"
+		);
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+
+		$this->assertStringStartsWith( '<!DOCTYPE html>', $html );
+		$this->assertSame( 1, substr_count( strtoupper( $html ), '<!DOCTYPE' ) );
+	}
+
+	/** The wp-admin metabox carries the same no-token appearance warning as the front-end builder. */
+	public function test_admin_metabox_warns_when_a_template_uses_no_brand_tokens() {
+		$event_id = $this->make_event();
+		$post     = get_post( $event_id );
+
+		ob_start();
+		$this->module()->render_email_builder_metabox( $post );
+		$stock = ob_get_clean();
+		$this->assertStringNotContainsString( 'anchor-event-email-appearance-warning', $stock );
+
+		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '<div id="own">{intro}</div>' );
+
+		ob_start();
+		$this->module()->render_email_builder_metabox( get_post( $event_id ) );
+		$custom = ob_get_clean();
+		$this->assertStringContainsString( 'anchor-event-email-appearance-warning', $custom );
+	}
 }

@@ -3870,15 +3870,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     $value    = (string) \call_user_func( '\\' . $clean, \wp_unslash( $src[ $key ] ) );
                     $meta_key = $prefix . $field . '_' . $type;
 
-                    if ( $value === '' && ! \metadata_exists( 'post', (int) $post_id, $meta_key ) ) {
-                        // The field showed the default as its PLACEHOLDER, so an
-                        // untouched one posts ''. Writing that would read as
-                        // "deliberately no button" and silently drop the CTA from
-                        // every email the first time any other field is saved —
-                        // which is the same class of bug, in the other direction,
-                        // as the frozen default this fix removes. metadata_exists()
-                        // is the discriminator, exactly as in get_email_cta():
-                        // clearing a field that HAS a value still stores ''.
+                    if ( ! $this->cta_field_is_authored( $post_id, $meta_key, $value ) ) {
+                        // An untouched placeholder — leave the field unset so the
+                        // default keeps resolving. See cta_field_is_authored().
                         continue;
                     }
 
@@ -3892,6 +3886,34 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 }
             }
         }
+    }
+
+    /**
+     * Did the author actually put something in this CTA field? (REG-D26)
+     *
+     * The one predicate behind BOTH the save path and the live preview, because
+     * the builder renders the default as the field's PLACEHOLDER: an untouched
+     * field posts ''. On save, writing that would read as "deliberately no
+     * button" and silently drop the CTA from every email; in the preview,
+     * honouring it shows no button where the send would put one — and an author
+     * who believes the preview will re-type the default into the field, which is
+     * exactly the freeze this fix removed. Both surfaces have to answer the
+     * question the same way, so they ask it here.
+     *
+     * metadata_exists() is the discriminator, the same one get_email_cta() uses
+     * to tell "no meta" from "empty meta": clearing a field that HAS a value is
+     * still a deliberate "no button".
+     *
+     * @param int    $event_id
+     * @param string $meta_key The field's `_anchor_event_email_cta*_{field}_{type}` key.
+     * @param string $value    The posted, sanitized value.
+     * @return bool
+     */
+    private function cta_field_is_authored( $event_id, $meta_key, $value ) {
+        if ( (string) $value !== '' ) {
+            return true;
+        }
+        return \metadata_exists( 'post', (int) $event_id, (string) $meta_key );
     }
 
     /**
@@ -3996,12 +4018,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     <button type="button" class="button button-small anchor-email-token" data-token="<?php echo esc_attr( '{' . $token . '}' ); ?>">{<?php echo esc_html( $token ); ?>}</button>
                                 <?php endforeach; ?>
                             </div>
+                            <?php $email_template = $this->resolve_email_template( $type, $post->ID ); ?>
                             <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( [
                                 [ 'id' => 'anchor_email_tpl_' . $type, 'label' => __( 'HTML', 'anchor-schema' ), 'lang' => 'html' ],
                             ] ) ); ?>'>
                                 <label for="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" class="screen-reader-text"><?php echo esc_html( $label ); ?></label>
-                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code"><?php echo esc_textarea( $this->resolve_email_template( $type, $post->ID ) ); ?></textarea>
+                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code"><?php echo esc_textarea( $email_template ); ?></textarea>
                             </div>
+                            <?php if ( ! $this->template_uses_brand_tokens( $email_template ) ) : ?>
+                                <?php
+                                /**
+                                 * REG-D27 — same warning as the front-end builder's HTML
+                                 * view, for the same reason: this template opts into none
+                                 * of the appearance tokens, so the colours and logo set in
+                                 * Settings reach it only if it still carries the stock
+                                 * literal colours. One warning per surface beats branding
+                                 * that silently applies to nothing.
+                                 */
+                                ?>
+                                <p class="description anchor-event-email-appearance-warning">
+                                    <?php echo esc_html__( 'This email uses its own HTML, so the colours and logo set in Settings may not reach it. Use the {brand_bg}, {brand_surface}, {brand_heading}, {brand_text}, {brand_button}, {brand_button_text} and {logo} tokens to opt back in.', 'anchor-schema' ); ?>
+                                </p>
+                            <?php endif; ?>
                             <p>
                                 <button type="button" class="button anchor-email-preview-real" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Preview with real data', 'anchor-schema' ); ?></button>
                                 <button type="button" class="button anchor-email-reset" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Reset to default', 'anchor-schema' ); ?></button>
@@ -4161,6 +4199,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $allow_css ) {
                 return $allow_css;
             }
+            // Only ever RE-runs safecss_filter_attr()'s own verdict on a string
+            // with the `{token}` placeholders removed — it never widens what
+            // that check permits. The pattern below is a VERBATIM COPY of the
+            // one in safecss_filter_attr() (wp-includes/kses.php, "Disallow CSS
+            // containing \ ( & } = or comments"); if WordPress tightens it, copy
+            // the new one here. Anything that check rejects for a reason other
+            // than our braces — url(javascript:…), expression(), a stray `}`,
+            // a comment — is still rejected, and the filter is removed again
+            // before this method returns, so no other kses() call is affected.
             $stripped = \preg_replace( '/\{[a-z0-9_]+\}/', '', (string) $css_test_string );
             return \is_string( $stripped ) && 0 === \preg_match( '%[\\\(&=}]|/\*%', $stripped );
         };
@@ -4185,7 +4232,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private static function strip_email_doctype( $html ) {
-        $out = \preg_replace( '/^\s*<!doctype[^>]*>[ \t]*(?:\r\n|\n|\r)?/i', '', (string) $html );
+        // A UTF-8 BOM ahead of the declaration is tolerated (and dropped with
+        // it): an editor that saves the template as "UTF-8 with BOM" would
+        // otherwise leave the doctype unmatched here and un-stripped, and the
+        // assembled email would carry two.
+        $out = \preg_replace( '/^(?:\xEF\xBB\xBF)?\s*<!doctype[^>]*>[ \t]*(?:\r\n|\n|\r)?/i', '', (string) $html );
         return \is_string( $out ) ? $out : (string) $html;
     }
 
@@ -4204,6 +4255,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! \preg_match( '/<html\b/i', $html ) ) {
             return $html;
         }
+        // A BOM the template arrived with must not end up BETWEEN the doctype
+        // and the document; strip_email_doctype() already drops one that sat in
+        // front of a declaration, this covers a template that never had one.
+        $html = \preg_replace( '/^\xEF\xBB\xBF/', '', $html );
         return "<!DOCTYPE html>\n" . $html;
     }
 
@@ -4477,16 +4532,37 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         ];
         $this->preview_field_override = \array_filter( $this->preview_field_override, function ( $v ) { return $v !== null; } );
 
+        // REG-D26 — the same authored/not-authored rule the save path applies, so
+        // the preview shows the button that would actually send. The builder now
+        // renders the default as a placeholder, so an untouched field posts '';
+        // taking that literally previewed NO button while the send had one, and
+        // the author's fix for that is to re-type the default into the field —
+        // re-freezing the very default this task unfroze.
         $cta_override = [ 'type' => $type ];
         foreach ( [ 1 => '', 2 => '2' ] as $slot => $suffix ) {
             $label_key = 'cta' . $suffix . '_label';
             $url_key   = 'cta' . $suffix . '_url';
-            if ( isset( $_POST[ $label_key ] ) || isset( $_POST[ $url_key ] ) ) {
-                $cta_override[ $slot ] = [
-                    'label' => \sanitize_text_field( \wp_unslash( $_POST[ $label_key ] ?? '' ) ),
-                    'url'   => \esc_url_raw( \wp_unslash( $_POST[ $url_key ] ?? '' ) ),
-                ];
+            if ( ! isset( $_POST[ $label_key ] ) && ! isset( $_POST[ $url_key ] ) ) {
+                continue;
             }
+            $posted = [
+                'label' => \sanitize_text_field( \wp_unslash( $_POST[ $label_key ] ?? '' ) ),
+                'url'   => \esc_url_raw( \wp_unslash( $_POST[ $url_key ] ?? '' ) ),
+            ];
+            // What this slot resolves to with nothing posted — stored meta, else
+            // the same default the builder printed as the placeholder. Read now,
+            // while preview_cta_override is still null, so get_email_cta() answers
+            // from the event rather than from the override being built.
+            $resolved = $this->get_email_cta( $event_id, $type, $slot, $this->email_cta_defaults( $event_id, $slot ) );
+
+            $pair = [];
+            foreach ( [ 'label', 'url' ] as $field ) {
+                $meta_key = '_anchor_event_email_cta' . $suffix . '_' . $field . '_' . $type;
+                $pair[ $field ] = $this->cta_field_is_authored( $event_id, $meta_key, $posted[ $field ] )
+                    ? $posted[ $field ]
+                    : (string) ( $resolved[ $field ] ?? '' );
+            }
+            $cta_override[ $slot ] = $pair;
         }
         $this->preview_cta_override = ( \count( $cta_override ) > 1 ) ? $cta_override : null;
 

@@ -197,6 +197,23 @@ did. A template that uses at least one of these (or `{logo}`) opts out of the li
 rewrite entirely; one that uses none keeps it, and the Emails builder shows an inline
 warning that the appearance settings may not reach it.
 
+**Tokens go between tags, never inside an attribute value** — with one exception.
+`{brand_bg}` and the other appearance colours are *designed* to sit inside a `style`
+attribute (`style="background:{brand_bg}"`), and `sanitize_email_template_html()`
+keeps them alive through WordPress's safe-CSS filter, which otherwise rejects any
+declaration containing `}`. Every OTHER token must not go in an attribute: the block
+tokens (`{intro}`, `{cta_button}`, `{header_image}`, `{logo}` …) expand to whole
+`<tr>`/`<p>` fragments, and the scalars are escaped for HTML text, not for an
+attribute — `href="{event_url}"` happens to work, `alt="{venue}"` will not survive a
+venue containing a quote. Put a token where the content goes.
+
+**The wp-admin metabox's live preview does not expand tokens.** The pane beside the
+Monaco editor is a raw client-side render of exactly what is in the textarea, so every
+`{token}` shows literally and every conditional region looks empty. That is the
+documented behaviour, not a broken template — click **Preview with real data** (the
+AJAX endpoint, `ajax_email_preview()`) to see the email as it would send. The
+front-end builder's Preview tab already uses that endpoint.
+
 **The doctype is not part of a template** (REG-D25). The kses allowlist cannot express
 a `<!DOCTYPE>` declaration, so one stored in a template was deleted on every save and
 the mail rendered in quirks mode. It is stripped on the way in

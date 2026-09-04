@@ -38,8 +38,11 @@ covers every meeting. `Module::get_sessions( $event_id )` returns the normalized
 
 ### Pick-one offerings (`offering`)
 A visitor registers for ONE of several dates. The parent event post holds an explicit
-list of desired dates (`_anchor_event_offering_dates` meta: `{date, start_time,
-end_time, label, capacity}` rows, authored via the "Offering Dates" repeater). Saving
+list of desired dates (`_anchor_event_offering_dates` meta: `{date, end_date,
+start_time, end_time, label, capacity, tier_id}` rows, authored via the "Offering
+Dates" repeater — `end_date` lets one row span more than a day, and `tier_id`
+optionally links the date to one of the event's ticket tiers instead of selling every
+tier on it). Saving
 the parent triggers `Occurrences::reconcile()`, which generates one full child `event`
 post per date — each with its own capacity, seats, roster, and (if the parent's
 registration mode is `wc`) its own managed WooCommerce product/variations. The parent
@@ -80,11 +83,14 @@ downstream is identical.
   child at creation. Reconciling an unchanged desired set produces no new posts, no
   closures, and no meta churn.
 - **Field split on every reconcile**:
-  - *Per-occurrence* (owned by the child): `start_date`/`end_date` (frozen once set —
-    the date identity) and `status`/`status_mode` (frozen). `start_time`, `end_time`,
-    and `capacity` are the row's *editable* fields and ARE re-applied parent-row-wins
-    on every reconcile, with `start_ts`/`end_ts` recomputed. Seats/roster and the
-    managed WooCommerce product are implicitly per-occurrence and never copied.
+  - *Per-occurrence* (owned by the child): `start_date` (frozen once set — the date
+    identity) and `status`/`status_mode` (frozen). `start_time`, `end_time`,
+    `end_date`, and `capacity` are the row's *editable* fields and ARE re-applied
+    parent-row-wins on every reconcile, with `start_ts`/`end_ts` recomputed. The END
+    date is deliberately **not** part of the occurrence's identity — only the START
+    date is — so a one-day occurrence that becomes two days updates in place instead
+    of minting a new occurrence. Seats/roster and the managed WooCommerce product are
+    implicitly per-occurrence and never copied.
   - *Shared* (copied from parent → child at creation AND re-synced on every reconcile
     of a still-live child): an **explicit allow-list**, not "everything else" —
     `Occurrences::INHERITED_KEYS` (location fields, `timezone`, `all_day`, the
@@ -245,8 +251,8 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 | `registration_mode` | string | `wc` \| `free` \| `external` |
 | `sessions` | array | Multi-session rows: `{date, start_time, end_time, label}` |
 | `labels` | array | Event-level badge rows: `{key, label, value}` — see "Event Labels" below |
-| `offering_dates` | array | Pick-one rows: `{date, start_time, end_time, label, capacity}` |
-| `recurrence` | array | Recurring rule: `{freq, interval, count?, until?, weekdays?, start_time, end_time, capacity}` |
+| `offering_dates` | array | Pick-one rows: `{date, end_date, start_time, end_time, label, capacity, tier_id}` |
+| `recurrence` | array | Recurring rule: `{freq, interval, count?, until?, weekdays?, start_time, end_time, capacity, label?, span_days?, tier_id?}` — the last three (audit MODEL-D35) have no admin UI input yet; `span_days` becomes each generated row's `end_date` |
 | `group_role` | string | `parent` \| `child` \| `` — engine-owned |
 | `group_id` | int | Child → parent post ID — engine-owned |
 | `occurrence_key` | string | Child's date identity, matches its source row — engine-owned |

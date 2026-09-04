@@ -16,12 +16,15 @@
  * Field split (see class docblock sections below):
  *   - PER-OCCURRENCE meta ("owned" by the child once created): start_date,
  *     end_date, start_time, end_time, start_ts, end_ts, capacity,
- *     status_mode, status. Of these, only start_date/end_date (the date
- *     IDENTITY, via occurrence_key) and status/status_mode are frozen once
- *     set — start_time/end_time/capacity are the row's EDITABLE fields and
- *     ARE re-applied (parent-row-wins) on every reconcile of a still-desired
- *     date, with start_ts/end_ts recomputed accordingly (see
- *     apply_occurrence_editable_fields()). Also implicitly per-occurrence:
+ *     status_mode, status. Of these, only start_date (the date IDENTITY, via
+ *     occurrence_key) and status/status_mode are frozen once set —
+ *     start_time/end_time/capacity/end_date are the row's EDITABLE fields
+ *     and ARE re-applied (parent-row-wins) on every reconcile of a
+ *     still-desired date, with start_ts/end_ts recomputed accordingly (audit
+ *     MODEL-D25: this paragraph used to list end_date alongside start_date as
+ *     frozen identity, which apply_occurrence_editable_fields() has never
+ *     done — the END date is not identity, only the START date is; see that
+ *     method's docblock). Also implicitly per-occurrence:
  *     seats/roster (REG_CPT rows keyed by
  *     event id) and the managed WooCommerce product
  *     (`_anchor_event_managed_product`) — both are per-post already and are

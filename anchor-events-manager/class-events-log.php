@@ -59,12 +59,14 @@ class Events_Log {
      * collapse into each other (REG-D46) — the same email failing for order 12
      * and order 13 is two problems, not one seen twice.
      *
-     * Beyond the entity ids, two keys name WHICH failure about a subject:
-     * `from` (the transition a seat was refused — two illegal transitions on one
-     * seat are two bugs) and `exception` (two different throws from one event's
-     * product sync are two faults).
+     * Beyond the entity ids, three keys name WHICH failure about a subject:
+     * `from` (the transition a seat was refused), `to` (what it was refused TO
+     * — two rejected targets on one seat are two bugs, and on a mail failure it
+     * is the redacted recipient, so a send failing for two people is two
+     * problems) and `exception` (two different throws from one event's product
+     * sync are two faults).
      */
-    const ERROR_IDENTITY_KEYS = [ 'order', 'event', 'seat', 'item', 'tier', 'parent_id', 'occurrence_key', 'type', 'source', 'from', 'exception' ];
+    const ERROR_IDENTITY_KEYS = [ 'order', 'event', 'seat', 'item', 'tier', 'parent_id', 'occurrence_key', 'type', 'source', 'from', 'to', 'exception' ];
 
     /** Order meta key: capped sync-log ring buffer. */
     const ORDER_LOG_META = '_anchor_event_sync_log';

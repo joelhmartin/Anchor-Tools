@@ -394,6 +394,19 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 		$this->assertCount( 2, $this->error_log_rows() );
 	}
 
+	/**
+	 * `from` alone was not enough: the status a change was refused TO also
+	 * tells two failures apart, and on one seat both rejected targets are real
+	 * bugs. They used to collapse into one counted row, so the second target
+	 * was never named anywhere an operator could read it.
+	 */
+	public function test_two_rejected_targets_on_one_seat_are_two_rows() {
+		Events_Log::error( 'invalid_status', [ 'seat' => 7, 'to' => 'attended' ] );
+		Events_Log::error( 'invalid_status', [ 'seat' => 7, 'to' => 'bogus' ] );
+
+		$this->assertCount( 2, $this->error_log_rows() );
+	}
+
 	/** Two different exceptions from one event's sync are two different failures. */
 	public function test_two_exceptions_on_one_event_are_two_rows() {
 		Events_Log::error( 'product_sync_failed', [ 'event' => 5, 'exception' => 'RuntimeException', 'message' => 'a' ] );

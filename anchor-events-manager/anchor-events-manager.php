@@ -9472,6 +9472,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <?php
         }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
 
+        \add_settings_field( 'refund_subject', __( 'Refund subject', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[refund_subject]" value="<?php echo esc_attr( $opts['refund_subject'] ); ?>" class="regular-text" />
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'refund_intro', __( 'Refund email intro', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[refund_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['refund_intro'] ); ?></textarea>
+            <p class="description"><?php echo esc_html__( 'Sent instead of the cancellation wording when a seat is refunded. Tokens: {event_title}, {attendee_name}, {status}, {site_name}.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
         \add_settings_field( 'organizer_email', __( 'Default organizer email', 'anchor-schema' ), function() {
             $opts = $this->get_settings();
             ?>
@@ -9589,6 +9604,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output['notify_cancellation']  = ! empty( $input['notify_cancellation'] );
         $output['cancellation_subject'] = \sanitize_text_field( $input['cancellation_subject'] ?? '' ) ?: $defaults['cancellation_subject'];
         $output['cancellation_intro']   = \sanitize_textarea_field( $input['cancellation_intro'] ?? '' ) ?: $defaults['cancellation_intro'];
+        $output['refund_subject']       = \sanitize_text_field( $input['refund_subject'] ?? '' ) ?: $defaults['refund_subject'];
+        $output['refund_intro']         = \sanitize_textarea_field( $input['refund_intro'] ?? '' ) ?: $defaults['refund_intro'];
         $output['organizer_roster_email'] = ! empty( $input['organizer_roster_email'] );
         $output['roster_auto_offset']   = max( 0, (int) ( $input['roster_auto_offset'] ?? 1 ) );
         $output['roster_subject']       = \sanitize_text_field( $input['roster_subject'] ?? '' ) ?: $defaults['roster_subject'];
@@ -12126,18 +12143,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $tokens = $this->email_tokens( [ 'event_id' => $event_id, 'seat' => array_merge( $info, [ 'name' => $name, 'status' => $status ] ), 'order' => $order ?: null ] );
         $is_refund = ( $status === \Anchor\Events\Registrations::STATUS_REFUNDED );
-        $subject = $this->expand_email_tokens(
-            $is_refund
-                ? \str_ireplace( 'cancelled', 'refunded', $this->get_email_field( $event_id, 'cancellation', 'subject', $settings['cancellation_subject'] ) )
-                : $this->get_email_field( $event_id, 'cancellation', 'subject', $settings['cancellation_subject'] ),
-            $tokens
-        );
-        $intro = $this->expand_email_tokens(
-            $is_refund
-                ? \str_ireplace( 'cancelled', 'refunded', $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] ) )
-                : $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] ),
-            $tokens
-        );
+
+        // REG-D51 — a refund has its own subject and opening lines. This used
+        // to be str_ireplace( 'cancelled', 'refunded', ... ) over the author's
+        // own prose: copy that never says "cancelled" ("Sorry — your seat has
+        // been released") went out with no mention of a refund at all, and copy
+        // that says it twice came out as "your refunded registration for the
+        // refundation policy course". A word-level rewrite of admin-authored
+        // text in an arbitrary language cannot be made to work; a second pair
+        // of fields can. Per-event overrides stay with the cancellation tab
+        // that owns them until a refund tab exists to write a refund one.
+        if ( $is_refund ) {
+            $subject_source = (string) $settings['refund_subject'];
+            $intro_source   = (string) $settings['refund_intro'];
+        } else {
+            $subject_source = $this->get_email_field( $event_id, 'cancellation', 'subject', $settings['cancellation_subject'] );
+            $intro_source   = $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] );
+        }
+        $subject = $this->expand_email_tokens( $subject_source, $tokens );
+        $intro   = $this->expand_email_tokens( $intro_source, $tokens );
         $detail_rows = [ [ 'label' => \__( 'Event', 'anchor-schema' ), 'value' => $tokens['event_title'] ] ];
         if ( $tokens['event_date'] !== '' ) {
             $detail_rows[] = [ 'label' => \__( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ];
@@ -13124,6 +13148,10 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'notify_cancellation'    => true,
             'cancellation_subject'   => __( 'Your registration for {event_title} has been cancelled', 'anchor-schema' ),
             'cancellation_intro'     => __( 'Your registration for {event_title} has been cancelled. If this is unexpected, please contact us.', 'anchor-schema' ),
+            // A refund is its own message, not the cancellation copy with a word
+            // swapped in it (audit REG-D51).
+            'refund_subject'         => __( 'Your registration for {event_title} has been refunded', 'anchor-schema' ),
+            'refund_intro'           => __( 'Your registration for {event_title} has been refunded. If this is unexpected, please contact us.', 'anchor-schema' ),
             'organizer_roster_email' => false,
             'roster_auto_offset'     => 1,
             'roster_subject'         => __( 'Final roster for {event_title}', 'anchor-schema' ),

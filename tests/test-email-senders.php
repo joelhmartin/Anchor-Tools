@@ -87,6 +87,53 @@ class Test_Email_Senders extends Anchor_Events_TestCase {
 	}
 
 	// -------------------------------------------------------------------------
+	// REG-D51 — a refund has its own wording, not the cancellation copy with a
+	// word swapped inside it.
+	// -------------------------------------------------------------------------
+
+	public function test_a_refund_uses_the_refund_wording_not_a_rewritten_cancellation() {
+		$this->set_settings( [
+			'notify_cancellation'  => true,
+			// Cancellation copy that never says "cancelled" — the case the old
+			// str_ireplace() left with no mention of a refund at all.
+			'cancellation_subject' => 'Your seat for {event_title} has been released',
+			'cancellation_intro'   => 'Sorry — your seat has been released.',
+			'refund_subject'       => 'Your registration for {event_title} has been refunded',
+			'refund_intro'         => 'Your registration has been refunded.',
+		] );
+
+		$event_id = $this->make_event( [ 'title' => 'Refund Course' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'refundee@example.org', 'name' => 'Ray Fund' ] );
+		$this->registrations()->update_status( $seat_id, Registrations::STATUS_REFUNDED );
+
+		$this->sent = [];
+		$this->assertTrue( $this->module()->send_cancellation_email( $seat_id )->is_sent() );
+
+		$mail = $this->sent[0] ?? null;
+		$this->assertNotNull( $mail );
+		$this->assertSame( 'Your registration for Refund Course has been refunded', $mail['subject'] );
+		$this->assertStringContainsString( 'Your registration has been refunded.', (string) $mail['message'] );
+		$this->assertStringNotContainsString( 'has been released', (string) $mail['message'] );
+	}
+
+	public function test_a_cancellation_still_uses_the_cancellation_wording() {
+		$this->set_settings( [
+			'notify_cancellation'  => true,
+			'cancellation_subject' => 'Your seat for {event_title} has been released',
+			'cancellation_intro'   => 'Sorry — your seat has been released.',
+		] );
+
+		$event_id = $this->make_event( [ 'title' => 'Refund Course' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'goner@example.org' ] );
+		$this->registrations()->update_status( $seat_id, Registrations::STATUS_CANCELLED );
+
+		$this->sent = [];
+		$this->assertTrue( $this->module()->send_cancellation_email( $seat_id )->is_sent() );
+
+		$this->assertSame( 'Your seat for Refund Course has been released', $this->sent[0]['subject'] );
+	}
+
+	// -------------------------------------------------------------------------
 	// REG-D1 — the free/manual confirmation send honors the per-event overrides.
 	// -------------------------------------------------------------------------
 

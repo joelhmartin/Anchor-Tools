@@ -9700,7 +9700,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     public function sanitize_settings( $input ) {
-        $defaults = $this->get_settings();
+        // MODEL-D29 — two different questions, two different arrays.
+        //
+        //   $defaults = what this plugin SHIPS. A cleared text field or an
+        //               unreadable colour falls back to this, so "empty the
+        //               box and save" now means "reset to the shipped value"
+        //               instead of "put back whatever is already stored",
+        //               which is what a single get_settings() array made every
+        //               `?:` on this page do.
+        //   $stored   = what is on this site RIGHT NOW. Used only where the
+        //               form deliberately does not render a field (the
+        //               WooCommerce subsection on a site without WooCommerce)
+        //               and the stored value has to survive the save untouched.
+        $defaults = $this->default_settings();
+        $stored   = $this->get_settings();
         $output = [
             'timezone_mode' => in_array( $input['timezone_mode'] ?? 'site', [ 'site', 'event' ], true ) ? $input['timezone_mode'] : 'site',
             'archive_hide_past' => ! empty( $input['archive_hide_past'] ),
@@ -9714,7 +9727,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'max_guests' => max( 0, min( 50, (int) ( $input['max_guests'] ?? 0 ) ) ),
             'register_button_label' => sanitize_text_field( $input['register_button_label'] ?? '' ),
             'register_button_color' => \sanitize_hex_color( $input['register_button_color'] ?? '' ) ?: $defaults['register_button_color'],
-            'event_slug' => sanitize_title( $input['event_slug'] ?? $defaults['event_slug'] ),
+            // A field that is not in $input at all is not a field somebody
+            // cleared, so the slug keeps what the site has; a field that is
+            // there but empty falls back to the shipped 'event' below.
+            'event_slug' => sanitize_title( $input['event_slug'] ?? $stored['event_slug'] ),
         ];
         if ( ! $output['event_slug'] ) {
             $output['event_slug'] = $defaults['event_slug'];
@@ -9729,15 +9745,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( \class_exists( 'WooCommerce' ) ) {
             $output['wc_notify_customer']   = ! empty( $input['wc_notify_customer'] );
             $output['wc_notify_organizer']  = ! empty( $input['wc_notify_organizer'] );
-            $output['wc_customer_subject']  = sanitize_text_field( $input['wc_customer_subject'] ?? $defaults['wc_customer_subject'] );
-            $output['wc_customer_intro']    = sanitize_textarea_field( $input['wc_customer_intro'] ?? $defaults['wc_customer_intro'] );
-            $output['wc_organizer_subject'] = sanitize_text_field( $input['wc_organizer_subject'] ?? $defaults['wc_organizer_subject'] );
+            $output['wc_customer_subject']  = sanitize_text_field( $input['wc_customer_subject'] ?? $stored['wc_customer_subject'] );
+            $output['wc_customer_intro']    = sanitize_textarea_field( $input['wc_customer_intro'] ?? $stored['wc_customer_intro'] );
+            $output['wc_organizer_subject'] = sanitize_text_field( $input['wc_organizer_subject'] ?? $stored['wc_organizer_subject'] );
         } else {
-            $output['wc_notify_customer']   = $defaults['wc_notify_customer'];
-            $output['wc_notify_organizer']  = $defaults['wc_notify_organizer'];
-            $output['wc_customer_subject']  = $defaults['wc_customer_subject'];
-            $output['wc_customer_intro']    = $defaults['wc_customer_intro'];
-            $output['wc_organizer_subject'] = $defaults['wc_organizer_subject'];
+            $output['wc_notify_customer']   = $stored['wc_notify_customer'];
+            $output['wc_notify_organizer']  = $stored['wc_notify_organizer'];
+            $output['wc_customer_subject']  = $stored['wc_customer_subject'];
+            $output['wc_customer_intro']    = $stored['wc_customer_intro'];
+            $output['wc_organizer_subject'] = $stored['wc_organizer_subject'];
         }
         // Email sender identity (applied as per-message headers on event emails).
         $output['email_from_name']        = sanitize_text_field( $input['email_from_name'] ?? '' );
@@ -9753,12 +9769,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output['email_heading_color']    = \sanitize_hex_color( $input['email_heading_color'] ?? '' ) ?: $defaults['email_heading_color'];
         $output['email_button_color']     = \sanitize_hex_color( $input['email_button_color'] ?? '' ) ?: $defaults['email_button_color'];
 
-        // Reserved/unused — preserve stored value (no UI field).
-        $output['notify_attendee'] = $defaults['notify_attendee'];
-
         // v1.1 lifecycle email settings (always saved — not WC-gated).
         $output['reminder_enabled']     = ! empty( $input['reminder_enabled'] );
-        $output['reminder_offsets']     = $this->sanitize_offset_csv( $input['reminder_offsets'] ?? $defaults['reminder_offsets'] );
+        $output['reminder_offsets']     = $this->sanitize_offset_csv( $input['reminder_offsets'] ?? $stored['reminder_offsets'] );
         $output['reminder_subject']     = \sanitize_text_field( $input['reminder_subject'] ?? '' ) ?: $defaults['reminder_subject'];
         $output['reminder_intro']       = \sanitize_textarea_field( $input['reminder_intro'] ?? '' ) ?: $defaults['reminder_intro'];
         $output['notify_cancellation']  = ! empty( $input['notify_cancellation'] );
@@ -13324,8 +13337,24 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         return \add_query_arg( 'event_registration', $message, $url );
     }
 
-    public function get_settings() {
-        $defaults = [
+    /**
+     * The settings this plugin SHIPS with — the values a site has never
+     * touched, and the values a cleared field returns to.
+     *
+     * MODEL-D29 — this literal used to live inside get_settings(), which meant
+     * sanitize_settings() had nothing to reach for but get_settings() itself.
+     * Its fallback array was called `$defaults` while actually holding the
+     * CURRENT merged settings, so `sanitize_text_field( '' ) ?: $defaults[...]`
+     * evaluated to the value already stored: clearing "Reminder subject" and
+     * saving put the same text straight back, the admin saw a save that did
+     * nothing, and no text setting or colour could ever be reset to what the
+     * plugin ships. get_settings() is now this array merged with the stored
+     * option — byte-identical output — and the saver can tell the two apart.
+     *
+     * @return array
+     */
+    public function default_settings() {
+        return [
             'timezone_mode' => 'site',
             'archive_hide_past' => true,
             'template_source' => 'theme',
@@ -13365,8 +13394,6 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'roster_auto_offset'     => 1,
             'roster_subject'         => __( 'Final roster for {event_title}', 'anchor-schema' ),
             'roster_intro'           => __( 'Here is the current confirmed roster for {event_title} on {event_date}.', 'anchor-schema' ),
-            // Reserved/unused in MVP (per-attendee emails are deferred).
-            'notify_attendee'      => false,
             // Email sender identity (applied as per-message headers on event emails).
             'email_from_name'        => '',
             'email_from_address'     => '',
@@ -13381,10 +13408,13 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'email_heading_color'    => '#111111',
             'email_button_color'     => '#111111',
         ];
+    }
+
+    public function get_settings() {
         $settings = \get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $settings ) ) {
             $settings = [];
         }
-        return \wp_parse_args( $settings, $defaults );
+        return \wp_parse_args( $settings, $this->default_settings() );
     }
 }

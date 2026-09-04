@@ -30,6 +30,62 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->module()->register_meta();
 	}
 
+	/* ------------------------------------------------------------------
+	 * Module settings: the shipped defaults, and what a save may reach for.
+	 * ---------------------------------------------------------------- */
+
+	/**
+	 * MODEL-D29 — clearing a text setting resets it to the shipped default.
+	 *
+	 * sanitize_settings()'s fallback array was called `$defaults` but held the
+	 * CURRENT merged settings, so `sanitize_text_field( '' ) ?: $defaults[...]`
+	 * evaluated to the value already stored: the field reappeared unchanged
+	 * and the admin saw a save that did nothing.
+	 */
+	public function test_clearing_a_text_setting_restores_the_shipped_default() {
+		$shipped = $this->module()->default_settings();
+
+		update_option( Anchor\Events\Module::OPTION_KEY, array_merge(
+			$this->module()->get_settings(),
+			[ 'reminder_subject' => 'Custom reminder subject', 'email_heading_color' => '#abcdef' ]
+		), false );
+		$this->assertSame( 'Custom reminder subject', $this->module()->get_settings()['reminder_subject'] );
+
+		$saved = $this->module()->sanitize_settings( [
+			'reminder_subject'    => '',
+			'email_heading_color' => '',
+		] );
+
+		$this->assertSame( $shipped['reminder_subject'], $saved['reminder_subject'] );
+		$this->assertSame( $shipped['email_heading_color'], $saved['email_heading_color'] );
+
+		delete_option( Anchor\Events\Module::OPTION_KEY );
+	}
+
+	/** get_settings() is still the shipped defaults merged with the stored option. */
+	public function test_get_settings_is_the_defaults_merged_with_the_option() {
+		$this->assertSame( $this->module()->default_settings(), $this->module()->get_settings() );
+
+		update_option( Anchor\Events\Module::OPTION_KEY, [ 'reminder_subject' => 'Mine' ], false );
+		$merged = $this->module()->get_settings();
+
+		$this->assertSame( 'Mine', $merged['reminder_subject'] );
+		$this->assertSame( $this->module()->default_settings()['roster_subject'], $merged['roster_subject'] );
+
+		delete_option( Anchor\Events\Module::OPTION_KEY );
+	}
+
+	/**
+	 * REG-D64 / MODEL-D28 — `notify_attendee` is gone. It was declared in the
+	 * defaults as "Reserved/unused in MVP", carried through every save
+	 * verbatim, and read by nothing, so a reader would reasonably conclude
+	 * attendee notification was switched off site-wide when it was not.
+	 */
+	public function test_the_reserved_notify_attendee_setting_is_gone() {
+		$this->assertArrayNotHasKey( 'notify_attendee', $this->module()->default_settings() );
+		$this->assertArrayNotHasKey( 'notify_attendee', $this->module()->sanitize_settings( [] ) );
+	}
+
 	/** event_type() falls back to 'single' when no type meta is stored. */
 	public function test_event_type_defaults_to_single() {
 		$event_id = $this->make_event();

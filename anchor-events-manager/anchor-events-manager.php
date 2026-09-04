@@ -4845,6 +4845,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
 
+        // RENDER-D9: captured before ANYTHING below writes meta, so
+        // maybe_persist_previous_start() (called from persist_event_authoring())
+        // can still see the status/start_date this event is transitioning
+        // FROM — by the time that call happens the update_post_meta() loop a
+        // few lines down has already overwritten both with the new values.
+        $old_meta = $this->get_meta( $post_id );
+
         // Resolved BEFORE the save loop below so an invalid/missing posted
         // registration_mode falls back to whatever the event currently
         // resolves to (explicit stored value, or the legacy-signal
@@ -4938,7 +4945,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // function (MODEL-D24 / REG-D49). Before Task 28 this metabox path ran
         // a shorter list than the front-end console did, so five whole
         // families of field were silently dropped on every wp-admin save.
-        $this->persist_event_authoring( $post_id, $_POST, $input );
+        $this->persist_event_authoring( $post_id, $_POST, $input, $old_meta );
     }
 
     /**
@@ -4992,13 +4999,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * nonce + capability before calling save_event_manager_fields()); this
      * method assumes that has already happened.
      *
-     * @param int   $post_id Event post ID, already inserted/updated.
-     * @param array $src     Raw input array ($_POST-shaped, still slashed).
-     * @param array $input   The sanitized meta the caller just wrote — read for
-     *                       the auto-append shortcode decision and the event
-     *                       `type` that drives group authoring.
+     * @param int   $post_id  Event post ID, already inserted/updated.
+     * @param array $src      Raw input array ($_POST-shaped, still slashed).
+     * @param array $input    The sanitized meta the caller just wrote — read
+     *                        for the auto-append shortcode decision and the
+     *                        event `type` that drives group authoring.
+     * @param array $old_meta get_meta( $post_id ) as it stood BEFORE the
+     *                        caller's own update_post_meta() loop overwrote it
+     *                        with $input — the only way to know what an event
+     *                        is transitioning FROM (RENDER-D9's
+     *                        `_anchor_event_previous_start`). Defaults to []
+     *                        (read as "no prior state") for the sake of any
+     *                        future caller that genuinely has none, e.g. a
+     *                        brand-new post.
      */
-    private function persist_event_authoring( $post_id, array $src, array $input ) {
+    private function persist_event_authoring( $post_id, array $src, array $input, array $old_meta = [] ) {
+        // RENDER-D9: capture the start being postponed/moved-online AWAY FROM,
+        // before any other sub-saver runs. Must happen first — nothing below
+        // reads or writes `previous_start`, but keeping this at the top means
+        // it is never accidentally fed an $input a later sub-saver has
+        // mutated.
+        $this->maybe_persist_previous_start( $post_id, $old_meta, $input );
+
         // Ticket tiers (spec §3.2). The Ticket_Types model sanitizes the rows,
         // assigns stable ids, drops empty rows, and persists. An empty table
         // clears the meta so the legacy single `price` field stays the
@@ -5038,6 +5060,56 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $this->persist_group_authoring( $post_id, $input['type'], $src );
 
         $this->clear_caches();
+    }
+
+    /**
+     * The ONE writer of `_anchor_event_previous_start` (RENDER-D9) — called
+     * from persist_event_authoring(), shared by both save surfaces.
+     *
+     * Writes the event's start date as it stood BEFORE this save when either:
+     *   - the status is transitioning INTO postponed/moved_online (from
+     *     anything else, including a fresh event with no prior status), or
+     *   - the status is ALREADY postponed/moved_online and the start date is
+     *     changing again — each further push updates the stored "previous"
+     *     start to the one it is moving away from, not the original snapshot
+     *     from the first postponement.
+     *
+     * Deliberately does NOT write on a no-op re-save (same status, same
+     * date): overwriting the true previous start with the CURRENT start on
+     * every subsequent save of an already-postponed event would erase the one
+     * fact Event_Schema's `previousStartDate` exists to publish.
+     *
+     * Only ever writes — never clears. An event that leaves postponed/
+     * moved_online for good (back to auto, or cancelled) keeps its last
+     * previous_start row; Event_Schema only ever reads it while the CURRENT
+     * status is postponed/moved_online, so a stale row after that is inert.
+     *
+     * @param int   $post_id
+     * @param array $old_meta get_meta( $post_id ) taken BEFORE this save's
+     *                        update_post_meta() loop overwrote it — see
+     *                        persist_event_authoring()'s docblock.
+     * @param array $input    The just-sanitized meta this save is about to
+     *                        (or has just) persisted.
+     */
+    private function maybe_persist_previous_start( $post_id, array $old_meta, array $input ) {
+        $tracked = [ 'postponed', 'moved_online' ];
+
+        $old_status = (string) ( $old_meta['status'] ?? '' );
+        $new_status = (string) ( $input['status'] ?? '' );
+        $old_start  = \trim( (string) ( $old_meta['start_date'] ?? '' ) );
+        $new_start  = \trim( (string) ( $input['start_date'] ?? '' ) );
+
+        if ( ! \in_array( $new_status, $tracked, true ) || $old_start === '' ) {
+            return;
+        }
+
+        $was_tracked = \in_array( $old_status, $tracked, true );
+        $entering_status = ! $was_tracked;
+        $date_changed_while_tracked = $was_tracked && $old_start !== $new_start;
+
+        if ( $entering_status || $date_changed_while_tracked ) {
+            \update_post_meta( $post_id, $this->meta_key( 'previous_start' ), $old_start );
+        }
     }
 
     /**
@@ -8129,6 +8201,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * without exposing an unguarded direct meta-write on the public API.
      */
     protected function save_event_manager_fields( $saved_id, $start_date, $current_registration_mode ) {
+        // RENDER-D9: same capture as save_meta() — taken before ANYTHING below
+        // writes meta, so maybe_persist_previous_start() can still see what
+        // this event is transitioning FROM. Safe on a brand-new $saved_id too:
+        // get_meta() just returns its all-defaults row ('status' => 'upcoming'),
+        // which can never itself be postponed/moved_online.
+        $old_meta = $this->get_meta( $saved_id );
+
         $input = [
             'start_date' => $start_date,
             'end_date' => $this->sanitize_date( $_POST['anchor_event_end_date'] ?? '' ),
@@ -8210,7 +8289,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // cache flush are the SAME shared tail the wp-admin metabox runs
         // (Task 28, MODEL-D24 / REG-D49) — one function, called from both, so
         // the two surfaces cannot drift on which fields a save persists.
-        $this->persist_event_authoring( $saved_id, $_POST, $input ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
+        $this->persist_event_authoring( $saved_id, $_POST, $input, $old_meta ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
 
         return $input;
     }
@@ -10260,6 +10339,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * The start date (Y-m-d) an event was postponed/moved-online FROM
+     * (RENDER-D9), for Event_Schema's `previousStartDate` — or '' when none is
+     * stored. Not a `get_meta_defaults()` key: a plain, never-touched event
+     * must never gain a `_anchor_event_previous_start` row (fleet-wide, this
+     * plugin ships to sites that have never used postponed/moved_online at
+     * all), so this reads the raw meta directly rather than through
+     * get_meta()'s default-filling loop.
+     *
+     * The ONE writer is maybe_persist_previous_start(), called from
+     * persist_event_authoring() — see that method's docblock. Public for the
+     * same reason external_url()/get_event_status() are: Event_Schema is a
+     * separate class and must ask rather than re-implement.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function previous_start_date( $event_id ) {
+        return (string) \get_post_meta( (int) $event_id, $this->meta_key( 'previous_start' ), true );
+    }
+
+    /**
      * Derive a registration mode for an event that has no explicit stored
      * value, from legacy registration-type/url meta and ticket-tier/product
      * signals. Shared by registration_mode() and migrate_registration_mode().
@@ -10819,6 +10919,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Its replacement, 'undated', is not offered either — it is computed, and
      * an author who wants an event hidden has post_status for that.
      *
+     * `postponed` and `moved_online` (RENDER-D9) are manual-only exactly like
+     * `cancelled`: nothing computes them, an author sets them, and
+     * Event_Schema::event_status_url() maps them to EventPostponed /
+     * EventMovedOnline. Before this the vocabulary had no member for either
+     * state, so a postponed or moved-online course had no honest status to be
+     * pinned to and republished as a plain "Upcoming"/EventScheduled with a
+     * silently changed date.
+     *
      * @return array<string,string> value => label.
      */
     private function get_status_options() {
@@ -10827,6 +10935,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'ongoing' => __( 'Ongoing', 'anchor-schema' ),
             'past' => __( 'Past', 'anchor-schema' ),
             'cancelled' => __( 'Cancelled', 'anchor-schema' ),
+            'postponed' => __( 'Postponed', 'anchor-schema' ),
+            'moved_online' => __( 'Moved online', 'anchor-schema' ),
         ];
     }
 

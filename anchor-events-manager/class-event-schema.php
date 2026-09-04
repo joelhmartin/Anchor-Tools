@@ -69,6 +69,28 @@
  *     `availability` is an optional property, and omitting it says "no claim"
  *     instead of dropping every display-only event's price from the markup.
  *
+ * OTHER FIELDS (RENDER-D9 / RENDER-D10 / RENDER-D38):
+ *   - `eventStatus` also covers `EventPostponed`/`EventMovedOnline` (manual-only
+ *     statuses, see Module::get_status_options()), each optionally paired with
+ *     `previousStartDate` from Module::previous_start_date() — see
+ *     assemble_node()'s docblock.
+ *   - `superEvent` is added to a group CHILD's own node, pointing back at its
+ *     live parent — the parent -> subEvent link already existed; this is the
+ *     reverse of it.
+ *   - `maximumAttendeeCapacity`/`remainingAttendeeCapacity` come from the same
+ *     capacity authority (`$meta['capacity']` + Registrations::remaining_capacity())
+ *     every other capacity reader already asks; capacity 0 means unlimited and
+ *     publishes neither key, same convention as availability.
+ *   - `isAccessibleForFree` is true only alongside an actually-emitted free Offer.
+ *   - every node this class builds passes through the `anchor_events_schema_node`
+ *     filter (`$node, $event_id`) at the end of assemble_node() before it is
+ *     returned — the one seam a theme or another plugin can decorate a node
+ *     from (performer, an `organizer.@id`, an image fallback, …) without this
+ *     class knowing anything about speakers or SEO plugins. See EVENTS.md's
+ *     filter table for who currently uses it and its one known gap
+ *     (multisession's per-session `subEvent` stubs are raw arrays, never run
+ *     through assemble_node(), so they never reach this filter directly).
+ *
  * @package Anchor\Events
  */
 
@@ -201,7 +223,25 @@ class Event_Schema {
             return [];
         }
 
-        return $this->assemble_node( $event_id, $meta, (int) $ts['start'], (int) $ts['end'] );
+        $node = $this->assemble_node( $event_id, $meta, (int) $ts['start'], (int) $ts['end'] );
+
+        // RENDER-D38: a group child's node had no link back to its parent, so
+        // the parent/child relationship was one-directional in the markup
+        // (parent -> subEvent only). parent_of() is already validated —
+        // trashed/reissued/dead ids resolve to 0 — so this never points at a
+        // parent that is not really there.
+        $parent_id = $this->module->occurrences->is_group_child( $event_id )
+            ? $this->module->occurrences->parent_of( $event_id )
+            : 0;
+        if ( $parent_id > 0 ) {
+            $node['superEvent'] = [
+                '@type' => 'Event',
+                'name'  => (string) \get_the_title( $parent_id ),
+                'url'   => (string) \get_permalink( $parent_id ),
+            ];
+        }
+
+        return $node;
     }
 
     /**
@@ -291,17 +331,37 @@ class Event_Schema {
 
         $child_nodes   = [];
         $earliest_meta = null;
+        $end_ts        = null;
 
+        // A container runs from its first occurrence to the END of its LAST
+        // one. Taking both ends off the earliest child described a group as
+        // finishing when its first date finished, while its own subEvents
+        // ran on for weeks — contradictory data for anything reading the
+        // markup. RENDER-D6: that end must come ONLY from a child that
+        // actually produced a subEvent node — $live_child_ids can contain a
+        // published, non-soft-closed child with no usable start_ts (for_event()
+        // returns [] for it), and re-looping the full id list unconditionally
+        // let such a child's end_ts leak into the parent's endDate with no
+        // corresponding entry anywhere in subEvent[]. Folding the end-of-span
+        // read into this same loop (rather than a second pass over every id)
+        // also drops a second get_meta() + compute_timestamps() per child.
         foreach ( $live_child_ids as $child_id ) {
             $node = $this->for_event( $child_id );
             if ( empty( $node ) ) {
                 continue;
             }
             $child_nodes[] = $node;
+
+            $child_meta = $this->module->get_meta( $child_id );
+            $child_ts   = $this->module->compute_timestamps( $child_meta );
+
             if ( $earliest_meta === null ) {
                 // children() is already sorted ascending by start_ts, so the
                 // first non-empty node's child is the earliest live one.
-                $earliest_meta = $this->module->get_meta( $child_id );
+                $earliest_meta = $child_meta;
+            }
+            if ( $end_ts === null || (int) $child_ts['end'] > $end_ts ) {
+                $end_ts = (int) $child_ts['end'];
             }
         }
 
@@ -314,20 +374,8 @@ class Event_Schema {
             return [];
         }
 
-        // A container runs from its first occurrence to the END of its LAST one.
-        // Taking both ends off the earliest child described a group as finishing
-        // when its first date finished, while its own subEvents ran on for weeks
-        // — contradictory data for anything reading the markup.
-        $end_ts = (int) $ts['end'];
-        foreach ( $live_child_ids as $child_id ) {
-            $child_ts = $this->module->compute_timestamps( $this->module->get_meta( $child_id ) );
-            if ( (int) $child_ts['end'] > $end_ts ) {
-                $end_ts = (int) $child_ts['end'];
-            }
-        }
-
         $parent_meta = $this->module->get_meta( $event_id );
-        $node        = $this->assemble_node( $event_id, $parent_meta, (int) $ts['start'], $end_ts );
+        $node        = $this->assemble_node( $event_id, $parent_meta, (int) $ts['start'], (int) $end_ts );
 
         // RENDER-D7: a container is never itself bookable
         // (render_registration_form() refuses to give a parent a form), so it
@@ -360,13 +408,14 @@ class Event_Schema {
         $tz      = $this->resolve_timezone( $meta );
         $all_day = ! empty( $meta['all_day'] );
         $loc     = $this->location_fields( $event_id, $meta );
+        $status  = (string) $this->module->get_event_status( $event_id, $meta );
 
         $node = [
             '@type'               => 'Event',
             'name'                => (string) \get_the_title( $event_id ),
             'startDate'           => $this->format_iso( $start_ts, $tz, $all_day ),
             'endDate'             => $this->format_iso( $end_ts, $tz, $all_day ),
-            'eventStatus'         => $this->event_status( $event_id, $meta ),
+            'eventStatus'         => $this->event_status_url( $status ),
             'eventAttendanceMode' => $loc['mode'],
             'location'            => $loc['location'],
             'url'                 => (string) \get_permalink( $event_id ),
@@ -377,6 +426,22 @@ class Event_Schema {
             ],
         ];
 
+        // RENDER-D9: EventPostponed/EventRescheduled/EventMovedOnline are
+        // documented (Google's Event guidance) to carry the date being moved
+        // AWAY from. _anchor_event_previous_start is written once, by the
+        // shared save path (Module::persist_event_authoring()), the moment a
+        // status transitions into one of these two, or its date changes again
+        // while already in one — see that method's docblock. No stored value
+        // (an event pinned straight to postponed/moved_online with no prior
+        // save through that path) means no honest date to publish, so the key
+        // is simply omitted rather than guessed.
+        if ( \in_array( $status, [ 'postponed', 'moved_online' ], true ) ) {
+            $previous_start = $this->module->previous_start_date( $event_id );
+            if ( $previous_start !== '' ) {
+                $node['previousStartDate'] = $previous_start;
+            }
+        }
+
         $image = $this->image_url( $event_id );
         if ( $image !== '' ) {
             $node['image'] = $image;
@@ -385,7 +450,37 @@ class Event_Schema {
         $offers = $this->build_offers( $event_id, $meta );
         if ( ! empty( $offers ) ) {
             $node['offers'] = $offers;
+
+            // RENDER-D38: only claim free admission when a real, live Offer
+            // was actually emitted for the free branch — a finished/closed
+            // event (omits_offer()) makes no offers claim at all, so it must
+            // not make this one either.
+            if ( $this->module->registration_mode( $event_id ) === 'free' ) {
+                $node['isAccessibleForFree'] = true;
+            }
         }
+
+        // RENDER-D38: maximumAttendeeCapacity/remainingAttendeeCapacity from
+        // the SAME capacity authority choose_date_availability_hint() already
+        // reads (Module::$meta['capacity'] + Registrations::remaining_capacity()) —
+        // not a second decision. Capacity 0 means "unlimited" throughout this
+        // module, so — same as an omitted `availability` — no capacity claim
+        // is published rather than a false one.
+        $capacity = (int) ( $meta['capacity'] ?? 0 );
+        if ( $capacity > 0 ) {
+            $node['maximumAttendeeCapacity']   = $capacity;
+            $node['remainingAttendeeCapacity'] = (int) $this->module->registrations->remaining_capacity( $event_id, $capacity );
+        }
+
+        // RENDER-D10 / THEME-D27: the one seam a theme (or another plugin) can
+        // decorate a node from — add performer, tie organizer to a site-wide
+        // @id, fall back an image, etc. — without Event_Schema knowing
+        // anything about speakers or Yoast. Applied here, inside the shared
+        // assembler, so every node (single, group child, multisession
+        // parent, group parent, and every child pulled in via for_event())
+        // passes through it as it is built, not just the outermost return of
+        // for_event().
+        $node = (array) \apply_filters( 'anchor_events_schema_node', $node, $event_id );
 
         return $node;
     }
@@ -427,26 +522,40 @@ class Event_Schema {
     }
 
     /**
-     * eventStatus: EventCancelled when the event/occurrence status is
-     * 'cancelled' (this already covers a soft-closed group-offering child —
-     * Occurrences::soft_close() sets status_mode=manual + status=cancelled),
-     * EventScheduled otherwise.
+     * eventStatus: maps the vocabulary Module::get_event_status() returns
+     * (the one accessor every other renderer uses — RENDER-D11, see below) to
+     * its schema.org URL. 'cancelled' already covers a soft-closed
+     * group-offering child (Occurrences::soft_close() sets status_mode=manual
+     * + status=cancelled). 'postponed'/'moved_online' are RENDER-D9: before
+     * this fix the vocabulary had no member for either state, so a course
+     * pushed to a later date or moved from in-person to virtual republished
+     * as a plain EventScheduled with a silently changed startDate — exactly
+     * the case Google's Event guidance says must use EventPostponed /
+     * EventMovedOnline (+ previousStartDate, assembled alongside this in
+     * assemble_node()). Anything else is EventScheduled.
      *
-     * RENDER-D11: the status comes from Module::get_event_status(), the one
-     * accessor every other renderer uses, not from the raw `$meta['status']`
-     * row. The row is only refreshed on save, on transition_post_status and by
-     * the daily sweep, so reading it directly made the JSON-LD and the visible
-     * "Status: …" on the same page derive one fact from two sources — and a
-     * stale 'cancelled' row on an AUTO-mode event (auto never computes
-     * 'cancelled') published EventCancelled for an event nobody had cancelled.
+     * RENDER-D11: the status comes from Module::get_event_status(), not a raw
+     * `$meta['status']` read — that row is only refreshed on save, on
+     * transition_post_status and by the daily sweep, so reading it directly
+     * made the JSON-LD and the visible "Status: …" on the same page derive one
+     * fact from two sources — and a stale 'cancelled' row on an AUTO-mode
+     * event (auto never computes 'cancelled') published EventCancelled for an
+     * event nobody had cancelled.
      *
-     * @param int   $event_id
-     * @param array $meta     get_meta( $event_id ).
+     * @param string $status Already-resolved Module::get_event_status() value.
      * @return string
      */
-    private function event_status( $event_id, array $meta ) {
-        $status = (string) $this->module->get_event_status( $event_id, $meta );
-        return $status === 'cancelled' ? 'https://schema.org/EventCancelled' : 'https://schema.org/EventScheduled';
+    private function event_status_url( $status ) {
+        switch ( (string) $status ) {
+            case 'cancelled':
+                return 'https://schema.org/EventCancelled';
+            case 'postponed':
+                return 'https://schema.org/EventPostponed';
+            case 'moved_online':
+                return 'https://schema.org/EventMovedOnline';
+            default:
+                return 'https://schema.org/EventScheduled';
+        }
     }
 
     /**

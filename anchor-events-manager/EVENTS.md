@@ -360,11 +360,35 @@ coerced, and emitting it would produce *invalid* structured data. A valid
 - A **group parent** (or an `offering`/`recurring` type pre-reconcile) renders one
   node whose `subEvent` array is `for_event()` of every LIVE child — so a scraper
   reading only the parent's page still sees every upcoming date. The parent's own
-  `startDate`/`endDate` are taken from the earliest live child. Zero live children →
-  `[]` (nothing advertised).
+  `startDate` is taken from the earliest live child, and `endDate` from the LATEST
+  end among only the children that actually produced a `subEvent` node — a live
+  child with no usable start date is skipped for both (RENDER-D6). Zero live
+  children → `[]` (nothing advertised).
 - A **`multisession`** event renders one node spanning its earliest session start to
   its latest session end, with one minimal `Event` stub per session in `subEvent`.
-- Anything else (**`single`**) renders one plain node.
+- Anything else (**`single`**) renders one plain node. A **group child** additionally
+  carries `superEvent` (`{@type, name, url}` of its live parent).
+
+**Status** (`eventStatus`) comes from `Module::get_event_status()` and maps
+`cancelled` → `EventCancelled`, `postponed` → `EventPostponed`, `moved_online` →
+`EventMovedOnline`, anything else → `EventScheduled`. `postponed`/`moved_online`
+are manual-only status choices (`get_status_options()`), same as `cancelled` —
+nothing computes them. Either one adds `previousStartDate` to the node when
+`_anchor_event_previous_start` is set; that meta is written once, by the shared
+save path (`Module::persist_event_authoring()` → `maybe_persist_previous_start()`),
+the moment an event's status transitions INTO postponed/moved_online, or its start
+date changes again while already in one of those states.
+
+**Capacity**: when `capacity` (the "Maximum capacity" field) is > 0, the node
+carries `maximumAttendeeCapacity` (that value) and `remainingAttendeeCapacity`
+(`Registrations::remaining_capacity()` — the same capacity authority
+`choose_date_availability_hint()` reads). Capacity 0 means unlimited and neither
+key is published, same convention as `availability`.
+
+**isAccessibleForFree**: `true` whenever registration_mode is `free` AND a live
+free Offer was actually emitted (i.e. `offers` is non-empty) — omitted, like
+`offers` itself, for a finished/closed/registration-off-with-nothing-to-sell
+event.
 
 **Offers**, keyed off `registration_mode( $event_id )`:
 - `wc`: one `Offer` per active ticket tier, priced from the tier.
@@ -411,3 +435,4 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 | `anchor_events_registration_email_html` | `$html, $ctx` | Final filter on any built registration/lifecycle email HTML. |
 | `anchor_events_default_email_template` | `$html, $type` | The shipped default body for one email type (`confirmation` \| `reminder` \| `cancellation` \| `roster`) — the fallback behind "Reset to default". Override one type without touching the other three. |
 | `anchor_events_capability` | `$cap, $wc_active` | The single capability every roster / export / resend / console surface resolves. Default: `manage_woocommerce` on a WooCommerce site, else `edit_others_posts`. A non-string or empty return is ignored. |
+| `anchor_events_schema_node` | `$node, $event_id` | RENDER-D10. Fires at the end of `Event_Schema::assemble_node()`, so it runs on EVERY node it builds — single events, group children, and both the multisession/group-parent header nodes — before `subEvent` is attached to a parent. Return the (possibly decorated) node array. Used by the DEKA theme (`deka-structured-data.php`) to add `performer` from linked speakers, tie `organizer` to a site `@id`, and fall back an `image`; that snippet also recurses over `$node['subEvent']` itself, which is what still reaches a multisession event's per-session stubs (those are built as raw arrays, not through `assemble_node()`, so this filter never sees them directly). |

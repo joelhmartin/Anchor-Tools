@@ -7116,7 +7116,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // that also renders its own registration UI for this event (or a
         // second copy of the shortcode anywhere on the page) must not get a
         // duplicate picker/form; the first render wins.
+        //
+        // finding-3 (bot review, PR #20) — this early return used to leave
+        // $registration_shortcode_rendered_for untouched. render_single_event_
+        // body() resets that marker to null immediately before running
+        // the_content — so when the shortcode had already rendered earlier in
+        // the request (a widget, a header block), THIS run saw the guard
+        // above and bailed, but the marker stayed null and
+        // content_already_rendered_registration() then told the single-event
+        // template nothing had rendered, so it called render_registration_form()
+        // anyway: exactly the duplicate this guard exists to prevent. The
+        // marker must be set on the early-return path too, same as the real
+        // render below — first render wins, and the template has to see it.
         if ( \in_array( $event_id, $this->registration_shortcode_rendered_ids, true ) ) {
+            $this->registration_shortcode_rendered_for = $event_id;
             return '';
         }
         $this->registration_shortcode_rendered_ids[] = $event_id;

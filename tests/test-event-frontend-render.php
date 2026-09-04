@@ -397,6 +397,45 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		$this->assertSame( '', $second, 'A second render of the same event this request must be suppressed.' );
 	}
 
+	/**
+	 * finding-3 (bot review, PR #20): the early "already rendered this
+	 * request" return in shortcode_event_registration() used to leave
+	 * $registration_shortcode_rendered_for untouched. render_single_event_
+	 * body() resets that marker to null immediately before running
+	 * the_content — so when a widget/header block had already rendered the
+	 * shortcode for this event earlier in the request, the SAME shortcode
+	 * stored in post_content hit the early-return guard again during
+	 * render_single_event_body(), left the marker null, and
+	 * content_already_rendered_registration() then told the single-event
+	 * template nothing had rendered — so it called render_registration_form()
+	 * again, producing a second form. The marker must be set on the
+	 * early-return path too.
+	 */
+	public function test_render_single_event_body_after_an_earlier_render_still_reports_one_render() {
+		$event_id = $this->make_event();
+		wp_update_post( [
+			'ID'           => $event_id,
+			'post_content' => 'Intro text. [event_registration id="' . $event_id . '"]',
+		] );
+
+		// A widget/header block rendering the shortcode BEFORE the
+		// single-event template body runs — the first render, which wins.
+		$widget_html = do_shortcode( '[event_registration id="' . $event_id . '"]' );
+		$this->assertStringContainsString( '<form class="anchor-event-registration"', $widget_html );
+
+		$html = $this->module()->render_single_event_body( $event_id );
+
+		$this->assertTrue(
+			$this->module()->content_already_rendered_registration( $event_id ),
+			'The marker must say "already rendered" even though THIS call hit the render-once early return, not the real render.'
+		);
+		$this->assertSame(
+			0,
+			substr_count( $html, '<form class="anchor-event-registration"' ),
+			'render_single_event_body() renders no second copy for an event the shortcode already rendered earlier in the request.'
+		);
+	}
+
 	/** A DIFFERENT event's shortcode still renders normally — the guard is per event, not global. */
 	public function test_shortcode_event_registration_render_once_guard_is_per_event() {
 		$event_a = $this->make_event();

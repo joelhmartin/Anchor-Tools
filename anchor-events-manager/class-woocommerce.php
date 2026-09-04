@@ -2537,7 +2537,14 @@ class WooCommerce {
                     } );
 
                     while ( $deficit > 0 ) {
-                        $has_room = ( $unlimited || $remaining >= 1 );
+                        $event_has_room = ( $unlimited || $remaining >= 1 );
+                        // P4 — the tier ceiling was asked of the CREATE branch
+                        // below and not of the revive, so a revive into a
+                        // sold-out tier on an event with room passed as though
+                        // nothing were wrong and the running tier tally stopped
+                        // matching the seats it was counting.
+                        $tier_has_room = ( $tier_unlimited || $tier_left >= 1 );
+                        $has_room      = $event_has_room && $tier_has_room;
                         if ( ! empty( $revivable ) ) {
                             $seat = \array_shift( $revivable );
                             // Revival can only go to confirmed/pending because
@@ -2547,28 +2554,38 @@ class WooCommerce {
                             // not because the transition table forbids anything.
                             // cancelled|failed → waitlist IS a legal transition;
                             // a roster revive on a full waitlisted event uses it.
-                            // Flag overfill if there is no room.
+                            //
+                            // The seat comes back either way — the order is
+                            // paid and the seat is owed, which is why a revive
+                            // has never been refused for want of room. What a
+                            // shortage changes is that it is RECORDED: overfill
+                            // raises the capacity_overfill review flag, for the
+                            // tier ceiling now as well as the event's.
                             if ( $this->registrations->update_status( $seat['id'], $active_target, 'order #' . $order_id . ' revived', 'woocommerce' )->is_sent() ) {
                                 $revived[] = $seat['id'];
-                                if ( $has_room ) {
+                                if ( $event_has_room ) {
                                     $remaining--;
-                                    // A revived seat re-consumes its tier's quota
-                                    // (it already carries its tier from creation —
-                                    // leave the tag as-is); keep the running tier
-                                    // tally accurate for any new creates this pass.
-                                    if ( ! $tier_unlimited && $tier_left > 0 ) {
-                                        $tier_left--;
-                                    }
-                                } else {
+                                }
+                                // A revived seat re-consumes its tier's quota
+                                // (it already carries its tier from creation —
+                                // leave the tag as-is), so the running tally
+                                // drops whether or not there was room to give:
+                                // it is what the seats now say, and the creates
+                                // later in this pass read it.
+                                if ( ! $tier_unlimited ) {
+                                    $tier_left = \max( 0, $tier_left - 1 );
+                                }
+                                if ( ! $has_room ) {
                                     $overfill = true;
                                 }
                             }
                         } else {
                             // CREATE a new seat at the next free index (max+1).
-                            // P4 — decide against BOTH the event total and the tier
-                            // quota (single authority, both recounted fresh above).
-                            $event_has_room = ( $unlimited || $remaining >= 1 );
-                            $tier_has_room  = ( $tier_unlimited || $tier_left >= 1 );
+                            // P4 — decide against BOTH the event total and the
+                            // tier quota (single authority, both recounted
+                            // fresh above and both answered at the top of this
+                            // iteration, so the revive and the create cannot
+                            // read the ceilings differently).
                             if ( $event_has_room && $tier_has_room ) {
                                 // Both levels have room → confirmed/active; decrement both.
                                 $status = $active_target;

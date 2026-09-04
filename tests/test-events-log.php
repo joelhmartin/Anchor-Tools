@@ -328,6 +328,57 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * A revive asked the EVENT total for room and never the tier quota, so a
+	 * paid seat coming back into a sold-out tier looked like an ordinary
+	 * revive: nothing flagged it, and the running tier tally the rest of the
+	 * pass reads stopped matching the seats. The seat still comes back — the
+	 * order is paid and the seat is owed — it is now RECORDED.
+	 */
+	public function test_a_revive_into_a_sold_out_tier_flags_the_overfill() {
+		$this->require_wc();
+		$event_id = $this->make_event(
+			[ 'title' => 'Tiered Event', 'capacity' => 50, 'waitlist' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1, 'quota' => 2 ] ]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		$tier_id      = (string) $this->ticket_types()->get( $event_id )[0]['id'];
+		$variation_id = (int) $this->product_sync()->variation_for_tier( $event_id, $tier_id );
+
+		$res = $this->make_order( $variation_id, 1 );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+
+		// The buyer cancels — the seat gives its tier slot back.
+		$order = wc_get_order( $res['order_id'] );
+		$order->set_status( 'cancelled' );
+		$order->save();
+
+		// The organizer sells that tier out from the roster in the meantime.
+		// The EVENT still has 48 seats spare; only the tier is exhausted.
+		for ( $i = 0; $i < 2; $i++ ) {
+			$this->make_seat(
+				$event_id,
+				[ 'email' => 'roster' . $i . '@example.test', 'ticket_type_id' => $tier_id ]
+			);
+		}
+
+		// The cancellation is reversed: the seat is owed, so it comes back.
+		$order = wc_get_order( $res['order_id'] );
+		$order->set_status( 'processing' );
+		$order->save();
+
+		$this->assertSame(
+			3,
+			$this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ),
+			'The paid seat was not revived — a tier shortage must not cost the buyer their seat.'
+		);
+		$this->assertContains(
+			'capacity_overfill',
+			$this->review_reasons( $res['order_id'] ),
+			'A revive that broke the tier quota was recorded nowhere.'
+		);
+	}
+
 	/** …and the scenario the audit actually describes still clears. */
 	public function test_capacity_overfill_clears_once_capacity_is_raised() {
 		$this->require_wc();

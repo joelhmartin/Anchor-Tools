@@ -462,6 +462,38 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		$this->assertSame( 'illegal_transition', $illegal->reason() );
 	}
 
+	/**
+	 * finding-8 — anchor_events_seat_status_changed must fire on a real
+	 * transition and NEVER on a same-status call, note or no note. The
+	 * roster's Cancel action passes a note on every click, so a click on an
+	 * already-cancelled row reaches update_status() with $from === $to.
+	 */
+	public function test_seat_status_changed_action_fires_only_on_a_real_transition() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
+		$reg      = $this->registrations();
+
+		$fired = [];
+		$spy   = function ( $sid, $from, $to, $actor ) use ( &$fired ) {
+			$fired[] = [ $sid, $from, $to, $actor ];
+		};
+		add_action( 'anchor_events_seat_status_changed', $spy, 10, 4 );
+
+		try {
+			$reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED );
+			$this->assertSame( [], $fired, 'A same-status no-note call must never fire the action.' );
+
+			$reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'roster cancel' );
+			$this->assertSame( [], $fired, 'A same-status note-only call must never fire the action either.' );
+
+			$reg->update_status( $seat_id, Registrations::STATUS_CANCELLED );
+			$this->assertCount( 1, $fired, 'A real transition must fire the action exactly once.' );
+			$this->assertSame( [ $seat_id, Registrations::STATUS_CONFIRMED, Registrations::STATUS_CANCELLED, 'system' ], $fired[0] );
+		} finally {
+			remove_action( 'anchor_events_seat_status_changed', $spy, 10 );
+		}
+	}
+
 	/* ---------------------------------------------------------------------
 	 * The tri-state composes with the Wave 3 retry queue (Task 25)
 	 * ------------------------------------------------------------------- */

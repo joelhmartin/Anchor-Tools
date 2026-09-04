@@ -347,6 +347,13 @@ class Registrations {
      * not a seat, an unknown status, or a transition the table forbids. Never
      * fatal.
      *
+     * finding-8: the `anchor_events_seat_status_changed` action fires ONLY on
+     * an actual transition ($from !== $to) — a same-status note-only call
+     * (the roster's Cancel action clicked again on an already-cancelled row,
+     * say) never fires it, so a listener cannot be told a change happened
+     * when the tri-state above already says `skipped`.
+     *
+
      * @param int    $seat_id Seat post ID.
      * @param string $to      Target status.
      * @param string $note    History note.
@@ -422,7 +429,15 @@ class Registrations {
 
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
-        \do_action( 'anchor_events_seat_status_changed', $seat_id, $from, $to, (string) $actor );
+        // finding-8 — a same-status call with a note (the roster's Cancel
+        // button clicked again on an already-cancelled row, say) reaches this
+        // far to record the note, but $changed is false: nothing about the
+        // seat actually moved. Firing the action anyway told every listener
+        // (reminders, roster digests, third-party integrations) a transition
+        // happened when it did not.
+        if ( $changed ) {
+            \do_action( 'anchor_events_seat_status_changed', $seat_id, $from, $to, (string) $actor );
+        }
 
         // The roster's Cancel action passes a note, so a click on an
         // already-cancelled row reaches this far: the note is recorded, the

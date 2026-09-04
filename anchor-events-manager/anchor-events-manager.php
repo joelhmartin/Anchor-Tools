@@ -1749,18 +1749,21 @@ class Module {
     }
 
     private function get_meta_defaults() {
-        $timezone = \get_option( 'timezone_string' );
-        if ( ! $timezone ) {
-            $offset = \get_option( 'gmt_offset' );
-            $timezone = $offset ? 'UTC' . ( $offset >= 0 ? '+' : '' ) . $offset : 'UTC';
-        }
-
         return [
             'start_date' => '',
             'end_date' => '',
             'start_time' => '',
             'end_time' => '',
-            'timezone' => $timezone,
+            // '' means "the site's zone", which is what an event with no
+            // timezone of its own has always meant. This used to mint the
+            // literal "UTC-6" from gmt_offset — a string DateTimeZone rejects
+            // outright, kept alive only by normalize_timezone()'s special case
+            // — and Occurrences::sync_shared_meta() then wrote that
+            // read-time invention down as a real row on every occurrence child
+            // (audit MODEL-D37). normalize_timezone( '' ) resolves to
+            // wp_timezone_string(), so the offset still applies; it is just no
+            // longer stored as data.
+            'timezone' => '',
             'all_day' => false,
             'venue' => '',
             'address_street' => '',
@@ -2344,11 +2347,40 @@ class Module {
         <?php endif;
     }
 
+    /**
+     * <option> markup for an event's Timezone field: wp_timezone_choice()
+     * prefixed with an explicit "site default" row.
+     *
+     * The empty option is not cosmetic. An event's timezone default is ''
+     * (meaning "the site's zone" — see get_meta_defaults()), and
+     * wp_timezone_choice( '' ) selects nothing, which a browser renders as
+     * the FIRST zone in the list. Saving that form would then silently store
+     * Africa/Abidjan on an event nobody set a zone for. The empty option
+     * gives '' somewhere to be selected, and makes the meaning visible.
+     *
+     * Shared by the classic metabox and the front-end manager form so the two
+     * offer the same choices.
+     *
+     * @param string $selected Current event timezone ('' = site default).
+     * @return string
+     */
+    private function timezone_field_options( $selected ) {
+        $selected = (string) $selected;
+        $label    = \sprintf(
+            /* translators: %s: the site's timezone, e.g. America/Chicago or UTC-6. */
+            __( 'Site default (%s)', 'anchor-schema' ),
+            \wp_timezone_string()
+        );
+
+        return '<option value=""' . \selected( $selected, '', false ) . '>' . \esc_html( $label ) . '</option>'
+            . \wp_timezone_choice( $selected );
+    }
+
     public function render_meta_box( $post ) {
         \wp_nonce_field( self::NONCE, self::NONCE );
         $meta = $this->get_meta( $post->ID );
         $settings = $this->get_settings();
-        $timezone_options = \wp_timezone_choice( $meta['timezone'] );
+        $timezone_options = $this->timezone_field_options( $meta['timezone'] );
         $event_type = $this->event_type( $post->ID );
         $registration_mode = $this->registration_mode( $post->ID );
         $wc_active = \class_exists( 'WooCommerce' );
@@ -5478,7 +5510,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $gallery_ids = array_values( array_filter( $gallery_ids ) );
 
         $base_url = \remove_query_arg( [ 'event_action', 'event_id', 'event_manager_notice' ] );
-        $timezone_options = \wp_timezone_choice( $meta['timezone'] );
+        $timezone_options = $this->timezone_field_options( $meta['timezone'] );
 
         // Event-type / registration-mode authoring (Task 1.3 metabox parity,
         // Task 1.5). These resolvers apply the same enum-fallback validation as

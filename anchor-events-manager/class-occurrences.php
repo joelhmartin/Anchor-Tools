@@ -27,18 +27,21 @@
  *     (`_anchor_event_managed_product`) — both are per-post already and are
  *     never copied from the parent.
  *   - SHARED meta (copied at child creation AND re-synced on every reconcile
- *     of a still-live child, so editing the parent propagates): everything
- *     else in the event meta schema except the per-occurrence keys above and
- *     the NEVER_COPY_KEYS below (product/engine-owned mirrors + fields that
- *     don't make sense to copy). This covers title-ish/content, location
- *     fields, ticket_types, registration_mode, external_*, the capacity
- *     *default*, timezone, and the remaining registration-policy fields
- *     (registration_enabled, waitlist, registration_open/close,
- *     registration_type, registration_url, price, hide_from_archive,
- *     featured, priority, organizer_email, reminder_offsets, gallery,
- *     all_day). A child's `type` meta is force-set to 'single' (never
- *     inherits 'offering'/'recurring') because each occurrence is itself a
- *     plain single event.
+ *     of a still-live child, so editing the parent propagates): an EXPLICIT
+ *     allow-list — INHERITED_KEYS (the shared schema facts: location fields,
+ *     timezone, all_day, registration policy, price, gallery, labels,
+ *     external_*, organizer_email, reminder_offsets) plus the event meta that
+ *     lives outside the schema and so was invisible to the old
+ *     "schema minus exclusions" definition: the registration questions and
+ *     every per-event email override. inherited_meta_keys() assembles the
+ *     full list and `anchor_events_inherited_meta_keys` filters it.
+ *     Only keys the parent has a REAL row for are copied — never a default
+ *     get_meta() synthesized at read time — and a key the parent no longer
+ *     has is deleted from the child, so clearing a value propagates too
+ *     (audit MODEL-D7 / MODEL-D37). Ticket tiers and the product are synced
+ *     separately (sync_ticket_types()/sync_product()). A child's `type` meta
+ *     is force-set to 'single' (never inherits 'offering'/'recurring')
+ *     because each occurrence is itself a plain single event.
  *
  * Soft-close representation: a removed-but-seated occurrence is NEVER
  * deleted. It is marked with the existing status vocabulary
@@ -120,6 +123,86 @@ class Occurrences {
         'recurrence',
         'occurrence_key',
         'occurrence_closed',
+    ];
+
+    /**
+     * The SHARED event facts an occurrence child inherits from its parent —
+     * schema keys, WITHOUT the `_anchor_event_` prefix (audit MODEL-D7).
+     *
+     * This is an explicit allow-list, not "the schema minus the two exclusion
+     * lists above". The subtraction definition had two failure modes:
+     *
+     *   - Every event meta key OUTSIDE get_meta_defaults() was invisible to
+     *     it, so the registration questions and the whole per-event email
+     *     override set never reached a child (they are enumerated in
+     *     inherited_meta_keys() below, which is what the copy actually
+     *     iterates).
+     *   - A new schema key silently became inherited the moment it was added,
+     *     with nobody deciding that it should be.
+     *
+     * The membership here is exactly what the old subtraction produced, so
+     * behaviour for schema keys is unchanged: everything in
+     * get_meta_defaults() that is in neither PER_OCCURRENCE_KEYS nor
+     * NEVER_COPY_KEYS. Adding a schema key now means deciding, here, whether
+     * an occurrence shares it with its siblings.
+     */
+    const INHERITED_KEYS = [
+        'timezone',
+        'all_day',
+        'venue',
+        'address_street',
+        'address_city',
+        'address_state',
+        'address_zip',
+        'address_country',
+        'virtual',
+        'virtual_url',
+        'registration_open',
+        'registration_close',
+        'waitlist',
+        'registration_type',
+        'registration_url',
+        'price',
+        'hide_from_archive',
+        'featured',
+        'priority',
+        'gallery',
+        'organizer_email',
+        'reminder_offsets',
+        'labels',
+        'registration_mode',
+        'external_url',
+        'external_embed',
+        'external_display_price',
+    ];
+
+    /**
+     * The `_anchor_event_` suffixes of the per-event email overrides, one set
+     * per EMAIL_TEMPLATE_TYPES entry. Assembled in inherited_meta_keys() from
+     * the module's own type list rather than written out, so a fifth email
+     * type inherits the day it is added.
+     *
+     * Sender identity (From / Reply-To / Cc / Bcc) is per event, not per
+     * type, so it is listed separately.
+     */
+    const EMAIL_OVERRIDE_PER_TYPE = [
+        'tpl',
+        'off',
+        'subject',
+        'preheader',
+        'intro',
+        'cta_label',
+        'cta_url',
+        'cta2_label',
+        'cta2_url',
+    ];
+    const EMAIL_SENDER_KEYS = [
+        'email_from_name',
+        'email_from_address',
+        'email_reply_to_name',
+        'email_reply_to_address',
+        'email_cc',
+        'email_bcc',
     ];
 
     /**
@@ -778,7 +861,7 @@ class Occurrences {
 
         // Shared fields (title[+suffix] handled above already; everything
         // else copied here), ticket tiers, and product sync.
-        $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
+        $this->sync_shared_meta( $parent_id, $child_id );
         $this->sync_ticket_types( $parent_id, $child_id, $row );
         $this->sync_product( $child_id, $parent_meta );
 
@@ -833,7 +916,7 @@ class Occurrences {
             $this->soft_close( $child_id );
         }
 
-        $this->sync_shared_meta( $parent_id, $child_id, $parent_meta );
+        $this->sync_shared_meta( $parent_id, $child_id );
         $this->sync_ticket_types( $parent_id, $child_id, $row );
         $this->sync_product( $child_id, $parent_meta );
     }
@@ -939,21 +1022,90 @@ class Occurrences {
     }
 
     /**
-     * Copy every SHARED meta key (parent meta minus PER_OCCURRENCE_KEYS minus
-     * NEVER_COPY_KEYS) from parent to child.
+     * The full meta keys (WITH the `_anchor_event_` prefix) an occurrence
+     * child inherits from its parent: the shared schema facts
+     * (INHERITED_KEYS) plus the event meta that lives outside
+     * get_meta_defaults() and therefore never used to be copied at all —
+     * the registration questions and every per-event email override.
      *
-     * @param int        $parent_id
-     * @param int        $child_id
-     * @param array|null $parent_meta Pre-fetched parent meta (avoids a re-read).
+     * The email keys are enumerated from Module::EMAIL_TEMPLATE_TYPES rather
+     * than written out, so the list cannot drift from the save handlers.
+     *
+     * @param int $parent_id
+     * @param int $child_id
+     * @return string[] Unique, prefixed meta keys.
      */
-    private function sync_shared_meta( $parent_id, $child_id, ?array $parent_meta = null ) {
-        $parent_meta = $parent_meta ?? $this->module->get_meta( $parent_id );
+    private function inherited_meta_keys( $parent_id, $child_id ) {
+        $keys = [];
+        foreach ( self::INHERITED_KEYS as $key ) {
+            $keys[] = $this->module->meta_key( $key );
+        }
 
-        $excluded = \array_flip( \array_merge( self::PER_OCCURRENCE_KEYS, self::NEVER_COPY_KEYS ) );
-        $shared   = \array_diff_key( $parent_meta, $excluded );
+        // Registration questions: a child asks the same questions as its
+        // parent, or a booking on one date collects nothing.
+        $keys[] = Module::QUESTIONS_META;
 
-        foreach ( $shared as $key => $value ) {
-            \update_post_meta( $child_id, $this->module->meta_key( $key ), $value );
+        // Per-event email overrides. Without these a child sent the site-wide
+        // confirmation while the parent's own wording sat one post away.
+        foreach ( Module::EMAIL_TEMPLATE_TYPES as $type ) {
+            foreach ( self::EMAIL_OVERRIDE_PER_TYPE as $suffix ) {
+                $keys[] = $this->module->meta_key( 'email_' . $suffix . '_' . $type );
+            }
+        }
+        foreach ( self::EMAIL_SENDER_KEYS as $key ) {
+            $keys[] = $this->module->meta_key( $key );
+        }
+
+        /**
+         * Filter the meta keys an occurrence child inherits from its group
+         * parent. Keys are full meta keys (including the `_anchor_event_`
+         * prefix). A key the parent has no row for is not written — and a
+         * child's stale row for it is removed — so adding a key here is safe
+         * for a parent that never used it.
+         *
+         * @param string[] $keys      Prefixed meta keys.
+         * @param int      $parent_id Group parent post id.
+         * @param int      $child_id  Occurrence child post id.
+         */
+        $keys = (array) \apply_filters( 'anchor_events_inherited_meta_keys', $keys, (int) $parent_id, (int) $child_id );
+
+        return \array_values( \array_unique( \array_filter( \array_map( 'strval', $keys ) ) ) );
+    }
+
+    /**
+     * Copy the inherited meta (see inherited_meta_keys()) from parent to
+     * child.
+     *
+     * Reads the parent's RAW rows, not get_meta(): get_meta() fills every
+     * missing key with the schema default, and this method then wrote that
+     * default down as a real row on the child. That is how the seven
+     * production children became the only posts on the site carrying
+     * `_anchor_event_registration_type = internal`, and how eight events
+     * acquired a `_anchor_event_timezone = "UTC-6"` string nobody authored
+     * (audit MODEL-D7 / MODEL-D37). On a child, "never authored" and "equal
+     * to the shipped default" then became indistinguishable, and a later
+     * change to a default could never reach them.
+     *
+     * A key the parent has no row for is not merely skipped: an existing
+     * child row for it is DELETED. Inheritance has to be symmetric or
+     * clearing a venue on the parent would leave the old venue showing on
+     * every occurrence for ever, with no way to remove it from the parent
+     * screen. The child then falls back to the same default its parent reads,
+     * which is what "inherited" means.
+     *
+     * @param int $parent_id
+     * @param int $child_id
+     */
+    private function sync_shared_meta( $parent_id, $child_id ) {
+        foreach ( $this->inherited_meta_keys( $parent_id, $child_id ) as $key ) {
+            if ( \metadata_exists( 'post', (int) $parent_id, $key ) ) {
+                // wp_slash() because update_post_meta() unslashes what it is
+                // given: handing it a raw DB value would eat a backslash out
+                // of every venue name and every email subject on every sync.
+                \update_post_meta( $child_id, $key, \wp_slash( \get_post_meta( (int) $parent_id, $key, true ) ) );
+            } elseif ( \metadata_exists( 'post', (int) $child_id, $key ) ) {
+                \delete_post_meta( $child_id, $key );
+            }
         }
     }
 

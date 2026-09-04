@@ -197,6 +197,31 @@ class Test_Registration_Questions extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * REG-D35 — the free path reads the question set, never the POST's own key
+	 * list. An unasked key used to be sanitize_key()'d and stored, which put an
+	 * attacker-chosen column header into the CSV an organizer opens; a
+	 * non-scalar value used to reach sanitize_text_field() and raise a notice.
+	 */
+	public function test_free_path_discards_answers_to_questions_the_event_never_asked() {
+		$event_id = $this->event_with_questions();
+
+		$this->submit_registration(
+			$event_id,
+			[
+				'practice_name'    => 'Anchor Dental',
+				'whatever_i_like'  => 'attacker column',
+				'nested'           => [ 'an', 'array' ],
+			]
+		);
+
+		$stored = get_post_meta( (int) $this->only_seat( $event_id )['id'], '_anchor_event_reg_fields', true );
+
+		$this->assertArrayNotHasKey( 'whatever_i_like', $stored );
+		$this->assertArrayNotHasKey( 'nested', $stored );
+		$this->assertSame( 'Anchor Dental', $stored['practice_name'] );
+	}
+
 	public function test_free_path_rejects_a_select_answer_that_is_not_an_option() {
 		$event_id = $this->event_with_questions();
 

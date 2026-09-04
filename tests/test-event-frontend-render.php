@@ -12,6 +12,15 @@
  * @package Anchor\Events\Tests
  */
 
+// RENDER-D21: a minimal stand-in for Yoast's own frontend class, so the
+// canonical-emission tests below can flip class_exists( 'WPSEO_Frontend' )
+// to true without needing the real plugin installed. Nothing else in this
+// suite checks for WPSEO_Frontend, so declaring it here is inert everywhere
+// but the tests that specifically look for it.
+if ( ! class_exists( 'WPSEO_Frontend' ) ) {
+	class WPSEO_Frontend {}
+}
+
 /**
  * @group event-frontend-render
  */
@@ -190,5 +199,54 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		$html = $this->module()->render_registration_form( $event_id );
 
 		$this->assertStringNotContainsString( 'anchor-event-registration-external', $html );
+	}
+
+	/**
+	 * RENDER-D21: output_canonical_url() must stay silent when an SEO plugin
+	 * that already emits its own canonical tag is active — Yoast here, via
+	 * class_exists( 'WPSEO_Frontend' ). Before the fix this echoed
+	 * unconditionally, so a Yoast site got two <link rel="canonical"> tags on
+	 * a `?anchor_events_month=` URL.
+	 */
+	public function test_output_canonical_url_is_silent_when_yoast_is_active() {
+		$_GET['anchor_events_month'] = '2026-10';
+
+		ob_start();
+		$this->module()->output_canonical_url();
+		$html = ob_get_clean();
+
+		unset( $_GET['anchor_events_month'] );
+
+		$this->assertSame( '', $html, 'output_canonical_url() must not print a tag when Yoast (WPSEO_Frontend) is active.' );
+	}
+
+	/** The `anchor_events_emit_canonical` filter can force our own tag back on even with an SEO plugin detected. */
+	public function test_output_canonical_url_filter_can_force_emission() {
+		$_GET['anchor_events_month'] = '2026-10';
+		add_filter( 'anchor_events_emit_canonical', '__return_true' );
+
+		ob_start();
+		$this->module()->output_canonical_url();
+		$html = ob_get_clean();
+
+		remove_filter( 'anchor_events_emit_canonical', '__return_true' );
+		unset( $_GET['anchor_events_month'] );
+
+		$this->assertStringContainsString( '<link rel="canonical"', $html );
+	}
+
+	/** The `anchor_events_emit_canonical` filter can also force our tag off even with no SEO plugin detected. */
+	public function test_output_canonical_url_filter_can_force_suppression() {
+		$_GET['anchor_events_month'] = '2026-10';
+		add_filter( 'anchor_events_emit_canonical', '__return_false' );
+
+		ob_start();
+		$this->module()->output_canonical_url();
+		$html = ob_get_clean();
+
+		remove_filter( 'anchor_events_emit_canonical', '__return_false' );
+		unset( $_GET['anchor_events_month'] );
+
+		$this->assertSame( '', $html );
 	}
 }

@@ -1975,10 +1975,46 @@ class Module {
     }
 
     /**
+     * Whether an SEO plugin is expected to own the canonical tag for this
+     * request, so output_canonical_url() (a fallback, per its own docblock)
+     * should stay silent.
+     *
+     * RENDER-D21: the docblock always claimed this was a fallback, but
+     * nothing enforced it — output_canonical_url() echoed unconditionally,
+     * so a Yoast site (Yoast filters the SAME URL via filter_yoast_canonical()
+     * on `wpseo_canonical`) got two `<link rel="canonical">` tags on any
+     * `?anchor_events_month=` URL.
+     *
+     * @return bool True when this module should print its own canonical tag.
+     */
+    private function should_emit_canonical() {
+        $seo_plugin_active = \class_exists( 'WPSEO_Frontend' )
+            || \defined( 'RANK_MATH_VERSION' )
+            || \defined( 'AIOSEO_VERSION' )
+            || \defined( 'SEOPRESS_VERSION' );
+
+        /**
+         * Filter whether this module should print its own fallback
+         * <link rel="canonical"> tag for a calendar-month URL. Defaults to
+         * false when Yoast, Rank Math, All in One SEO or SEOPress is
+         * detected active (each already emits/filters its own canonical),
+         * true otherwise.
+         *
+         * @param bool $emit              Whether to emit our own canonical tag.
+         * @param bool $seo_plugin_active Whether a known SEO plugin was detected active.
+         */
+        return (bool) \apply_filters( 'anchor_events_emit_canonical', ! $seo_plugin_active, $seo_plugin_active );
+    }
+
+    /**
      * Output canonical URL in wp_head for pages with calendar month parameter.
      * This serves as a fallback if no SEO plugin outputs a canonical tag.
      */
     public function output_canonical_url() {
+        if ( ! $this->should_emit_canonical() ) {
+            return;
+        }
+
         $canonical = $this->get_canonical_url();
         if ( ! $canonical ) {
             return;

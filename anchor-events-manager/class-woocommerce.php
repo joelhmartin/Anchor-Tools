@@ -2403,6 +2403,12 @@ class WooCommerce {
             $released_capacity = 0;
             // L12 — duplicate-seat prevention parity with the old data-layer contract.
             $dup_prevented = false;
+            // WOO-D33 — whether this pass actually tried to produce a seat. That,
+            // not "could it have", is what re-checks the seat-level conditions:
+            // a revive over capacity CREATES the seat, so the next pass is
+            // converged and would otherwise clear capacity_overfill while the
+            // event is still overbooked — and nothing else records that.
+            $create_attempted = false;
 
             // L1 — map newly-CREATED seats to attendee payloads by a per-line
             // creation-sequence position (0,1,2…) over the present attendee entries
@@ -2504,6 +2510,7 @@ class WooCommerce {
                 // plus one new seat doesn't re-use attendee payload #1.
                 $existing_active = \count( $active );
                 if ( $deficit > 0 && $active_target !== null && $can_create ) {
+                    $create_attempted = true;
                     $revivable = \array_values( \array_filter( $matching, function ( $s ) {
                         return \in_array( $s['status'], [ Registrations::STATUS_CANCELLED, Registrations::STATUS_FAILED ], true );
                     } ) );
@@ -2654,14 +2661,15 @@ class WooCommerce {
                 'released_capacity' => $released_capacity,
                 'dup_prevented'     => $dup_prevented,
                 'lock_unavailable'  => ! $locked,
+                'create_attempted'  => $create_attempted,
             ];
         } );
 
         // WOO-D33 — the seat-level conditions (overfill, retired tier, duplicate,
-        // lock degradation) are only re-checked on a pass that was in a position
-        // to satisfy this line's seats. A line the pass refuses to create for
-        // (no attendees, nothing expected) has told us nothing about them.
-        if ( $can_create ) {
+        // lock degradation) are only re-checked on a pass that actually tried to
+        // produce a seat. A converged line, or a line the pass refuses to create
+        // for, has told us nothing about them.
+        if ( ! empty( $result['create_attempted'] ) ) {
             $evaluated['line_seats'] = true;
         }
 
@@ -2769,7 +2777,11 @@ class WooCommerce {
      *
      * Tokens:
      *  - line_attendees  the pass checked a line that expects seats for attendee data.
-     *  - line_seats      the pass was in a position to create/verify this line's seats.
+     *  - line_seats      the pass actually ATTEMPTED to produce a seat for the line
+     *                    (deficit > 0, active target, creatable). "Could have"
+     *                    is not enough: a revive over capacity creates the seat,
+     *                    so the next pass is converged and would clear
+     *                    capacity_overfill on an event that is still overbooked.
      *  - customer_email  the pass actually attempted the buyer confirmation.
      *
      * @return array<string,string> reason => evaluation token.

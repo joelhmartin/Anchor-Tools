@@ -141,8 +141,13 @@ class Product_Sync {
             // WOO-D13 — a mid-sync throw used to abort save_post with an uncaught
             // exception. Capture it instead: the save completes, the failure is in
             // the error log and on the event, and NOTHING is re-raised.
+            // …and re-adopt a product the throw orphaned. A handler that threw
+            // from save_post_product lands AFTER the product exists but BEFORE
+            // the event → product pointer is written, so the next sync would see
+            // no pointer and mint a SECOND product for the same event.
+            $this->recover_product_pointer( $event_id );
             $this->record_sync_failure( $event_id, $e );
-            return $this->stored_product_id( $event_id );
+            return $this->managed_product_id( $event_id );
         } finally {
             unset( self::$in_flight['event'][ $event_id ] );
         }
@@ -973,6 +978,33 @@ class Product_Sync {
         ] );
     }
 
+    /**
+     * Re-point an event at the managed product it already owns, when the pointer
+     * is missing but the product's own back-pointer names this event. One
+     * bounded query, and a complete no-op when the pointer is already there.
+     *
+     * @param int $event_id
+     */
+    private function recover_product_pointer( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || $this->stored_product_id( $event_id ) > 0 ) {
+            return;
+        }
+        $found = \get_posts( [
+            'post_type'        => 'product',
+            'post_status'      => 'any',
+            'numberposts'      => 1,
+            'fields'           => 'ids',
+            'meta_key'         => self::PRODUCT_EVENT_META, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+            'meta_value'       => $event_id,                // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+            'no_found_rows'    => true,
+            'suppress_filters' => false,
+        ] );
+        if ( ! empty( $found ) && (int) $found[0] > 0 ) {
+            \update_post_meta( $event_id, self::EVENT_PRODUCT_META, (int) $found[0] );
+        }
+    }
+
     /** Drop the failure marker once a pass completes (idempotent). */
     private function clear_sync_failure( $event_id ) {
         $event_id = (int) $event_id;
@@ -994,7 +1026,7 @@ class Product_Sync {
             return;
         }
         $event_id = isset( $GLOBALS['post'] ) && $GLOBALS['post'] instanceof \WP_Post ? (int) $GLOBALS['post']->ID : 0;
-        if ( $event_id <= 0 ) {
+        if ( $event_id <= 0 || ! \current_user_can( 'edit_post', $event_id ) ) {
             return;
         }
         $failure = \get_post_meta( $event_id, self::SYNC_FAILED_META, true );

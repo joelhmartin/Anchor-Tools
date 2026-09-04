@@ -259,6 +259,90 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 		$this->assertContains( 'attendees_missing', $this->review_reasons( $res['order_id'] ) );
 	}
 
+	/**
+	 * A revived seat that overflows capacity IS created, so the very next pass is
+	 * converged. If "the pass could have created" were the condition, that pass
+	 * would clear capacity_overfill while the event is still overbooked — and
+	 * nothing else records it (there is no capacity_overfill error-log entry).
+	 * The condition is "the pass actually attempted a create".
+	 */
+	public function test_capacity_overfill_survives_a_converged_pass() {
+		$this->require_wc();
+		$event_id = $this->make_event(
+			[ 'title' => 'Tight Event', 'capacity' => 5, 'waitlist' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		$tiers        = $this->ticket_types()->get( $event_id );
+		$variation_id = (int) $this->product_sync()->variation_for_tier( $event_id, (string) $tiers[0]['id'] );
+
+		// make_order() lands on `processing`, and the status-change hook reconciles.
+		$res = $this->make_order( $variation_id, 1 );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+
+		// The buyer cancels — the seat goes cancelled and gives its capacity back.
+		$order = wc_get_order( $res['order_id'] );
+		$order->set_status( 'cancelled' );
+		$order->save();
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CANCELLED ) );
+
+		// The organizer fills the event from the roster in the meantime.
+		for ( $i = 0; $i < 5; $i++ ) {
+			$this->make_seat( $event_id, [ 'email' => 'roster' . $i . '@example.test' ] );
+		}
+
+		// The cancellation is reversed: the seat is REVIVED with no room left.
+		$order = wc_get_order( $res['order_id'] );
+		$order->set_status( 'processing' );
+		$order->save();
+		$this->assertSame( 6, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+		$this->assertContains(
+			'capacity_overfill',
+			$this->review_reasons( $res['order_id'] ),
+			'Precondition: reviving over capacity flags the overfill.'
+		);
+
+		// …and the order is now converged, so the next pass attempts nothing.
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'resync' );
+
+		$this->assertContains(
+			'capacity_overfill',
+			$this->review_reasons( $res['order_id'] ),
+			'A pass that never tried to create a seat has not re-checked capacity.'
+		);
+	}
+
+	/** …and the scenario the audit actually describes still clears. */
+	public function test_capacity_overfill_clears_once_capacity_is_raised() {
+		$this->require_wc();
+		$event_id = $this->make_event(
+			[ 'title' => 'Full Event', 'capacity' => 1, 'waitlist' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		$tiers        = $this->ticket_types()->get( $event_id );
+		$variation_id = (int) $this->product_sync()->variation_for_tier( $event_id, (string) $tiers[0]['id'] );
+
+		// The single seat is already taken from the roster, so the paid line has
+		// nowhere to go: the create is REFUSED and the deficit persists.
+		$this->make_seat( $event_id, [ 'email' => 'roster@example.test' ] );
+
+		$res = $this->make_order( $variation_id, 1 );
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'paid' );
+		$this->assertContains( 'capacity_overfill', $this->review_reasons( $res['order_id'] ) );
+
+		// The organizer raises the capacity; the next pass has a deficit, attempts
+		// the create, and succeeds.
+		update_post_meta( $event_id, '_anchor_event_capacity', 10 );
+		$this->woocommerce()->reconcile_order( wc_get_order( $res['order_id'] ), 'resync' );
+
+		$this->assertNotContains(
+			'capacity_overfill',
+			$this->review_reasons( $res['order_id'] ),
+			'A pass that attempted the create and found room has re-checked the condition.'
+		);
+	}
+
 	/* -----------------------------------------------------------------
 	 * REG-D46 — the log stops filling with duplicates
 	 * --------------------------------------------------------------- */
@@ -284,6 +368,43 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 		Events_Log::error( 'email_retry_abandoned', [ 'seat' => 9, 'type' => 'cancellation' ] );
 
 		$this->assertCount( 4, $this->error_log_rows() );
+	}
+
+	/** The transition a seat was refused tells them apart, so `from` identifies too. */
+	public function test_two_illegal_transitions_on_one_seat_are_two_rows() {
+		Events_Log::error( 'illegal_transition', [ 'seat' => 9, 'from' => 'refunded', 'to' => 'confirmed' ] );
+		Events_Log::error( 'illegal_transition', [ 'seat' => 9, 'from' => 'cancelled', 'to' => 'waitlist' ] );
+
+		$this->assertCount( 2, $this->error_log_rows() );
+	}
+
+	/** Two different exceptions from one event's sync are two different failures. */
+	public function test_two_exceptions_on_one_event_are_two_rows() {
+		Events_Log::error( 'product_sync_failed', [ 'event' => 5, 'exception' => 'RuntimeException', 'message' => 'a' ] );
+		Events_Log::error( 'product_sync_failed', [ 'event' => 5, 'exception' => 'LogicException', 'message' => 'b' ] );
+
+		$this->assertCount( 2, $this->error_log_rows() );
+	}
+
+	/**
+	 * A failed send used to collapse across recipients because the context carried
+	 * no subject id at all. Every mail failure now names the event it belongs to.
+	 */
+	public function test_a_failed_send_carries_the_event_it_belongs_to() {
+		$event_a = $this->make_event( [ 'title' => 'Mail A' ] );
+		$event_b = $this->make_event( [ 'title' => 'Mail B' ] );
+
+		add_filter( 'pre_wp_mail', '__return_false' );
+		$this->module()->send_html_email( 'a@example.test', 'Subject A', '<p>a</p>', [], $event_a );
+		$this->module()->send_html_email( 'b@example.test', 'Subject B', '<p>b</p>', [], $event_b );
+		remove_filter( 'pre_wp_mail', '__return_false' );
+
+		$rows = array_values( array_filter( $this->error_log_rows(), function ( $row ) {
+			return 'email_send_returned_false' === $row['code'];
+		} ) );
+		$this->assertCount( 2, $rows, 'Two events, two rows — not one row counted twice.' );
+		$this->assertSame( $event_a, (int) $rows[0]['context']['event'] );
+		$this->assertSame( $event_b, (int) $rows[1]['context']['event'] );
 	}
 
 	/** A failure that returns after the window is news, not a repeat. */
@@ -379,6 +500,37 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 		$this->assertSame( 'RuntimeException', $failure['exception'] );
 		$this->assertSame( $event_id, (int) $failure['event'] );
 		$this->assertStringContainsString( 'exploded', (string) $failure['message'] );
+	}
+
+	/**
+	 * A throw from a third-party save_post_product handler lands AFTER the product
+	 * exists but BEFORE the event → product pointer is written. Left orphaned, the
+	 * next sync sees no pointer and builds a second product. The catch re-points
+	 * the event at the product it already owns.
+	 */
+	public function test_a_throw_that_orphans_the_product_re_points_the_event() {
+		$this->require_wc();
+
+		$boom = function () {
+			throw new RuntimeException( 'save_post_product exploded' );
+		};
+		add_action( 'woocommerce_new_product', $boom, 1 );
+
+		$event_id = $this->make_event(
+			[ 'title' => 'Orphaning Sync', 'capacity' => 0 ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$returned = $this->product_sync()->sync_event( $event_id );
+
+		remove_action( 'woocommerce_new_product', $boom, 1 );
+
+		$pointer = (int) get_post_meta( $event_id, Product_Sync::EVENT_PRODUCT_META, true );
+		$this->assertGreaterThan( 0, $pointer, 'The orphaned product must be re-adopted, not abandoned.' );
+		$this->assertSame( $event_id, (int) get_post_meta( $pointer, Product_Sync::PRODUCT_EVENT_META, true ) );
+		$this->assertSame( $pointer, (int) $returned, 'The catch returns the validated product id.' );
+
+		// …and the next sync reuses it rather than minting a second product.
+		$this->assertSame( $pointer, (int) $this->product_sync()->sync_event( $event_id ) );
 	}
 
 	/** …and the marker clears itself the moment a sync completes. */

@@ -191,6 +191,15 @@ class Module {
     /** Unsaved subject/intro supplied by a live preview request; see get_email_field(). */
     private $preview_field_override = null;
 
+    /**
+     * The event a send_html_email() call is currently in the middle of, so the
+     * wp_mail_failed handler — which is handed nothing but a WP_Error — can name
+     * the same subject the call site does (REG-D46). 0 outside a send.
+     *
+     * @var int
+     */
+    private $sending_event_id = 0;
+
     /** @var Registrations Seat data-access layer (always loaded). */
     public $registrations = null;
 
@@ -1501,6 +1510,10 @@ class Module {
     public function capture_mail_failure( $error ) {
         if ( \is_wp_error( $error ) ) {
             Events_Log::error( 'email_failed', [
+                // REG-D46 — name the event the send belonged to, so failures for
+                // two different events stay two rows instead of collapsing into
+                // one counted row keyed on the code alone.
+                'event'   => (int) $this->sending_event_id,
                 'message' => $error->get_error_message(),
                 'data'    => $error->get_error_data(),
             ] );
@@ -1534,9 +1547,22 @@ class Module {
                 array_unshift( $headers, 'Content-Type: text/html; charset=UTF-8' );
             }
         }
-        $sent = \wp_mail( $to, $subject, $html, $headers );
+        // REG-D46 — carry the event through wp_mail so capture_mail_failure()
+        // (a wp_mail_failed handler, which is handed nothing but the WP_Error)
+        // can name the same subject this call site does.
+        $previous_event         = $this->sending_event_id;
+        $this->sending_event_id = (int) $event_id;
+        try {
+            $sent = \wp_mail( $to, $subject, $html, $headers );
+        } finally {
+            $this->sending_event_id = $previous_event;
+        }
         if ( ! $sent ) {
-            Events_Log::error( 'email_send_returned_false', [ 'to' => $to, 'subject' => $subject ] );
+            Events_Log::error( 'email_send_returned_false', [
+                'event'   => (int) $event_id,
+                'to'      => $to,
+                'subject' => $subject,
+            ] );
         }
         return (bool) $sent;
     }
@@ -9576,55 +9602,34 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         if ( isset( $_GET['anchor_events_log_cleared'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
             $moved = (int) $_GET['anchor_events_log_cleared']; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-            echo '<div class="notice notice-success inline"><p>' . \esc_html( \sprintf(
-                /* translators: %d: number of entries moved to the archive. */
-                \_n( 'Error log cleared. %d entry kept in the archive.', 'Error log cleared. %d entries kept in the archive.', $moved, 'anchor-schema' ),
-                $moved
-            ) ) . '</p></div>';
+            // Only when something actually moved — "cleared 0 entries" is noise.
+            if ( $moved > 0 ) {
+                echo '<div class="notice notice-success inline"><p>' . \esc_html( \sprintf(
+                    /* translators: %d: number of entries moved to the archive. */
+                    \_n( 'Error log cleared. %d entry kept in the archive.', 'Error log cleared. %d entries kept in the archive.', $moved, 'anchor-schema' ),
+                    $moved
+                ) ) . '</p></div>';
+            }
         }
 
         if ( empty( $log ) ) {
             echo '<p>' . \esc_html__( 'No errors logged.', 'anchor-schema' ) . '</p>';
         } else {
-            echo '<table class="widefat striped" style="max-width:840px;">';
-            echo '<thead><tr>';
-            echo '<th>' . \esc_html__( 'Last seen', 'anchor-schema' ) . '</th>';
-            echo '<th>' . \esc_html__( 'Code', 'anchor-schema' ) . '</th>';
-            echo '<th>' . \esc_html__( 'Count', 'anchor-schema' ) . '</th>';
-            echo '<th>' . \esc_html__( 'Context', 'anchor-schema' ) . '</th>';
-            echo '</tr></thead><tbody>';
-            foreach ( \array_slice( \array_reverse( $log ), 0, 100 ) as $entry ) {
-                $time    = isset( $entry['time'] ) ? (int) $entry['time'] : 0;
-                $first   = isset( $entry['first_time'] ) ? (int) $entry['first_time'] : $time;
-                $count   = isset( $entry['count'] ) ? max( 1, (int) $entry['count'] ) : 1;
-                $code    = isset( $entry['code'] ) ? (string) $entry['code'] : '';
-                $context = isset( $entry['context'] ) ? $entry['context'] : [];
-                $when    = $time ? \date_i18n( 'Y-m-d H:i:s', $time ) : '';
-                $ctx_str = \is_scalar( $context ) ? (string) $context : \wp_json_encode( $context );
-                $tally   = $count > 1 && $first
-                    ? \sprintf(
-                        /* translators: 1: repeat count, 2: first-seen timestamp. */
-                        \__( '%1$d× since %2$s', 'anchor-schema' ),
-                        $count,
-                        \date_i18n( 'Y-m-d H:i:s', $first )
-                    )
-                    : (string) $count;
-                echo '<tr>';
-                echo '<td>' . \esc_html( $when ) . '</td>';
-                echo '<td><code>' . \esc_html( $code ) . '</code></td>';
-                echo '<td>' . \esc_html( $tally ) . '</td>';
-                echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
-                echo '</tr>';
-            }
-            echo '</tbody></table>';
+            $this->render_error_log_table( $log );
         }
 
+        // REG-D31 — the archive is the "undo" for the Clear button, so it has to
+        // be readable from here. Collapsed, read-only, same row markup.
         if ( ! empty( $archive ) ) {
-            echo '<p class="description">' . \esc_html( \sprintf(
-                /* translators: %d: number of archived entries. */
-                \_n( '%d cleared entry is kept in the archive.', '%d cleared entries are kept in the archive.', \count( $archive ), 'anchor-schema' ),
-                \count( $archive )
-            ) ) . '</p>';
+            echo '<details style="margin-top:12px;max-width:840px;"><summary style="cursor:pointer;">'
+                . \esc_html( \sprintf(
+                    /* translators: %d: number of archived entries. */
+                    \_n( 'Archived entries (%d)', 'Archived entries (%d)', \count( $archive ), 'anchor-schema' ),
+                    \count( $archive )
+                ) ) . '</summary>';
+            echo '<p class="description">' . \esc_html__( 'Entries removed by a previous "Clear error log". Kept read-only so a cleared failure is still recoverable.', 'anchor-schema' ) . '</p>';
+            $this->render_error_log_table( $archive );
+            echo '</details>';
         }
 
         if ( empty( $log ) ) {
@@ -9644,6 +9649,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             [ 'onclick' => 'return confirm(' . \wp_json_encode( \__( 'Clear the error log? The entries move to the archive and stay recoverable.', 'anchor-schema' ) ) . ');' ]
         );
         echo '</form>';
+    }
+
+    /**
+     * Render one error-log table. Shared by the live log and the archive so the
+     * two can never drift apart (REG-D31/REG-D46). Read-only; escapes everything.
+     *
+     * @param array $rows Log entries, oldest first.
+     */
+    private function render_error_log_table( array $rows ) {
+        echo '<table class="widefat striped" style="max-width:840px;">';
+        echo '<thead><tr>';
+        echo '<th>' . \esc_html__( 'Last seen', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Code', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Count', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Context', 'anchor-schema' ) . '</th>';
+        echo '</tr></thead><tbody>';
+        foreach ( \array_slice( \array_reverse( $rows ), 0, 100 ) as $entry ) {
+            $entry   = \is_array( $entry ) ? $entry : [];
+            $time    = isset( $entry['time'] ) ? (int) $entry['time'] : 0;
+            $first   = isset( $entry['first_time'] ) ? (int) $entry['first_time'] : $time;
+            $count   = isset( $entry['count'] ) ? max( 1, (int) $entry['count'] ) : 1;
+            $code    = isset( $entry['code'] ) ? (string) $entry['code'] : '';
+            $context = isset( $entry['context'] ) ? $entry['context'] : [];
+            $when    = $time ? \date_i18n( 'Y-m-d H:i:s', $time ) : '';
+            $ctx_str = \is_scalar( $context ) ? (string) $context : \wp_json_encode( $context );
+            $tally   = $count > 1 && $first
+                ? \sprintf(
+                    /* translators: 1: repeat count, 2: first-seen timestamp. */
+                    \__( '%1$d× since %2$s', 'anchor-schema' ),
+                    $count,
+                    \date_i18n( 'Y-m-d H:i:s', $first )
+                )
+                : (string) $count;
+            echo '<tr>';
+            echo '<td>' . \esc_html( $when ) . '</td>';
+            echo '<td><code>' . \esc_html( $code ) . '</code></td>';
+            echo '<td>' . \esc_html( $tally ) . '</td>';
+            echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
+            echo '</tr>';
+        }
+        echo '</tbody></table>';
     }
 
     /**
@@ -11662,7 +11708,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // Plain-text email, but still carry the configured sender identity.
             $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
             if ( ! $sent ) {
-                Events_Log::error( 'email_send_returned_false', [ 'to' => $admin_email, 'subject' => $subject ] );
+                Events_Log::error( 'email_send_returned_false', [
+                    'event'   => (int) $event_id,
+                    'to'      => $admin_email,
+                    'subject' => $subject,
+                ] );
             }
         }
 

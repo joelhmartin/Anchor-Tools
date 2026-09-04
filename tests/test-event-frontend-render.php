@@ -504,6 +504,8 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 	 * [events_list type="..."] shortcode in a page/widget keeps working.
 	 */
 	public function test_events_list_shortcode_type_attribute_is_a_deprecated_alias_for_event_type() {
+		$this->setExpectedIncorrectUsage( 'Anchor\Events\Module::shortcode_events_list' );
+
 		$captured = null;
 		$capture = function ( $args ) use ( &$captured ) {
 			$captured = $args;
@@ -525,6 +527,8 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 
 	/** event_type= wins when both attributes are given on the same shortcode. */
 	public function test_events_list_shortcode_event_type_wins_over_deprecated_type_alias() {
+		$this->setExpectedIncorrectUsage( 'Anchor\Events\Module::shortcode_events_list' );
+
 		$captured = null;
 		$capture = function ( $args ) use ( &$captured ) {
 			$captured = $args;
@@ -541,6 +545,27 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 			}
 		}
 		$this->assertSame( [ 'elite' ], $clause['terms'] );
+	}
+
+	/**
+	 * MODEL-D30 fix round 1 — using the deprecated `type=` attribute triggers
+	 * _doing_it_wrong() (surfaced only under WP_DEBUG, same as every other
+	 * core deprecation notice — setExpectedIncorrectUsage() above already
+	 * covers this implicitly, but this test makes the trigger itself, not
+	 * just its side effect, the explicit assertion). Using only the new
+	 * `event_type=` name triggers nothing.
+	 */
+	public function test_events_list_shortcode_type_attribute_triggers_doing_it_wrong() {
+		$this->setExpectedIncorrectUsage( 'Anchor\Events\Module::shortcode_events_list' );
+		$this->module()->shortcode_events_list( [ 'type' => 'course' ] );
+	}
+
+	/** The explicit, non-deprecated attribute name triggers no notice at all. */
+	public function test_events_list_shortcode_event_type_attribute_triggers_no_doing_it_wrong() {
+		$this->module()->shortcode_events_list( [ 'event_type' => 'course' ] );
+		// No setExpectedIncorrectUsage(): an unexpected _doing_it_wrong() call
+		// fails this test at tearDown, so reaching this line IS the assertion.
+		$this->assertTrue( true );
 	}
 
 	/**

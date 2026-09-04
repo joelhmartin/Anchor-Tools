@@ -6768,9 +6768,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         // Deprecated alias: only takes effect when `event_type` itself was
         // not also given (which wins on conflict, since it is the one this
-        // attribute is actually named after).
-        if ( $atts['event_type'] === '' && $atts['type'] !== '' ) {
-            $atts['event_type'] = $atts['type'];
+        // attribute is actually named after). MODEL-D30 fix round 1:
+        // _doing_it_wrong() only surfaces under WP_DEBUG, same as every other
+        // WP core deprecation notice — this is a developer nudge, not a
+        // front-end-visible warning.
+        if ( $atts['type'] !== '' ) {
+            \_doing_it_wrong( __METHOD__, 'Use event_type= instead of type=.', '3.27.0' );
+            if ( $atts['event_type'] === '' ) {
+                $atts['event_type'] = $atts['type'];
+            }
         }
 
         return $this->render_events_list( $atts, 'shortcode' );

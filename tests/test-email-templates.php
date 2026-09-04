@@ -21,7 +21,6 @@
  *   - waitlist_notice:  present (B) / absent (A, C, D, E)
  *   - detail_rows:      present (A, C, D, E) / absent (B)
  *   - seat_list:        present (B, E) / absent (A, C, D)
- *   - join_button:      present (A, C, E — virtual + confirmed) / absent (B, D)
  *   - cta_button:       present (A, B, C, E) / absent (D — cta_label/url both '')
  *
  * @package Anchor\Events\Tests
@@ -266,6 +265,37 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 			// Nothing outside the custom markup — proves the DEFAULT shell was
 			// NOT used once an override is in effect.
 			$this->assertStringNotContainsString( '<!DOCTYPE html>', $html );
+		} finally {
+			delete_post_meta( $event_id, '_anchor_event_email_tpl_confirmation' );
+		}
+	}
+
+	/**
+	 * REG-D28 — {join_button} is gone. It was produced by the body token map on
+	 * every send while appearing in no shipped template and in no palette, so
+	 * the only way to reach it was to hand-type it from a stale doc row and get
+	 * a second full-width button beside the CTA that replaced it.
+	 */
+	public function test_the_retired_join_button_token_renders_no_second_button() {
+		$event_id = $this->make_event( [ 'virtual' => 1, 'virtual_url' => 'https://example.test/room/' ] );
+		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '<div>{join_button}|{join_link}</div>' );
+		try {
+			$html = $this->module()->build_registration_email_html( [
+				'event_id'      => $event_id,
+				'name'          => 'Someone',
+				'status'        => Registrations::STATUS_CONFIRMED,
+				'intro_message' => '',
+				'detail_rows'   => [],
+				'seat_list'     => [],
+				'cta_label'     => '',
+				'cta_url'       => '',
+				'type'          => 'confirmation',
+			] );
+
+			$this->assertStringNotContainsString( 'Join the event', $html );
+			$this->assertStringContainsString( '{join_button}', $html, 'The token is retired, so it stays literal rather than rendering a button.' );
+			// The room link itself is still reachable as a scalar.
+			$this->assertStringContainsString( 'https://example.test/room/', $html );
 		} finally {
 			delete_post_meta( $event_id, '_anchor_event_email_tpl_confirmation' );
 		}

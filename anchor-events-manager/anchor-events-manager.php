@@ -154,7 +154,7 @@ class Module {
      */
     const EMAIL_BLOCK_TOKENS = [
         'intro', 'header_image', 'greeting', 'guests_line', 'waitlist_notice',
-        'detail_rows', 'seat_list', 'join_button', 'cta_button', 'cta_button_2',
+        'detail_rows', 'seat_list', 'cta_button', 'cta_button_2',
         'preheader',
     ];
 
@@ -12243,7 +12243,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * input (tags stripped, but not entity-escaped). Block tokens (pre-rendered
      * HTML fragments for the structured/conditional regions):
      * {header_image} {greeting} {intro} {guests_line} {waitlist_notice}
-     * {detail_rows} {seat_list} {join_button} {cta_button}. There is no
+     * {detail_rows} {seat_list} {cta_button}. There is no
      * separate {footer} block token — the footer region is static markup
      * with only a scalar {site_name} substitution, so no block extraction
      * was needed for it.
@@ -12573,25 +12573,6 @@ ANCHOR_EVENTS_EMAIL_SHELL;
                                             <?php endforeach; ?>
                                         </ul>
                                     <?php endif; ?><?php
-        return \ob_get_clean();
-    }
-
-    /**
-     * Block-token renderer — verbatim byte-for-byte extraction of the
-     * original inline `join_button` conditional from build_registration_email_html().
-     * Returns '' when the condition is false, exactly as before.
-     */
-    private function tpl_block_join_button( $join_url ) {
-        \ob_start();
-        ?><?php if ( $join_url ) : ?>
-                            <tr>
-                                <td style="padding:8px 32px 0;">
-                                    <a href="<?php echo esc_url( $join_url ); ?>" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        <?php echo esc_html__( 'Join the event', 'anchor-schema' ); ?>
-                                    </a>
-                                </td>
-                            </tr>
-                            <?php endif; ?><?php
         return \ob_get_clean();
     }
 
@@ -12937,12 +12918,13 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // $ctx so every send path — free, WooCommerce, reminder, cancellation,
         // roster — picks them up from one place.
         //
-        // A virtual event defaults to its room link. That replaces the separate
+        // A virtual event defaults to its room link. That replaced the separate
         // {join_button} region, which was a second button no field controlled:
         // it appeared and disappeared on rules the author could not see, and
         // read as a stray duplicate of the CTA sitting right beside it. Same
         // link, same place, but now it is in a field that can be renamed,
-        // repointed, or emptied.
+        // repointed, or emptied. REG-D28 removed the leftover region and its
+        // token, which no shipped template and no palette ever offered.
         $cta  = $this->get_email_cta( $event_id, $type, 1, $this->default_email_cta( $event_id, [ 'label' => $cta_label, 'url' => $cta_url ] ) );
         $cta2 = $this->get_email_cta( $event_id, $type, 2 );
 
@@ -12954,10 +12936,11 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             // A stand-in room link ONLY for an event that is actually virtual
             // and simply has no URL saved yet. Never for an in-person event.
             //
-            // {join_button} is a full-width button, and faking one put a second
-            // button in the preview of an event that will never send it —
-            // indistinguishable from the CTA buttons that ARE configured just
-            // above it. Same reason {header_image} gets no stand-in photo: a
+            // The retired {join_button} was a full-width button, and faking one
+            // put a second button in the preview of an event that will never
+            // send it — indistinguishable from the CTA buttons that ARE
+            // configured just above it. Same reason {header_image} gets no
+            // stand-in photo: a
             // sample is helpful when it is obviously filling a gap in a line of
             // text, and misleading when it renders as a piece of the layout the
             // author did not put there. The {join_link} SCALAR still gets a
@@ -13019,7 +13002,6 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'waitlist_notice'  => $this->tpl_block_waitlist_notice( $preview ? 'waitlist' : $status ),
             'detail_rows'      => $this->tpl_block_detail_rows( $detail_rows ),
             'seat_list'        => $this->tpl_block_seat_list( $seat_list ),
-            'join_button'      => $this->tpl_block_join_button( $join_url ),
             'cta_button'       => $this->tpl_block_cta_button( $cta['url'], $cta['label'] ),
             'cta_button_2'     => $this->tpl_block_cta_button( $cta2['url'], $cta2['label'], '#ffffff', '#111' ),
         ];

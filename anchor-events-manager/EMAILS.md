@@ -116,7 +116,7 @@ one tab per email type, each with:
 - A **token-insert palette** — buttons for the curated subset of body tokens
   documented as safe/useful to hand-insert (`Module::documented_email_tokens()`; see
   the token table below — the palette omits a few internal-only tokens like
-  `{event_id}`/`{status}`/`{greeting}`/`{waitlist_notice}`/`{join_button}` and offers
+  `{event_id}`/`{status}`/`{greeting}`/`{waitlist_notice}` and offers
   no `{footer}` token since the footer region only ever substitutes `{site_name}`).
 - A **live preview iframe** that shows the raw template with tokens literal until...
 - ...**"Preview with real data"** is clicked, which AJAX-renders the in-progress
@@ -173,7 +173,6 @@ a custom template can't become a stored-injection vector):
 | `{waitlist_notice}` | Waitlist-specific notice, when status is `waitlist` |
 | `{detail_rows}` | A table of label/value detail rows |
 | `{seat_list}` | A list of named seats (multi-seat orders) |
-| `{join_button}` | A styled "Join" button linking `{join_link}`, when set |
 | `{cta_button}` | A styled call-to-action button (e.g. "View event details") |
 | `{cta_button_2}` | The optional second call-to-action button |
 | `{logo}` | The Email Appearance logo, as its own table row. Empty when no logo is set |

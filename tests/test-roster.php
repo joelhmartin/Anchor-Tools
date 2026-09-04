@@ -630,6 +630,24 @@ class Test_Roster extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * REG-D43 — the digest CTA is minted inside cron, with no logged-in user,
+	 * so a nonce on it would be bound to user 0 and expire in 24 hours. The
+	 * roster screen is capability-gated and read-only, so the link is a plain
+	 * admin URL (REG-D15 removed the nonce roster_url() used to add).
+	 */
+	public function test_the_roster_digest_cta_is_a_plain_admin_link() {
+		$event_id = $this->make_event();
+
+		$this->assertStringNotContainsString( '_wpnonce', $this->module()->roster->roster_url( $event_id ) );
+
+		$this->assertTrue( $this->module()->send_roster_email( $event_id )->is_sent() );
+		$mail = $this->sent[0] ?? null;
+		$this->assertNotNull( $mail );
+		$this->assertStringNotContainsString( '_wpnonce', (string) $mail['message'] );
+		$this->assertStringContainsString( 'page=anchor-event-roster', html_entity_decode( (string) $mail['message'] ) );
+	}
+
+	/**
 	 * REG-D17 — a roster send with nowhere to send it logs its own code, and
 	 * a roster switched off says so in the notice instead of pointing the
 	 * operator at an error log that has nothing in it.

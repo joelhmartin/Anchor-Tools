@@ -633,4 +633,107 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 		$this->assertSame( 'trash', get_post_status( $child_a ) );
 		$this->assertNotSame( 'trash', get_post_status( $child_b ), 'A child is never itself a group parent, so trashing it must not retire its sibling.' );
 	}
+
+	/* ------------------------------------------------------------------
+	 * 9. MODEL-D34 — closed_children() / delete_closed_occurrence(): a
+	 *    reachable terminal state for a soft-closed, now-seatless child.
+	 * ------------------------------------------------------------------ */
+
+	/** A soft-closed child (seats since removed) is found; a live one is not. */
+	public function test_closed_children_finds_soft_closed_occurrences_across_parents() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated );
+
+		// Drop the seated date -> soft-close (roster preserved).
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( $this->occurrences()->is_closed( $seated ) );
+
+		$closed = $this->occurrences()->closed_children();
+
+		$this->assertContains( $seated, $closed );
+		// The still-live sibling must not appear.
+		$live_sibling = $this->occurrences()->children( $parent_id );
+		foreach ( $live_sibling as $id ) {
+			$this->assertNotContains( $id, $closed );
+		}
+	}
+
+	/** A plain (never-grouped) event carries no occurrence_closed row and is never listed. */
+	public function test_closed_children_excludes_ordinary_events() {
+		$this->make_event();
+		$this->assertSame( [], $this->occurrences()->closed_children() );
+	}
+
+	/** delete_closed_occurrence() trashes a genuinely closed occurrence. */
+	public function test_delete_closed_occurrence_trashes_a_closed_child() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( $this->occurrences()->is_closed( $seated ) );
+
+		$this->assertTrue( $this->module()->delete_closed_occurrence( $seated ) );
+		$this->assertSame( 'trash', get_post_status( $seated ) );
+	}
+
+	/**
+	 * The object check: delete_closed_occurrence() refuses an event that is
+	 * not currently closed — this is not a generic "delete any event" path.
+	 */
+	public function test_delete_closed_occurrence_refuses_a_live_event() {
+		$event_id = $this->make_event();
+
+		$this->assertFalse( $this->module()->delete_closed_occurrence( $event_id ) );
+		$this->assertNotSame( 'trash', get_post_status( $event_id ) );
+	}
+
+	/** And refuses a non-event post id / a post that doesn't exist. */
+	public function test_delete_closed_occurrence_refuses_a_non_event_id() {
+		$page_id = self::factory()->post->create( [ 'post_type' => 'page' ] );
+
+		$this->assertFalse( $this->module()->delete_closed_occurrence( $page_id ) );
+		$this->assertFalse( $this->module()->delete_closed_occurrence( 0 ) );
+		$this->assertFalse( $this->module()->delete_closed_occurrence( PHP_INT_MAX ) );
+	}
+
+	/**
+	 * handle_delete_closed_occurrence() is the real admin-post entry point;
+	 * order is nonce -> capability -> object (delete_closed_occurrence()'s
+	 * own is_closed() check). wp_die() is intercepted by WP's test suite as
+	 * WPDieException instead of terminating the process, so — like
+	 * handle_event_manager_save()'s nonce test — both gates ARE directly
+	 * testable even though the success path's exit() is not.
+	 */
+	public function test_handle_delete_closed_occurrence_dies_on_invalid_nonce() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST = [ 'event_id' => 1, '_wpnonce' => 'invalid-nonce' ];
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_delete_closed_occurrence();
+	}
+
+	/** A valid nonce is not enough — the module capability gate still applies. */
+	public function test_handle_delete_closed_occurrence_dies_when_user_lacks_capability() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$_POST = [
+			'event_id' => $seated,
+			'_wpnonce' => wp_create_nonce( 'anchor_events_delete_closed_occurrence_' . $seated ),
+		];
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_delete_closed_occurrence();
+	}
 }

@@ -671,6 +671,42 @@ class Occurrences {
     }
 
     /**
+     * Every currently soft-closed occurrence in the system, oldest post ID
+     * first — feeds the admin "Closed occurrences" panel (MODEL-D34).
+     *
+     * retire_child() deliberately never trashes a child that is ALREADY
+     * closed (it re-asserts soft_close() instead, to avoid surprise-trashing
+     * a preserved roster) — so once a soft-closed child's seats are later
+     * cancelled/refunded to zero, nothing in reconcile() ever removes it.
+     * The post stays published, excluded from every public listing
+     * (build_hide_clause()) and from children()/siblings(), with no
+     * reachable terminal state. This is that state: cross-parent (unlike
+     * children(), which is scoped to one group), so an admin can find and
+     * remove one regardless of which parent it belongs to.
+     *
+     * @param int $limit
+     * @return int[] Child post ids.
+     */
+    public function closed_children( $limit = 200 ) {
+        return \get_posts( [
+            'post_type'      => Module::CPT,
+            'post_status'    => 'publish',
+            'posts_per_page' => (int) $limit,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+            'orderby'        => 'ID',
+            'order'          => 'ASC',
+            'meta_query'     => [
+                [
+                    'key'     => $this->module->meta_key( 'occurrence_closed' ),
+                    'value'   => '1',
+                    'compare' => '=',
+                ],
+            ],
+        ] );
+    }
+
+    /**
      * Sibling child ids (same group, excluding $child_id itself).
      *
      * @param int  $child_id

@@ -530,6 +530,11 @@ class Module {
         // here (not the WC class) because the error log exists on all sites.
         \add_action( 'admin_post_anchor_events_clear_error_log', [ $this, 'handle_clear_error_log' ] );
 
+        // MODEL-D34: delete a closed occurrence from the "Closed occurrences"
+        // admin panel — the one reachable terminal state for a soft-closed
+        // child once its seats are gone.
+        \add_action( 'admin_post_anchor_events_delete_closed_occurrence', [ $this, 'handle_delete_closed_occurrence' ] );
+
         // L14: GDPR personal-data exporter + eraser for attendee PII stored on seats.
         \add_filter( 'wp_privacy_personal_data_exporters', [ $this, 'register_privacy_exporter' ] );
         \add_filter( 'wp_privacy_personal_data_erasers', [ $this, 'register_privacy_eraser' ] );
@@ -8435,6 +8440,63 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Trash a currently soft-closed occurrence — the terminal state MODEL-D34
+     * gives one that would otherwise stay published forever once its seats
+     * are gone (see Occurrences::closed_children()'s docblock). The object
+     * check IS "is this actually a closed occurrence": trashing an ordinary
+     * event belongs to the existing admin Posts screen / handle_event_manager_delete(),
+     * not to this panel.
+     *
+     * Pure logic — no nonce/capability/redirect/exit — so it is directly
+     * unit-testable; handle_delete_closed_occurrence() below is the real
+     * admin-post entry point (mirrors handle_event_manager_delete()).
+     *
+     * @param int $event_id
+     * @return bool True if trashed, false if $event_id is not a closed occurrence.
+     */
+    public function delete_closed_occurrence( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
+            return false;
+        }
+        if ( ! $this->occurrences->is_closed( $event_id ) ) {
+            return false;
+        }
+
+        \wp_trash_post( $event_id );
+        $this->clear_caches();
+
+        return true;
+    }
+
+    /**
+     * admin-post entry point for the "Closed occurrences" panel's Delete
+     * button (MODEL-D34). Same order as handle_event_manager_delete(): nonce,
+     * then the module capability, then the object check (inside
+     * delete_closed_occurrence()) — never `delete_post` alone, which would
+     * let any author who can delete the post trash it without holding the
+     * capability the panel itself is gated on.
+     */
+    public function handle_delete_closed_occurrence() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) $_POST['event_id'] : 0;
+        $redirect = \wp_get_referer();
+        if ( ! $redirect ) {
+            $redirect = \admin_url();
+        }
+
+        \check_admin_referer( 'anchor_events_delete_closed_occurrence_' . $event_id );
+
+        if ( ! Roster::current_user_can_manage() ) {
+            \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
+        }
+
+        $deleted = $this->delete_closed_occurrence( $event_id );
+
+        \wp_safe_redirect( \add_query_arg( 'anchor_events_closed_deleted', $deleted ? '1' : '0', $redirect ) );
+        exit;
+    }
+
+    /**
      * Turn a shortcode's `orderby` attribute into the orderby/meta_key pair a
      * WP_Query args array needs — the one place render_events_list() and
      * shortcode_event_registrants_list() decide this, instead of each having
@@ -10136,6 +10198,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         echo '</form>';
 
         $this->render_error_log_panel();
+        $this->render_closed_occurrences_panel();
     }
 
     /**
@@ -10247,6 +10310,72 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             echo '<td><code>' . \esc_html( $code ) . '</code></td>';
             echo '<td>' . \esc_html( $tally ) . '</td>';
             echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
+            echo '</tr>';
+        }
+        echo '</tbody></table>';
+    }
+
+    /**
+     * "Closed occurrences" panel for the Events settings tab (MODEL-D34).
+     *
+     * Lists every occurrence Occurrences::closed_children() finds — a
+     * soft-closed group child left published with nowhere else surfacing it
+     * once its seats are gone — with a per-row Delete action. Same
+     * capability gate as the error log panel above it.
+     */
+    private function render_closed_occurrences_panel() {
+        if ( ! Roster::current_user_can_manage() ) {
+            return;
+        }
+
+        echo '<hr style="margin:24px 0;" />';
+        echo '<h2>' . \esc_html__( 'Closed occurrences', 'anchor-schema' ) . '</h2>';
+        echo '<p class="description">' . \esc_html__( 'Dates soft-closed by removing them from a group parent (their roster is preserved). They stay published indefinitely unless deleted here.', 'anchor-schema' ) . '</p>';
+
+        if ( isset( $_GET['anchor_events_closed_deleted'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            if ( $_GET['anchor_events_closed_deleted'] === '1' ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                echo '<div class="notice notice-success inline"><p>' . \esc_html__( 'Occurrence deleted.', 'anchor-schema' ) . '</p></div>';
+            } else {
+                echo '<div class="notice notice-error inline"><p>' . \esc_html__( 'That occurrence could not be deleted — it may no longer be closed.', 'anchor-schema' ) . '</p></div>';
+            }
+        }
+
+        $ids = $this->occurrences->closed_children();
+        if ( empty( $ids ) ) {
+            echo '<p>' . \esc_html__( 'No closed occurrences.', 'anchor-schema' ) . '</p>';
+            return;
+        }
+
+        echo '<table class="widefat striped" style="max-width:960px;">';
+        echo '<thead><tr>';
+        echo '<th>' . \esc_html__( 'Occurrence', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Date', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Seats', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Action', 'anchor-schema' ) . '</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ( $ids as $event_id ) {
+            $event_id   = (int) $event_id;
+            $meta       = $this->get_meta( $event_id );
+            $seats      = $this->registrations->query_seats( [ 'event_id' => $event_id, 'status' => 'all', 'per_page' => 1 ] );
+            $seat_total = (int) ( $seats['total'] ?? 0 );
+            $edit_link  = \get_edit_post_link( $event_id, 'raw' );
+
+            echo '<tr>';
+            echo '<td>' . ( $edit_link
+                ? '<a href="' . \esc_url( $edit_link ) . '">' . \esc_html( \get_the_title( $event_id ) ) . '</a>'
+                : \esc_html( \get_the_title( $event_id ) )
+            ) . '</td>';
+            echo '<td>' . \esc_html( (string) ( $meta['start_date'] ?? '' ) ) . '</td>';
+            echo '<td>' . \esc_html( (string) $seat_total ) . '</td>';
+            echo '<td>';
+            echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="display:inline;" onsubmit="return confirm(' . \wp_json_encode( \__( 'Delete this closed occurrence? This cannot be undone from here.', 'anchor-schema' ) ) . ');">';
+            echo '<input type="hidden" name="action" value="anchor_events_delete_closed_occurrence" />';
+            echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
+            \wp_nonce_field( 'anchor_events_delete_closed_occurrence_' . $event_id );
+            \submit_button( \__( 'Delete', 'anchor-schema' ), 'delete', 'submit', false );
+            echo '</form>';
+            echo '</td>';
             echo '</tr>';
         }
         echo '</tbody></table>';

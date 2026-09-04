@@ -1,6 +1,7 @@
 <?php
 /**
- * Buyer confirmation / organizer notice seat collection (WOO-D44, WOO-D51).
+ * Buyer confirmation / organizer notice seat collection (WOO-D44, WOO-D51,
+ * finding-1).
  *
  * @package Anchor\Events\Tests
  */
@@ -25,13 +26,11 @@ class Test_WooCommerce_Confirmation_Emails extends Anchor_Events_TestCase {
 		return $method->invoke( $this->woocommerce(), $order_id );
 	}
 
-	/** send_customer_confirmation() via reflection, returning [Outcome, primary_id]. */
-	private function send_customer_confirmation( \WC_Order $order ) {
+	/** send_customer_confirmation() via reflection, scoped to one event. */
+	private function send_customer_confirmation( \WC_Order $order, $event_id ) {
 		$method = new ReflectionMethod( get_class( $this->woocommerce() ), 'send_customer_confirmation' );
 		$method->setAccessible( true );
-		$primary_id = 0;
-		$outcome    = $method->invokeArgs( $this->woocommerce(), [ $order, $this->module()->get_settings(), &$primary_id ] );
-		return [ $outcome, $primary_id ];
+		return $method->invokeArgs( $this->woocommerce(), [ $order, $this->module()->get_settings(), $event_id ] );
 	}
 
 	/**
@@ -90,19 +89,21 @@ class Test_WooCommerce_Confirmation_Emails extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * WOO-D51: the buyer confirmation's "primary event" (whose title/CTA/
-	 * per-event overrides drive the whole email) must be the event with the
-	 * MOST seats, not silently whichever event's seats were iterated first —
-	 * an order spanning a container and a real occurrence used to report the
-	 * container's title, roster and remaining capacity for the WHOLE order.
+	 * finding-1 (carry-over; supersedes WOO-D51): the buyer confirmation used
+	 * to be ONE combined email spanning every event on the order, silently
+	 * choosing a single "primary" event (most seats) whose title/CTA/
+	 * overrides drove the WHOLE email — an order spanning a container and a
+	 * real occurrence then reported the container's title, roster and
+	 * remaining capacity for the entire order. Each event now gets its own
+	 * confirmation, scoped to ONLY that event's seats — an order spanning a
+	 * small and a big event must confirm each with its OWN title and seat
+	 * count, never the other event's.
 	 */
-	public function test_primary_event_is_the_one_with_the_most_seats_not_the_first_iterated() {
+	public function test_confirmation_is_scoped_to_only_the_requested_event() {
 		$small_event = $this->make_event( [ 'title' => 'Small Event' ] );
 		$big_event   = $this->make_event( [ 'title' => 'Big Event' ] );
 		$order_id    = 4343;
 
-		// Seeded so the SMALL event's seat is created (and thus iterated)
-		// first, and the BIG event — the one with more seats — second.
 		$this->make_seat( $small_event, [ 'order_id' => $order_id ] );
 		$this->make_seat( $big_event, [ 'order_id' => $order_id ] );
 		$this->make_seat( $big_event, [ 'order_id' => $order_id ] );
@@ -112,9 +113,26 @@ class Test_WooCommerce_Confirmation_Emails extends Anchor_Events_TestCase {
 		$order->set_id( $order_id );
 		$order->set_billing_email( 'buyer@example.test' );
 
-		list( $outcome, $primary_id ) = $this->send_customer_confirmation( $order );
+		$small_outcome = $this->send_customer_confirmation( $order, $small_event );
+		$big_outcome   = $this->send_customer_confirmation( $order, $big_event );
 
-		$this->assertTrue( $outcome->is_sent(), 'Response: ' . $outcome->reason() );
-		$this->assertSame( $big_event, $primary_id, 'The event with the most seats must be primary, not the first one iterated.' );
+		$this->assertTrue( $small_outcome->is_sent(), 'Response: ' . $small_outcome->reason() );
+		$this->assertTrue( $big_outcome->is_sent(), 'Response: ' . $big_outcome->reason() );
+	}
+
+	/** Requesting a confirmation for an event the order has no active seats on is a no-op. */
+	public function test_confirmation_for_an_event_with_no_seats_on_the_order_is_skipped() {
+		$event_id      = $this->make_event( [ 'title' => 'Real Event' ] );
+		$unrelated_id  = $this->make_event( [ 'title' => 'Unrelated Event' ] );
+		$order_id      = 4344;
+		$this->make_seat( $event_id, [ 'order_id' => $order_id ] );
+
+		$order = new WC_Order();
+		$order->set_id( $order_id );
+		$order->set_billing_email( 'buyer@example.test' );
+
+		$outcome = $this->send_customer_confirmation( $order, $unrelated_id );
+		$this->assertTrue( $outcome->is_skipped() );
+		$this->assertSame( 'nothing_to_send', $outcome->reason() );
 	}
 }

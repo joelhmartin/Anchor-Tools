@@ -607,11 +607,19 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 	}
 
 	/* ---------------------------------------------------------------------
-	 * Fix round 1 — the disabled stamp follows the switch that was consulted
+	 * finding-1 (carry-over) — each event resolves its OWN confirmation
+	 * switch, so a disabled event never starves an enabled one
 	 * ------------------------------------------------------------------- */
 
-	/** Disabled event A must not gate enabled event B on the same order. */
-	public function test_a_mixed_order_leaves_the_enabled_events_gate_open() {
+	/**
+	 * A mixed order (confirmation disabled on event A, enabled on event B)
+	 * used to never confirm B: the sender resolved a single "primary" event
+	 * for the whole order and, once that primary was the disabled one,
+	 * returned skipped('disabled') forever — B's open gate was never reached.
+	 * Each event must now resolve its own switch: A settles as a deliberate
+	 * skip, B actually sends.
+	 */
+	public function test_disabled_event_a_still_confirms_enabled_event_b() {
 		$this->require_wc();
 		// Place the order with every notification off, so the seats exist before
 		// anything is decided about emails.
@@ -635,25 +643,26 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $this->count_seats( $a['event_id'], Registrations::STATUS_CONFIRMED ) );
 		$this->assertSame( 1, $this->count_seats( $b['event_id'], Registrations::STATUS_CONFIRMED ) );
 
-		// The confirmation resolves its copy and its switch from ONE event; find
-		// out which, and switch that one off.
+		// A is disabled, B stays enabled — A is seen FIRST in $email_events so
+		// the old bug (a single primary resolved once) would have starved B.
 		$by_event = $this->invoke_wc( 'collect_order_seats', [ $order_id ] );
 		$ids      = array_map( 'intval', array_keys( $by_event ) );
 		$this->assertCount( 2, $ids );
-		$primary = $ids[0];
-		$other   = $ids[1];
-		$this->switch_email_off( $primary, 'confirmation' );
+		$disabled = $ids[0];
+		$enabled  = $ids[1];
+		$this->switch_email_off( $disabled, 'confirmation' );
 
 		$this->set_settings( [ 'wc_notify_customer' => true, 'wc_notify_organizer' => false ] );
 		$fresh = wc_get_order( $order_id );
 		$fresh->update_meta_data( '_anchor_event_emails_sent', [] );
 		$fresh->save();
+		$this->mails = []; // Isolate from WooCommerce's own order-status-change emails.
 
 		$log   = [];
 		$flags = [];
 		$args  = [
 			$fresh,
-			[ $primary => [ 'confirmed' => 1 ], $other => [ 'confirmed' => 1 ] ],
+			[ $disabled => [ 'confirmed' => 1 ], $enabled => [ 'confirmed' => 1 ] ],
 			&$log,
 			&$flags,
 		];
@@ -661,13 +670,70 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 
 		$sent = $fresh->get_meta( '_anchor_event_emails_sent' );
 		$sent = is_array( $sent ) ? $sent : [];
-		$this->assertArrayHasKey( 'customer:' . $primary, $sent, 'The event whose switch was read is settled.' );
-		$this->assertArrayNotHasKey(
-			'customer:' . $other,
+		$this->assertArrayHasKey( 'customer:' . $disabled, $sent, 'The switched-off event is settled, not re-decided forever.' );
+		$this->assertArrayHasKey(
+			'customer:' . $enabled,
 			$sent,
-			'The other event never had its switch consulted — gating it would make its confirmation unsendable for ever.'
+			'finding-1: the enabled event must confirm even though the disabled event is seen first.'
 		);
 		$this->assertSame( [], $flags );
+		$this->assertCount(
+			1,
+			$this->mails,
+			'B\'s buyer confirmation must actually be sent, not just gated (organizer notices are off in this test).'
+		);
+	}
+
+	/** Two enabled events on the same order both get their own confirmation. */
+	public function test_two_enabled_events_are_both_confirmed() {
+		$this->require_wc();
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$this->place_order( $order );
+
+		$order_id = $order->get_id();
+		$by_event = $this->invoke_wc( 'collect_order_seats', [ $order_id ] );
+		$ids      = array_map( 'intval', array_keys( $by_event ) );
+		$this->assertCount( 2, $ids );
+
+		$this->set_settings( [ 'wc_notify_customer' => true, 'wc_notify_organizer' => false ] );
+		$fresh = wc_get_order( $order_id );
+		$fresh->update_meta_data( '_anchor_event_emails_sent', [] );
+		$fresh->save();
+		$this->mails = []; // Isolate from WooCommerce's own order-status-change emails.
+
+		$log   = [];
+		$flags = [];
+		$args  = [
+			$fresh,
+			[ $ids[0] => [ 'confirmed' => 1 ], $ids[1] => [ 'confirmed' => 1 ] ],
+			&$log,
+			&$flags,
+		];
+		$this->invoke_wc( 'dispatch_emails', $args );
+
+		$sent = $fresh->get_meta( '_anchor_event_emails_sent' );
+		$sent = is_array( $sent ) ? $sent : [];
+		$this->assertArrayHasKey( 'customer:' . $ids[0], $sent, 'Both events must be covered.' );
+		$this->assertArrayHasKey( 'customer:' . $ids[1], $sent, 'Both events must be covered.' );
+		$this->assertSame( [], $flags );
+		$this->assertCount(
+			2,
+			$this->mails,
+			'Each enabled event gets its own confirmation email (organizer notices are off in this test).'
+		);
 	}
 
 	/* ---------------------------------------------------------------------

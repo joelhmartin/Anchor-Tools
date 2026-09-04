@@ -241,6 +241,32 @@ class Test_Roster extends Anchor_Events_TestCase {
 	}
 
 	/* -----------------------------------------------------------------
+	 * REG-D13 — the status filter links are actually rendered
+	 * --------------------------------------------------------------- */
+
+	/** Render the admin roster screen for $event_id and return its HTML. */
+	private function render_roster_screen( $event_id ) {
+		set_current_screen( 'edit-event' );
+		try {
+			$method = new ReflectionMethod( $this->module()->roster, 'render_roster' );
+			$method->setAccessible( true );
+			ob_start();
+			$method->invoke( $this->module()->roster, $event_id );
+			return (string) ob_get_clean();
+		} finally {
+			set_current_screen( 'front' );
+		}
+	}
+
+	public function test_the_roster_screen_renders_the_status_filter_links() {
+		$html = html_entity_decode( $this->render_roster_screen( $this->make_event() ) );
+
+		$this->assertStringContainsString( 'subsubsub', $html, 'The roster screen never called $table->views().' );
+		$this->assertStringContainsString( 'status=waitlist', $html );
+		$this->assertStringContainsString( 'status=cancelled', $html );
+	}
+
+	/* -----------------------------------------------------------------
 	 * REG-D39 — the manual add asks the event's own questions
 	 * --------------------------------------------------------------- */
 

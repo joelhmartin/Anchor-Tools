@@ -238,8 +238,15 @@ class Roster {
         $this->render_status_pill_styles();
 
         // List table.
+        load_roster_list_table();
         $table = new Roster_List_Table( $event_id, $this->registrations, $this );
         $table->prepare_items();
+
+        // REG-D13 — WP_List_Table::display() does not render the status filter
+        // links; the page has to call views() itself. Without this the All /
+        // Active / Confirmed / ... links that get_views() builds existed only in
+        // code and the filter worked only for a hand-typed URL.
+        $table->views();
 
         echo '<form method="get">';
         echo '<input type="hidden" name="post_type" value="' . \esc_attr( Module::CPT ) . '" />';
@@ -1388,9 +1395,14 @@ class Roster {
 }
 
 /* =========================================================================
- * Roster list table — declared only in admin where WP_List_Table is available.
+ * Roster list table — declared on demand by render_roster(), the one screen
+ * that uses it. WP_List_Table only exists under wp-admin, so this used to be
+ * wrapped in `if ( is_admin() )` at file scope; that made the class impossible
+ * to reach from anywhere the admin bootstrap has not run (including the test
+ * suite, which is why REG-D13 went unnoticed). Declaring it inside a function
+ * keeps the same laziness and makes the one caller responsible for asking.
  * ========================================================================= */
-if ( \is_admin() ) {
+function load_roster_list_table() {
     if ( ! \class_exists( '\WP_List_Table' ) ) {
         require_once \ABSPATH . 'wp-admin/includes/class-wp-list-table.php';
     }

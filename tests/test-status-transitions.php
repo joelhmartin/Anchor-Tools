@@ -70,6 +70,24 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$this->assertTrue( $this->registrations()->update_status( $seat_id, 'bogus' )->is_failed() );
 	}
 
+	/**
+	 * REG-D32 — `attended` and `no_show` are not part of the vocabulary. They
+	 * were legal statuses with a legal transition out of `confirmed` and a
+	 * per-status summary bucket each, and nothing anywhere could set them.
+	 */
+	public function test_the_deferred_check_in_statuses_are_not_legal() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id );
+
+		$this->assertFalse( $this->registrations()->valid_status( 'attended' ) );
+		$this->assertFalse( $this->registrations()->valid_status( 'no_show' ) );
+		$this->assertTrue( $this->registrations()->update_status( $seat_id, 'attended' )->is_failed() );
+
+		$summary = $this->registrations()->get_event_summary( $event_id );
+		$this->assertArrayNotHasKey( 'attended', $summary['per_status'] );
+		$this->assertArrayNotHasKey( 'no_show', $summary['per_status'] );
+	}
+
 	/** anonymize_seat scrubs name/email/phone + custom reg fields, keeps status. */
 	public function test_anonymize_seat_scrubs_pii() {
 		$event_id = $this->make_event();

@@ -27,10 +27,21 @@ class Registrations {
     const STATUS_CANCELLED = 'cancelled'; // kept, excluded from counts.
     const STATUS_REFUNDED  = 'refunded';  // kept, terminal, never revived.
     const STATUS_FAILED    = 'failed';    // kept, excluded from counts.
-    const STATUS_ATTENDED  = 'attended';  // reserved vocabulary (check-in deferred); NOT counted in MVP.
-    const STATUS_NO_SHOW   = 'no_show';   // reserved vocabulary; inactive.
 
-    /** Statuses that consume capacity. `attended` is intentionally NOT here in MVP (spec finding #21). */
+    /**
+     * Every status a seat may legally hold. REG-D32 — this used to also carry
+     * `attended` and `no_show`: valid_status() accepted them, the transition
+     * table allowed confirmed -> either, and get_event_summary() reserved a
+     * bucket for each, but no UI, cron or API path could set them, so the
+     * buckets were always zero and the transitions unreachable. They come back
+     * with the check-in screen that would write them, not before.
+     */
+    const STATUSES = [
+        self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST,
+        self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED,
+    ];
+
+    /** Statuses that consume capacity. */
     const RESERVING_STATUSES = [ self::STATUS_CONFIRMED, self::STATUS_PENDING ];
 
     /** Statuses counted as waitlist (never toward capacity). */
@@ -58,7 +69,7 @@ class Registrations {
     /** Allowed status transitions (spec §4.3). Illegal transitions are logged + no-oped. */
     protected static $transitions = [
         self::STATUS_PENDING   => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED, self::STATUS_WAITLIST ],
-        self::STATUS_CONFIRMED => [ self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED, self::STATUS_ATTENDED, self::STATUS_NO_SHOW ],
+        self::STATUS_CONFIRMED => [ self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED ],
         self::STATUS_WAITLIST  => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED ],
         self::STATUS_FAILED    => [ self::STATUS_CONFIRMED, self::STATUS_PENDING ],
         self::STATUS_CANCELLED => [ self::STATUS_CONFIRMED, self::STATUS_PENDING ],
@@ -1324,7 +1335,7 @@ class Registrations {
 
         $c          = $this->counts( $event_id );
         $per_status = [];
-        foreach ( [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST, self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED, self::STATUS_ATTENDED, self::STATUS_NO_SHOW ] as $s ) {
+        foreach ( self::STATUSES as $s ) {
             $per_status[ $s ] = [
                 'seats'   => $c[ $s ]['seats'] ?? 0,
                 'records' => $c[ $s ]['records'] ?? 0,
@@ -1466,11 +1477,7 @@ class Registrations {
      * ------------------------------------------------------------------- */
 
     public function valid_status( $status ) {
-        return \in_array( $status, [
-            self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST,
-            self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED,
-            self::STATUS_ATTENDED, self::STATUS_NO_SHOW,
-        ], true );
+        return \in_array( $status, self::STATUSES, true );
     }
 
     /**

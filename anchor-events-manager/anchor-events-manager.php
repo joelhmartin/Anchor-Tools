@@ -7076,10 +7076,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! $this->occurrences->is_group_child( $post_id ) ) {
             return false;
         }
+        // The engine's own closed flag first — it is the exact predicate
+        // children() filters on, and unlike the parent lookup below it survives
+        // the parent being trashed or deleted (MODEL-D22). Without it, a
+        // soft-closed occurrence orphaned by a deleted parent would read as
+        // "not closed" and lose its "no longer available" notice.
+        if ( $this->occurrences->is_closed( $post_id ) ) {
+            return true;
+        }
         $parent_id = $this->occurrences->parent_of( $post_id );
         if ( $parent_id <= 0 ) {
             return false;
         }
+        // Still asked, because children() also drops an unpublished child and a
+        // non-canonical duplicate of an occurrence key — neither of which the
+        // closed flag records.
         return ! \in_array( $post_id, $this->occurrences->children( $parent_id, false ), true );
     }
 

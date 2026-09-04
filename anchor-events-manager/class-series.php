@@ -187,7 +187,11 @@ class Series {
         }
         $parent_id = $occ->parent_of( $event_id );
         if ( $parent_id <= 0 ) {
-            return $event_id;
+            // No live parent (trashed or deleted — MODEL-D22). The child is on
+            // its own, so it represents itself — unless it is soft-closed, which
+            // is the same exclusion the children() check below applies and the
+            // one thing the archive must still honour without a parent.
+            return $occ->is_closed( $event_id ) ? 0 : $event_id;
         }
         if ( ! \in_array( $event_id, $occ->children( $parent_id, false ), true ) ) {
             return 0; // Soft-closed — excluded from the archive entirely.

@@ -305,6 +305,46 @@ class Test_Foreign_Keys extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * Losing the parent must not un-close a soft-closed occurrence: the engine's
+	 * own closed flag, not the parent lookup, is what says "no longer available".
+	 */
+	public function test_soft_closed_child_stays_closed_after_its_parent_is_deleted() {
+		$parent_id = $this->make_event( [ 'title' => 'Workshop', 'timezone' => 'UTC' ] );
+		update_post_meta(
+			$parent_id,
+			'_anchor_event_offering_dates',
+			[
+				[ 'date' => '2027-06-01', 'start_time' => '09:00', 'end_time' => '11:00' ],
+				[ 'date' => '2027-06-08', 'start_time' => '09:00', 'end_time' => '11:00' ],
+			]
+		);
+		$children = $this->occurrences()->reconcile( $parent_id );
+		$child_id = (int) $children[0];
+
+		// A seated occurrence is preserved (soft-closed) rather than trashed when
+		// its date is dropped from the parent.
+		$this->make_seat( $child_id );
+		update_post_meta(
+			$parent_id,
+			'_anchor_event_offering_dates',
+			[ [ 'date' => '2027-06-08', 'start_time' => '09:00', 'end_time' => '11:00' ] ]
+		);
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( $this->occurrences()->is_closed( $child_id ) );
+		$this->assertSame( 'closed', $this->module()->bookability( $child_id ) );
+
+		wp_delete_post( $parent_id, true );
+		wp_cache_flush();
+
+		$this->assertSame( 0, $this->occurrences()->parent_of( $child_id ) );
+		$this->assertSame(
+			'closed',
+			$this->module()->bookability( $child_id ),
+			'An orphaned soft-closed occurrence is still closed.'
+		);
+	}
+
 	/** A group_id pointing at a non-event post resolves to 0. */
 	public function test_parent_of_is_zero_for_wrong_post_type() {
 		$child_id = $this->make_event( [ 'title' => 'Orphan' ] );

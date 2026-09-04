@@ -1309,7 +1309,7 @@ class Roster {
         ?>
         <div class="anchor-event-section">
             <h3><?php \esc_html_e( 'Add an attendee', 'anchor-schema' ); ?></h3>
-            <p class="anchor-roster-fe-help"><?php \esc_html_e( 'Seats added here are real registrations: they count against capacity, appear in the export, and receive the same confirmation and reminder emails as a public sign-up. Untick “Send the confirmation email” to add somebody silently — reminders still go out.', 'anchor-schema' ); ?></p>
+            <p class="anchor-roster-fe-help"><?php echo \esc_html( $this->add_form_help( $event_id ) ); ?></p>
             <form method="post" action="<?php echo \esc_url( \admin_url( 'admin-post.php' ) ); ?>" class="anchor-roster-fe-form">
                 <input type="hidden" name="action" value="anchor_roster_add" />
                 <input type="hidden" name="event_id" value="<?php echo \esc_attr( (string) $event_id ); ?>" />
@@ -1366,6 +1366,41 @@ class Roster {
         </div>
         <?php
         return (string) \ob_get_clean();
+    }
+
+    /**
+     * What a manual add on this event will actually do about email.
+     *
+     * REG-D57 — this used to be one fixed sentence promising that a manually
+     * added seat "receives the same confirmation and reminder emails as a
+     * public sign-up" and that "reminders still go out" even when the
+     * confirmation is unticked. Neither is a fact about the site: reminders
+     * reach the seat only while the site-wide reminder sweep is on AND this
+     * event's reminder switch is untouched, and the confirmation is likewise
+     * per-event — and none of that is visible from this form. The sentence is
+     * derived from the same two answers the sender asks.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    private function add_form_help( $event_id ) {
+        $settings     = $this->module->get_settings();
+        $confirmation = ! empty( $settings['notify_user'] ) && $this->module->is_email_enabled( (int) $event_id, 'confirmation' );
+        $reminders    = ! empty( $settings['reminder_enabled'] ) && $this->module->is_email_enabled( (int) $event_id, 'reminder' );
+
+        $text = \__( 'Seats added here are real registrations: they count against capacity and appear in the export.', 'anchor-schema' );
+
+        if ( $confirmation ) {
+            $text .= ' ' . \__( 'This event sends a confirmation email — untick “Send the confirmation email” to add somebody silently.', 'anchor-schema' );
+        } else {
+            $text .= ' ' . \__( 'This event is not sending confirmation emails, so nothing is emailed on add.', 'anchor-schema' );
+        }
+
+        $text .= ' ' . ( $reminders
+            ? \__( 'Reminder emails are on for this event, so the seat will get them.', 'anchor-schema' )
+            : \__( 'Reminder emails are off for this event, so the seat will not get any.', 'anchor-schema' ) );
+
+        return $text;
     }
 
     /** Edit one seat from the front-end console. */

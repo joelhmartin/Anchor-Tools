@@ -241,6 +241,45 @@ class Test_Roster extends Anchor_Events_TestCase {
 	}
 
 	/* -----------------------------------------------------------------
+	 * REG-D57 — the console's help text describes this site, not a hope
+	 * --------------------------------------------------------------- */
+
+	public function test_the_console_add_form_says_reminders_are_off_when_they_are() {
+		$this->set_notifications( true );
+		$event_id = $this->make_event(); // reminder_enabled defaults to false
+
+		$html = $this->module()->roster->render_frontend( $event_id, home_url( '/console/' ) );
+
+		$this->assertStringContainsString( 'Reminder emails are off', $html );
+		$this->assertStringNotContainsString( 'reminders still go out', $html );
+	}
+
+	public function test_the_console_add_form_says_reminders_are_on_when_they_are() {
+		$settings                     = $this->module()->get_settings();
+		$settings['notify_user']      = true;
+		$settings['reminder_enabled'] = true;
+		update_option( Module::OPTION_KEY, $settings, false );
+
+		$event_id = $this->make_event();
+		$html     = $this->module()->roster->render_frontend( $event_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'Reminder emails are on', $html );
+
+		// ...and off again the moment this event's own switch is unticked.
+		update_post_meta( $event_id, '_anchor_event_email_off_reminder', '1' );
+		$html = $this->module()->roster->render_frontend( $event_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'Reminder emails are off', $html );
+	}
+
+	public function test_the_console_add_form_does_not_promise_an_unsent_confirmation() {
+		$this->set_notifications( false );
+		$event_id = $this->make_event();
+
+		$html = $this->module()->roster->render_frontend( $event_id, home_url( '/console/' ) );
+
+		$this->assertStringContainsString( 'not sending confirmation emails', $html );
+	}
+
+	/* -----------------------------------------------------------------
 	 * REG-D56 — the admin screen and the console share their decisions
 	 * --------------------------------------------------------------- */
 

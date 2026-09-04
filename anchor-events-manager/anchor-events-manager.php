@@ -187,6 +187,19 @@ class Module {
     const EMAIL_RETRY_BATCH = 100;
 
     /**
+     * finding-14 — a reminder marker's value distinguishes THREE things, not
+     * two: a real send timestamp (>0), superseded by a nearer due offset (0,
+     * REG-D3 — never attempted, so "past" is the honest state), and abandoned
+     * after MAX_EMAIL_ATTEMPTS failed deliveries (this sentinel). Before this
+     * existed, queue_email_retry() wrote the SAME 0 a supersession does, so
+     * compute_email_schedule()/the Upcoming Sends panel reported a mailer
+     * that failed three times in a row identically to an offset that was
+     * simply never due — "past — not sent", not the delivery failure it
+     * actually was.
+     */
+    const REMINDER_ABANDONED_MARKER = -1;
+
+    /**
      * How far ahead the hourly reminder sweep will ever look, in days
      * (audit REG-D36). The scan window is normally the largest reminder offset
      * in play; this is the ceiling on that, so one absurd per-event offset
@@ -1054,7 +1067,10 @@ class Module {
      * @param int $seat_id
      * @param int $start_ts
      * @param int $offset
-     * @param int $sent_at  Send time, or 0 for "superseded by a nearer offset".
+     * @param int $sent_at  Send time; 0 for "superseded by a nearer offset"
+     *                      (REG-D3); self::REMINDER_ABANDONED_MARKER for
+     *                      "gave up after MAX_EMAIL_ATTEMPTS failed sends"
+     *                      (finding-14).
      */
     private function mark_reminder_sent( $seat_id, $start_ts, $offset, $sent_at ) {
         $raw = \get_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, true );
@@ -1164,9 +1180,12 @@ class Module {
             // exists, so an unmarked offset would be picked up by the very same
             // sweep's reminder pass, sent, and re-queued at one attempt — a
             // permanently failing mailer would cycle for ever and fill the
-            // capped error log. Marking it superseded (0) ends it for good.
+            // capped error log. finding-14 — this used to mark it superseded
+            // (0), which compute_email_schedule() cannot tell apart from a
+            // real supersession (REG-D3); the dedicated sentinel lets the
+            // Upcoming Sends panel report a delivery failure as one.
             if ( 'reminder' === $type && (int) ( $job['start_ts'] ?? 0 ) > 0 && (int) ( $job['offset'] ?? 0 ) > 0 ) {
-                $this->mark_reminder_sent( $seat_id, (int) $job['start_ts'], (int) $job['offset'], 0 );
+                $this->mark_reminder_sent( $seat_id, (int) $job['start_ts'], (int) $job['offset'], self::REMINDER_ABANDONED_MARKER );
             }
 
             Events_Log::error( 'email_retry_abandoned', [
@@ -1501,7 +1520,7 @@ class Module {
      *       'recipient'    => string,     // human-readable recipient description
      *       'sent_count'   => int,        // reminders: seats w/ the offset marker; roster: 0|1
      *       'total_count'  => int,        // reminders: confirmed seats; roster: 1
-     *       'state'        => 'sent'|'partial'|'scheduled'|'past',
+     *       'state'        => 'sent'|'partial'|'scheduled'|'past'|'failed',
      *     ],
      *     ...
      *   ],
@@ -1564,16 +1583,23 @@ class Module {
             $total = \count( $seats['items'] );
 
             foreach ( $this->effective_offsets( $event_id, $settings, $meta ) as $offset ) {
-                $scheduled_ts = $start_ts - ( $offset * DAY_IN_SECONDS );
-                $sent_count   = 0;
+                $scheduled_ts    = $start_ts - ( $offset * DAY_IN_SECONDS );
+                $sent_count      = 0;
+                $abandoned_count = 0;
                 foreach ( $seats['items'] as $seat ) {
                     // Markers are read, never migrated, here — this method is
                     // documented as having no side effects. A 0 marker means
                     // the offset was superseded by a nearer reminder (REG-D3)
                     // and was never actually sent, so it must not be counted:
-                    // the row then reports 'past', which is the truth.
+                    // the row then reports 'past', which is the truth. The
+                    // dedicated abandoned sentinel (finding-14) is a THIRD,
+                    // distinct case — a real delivery failure, not a no-op —
+                    // counted separately so the row can say so.
                     $sent_map = $this->reminder_markers( $seat['id'], $start_ts );
-                    if ( ! empty( $sent_map[ $offset ] ) ) {
+                    $marker   = $sent_map[ $offset ] ?? null;
+                    if ( null !== $marker && (int) $marker === self::REMINDER_ABANDONED_MARKER ) {
+                        $abandoned_count++;
+                    } elseif ( ! empty( $marker ) ) {
                         $sent_count++;
                     }
                 }
@@ -1588,7 +1614,7 @@ class Module {
                     ),
                     'sent_count'   => $sent_count,
                     'total_count'  => $total,
-                    'state'        => $this->schedule_row_state( $scheduled_ts, $now, $sent_count, $total ),
+                    'state'        => $this->schedule_row_state( $scheduled_ts, $now, $sent_count, $total, $abandoned_count ),
                 ];
             }
         }
@@ -1626,6 +1652,9 @@ class Module {
      * - 'partial'   : some, but not all, confirmed seats have it — honestly
      *                 surfaces mixed state instead of collapsing it into
      *                 either "sent" or "scheduled".
+     * - 'failed'    : (finding-14) nothing sent, but at least one confirmed
+     *                 seat's retry was abandoned after MAX_EMAIL_ATTEMPTS —
+     *                 a real delivery failure, not merely unsent yet.
      * - 'scheduled' : none sent yet, send window still in the future.
      * - 'past'      : none sent yet, send window already passed (e.g.
      *                 reminders were enabled after the window elapsed).
@@ -1634,14 +1663,18 @@ class Module {
      * @param int $now
      * @param int $sent_count
      * @param int $total_count
+     * @param int $abandoned_count
      * @return string
      */
-    private function schedule_row_state( $scheduled_ts, $now, $sent_count, $total_count ) {
+    private function schedule_row_state( $scheduled_ts, $now, $sent_count, $total_count, $abandoned_count = 0 ) {
         if ( $total_count > 0 && $sent_count === $total_count ) {
             return 'sent';
         }
         if ( $sent_count > 0 ) {
             return 'partial';
+        }
+        if ( $abandoned_count > 0 ) {
+            return 'failed';
         }
         return $now < $scheduled_ts ? 'scheduled' : 'past';
     }
@@ -4496,6 +4529,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'sent'      => __( 'Sent', 'anchor-schema' ),
             'scheduled' => __( 'Scheduled', 'anchor-schema' ),
             'past'      => __( 'Past — not sent', 'anchor-schema' ),
+            // finding-14 — a 'failed' row means at least one confirmed seat's
+            // retry was abandoned after MAX_EMAIL_ATTEMPTS, not merely that
+            // the window passed unattempted (that is still 'past').
+            'failed'    => \sprintf(
+                /* translators: %d: number of delivery attempts made before giving up. */
+                __( 'Failed after %d attempts', 'anchor-schema' ),
+                self::MAX_EMAIL_ATTEMPTS
+            ),
         ];
         $date_format = \get_option( 'date_format' ) . ' ' . \get_option( 'time_format' );
 

@@ -641,7 +641,15 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( 3, $attempts, 'After giving up, the sweep is silent about this offset for ever.' );
 
 		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ) );
-		$this->assertSame( 0, (int) ( $this->markers( $seat_id, $start_ts )[1] ?? -1 ), 'The abandoned offset is marked superseded, not left open.' );
+		// finding-14 — abandoned after MAX_EMAIL_ATTEMPTS is its OWN sentinel
+		// now, distinct from a plain supersession's 0, so the Upcoming Sends
+		// panel can tell the two apart; either way the offset is marked
+		// (not left open) so the sweep never re-attempts it.
+		$this->assertSame(
+			Module::REMINDER_ABANDONED_MARKER,
+			(int) ( $this->markers( $seat_id, $start_ts )[1] ?? 1 ),
+			'The abandoned offset is marked with the abandoned sentinel, not left open.'
+		);
 		$this->assertSame( 1, $this->log_count( 'email_retry_abandoned' ), 'One abandon entry — not one per hour for ever.' );
 	}
 

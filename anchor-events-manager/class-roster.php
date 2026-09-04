@@ -321,25 +321,50 @@ class Roster {
         echo '</form>';
     }
 
+    /**
+     * The stored values a seat edit form fills itself from, or null when the
+     * seat does not belong to this event (REG-D48).
+     *
+     * REG-D56 — one reader. render_edit_form() and frontend_edit_form() each
+     * pulled the same five/six meta keys by hand, so they had already drifted:
+     * only the admin form knew about `source`, only the console keyed its
+     * WooCommerce warning off `order_id`, and adding a field meant remembering
+     * both. This returns the seat DTO the rest of the module already uses.
+     *
+     * @param int $event_id
+     * @param int $seat_id
+     * @return array|null
+     */
+    private function seat_form_values( $event_id, $seat_id ) {
+        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
+            return null;
+        }
+        return $this->registrations->get_seat( (int) $seat_id );
+    }
+
+    /** Is this seat owned by a WooCommerce order (so its money fields are read-only)? */
+    private static function seat_is_order_owned( array $seat ) {
+        return ( (string) ( $seat['source'] ?? '' ) === 'woocommerce' ) || ( (int) ( $seat['order_id'] ?? 0 ) > 0 );
+    }
+
     private function render_edit_form( $event_id, $seat_id ) {
         $event_id = (int) $event_id;
         $seat_id  = (int) $seat_id;
         // REG-D48 — the read side needs the same scoping as handle_edit(): the seat
         // id arrives in $_GET, and rendering another event's seat here would print
         // that event's attendee name, email and phone under this event's heading.
-        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
+        $seat = $this->seat_form_values( $event_id, $seat_id );
+        if ( null === $seat ) {
             echo '<div class="notice notice-error inline"><p>'
                 . \esc_html__( 'Seat not found.', 'anchor-schema' ) . '</p></div>';
             return;
         }
-        // Reads only — never written from here.
-        $name   = (string) \get_post_meta( $seat_id, '_anchor_event_name', true );
-        $email  = (string) \get_post_meta( $seat_id, '_anchor_event_email', true );
-        $phone  = (string) \get_post_meta( $seat_id, '_anchor_event_phone', true );
-        $status = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
-        $source = (string) \get_post_meta( $seat_id, '_anchor_event_source', true );
-        $oid    = (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true );
-        $is_woo = ( $source === 'woocommerce' );
+        $name   = (string) $seat['name'];
+        $email  = (string) $seat['email'];
+        $phone  = (string) $seat['phone'];
+        $status = (string) $seat['status'];
+        $oid    = (int) $seat['order_id'];
+        $is_woo = self::seat_is_order_owned( $seat );
 
         echo '<div class="anchor-roster-edit" style="margin:12px 0;padding:12px 16px;background:#fff;border:1px solid #2271b1;border-radius:3px;">';
         echo '<h2 style="margin-top:0;">' . \esc_html__( 'Edit seat', 'anchor-schema' ) . ' #' . \esc_html( (string) $seat_id ) . '</h2>';
@@ -394,10 +419,24 @@ class Roster {
      *
      * @param int $event_id
      */
-    private function tier_row( $event_id ) {
+    /**
+     * Active ticket tiers for the seat forms: id => label (price appended when
+     * there is one), plus the id a fresh form should preselect.
+     *
+     * REG-D56 — ONE resolver. The admin form's tier_row() and the console's
+     * frontend_tier_choices() each carried their own copy of these rules
+     * (active tiers, fall back to all tiers when none is active, label
+     * fallback, wc_price() formatting), so the two screens could answer
+     * differently about the same event and any fix had to be made twice. The
+     * markup is still per-screen; the decision is not.
+     *
+     * @param int $event_id
+     * @return array{choices:array<string,string>,primary:string}
+     */
+    private function tier_choices( $event_id ) {
         $tt = isset( $this->module->ticket_types ) ? $this->module->ticket_types : null;
         if ( ! $tt ) {
-            return;
+            return [ 'choices' => [], 'primary' => 'primary' ];
         }
         $tiers  = (array) $tt->get( (int) $event_id );
         $active = [];
@@ -410,25 +449,36 @@ class Roster {
             // Defensive: keep at least the implicit primary so the field is usable.
             $active = $tiers;
         }
-        if ( empty( $active ) ) {
-            return;
-        }
 
-        $primary = (string) $tt->primary_id( (int) $event_id );
-
-        echo '<tr><th scope="row"><label for="roster_ticket_type">' . \esc_html__( 'Ticket type', 'anchor-schema' ) . '</label></th><td>';
-        echo '<select name="roster_ticket_type" id="roster_ticket_type">';
+        $choices = [];
         foreach ( $active as $t ) {
             $id    = (string) ( $t['id'] ?? 'primary' );
             $label = ( isset( $t['label'] ) && $t['label'] !== '' ) ? (string) $t['label'] : \__( 'Registration', 'anchor-schema' );
             $price = (float) ( $t['price'] ?? 0 );
             if ( $price > 0 ) {
-                $price_str = \function_exists( 'wc_price' )
+                $label .= ' — ' . ( \function_exists( 'wc_price' )
                     ? \wp_strip_all_tags( \wc_price( $price ) )
-                    : \number_format_i18n( $price, 2 );
-                $label    .= ' — ' . $price_str;
+                    : \number_format_i18n( $price, 2 ) );
             }
-            echo '<option value="' . \esc_attr( $id ) . '"' . \selected( $primary, $id, false ) . '>' . \esc_html( $label ) . '</option>';
+            $choices[ $id ] = $label;
+        }
+
+        return [
+            'choices' => $choices,
+            'primary' => (string) $tt->primary_id( (int) $event_id ),
+        ];
+    }
+
+    private function tier_row( $event_id ) {
+        $tiers = $this->tier_choices( $event_id );
+        if ( empty( $tiers['choices'] ) ) {
+            return;
+        }
+
+        echo '<tr><th scope="row"><label for="roster_ticket_type">' . \esc_html__( 'Ticket type', 'anchor-schema' ) . '</label></th><td>';
+        echo '<select name="roster_ticket_type" id="roster_ticket_type">';
+        foreach ( $tiers['choices'] as $id => $label ) {
+            echo '<option value="' . \esc_attr( $id ) . '"' . \selected( $tiers['primary'], $id, false ) . '>' . \esc_html( $label ) . '</option>';
         }
         echo '</select>';
         echo '</td></tr>';
@@ -862,17 +912,34 @@ class Roster {
         exit;
     }
 
-    private function maybe_render_notice() {
+    /**
+     * The redirect notice a seat action left behind, or null when there is
+     * none. REG-D56 — one reader for the `roster_msg`/`roster_type` pair; the
+     * admin screen and the console each render it in their own markup.
+     *
+     * @return array{message:string,type:string}|null
+     */
+    private function notice_parts() {
         if ( empty( $_GET['roster_msg'] ) ) {
-            return;
+            return null;
         }
-        $msg  = \sanitize_text_field( \rawurldecode( \wp_unslash( $_GET['roster_msg'] ) ) );
-        $type = ( isset( $_GET['roster_type'] ) && \wp_unslash( $_GET['roster_type'] ) === 'error' ) ? 'error' : 'success';
+        $msg = \sanitize_text_field( \rawurldecode( \wp_unslash( $_GET['roster_msg'] ) ) );
         if ( $msg === '' ) {
+            return null;
+        }
+        return [
+            'message' => $msg,
+            'type'    => ( isset( $_GET['roster_type'] ) && \wp_unslash( $_GET['roster_type'] ) === 'error' ) ? 'error' : 'success',
+        ];
+    }
+
+    private function maybe_render_notice() {
+        $notice = $this->notice_parts();
+        if ( null === $notice ) {
             return;
         }
-        echo '<div class="notice notice-' . ( $type === 'error' ? 'error' : 'success' ) . ' is-dismissible"><p>'
-            . \esc_html( $msg ) . '</p></div>';
+        echo '<div class="notice notice-' . ( $notice['type'] === 'error' ? 'error' : 'success' ) . ' is-dismissible"><p>'
+            . \esc_html( $notice['message'] ) . '</p></div>';
     }
 
     /* ---------------------------------------------------------------------
@@ -1235,7 +1302,8 @@ class Roster {
     /** Manual "add attendee" form for the front-end console. */
     private function frontend_add_form( $event_id, $self_url ) {
         $event_id = (int) $event_id;
-        $tiers    = $this->frontend_tier_choices( $event_id );
+        // REG-D56 — the same resolver the admin form uses.
+        $tiers    = $this->tier_choices( $event_id )['choices'];
 
         \ob_start();
         ?>
@@ -1306,21 +1374,22 @@ class Roster {
         $seat_id  = (int) $seat_id;
         // REG-D48 — checked at the call site too; repeated here so the method can
         // never be the one that prints a foreign event's attendee details.
-        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
+        $seat = $this->seat_form_values( $event_id, $seat_id );
+        if ( null === $seat ) {
             return '<p class="anchor-roster-fe-warn">' . \esc_html__( 'Seat not found.', 'anchor-schema' ) . '</p>';
         }
 
-        $name   = (string) \get_post_meta( $seat_id, '_anchor_event_name', true );
-        $email  = (string) \get_post_meta( $seat_id, '_anchor_event_email', true );
-        $phone  = (string) \get_post_meta( $seat_id, '_anchor_event_phone', true );
-        $status = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
-        $order  = (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true );
+        $name   = (string) $seat['name'];
+        $email  = (string) $seat['email'];
+        $phone  = (string) $seat['phone'];
+        $status = (string) $seat['status'];
+        $is_woo = self::seat_is_order_owned( $seat );
 
         \ob_start();
         ?>
         <div class="anchor-event-section anchor-roster-fe-editing">
             <h3><?php \esc_html_e( 'Edit seat', 'anchor-schema' ); ?> #<?php echo (int) $seat_id; ?></h3>
-            <?php if ( $order > 0 ) : ?>
+            <?php if ( $is_woo ) : ?>
                 <p class="anchor-roster-fe-help"><?php \esc_html_e( 'This seat came from a WooCommerce order — cancel or refund it in the order so payment and seats stay in step.', 'anchor-schema' ); ?></p>
             <?php endif; ?>
             <form method="post" action="<?php echo \esc_url( \admin_url( 'admin-post.php' ) ); ?>" class="anchor-roster-fe-form">
@@ -1361,53 +1430,14 @@ class Roster {
         return (string) \ob_get_clean();
     }
 
-    /**
-     * Active ticket tiers as id => label, primary first. Same resolution rules as
-     * tier_row(); returned as data so the front-end form can lay it out itself.
-     *
-     * @param int $event_id
-     * @return array<string,string>
-     */
-    private function frontend_tier_choices( $event_id ) {
-        $tt = isset( $this->module->ticket_types ) ? $this->module->ticket_types : null;
-        if ( ! $tt ) {
-            return [];
-        }
-        $tiers  = (array) $tt->get( (int) $event_id );
-        $active = [];
-        foreach ( $tiers as $t ) {
-            if ( ! empty( $t['active'] ) ) {
-                $active[] = $t;
-            }
-        }
-        if ( empty( $active ) ) {
-            $active = $tiers;
-        }
-
-        $out = [];
-        foreach ( $active as $t ) {
-            $id    = (string) ( $t['id'] ?? 'primary' );
-            $label = ( isset( $t['label'] ) && $t['label'] !== '' ) ? (string) $t['label'] : \__( 'Registration', 'anchor-schema' );
-            $price = (float) ( $t['price'] ?? 0 );
-            if ( $price > 0 ) {
-                $label .= ' — ' . ( \function_exists( 'wc_price' ) ? \wp_strip_all_tags( \wc_price( $price ) ) : \number_format_i18n( $price, 2 ) );
-            }
-            $out[ $id ] = $label;
-        }
-        return $out;
-    }
-
-    /** The roster_msg/roster_type notice, in front-end markup. */
+    /** The same notice as maybe_render_notice(), in front-end markup. */
     private function frontend_notice() {
-        if ( empty( $_GET['roster_msg'] ) ) {
+        $notice = $this->notice_parts();
+        if ( null === $notice ) {
             return '';
         }
-        $msg = \sanitize_text_field( \rawurldecode( \wp_unslash( $_GET['roster_msg'] ) ) );
-        if ( $msg === '' ) {
-            return '';
-        }
-        $type = ( isset( $_GET['roster_type'] ) && \wp_unslash( $_GET['roster_type'] ) === 'error' ) ? 'is-error' : 'is-ok';
-        return '<div class="anchor-event-manager-notice ' . \esc_attr( $type ) . '">' . \esc_html( $msg ) . '</div>';
+        $class = $notice['type'] === 'error' ? 'is-error' : 'is-ok';
+        return '<div class="anchor-event-manager-notice ' . \esc_attr( $class ) . '">' . \esc_html( $notice['message'] ) . '</div>';
     }
 }
 

@@ -241,6 +241,69 @@ class Test_Roster extends Anchor_Events_TestCase {
 	}
 
 	/* -----------------------------------------------------------------
+	 * REG-D56 — the admin screen and the console share their decisions
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * The two seat edit forms resolved the same seat by hand, from different
+	 * meta keys, and had drifted: only the admin one knew about `source`, only
+	 * the console keyed its WooCommerce warning off `order_id`. One resolver
+	 * now answers both, so a seat that came from an order is described the
+	 * same way on either screen.
+	 */
+	public function test_both_seat_edit_forms_resolve_the_same_seat_values() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [
+			'name'   => 'Paid Attendee',
+			'email'  => 'paid@example.org',
+			'phone'  => '555-0100',
+			'source' => 'woocommerce',
+			'status' => Registrations::STATUS_CONFIRMED,
+		] );
+
+		$admin = new ReflectionMethod( $this->module()->roster, 'render_edit_form' );
+		$admin->setAccessible( true );
+		ob_start();
+		$admin->invoke( $this->module()->roster, $event_id, $seat_id );
+		$admin_html = (string) ob_get_clean();
+
+		$console = new ReflectionMethod( $this->module()->roster, 'frontend_edit_form' );
+		$console->setAccessible( true );
+		$console_html = (string) $console->invoke( $this->module()->roster, $event_id, $seat_id, home_url( '/console/' ) );
+
+		foreach ( [ $admin_html, $console_html ] as $html ) {
+			$this->assertStringContainsString( 'Paid Attendee', $html );
+			$this->assertStringContainsString( 'paid@example.org', $html );
+			$this->assertStringContainsString( '555-0100', $html );
+			// Both screens now agree that this seat belongs to an order.
+			$this->assertStringContainsString( 'WooCommerce', $html );
+		}
+	}
+
+	/** One tier resolver, so both forms offer the same choices. */
+	public function test_both_add_forms_offer_the_same_ticket_tiers() {
+		$event_id = $this->make_event();
+		$this->ticket_types()->save( $event_id, [
+			[ 'id' => 'primary', 'label' => 'Doctor', 'price' => 0, 'active' => true ],
+			[ 'id' => 'staff', 'label' => 'Staff', 'price' => 0, 'active' => true ],
+		] );
+
+		$admin_m = new ReflectionMethod( $this->module()->roster, 'render_add_form' );
+		$admin_m->setAccessible( true );
+		ob_start();
+		$admin_m->invoke( $this->module()->roster, $event_id );
+		$admin = (string) ob_get_clean();
+
+		$console = $this->module()->roster->render_frontend( $event_id, home_url( '/console/' ) );
+
+		foreach ( [ $admin, $console ] as $html ) {
+			$this->assertStringContainsString( 'value="primary"', $html );
+			$this->assertStringContainsString( 'value="staff"', $html );
+			$this->assertStringContainsString( 'Staff', $html );
+		}
+	}
+
+	/* -----------------------------------------------------------------
 	 * REG-D33 — one status list, not two
 	 * --------------------------------------------------------------- */
 

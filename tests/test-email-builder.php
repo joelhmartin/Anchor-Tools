@@ -694,6 +694,16 @@ class Test_Email_Builder extends Anchor_Events_TestCase {
 		$tokens = $method->invoke( $this->module() );
 		$this->assertNotEmpty( $tokens );
 
+		// The wording palette IS the subject/intro map's key set, in its order
+		// — not a hand-typed list that happens to hold the same names today.
+		$wording = new ReflectionMethod( $this->module(), 'wording_email_tokens' );
+		$wording->setAccessible( true );
+		$this->assertSame(
+			array_keys( $this->module()->email_tokens( [] ) ),
+			$wording->invoke( $this->module() ),
+			'The wording palette must be read off email_tokens(), not re-typed beside it.'
+		);
+
 		$event_id = $this->make_event( [ 'title' => 'Palette Event' ] );
 		$template = '';
 		foreach ( $tokens as $token ) {
@@ -718,6 +728,15 @@ class Test_Email_Builder extends Anchor_Events_TestCase {
 				'The palette offers {' . $token . '}, but the body map never builds it.'
 			);
 		}
+
+		// And every wording token resolves where wording is expanded.
+		$subject = $this->module()->expand_email_tokens(
+			implode( '|', array_map( static function ( $t ) {
+				return '{' . $t . '}';
+			}, $wording->invoke( $this->module() ) ) ),
+			$this->module()->email_tokens( [ 'event_id' => $event_id ] )
+		);
+		$this->assertStringNotContainsString( '{', $subject, 'A wording palette button must not reach the inbox as literal text.' );
 
 		delete_post_meta( $event_id, '_anchor_event_email_tpl_confirmation' );
 	}

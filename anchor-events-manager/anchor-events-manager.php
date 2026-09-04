@@ -200,14 +200,6 @@ class Module {
     /** Unsaved subject/intro supplied by a live preview request; see get_email_field(). */
     private $preview_field_override = null;
 
-    /**
-     * The event a send_html_email() call is currently in the middle of, so the
-     * wp_mail_failed handler — which is handed nothing but a WP_Error — can name
-     * the same subject the call site does (REG-D46). 0 outside a send.
-     *
-     * @var int
-     */
-    private $sending_event_id = 0;
 
     /**
      * The mailer's own reason for the send in progress, captured from the
@@ -1621,18 +1613,13 @@ class Module {
                 array_unshift( $headers, 'Content-Type: text/html; charset=UTF-8' );
             }
         }
-        // REG-D46 — carry the event through wp_mail so capture_mail_failure()
-        // (a wp_mail_failed handler, which is handed nothing but the WP_Error)
-        // can name the same subject this call site does.
-        $previous_event         = $this->sending_event_id;
-        $previous_error         = $this->last_mail_error;
-        $this->sending_event_id = (int) $event_id;
-        $this->last_mail_error  = null;
-        try {
-            $sent = \wp_mail( $to, $subject, $html, $headers );
-        } finally {
-            $this->sending_event_id = $previous_event;
-        }
+        // REG-D46 named the event on the failure row; REG-D63 made this the ONE
+        // place that writes it, so the event no longer has to be smuggled to
+        // the wp_mail_failed handler through a request-scoped property — it is
+        // right here as $event_id.
+        $previous_error        = $this->last_mail_error;
+        $this->last_mail_error = null;
+        $sent                  = \wp_mail( $to, $subject, $html, $headers );
         if ( ! $sent ) {
             // REG-D63 — ONE row per failed send, carrying the mailer's own
             // reason when there is one. wp_mail() can answer false without ever
@@ -1720,15 +1707,7 @@ class Module {
      * one typo should not cost an event its confirmation emails.
      */
     public function email_address_list( $raw ) {
-        $parts = \preg_split( '/[,;\r\n]+/', (string) $raw, -1, PREG_SPLIT_NO_EMPTY );
-        $out   = [];
-        foreach ( (array) $parts as $part ) {
-            $address = \sanitize_email( \trim( $part ) );
-            if ( $address !== '' && \is_email( $address ) ) {
-                $out[] = $address;
-            }
-        }
-        return $out;
+        return $this->split_email_address_list( $raw )['kept'];
     }
 
     /**
@@ -1744,19 +1723,39 @@ class Module {
      * @return string[]
      */
     public function rejected_email_addresses( $raw ) {
-        $parts = \preg_split( '/[,;\r\n]+/', (string) $raw, -1, PREG_SPLIT_NO_EMPTY );
-        $out   = [];
+        return $this->split_email_address_list( $raw )['dropped'];
+    }
+
+    /**
+     * The one splitter both of the above read: every entry of a comma/newline
+     * separated address list, sorted into the addresses that survived and the
+     * fragments that did not.
+     *
+     * One implementation, because the two answers have to agree by
+     * construction — a second copy of the split/trim/validate rules is a
+     * notice that names an entry the saver actually kept, or stays silent
+     * about one it threw away.
+     *
+     * @param string $raw
+     * @return array{kept:string[],dropped:string[]}
+     */
+    private function split_email_address_list( $raw ) {
+        $parts   = \preg_split( '/[,;\r\n]+/', (string) $raw, -1, PREG_SPLIT_NO_EMPTY );
+        $kept    = [];
+        $dropped = [];
         foreach ( (array) $parts as $part ) {
             $part = \trim( $part );
             if ( $part === '' ) {
                 continue;
             }
             $address = \sanitize_email( $part );
-            if ( $address === '' || ! \is_email( $address ) ) {
-                $out[] = $part;
+            if ( $address !== '' && \is_email( $address ) ) {
+                $kept[] = $address;
+            } else {
+                $dropped[] = $part;
             }
         }
-        return $out;
+        return [ 'kept' => $kept, 'dropped' => $dropped ];
     }
 
     /** Quote a display name for an email header if it contains characters that need it. */
@@ -4070,12 +4069,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
             $raw = \wp_unslash( $src[ $form ] );
             if ( $clean === 'list' ) {
-                $kept  = $this->email_address_list( $raw );
-                $value = \implode( ', ', $kept );
                 // REG-D61 — the drop stays (a malformed Cc can bounce the whole
                 // message), but the person who typed it is told which entries
                 // did not survive instead of watching the field empty itself.
-                $dropped = $this->rejected_email_addresses( $raw );
+                // One split answers both halves.
+                $split   = $this->split_email_address_list( $raw );
+                $value   = \implode( ', ', $split['kept'] );
+                $dropped = $split['dropped'];
                 if ( ! empty( $dropped ) ) {
                     $this->queue_group_notice(
                         $key === 'email_bcc' ? 'email_bcc_invalid' : 'email_cc_invalid',
@@ -5986,16 +5986,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
         }
         return $out;
-    }
-
-    /**
-     * The queued codes for a post, WITHOUT consuming them.
-     *
-     * @param int $post_id
-     * @return string[]
-     */
-    private function queued_group_notice_codes( $post_id ) {
-        return \array_keys( $this->queued_group_notice_entries( $post_id ) );
     }
 
     /** One notice's copy, with the detail it names appended when there is one. */
@@ -9495,7 +9485,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[confirmation_subject]" value="<?php echo esc_attr( $opts['confirmation_subject'] ); ?>" class="regular-text" />
             <p class="description"><?php echo esc_html__( 'Subject line for the attendee confirmation. Tokens: {event_title}, {attendee_name}, {event_date}, {site_name}.', 'anchor-schema' ); ?></p>
             <?php
-        }, 'anchor_events_settings', 'anchor_events_emails' );
+        }, 'anchor_events_settings', 'anchor_events_registration' );
 
         \add_settings_field( 'confirmation_message', __( 'Confirmation message', 'anchor-schema' ), function() {
             $opts = $this->get_settings();
@@ -9801,7 +9791,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /** Normalize a CSV of day offsets → sorted-descending, de-duped, positive ints (≤5). */
     private function sanitize_offset_csv( $raw ) {
-        $days = array_filter( array_map( 'intval', explode( ',', (string) $raw ) ), function ( $d ) { return $d > 0; } );
+        // REG-D36 — an offset larger than the sweep's horizon can never fire:
+        // the scan would have to look further ahead than REMINDER_HORIZON_DAYS
+        // to reach the event it belongs to, and it deliberately will not. Clamp
+        // at the point of storage so what an author sees saved is what the
+        // sweep will actually honour, rather than a number that silently means
+        // "no reminder".
+        $days = array_filter(
+            array_map( 'intval', explode( ',', (string) $raw ) ),
+            function ( $d ) { return $d > 0 && $d <= self::REMINDER_HORIZON_DAYS; }
+        );
         $days = array_values( array_unique( $days ) );
         rsort( $days );
         $days = array_slice( $days, 0, 5 );
@@ -12615,15 +12614,32 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // its own line, not a rewrite of this method.
         switch ( $type ) {
             case 'reminder':
-                return self::default_email_shell();
+                $shell = self::default_email_shell();
+                break;
             case 'cancellation':
-                return self::default_email_shell();
+                $shell = self::default_email_shell();
+                break;
             case 'roster':
-                return self::default_email_shell();
+                $shell = self::default_email_shell();
+                break;
             case 'confirmation':
             default:
-                return self::default_email_shell();
+                $shell = self::default_email_shell();
+                break;
         }
+
+        /**
+         * The shipped default body for one email type.
+         *
+         * The seam the method name promises, reachable from outside as well as
+         * in: a site that wants a cancellation that does not look like a
+         * confirmation can answer for that one type without touching the
+         * other three.
+         *
+         * @param string $shell The default template HTML.
+         * @param string $type  One of Module::EMAIL_TEMPLATE_TYPES.
+         */
+        return (string) \apply_filters( 'anchor_events_default_email_template', $shell, $type );
     }
 
     /**
@@ -13323,6 +13339,14 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'waitlist_notice'  => $this->tpl_block_waitlist_notice( $preview ? 'waitlist' : $status ),
             'detail_rows'      => $this->tpl_block_detail_rows( $detail_rows ),
             'seat_list'        => $this->tpl_block_seat_list( $seat_list ),
+            // REG-D28 — retired, but still a key. The region and its renderer
+            // are gone (the CTA slot carries the room link now) and the token
+            // is in no palette and no doc, but expand_email_tokens() is a plain
+            // str_replace: without this entry, a live per-event template that
+            // still contains {join_button} would email the literal text. It
+            // expands to nothing instead, which is what the region rendered for
+            // every non-virtual event anyway.
+            'join_button'      => '',
             'cta_button'       => $this->tpl_block_cta_button( $cta['url'], $cta['label'] ),
             'cta_button_2'     => $this->tpl_block_cta_button( $cta2['url'], $cta2['label'], '#ffffff', '#111' ),
         ];

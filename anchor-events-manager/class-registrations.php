@@ -91,6 +91,18 @@ class Registrations {
     /** @var Module */
     private $module;
 
+    /**
+     * True while write_seat_title() is inside its own wp_update_post().
+     *
+     * The title sync listens on save_post, and the write it makes fires
+     * save_post again — so without this the sync re-enters itself. It cannot
+     * be left to "is the stored title already what we want?", because the
+     * title WordPress stores is kses-filtered (see write_seat_title()).
+     *
+     * @var bool
+     */
+    private $syncing_seat_title = false;
+
     public function __construct( Module $module ) {
         $this->module = $module;
 
@@ -149,15 +161,54 @@ class Registrations {
         $this->write_seat_title( (int) $post_id, self::seat_title_for( $name ) );
     }
 
-    /** Write $title onto a seat post, but only when it is actually different. */
+    /**
+     * Write $title onto a seat post.
+     *
+     * The equality check is a fast path, NOT the recursion guard. WordPress
+     * runs `title_save_pre` on the way in, and for any actor without
+     * `unfiltered_html` that includes wp_filter_kses() — so "Smith & Sons" is
+     * stored as "Smith &amp; Sons" and never equals what we asked for. With
+     * only the comparison in place, wp_update_post() fired save_post, which
+     * synced, which compared, which never matched, which wrote again: an
+     * unbounded loop on every public registration, WooCommerce checkout and
+     * cron seat write. The re-entrancy flag is the guard.
+     *
+     * @param int    $post_id
+     * @param string $title
+     */
     private function write_seat_title( $post_id, $title ) {
-        if ( $post_id <= 0 || \get_post_type( $post_id ) !== Module::REG_CPT ) {
+        $post_id = (int) $post_id;
+        if ( $this->syncing_seat_title || $post_id <= 0 ) {
             return;
         }
-        if ( (string) \get_post_field( 'post_title', $post_id ) === $title ) {
-            return; // Already in step — and this is what stops save_post recursing.
+        if ( \get_post_type( $post_id ) !== Module::REG_CPT ) {
+            return;
         }
-        \wp_update_post( [ 'ID' => $post_id, 'post_title' => $title ] );
+        // Read raw: get_post_field() defaults to the DISPLAY context, which
+        // runs the value through display filters and would compare a formatted
+        // title against an unformatted one.
+        $stored = (string) \get_post_field( 'post_title', $post_id, 'raw' );
+
+        // wp_insert_post() stores wp_unslash( sanitize_post( $data, 'db' ) ),
+        // and that db pass is where title_save_pre (kses, for an actor without
+        // unfiltered_html) turns "Smith & Sons" into "Smith &amp; Sons". Run
+        // the same pass here so the fast path compares like with like instead
+        // of asking for a write on every single save of a name with an entity
+        // in it.
+        $slashed  = \wp_slash( (string) $title );
+        $expected = \wp_unslash( (string) \sanitize_post_field( 'post_title', $slashed, $post_id, 'db' ) );
+        if ( $stored === (string) $title || $stored === $expected ) {
+            return; // Already in step; nothing to write.
+        }
+
+        $this->syncing_seat_title = true;
+        try {
+            // wp_slash(): wp_insert_post() unslashes what it is given, so an
+            // already-unslashed title would lose every literal backslash.
+            \wp_update_post( [ 'ID' => $post_id, 'post_title' => $slashed ] );
+        } finally {
+            $this->syncing_seat_title = false;
+        }
     }
 
     /* ---------------------------------------------------------------------

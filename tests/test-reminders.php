@@ -232,6 +232,25 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $override_scans, 'The sweep still folds in per-event offsets, exactly once.' );
 	}
 
+	/**
+	 * ...and an offset outside the horizon is not stored in the first place,
+	 * so what an author sees saved is what the sweep will honour rather than a
+	 * number that silently means "no reminder".
+	 */
+	public function test_an_offset_outside_the_horizon_is_not_stored() {
+		$too_far = Module::REMINDER_HORIZON_DAYS + 1;
+
+		$saved = $this->module()->sanitize_settings( [ 'reminder_offsets' => '7,1,' . $too_far ] );
+
+		$this->assertSame( '7,1', $saved['reminder_offsets'] );
+		$this->assertStringNotContainsString( (string) $too_far, $saved['reminder_offsets'] );
+		// The boundary itself is legal.
+		$this->assertStringContainsString(
+			(string) Module::REMINDER_HORIZON_DAYS,
+			$this->module()->sanitize_settings( [ 'reminder_offsets' => (string) Module::REMINDER_HORIZON_DAYS ] )['reminder_offsets']
+		);
+	}
+
 	/** No offset, however large, makes the sweep look further ahead than the cap. */
 	public function test_an_absurd_offset_cannot_widen_the_scan_past_the_horizon() {
 		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );

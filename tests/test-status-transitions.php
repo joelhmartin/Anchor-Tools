@@ -134,6 +134,58 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$this->assertSame( 'Jane Q. Roe', get_post_field( 'post_title', $seat_id ) );
 	}
 
+	/**
+	 * REG-D50 fix round 1 — the sync cannot re-enter itself.
+	 *
+	 * The recursion guard used to be "is the stored title already what we
+	 * want?", which is not a guard at all: WordPress runs title_save_pre on
+	 * the way in, and for any actor without unfiltered_html that includes
+	 * wp_filter_kses(), so "Smith & Sons" is STORED as "Smith &amp; Sons" and
+	 * never equals what was asked for. wp_update_post() then fired save_post,
+	 * which synced, which compared, which never matched — an unbounded loop on
+	 * every public registration, WooCommerce checkout and cron seat write.
+	 */
+	public function test_a_name_with_entities_syncs_once_and_does_not_recurse() {
+		// An anonymous actor: no unfiltered_html, so the kses title filters are on.
+		wp_set_current_user( 0 );
+		kses_init_filters();
+
+		$writes = 0;
+		$count  = function ( $post_id ) use ( &$writes ) {
+			$writes++;
+		};
+		add_action( 'save_post_' . \Anchor\Events\Module::REG_CPT, $count, 99 );
+
+		try {
+			$event_id = $this->make_event();
+			$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Smith & <b>Sons</b>' ] );
+			$this->assertGreaterThan( 0, $seat_id );
+
+			$before = $writes;
+			update_post_meta( $seat_id, '_anchor_event_name', 'Jones & <i>Co</i>' );
+			$this->assertLessThanOrEqual( 1, $writes - $before, 'One meta write must cause at most one title write.' );
+
+			$title = (string) get_post_field( 'post_title', $seat_id, 'raw' );
+			$this->assertStringContainsString( 'Jones', $title );
+			$this->assertNotSame( '', trim( $title ) );
+
+			// A second identical meta write is a no-op: the fast path has to
+			// recognise the kses-filtered title as already in step.
+			$before = $writes;
+			update_post_meta( $seat_id, '_anchor_event_name', 'Jones & <i>Co</i>' );
+			$this->assertSame( $before, $writes, 'A name already in step must not be rewritten.' );
+
+			// And an external rename is still corrected, exactly once.
+			$before = $writes;
+			wp_update_post( [ 'ID' => $seat_id, 'post_title' => wp_slash( 'Somebody Else' ) ] );
+			$this->assertLessThanOrEqual( 2, $writes - $before );
+			$this->assertStringContainsString( 'Jones', (string) get_post_field( 'post_title', $seat_id, 'raw' ) );
+		} finally {
+			remove_action( 'save_post_' . \Anchor\Events\Module::REG_CPT, $count, 99 );
+			kses_remove_filters();
+		}
+	}
+
 	/** anonymize_seat scrubs name/email/phone + custom reg fields, keeps status. */
 	public function test_anonymize_seat_scrubs_pii() {
 		$event_id = $this->make_event();

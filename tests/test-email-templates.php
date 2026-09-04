@@ -199,6 +199,29 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 			$this->module()->default_email_template( 'confirmation' ),
 			$this->module()->default_email_template( 'not-a-type' )
 		);
+
+		// The seam is real: answering for ONE type changes that type and
+		// nothing else. With $type ignored (the pre-fix body was a bare
+		// `return self::default_email_shell();`) there was nowhere to answer
+		// from, so "Reset to default" on the cancellation tab restored the
+		// confirmation-shaped shell whatever anybody did.
+		$only_cancellation = static function ( $shell, $type ) {
+			return 'cancellation' === $type ? '<p>Cancellation shell</p>' : $shell;
+		};
+		add_filter( 'anchor_events_default_email_template', $only_cancellation, 10, 2 );
+		try {
+			$this->assertSame( '<p>Cancellation shell</p>', $this->module()->default_email_template( 'cancellation' ) );
+			$this->assertSame( '<p>Cancellation shell</p>', $this->module()->resolve_email_template( 'cancellation', 0 ) );
+			foreach ( [ 'confirmation', 'reminder', 'roster' ] as $untouched ) {
+				$this->assertStringNotContainsString(
+					'Cancellation shell',
+					$this->module()->default_email_template( $untouched ),
+					$untouched . ' must be unaffected by an answer given for cancellation.'
+				);
+			}
+		} finally {
+			remove_filter( 'anchor_events_default_email_template', $only_cancellation, 10 );
+		}
 	}
 
 	/** REG-D12 — the retired global tier is not consulted, even when the option exists. */
@@ -314,7 +337,11 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 			] );
 
 			$this->assertStringNotContainsString( 'Join the event', $html );
-			$this->assertStringContainsString( '{join_button}', $html, 'The token is retired, so it stays literal rather than rendering a button.' );
+			// Retired, but NOT left to reach the inbox as literal text: a live
+			// per-event template written from the old doc row still contains
+			// {join_button}, and expand_email_tokens() is a plain str_replace.
+			$this->assertStringNotContainsString( '{join_button}', $html );
+			$this->assertStringContainsString( '<div>|https://example.test/room/</div>', $html );
 			// The room link itself is still reachable as a scalar.
 			$this->assertStringContainsString( 'https://example.test/room/', $html );
 		} finally {

@@ -354,7 +354,7 @@ class Roster {
         // id arrives in $_GET, and rendering another event's seat here would print
         // that event's attendee name, email and phone under this event's heading.
         $seat = $this->seat_form_values( $event_id, $seat_id );
-        if ( null === $seat ) {
+        if ( ! \is_array( $seat ) ) {
             echo '<div class="notice notice-error inline"><p>'
                 . \esc_html__( 'Seat not found.', 'anchor-schema' ) . '</p></div>';
             return;
@@ -1424,7 +1424,7 @@ class Roster {
         // REG-D48 — checked at the call site too; repeated here so the method can
         // never be the one that prints a foreign event's attendee details.
         $seat = $this->seat_form_values( $event_id, $seat_id );
-        if ( null === $seat ) {
+        if ( ! \is_array( $seat ) ) {
             return '<p class="anchor-roster-fe-warn">' . \esc_html__( 'Seat not found.', 'anchor-schema' ) . '</p>';
         }
 

@@ -76,6 +76,42 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * REG-D58 fix round 1 — the Confirmation subject field is on the page.
+	 *
+	 * It was registered under the section `anchor_events_emails`, which does
+	 * not exist (the page's sections are main, email_sender, email_appearance,
+	 * registration, wc_emails, lifecycle_emails and slugs), so it never
+	 * rendered — and a settings save therefore posted no value for it, which
+	 * sanitize_settings() answered by resetting it to the shipped default
+	 * every single time.
+	 */
+	public function test_every_settings_field_this_batch_added_actually_renders() {
+		global $wp_settings_sections, $wp_settings_fields;
+		$wp_settings_sections = [];
+		$wp_settings_fields   = [];
+
+		$this->module()->register_settings();
+
+		ob_start();
+		do_settings_sections( 'anchor_events_settings' );
+		$html = (string) ob_get_clean();
+
+		foreach ( [ 'confirmation_subject', 'refund_subject', 'refund_intro' ] as $field ) {
+			$this->assertStringContainsString(
+				'[' . $field . ']',
+				$html,
+				$field . ' is registered under a section the page never renders.'
+			);
+		}
+
+		// No field on this page may name a section that was never added.
+		$sections = array_keys( $wp_settings_sections['anchor_events_settings'] ?? [] );
+		foreach ( array_keys( $wp_settings_fields['anchor_events_settings'] ?? [] ) as $section ) {
+			$this->assertContains( $section, $sections, 'Fields are registered under the unknown section ' . $section . '.' );
+		}
+	}
+
+	/**
 	 * REG-D64 / MODEL-D28 — `notify_attendee` is gone. It was declared in the
 	 * defaults as "Reserved/unused in MVP", carried through every save
 	 * verbatim, and read by nothing, so a reader would reasonably conclude

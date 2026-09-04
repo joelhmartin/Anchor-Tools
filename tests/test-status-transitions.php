@@ -71,21 +71,94 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * REG-D32 — `attended` and `no_show` are not part of the vocabulary. They
-	 * were legal statuses with a legal transition out of `confirmed` and a
-	 * per-status summary bucket each, and nothing anywhere could set them.
+	 * REG-D32 — nothing may WRITE `attended`/`no_show`: no transition leads
+	 * into either, and create_seat() refuses to be born into one.
 	 */
-	public function test_the_deferred_check_in_statuses_are_not_legal() {
+	public function test_the_deferred_check_in_statuses_can_not_be_written() {
 		$event_id = $this->make_event();
 		$seat_id  = $this->make_seat( $event_id );
 
-		$this->assertFalse( $this->registrations()->valid_status( 'attended' ) );
-		$this->assertFalse( $this->registrations()->valid_status( 'no_show' ) );
+		$this->assertFalse( $this->registrations()->writable_status( 'attended' ) );
+		$this->assertFalse( $this->registrations()->writable_status( 'no_show' ) );
 		$this->assertTrue( $this->registrations()->update_status( $seat_id, 'attended' )->is_failed() );
 
+		$born = $this->registrations()->create_seat( [
+			'event_id' => $event_id,
+			'name'     => 'Legacy Hopeful',
+			'status'   => 'attended',
+		] );
+		$this->assertSame(
+			Registrations::STATUS_CONFIRMED,
+			get_post_meta( $born, '_anchor_event_reg_status', true ),
+			'create_seat() let a new seat be born into a read-only legacy status.'
+		);
+	}
+
+	/**
+	 * ...but a seat a PREVIOUS version stored as `attended` is still readable:
+	 * REG-D32 dropped both statuses outright, which stranded those seats — they
+	 * were omitted from every summary and every move out of them answered
+	 * `invalid_status`.
+	 */
+	public function test_a_legacy_attended_seat_is_counted_and_can_be_moved_on() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id );
+		$this->store_legacy_status( $event_id, $seat_id, Registrations::STATUS_ATTENDED );
+
+		$this->assertTrue( $this->registrations()->valid_status( 'attended' ) );
+		$this->assertTrue( $this->registrations()->valid_status( 'no_show' ) );
+
 		$summary = $this->registrations()->get_event_summary( $event_id );
-		$this->assertArrayNotHasKey( 'attended', $summary['per_status'] );
-		$this->assertArrayNotHasKey( 'no_show', $summary['per_status'] );
+		$this->assertArrayHasKey( 'attended', $summary['per_status'] );
+		$this->assertSame( 1, $summary['per_status']['attended']['records'] );
+		$this->assertSame( 1, $summary['attended'] );
+
+		$this->assertTrue(
+			$this->registrations()->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'moved on' )->is_sent(),
+			'A seat stranded in `attended` could not be moved to confirmed.'
+		);
+		$this->assertSame(
+			Registrations::STATUS_CONFIRMED,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
+		);
+	}
+
+	/** A `no_show` seat has the same two ways out. */
+	public function test_a_legacy_no_show_seat_can_be_cancelled() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id );
+		$this->store_legacy_status( $event_id, $seat_id, Registrations::STATUS_NO_SHOW );
+
+		$this->assertTrue(
+			$this->registrations()->update_status( $seat_id, Registrations::STATUS_CANCELLED )->is_sent()
+		);
+	}
+
+	/** The read-only legacy statuses are not offered for new writes. */
+	public function test_the_legacy_statuses_are_not_in_the_roster_status_select() {
+		$options = $this->module()->roster->status_options();
+
+		$this->assertArrayNotHasKey( 'attended', $options );
+		$this->assertArrayNotHasKey( 'no_show', $options );
+		$this->assertSame( Registrations::STATUSES, array_keys( $options ) );
+	}
+
+	/**
+	 * A seat that HOLDS a legacy status still gets its own option, or the
+	 * browser selects the first one and "Save seat" silently rewrites it
+	 * (the REG-D33 failure, which the read-only statuses would re-open).
+	 */
+	public function test_a_held_legacy_status_keeps_its_own_option() {
+		$options = $this->module()->roster->status_options_for( Registrations::STATUS_ATTENDED );
+
+		$this->assertSame( 'attended', array_key_first( $options ) );
+		$this->assertSame( 'Attended', $options['attended'] );
+	}
+
+	/** Store a status no writer produces, the way an earlier version left it. */
+	private function store_legacy_status( $event_id, $seat_id, $status ) {
+		update_post_meta( $seat_id, '_anchor_event_reg_status', $status );
+		$this->registrations()->bust_cache( $event_id );
 	}
 
 	/**

@@ -381,7 +381,7 @@ class Roster {
         // Status select.
         echo '<tr><th scope="row"><label for="roster_status">' . \esc_html__( 'Status', 'anchor-schema' ) . '</label></th><td>';
         echo '<select name="roster_status" id="roster_status">';
-        foreach ( $this->status_options() as $val => $label ) {
+        foreach ( $this->status_options_for( $status ) as $val => $label ) {
             echo '<option value="' . \esc_attr( $val ) . '"' . \selected( $status, $val, false ) . '>' . \esc_html( $label ) . '</option>';
         }
         echo '</select></td></tr>';
@@ -1103,14 +1103,7 @@ class Roster {
      * labelled from its own key, so the drift can no longer eat a value.
      */
     public function status_options() {
-        $labels = [
-            Registrations::STATUS_CONFIRMED => \__( 'Confirmed', 'anchor-schema' ),
-            Registrations::STATUS_PENDING   => \__( 'Pending', 'anchor-schema' ),
-            Registrations::STATUS_WAITLIST  => \__( 'Waitlist', 'anchor-schema' ),
-            Registrations::STATUS_CANCELLED => \__( 'Cancelled', 'anchor-schema' ),
-            Registrations::STATUS_REFUNDED  => \__( 'Refunded', 'anchor-schema' ),
-            Registrations::STATUS_FAILED    => \__( 'Failed', 'anchor-schema' ),
-        ];
+        $labels  = $this->status_labels();
         $options = [];
         foreach ( Registrations::STATUSES as $status ) {
             $options[ $status ] = $labels[ $status ] ?? \ucfirst( \str_replace( '_', ' ', (string) $status ) );
@@ -1118,10 +1111,56 @@ class Roster {
         return $options;
     }
 
+    /**
+     * The options the edit form shows for a seat CURRENTLY holding $status.
+     *
+     * status_options() alone would re-open the hole REG-D33 closed for the
+     * read-only legacy statuses: a seat stored as `attended` matches no option,
+     * the browser selects the first one, and "Save seat" posts `confirmed`
+     * without the operator choosing it. So a held status that is not offered is
+     * added — first, and only for that seat — which makes it the selected
+     * option and leaves the operator to pick the move deliberately.
+     *
+     * @param string $status The seat's stored status.
+     * @return array<string,string>
+     */
+    public function status_options_for( $status ) {
+        $options = $this->status_options();
+        $status  = (string) $status;
+        if ( $status !== '' && ! isset( $options[ $status ] ) ) {
+            $options = [ $status => $this->status_label( $status ) ] + $options;
+        }
+        return $options;
+    }
+
+    /**
+     * Label for every status a seat may HOLD, read-only legacy included.
+     *
+     * Separate from status_options() because the two answer different
+     * questions: this one names what a seat IS (so a legacy `attended` seat
+     * shows as "Attended" in the roster and the summary), while the options
+     * list names what an operator may SET, and the legacy statuses are not on
+     * that list.
+     *
+     * @return array<string,string>
+     */
+    private function status_labels() {
+        return [
+            Registrations::STATUS_CONFIRMED => \__( 'Confirmed', 'anchor-schema' ),
+            Registrations::STATUS_PENDING   => \__( 'Pending', 'anchor-schema' ),
+            Registrations::STATUS_WAITLIST  => \__( 'Waitlist', 'anchor-schema' ),
+            Registrations::STATUS_CANCELLED => \__( 'Cancelled', 'anchor-schema' ),
+            Registrations::STATUS_REFUNDED  => \__( 'Refunded', 'anchor-schema' ),
+            Registrations::STATUS_FAILED    => \__( 'Failed', 'anchor-schema' ),
+            Registrations::STATUS_ATTENDED  => \__( 'Attended', 'anchor-schema' ),
+            Registrations::STATUS_NO_SHOW   => \__( 'No show', 'anchor-schema' ),
+        ];
+    }
+
     /** Human label for a status. */
     public function status_label( $status ) {
-        $opts = $this->status_options();
-        return $opts[ $status ] ?? \ucfirst( (string) $status );
+        $labels = $this->status_labels();
+        return $labels[ $status ] ?? \ucfirst( \str_replace( '_', ' ', (string) $status ) );
     }
 
     /** Background colour for a status pill. */
@@ -1464,7 +1503,7 @@ class Roster {
                     <div class="anchor-event-field">
                         <label for="roster_status"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></label>
                         <select id="roster_status" name="roster_status">
-                            <?php foreach ( $this->status_options() as $val => $label ) : ?>
+                            <?php foreach ( $this->status_options_for( $status ) as $val => $label ) : ?>
                                 <option value="<?php echo \esc_attr( $val ); ?>" <?php \selected( $status, $val ); ?>><?php echo \esc_html( $label ); ?></option>
                             <?php endforeach; ?>
                         </select>

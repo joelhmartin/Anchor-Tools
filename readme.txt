@@ -97,6 +97,12 @@ Events Manager — seats and reminders:
 * The seat status transitions `cancelled → waitlist` and `failed → waitlist` are
   now legal. Reviving a seat on an event that is full and has a waitlist puts it
   on the waitlist instead of refusing the transition outright.
+* The seat statuses `attended` and `no_show` are read-only rather than gone. A
+  site that ran an earlier version may hold seats stored as either; they are
+  counted in the roster summary under their own labels and can be moved on to
+  Confirmed or Cancelled. Nothing writes them — they are not offered in the
+  seat status select and no new seat can be created in either state — and no
+  migration rewrites the stored values.
 * Reminder offsets are capped at 366 days. A stored offset larger than that is
   clamped when the settings are saved, so a scan can no longer be asked to look
   further ahead than the reminder horizon it actually walks.

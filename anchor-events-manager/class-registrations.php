@@ -28,18 +28,53 @@ class Registrations {
     const STATUS_REFUNDED  = 'refunded';  // kept, terminal, never revived.
     const STATUS_FAILED    = 'failed';    // kept, excluded from counts.
 
+    // READ-ONLY LEGACY (see LEGACY_STATUSES): storable by history, never by a
+    // new write.
+    const STATUS_ATTENDED = 'attended';
+    const STATUS_NO_SHOW  = 'no_show';
+
     /**
-     * Every status a seat may legally hold. REG-D32 — this used to also carry
-     * `attended` and `no_show`: valid_status() accepted them, the transition
-     * table allowed confirmed -> either, and get_event_summary() reserved a
-     * bucket for each, but no UI, cron or API path could set them, so the
-     * buckets were always zero and the transitions unreachable. They come back
-     * with the check-in screen that would write them, not before.
+     * Every status a NEW write may put a seat into — the writable vocabulary.
+     *
+     * REG-D32 removed `attended`/`no_show` from here because nothing could set
+     * them, and that part stands: no path creates or moves a seat INTO either.
+     * They are not gone from the model, though — see LEGACY_STATUSES.
      */
     const STATUSES = [
         self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST,
         self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED,
     ];
+
+    /**
+     * Statuses a seat may HOLD but nothing may write.
+     *
+     * A site that ran an earlier version has seats stored as `attended` or
+     * `no_show`. REG-D32 dropped both from the vocabulary outright, which made
+     * those stored values unreadable rather than unwritable: summaries omitted
+     * them (so the seats vanished from every count an operator sees) and every
+     * status change out of them answered `invalid_status`, stranding the seat
+     * in a state no screen could move it out of.
+     *
+     * So they are read-only rather than absent. valid_status() accepts them,
+     * get_event_summary() counts them under their own labels, and the
+     * transition table lets an operator move one on to `confirmed` or
+     * `cancelled`. What they are NOT is offered: Roster::status_options() is
+     * built from STATUSES, and create_seat() rejects them, so no new seat ever
+     * enters either state. No migration — the stored values are the record of
+     * what happened, and rewriting them would be inventing history.
+     */
+    const LEGACY_STATUSES = [ self::STATUS_ATTENDED, self::STATUS_NO_SHOW ];
+
+    /**
+     * Every status a seat may legally hold: writable plus read-only legacy.
+     * A method, not a constant, because a constant expression cannot merge two
+     * arrays and a hand-written third list is exactly the drift REG-D33 fixed.
+     *
+     * @return string[]
+     */
+    public static function all_statuses() {
+        return \array_merge( self::STATUSES, self::LEGACY_STATUSES );
+    }
 
     /** Statuses that consume capacity. */
     const RESERVING_STATUSES = [ self::STATUS_CONFIRMED, self::STATUS_PENDING ];
@@ -86,6 +121,12 @@ class Registrations {
         self::STATUS_FAILED    => [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST ],
         self::STATUS_CANCELLED => [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST ],
         self::STATUS_REFUNDED  => [], // terminal — never auto-revived.
+        // Read-only legacy (LEGACY_STATUSES): nothing transitions INTO these,
+        // but a seat already holding one has to be movable, or it is stuck in a
+        // state the module no longer writes. Out only, and only to the two
+        // states that describe a seat after the fact: it counts, or it doesn't.
+        self::STATUS_ATTENDED  => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED ],
+        self::STATUS_NO_SHOW   => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED ],
     ];
 
     /** @var Module */
@@ -246,7 +287,9 @@ class Registrations {
         }
 
         $name   = \sanitize_text_field( (string) ( $args['name'] ?? '' ) );
-        $status = $this->valid_status( $args['status'] ?? self::STATUS_CONFIRMED ) ? $args['status'] : self::STATUS_CONFIRMED;
+        // writable_status(), not valid_status(): a seat may HOLD a read-only
+        // legacy status, but no new seat may be born into one.
+        $status = $this->writable_status( $args['status'] ?? self::STATUS_CONFIRMED ) ? $args['status'] : self::STATUS_CONFIRMED;
         $source = (string) ( $args['source'] ?? 'internal' );
         $actor  = (string) ( $args['actor'] ?? 'system' );
         $note   = (string) ( $args['note'] ?? '' );
@@ -522,7 +565,12 @@ class Registrations {
                 // `illegal_transition` and the operator was told the change was
                 // not allowed.) A seat that is ALREADY waitlisted has nowhere
                 // to go, so that is a plain refusal.
-                if ( $from !== self::STATUS_WAITLIST && ! empty( $meta['waitlist'] ) ) {
+                // Asked of the transition table rather than spelled out here:
+                // `refunded` and the read-only legacy statuses have no route to
+                // the waitlist either, and offering them one produced an
+                // `illegal_transition` refusal for a move the module had just
+                // chosen to make.
+                if ( \in_array( self::STATUS_WAITLIST, self::$transitions[ $from ] ?? [], true ) && ! empty( $meta['waitlist'] ) ) {
                     $note_full = \trim( $note . ' ' . \__( '(event full — waitlisted instead)', 'anchor-schema' ) );
                     $out = $this->update_status( $seat_id, self::STATUS_WAITLIST, $note_full, $actor );
                     return $out->is_sent() ? Outcome::sent( 'waitlisted' ) : $out;
@@ -1514,7 +1562,10 @@ class Registrations {
 
         $c          = $this->counts( $event_id );
         $per_status = [];
-        foreach ( self::STATUSES as $s ) {
+        // all_statuses(), not STATUSES: a seat stored as `attended`/`no_show`
+        // by an earlier version is still a seat, and a summary that omits it
+        // is a count an operator cannot reconcile against the roster.
+        foreach ( self::all_statuses() as $s ) {
             $per_status[ $s ] = [
                 'seats'   => $c[ $s ]['seats'] ?? 0,
                 'records' => $c[ $s ]['records'] ?? 0,
@@ -1538,6 +1589,10 @@ class Registrations {
             'cancelled'          => $per_status[ self::STATUS_CANCELLED ]['seats'],
             'refunded'           => $per_status[ self::STATUS_REFUNDED ]['seats'],
             'failed'             => $per_status[ self::STATUS_FAILED ]['seats'],
+            // Read-only legacy, flat like the rest so a caller reading a named
+            // key does not have to know which statuses are legacy.
+            'attended'           => $per_status[ self::STATUS_ATTENDED ]['seats'],
+            'no_show'            => $per_status[ self::STATUS_NO_SHOW ]['seats'],
             'remaining'          => $capacity > 0 ? max( 0, $capacity - $reserved ) : -1, // -1 = unlimited.
             'has_linked_product' => $has_linked,
             'is_overbooked'      => $capacity > 0 && $reserved > $capacity,
@@ -1656,6 +1711,19 @@ class Registrations {
      * ------------------------------------------------------------------- */
 
     public function valid_status( $status ) {
+        return \in_array( $status, self::all_statuses(), true );
+    }
+
+    /**
+     * Whether a NEW write may put a seat into $status. valid_status() answers
+     * "may a seat hold this" (legacy included, so stored values stay readable
+     * and movable); this answers "may we put one there", which the read-only
+     * legacy statuses fail.
+     *
+     * @param string $status
+     * @return bool
+     */
+    public function writable_status( $status ) {
         return \in_array( $status, self::STATUSES, true );
     }
 

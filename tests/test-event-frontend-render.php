@@ -316,4 +316,60 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 
 		$this->assertSame( $theme_override, $result );
 	}
+
+	/**
+	 * RENDER-D33: the old guard grepped the RAW STORED post_content string
+	 * for the [event_registration] shortcode tag, so a shortcode injected at
+	 * render time by a builder/another 'the_content' filter (not stored in
+	 * the post at all) went undetected and the registration UI rendered
+	 * twice. render_single_event_body() must catch this case because it
+	 * checks what the content actually rendered, not the stored string.
+	 */
+	public function test_render_single_event_body_avoids_duplicate_when_shortcode_injected_at_render_time() {
+		$event_id = $this->make_event();
+		wp_update_post( [ 'ID' => $event_id, 'post_content' => 'Some course description.' ] );
+
+		$inject = function ( $content ) use ( $event_id ) {
+			return $content . '[event_registration id="' . $event_id . '"]';
+		};
+		add_filter( 'the_content', $inject, 9 );
+
+		try {
+			$html = $this->module()->render_single_event_body( $event_id );
+		} finally {
+			remove_filter( 'the_content', $inject, 9 );
+		}
+
+		$this->assertTrue( $this->module()->content_already_rendered_registration( $event_id ) );
+		$this->assertSame(
+			1,
+			substr_count( $html, '<form class="anchor-event-registration"' ),
+			'The registration form must render exactly once even when the shortcode was injected at render time.'
+		);
+	}
+
+	/** Regression: a shortcode legitimately stored in post_content still renders once, and the flag reflects it. */
+	public function test_render_single_event_body_avoids_duplicate_when_shortcode_is_stored_in_content() {
+		$event_id = $this->make_event();
+		wp_update_post( [
+			'ID'           => $event_id,
+			'post_content' => 'Intro text. [event_registration id="' . $event_id . '"]',
+		] );
+
+		$html = $this->module()->render_single_event_body( $event_id );
+
+		$this->assertTrue( $this->module()->content_already_rendered_registration( $event_id ) );
+		$this->assertSame( 1, substr_count( $html, '<form class="anchor-event-registration"' ) );
+	}
+
+	/** With no [event_registration] shortcode anywhere, the flag stays false so the template still renders its own form. */
+	public function test_render_single_event_body_flag_false_with_no_registration_shortcode() {
+		$event_id = $this->make_event();
+		wp_update_post( [ 'ID' => $event_id, 'post_content' => 'No shortcode here.' ] );
+
+		$html = $this->module()->render_single_event_body( $event_id );
+
+		$this->assertFalse( $this->module()->content_already_rendered_registration( $event_id ) );
+		$this->assertStringContainsString( 'No shortcode here.', $html );
+	}
 }

@@ -23,25 +23,18 @@ if ( $module ) {
         </header>
         <div class="anchor-event-content">
             <?php
-            // The [event_registration] shortcode is auto-appended to an
-            // event's post_content when registration is enabled and the event
-            // is saved in wp-admin (maybe_append_registration_shortcode(), so
-            // registration survives page builders). When the content carries
-            // it, the_content() below already renders the notice + the
-            // registration/ticket UI — rendering them again from this
-            // template duplicated the whole registration block on the page.
-            $anchor_event_content_has_registration = has_shortcode(
-                (string) get_post_field( 'post_content', get_the_ID() ),
-                'event_registration'
-            );
+            // RENDER-D33: render_single_event_body() runs the post's content
+            // through the 'the_content' filter exactly once (which is what
+            // actually executes an [event_registration] shortcode — auto-
+            // appended by maybe_append_registration_shortcode(), OR injected
+            // at render time by a builder/another content filter) and knows
+            // afterward whether that pass already rendered the registration
+            // notice/form, instead of grepping the raw stored post_content
+            // string for the shortcode tag (which misses the render-time
+            // case and re-duplicates the block from the other direction).
             if ( $module ) {
-                if ( ! $anchor_event_content_has_registration ) {
-                    echo $module->render_registration_notice();
-                }
-                echo $module->render_single_content( get_the_ID() );
-                echo $module->render_event_gallery( get_the_ID() );
+                echo $module->render_single_event_body( get_the_ID() );
             }
-            the_content();
             ?>
         </div>
         <?php
@@ -53,7 +46,7 @@ if ( $module ) {
                 // children REPLACES the (already-suppressed) registration form.
                 echo $module->render_choose_date_list( $event_id );
             } else {
-                if ( ! $anchor_event_content_has_registration ) {
+                if ( ! $module->content_already_rendered_registration( $event_id ) ) {
                     echo $module->render_registration_form( $event_id );
                 }
                 if ( $module->occurrences->is_group_child( $event_id ) ) {

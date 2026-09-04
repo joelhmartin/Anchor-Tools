@@ -187,6 +187,17 @@ class Module {
     private $assets_enqueued = false;
 
     /**
+     * RENDER-D33: the event id shortcode_event_registration() rendered
+     * registration UI for during THIS request, or null. render_single_event_body()
+     * resets this to null, runs the post's content through the 'the_content'
+     * filter exactly once (which is what actually executes the shortcode,
+     * wherever it came from — stored post_content or injected by another
+     * filter/builder), and checks this afterward instead of grepping the raw
+     * stored content string for the shortcode tag.
+     */
+    private $registration_shortcode_rendered_for = null;
+
+    /**
      * True only while a preview is rendering. Makes build_registration_email_html()
      * substitute preview_sample_scalars() for tokens the event has no value for,
      * and render the conditional regions that would otherwise be empty. Never
@@ -6733,6 +6744,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 . '</div>';
         }
 
+        // RENDER-D33: mark THIS event as "the registration shortcode already
+        // rendered for it" the moment we resolve a real target, regardless of
+        // which branch below actually runs — render_single_event_body() and
+        // content_already_rendered_registration() read this to decide whether
+        // the single-event template still needs to render its own notice/
+        // form, instead of grepping the post's raw stored content for the
+        // shortcode tag (which misses a shortcode injected at render time by
+        // a builder or another 'the_content' filter).
+        $this->registration_shortcode_rendered_for = $event_id;
+
         $this->enqueue_frontend_assets();
 
         $output = '';
@@ -8624,6 +8645,59 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $user = \wp_get_current_user();
         return $this->registrations->user_has_active_seat( $post_id, (int) $user->ID, (string) $user->user_email );
+    }
+
+    /**
+     * The `.anchor-event-content` inner HTML for templates/single-event.php:
+     * the registration notice (unless the post's own content already renders
+     * one via [event_registration]), the sessions/detail block, the gallery,
+     * and finally the post's rendered content itself — computed together so
+     * the guard against double-rendering the registration notice can be based
+     * on whether the content ACTUALLY produced it this request, not on
+     * whether the raw stored post_content string happens to contain the
+     * shortcode tag (RENDER-D33).
+     *
+     * Renders the post's content exactly once via the 'the_content' filter
+     * (which is also what runs do_shortcode()) and reuses that single pass —
+     * calling the_content()/apply_filters('the_content',...) a second time
+     * would re-execute [event_registration] and reintroduce the very
+     * duplicate this method exists to prevent.
+     *
+     * content_already_rendered_registration( $post_id ) reflects the SAME
+     * pass afterward, for the template's separate render_registration_form()
+     * call below the content block.
+     *
+     * @param int $post_id
+     * @return string
+     */
+    public function render_single_event_body( $post_id ) {
+        $this->registration_shortcode_rendered_for = null;
+
+        $rendered_content = \apply_filters( 'the_content', \get_the_content( null, false, $post_id ) );
+
+        $output = '';
+        if ( $this->registration_shortcode_rendered_for !== $post_id ) {
+            $output .= $this->render_registration_notice();
+        }
+        $output .= $this->render_single_content( $post_id );
+        $output .= $this->render_event_gallery( $post_id );
+        $output .= $rendered_content;
+
+        return $output;
+    }
+
+    /**
+     * Whether the most recent render_single_event_body( $post_id ) call
+     * already rendered the [event_registration] shortcode's own registration
+     * UI for this event — used by templates/single-event.php to skip its own
+     * render_registration_form() call when the content already produced one
+     * (RENDER-D33).
+     *
+     * @param int $post_id
+     * @return bool
+     */
+    public function content_already_rendered_registration( $post_id ) {
+        return $this->registration_shortcode_rendered_for === (int) $post_id;
     }
 
     public function render_single_content( $post_id ) {

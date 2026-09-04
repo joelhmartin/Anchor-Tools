@@ -578,6 +578,75 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * finding-11 (carry-over) — save_meta() (wp-admin metabox) and
+	 * save_event_manager_fields() (front-end console) used to build the same
+	 * ~28-key authoring allow-list independently: two copies of a rule that
+	 * has to agree to be correct. Both now call the ONE shared
+	 * event_authoring_input(), so the same POST must sanitize to
+	 * byte-identical meta on both surfaces.
+	 */
+	public function test_both_save_surfaces_produce_the_same_sanitized_meta_for_the_same_post() {
+		$metabox_event = $this->make_event();
+		$console_event = $this->make_event();
+
+		$payload = [
+			'anchor_event_start_date' => '2026-09-01',
+			'anchor_event_end_date' => '2026-09-02',
+			'anchor_event_start_time' => '09:00',
+			'anchor_event_end_time' => '10:30',
+			'anchor_event_timezone' => 'America/Chicago',
+			'anchor_event_all_day' => '1',
+			'anchor_event_venue' => 'Anchor HQ',
+			'anchor_event_address_street' => '123 Main St',
+			'anchor_event_address_city' => 'Austin',
+			'anchor_event_address_state' => 'TX',
+			'anchor_event_address_zip' => '78701',
+			'anchor_event_address_country' => 'US',
+			'anchor_event_virtual' => '1',
+			'anchor_event_virtual_url' => 'https://example.test/live',
+			'anchor_event_registration_enabled' => '1',
+			'anchor_event_capacity' => '25',
+			'anchor_event_registration_open' => '2026-08-01',
+			'anchor_event_registration_close' => '2026-08-31',
+			'anchor_event_waitlist' => '1',
+			'anchor_event_sold_out' => '',
+			'anchor_event_price' => '$25',
+			'anchor_event_hide_from_archive' => '',
+			'anchor_event_featured' => '1',
+			'anchor_event_priority' => '5',
+			'anchor_event_gallery' => '',
+			'anchor_event_reminder_offsets' => '7,1',
+			'anchor_event_type' => 'single',
+			'anchor_event_registration_mode' => 'free',
+		];
+
+		// wp-admin metabox.
+		$_POST = array_merge( [ Module::NONCE => wp_create_nonce( Module::NONCE ) ], $payload );
+		$this->module()->save_meta( $metabox_event );
+
+		// Front-end console. save_via_console() always passes '2026-09-01' as
+		// the precomputed $start_date, matching the payload above.
+		$_POST = $payload;
+		$this->save_via_console( $console_event );
+
+		$keys = [
+			'start_date', 'end_date', 'start_time', 'end_time', 'timezone', 'all_day', 'venue',
+			'address_street', 'address_city', 'address_state', 'address_zip', 'address_country',
+			'virtual', 'virtual_url', 'registration_enabled', 'capacity', 'registration_open',
+			'registration_close', 'waitlist', 'sold_out', 'price', 'hide_from_archive', 'featured',
+			'priority', 'gallery', 'reminder_offsets', 'type', 'registration_mode',
+		];
+
+		foreach ( $keys as $key ) {
+			$this->assertSame(
+				get_post_meta( $metabox_event, '_anchor_event_' . $key, true ),
+				get_post_meta( $console_event, '_anchor_event_' . $key, true ),
+				"Key '{$key}' must be sanitized identically on both save surfaces."
+			);
+		}
+	}
+
+	/**
 	 * Group authoring is part of the shared tail, so it must read the $src it
 	 * was handed — not $_POST behind its caller's back. Both real callers
 	 * still pass $_POST, so this is invisible in production today; it is what

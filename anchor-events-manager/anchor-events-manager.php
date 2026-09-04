@@ -4959,6 +4959,94 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         \wp_send_json_success( [ 'html' => $html ] );
     }
 
+    /**
+     * finding-11 (carry-over) — the ~28-key authoring allow-list BOTH
+     * save_meta() (wp-admin metabox) and save_event_manager_fields()
+     * (front-end console) built independently: same field names, same
+     * sanitizers, same start_date handling. Two copies of a rule that has to
+     * agree to be correct is exactly the drift MODEL-D24/REG-D49's
+     * persist_event_authoring() consolidation already fixed for the SAVE
+     * tail — this does the same for the sanitize-and-build half that runs
+     * before it.
+     *
+     * Values are read straight off $src (still in the slashed domain — see
+     * persist_event_authoring()'s docblock on the wp_slash contract) and fed
+     * to sanitize_text_field()/(int)/esc_url_raw(), none of which unslash,
+     * so nothing here needs a matching wp_slash(); the caller's own
+     * update_post_meta() loop does the one correct unslash.
+     *
+     * Deliberately does NOT compute status_mode/status/start_ts/end_ts:
+     * save_meta() also queues a missing_start_date authoring notice the
+     * console's own pre-validation (handle_event_manager_save() redirects
+     * with 'missing' before the post even exists) makes moot there, so that
+     * step stays with each caller.
+     *
+     * @param array       $src                       Raw input ($_POST-shaped, still slashed).
+     * @param string      $current_registration_mode Fallback for an invalid/missing
+     *                                                posted registration_mode — see
+     *                                                sanitize_event_type_input().
+     * @param string|null $start_date                Precomputed start_date the
+     *                                                caller already sanitized from
+     *                                                this SAME $src key (the console
+     *                                                validates it before the post
+     *                                                exists, so passes it in rather
+     *                                                than re-deriving it); null
+     *                                                re-derives it here from $src,
+     *                                                matching the metabox's own
+     *                                                behavior.
+     * @return array The sanitized authoring input, ready for the caller's own
+     *               update_post_meta() loop.
+     */
+    private function event_authoring_input( array $src, $current_registration_mode, $start_date = null ) {
+        $input = [
+            'start_date' => $start_date !== null ? $start_date : $this->sanitize_date( $src['anchor_event_start_date'] ?? '' ),
+            'end_date' => $this->sanitize_date( $src['anchor_event_end_date'] ?? '' ),
+            'start_time' => $this->sanitize_time( $src['anchor_event_start_time'] ?? '' ),
+            'end_time' => $this->sanitize_time( $src['anchor_event_end_time'] ?? '' ),
+            'timezone' => sanitize_text_field( $src['anchor_event_timezone'] ?? '' ),
+            'all_day' => ! empty( $src['anchor_event_all_day'] ),
+            'venue' => sanitize_text_field( $src['anchor_event_venue'] ?? '' ),
+            'address_street' => sanitize_text_field( $src['anchor_event_address_street'] ?? '' ),
+            'address_city' => sanitize_text_field( $src['anchor_event_address_city'] ?? '' ),
+            'address_state' => sanitize_text_field( $src['anchor_event_address_state'] ?? '' ),
+            'address_zip' => sanitize_text_field( $src['anchor_event_address_zip'] ?? '' ),
+            'address_country' => sanitize_text_field( $src['anchor_event_address_country'] ?? '' ),
+            'virtual' => ! empty( $src['anchor_event_virtual'] ),
+            'virtual_url' => esc_url_raw( $src['anchor_event_virtual_url'] ?? '' ),
+            'registration_enabled' => ! empty( $src['anchor_event_registration_enabled'] ),
+            'capacity' => (int) ( $src['anchor_event_capacity'] ?? 0 ),
+            'registration_open' => $this->sanitize_date( $src['anchor_event_registration_open'] ?? '' ),
+            'registration_close' => $this->sanitize_date( $src['anchor_event_registration_close'] ?? '' ),
+            'waitlist' => ! empty( $src['anchor_event_waitlist'] ),
+            'sold_out' => ! empty( $src['anchor_event_sold_out'] ),
+            // Task BC: `registration_type`/`registration_url` are intentionally
+            // NOT in this allow-list — neither surface renders those legacy
+            // fields (superseded by registration_mode/external_url below),
+            // and the caller writes every key present here via
+            // update_post_meta() regardless of whether $src carries it. Had
+            // they stayed listed, their absence would sanitize to
+            // 'internal'/'' and silently BLANK an old external event's real
+            // link on its next re-save. Leaving them out means this path
+            // never touches those two legacy keys at all — old events keep
+            // whatever they already have, and external_url()/get_meta()
+            // still read them as a fallback.
+            'price' => sanitize_text_field( $src['anchor_event_price'] ?? '' ),
+            'hide_from_archive' => ! empty( $src['anchor_event_hide_from_archive'] ),
+            'featured' => ! empty( $src['anchor_event_featured'] ),
+            'priority' => (int) ( $src['anchor_event_priority'] ?? 0 ),
+            'gallery' => $this->sanitize_gallery_ids( $src['anchor_event_gallery'] ?? '' ),
+            'reminder_offsets' => $this->sanitize_offset_csv( $src['anchor_event_reminder_offsets'] ?? '' ),
+            'labels' => $this->labels_input( $src ),
+        ];
+
+        // Event-type / registration-mode authoring UI (Task 1.3+1.4).
+        // Occurrence only — offering/recurring get a placeholder note in both
+        // forms; no seats/capacity/tiers/product logic here. The one helper
+        // both surfaces already shared, folded in here so the two save paths
+        // can never drift on how these six keys are sanitized.
+        return array_merge( $input, $this->sanitize_event_type_input( $src, $current_registration_mode ) );
+    }
+
     public function save_meta( $post_id ) {
         if ( ! isset( $_POST[ self::NONCE ] ) || ! \wp_verify_nonce( \sanitize_text_field( \wp_unslash( $_POST[ self::NONCE ] ) ), self::NONCE ) ) {
             return;
@@ -4983,53 +5071,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // derivation), not a hardcoded default.
         $current_registration_mode = $this->registration_mode( $post_id );
 
-        $input = [
-            'start_date' => $this->sanitize_date( $_POST['anchor_event_start_date'] ?? '' ),
-            'end_date' => $this->sanitize_date( $_POST['anchor_event_end_date'] ?? '' ),
-            'start_time' => $this->sanitize_time( $_POST['anchor_event_start_time'] ?? '' ),
-            'end_time' => $this->sanitize_time( $_POST['anchor_event_end_time'] ?? '' ),
-            'timezone' => sanitize_text_field( $_POST['anchor_event_timezone'] ?? '' ),
-            'all_day' => ! empty( $_POST['anchor_event_all_day'] ),
-            'venue' => sanitize_text_field( $_POST['anchor_event_venue'] ?? '' ),
-            'address_street' => sanitize_text_field( $_POST['anchor_event_address_street'] ?? '' ),
-            'address_city' => sanitize_text_field( $_POST['anchor_event_address_city'] ?? '' ),
-            'address_state' => sanitize_text_field( $_POST['anchor_event_address_state'] ?? '' ),
-            'address_zip' => sanitize_text_field( $_POST['anchor_event_address_zip'] ?? '' ),
-            'address_country' => sanitize_text_field( $_POST['anchor_event_address_country'] ?? '' ),
-            'virtual' => ! empty( $_POST['anchor_event_virtual'] ),
-            'virtual_url' => esc_url_raw( $_POST['anchor_event_virtual_url'] ?? '' ),
-            'registration_enabled' => ! empty( $_POST['anchor_event_registration_enabled'] ),
-            'capacity' => (int) ( $_POST['anchor_event_capacity'] ?? 0 ),
-            'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
-            'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
-            'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
-            'sold_out' => ! empty( $_POST['anchor_event_sold_out'] ),
-            // Task BC: `registration_type`/`registration_url` are intentionally
-            // NOT in this allow-list — the metabox no longer renders those
-            // legacy fields (superseded by registration_mode/external_url
-            // below), and this save loop writes every key present here via
-            // update_post_meta() regardless of whether $_POST carries it. Had
-            // they stayed listed, their absence from $_POST would sanitize to
-            // 'internal'/'' and silently BLANK an old external event's real
-            // link on its next re-save. Leaving them out of $input means this
-            // save path never touches those two legacy keys at all — old
-            // events keep whatever they already have, and external_url()/
-            // get_meta() still read them as a fallback (see those methods).
-            'price' => sanitize_text_field( $_POST['anchor_event_price'] ?? '' ),
-            'hide_from_archive' => ! empty( $_POST['anchor_event_hide_from_archive'] ),
-            'featured' => ! empty( $_POST['anchor_event_featured'] ),
-            'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
-            'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
-            'reminder_offsets' => $this->sanitize_offset_csv( $_POST['anchor_event_reminder_offsets'] ?? '' ),
-            'labels' => $this->labels_input( $_POST ),
-        ];
-
-        // Event-type / registration-mode authoring UI (Task 1.3+1.4, front-end
-        // parity in Task 1.5). Occurrence only — offering/recurring get a
-        // placeholder note in both forms; no seats/capacity/tiers/product logic
-        // here. Shared with handle_event_manager_save() so the two save paths
-        // can never drift on how these six keys are sanitized.
-        $input = array_merge( $input, $this->sanitize_event_type_input( $_POST, $current_registration_mode ) );
+        // finding-11 (carry-over) — the ~28-key allow-list is now the ONE
+        // shared builder both this metabox save and the front-end console's
+        // save_event_manager_fields() call; see event_authoring_input()'s
+        // docblock.
+        $input = $this->event_authoring_input( $_POST, $current_registration_mode );
 
         if ( ! $input['start_date'] ) {
             $this->queue_group_notice( 'missing_start_date', $post_id );
@@ -8461,45 +8507,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // which can never itself be postponed/moved_online.
         $old_meta = $this->get_meta( $saved_id );
 
-        $input = [
-            'start_date' => $start_date,
-            'end_date' => $this->sanitize_date( $_POST['anchor_event_end_date'] ?? '' ),
-            'start_time' => $this->sanitize_time( $_POST['anchor_event_start_time'] ?? '' ),
-            'end_time' => $this->sanitize_time( $_POST['anchor_event_end_time'] ?? '' ),
-            'timezone' => sanitize_text_field( $_POST['anchor_event_timezone'] ?? '' ),
-            'all_day' => ! empty( $_POST['anchor_event_all_day'] ),
-            'venue' => sanitize_text_field( $_POST['anchor_event_venue'] ?? '' ),
-            'address_street' => sanitize_text_field( $_POST['anchor_event_address_street'] ?? '' ),
-            'address_city' => sanitize_text_field( $_POST['anchor_event_address_city'] ?? '' ),
-            'address_state' => sanitize_text_field( $_POST['anchor_event_address_state'] ?? '' ),
-            'address_zip' => sanitize_text_field( $_POST['anchor_event_address_zip'] ?? '' ),
-            'address_country' => sanitize_text_field( $_POST['anchor_event_address_country'] ?? '' ),
-            'virtual' => ! empty( $_POST['anchor_event_virtual'] ),
-            'virtual_url' => esc_url_raw( $_POST['anchor_event_virtual_url'] ?? '' ),
-            'registration_enabled' => ! empty( $_POST['anchor_event_registration_enabled'] ),
-            'capacity' => (int) ( $_POST['anchor_event_capacity'] ?? 0 ),
-            'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
-            'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
-            'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
-            'sold_out' => ! empty( $_POST['anchor_event_sold_out'] ),
-            // Task BC: see save_meta()'s matching comment — `registration_type`/
-            // `registration_url` are deliberately absent from this front-end
-            // form's $input too, for the identical reason (the legacy fields
-            // no longer render here either; leaving them listed would blank
-            // an old external event's real link on its next re-save).
-            'price' => sanitize_text_field( $_POST['anchor_event_price'] ?? '' ),
-            'hide_from_archive' => ! empty( $_POST['anchor_event_hide_from_archive'] ),
-            'featured' => ! empty( $_POST['anchor_event_featured'] ),
-            'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
-            'labels' => $this->labels_input( $_POST ),
-            'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
-            'reminder_offsets' => $this->sanitize_offset_csv( $_POST['anchor_event_reminder_offsets'] ?? '' ),
-        ];
-
-        // Event-type / registration-mode authoring UI (Task 1.3 metabox parity,
-        // Task 1.5). Same six keys, same sanitize_event_type_input() helper as
-        // save_meta() — see that method's docblock.
-        $input = array_merge( $input, $this->sanitize_event_type_input( $_POST, $current_registration_mode ) );
+        // finding-11 (carry-over) — the ~28-key allow-list is now the ONE
+        // shared builder both this console save and the wp-admin metabox's
+        // save_meta() call; see event_authoring_input()'s docblock. $start_date
+        // is passed through (already sanitized from this same $_POST key by
+        // handle_event_manager_save(), before the post itself existed).
+        $input = $this->event_authoring_input( $_POST, $current_registration_mode, $start_date );
 
         $status_raw = sanitize_text_field( $_POST['anchor_event_status'] ?? 'auto' );
         if ( $status_raw === 'auto' ) {

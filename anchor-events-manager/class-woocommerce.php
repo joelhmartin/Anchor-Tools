@@ -2021,13 +2021,36 @@ class WooCommerce {
         // through an add-to-cart path (snapshot_event_on_add_to_cart()). The
         // live resolver is the fallback for a line added before this snapshot
         // existed, or added programmatically with no cart item data at all.
-        $event_id = ( \is_array( $values ) && isset( $values['anchor_event_id'] ) )
-            ? $this->validate_event_id( (int) $values['anchor_event_id'] )
-            : 0;
+        $snapshot_event_id = ( \is_array( $values ) && isset( $values['anchor_event_id'] ) ) ? (int) $values['anchor_event_id'] : 0;
+        $event_id          = $snapshot_event_id > 0 ? $this->validate_event_id( $snapshot_event_id ) : 0;
         if ( $event_id <= 0 ) {
             $event_id = $this->event_for_line( $product_id, $variation_id );
         }
         if ( $event_id <= 0 ) {
+            // WOO-D18: a snapshot existed — this line WAS an event line at
+            // add-to-cart time — but no longer resolves (the event was
+            // trashed/deleted between add-to-cart and checkout), and the
+            // live product/variation link doesn't rescue it either. Silently
+            // treating this as "not an event line" loses the seat with zero
+            // trace: order_has_event_lines() sees nothing here, so
+            // reconcile_order() never even reaches this order. A line with
+            // NO snapshot at all is left alone — that is legitimately a
+            // non-event line, not a defect.
+            if ( $snapshot_event_id > 0 && $order instanceof \WC_Order ) {
+                $order_id = (int) $order->get_id();
+                if ( $order_id > 0 ) {
+                    Events_Log::flag_review(
+                        $order_id,
+                        'event_line_unresolved',
+                        \sprintf( 'cart item %s, event %d', $cart_item_key, $snapshot_event_id )
+                    );
+                }
+                Events_Log::error( 'event_line_unresolved', [
+                    'order' => $order_id,
+                    'item'  => (string) $cart_item_key,
+                    'event' => $snapshot_event_id,
+                ] );
+            }
             return;
         }
 

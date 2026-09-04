@@ -98,4 +98,60 @@ class Test_WooCommerce_Line_Item_Snapshot extends Anchor_Events_TestCase {
 			'The order line must still snapshot the event even though the live link is gone.'
 		);
 	}
+
+	/**
+	 * WOO-D18 (fix round 1, Important): when the snapshot exists but no
+	 * longer validates at all — the event was TRASHED between add-to-cart
+	 * and checkout, so both the snapshot and the live product/variation
+	 * link fail — the line used to become indistinguishable from an
+	 * ordinary non-event line: no `_anchor_event_id` written, so
+	 * order_has_event_lines() sees nothing and reconcile_order() never even
+	 * reaches the order. It must instead be flagged for review and logged,
+	 * with the order/item/event identity, so the order is visible in
+	 * Needs review.
+	 */
+	public function test_a_trashed_event_after_add_to_cart_flags_the_order_instead_of_disappearing() {
+		list( $event_id, $variation_id ) = $this->make_ticketed_event();
+
+		$cart_item_data = $this->woocommerce()->snapshot_event_on_add_to_cart(
+			[],
+			(int) wc_get_product( $variation_id )->get_parent_id(),
+			$variation_id
+		);
+		$this->assertSame( $event_id, (int) ( $cart_item_data['anchor_event_id'] ?? 0 ) );
+
+		// The event is trashed AFTER add-to-cart but BEFORE checkout — the
+		// snapshot no longer validates, and the live link (still pointing at
+		// the now-trashed event) doesn't rescue it either.
+		wp_trash_post( $event_id );
+		$this->assertSame( 0, $this->woocommerce()->event_for_variation( $variation_id ) );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $variation_id ) );
+		$item->set_quantity( 1 );
+		$order = new WC_Order();
+		$order->add_item( $item );
+		$order->save();
+
+		delete_option( \Anchor\Events\Events_Log::ERROR_OPTION );
+
+		$_POST = [];
+		$this->woocommerce()->persist_attendees_to_line_item( $item, 'cartkey', $cart_item_data, $order );
+
+		$this->assertSame(
+			'',
+			$item->get_meta( '_anchor_event_id' ),
+			'No event id can honestly be attached to this line — the event is gone.'
+		);
+
+		// HPOS-safe read (CRUD only) — order meta may not live in wp_postmeta.
+		$flags = (array) wc_get_order( $order->get_id() )->get_meta( \Anchor\Events\Events_Log::ORDER_REVIEW_META );
+		$this->assertNotEmpty( $flags, 'The order must surface in Needs review, not disappear silently.' );
+		$this->assertSame( 'event_line_unresolved', $flags[0]['reason'] );
+		$this->assertStringContainsString( (string) $event_id, $flags[0]['detail'] );
+
+		$error_rows = get_option( \Anchor\Events\Events_Log::ERROR_OPTION, [] );
+		$codes      = array_column( $error_rows, 'code' );
+		$this->assertContains( 'event_line_unresolved', $codes, 'An error-log row with the order/item/event identity must exist too.' );
+	}
 }

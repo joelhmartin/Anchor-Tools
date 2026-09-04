@@ -1344,7 +1344,11 @@ class Occurrences {
         \update_post_meta( $child_id, $mk( 'start_time' ), $start_time );
         \update_post_meta( $child_id, $mk( 'end_time' ), $end_time );
         \update_post_meta( $child_id, $mk( 'capacity' ), $capacity );
-        \update_post_meta( $child_id, $mk( 'label' ), (string) ( $row['label'] ?? '' ) );
+        // wp_slash(): $row came out of get_post_meta() (already unslashed) and
+        // update_post_meta() unslashes again — same contract as the
+        // sync_shared_meta() copy below. Without it a date labelled
+        // `Room C:\Alpha` reaches the child as `Room C:Alpha`.
+        \update_post_meta( $child_id, $mk( 'label' ), \wp_slash( (string) ( $row['label'] ?? '' ) ) );
 
         // The child's start date is its identity and is read, never written,
         // here. Its end date follows the row, so a one-day occurrence that

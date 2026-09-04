@@ -3545,7 +3545,14 @@ class Module {
         return \get_post_meta( (int) $event_id, '_anchor_event_email_off_' . $type, true ) !== '1';
     }
 
-    /** Persist the per-type on/off switches posted by the email builder. */
+    /**
+     * Persist the per-type on/off switches posted by the email builder.
+     *
+     * No wp_slash() here, deliberately: this saver stores the literal '1' (or
+     * deletes the row), never a value the author typed, so there is no
+     * backslash for update_post_meta()'s unslash to eat. It is the one
+     * exception in persist_event_authoring()'s list — see that docblock.
+     */
     private function save_email_switches( $post_id, array $src ) {
         // Only trust the post when the builder was actually on screen, otherwise
         // a save from anywhere else would read "absent" as "turned off".
@@ -3579,7 +3586,10 @@ class Module {
                 if ( \trim( (string) $value ) === '' ) {
                     \delete_post_meta( $post_id, $meta );   // empty means "use the site default"
                 } else {
-                    \update_post_meta( $post_id, $meta, $value );
+                    // wp_slash(): re-slash the sanitized value, because
+                    // update_post_meta() unslashes again — see
+                    // persist_event_authoring()'s docblock.
+                    \update_post_meta( $post_id, $meta, \wp_slash( $value ) );
                 }
             }
         }
@@ -3831,7 +3841,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $value = ( $clean === 'list' )
                 ? \implode( ', ', $this->email_address_list( $raw ) )
                 : \call_user_func( '\\' . $clean, $raw );
-            \update_post_meta( $post_id, '_anchor_event_' . $key, $value );
+            // wp_slash(): see persist_event_authoring()'s docblock — a From
+            // name is free text and may legitimately contain a backslash.
+            \update_post_meta( $post_id, '_anchor_event_' . $key, \wp_slash( $value ) );
         }
     }
 
@@ -3882,7 +3894,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                         \delete_post_meta( $post_id, $meta_key );
                         continue;
                     }
-                    \update_post_meta( $post_id, $meta_key, $value );
+                    // wp_slash(): see persist_event_authoring()'s docblock.
+                    // The default comparison above deliberately uses the
+                    // UNSLASHED $value — it is comparing meaning, not bytes.
+                    \update_post_meta( $post_id, $meta_key, \wp_slash( $value ) );
                 }
             }
         }
@@ -4167,7 +4182,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 continue;
             }
 
-            \update_post_meta( $post_id, '_anchor_event_email_tpl_' . $type, $this->sanitize_email_template_html( $raw ) );
+            // wp_slash(): update_post_meta() unslashes what it is given, so an
+            // already-unslashed template would lose every CSS escape and every
+            // literal backslash in it. See persist_event_authoring()'s docblock.
+            \update_post_meta( $post_id, '_anchor_event_email_tpl_' . $type, \wp_slash( $this->sanitize_email_template_html( $raw ) ) );
         }
     }
 
@@ -4710,8 +4728,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * $src is a raw, NOT-yet-unslashed input array shaped like $_POST — the
      * same shape both callers hold, and the shape every sub-saver already
      * expects (each does its own wp_unslash() at the point of use). Do NOT
-     * unslash it here: update_post_meta() unslashes too, and a double unslash
-     * eats a real backslash out of the stored value.
+     * unslash it here.
+     *
+     * THE SLASH CONTRACT, because it is counter-intuitive and it bit this
+     * code: WordPress's meta setters take SLASHED input. add_metadata(),
+     * update_metadata() and the by-value delete_metadata() each call
+     * wp_unslash() on the value themselves (wp-includes/meta.php). So a saver
+     * that unslashes the post and hands the sanitized result straight to
+     * update_post_meta() has unslashed TWICE, and the second one destroys any
+     * literal backslash the value legitimately contains —
+     *   posted `C:\\path` -> unslash -> `C:\path` -> update_post_meta -> `C:path`.
+     * Every saver below therefore does ONE wp_unslash() on the way in (it must:
+     * wp_kses() and friends have to see the real characters) and wp_slash()es
+     * the sanitized value back at the update_post_meta() call. wp_slash() maps
+     * over arrays and leaves non-strings alone, so an array-valued meta (the
+     * question repeater, ticket tiers, offering rows, labels) is slashed the
+     * same way. Values that were NEVER unslashed — most of the callers'
+     * $input allow-list, which feeds $_POST straight into sanitize_text_field()
+     * — are already in the slashed domain and must NOT be slashed again.
      *
      * Callers gate the request themselves (save_meta() checks nonce +
      * DOING_AUTOSAVE + edit_post; handle_event_manager_save() checks its own
@@ -4761,7 +4795,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // LAST, after every other sub-saver: it reconciles, and the reconcile
         // copies the parent's rows down onto the children. See the ORDERING
         // note in persist_group_authoring()'s docblock.
-        $this->persist_group_authoring( $post_id, $input['type'] );
+        $this->persist_group_authoring( $post_id, $input['type'], $src );
 
         $this->clear_caches();
     }
@@ -4776,7 +4810,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * $src is a raw, NOT-yet-unslashed input array shaped like $_POST; every
      * value is wp_unslash()ed here (esp. external_embed, unslashed BEFORE it
-     * hits wp_kses() in sanitize_external_embed() — never store it raw).
+     * hits wp_kses() in sanitize_external_embed() — never store it raw) and
+     * the sanitized result is wp_slash()ed back before it is returned.
+     *
+     * That last step is not decoration: the returned array is merged straight
+     * into both callers' $input and written by their generic
+     * update_post_meta() loop, and update_post_meta() unslashes. Without it
+     * these six keys would be unslashed TWICE and any literal backslash in
+     * them — a CSS escape inside external_embed, a `C:\path` in a session
+     * label — would be destroyed. Every other producer in that $input array
+     * never unslashes at all, so the whole array is in one (slashed) domain.
+     * See persist_event_authoring()'s docblock for the full contract.
      *
      * @param array  $src                        Raw input array ($_POST-shaped).
      * @param string $registration_mode_fallback Pre-resolved registration_mode()
@@ -4800,7 +4844,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             ? \wp_unslash( $src['anchor_event_sessions'] )
             : [];
 
-        return [
+        return \wp_slash( [
             'type' => $this->sanitize_event_type( \wp_unslash( $src['anchor_event_type'] ?? '' ) ),
             'registration_mode' => $this->sanitize_registration_mode( \wp_unslash( $src['anchor_event_registration_mode'] ?? '' ), $registration_mode_fallback ),
             'sessions' => $this->sanitize_sessions_rows( $sessions_raw ),
@@ -4810,7 +4854,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // raw regardless of which save path wrote it.
             'external_embed' => $this->sanitize_external_embed( \wp_unslash( $src['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
             'external_display_price' => sanitize_text_field( \wp_unslash( $src['anchor_event_external_display_price'] ?? '' ) ),
-        ];
+        ] );
     }
 
     /**
@@ -4969,7 +5013,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             ? \wp_unslash( $src['anchor_event_labels'] )
             : [];
 
-        return $this->sanitize_labels_rows( $raw );
+        // wp_slash(): the result goes STRAIGHT into both save paths' generic
+        // update_post_meta() loop, which unslashes what it is given. This is
+        // one of only two producers in that $input array that unslash at all
+        // (the other is sanitize_event_type_input()); everything else feeds
+        // $_POST into a sanitizer without unslashing and is therefore already
+        // in the slashed domain the loop expects. Re-slashing here keeps the
+        // whole array in ONE domain. See persist_event_authoring()'s docblock.
+        return \wp_slash( $this->sanitize_labels_rows( $raw ) );
     }
 
     /**
@@ -5114,8 +5165,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * @param int    $post_id
      * @param string $type Already-sanitized event type (sanitize_event_type_input()'s 'type').
+     * @param array  $src  Raw input array ($_POST-shaped, still slashed) — the
+     *                     SAME array persist_event_authoring() hands every
+     *                     other sub-saver. Threaded through (Task 28 fix round
+     *                     1) rather than read off $_POST down in
+     *                     persist_group_structure(), so the shared tail has
+     *                     exactly one input and can be exercised without a
+     *                     superglobal. Both real callers pass $_POST, so this
+     *                     changes no production behaviour.
      */
-    private function persist_group_authoring( $post_id, $type ) {
+    private function persist_group_authoring( $post_id, $type, array $src ) {
         if ( self::$reconciling ) {
             return;
         }
@@ -5123,11 +5182,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
 
-        $this->persist_group_structure( $post_id, $type );
+        $this->persist_group_structure( $post_id, $type, $src );
 
         // One call site, after every structural branch above (including the
         // guards' early returns, which live inside persist_group_structure()).
-        $this->maybe_apply_registration_to_dates( $post_id );
+        $this->maybe_apply_registration_to_dates( $post_id, $src );
     }
 
     /**
@@ -5139,12 +5198,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * @param int    $post_id
      * @param string $type
+     * @param array  $src Raw input array ($_POST-shaped, still slashed).
      */
-    private function persist_group_structure( $post_id, $type ) {
+    private function persist_group_structure( $post_id, $type, array $src ) {
         $was_parent = $this->occurrences->is_group_parent( $post_id );
 
         if ( $type === 'offering' ) {
-            $rows = $this->sanitize_offering_dates_rows( $_POST['anchor_event_offering_dates'] ?? [], $post_id );
+            $rows = $this->sanitize_offering_dates_rows( $src['anchor_event_offering_dates'] ?? [], $post_id );
 
             if ( empty( $rows ) && $this->offering_has_dates_to_protect( $post_id ) ) {
                 // Guard (audit MODEL-D14): an offering that ALREADY has dates
@@ -5163,7 +5223,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 return;
             }
 
-            \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), $rows );
+            // wp_slash(): sanitize_offering_dates_rows() unslashed the posted
+            // rows and update_post_meta() unslashes again, so a row `label`
+            // reading `Room C:\Alpha` would otherwise arrive as `Room C:Alpha`.
+            // See persist_event_authoring()'s docblock.
+            \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), \wp_slash( $rows ) );
             \update_post_meta( $post_id, $this->meta_key( 'recurrence' ), [] );
 
             if ( empty( $rows ) ) {
@@ -5179,7 +5243,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         if ( $type === 'recurring' ) {
-            $rule = $this->sanitize_recurrence_rule( $_POST['anchor_event_recurrence'] ?? [] );
+            // The rule carries no free text (freq/interval/times/counts/dates
+            // only), so there is nothing for a re-slash to protect here.
+            $rule = $this->sanitize_recurrence_rule( $src['anchor_event_recurrence'] ?? [] );
             \update_post_meta( $post_id, $this->meta_key( 'recurrence' ), $rule );
             \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), [] );
 
@@ -5238,15 +5304,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * never touched). A no-op on anything that is not a group parent, so the
      * key is inert if it ever arrives on a single event's save.
      *
-     * @param int $post_id
+     * @param int   $post_id
+     * @param array $src Raw input array ($_POST-shaped) threaded down from
+     *                   persist_event_authoring(), not read off the superglobal.
      */
-    private function maybe_apply_registration_to_dates( $post_id ) {
-        // phpcs:disable WordPress.Security.NonceVerification.Missing -- both callers verify their own nonce before reaching persist_group_authoring().
-        if ( empty( $_POST['anchor_event_registration_apply_to_dates'] ) ) {
+    private function maybe_apply_registration_to_dates( $post_id, array $src ) {
+        if ( empty( $src['anchor_event_registration_apply_to_dates'] ) ) {
             return;
         }
-        $enabled = ! empty( $_POST['anchor_event_registration_enabled'] );
-        // phpcs:enable WordPress.Security.NonceVerification.Missing
+        $enabled = ! empty( $src['anchor_event_registration_enabled'] );
 
         $this->occurrences->apply_registration_to_children( $post_id, $enabled );
     }
@@ -11362,7 +11428,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \delete_post_meta( $post_id, self::QUESTIONS_META );
             return;
         }
-        \update_post_meta( $post_id, self::QUESTIONS_META, $clean );
+        // wp_slash(): the rows were unslashed on the way in, and
+        // update_post_meta() unslashes again — wp_slash() maps over the array,
+        // so a label reading `Room C:\Alpha` survives. See
+        // persist_event_authoring()'s docblock.
+        \update_post_meta( $post_id, self::QUESTIONS_META, \wp_slash( $clean ) );
     }
 
     /**

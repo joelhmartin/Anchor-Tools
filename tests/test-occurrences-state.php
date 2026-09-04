@@ -9,13 +9,15 @@
  * carrying only PART of the quartet — production child 7530 had
  * occurrence_closed=1 and registration_enabled=0 but status='past', because a
  * later save recomputed the status — could never be repaired by any code path:
- * soft_close() no-op'd (already "closed"), revive_if_closed() no-op'd (not
- * "closed" once the flag was cleared by hand), and sync_child_from_parent()
- * skipped all four keys because they live in PER_OCCURRENCE_KEYS.
+ * soft_close() no-op'd (already "closed") and sync_child_from_parent() skipped
+ * all four keys because they live in PER_OCCURRENCE_KEYS.
  *
- * These tests pin the repair: whichever half of the state survives, the next
- * reconcile() writes the whole quartet back — closed if the date is gone,
- * revived if the date is back — and doing it twice changes nothing.
+ * These tests pin the repair: every writer of the closed state now asserts the
+ * whole quartet, so the next reconcile() of a still-absent date normalises the
+ * row whichever half survived, and doing it twice changes nothing. They also
+ * pin the limit of that repair — `occurrence_closed` remains the ONLY trigger
+ * for reopening a date, because the status half on its own is exactly what an
+ * admin writes when they cancel a date by hand.
  *
  * @package Anchor\Events\Tests
  */
@@ -135,54 +137,13 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 	}
 
 	/* ------------------------------------------------------------------
-	 * (b) The mirror-image partial: flag cleared by hand, status still
-	 *     cancelled. Repaired both ways — revived when the date comes back,
-	 *     re-closed while it is still absent.
+	 * (b) The mirror-image partial — flag cleared by hand, status half still
+	 *     cancelled — is repaired by the CLOSING side while its date is
+	 *     absent. It is deliberately NOT repaired by reviving: the status half
+	 *     alone is indistinguishable from an admin cancelling a date, so
+	 *     `occurrence_closed` stays the only reopening trigger (see the
+	 *     negative tests below).
 	 * ------------------------------------------------------------------ */
-
-	public function test_flag_cleared_partial_is_revived_when_its_date_is_re_added() {
-		list( $parent_id, $child ) = $this->soft_closed_child();
-
-		// Someone clears the engine flag by hand; the status half survives.
-		update_post_meta( $child, '_anchor_event_occurrence_closed', false );
-
-		// The date comes back.
-		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->two_rows() );
-		$live = $this->occurrences()->reconcile( $parent_id );
-
-		$this->assertContains( $child, $live, 'The revived child must be the SAME post id.' );
-		$this->assertFalse( (bool) get_post_meta( $child, '_anchor_event_occurrence_closed', true ) );
-		$this->assertSame(
-			'auto',
-			get_post_meta( $child, '_anchor_event_status_mode', true ),
-			'A revived occurrence goes back to auto status.'
-		);
-		$this->assertSame(
-			'upcoming',
-			get_post_meta( $child, '_anchor_event_status', true ),
-			'A revived 2027 date is upcoming, not cancelled.'
-		);
-	}
-
-	/**
-	 * Reviving must still NOT force registration back on — that field is a
-	 * separate decision (documented in revive_if_closed()), and the mirror
-	 * partial must not become a back door for re-enabling sales.
-	 */
-	public function test_revive_of_flag_cleared_partial_does_not_force_registration_on() {
-		list( $parent_id, $child ) = $this->soft_closed_child( [ 'registration_enabled' => false ] );
-
-		update_post_meta( $child, '_anchor_event_occurrence_closed', false );
-
-		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->two_rows() );
-		$this->occurrences()->reconcile( $parent_id );
-
-		$raw = get_post_meta( $child, '_anchor_event_registration_enabled', true );
-		$this->assertFalse(
-			(bool) $raw,
-			'revive must not force registration_enabled=true.'
-		);
-	}
 
 	public function test_flag_cleared_partial_is_re_closed_while_its_date_is_still_absent() {
 		list( $parent_id, $child ) = $this->soft_closed_child();
@@ -196,14 +157,53 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * A deliberately, manually cancelled LIVE date is not a partial: its
-	 * registration flag was never turned off by soft_close(), so the repair
-	 * must leave the admin's choice alone.
+	 * A deliberately, manually cancelled LIVE date is not a partial and must
+	 * never be reopened by reconcile(). This is the case that rules out
+	 * inferring closure from the status half of the quartet: an admin who
+	 * cancels a date AND unchecks registration writes exactly what soft_close()
+	 * writes, minus the flag. Reviving on that would flip a real cancellation
+	 * back to auto/upcoming on the next parent save and publish
+	 * schema.org/EventScheduled for it.
 	 */
-	public function test_manually_cancelled_live_child_is_not_treated_as_a_partial() {
+	public function test_manually_cancelled_live_child_with_registration_off_is_not_revived() {
 		$parent_id = $this->make_parent( $this->two_rows() );
 		$live      = $this->occurrences()->reconcile( $parent_id );
 		$child     = (int) $live[0];
+
+		// The metabox / manager form's own output for "Cancelled + registration off".
+		update_post_meta( $child, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $child, '_anchor_event_status', 'cancelled' );
+		update_post_meta( $child, '_anchor_event_registration_enabled', false );
+
+		// The date is still offered, so reconcile() takes the matched branch.
+		$live2 = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertContains( $child, $live2, 'Precondition: the date is still live, so revive_if_closed() runs.' );
+		$this->assertSame( 'manual', get_post_meta( $child, '_anchor_event_status_mode', true ) );
+		$this->assertSame(
+			'cancelled',
+			get_post_meta( $child, '_anchor_event_status', true ),
+			"An admin's cancellation must survive a parent save — only occurrence_closed reopens a date."
+		);
+		$this->assertFalse( (bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ) );
+	}
+
+	/**
+	 * The same, but the child never had to be touched at all: create_child()
+	 * seeds registration_enabled from the parent, so on a parent whose own
+	 * registration is off EVERY child carries a false flag from birth, and a
+	 * plain "Cancelled" pick in the metabox is enough to complete the
+	 * soft-close-looking triple.
+	 */
+	public function test_manually_cancelled_child_of_a_registration_off_parent_is_not_revived() {
+		$parent_id = $this->make_parent( $this->two_rows(), [ 'registration_enabled' => false ] );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		$this->assertFalse(
+			(bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ),
+			'Precondition: the child inherits the parent\'s disabled registration at creation.'
+		);
 
 		update_post_meta( $child, '_anchor_event_status_mode', 'manual' );
 		update_post_meta( $child, '_anchor_event_status', 'cancelled' );
@@ -214,7 +214,7 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 		$this->assertSame(
 			'cancelled',
 			get_post_meta( $child, '_anchor_event_status', true ),
-			'A hand-cancelled live date keeps its manual status; only the soft-close signature is repaired.'
+			'A cancelled date on a registration-off parent must not be silently reopened.'
 		);
 	}
 

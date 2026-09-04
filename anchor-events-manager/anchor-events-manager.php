@@ -345,6 +345,14 @@ class Module {
         \add_action( 'wp_ajax_anchor_events_email_preview', [ $this, 'ajax_email_preview' ] );
 
         \add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'handle_settings_update' ], 10, 2 );
+        // The site's timezone is an INPUT to every stored timestamp, so moving
+        // it invalidates all of them. Both halves of the setting, and both the
+        // add and update actions (a fresh install has no `timezone_string` row
+        // until somebody picks one). See invalidate_stored_timestamps().
+        foreach ( [ 'timezone_string', 'gmt_offset' ] as $tz_option ) {
+            \add_action( 'update_option_' . $tz_option, [ $this, 'invalidate_stored_timestamps' ] );
+            \add_action( 'add_option_' . $tz_option, [ $this, 'invalidate_stored_timestamps' ] );
+        }
         \add_action( 'before_delete_post', [ $this, 'clear_caches_on_delete' ] );
         // …and its trash/untrash/unpublish twin. before_delete_post fires only
         // on PERMANENT deletion, so every soft change — the one authors
@@ -8886,6 +8894,39 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Send every event back through the timestamp back-fill, because the site's
+     * timezone moved (audit NEW-D3).
+     *
+     * `start_ts`/`end_ts` are the event's authored local date+time RESOLVED
+     * against a zone, and the zone most events resolve against is the site's
+     * (an event's own `timezone` row is the exception, not the rule). Change
+     * Settings → General and every one of those stored instants is now an hour
+     * — or six — from the time printed on the event's own page, and nothing
+     * recomputed them: the listing order, the reminder window, the registration
+     * close, the "past" sweep and the JSON-LD instant all kept the old zone
+     * until somebody happened to re-save each event by hand.
+     *
+     * Both markers have to go. The site option is the migration's "finished"
+     * flag, and the per-event `ts_version` stamps are what its selection query
+     * matches on — dropping only the option would re-run a pass that selects
+     * nothing. One DELETE for the whole key (the key is this module's, on this
+     * module's CPT), and the ordinary batched pass rewrites the rows over the
+     * next few capability-gated admin loads.
+     *
+     * DEPLOY NOTE: this is the automatic half of what used to be a manual
+     * "re-save every event after a timezone change" step. It still needs an
+     * admin page load by a user who can edit events — backfill_timestamps() is
+     * capability-gated on purpose (admin_init is not an authenticated hook) —
+     * so on a site with no admin traffic the rows stay stale until one happens.
+     */
+    public function invalidate_stored_timestamps() {
+        \delete_option( 'anchor_events_ts_version' );
+        // The per-event stamps are the batch selector; leaving them would make
+        // the re-run a no-op.
+        \delete_post_meta_by_key( $this->meta_key( 'ts_version' ) );
+    }
+
+    /**
      * Batched, VERSIONED back-fill of start_ts/end_ts (audit MODEL-D2).
      *
      * Legacy events never had the `_ts` keys written — nothing back-filled them
@@ -8905,7 +8946,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * So selection is by `_anchor_event_ts_version` — missing, or older than
      * TS_SCHEMA_VERSION — and every event this touches is stamped with the
      * current version, including one with no `start_date` that can never get
-     * `_ts` rows at all. Stamping the unfillable ones is what keeps them from
+     * `_ts` rows at all. The same selector is what makes the pass RE-RUNNABLE
+     * without a version bump: changing the site's timezone drops both markers
+     * (invalidate_stored_timestamps()) and this runs again over the whole
+     * population, because the rows it wrote were computed against a zone the
+     * site no longer keeps. Stamping the unfillable ones is what keeps them from
      * occupying the batch window forever and stranding the fillable ones behind
      * them.
      *
@@ -9017,6 +9062,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * real data on every occurrence child (audit MODEL-D37, cleanup deferred
      * from the get_meta_defaults() fix).
      *
+     * GROUP CHILDREN ONLY. The mint had exactly one writer — the inheritance
+     * copy — so a child is the one post whose "UTC-6" provably nobody typed.
+     * On a single event or a group parent the identical string is a value an
+     * author picked out of the timezone field (the field offers the UTC±N
+     * choices WordPress itself offers), and deleting it would hand that event
+     * to whatever the site setting becomes next: the event does not move today,
+     * it moves the day somebody edits Settings → General. A fixed offset is a
+     * poor choice — it does not observe DST, which is what
+     * timezone_notice_html() says on every events screen — but it is the
+     * author's, and a migration is not the place to overrule it.
+     *
      * Only the site's OWN offset goes. An offset that differs ("UTC-5" on a
      * -06:00 site) cannot have come from gmt_offset, so somebody chose it, and
      * deleting it would silently move the event by an hour; a named zone is
@@ -9026,6 +9082,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param int $event_id
      */
     private function drop_minted_timezone_row( $event_id ) {
+        if ( ! $this->occurrences->is_group_child( $event_id ) ) {
+            return;
+        }
         $stored = (string) \get_post_meta( $event_id, $this->meta_key( 'timezone' ), true );
         if ( $stored === '' || ! \preg_match( '/^UTC[+-]/i', $stored ) ) {
             return;

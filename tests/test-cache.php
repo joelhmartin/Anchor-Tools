@@ -344,6 +344,36 @@ class Test_Cache extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * finding-3 (carry-over; already closed by RENDER-D20 —
+	 * get_cached_ids() keys on anchor_events_cache_ver + the query args, not
+	 * time()/a per-minute bucket; see test_clear_caches_bumps_the_version_and_the_next_lookup_misses()
+	 * above). Two calls with identical args in the same version must hit the
+	 * cache rather than re-run the WP_Query.
+	 */
+	public function test_two_calls_in_the_same_version_hit_the_cache_not_a_second_query() {
+		$args = [
+			'post_type'      => Module::CPT,
+			'post_status'    => 'publish',
+			'posts_per_page' => 5,
+		];
+
+		$queries = 0;
+		$count   = static function ( $query ) use ( &$queries ) {
+			$queries++;
+		};
+		add_action( 'pre_get_posts', $count );
+		try {
+			$first  = $this->call_get_cached_ids( $args );
+			$second = $this->call_get_cached_ids( $args );
+		} finally {
+			remove_action( 'pre_get_posts', $count );
+		}
+
+		$this->assertSame( $first, $second, 'A cache hit must return the same ids.' );
+		$this->assertSame( 1, $queries, 'The second call in the same request/version must hit the cache, not run a second query.' );
+	}
+
 	/* ------------------------------------------------------------------
 	 * Helpers.
 	 * ------------------------------------------------------------------ */

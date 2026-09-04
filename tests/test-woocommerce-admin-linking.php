@@ -125,4 +125,30 @@ class Test_WooCommerce_Admin_Linking extends Anchor_Events_TestCase {
 			'The mirror must be rebuilt from a variation-only save, not just a parent-product save.'
 		);
 	}
+
+	/**
+	 * WOO-D31: products_for_event()'s two product/variation link queries must
+	 * be capped, not `posts_per_page => -1` — an uncapped meta query used to
+	 * run on every legacy-link render and every mirror rebuild.
+	 */
+	public function test_products_for_event_caps_its_queries() {
+		$event_id = $this->make_event();
+
+		$captured = [];
+		$spy      = function ( $query ) use ( &$captured ) {
+			if ( in_array( $query->get( 'post_type' ), [ 'product', 'product_variation' ], true ) ) {
+				$captured[] = (int) $query->get( 'posts_per_page' );
+			}
+			return $query;
+		};
+		add_action( 'pre_get_posts', $spy );
+		$this->woocommerce()->products_for_event( $event_id );
+		remove_action( 'pre_get_posts', $spy );
+
+		$this->assertNotEmpty( $captured, 'Precondition: the product/variation queries must actually run.' );
+		foreach ( $captured as $per_page ) {
+			$this->assertSame( WooCommerce::LINK_QUERY_CAP, $per_page );
+			$this->assertGreaterThan( 0, $per_page, 'Must never be the uncapped -1.' );
+		}
+	}
 }

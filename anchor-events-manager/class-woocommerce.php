@@ -57,6 +57,18 @@ class WooCommerce {
     /** Short-lived cache of the needs-review order presence/count (finding L10). */
     const NEEDS_REVIEW_TRANSIENT = 'anchor_events_needs_review';
 
+    /**
+     * WOO-D31 — sane upper bound for the uncapped `posts_per_page => -1`
+     * product/variation link queries. products_for_event() ran two such
+     * queries with no cap (front-end, on every legacy-link render and every
+     * mirror rebuild); product_link_event_ids() a third. A store with
+     * thousands of variations turned every save of any linked product, and
+     * every render of an event page in the legacy-link mode, into an
+     * uncapped meta scan. No real site links anywhere near this many
+     * products/variations to one event or one product.
+     */
+    const LINK_QUERY_CAP = 500;
+
     /** @var Module */
     private $module;
 
@@ -374,7 +386,7 @@ class WooCommerce {
         $products = \get_posts( [
             'post_type'      => 'product',
             'post_status'    => 'publish',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::LINK_QUERY_CAP,
             'fields'         => 'ids',
             'no_found_rows'  => true,
             'meta_query'     => [
@@ -391,7 +403,7 @@ class WooCommerce {
         $variations = \get_posts( [
             'post_type'      => 'product_variation',
             'post_status'    => 'publish',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::LINK_QUERY_CAP,
             'fields'         => 'ids',
             'no_found_rows'  => true,
             'meta_query'     => [
@@ -780,7 +792,7 @@ class WooCommerce {
             'post_type'      => 'product_variation',
             'post_status'    => [ 'publish', 'private', 'draft' ],
             'post_parent'    => $product_id,
-            'posts_per_page' => -1,
+            'posts_per_page' => self::LINK_QUERY_CAP,
             'fields'         => 'ids',
             'no_found_rows'  => true,
         ] );

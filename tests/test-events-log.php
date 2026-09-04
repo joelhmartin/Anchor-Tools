@@ -137,6 +137,22 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 	 * (written moments earlier, legitimately 0) survives, render_needs_review_notice
 	 * returns early and the order is invisible for five minutes.
 	 */
+	/**
+	 * REG-D30 — there is no per-event activity roll-up. Events_Log::event() was
+	 * an empty method with a full docblock, so a caller would have read as
+	 * recording activity while recording nothing, and the event meta schema
+	 * reserved an 'activity' key nothing ever wrote.
+	 */
+	public function test_there_is_no_no_op_per_event_activity_log() {
+		$this->assertFalse(
+			method_exists( Events_Log::class, 'event' ),
+			'A method that logs nothing is worse than no method at all.'
+		);
+
+		$meta = $this->module()->get_meta( $this->make_event() );
+		$this->assertArrayNotHasKey( 'activity', $meta );
+	}
+
 	public function test_flag_review_busts_the_needs_review_notice_transient() {
 		$this->require_wc();
 		$ctx = $this->paid_event_with_variation();

@@ -6,9 +6,11 @@
  * place for: a site-wide error log (option-backed, capped), a per-order sync log
  * (order meta, HPOS-safe via WC CRUD), and per-order "needs review" flags.
  *
- * The per-event activity roll-up (Events_Log::event) is intentionally a no-op in
- * MVP — the activity log + Activity panel are deferred (spec finding #20). The
- * method exists so callers don't branch and so a future build can fill it in.
+ * There is deliberately NO per-event activity roll-up here. One existed as an
+ * empty Events_Log::event() with a full docblock, so any caller would have
+ * looked like it was recording activity and recorded nothing; REG-D30 removed
+ * it, along with the reserved 'activity' event meta key, until the Activity
+ * panel that would read them actually ships.
  *
  * @package AnchorTools\Events
  */
@@ -317,18 +319,6 @@ class Events_Log {
         if ( \function_exists( 'delete_transient' ) && \class_exists( __NAMESPACE__ . '\\WooCommerce' ) ) {
             \delete_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT );
         }
-    }
-
-    /**
-     * Per-event activity roll-up. DEFERRED in MVP (spec finding #20): no-op.
-     * Reserved so callers don't need to branch and a future build can populate it.
-     *
-     * @param int    $event_id Event post ID.
-     * @param string $type     Activity type.
-     * @param array  $context  Optional context.
-     */
-    public static function event( $event_id, $type, array $context = [] ) {
-        // Intentionally empty — activity log deferred (spec §2, §11.6).
     }
 
     /**

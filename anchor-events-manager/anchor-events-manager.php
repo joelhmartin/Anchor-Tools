@@ -2389,9 +2389,6 @@ class Module {
             // this event is on now" (roster_sent_markers()) and is rewritten
             // into the keyed shape on the next sweep.
             'roster_sent' => [ 'type' => 'array', 'show_in_rest' => false ],
-            // Per-event activity roll-up: data-model reserved only; NOT written/surfaced
-            // in MVP (activity log deferred — spec §2, §11.6).
-            'activity' => [ 'type' => 'array', 'show_in_rest' => false ],
             // Event-type / registration-mode data model (Task 1.1+1.2). Metabox
             // authoring UI + save_meta() wiring landed in Task 1.3+1.4; front-end
             // manager-form parity (same fields, same sanitize_event_type_input()
@@ -2431,7 +2428,7 @@ class Module {
             // Engine-owned: written only by Occurrences, never by save_meta()'s
             // allow-list (see the $input array in save_meta() below — these five
             // keys are intentionally absent from it, same pattern as
-            // linked_products/roster_sent/activity above). show_in_rest=false so
+            // linked_products/roster_sent above). show_in_rest=false so
             // REST/Gutenberg can never write them either.
             'group_role' => [ 'type' => 'string', 'show_in_rest' => false ],
             'group_id' => [ 'type' => 'integer', 'show_in_rest' => false ],
@@ -2508,7 +2505,6 @@ class Module {
             'organizer_email' => '',
             'reminder_offsets' => '',
             'roster_sent' => [],
-            'activity' => [],
             'type' => 'single',
             'sessions' => [],
             'labels' => [],
@@ -9725,7 +9721,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // REG-D31 — archive rather than destroy. These entries are the ONLY
         // record of email_send_returned_false / capacity_lock_unavailable /
         // illegal_transition / seat_insert_failed; the seat history does not
-        // carry them and Events_Log::event() is a no-op.
+        // carry them, and there is no per-event activity log to fall back on
+        // (REG-D30 retired the no-op that pretended otherwise).
         $archived = Events_Log::archive_and_clear();
 
         $redirect = \wp_get_referer();

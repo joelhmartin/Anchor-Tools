@@ -115,7 +115,6 @@ class Occurrences {
     const NEVER_COPY_KEYS = [
         'linked_products',
         'roster_sent',
-        'activity',
         'type',
         'sessions',
         'group_role',

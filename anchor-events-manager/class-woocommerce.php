@@ -98,7 +98,13 @@ class WooCommerce {
         \add_action( 'trashed_post', [ $this, 'rebuild_deferred' ] );
         \add_action( 'before_delete_post', [ $this, 'capture_linked_events' ] );
         \add_action( 'deleted_post', [ $this, 'rebuild_deferred' ] );
-        \add_action( 'woocommerce_delete_product_variation', [ $this, 'capture_linked_events' ] );
+        // WOO-D9: `woocommerce_delete_product_variation` used to be hooked to
+        // capture_linked_events() here too, but that action fires AFTER
+        // wp_delete_post() has already removed the post — get_post_type()
+        // returns false by the time the handler runs, so it was a no-op
+        // dressed up as coverage. The before_delete_post/deleted_post pair
+        // above already covers a variation delete (it fires for every post
+        // type, variations included) and does the real work.
 
         /* -----------------------------------------------------------------
          * Phase 2 — form swap + checkout capture + seat creation

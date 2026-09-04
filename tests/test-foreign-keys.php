@@ -272,6 +272,34 @@ class Test_Foreign_Keys extends Anchor_Events_TestCase {
 		$this->assertSame( $vid, (int) $this->product_sync()->variation_for_tier( $event_id, $tier['id'] ) );
 	}
 
+	/**
+	 * WOO-D9: the mirror rebuild on a variation-post delete works via the
+	 * generic before_delete_post/deleted_post pair — NOT via a dedicated
+	 * `woocommerce_delete_product_variation` hook (removed: that action fires
+	 * AFTER wp_delete_post() has already removed the post, so
+	 * capture_linked_events()'s get_post_type() call always saw `false` and
+	 * captured nothing).
+	 */
+	public function test_deleting_a_variation_post_directly_still_rebuilds_the_mirror() {
+		list( $event_id, $tier, $product_id ) = $this->paid_event();
+		$vid = (int) $this->product_sync()->variation_for_tier( $event_id, $tier['id'] );
+		$this->assertGreaterThan( 0, $vid );
+		$this->assertNotSame( [], $this->woocommerce()->products_for_event( $event_id ) );
+
+		wp_delete_post( $vid, true );
+		wp_cache_flush();
+
+		$this->assertSame(
+			[],
+			$this->woocommerce()->products_for_event( $event_id ),
+			'A deleted variation must drop out of the live query…'
+		);
+		$this->assertFalse(
+			$this->woocommerce()->event_is_linked( $event_id ),
+			'…and the mirror must have been rebuilt to agree, with no dedicated variation-delete hook.'
+		);
+	}
+
 	/* ------------------------------------------------------------------
 	 * MODEL-D22 — parent_of()
 	 * ------------------------------------------------------------------ */

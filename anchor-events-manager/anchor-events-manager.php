@@ -10205,10 +10205,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         //               and the stored value has to survive the save untouched.
         $defaults = $this->default_settings();
         $stored   = $this->get_settings();
+        // finding-4 — the coalesced fallback must be read on BOTH sides of the
+        // ternary. `$input['x'] ?? 'default'` only guards the in_array() check;
+        // reading `$input['x']` again in the true branch warns on a genuinely
+        // missing key (the coalesce made the check pass on its OWN fallback,
+        // not on a key that exists).
+        $timezone_mode   = $input['timezone_mode'] ?? 'site';
+        $template_source = $input['template_source'] ?? 'theme';
         $output = [
-            'timezone_mode' => in_array( $input['timezone_mode'] ?? 'site', [ 'site', 'event' ], true ) ? $input['timezone_mode'] : 'site',
+            'timezone_mode' => in_array( $timezone_mode, [ 'site', 'event' ], true ) ? $timezone_mode : 'site',
             'archive_hide_past' => ! empty( $input['archive_hide_past'] ),
-            'template_source' => in_array( $input['template_source'] ?? 'theme', [ 'theme', 'plugin' ], true ) ? $input['template_source'] : 'theme',
+            'template_source' => in_array( $template_source, [ 'theme', 'plugin' ], true ) ? $template_source : 'theme',
             'registration_internal' => ! empty( $input['registration_internal'] ),
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),

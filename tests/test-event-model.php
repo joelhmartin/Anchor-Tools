@@ -122,6 +122,33 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertArrayNotHasKey( 'notify_attendee', $this->module()->sanitize_settings( [] ) );
 	}
 
+	/**
+	 * finding-4 — `in_array( $input['x'] ?? 'default', [...], true ) ?
+	 * $input['x'] : 'default'` guards the CHECK with the coalesced value but
+	 * re-reads the raw `$input['x']` in the true branch: on a genuinely
+	 * missing key the check passes on its own fallback, then the true branch
+	 * warns on the same missing key. Both `timezone_mode` and
+	 * `template_source` must resolve to their default with no PHP warning
+	 * when the key is absent from $input entirely (not merely empty).
+	 */
+	public function test_sanitize_settings_with_a_missing_key_warns_never_and_defaults_correctly() {
+		$warnings = [];
+		set_error_handler( static function ( $errno, $errstr ) use ( &$warnings ) {
+			$warnings[] = $errstr;
+			return true;
+		}, E_WARNING | E_NOTICE | E_DEPRECATED );
+
+		try {
+			$saved = $this->module()->sanitize_settings( [] );
+		} finally {
+			restore_error_handler();
+		}
+
+		$this->assertSame( [], $warnings, 'A missing settings key must never raise a PHP warning/notice.' );
+		$this->assertSame( 'site', $saved['timezone_mode'] );
+		$this->assertSame( 'theme', $saved['template_source'] );
+	}
+
 	/** event_type() falls back to 'single' when no type meta is stored. */
 	public function test_event_type_defaults_to_single() {
 		$event_id = $this->make_event();

@@ -3949,13 +3949,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             : [];
         $this->ticket_types->save( $post_id, $ticket_rows );
 
-        // Group authoring (offering_dates / recurrence / group_role) — Phase 2,
-        // Task 2.3. Deliberately NOT part of the generic $input allow-list
-        // above (see get_meta_schema()'s docblock on those keys); this is the
-        // one dedicated, validated place they're written, and the only place
-        // Occurrences::reconcile() is ever called from.
-        $this->persist_group_authoring( $post_id, $input['type'] );
-
         $this->maybe_append_registration_shortcode( $post_id, $input );
 
         // Task 3.2 — per-event lifecycle-email template overrides. Deliberately
@@ -3963,6 +3956,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // docblock on the meta keys' register_post_meta() call); this is the
         // one dedicated, email-safe-kses-validated place they're written.
         $this->save_email_templates( $post_id );
+
+        // Group authoring (offering_dates / recurrence / group_role) — Phase 2,
+        // Task 2.3. Deliberately NOT part of the generic $input allow-list
+        // above (see get_meta_schema()'s docblock on those keys); this is the
+        // one dedicated, validated place they're written, and the only place
+        // Occurrences::reconcile() is ever called from.
+        //
+        // LAST, after every other sub-saver: it reconciles, and the reconcile
+        // copies the parent's rows down onto the children. See the ORDERING
+        // note in persist_group_authoring()'s docblock.
+        $this->persist_group_authoring( $post_id, $input['type'] );
 
         $this->clear_caches();
     }
@@ -4293,6 +4297,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *      in case some other, unrelated hook chain calls save_meta()/
      *      save_event_manager_fields() while a reconcile() for this request
      *      is already in flight.
+     *
+     * ORDERING (Codex P1): both save paths call this LAST, after every other
+     * sub-saver. reconcile() copies the parent's rows down onto its children
+     * (Occurrences::sync_shared_meta(), plus the post_content
+     * maybe_append_registration_shortcode() may rewrite), so anything that runs
+     * after it propagates one save late: the author changed the confirmation
+     * subject, opened an occurrence and read the PREVIOUS one, with nothing on
+     * screen to say the copy had already happened. The sub-savers write the
+     * parent's own meta and never touch a child, so running them first is safe
+     * as well as correct. Adding a new one? Put it above the
+     * persist_group_authoring() call, not below it.
      *
      * APPLY-TO-ALL-DATES (audit MODEL-D40): after the structure is settled,
      * the parent's own `registration_enabled` is written down onto every LIVE
@@ -6908,11 +6923,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             : [];
         $this->ticket_types->save( $saved_id, $ticket_rows );
 
-        // Group authoring (Task 2.3) — SAME dedicated validated persist+reconcile
-        // step as save_meta(), reused (not duplicated) so the two save paths can
-        // never drift. See persist_group_authoring()'s docblock.
-        $this->persist_group_authoring( $saved_id, $input['type'] );
-
         $this->maybe_append_registration_shortcode( $saved_id, $input );
         $this->save_email_templates( $saved_id );
         $this->save_registration_questions( $saved_id, $_POST );
@@ -6920,6 +6930,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $this->save_email_switches( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
         $this->save_email_cta_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
         $this->save_email_sender_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
+
+        // Group authoring (Task 2.3) — SAME dedicated validated persist+reconcile
+        // step as save_meta(), reused (not duplicated) so the two save paths can
+        // never drift, and LAST for the same reason: everything above is an
+        // input to the copy it makes. See persist_group_authoring()'s docblock.
+        $this->persist_group_authoring( $saved_id, $input['type'] );
+
         $this->clear_caches();
 
         return $input;

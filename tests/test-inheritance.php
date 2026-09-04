@@ -195,6 +195,77 @@ class Test_Inheritance extends Anchor_Events_TestCase {
 	}
 
 	/* ------------------------------------------------------------------
+	 * 3b. The save that writes a value is the save that propagates it.
+	 *
+	 * Both save paths reconciled BEFORE their email/questions sub-savers had
+	 * run, so sync_shared_meta() copied down the parent's PREVIOUS rows and the
+	 * new ones sat one post away until something reconciled again. An author
+	 * changed the confirmation subject, opened an occurrence, and saw the old
+	 * wording — which reads as "inheritance is broken", not "save twice".
+	 * ------------------------------------------------------------------ */
+
+	/** The classic metabox: a template edited in this request reaches the child. */
+	public function test_metabox_save_propagates_the_email_template_it_just_wrote() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$parent_id = $this->make_parent();
+		$child_id  = $this->one_child( $parent_id );
+
+		$_POST = [
+			Module::NONCE                      => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date'          => '2027-05-04',
+			'anchor_event_type'                => 'offering',
+			'anchor_event_registration_mode'   => 'free',
+			'anchor_event_offering_dates'      => $this->one_row(),
+			'anchor_email_tpl_confirmation'    => '<p>Booked: {event_title}</p>',
+		];
+		$this->module()->save_meta( $parent_id );
+		unset( $_POST );
+
+		$this->assertSame(
+			get_post_meta( $parent_id, '_anchor_event_email_tpl_confirmation', true ),
+			get_post_meta( $child_id, '_anchor_event_email_tpl_confirmation', true ),
+			'One save must be enough for the parent and its dates to agree.'
+		);
+		$this->assertStringContainsString(
+			'Booked:',
+			get_post_meta( $child_id, '_anchor_event_email_tpl_confirmation', true )
+		);
+	}
+
+	/** …and the front-end manager form, which owns the subject/intro fields. */
+	public function test_manager_save_propagates_the_email_subject_it_just_wrote() {
+		$parent_id = $this->make_parent();
+		$child_id  = $this->one_child( $parent_id );
+
+		$_POST = [
+			'anchor_event_type'                        => 'offering',
+			'anchor_event_registration_mode'           => 'free',
+			'anchor_event_offering_dates'              => $this->one_row(),
+			'anchor_event_email_subject_confirmation'  => 'Your seat at the Workshop',
+			'anchor_event_questions'                   => [
+				[ 'label' => 'Dietary needs', 'type' => 'text', 'required' => '0' ],
+			],
+		];
+
+		$method = new ReflectionMethod( Module::class, 'save_event_manager_fields' );
+		$method->setAccessible( true );
+		$method->invoke( $this->module(), $parent_id, '2027-05-04', $this->module()->registration_mode( $parent_id ) );
+		unset( $_POST );
+
+		$this->assertSame(
+			'Your seat at the Workshop',
+			get_post_meta( $child_id, '_anchor_event_email_subject_confirmation', true ),
+			'The subject written by this save must reach the date this save reconciled.'
+		);
+		$this->assertSame(
+			get_post_meta( $parent_id, Module::QUESTIONS_META, true ),
+			get_post_meta( $child_id, Module::QUESTIONS_META, true ),
+			'…and so must the questions it wrote.'
+		);
+	}
+
+	/* ------------------------------------------------------------------
 	 * 4. Per-occurrence keys are still never overwritten
 	 * ------------------------------------------------------------------ */
 

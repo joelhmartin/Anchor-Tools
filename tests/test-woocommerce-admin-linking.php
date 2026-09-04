@@ -89,4 +89,40 @@ class Test_WooCommerce_Admin_Linking extends Anchor_Events_TestCase {
 			'A managed variation\'s link meta must survive an admin form save.'
 		);
 	}
+
+	/**
+	 * WOO-D30: a variation-only save (the ONLY hooks it fires are
+	 * woocommerce_{update,new}_product_variation, not
+	 * woocommerce_update_product) must still rebuild the denormalized
+	 * linked-products mirror — before this, only a save of the PARENT
+	 * product rebuilt it, so a variation-only change could leave
+	 * event_is_linked() (the mirror) disagreeing with products_for_event()
+	 * (the live query) indefinitely.
+	 */
+	public function test_a_variation_only_save_rebuilds_the_mirror() {
+		$event_id = $this->make_event( [ 'title' => 'Self-managed link target' ] );
+
+		$product = new WC_Product_Variable();
+		$product->set_name( 'Self-managed' );
+		$product->update_meta_data( WooCommerce::META_ENABLED, '1' );
+		$product_id = $product->save();
+
+		$variation = new WC_Product_Variation();
+		$variation->set_parent_id( $product_id );
+		$variation->update_meta_data( WooCommerce::META_EVENT_ID, $event_id );
+		$variation_id = $variation->save();
+
+		// The live query already agrees; simulate the mirror having gone
+		// stale (e.g. built before this variation existed).
+		update_post_meta( $event_id, $this->module()->meta_key( 'linked_products' ), [] );
+		$this->assertFalse( $this->woocommerce()->event_is_linked( $event_id ) );
+		$this->assertNotSame( [], $this->woocommerce()->products_for_event( $event_id ) );
+
+		$this->woocommerce()->on_variation_saved( $variation_id );
+
+		$this->assertTrue(
+			$this->woocommerce()->event_is_linked( $event_id ),
+			'The mirror must be rebuilt from a variation-only save, not just a parent-product save.'
+		);
+	}
 }

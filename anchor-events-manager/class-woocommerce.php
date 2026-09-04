@@ -92,6 +92,19 @@ class WooCommerce {
         \add_action( 'woocommerce_update_product', [ $this, 'on_product_saved' ], 20, 1 );
         \add_action( 'woocommerce_new_product', [ $this, 'on_product_saved' ], 20, 1 );
 
+        // WOO-D30 — a VARIATION saved on its own (Product_Sync writing a
+        // price/status change, or an admin editing one variation) fires
+        // woocommerce_{update,new}_product_variation, not the two hooks
+        // above — those only fire when the PARENT product itself is saved,
+        // which a variation-only pass does not always do. Without this, the
+        // denormalized `_anchor_event_linked_products` mirror
+        // (event_is_linked()) could go stale while products_for_event()'s
+        // live query already disagreed with it. rebuild_event_mirror() is
+        // idempotent, so overlapping with the parent-save rebuild above is
+        // harmless.
+        \add_action( 'woocommerce_update_product_variation', [ $this, 'on_variation_saved' ], 20, 1 );
+        \add_action( 'woocommerce_new_product_variation', [ $this, 'on_variation_saved' ], 20, 1 );
+
         // Mirror lifecycle — product / variation trash + delete. Capture the
         // linked event ids while the post meta still exists, then rebuild after.
         \add_action( 'wp_trash_post', [ $this, 'capture_linked_events' ] );
@@ -686,6 +699,24 @@ class WooCommerce {
             $this->rebuild_event_mirror( $eid );
         }
         unset( $this->deferred[ $product_id ] );
+    }
+
+    /**
+     * WOO-D30 — rebuild the mirror for a variation save that never touches
+     * its parent product. Hooks: woocommerce_update_product_variation /
+     * woocommerce_new_product_variation( int $variation_id ).
+     *
+     * @param int $variation_id
+     */
+    public function on_variation_saved( $variation_id ) {
+        $variation_id = (int) $variation_id;
+        $parent_id    = (int) \wp_get_post_parent_id( $variation_id );
+        if ( $parent_id <= 0 ) {
+            return;
+        }
+        foreach ( $this->product_link_event_ids( $parent_id ) as $eid ) {
+            $this->rebuild_event_mirror( $eid );
+        }
     }
 
     /**

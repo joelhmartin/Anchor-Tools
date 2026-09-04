@@ -41,18 +41,33 @@
  *
  * OFFERS (build_offers(), keyed off Module::registration_mode()):
  *   - wc: one Offer per ACTIVE ticket tier (Ticket_Types::get()), priced
- *     from the tier's own price. `availability` is derived from the EVENT's
- *     overall remaining capacity (Registrations::remaining_capacity() — one
- *     cheap cached count query), not a per-tier count, to keep this a single
- *     query regardless of tier count (documented simplification). No active
- *     tiers -> no offers key.
+ *     from the tier's own price. No active tiers -> no offers key.
  *   - external: one Offer with `url` = external_url (or the permalink) and
  *     `price` parsed from the free-text external_display_price ("$495" ->
  *     495) when a numeric substring is found; price is omitted (not "0")
  *     when unparseable, so we never fabricate a price.
- *   - free (default): one Offer with price 0 — chosen over omitting offers
- *     entirely because Google's Event guidance treats a present, zero-price
- *     Offer as the canonical "free to attend" signal for rich results.
+ *   - free (default): one Offer with price 0 — chosen over omitting a
+ *     BOOKABLE event's offers because Google's Event guidance treats a
+ *     present, zero-price Offer as the canonical "free to attend" signal.
+ *
+ * AVAILABILITY is not decided here. Every builder asks Module::bookability()
+ * — the single purchasability authority the storefront, the cart, the date
+ * picker and the series archive also ask — and maps it through
+ * availability_for(). The wc branch asks per TIER, so an exhausted tier quota
+ * is SoldOut while its sibling stays InStock.
+ *
+ * Three bookability states have no availability value, and they do NOT all
+ * mean the same thing (see omits_offer()):
+ *   - `parent` / `closed` — a container, a finished event, a soft-closed date
+ *     or a registration window that has passed. There is nothing to sell, so
+ *     the Offer is omitted entirely rather than claiming a false state.
+ *   - `disabled` — registration is simply switched OFF, which is the DEFAULT
+ *     and the normal steady state for a display-only site. The event is real,
+ *     its price is real, and it is still worth publishing; what the site
+ *     cannot honestly claim is a stock state. So the Offer IS emitted, with
+ *     price / priceCurrency / url / validFrom and NO `availability` key —
+ *     `availability` is an optional property, and omitting it says "no claim"
+ *     instead of dropping every display-only event's price from the markup.
  *
  * @package Anchor\Events
  */
@@ -75,6 +90,58 @@ class Event_Schema {
     /* ═══════════════════════════════════════════════════════════
        Public API
        ═══════════════════════════════════════════════════════════ */
+
+    /**
+     * The schema.org availability URL for a Module::bookability() state, or
+     * null when there is no honest value to publish (RENDER-D3/D4/D5/D7).
+     *
+     * schema.org has no "not for sale" availability value, so a container, a
+     * finished event, a closed registration window and an event with
+     * registration switched off all map to null. null means "make no
+     * availability claim" — it does NOT by itself mean "omit the Offer";
+     * omits_offer() is what decides that, and it says yes for parent/closed
+     * and no for disabled. 'waitlist' maps to LimitedAvailability rather than
+     * SoldOut because the seat CAN still be requested —
+     * Registrations::claim_seats() resolves it at creation.
+     *
+     * @param string $bookability One of open|waitlist|full|closed|parent|disabled.
+     * @return string|null
+     */
+    public static function availability_for( $bookability ) {
+        switch ( (string) $bookability ) {
+            case 'open':
+                return 'https://schema.org/InStock';
+            case 'waitlist':
+                return 'https://schema.org/LimitedAvailability';
+            case 'full':
+                return 'https://schema.org/SoldOut';
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * Whether a Module::bookability() state means "publish no Offer at all",
+     * as opposed to "publish the Offer but make no availability claim".
+     *
+     * `parent` is a container that has no seats of its own; `closed` covers a
+     * finished event, a soft-closed date and a registration window that has
+     * passed. In both cases an Offer would advertise something that does not
+     * exist.
+     *
+     * `disabled` is deliberately NOT in this list. Registration off is the
+     * default state of an event and the permanent state of every display-only
+     * site, so treating it as "no Offer" stripped `offers` from the majority
+     * of events on such a site — the price stopped reaching search results
+     * because nobody had switched on a registration feature they do not use.
+     * Its Offer is emitted without `availability` instead.
+     *
+     * @param string $bookability
+     * @return bool
+     */
+    private static function omits_offer( $bookability ) {
+        return ! \in_array( (string) $bookability, [ 'open', 'waitlist', 'full', 'disabled' ], true );
+    }
 
     /**
      * Build a schema.org/Event JSON-LD node (as a plain array) for one event
@@ -259,8 +326,17 @@ class Event_Schema {
             }
         }
 
-        $parent_meta      = $this->module->get_meta( $event_id );
-        $node             = $this->assemble_node( $event_id, $parent_meta, (int) $ts['start'], $end_ts );
+        $parent_meta = $this->module->get_meta( $event_id );
+        $node        = $this->assemble_node( $event_id, $parent_meta, (int) $ts['start'], $end_ts );
+
+        // RENDER-D7: a container is never itself bookable
+        // (render_registration_form() refuses to give a parent a form), so it
+        // advertises no Offer — its subEvents each carry their own. Explicit
+        // rather than implicit: bookability() already answers 'parent' here so
+        // assemble_node() produces no offers, but assemble_node() is shared
+        // with three builders and this is the parent's own contract.
+        unset( $node['offers'] );
+
         $node['subEvent'] = $child_nodes;
         return $node;
     }
@@ -510,9 +586,9 @@ class Event_Schema {
             return $this->build_wc_offers( $event_id, $meta, $currency, $url );
         }
         if ( $mode === 'external' ) {
-            return $this->build_external_offer( $meta, $currency, $url );
+            return $this->build_external_offer( $event_id, $meta, $currency, $url );
         }
-        return $this->build_free_offer( $currency, $url );
+        return $this->build_free_offer( $event_id, $meta, $currency, $url );
     }
 
     /**
@@ -528,9 +604,17 @@ class Event_Schema {
     }
 
     /**
-     * One Offer per ACTIVE ticket tier. `availability` comes from the
-     * event's overall remaining capacity (one cheap, cached query) rather
-     * than a per-tier count — documented simplification, see class docblock.
+     * One Offer per ACTIVE ticket tier whose seats can still be sold.
+     *
+     * RENDER-D3: `availability` is Module::bookability() for THAT tier, not a
+     * remaining_capacity() count — the count is blind to the hand-set
+     * sold_out flag, the registration_open/close window, the waitlist toggle,
+     * the per-tier quota and the past, all of which the picker on the same
+     * page already honours. A tier whose state omits the Offer entirely
+     * (closed / parent) contributes nothing, so an event that cannot be
+     * booked publishes no price rather than a false one; a `disabled` event
+     * still publishes its tier prices, just with no availability claim (see
+     * omits_offer()).
      *
      * @param int    $event_id
      * @param array  $meta
@@ -550,20 +634,24 @@ class Event_Schema {
             return [];
         }
 
-        $capacity     = (int) ( $meta['capacity'] ?? 0 );
-        $remaining    = $this->module->registrations->remaining_capacity( $event_id, $capacity );
-        $availability = $remaining > 0 ? 'https://schema.org/InStock' : 'https://schema.org/SoldOut';
-        $valid_from   = $this->registration_open_iso( $meta );
+        $valid_from = $this->registration_open_iso( $meta );
 
         $offers = [];
         foreach ( $active as $tier ) {
+            $bookability = $this->module->bookability( $event_id, $tier );
+            if ( self::omits_offer( $bookability ) ) {
+                continue;
+            }
             $offer = [
                 '@type'         => 'Offer',
                 'price'         => $this->clean_number( (float) ( $tier['price'] ?? 0 ) ),
                 'priceCurrency' => $currency,
-                'availability'  => $availability,
                 'url'           => $url,
             ];
+            $availability = self::availability_for( $bookability );
+            if ( $availability !== null ) {
+                $offer['availability'] = $availability;
+            }
             if ( $valid_from !== '' ) {
                 $offer['validFrom'] = $valid_from;
             }
@@ -577,12 +665,22 @@ class Event_Schema {
      * the free-text external_display_price and omitted (never fabricated as
      * "0") when no numeric substring is found.
      *
+     * RENDER-D5: the Offer used to carry neither `availability` nor
+     * `validFrom`, so Google dropped the block rather than showing "unknown".
+     * All three builders now emit the same shape from the same authority.
+     *
+     * @param int    $event_id
      * @param array  $meta
      * @param string $currency
      * @param string $fallback_url Permalink, used when external_url is empty.
      * @return array
      */
-    private function build_external_offer( array $meta, $currency, $fallback_url ) {
+    private function build_external_offer( $event_id, array $meta, $currency, $fallback_url ) {
+        $bookability = $this->module->bookability( $event_id );
+        if ( self::omits_offer( $bookability ) ) {
+            return [];
+        }
+
         $url = ! empty( $meta['external_url'] ) ? (string) $meta['external_url'] : $fallback_url;
 
         $offer = [
@@ -591,9 +689,19 @@ class Event_Schema {
             'url'           => $url,
         ];
 
+        $availability = self::availability_for( $bookability );
+        if ( $availability !== null ) {
+            $offer['availability'] = $availability;
+        }
+
         $price = $this->parse_price( (string) ( $meta['external_display_price'] ?? '' ) );
         if ( $price !== null ) {
             $offer['price'] = $price;
+        }
+
+        $valid_from = $this->registration_open_iso( $meta );
+        if ( $valid_from !== '' ) {
+            $offer['validFrom'] = $valid_from;
         }
 
         return [ $offer ];
@@ -603,18 +711,43 @@ class Event_Schema {
      * The single free Offer (price 0) — see class docblock for why a
      * present, zero-price Offer is preferred over omitting `offers`.
      *
+     * RENDER-D4: `availability` used to be a hardcoded InStock, so a free
+     * event that was full, hand-flagged sold out, or long finished still
+     * advertised itself as available to Google indefinitely. There is no
+     * "closed" availability value, so a container or a finished/closed event
+     * now emits no Offer, and an event with registration merely switched off
+     * emits the Offer with no availability claim (see omits_offer()).
+     *
+     * @param int    $event_id
+     * @param array  $meta
      * @param string $currency
      * @param string $url
      * @return array
      */
-    private function build_free_offer( $currency, $url ) {
-        return [ [
+    private function build_free_offer( $event_id, array $meta, $currency, $url ) {
+        $bookability = $this->module->bookability( $event_id );
+        if ( self::omits_offer( $bookability ) ) {
+            return [];
+        }
+
+        $offer = [
             '@type'         => 'Offer',
             'price'         => 0,
             'priceCurrency' => $currency,
-            'availability'  => 'https://schema.org/InStock',
             'url'           => $url,
-        ] ];
+        ];
+
+        $availability = self::availability_for( $bookability );
+        if ( $availability !== null ) {
+            $offer['availability'] = $availability;
+        }
+
+        $valid_from = $this->registration_open_iso( $meta );
+        if ( $valid_from !== '' ) {
+            $offer['validFrom'] = $valid_from;
+        }
+
+        return [ $offer ];
     }
 
     /**
@@ -649,8 +782,9 @@ class Event_Schema {
     }
 
     /**
-     * ISO 8601 `validFrom` for a WC offer, from the event's
-     * registration_open date (midnight, event timezone), or '' when unset.
+     * ISO 8601 `validFrom` for an Offer (all three builders emit the same
+     * shape), from the event's registration_open date (midnight, event
+     * timezone), or '' when unset.
      *
      * @param array $meta
      * @return string

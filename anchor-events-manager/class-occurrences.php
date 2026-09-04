@@ -278,9 +278,7 @@ class Occurrences {
         $meta['start_date'] = $start_date;
         $meta['end_date']   = $end_date;
 
-        $ts = $this->module->compute_timestamps( $meta );
-        \update_post_meta( $parent_id, $mk( 'start_ts' ), (int) $ts['start'] );
-        \update_post_meta( $parent_id, $mk( 'end_ts' ), (int) $ts['end'] );
+        $this->module->persist_timestamps( $parent_id, $meta );
     }
 
     public function retire_all_children( $parent_id ) {
@@ -788,10 +786,7 @@ class Occurrences {
             'all_day'    => ! empty( $parent_meta['all_day'] ),
             'timezone'   => (string) ( $parent_meta['timezone'] ?? '' ),
         ];
-        $timestamps = $this->module->compute_timestamps( $occurrence_meta );
-
-        \update_post_meta( $child_id, $mk( 'start_ts' ), $timestamps['start'] );
-        \update_post_meta( $child_id, $mk( 'end_ts' ), $timestamps['end'] );
+        $this->module->persist_timestamps( $child_id, $occurrence_meta );
     }
 
     /**
@@ -1008,12 +1003,16 @@ class Occurrences {
     }
 
     /**
-     * Whether a child is currently soft-closed.
+     * Whether an occurrence is currently soft-closed.
+     *
+     * Public because the listing/notification layer needs the same predicate:
+     * run_reminder_sweep() skips a soft-closed date rather than mailing its
+     * roster "…is coming up" (audit MODEL-D17).
      *
      * @param int $child_id
      * @return bool
      */
-    private function is_closed( $child_id ) {
+    public function is_closed( $child_id ) {
         return (bool) \get_post_meta( $child_id, $this->module->meta_key( 'occurrence_closed' ), true );
     }
 

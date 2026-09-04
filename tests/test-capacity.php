@@ -201,4 +201,151 @@ class Test_Capacity extends Anchor_Events_TestCase {
 		// All three are confirmed and consume capacity past the ceiling.
 		$this->assertSame( 3, $this->registrations()->count_reserved_seats( $event_id, true ) );
 	}
+
+	/* ------------------------------------------------------------------
+	 * MODEL-D5 / WOO-D2 — capacity_decision() is the single purchasability
+	 * authority, and Module::bookability() is the one predicate every reader
+	 * (storefront, cart, date picker, series archive, schema) asks.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * MODEL-D5: an event that has already finished is closed, however much
+	 * room it has left. Without this the picker printed "Open"/"Register" and
+	 * handle_registration() minted a real seat on a course that already ran.
+	 *
+	 * The `_ts` rows are written the way every production save path writes
+	 * them (compute_timestamps()); make_event() only sets the date meta.
+	 */
+	public function test_past_event_is_closed_even_with_room() {
+		$event = $this->make_past_event( [ 'capacity' => 10 ] );
+
+		$this->assertSame(
+			'closed',
+			$this->registrations()->capacity_decision( $event, $this->module()->get_meta( $event ) )
+		);
+	}
+
+	/** An event with no end_ts row is UNDATED, not past (RENDER-D31) — it stays open. */
+	public function test_event_with_no_end_ts_is_not_treated_as_past() {
+		$event = $this->make_event( [ 'capacity' => 10, 'start_date' => '2020-01-01' ] );
+		delete_post_meta( $event, '_anchor_event_end_ts' );
+
+		$this->assertSame(
+			'open',
+			$this->registrations()->capacity_decision( $event, $this->module()->get_meta( $event ) )
+		);
+	}
+
+	/** bookability(): the hand-set "sold out" flag reaches every reader as 'full'. */
+	public function test_bookability_reports_sold_out_flag() {
+		$event = $this->make_event( [
+			'capacity'             => 0,
+			'registration_enabled' => true,
+			'sold_out'             => true,
+			'start_date'           => '2030-01-01',
+		] );
+
+		$this->assertSame( 'full', $this->module()->bookability( $event ) );
+	}
+
+	/** bookability(): sold out + waitlist on is 'waitlist', not 'full'. */
+	public function test_bookability_reports_waitlist() {
+		$event = $this->make_event( [
+			'capacity'             => 1,
+			'registration_enabled' => true,
+			'waitlist'             => true,
+			'start_date'           => '2030-01-01',
+		] );
+		$this->make_seat( $event );
+
+		$this->assertSame( 'waitlist', $this->module()->bookability( $event ) );
+	}
+
+	/** bookability(): registration switched off is 'disabled', not 'open'. */
+	public function test_bookability_reports_disabled_registration() {
+		$event = $this->make_event( [ 'registration_enabled' => false, 'start_date' => '2030-01-01' ] );
+
+		$this->assertSame( 'disabled', $this->module()->bookability( $event ) );
+	}
+
+	/** bookability(): a finished event is 'closed' on every route. */
+	public function test_bookability_reports_past_event_as_closed() {
+		$event = $this->make_past_event( [ 'capacity' => 10 ] );
+
+		$this->assertSame( 'closed', $this->module()->bookability( $event ) );
+	}
+
+	/** bookability(): a per-tier quota that is exhausted is 'full' for that tier only. */
+	public function test_bookability_reports_tier_quota_as_full() {
+		$event = $this->make_event(
+			[ 'capacity' => 100, 'waitlist' => true, 'start_date' => '2030-01-01' ],
+			[ [ 'label' => 'Limited', 'price' => '0', 'active' => 1, 'quota' => 1 ] ]
+		);
+		$tier = $this->ticket_types()->get( $event )[0];
+
+		$this->assertSame( 'open', $this->module()->bookability( $event, $tier ) );
+
+		$this->make_seat( $event, [ 'ticket_type_id' => $tier['id'] ] );
+
+		$this->assertSame( 'full', $this->module()->bookability( $event, $tier ) );
+		// The event itself still has room.
+		$this->assertSame( 'open', $this->module()->bookability( $event ) );
+	}
+
+	/** bookability(): a group PARENT is a container, never a seat — 'parent'. */
+	public function test_bookability_reports_group_parent() {
+		$parent = $this->make_event( [
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'timezone'             => 'UTC',
+		] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0 ],
+		] );
+		$this->module()->occurrences->reconcile( $parent );
+
+		$this->assertSame( 'parent', $this->module()->bookability( $parent ) );
+	}
+
+	/** bookability(): a soft-closed occurrence is 'closed' even reached by direct URL. */
+	public function test_bookability_reports_soft_closed_child_as_closed() {
+		$rows = [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0 ],
+			[ 'date' => '2030-11-13', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'November', 'capacity' => 0 ],
+		];
+		$parent = $this->make_event( [
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'timezone'             => 'UTC',
+		] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', $rows );
+		$live = $this->module()->occurrences->reconcile( $parent );
+
+		$closed = $live[0];
+		$this->make_seat( $closed ); // Seated → soft-closed rather than trashed.
+		update_post_meta( $parent, '_anchor_event_offering_dates', array_slice( $rows, 1 ) );
+		$this->module()->occurrences->reconcile( $parent );
+
+		$this->assertSame( 'closed', $this->module()->bookability( $closed ) );
+	}
+
+	/**
+	 * An event dated in the past, with the `_ts` rows every production save
+	 * path writes.
+	 *
+	 * @param array $meta Extra event meta.
+	 * @return int
+	 */
+	protected function make_past_event( array $meta = [] ) {
+		$event = $this->make_event( array_merge( [
+			'registration_enabled' => true,
+			'start_date'           => '2020-01-01',
+			'end_date'             => '2020-01-01',
+			'timezone'             => 'UTC',
+		], $meta ) );
+		$ts = $this->module()->compute_timestamps( $this->module()->get_meta( $event ) );
+		update_post_meta( $event, '_anchor_event_start_ts', $ts['start'] );
+		update_post_meta( $event, '_anchor_event_end_ts', $ts['end'] );
+		return $event;
+	}
 }

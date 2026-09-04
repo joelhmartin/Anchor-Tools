@@ -38,6 +38,13 @@ event of a Pick-one-offerings or Recurring-schedule parent (each gets its own ma
   each tier's optional **quota**. A purchase needs room in both.
 - A tier whose quota is hit shows "Sold out" while other tiers keep selling. When the **event total** is
   full, the event's **waitlist** toggle governs (on → over-capacity buyers become `waitlist` seats).
+- The storefront row, `is_purchasable`, the add-to-cart endpoint, the choose-a-date picker, the series
+  archive and the JSON-LD offers all ask one predicate — `Module::bookability( $event_id, $tier )` →
+  `open|waitlist|full|closed|parent|disabled` — so a row can never advertise a seat the cart then
+  refuses. Beyond capacity it also answers for the "Sold out" flag, the registration open/close window,
+  an event whose own end date has passed, a container (group parent), a soft-closed occurrence and
+  registration being switched off. When nothing on the page is sellable, the "Register / Add to cart"
+  button is not rendered at all, and a refusal at the cart says which of these it was.
 
 ## Coupons
 

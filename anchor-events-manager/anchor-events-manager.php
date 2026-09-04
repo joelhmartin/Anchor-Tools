@@ -11,7 +11,42 @@ require_once __DIR__ . '/template-tags.php';
 class Module {
     const CPT = 'event';
     const REG_CPT = 'anchor_event_reg';
+
+    // Task 7 (COORD-D2): the only get_meta_schema() keys exposed over REST by
+    // default. Everything else defaults to show_in_rest => false unless the
+    // schema entry itself opts back in explicitly (array_merge in
+    // register_meta() puts the per-key $schema AFTER this default, so an
+    // explicit override always wins over this list).
+    //
+    // Because the per-key entry wins, listing a key here that also sets
+    // 'show_in_rest' => false in get_meta_schema() does nothing at all. `type`
+    // and `external_display_price` were both listed and both overridden, so
+    // they were dead entries that read as "exposed" while the schema kept them
+    // hidden — they are metabox/manager-form owned on purpose (see the
+    // last-write-wins note on `type` in get_meta_schema()). They are removed
+    // from this list rather than from their overrides: the overrides are the
+    // intended behaviour. Anything added here must NOT carry its own
+    // show_in_rest.
+    const REST_PUBLIC_META = [ 'start_date', 'end_date', 'start_time', 'end_time', 'all_day', 'timezone', 'venue', 'address_city', 'address_state', 'address_country', 'status', 'price' ];
     const OPTION_KEY = 'anchor_events_settings';
+
+    /**
+     * Version of the derived-timestamp schema (`start_ts`/`end_ts`).
+     *
+     * Bumped whenever calculate_timestamps() would produce DIFFERENT rows for
+     * unchanged authored dates, so backfill_timestamps() knows the stored rows
+     * are stale and recomputes them. Every event carries the version it was
+     * last computed under in `_anchor_event_ts_version`; the site-wide option
+     * `anchor_events_ts_version` records the version the migration has finished.
+     *
+     * 1 — implicit/original: a date-only event ended at 00:00, because
+     *     `end_time` defaulted to '' and end == start.
+     * 2 — a date-only or end-time-less event ends at 23:59 on its end date.
+     *     Version 1 rows must be recomputed or the past-event guard in
+     *     Registrations::capacity_decision() closes such an event at midnight
+     *     on the morning it runs.
+     */
+    const TS_SCHEMA_VERSION = 2;
 
     /** Per-event attendee questions (see get_registration_questions()). */
     const QUESTIONS_META = '_anchor_event_reg_questions';
@@ -164,6 +199,14 @@ class Module {
         \add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
         \add_action( 'transition_post_status', [ $this, 'persist_status_on_transition' ], 10, 3 );
+        // REST/Gutenberg writes the six public date keys (REST_PUBLIC_META)
+        // without going through either save path that maintains the derived
+        // rows — save_meta() bails on the missing metabox nonce, and
+        // transition_post_status fires from wp_update_post() BEFORE the REST
+        // controller saves meta. rest_after_insert_{$post_type} is the hook
+        // that runs after the meta write, so it is the only place the new
+        // dates are visible.
+        \add_action( 'rest_after_insert_' . self::CPT, [ $this, 'persist_after_rest_write' ], 10, 3 );
 
         \add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
         \add_action( 'wp_enqueue_scripts', [ $this, 'frontend_assets' ] );
@@ -189,6 +232,13 @@ class Module {
 
         \add_filter( 'anchor_settings_tabs', [ $this, 'register_tab' ], 40 );
         \add_action( 'admin_init', [ $this, 'register_settings' ] );
+        // One-time start_ts/end_ts back-fill for legacy events (audit MODEL-D2).
+        // admin_init, never init: it writes meta, so it must not run on an
+        // ordinary front-end pageload (MODEL-D41). admin_init alone does not
+        // make it privileged — admin-post.php fires it before auth, for the
+        // nopriv handlers registered below — so the method itself is
+        // capability-gated as well as flag-guarded and batched.
+        \add_action( 'admin_init', [ $this, 'backfill_timestamps' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
@@ -319,13 +369,53 @@ class Module {
             return;
         }
         $meta = $this->get_meta( $post->ID );
-        if ( $meta['status_mode'] === 'manual' ) {
+
+        // A quick-edit publish never runs the meta box save, so an event could
+        // reach 'publish' with no start_ts/end_ts row at all and drop out of
+        // every listing (audit MODEL-D2). Write them here too — before the
+        // manual-status bail, because visibility does not depend on status_mode.
+        if ( $new_status === 'publish' && ! empty( $meta['start_date'] ) ) {
+            $this->persist_timestamps( $post->ID, $meta );
+        }
+
+        $this->persist_auto_status( $post->ID, $meta );
+    }
+
+    /**
+     * Recompute the derived rows after a REST write to an event (audit REST-D1).
+     *
+     * `start_date`, `end_date`, `start_time`, `end_time`, `all_day` and
+     * `timezone` are all in REST_PUBLIC_META, so any client with `edit_post`
+     * can move an event's dates through `/wp/v2/event/<id>` — and nothing
+     * downstream recomputed `start_ts`/`end_ts`/`status` from them. The event
+     * kept sorting, listing and (since the past-event guard in
+     * Registrations::capacity_decision()) opening or closing on its OLD dates.
+     *
+     * Same calculators as every other save path, via persist_timestamps() and
+     * persist_auto_status() — not a second implementation.
+     *
+     * Status is included deliberately: on an auto-mode event a REST-written
+     * `_anchor_event_status` is recomputed from the dates and overwritten,
+     * because in auto mode the dates own the status — a client that wants to
+     * set it by hand has to switch the event to manual mode first.
+     *
+     * @param \WP_Post         $post
+     * @param \WP_REST_Request $request  Unused; part of the hook signature.
+     * @param bool             $creating Unused; part of the hook signature.
+     */
+    public function persist_after_rest_write( $post, $request = null, $creating = false ) {
+        if ( ! $post instanceof \WP_Post || $post->post_type !== self::CPT ) {
             return;
         }
-        $computed = $this->calculate_status( $meta );
-        if ( $computed !== $meta['status'] ) {
-            \update_post_meta( $post->ID, $this->meta_key( 'status' ), $computed );
+
+        $meta = $this->get_meta( $post->ID );
+        if ( ! empty( $meta['start_date'] ) ) {
+            $this->persist_timestamps( $post->ID, $meta );
         }
+        $this->persist_auto_status( $post->ID, $meta );
+
+        // The rows this just moved are what the listing caches were keyed on.
+        $this->clear_caches();
     }
 
     public function run_status_sweep() {
@@ -443,6 +533,24 @@ class Module {
 
         foreach ( $event_ids as $event_id ) {
             $meta     = $this->get_meta( $event_id );
+
+            // A group parent is a container, never a registration target: its
+            // seats live on the dates (audit REG-D2). compute_email_schedule()
+            // already refuses parents, so without this the sweep and the
+            // "Upcoming sends" panel disagreed about who gets reminded.
+            if ( $this->occurrences->is_group_parent( $event_id ) ) {
+                continue;
+            }
+
+            // Never remind attendees about a date that is off (audit MODEL-D17).
+            // A soft-closed occurrence keeps its future start_ts and its roster,
+            // so it matched the window and mailed "…is coming up" for a date
+            // that had been cancelled.
+            if ( 'cancelled' === $this->get_event_status( $event_id, $meta )
+                || $this->occurrences->is_closed( $event_id ) ) {
+                continue;
+            }
+
             $start_ts = (int) ( $meta['start_ts'] ?? 0 );
             if ( $start_ts <= $now ) {
                 continue; // already started
@@ -1269,7 +1377,10 @@ class Module {
             ],
             'public' => false,
             'show_ui' => false,
-            'show_in_rest' => true,
+            // Task 7 (COORD-D4/REG-D19): seats are published posts whose title
+            // is the attendee's name — nothing reads this over REST, so it has
+            // no REST route at all.
+            'show_in_rest' => false,
             'supports' => [ 'title' ],
             'capability_type' => 'post',
             'map_meta_cap' => true,
@@ -1291,7 +1402,9 @@ class Module {
         foreach ( $this->get_meta_schema() as $key => $schema ) {
             \register_post_meta( self::CPT, $this->meta_key( $key ), array_merge( [
                 'single' => true,
-                'show_in_rest' => true,
+                // Task 7 (COORD-D2): allow-list, not a blanket true — virtual_url,
+                // organizer_email and every other unlisted key default to hidden.
+                'show_in_rest' => in_array( $key, self::REST_PUBLIC_META, true ),
                 'auth_callback' => $event_auth_callback,
             ], $schema ) );
         }
@@ -3576,7 +3689,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true ) ? $status_raw : 'upcoming';
         }
 
-        $timestamps = $this->calculate_timestamps( $input );
+        // persist_timestamps() is the single writer for the derived rows: it
+        // stamps `ts_version` alongside them, so a just-saved event is already
+        // at the current schema version and backfill_timestamps() skips it.
+        // The values are mirrored back into $input purely so the generic
+        // update_post_meta() loop below (and this method's return value) still
+        // carry them; the loop's writes are then no-ops.
+        $timestamps = $this->persist_timestamps( $post_id, $input );
         $input['start_ts'] = $timestamps['start'];
         $input['end_ts'] = $timestamps['end'];
 
@@ -4242,8 +4361,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
         \wp_enqueue_media();
-        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], '1.0.5' );
-        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], '1.0.5', true );
+        \wp_enqueue_style( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.css' ), [], $this->asset_version( 'anchor-events-manager/assets/admin.css' ) );
+        \wp_enqueue_script( 'anchor-events-admin', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], $this->asset_version( 'anchor-events-manager/assets/admin.js' ), true );
         // Ticket-tier repeatable table (spec §3.2).
         \wp_enqueue_script( 'anchor-events-ticket-types', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/ticket-types-admin.js' ), [ 'jquery', 'jquery-ui-sortable' ], $this->asset_version( 'anchor-events-manager/assets/ticket-types-admin.js' ), true );
 
@@ -4253,9 +4372,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \Anchor_Preview_CSS::enqueue_for_admin();
         }
         \Anchor_Monaco::enqueue( self::CPT );
-        $edir = \plugin_dir_path( __FILE__ ) . 'assets/';
-        \wp_enqueue_style( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.css' ), [], (string) \filemtime( $edir . 'email-builder.css' ) );
-        \wp_enqueue_script( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview' ], (string) \filemtime( $edir . 'email-builder.js' ), true );
+        \wp_enqueue_style( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.css' ), [], $this->asset_version( 'anchor-events-manager/assets/email-builder.css' ) );
+        \wp_enqueue_script( 'anchor-events-email-builder', \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/email-builder.js' ), [ 'jquery', 'anchor-monaco', 'anchor-preview' ], $this->asset_version( 'anchor-events-manager/assets/email-builder.js' ), true );
 
         $post_id  = isset( $GLOBALS['post'] ) && $GLOBALS['post'] ? (int) $GLOBALS['post']->ID : 0;
         $defaults = [];
@@ -4324,7 +4442,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param string $relative Path under the plugin root.
      * @return string
      */
-    private function asset_version( $relative ) {
+    public function asset_version( $relative ) {
         $path = \Anchor_Asset_Loader::path( $relative );
         $time = \is_readable( $path ) ? \filemtime( $path ) : false;
         return $time ? (string) $time : ( \defined( 'ANCHOR_TOOLS_VERSION' ) ? ANCHOR_TOOLS_VERSION : '1' );
@@ -4556,11 +4674,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $atts['show_title'] === 'yes' ) {
             $output .= '<h2 class="anchor-event-title">' . esc_html( \get_the_title( $event_id ) ) . '</h2>';
         }
+        if ( $this->occurrences->is_group_parent( $event_id ) ) {
+            // A container is never bookable itself (render_registration_form()
+            // returns '' for it); the picker over its live dates is what a
+            // landing page that names the parent actually wants.
+            $output .= $this->render_choose_date_list( $event_id );
+            return $output;
+        }
         if ( $atts['show_notice'] === 'yes' ) {
             $output .= $this->render_registration_notice();
         }
         $output .= $this->render_registration_form( $event_id );
-
         return $output;
     }
 
@@ -4650,7 +4774,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $this->enqueue_frontend_assets();
 
-        $meta_query = [ $this->build_hide_clause() ];
+        // $public = false: this shortcode is gated on edit_others_posts and
+        // exists to reach rosters. A soft-closed date still HAS a roster to
+        // email or refund, so the occurrence_closed half of the exclusion is
+        // not applied here — hide_from_archive still is.
+        $meta_query = [ $this->build_hide_clause( false ) ];
         if ( $atts['show_past'] === 'no' ) {
             $meta_query[] = $this->build_visibility_clause();
         }
@@ -5076,7 +5204,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     private function render_event_manager_list( $atts ) {
-        $meta_query = [ $this->build_hide_clause() ];
+        // $public = false — same reason as shortcode_event_registrants_list():
+        // the manager console is a staff surface and a cancelled date's roster
+        // has to stay findable. See build_hide_clause().
+        $meta_query = [ $this->build_hide_clause( false ) ];
         if ( $atts['show_past'] === 'no' ) {
             $meta_query[] = $this->build_visibility_clause();
         }
@@ -6006,7 +6137,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true ) ? $status_raw : 'upcoming';
         }
 
-        $timestamps = $this->calculate_timestamps( $input );
+        // persist_timestamps() is the single writer for the derived rows: it
+        // stamps `ts_version` alongside them, so a just-saved event is already
+        // at the current schema version and backfill_timestamps() skips it.
+        // The values are mirrored back into $input purely so the generic
+        // update_post_meta() loop below (and this method's return value) still
+        // carry them; the loop's writes are then no-ops.
+        $timestamps = $this->persist_timestamps( $saved_id, $input );
         $input['start_ts'] = $timestamps['start'];
         $input['end_ts'] = $timestamps['end'];
 
@@ -6447,6 +6584,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'This date is no longer available.', 'anchor-schema' ) . '</div>';
         }
 
+        // RENDER-D1 / WOO-D1: `registration_enabled` is the outermost gate on
+        // ALL registration UI, so it is checked BEFORE the render seam below.
+        // It used to sit after the apply_filters(), which meant WooCommerce's
+        // callback could hand back a full ticket block + "Add to cart" button
+        // for an event whose "Enable registration" box was unticked — the
+        // buyer then got a generic "Could not add Ticket to the cart" from
+        // is_purchasable(). Nothing on this filter may re-introduce a form for
+        // a disabled event.
+        if ( ! $meta['registration_enabled'] ) {
+            return '';
+        }
+
         // Render seam (spec §3): the WooCommerce class swaps the free form for a
         // buy button on linked events by returning non-empty here. Inert until the
         // Phase 2 filter callback is registered (no consumers otherwise).
@@ -6455,8 +6604,26 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $override;
         }
 
-        if ( ! $meta['registration_enabled'] ) {
-            return '';
+        // WOO-D19: a paid event whose storefront produced nothing (WooCommerce
+        // off, product missing, every paid tier deactivated) must NOT fall
+        // through to the free internal form below — that would book free seats
+        // on a ticketed course. Two wc-mode cases legitimately DO want the free
+        // form and are exempted:
+        //
+        //  - the event still has an AUTHORED active free tier, so it is a
+        //    bookable free course rather than a ticketed one (a free tier that
+        //    `Ticket_Types::get()` merely synthesized does not count — see
+        //    has_authored_free_tier()); and
+        //  - WooCommerce's own mixed free+paid re-entry, which has already
+        //    rendered the paid storefront and is now asking for the FREE-tier
+        //    form to append to it. is_rendering_free() marks that nested call.
+        //    It is subsumed by the free-tier test above (the re-entry only fires
+        //    when an active free tier exists) but is kept explicit so the seam
+        //    stays correct independently of how the tier predicate evolves.
+        $wc_free_reentry = ( $this->woocommerce && $this->woocommerce->is_rendering_free( $post_id ) );
+        $free_bookable   = $this->has_authored_free_tier( $post_id );
+        if ( ! $wc_free_reentry && ! $free_bookable && $this->registration_mode( $post_id ) === 'wc' ) {
+            return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'Tickets are not available right now.', 'anchor-schema' ) . '</div>';
         }
 
         // External registration mode (Task 1.6): the event's registration/
@@ -6707,7 +6874,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $output .= '</a>';
         $output .= '<span class="anchor-event-choose-date-availability">' . esc_html( $this->choose_date_availability_hint( $event_id, $meta ) ) . '</span>';
-        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $event_id, $meta ) ) . '</a>';
+        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $event_id ) ) . '</a>';
         $output .= '</li>';
 
         return $output;
@@ -6760,37 +6927,51 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * Short availability hint for a choose-date row: "Registration closed"
-     * when the occurrence itself has registration disabled, else the same
-     * open/full/waitlist decision get_registration_status() already computes
-     * for the registration form, rendered as "Sold out" / "Waitlist only" /
-     * "N spot(s) left" / "Open" (unlimited capacity).
+     * Short availability hint for a choose-date row, rendered from
+     * bookability() — the single purchasability authority — as "Sold out" /
+     * "Waitlist only" / "Registration closed" / "N spot(s) left" / "Open"
+     * (unlimited capacity).
+     *
+     * Public because the series archive renders the same hint for the same
+     * question (MODEL-D42): Series::availability_hint() used to re-decide it
+     * from remaining_capacity() alone and got a weaker answer — it printed
+     * "Open" for a hand-flagged sold-out occurrence.
      *
      * @param int   $event_id
-     * @param array $meta
+     * @param array $meta     get_meta( $event_id ) — passed in by callers that
+     *                        already hold it (only the capacity read uses it).
      * @return string
      */
-    private function choose_date_availability_hint( $event_id, array $meta ) {
-        // Full is asked FIRST, before the registration switch. A date that sold
-        // out is normally also closed to registration, and answering "closed"
-        // there tells the visitor less than the truth — they want to know the
-        // seats went, not merely that the button is gone.
-        $status = $this->get_registration_status( $event_id, $meta );
-        if ( $status === 'full' ) {
+    public function choose_date_availability_hint( $event_id, array $meta ) {
+        // RENDER-D32 / MODEL-D42: one call to the single purchasability
+        // authority, not a local re-decision.
+        $state = $this->bookability( $event_id );
+
+        // "The seats went" outranks "the button is gone". A date that sold out
+        // is normally ALSO switched off, and bookability() answers 'disabled'
+        // for that (registration_enabled is the outer gate) — which tells the
+        // visitor less than the truth. So when the switch is off, ask the seat
+        // layer whether capacity was the real story and say so if it was.
+        if ( $state === 'disabled' ) {
+            $seats = $this->get_registration_status( $event_id, $meta );
+            if ( $seats === 'full' || $seats === Registrations::STATUS_WAITLIST ) {
+                $state = $seats;
+            }
+        }
+
+        if ( $state === 'full' ) {
             return \__( 'Sold out', 'anchor-schema' );
         }
-        if ( $status === 'waitlist' ) {
+        if ( $state === Registrations::STATUS_WAITLIST ) {
             return \__( 'Waitlist only', 'anchor-schema' );
         }
-
-        if ( empty( $meta['registration_enabled'] ) ) {
+        if ( $state === 'closed' || $state === 'disabled' ) {
             return \__( 'Registration closed', 'anchor-schema' );
         }
 
-        if ( $status === 'closed' ) {
-            return \__( 'Registration closed', 'anchor-schema' );
-        }
-
+        // 'open' — and 'parent', defensively: render_choose_date_row() is
+        // documented as tolerating the parent itself, which has no capacity
+        // of its own and so reads as unlimited/"Open" here.
         $capacity = (int) ( $meta['capacity'] ?? 0 );
         if ( $capacity <= 0 ) {
             return \__( 'Open', 'anchor-schema' );
@@ -6803,21 +6984,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * CTA label for a choose-date row: "Details" when the occurrence isn't
      * currently accepting new registrations (closed/full/registration
-     * disabled), else "Register".
+     * disabled/a container), else "Register".
      *
-     * @param int   $event_id
-     * @param array $meta
+     * @param int $event_id
      * @return string
      */
-    private function choose_date_cta_label( $event_id, array $meta ) {
-        if ( empty( $meta['registration_enabled'] ) ) {
-            return \__( 'Details', 'anchor-schema' );
-        }
-        $status = $this->get_registration_status( $event_id, $meta );
-        if ( $status === 'full' || $status === 'closed' ) {
-            return \__( 'Details', 'anchor-schema' );
-        }
-        return \__( 'Register', 'anchor-schema' );
+    private function choose_date_cta_label( $event_id ) {
+        // RENDER-D32: same authority as the hint beside it, so the row can
+        // never say "Sold out" and "Register" at once.
+        return $this->is_bookable( $this->bookability( $event_id ) )
+            ? \__( 'Register', 'anchor-schema' )
+            : \__( 'Details', 'anchor-schema' );
     }
 
     public function handle_registration() {
@@ -7558,17 +7735,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
         $settings = $this->get_settings();
-        // FIX 3 (review round): the plain CPT archive is unaware of Task 2.4's
-        // soft-close state — a soft-closed group child stays post_status=publish
-        // (its roster is preserved) so it was showing up here as a normal "View
-        // Event" card that dead-ends into render_registration_form()'s "no
-        // longer available" notice. Excluded the same way hide_from_archive
-        // already is (build_hide_clause()) — a meta_query addition, not a
-        // template-level filter. The series-taxonomy archive needs no such
-        // guard: Occurrences::reconcile() only assigns the series term to live
-        // children (see assign_series()), so a closed child was never tagged
-        // into a series archive in the first place.
-        $meta_query = [ $this->build_hide_clause(), $this->build_closed_clause() ];
+        // The plain CPT archive leaves out hidden events AND soft-closed group
+        // children (a soft-closed child stays post_status=publish so its roster
+        // survives, and used to show up here as a normal "View Event" card that
+        // dead-ends in render_registration_form()'s "no longer available"
+        // notice). Both facts now live in build_hide_clause(), so every listing
+        // query gets them — see that builder for why they were merged.
+        $meta_query = [ $this->build_hide_clause() ];
         if ( ! empty( $settings['archive_hide_past'] ) ) {
             $meta_query[] = $this->build_visibility_clause();
         }
@@ -7850,6 +8023,127 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Batched, VERSIONED back-fill of start_ts/end_ts (audit MODEL-D2).
+     *
+     * Legacy events never had the `_ts` keys written — nothing back-filled them
+     * — and every listing query orders by `start_ts` (meta_key + orderby =
+     * meta_value_num), which INNER-JOINs postmeta. An event without the row was
+     * therefore absent from the archive, [events_list], [event_calendar],
+     * [event_manager] and [event_registrants_list] entirely, not merely
+     * unsorted.
+     *
+     * It is versioned, not one-time, because the rows can go stale without ever
+     * going missing. The first shipped version of calculate_timestamps() left a
+     * date-only event with `end == start` — midnight on its own start date — so
+     * once Registrations::capacity_decision() learned to close an event whose
+     * `end_ts` is in the past, every such event closed at 00:00 on the morning
+     * it ran. A back-fill keyed on "has no start_ts row" cannot see those
+     * events at all: their rows are present, just computed under the old rules.
+     * So selection is by `_anchor_event_ts_version` — missing, or older than
+     * TS_SCHEMA_VERSION — and every event this touches is stamped with the
+     * current version, including one with no `start_date` that can never get
+     * `_ts` rows at all. Stamping the unfillable ones is what keeps them from
+     * occupying the batch window forever and stranding the fillable ones behind
+     * them.
+     *
+     * Runs on admin_init in batches of 200, and only records the option once a
+     * batch comes back short — so a site with thousands of events converges over
+     * a few admin page loads instead of timing out on one, and a site with no
+     * events at all finishes on the first call. Because every processed event is
+     * stamped, a full batch always makes progress and the migration cannot loop.
+     *
+     * admin_init is NOT an authenticated hook: wp-admin/admin-post.php fires it
+     * before it validates the auth cookie, and this module registers
+     * admin_post_nopriv_anchor_event_register and ..._manager_login — so a
+     * logged-out visitor's registration POST reaches this method. Hence the
+     * capability check: the back-fill only ever runs for a user who could have
+     * edited the events by hand, never inline on a public request.
+     */
+    public function backfill_timestamps() {
+        if ( ! \current_user_can( 'edit_posts' ) ) {
+            return;
+        }
+        // The pre-versioning boolean flag is deliberately NOT consulted as a
+        // done-marker: a site that set it ran the v1 rules, which is exactly the
+        // state this migration exists to repair. It is deleted below once the
+        // versioned option supersedes it.
+        if ( (int) \get_option( 'anchor_events_ts_version' ) >= self::TS_SCHEMA_VERSION ) {
+            return;
+        }
+
+        $batch = 200;
+        $ids = \get_posts( [
+            'post_type' => self::CPT,
+            'post_status' => 'any',
+            'posts_per_page' => $batch,
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'suppress_filters' => true,
+            'meta_query' => [
+                'relation' => 'OR',
+                // Never computed under a versioned schema — every event that
+                // predates this migration, whether or not it has `_ts` rows.
+                //
+                // This arm cannot be folded into the one below as a single
+                // `compare => '!='`. WP_Meta_Query DOES nest negative operators
+                // in a NOT EXISTS subquery, but only for `compare_key` — the
+                // comparison against the meta KEY name (class-wp-meta-query.php
+                // ~L655 switches on $meta_compare_key, not $meta_compare). A
+                // value-level `!=` gets a plain join, so it matches only posts
+                // that HAVE the row, and every never-stamped event — the whole
+                // legacy population this migration exists for — is skipped.
+                // Tried, measured: 6 of the 13 Test_Timestamps cases fail, all
+                // of them the missing-row ones.
+                [ 'key' => $this->meta_key( 'ts_version' ), 'compare' => 'NOT EXISTS' ],
+                // Computed, but under older rules than the ones in force now.
+                [ 'key' => $this->meta_key( 'ts_version' ), 'value' => self::TS_SCHEMA_VERSION, 'compare' => '<', 'type' => 'NUMERIC' ],
+            ],
+        ] );
+
+        // One query for the whole batch instead of one per get_meta() call:
+        // get_meta() reads ~40 keys per event through get_post_meta(), and with
+        // a cold meta cache that is 200 uncached round trips on an admin page
+        // load. Priming the cache up front makes them all cache hits.
+        if ( ! empty( $ids ) ) {
+            \update_meta_cache( 'post', $ids );
+        }
+
+        $written = 0;
+        foreach ( $ids as $event_id ) {
+            $meta = $this->get_meta( $event_id );
+            if ( empty( $meta['start_date'] ) ) {
+                // Unfillable, but still stamped — see the docblock. Without the
+                // stamp a window of 200 dateless posts comes back every pass.
+                \update_post_meta( $event_id, $this->meta_key( 'ts_version' ), self::TS_SCHEMA_VERSION );
+                continue;
+            }
+            $this->persist_timestamps( $event_id, $meta );
+            $written++;
+        }
+
+        // Recomputed events change what every cached listing should contain —
+        // an event that was invisible to the start_ts ordering join a moment
+        // ago now sorts into [events_list], the calendar and the archive, and a
+        // v1 event that read as already-over is bookable again. The listing
+        // caches are keyed by query args, not by post state, so they would
+        // otherwise keep serving the pre-backfill result until they expired on
+        // their own.
+        if ( $written > 0 ) {
+            $this->clear_caches();
+        }
+
+        // A short batch means nothing is left to process. Every event the query
+        // returns is stamped before the loop ends, so the window always moves
+        // and this condition is always eventually reached.
+        if ( count( $ids ) < $batch ) {
+            \update_option( 'anchor_events_ts_version', self::TS_SCHEMA_VERSION, false );
+            // Superseded by the versioned option; leaving it would only invite a
+            // future reader to treat it as authoritative again.
+            \delete_option( 'anchor_events_ts_backfilled' );
+        }
+    }
+
+    /**
      * Active FREE tiers (price == 0) for an event, in order. Used by the inline
      * registration form (paid tiers are sold through WooCommerce, not here).
      *
@@ -7868,6 +8162,35 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $tiers[] = $tier;
         }
         return $tiers;
+    }
+
+    /**
+     * Whether the event has an AUTHORED active free tier — i.e. somebody
+     * deliberately published a free ticket for it.
+     *
+     * This is deliberately narrower than `! empty( get_active_free_tiers() )`.
+     * `Ticket_Types::get()` synthesizes an implicit primary tier (price from the
+     * legacy `price` field, `active => true`) for any event with no stored tier
+     * rows, so on an event with NO tier authoring at all the plain helper reports
+     * a free tier that nobody ever created. The WOO-D19 guard in
+     * render_registration_form() keys off this method because that exact case —
+     * a `wc` event with no tiers and no product — is the bug it exists to close;
+     * treating the synthesized placeholder as a real free ticket would hand the
+     * free form straight back to a ticketed course.
+     *
+     * (That `get()` does not itself report whether it synthesized is the gap
+     * recorded as WOO-D6; when that is fixed, this should read the flag instead
+     * of re-checking the stored meta.)
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    private function has_authored_free_tier( $event_id ) {
+        $stored = \get_post_meta( $event_id, Ticket_Types::META_KEY, true );
+        if ( ! \is_array( $stored ) || empty( $stored ) ) {
+            return false;
+        }
+        return ! empty( $this->get_active_free_tiers( $event_id ) );
     }
 
     private function sanitize_date( $value ) {
@@ -7916,6 +8239,53 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * Compute AND persist an event's derived timestamp rows, stamped with the
+     * schema version they were computed under.
+     *
+     * The single writer for `start_ts`/`end_ts`/`ts_version`. Every path that
+     * has ever minted those rows — the metabox save, the front-end manager
+     * save, the status transition, the REST meta write and the Occurrences
+     * engine (parent roll-up and child creation) — goes through here, so the
+     * version stamp can never drift out of step with the values it describes.
+     * A freshly saved event is therefore already at TS_SCHEMA_VERSION and the
+     * back-fill skips it.
+     *
+     * Public for the same reason compute_timestamps() is: the Occurrences
+     * engine lives in its own class and must not duplicate this.
+     *
+     * @param int   $post_id
+     * @param array $meta Meta array with start_date/end_date/start_time/end_time/timezone/all_day.
+     * @return array{start:int,end:int} The timestamps just written.
+     */
+    public function persist_timestamps( $post_id, array $meta ) {
+        $timestamps = $this->calculate_timestamps( $meta );
+        \update_post_meta( $post_id, $this->meta_key( 'start_ts' ), (int) $timestamps['start'] );
+        \update_post_meta( $post_id, $this->meta_key( 'end_ts' ), (int) $timestamps['end'] );
+        \update_post_meta( $post_id, $this->meta_key( 'ts_version' ), self::TS_SCHEMA_VERSION );
+        return $timestamps;
+    }
+
+    /**
+     * Re-derive and persist an auto-mode event's status. No-op in manual mode —
+     * an author who picked a status by hand owns it.
+     *
+     * Shared by persist_status_on_transition() and the REST after-insert hook
+     * so the two agree on what "auto status" means.
+     *
+     * @param int   $post_id
+     * @param array $meta
+     */
+    private function persist_auto_status( $post_id, array $meta ) {
+        if ( ( $meta['status_mode'] ?? 'auto' ) === 'manual' ) {
+            return;
+        }
+        $computed = $this->calculate_status( $meta );
+        if ( $computed !== ( $meta['status'] ?? '' ) ) {
+            \update_post_meta( $post_id, $this->meta_key( 'status' ), $computed );
+        }
+    }
+
+    /**
      * Public wrapper around calculate_status() (spec Phase 2, Task 2.1) — auto
      * status derivation from start/end dates, for the Occurrences engine.
      *
@@ -7951,7 +8321,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $start_time = $meta['all_day'] ? '00:00' : ( $meta['start_time'] ?: '00:00' );
         $end_date = $meta['end_date'] ?: $meta['start_date'];
-        $end_time = $meta['all_day'] ? '23:59' : ( $meta['end_time'] ?: $start_time );
+        $end_time = ( $meta['all_day'] || ! $meta['end_time'] ) ? '23:59' : $meta['end_time'];
 
         $start = $this->to_timestamp( $meta['start_date'], $start_time, $timezone );
         $end = $this->to_timestamp( $end_date, $end_time, $timezone );
@@ -8154,50 +8524,112 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $this->calculate_status( $meta );
     }
 
-    private function build_visibility_clause() {
-        return [
-            'key' => $this->meta_key( 'end_ts' ),
-            'value' => time(),
-            'compare' => '>=',
-            'type' => 'NUMERIC',
-        ];
-    }
-
-    private function build_hide_clause() {
+    /**
+     * "Hide past events" without treating a missing `end_ts` as PAST
+     * (audit RENDER-D31).
+     *
+     * The old shape was a bare `end_ts >= time()` comparison, which INNER-JOINs
+     * postmeta: an event that never had an `end_ts` row written was treated as
+     * over and silently dropped. The NOT EXISTS branch is what stops that.
+     *
+     * Be precise about what it does and does not rescue, because the clause is
+     * only one of two joins a listing applies:
+     *   - It rescues an event that HAS a `start_ts` row but no `end_ts` row —
+     *     a single-day event saved before end_ts existed, or one whose end
+     *     meta was lost. That event is undated at the far end, not finished.
+     *   - It does NOT rescue an event with NO `start_ts` at all. Every listing
+     *     query also orders by `meta_key => start_ts` / `meta_value_num`,
+     *     which INNER-JOINs postmeta on start_ts, so a start_ts-less event is
+     *     dropped by the ORDERING join no matter what this clause says. That
+     *     is the gap backfill_timestamps() closes: it mints `start_ts`/`end_ts`
+     *     for every legacy event that still has a `start_date`, which is what
+     *     actually returns fully-undated legacy events to the listings.
+     */
+    public function build_visibility_clause() {
         return [
             'relation' => 'OR',
             [
-                'key' => $this->meta_key( 'hide_from_archive' ),
+                'key' => $this->meta_key( 'end_ts' ),
                 'compare' => 'NOT EXISTS',
             ],
             [
-                'key' => $this->meta_key( 'hide_from_archive' ),
-                'value' => '1',
-                'compare' => '!=',
+                'key' => $this->meta_key( 'end_ts' ),
+                'value' => time(),
+                'compare' => '>=',
+                'type' => 'NUMERIC',
             ],
         ];
     }
 
     /**
-     * Excludes soft-closed group children (Task 2.4 FIX 3, review round) —
-     * mirrors build_hide_clause()'s NOT-EXISTS-or-not-truthy shape so a
-     * post that has never had the `occurrence_closed` meta written (i.e.
-     * every non-grouped event, and every group child before its first
-     * soft-close) is unaffected.
+     * The single listing-exclusion clause: everything a list of events must
+     * leave out, regardless of dates (audit RENDER-D15 / MODEL-D3).
      *
-     * @return array
+     * Two facts hide an event from a PUBLIC listing:
+     *   - `hide_from_archive` — the editor's explicit "keep this off lists".
+     *   - `occurrence_closed` — a soft-closed group child (Occurrences::
+     *     soft_close() preserves the post + its roster but the date is no
+     *     longer bookable).
+     *
+     * These used to be two builders, and the closed half had exactly ONE call
+     * site (filter_archive_query) against the hide half's five, so a cancelled
+     * date still rendered as a bookable card in [events_list], the calendar,
+     * both manager shortcodes and the series archive — each linking to a page
+     * whose only registration UI is "This date is no longer available."
+     * Folding them into one clause makes every existing call site correct and
+     * leaves nothing to forget at the next one.
+     *
+     * Only the `hide_from_archive` half is an exclusion for STAFF, though. A
+     * soft-closed date keeps its roster — that is the entire point of a soft
+     * close — and somebody has to email or refund those attendees, so the two
+     * capability-gated surfaces ([event_registrants_list], which requires
+     * edit_others_posts, and the front-end Events Manager console) pass
+     * $public = false and keep cancelled dates in the list. Folding the closed
+     * half in unconditionally would have made a cancelled date's roster
+     * unreachable from the surfaces built to manage it.
+     *
+     * Each half keeps the NOT-EXISTS-or-not-truthy shape: a post that has
+     * never had the meta row written (every legacy event, and every group
+     * child before its first soft-close) is unaffected rather than
+     * INNER-JOINed out.
+     *
+     * @param bool $public Whether this is a public-facing listing (default
+     *                     true). False = a staff surface: hidden events are
+     *                     still excluded, soft-closed dates are not.
+     * @return array meta_query clause.
      */
-    private function build_closed_clause() {
-        return [
+    public function build_hide_clause( $public = true ) {
+        $hidden = [
             'relation' => 'OR',
             [
-                'key' => $this->meta_key( 'occurrence_closed' ),
+                'key' => $this->meta_key( 'hide_from_archive' ),
                 'compare' => 'NOT EXISTS',
             ],
             [
-                'key' => $this->meta_key( 'occurrence_closed' ),
+                'key' => $this->meta_key( 'hide_from_archive' ),
                 'value' => '1',
                 'compare' => '!=',
+            ],
+        ];
+
+        if ( ! $public ) {
+            return $hidden;
+        }
+
+        return [
+            'relation' => 'AND',
+            $hidden,
+            [
+                'relation' => 'OR',
+                [
+                    'key' => $this->meta_key( 'occurrence_closed' ),
+                    'compare' => 'NOT EXISTS',
+                ],
+                [
+                    'key' => $this->meta_key( 'occurrence_closed' ),
+                    'value' => '1',
+                    'compare' => '!=',
+                ],
             ],
         ];
     }
@@ -8222,6 +8654,60 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // Single capacity authority lives in the data layer (spec §9.1). Passing the
         // tier enforces its per-tier quota alongside the event total.
         return $this->registrations->capacity_decision( $event_id, $meta, $party_size, $tier );
+    }
+
+    /**
+     * "Can a seat on this event (optionally on this tier) be sold right now?"
+     * — the ONE predicate every reader asks (WOO-D2/D3/D37, RENDER-D3/D4/D5/
+     * D7/D32, MODEL-D42). The storefront row, `is_purchasable`, the AJAX
+     * add-to-cart endpoint, the choose-a-date picker, the series archive and
+     * the JSON-LD Offer builders all route through here, so one event can no
+     * longer read "Join waitlist" on the page, "sold out" at the cart and
+     * "InStock" in the markup on the same request.
+     *
+     * The branch order mirrors render_registration_form()'s, which is the
+     * canonical statement of what a bookable event is:
+     *   parent   — a group container is never itself a seat,
+     *   closed   — a soft-closed occurrence, still reachable by direct URL,
+     *   disabled — "Enable registration" is unticked,
+     *   then the seat-layer capacity authority (open|waitlist|full|closed),
+     *   which owns the sold_out flag, the registration window, the past-event
+     *   check, the event total and the per-tier quota.
+     *
+     * @param int        $event_id
+     * @param array|null $tier     Normalized ticket-tier row, when the question
+     *                             is about one tier rather than the event.
+     * @return string One of open|waitlist|full|closed|parent|disabled.
+     */
+    public function bookability( $event_id, $tier = null ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 ) {
+            return 'closed';
+        }
+        if ( $this->occurrences->is_group_parent( $event_id ) ) {
+            return 'parent';
+        }
+        if ( $this->is_closed_group_child( $event_id ) ) {
+            return 'closed';
+        }
+        $meta = $this->get_meta( $event_id );
+        if ( empty( $meta['registration_enabled'] ) ) {
+            return 'disabled';
+        }
+        return $this->get_registration_status( $event_id, $meta, 1, $tier );
+    }
+
+    /**
+     * Whether a bookability() state can still take a seat. 'waitlist' counts:
+     * a waitlist request is a real, accepted transaction (Registrations::
+     * claim_seats() resolves it at creation), which is exactly why the cart
+     * and the storefront must agree that it is allowed.
+     *
+     * @param string $bookability
+     * @return bool
+     */
+    public function is_bookable( $bookability ) {
+        return \in_array( $bookability, [ 'open', Registrations::STATUS_WAITLIST ], true );
     }
 
     /**

@@ -8,9 +8,13 @@
 use Anchor\Events\Module;
 
 /**
- * Provides event/seat factories and accessors to the events module singleton.
+ * Event/seat factories and accessors to the events module singleton.
+ *
+ * A trait rather than methods on the base case because two different WP test
+ * bases need them: the plain integration suite (Anchor_Events_TestCase, below)
+ * and the AJAX suite, which has to extend WP_Ajax_UnitTestCase instead.
  */
-abstract class Anchor_Events_TestCase extends WP_UnitTestCase {
+trait Anchor_Events_Fixtures {
 
 	/**
 	 * The events module singleton, instantiated by the plugin's priority-25
@@ -150,4 +154,12 @@ abstract class Anchor_Events_TestCase extends WP_UnitTestCase {
 		);
 		return count( $q->posts );
 	}
+}
+
+/**
+ * Base case for the plain (non-AJAX) integration suite.
+ */
+abstract class Anchor_Events_TestCase extends WP_UnitTestCase {
+
+	use Anchor_Events_Fixtures;
 }

@@ -1256,6 +1256,22 @@ class WooCommerce {
         $added    = 0;
         $messages = [];
 
+        // WOO-D26: cart-wide capacity. ajax_add_to_cart() calls
+        // WC_Cart::add_to_cart() directly, which never fires the
+        // woocommerce_add_to_cart_validation filter validate_add_to_cart()
+        // is hooked to — WC_Form_Handler / the native WC AJAX action / a
+        // cart-session reorder are the only callers that apply it. Without
+        // this, the plugin's OWN "Register / Add to cart" button had no
+        // cart-wide gate at all: capacity_decision() below only asks about
+        // real, already-CONFIRMED/reserved seats, so two successive adds
+        // that individually fit within remaining capacity could together
+        // overfill it, each one reporting success. Tracked locally and
+        // incremented as tiers are added within this SAME request, so a
+        // multi-tier submission can't overfill the event either.
+        $capacity_cap    = (int) ( $meta['capacity'] ?? 0 );
+        $waitlist_on     = ! empty( $meta['waitlist'] );
+        $already_in_cart = ( ! $waitlist_on && $capacity_cap > 0 ) ? $this->event_qty_already_in_cart( $event_id ) : 0;
+
         foreach ( $requested as $tier_id => $qty ) {
             $tier  = $this->module->ticket_types->find( $event_id, $tier_id );
             $label = ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
@@ -1278,6 +1294,20 @@ class WooCommerce {
                 continue;
             }
 
+            if ( ! $waitlist_on && $capacity_cap > 0 ) {
+                $remaining              = (int) $this->registrations->remaining_capacity( $event_id, $capacity_cap );
+                $available_for_this_add = \max( 0, $remaining - $already_in_cart );
+                if ( $qty > $available_for_this_add ) {
+                    /* translators: 1: remaining seat count, 2: ticket tier label. */
+                    $messages[] = \sprintf(
+                        \__( 'Only %1$d seat(s) remain for %2$s (some are already in your cart).', 'anchor-schema' ),
+                        $available_for_this_add,
+                        $label
+                    );
+                    continue;
+                }
+            }
+
             // Server-side capacity validation (single authority, spec §7). The
             // event-level gate above cannot answer this one: it is per tier AND
             // per requested quantity ("2 seats left, 3 asked for" is full).
@@ -1290,7 +1320,8 @@ class WooCommerce {
             // 'open' or 'waitlist' → add (waitlist seats are resolved at creation).
             $key = WC()->cart->add_to_cart( $parent_product_id, $qty, $variation_id, [], [] );
             if ( $key ) {
-                $added += $qty;
+                $added           += $qty;
+                $already_in_cart += $qty;
                 if ( Registrations::STATUS_WAITLIST === $decision ) {
                     /* translators: 1: quantity, 2: ticket tier label. */
                     $messages[] = \sprintf( \__( 'Added %1$d × %2$s to the waitlist.', 'anchor-schema' ), $qty, $label );
@@ -1515,13 +1546,10 @@ class WooCommerce {
         // individual add-to-cart request reported success. This gate is
         // advisory (cart validation, no lock); reconcile under the per-event
         // lock at payment time remains the authority that cannot be raced.
-        $already_in_cart = 0;
-        foreach ( $this->get_event_cart_lines() as $line ) {
-            if ( (int) $line['event_id'] === $event_id ) {
-                $already_in_cart += (int) $line['qty'];
-            }
-        }
-        $remaining_after_cart = \max( 0, $remaining - $already_in_cart );
+        // event_qty_already_in_cart() is shared with ajax_add_to_cart() — the
+        // native WC add-to-cart path and the plugin's own AJAX endpoint must
+        // agree on one cart-wide capacity sum, not two that can drift.
+        $remaining_after_cart = \max( 0, $remaining - $this->event_qty_already_in_cart( $event_id ) );
 
         if ( $remaining_after_cart < (int) $quantity && \function_exists( 'wc_add_notice' ) ) {
             \wc_add_notice(
@@ -1536,6 +1564,30 @@ class WooCommerce {
             return false;
         }
         return $passed;
+    }
+
+    /**
+     * WOO-D26 — how many seats of $event_id (any tier, any cart line) are
+     * ALREADY sitting in the cart. Shared by validate_add_to_cart() (the
+     * native WC add-to-cart path — a direct product-page or legacy-link
+     * purchase) and ajax_add_to_cart() (the plugin's own "Register / Add to
+     * cart" endpoint, which calls WC_Cart::add_to_cart() directly and so
+     * never fires the woocommerce_add_to_cart_validation filter
+     * validate_add_to_cart() is hooked to) — ONE cart-wide capacity sum, not
+     * two independent ones that can silently drift apart.
+     *
+     * @param int $event_id
+     * @return int
+     */
+    private function event_qty_already_in_cart( $event_id ) {
+        $event_id = (int) $event_id;
+        $qty      = 0;
+        foreach ( $this->get_event_cart_lines() as $line ) {
+            if ( (int) $line['event_id'] === $event_id ) {
+                $qty += (int) $line['qty'];
+            }
+        }
+        return $qty;
     }
 
     /**

@@ -4,16 +4,25 @@
  *
  * Lifecycle email BODIES moved from hardcoded PHP into stored, tokenized,
  * per-type templates (confirmation|reminder|cancellation|roster) resolved
- * per-event override -> global default option -> default constant. This
- * suite proves the refactor is byte-equivalent to the pre-refactor output
- * (the crux requirement) and exercises the new resolver + token expansion
- * + per-sender type routing.
+ * per-event override -> the shipped default for that type. There is no middle
+ * "global option" tier: REG-D12 retired `anchor_events_email_tpl_{type}`,
+ * which nothing in the plugin ever wrote, so the option is ignored outright
+ * rather than honoured as a tier no site could reach.
  *
- * The five `expected_*()` fixtures below were captured from the UNMODIFIED
- * pre-refactor build_registration_email_html() (git-stashed the refactor,
- * ran the exact same $ctx inputs used in the byte-equivalence tests here,
- * and inlined the raw output). Together they exercise every conditional
- * region of the shared email shell:
+ * This suite pins the rendered bytes of the shipped shell and exercises the
+ * resolver + token expansion + per-sender type routing.
+ *
+ * The five `expected_*()` fixtures below are the CURRENT renderer's output,
+ * captured by running the exact $ctx inputs of the byte-equivalence tests
+ * here and inlining the raw result. They started life as a byte-for-byte
+ * capture of the pre-refactor hardcoded shell; 3.26.0 deliberately moved that
+ * shell on (a `<!DOCTYPE html>`, the `{brand_*}` / `{logo}` tokens replacing
+ * the hardcoded palette, and the retired `{join_button}` expanding to
+ * nothing), so they now pin the shipped 3.26.0 output instead. Regenerate the
+ * same way — capture once, paste the raw bytes — whenever the shell is
+ * intentionally changed; never by loosening the assertions, which are what
+ * makes an UNintentional change to any of these emails visible at all.
+ * Together they exercise every conditional region of the shared email shell:
  *   - header_image:    present (A, E) / absent (B, C, D)
  *   - greeting:         present (A, B, C, D) / absent (E — empty name, as
  *                        the real roster sender always passes)
@@ -57,10 +66,11 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 	}
 
 	/* ---------------------------------------------------------------------
-	 * Byte-equivalence: the crux. Same $ctx as the pre-refactor capture run,
-	 * no per-event override and no global option set, so resolve_email_template()
-	 * falls through to the default constant — the refactored renderer must
-	 * produce EXACTLY the same bytes as the original hardcoded shell.
+	 * Byte-equivalence: the crux. No per-event override is set, so
+	 * resolve_email_template() falls through to the shipped default for the
+	 * type — and the renderer must produce EXACTLY the bytes captured below.
+	 * Any drift in the shell, the token expansion or the conditional regions
+	 * shows up here as a diff rather than as a subtly wrong email.
 	 * ------------------------------------------------------------------- */
 
 	public function test_byte_equivalence_confirmation() {
@@ -637,7 +647,7 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 
 	private function expected_confirmation() {
 		return <<<'EXPECTED_CONFIRMATION'
-        <!DOCTYPE html>
+<!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8" />
@@ -645,16 +655,19 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
             <title>Test Event</title>
         </head>
         <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
                 <tr>
                     <td align="center">
                         <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
+                            
                                                         <tr>
                                 <td style="padding:0;">
                                     <img src="http://example.org/wp-content/uploads/image-a.jpg" alt="Test Event" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" />
                                 </td>
                             </tr>
-                                                        <tr>
+                            
+                            <tr>
                                 <td style="padding:28px 32px 8px;">
                                     <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">Test Event</h1>
                                 </td>
@@ -663,35 +676,38 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
                                 <td style="padding:16px 32px 8px;">
                                                                             <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">
                                             Hi Jane Doe,                                        </p>
-                                                                        <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">Thanks for joining us!</p><p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">We can&#039;t wait to see you there.</p>                                                                            <p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:#333;">
+                                    
+                                    <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">Thanks for joining us!</p><p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">We can&#039;t wait to see you there.</p>
+                                                                            <p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:#333;">
                                             Your party of 3 is confirmed (you + 2 guests).                                        </p>
-                                                                                                                                                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
+                                    
+                                    
+                                                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Date</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">January 5, 2027</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Date</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">January 5, 2027</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Time</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">6:00 pm</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Time</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">6:00 pm</td>
                                                 </tr>
                                                                                     </table>
-                                                                                                        </td>
+                                    
+                                    
+                                </td>
                             </tr>
                                                         <tr>
-                                <td style="padding:8px 32px 0;">
-                                    <a href="https://example.test/join-a" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                <td style="padding:8px 32px 32px;">
+                                    <a href="https://example.test/join-a" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;border:1px solid #111;">
                                         Join the event                                    </a>
                                 </td>
                             </tr>
-                                                                                    <tr>
-                                <td style="padding:8px 32px 32px;">
-                                    <a href="https://example.test/event/test-event-a/" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        View event details                                    </a>
-                                </td>
-                            </tr>
-                                                        <tr>
+                            
+                            
+                            <tr>
                                 <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
-                                    Test Blog                                </td>
+                                    Test Blog
+                                </td>
                             </tr>
                         </table>
                     </td>
@@ -705,7 +721,7 @@ EXPECTED_CONFIRMATION;
 
 	private function expected_confirmation_waitlist() {
 		return <<<'EXPECTED_CONFIRMATION_WAITLIST'
-        <!DOCTYPE html>
+<!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8" />
@@ -713,11 +729,14 @@ EXPECTED_CONFIRMATION;
             <title>Test Event</title>
         </head>
         <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
                 <tr>
                     <td align="center">
                         <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
-                                                        <tr>
+                            
+                            
+                            <tr>
                                 <td style="padding:28px 32px 8px;">
                                     <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">Test Event</h1>
                                 </td>
@@ -726,23 +745,32 @@ EXPECTED_CONFIRMATION;
                                 <td style="padding:16px 32px 8px;">
                                                                             <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">
                                             Hi Sam Waitperson,                                        </p>
-                                                                        <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">You have been added to the waitlist.</p>                                                                                                                <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:#666;">
+                                    
+                                    <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">You have been added to the waitlist.</p>
+                                    
+                                                                            <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:#666;">
                                             You are currently on the waitlist and will be notified if a spot opens up.                                        </p>
-                                                                                                                                                    <p style="margin:0 0 6px;font-size:14px;font-weight:600;color:#333;">Attendees</p>
+                                    
+                                    
+                                                                            <p style="margin:0 0 6px;font-size:14px;font-weight:600;color:#333;">Attendees</p>
                                         <ul style="margin:0 0 16px;padding:0 0 0 18px;font-size:14px;line-height:1.6;color:#333;">
                                                                                             <li>Sam Waitperson — sam@example.test</li>
                                                                                     </ul>
-                                                                    </td>
-                            </tr>
-                                                                                    <tr>
-                                <td style="padding:8px 32px 32px;">
-                                    <a href="https://example.test/event/test-event-b/" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        View event details                                    </a>
+                                    
                                 </td>
                             </tr>
                                                         <tr>
+                                <td style="padding:8px 32px 32px;">
+                                    <a href="https://example.test/event/test-event-b/" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;border:1px solid #111;">
+                                        View event details                                    </a>
+                                </td>
+                            </tr>
+                            
+                            
+                            <tr>
                                 <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
-                                    Test Blog                                </td>
+                                    Test Blog
+                                </td>
                             </tr>
                         </table>
                     </td>
@@ -756,7 +784,7 @@ EXPECTED_CONFIRMATION_WAITLIST;
 
 	private function expected_reminder() {
 		return <<<'EXPECTED_REMINDER'
-        <!DOCTYPE html>
+<!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8" />
@@ -764,11 +792,14 @@ EXPECTED_CONFIRMATION_WAITLIST;
             <title>Test Event</title>
         </head>
         <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
                 <tr>
                     <td align="center">
                         <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
-                                                        <tr>
+                            
+                            
+                            <tr>
                                 <td style="padding:28px 32px 8px;">
                                     <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">Test Event</h1>
                                 </td>
@@ -777,37 +808,40 @@ EXPECTED_CONFIRMATION_WAITLIST;
                                 <td style="padding:16px 32px 8px;">
                                                                             <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">
                                             Hi Riley Reminder,                                        </p>
-                                                                        <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">This is a friendly reminder that you are registered for Test Event on January 9, 2027. We look forward to seeing you.</p>                                                                                                                                                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
+                                    
+                                    <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">This is a friendly reminder that you are registered for Test Event on January 9, 2027. We look forward to seeing you.</p>
+                                    
+                                    
+                                                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Date</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">January 9, 2027</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Date</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">January 9, 2027</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Time</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">7:00 pm</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Time</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">7:00 pm</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Location</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">Online</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Location</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">Online</td>
                                                 </tr>
                                                                                     </table>
-                                                                                                        </td>
+                                    
+                                    
+                                </td>
                             </tr>
                                                         <tr>
-                                <td style="padding:8px 32px 0;">
-                                    <a href="https://example.test/join-c" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                <td style="padding:8px 32px 32px;">
+                                    <a href="https://example.test/join-c" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;border:1px solid #111;">
                                         Join the event                                    </a>
                                 </td>
                             </tr>
-                                                                                    <tr>
-                                <td style="padding:8px 32px 32px;">
-                                    <a href="https://example.test/event/test-event-c/" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        View event details                                    </a>
-                                </td>
-                            </tr>
-                                                        <tr>
+                            
+                            
+                            <tr>
                                 <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
-                                    Test Blog                                </td>
+                                    Test Blog
+                                </td>
                             </tr>
                         </table>
                     </td>
@@ -821,7 +855,7 @@ EXPECTED_REMINDER;
 
 	private function expected_cancellation() {
 		return <<<'EXPECTED_CANCELLATION'
-        <!DOCTYPE html>
+<!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8" />
@@ -829,11 +863,14 @@ EXPECTED_REMINDER;
             <title>Test Event</title>
         </head>
         <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
                 <tr>
                     <td align="center">
                         <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
-                                                        <tr>
+                            
+                            
+                            <tr>
                                 <td style="padding:28px 32px 8px;">
                                     <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">Test Event</h1>
                                 </td>
@@ -842,21 +879,30 @@ EXPECTED_REMINDER;
                                 <td style="padding:16px 32px 8px;">
                                                                             <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">
                                             Hi Casey Cancelled,                                        </p>
-                                                                        <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">Your registration for Test Event has been cancelled. If this is unexpected, please contact us.</p>                                                                                                                                                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
+                                    
+                                    <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">Your registration for Test Event has been cancelled. If this is unexpected, please contact us.</p>
+                                    
+                                    
+                                                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Event</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">Test Event</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Event</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">Test Event</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Date</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">January 12, 2027</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Date</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">January 12, 2027</td>
                                                 </tr>
                                                                                     </table>
-                                                                                                        </td>
+                                    
+                                    
+                                </td>
                             </tr>
-                                                                                    <tr>
+                            
+                            
+                            <tr>
                                 <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
-                                    Test Blog                                </td>
+                                    Test Blog
+                                </td>
                             </tr>
                         </table>
                     </td>
@@ -870,7 +916,7 @@ EXPECTED_CANCELLATION;
 
 	private function expected_roster() {
 		return <<<'EXPECTED_ROSTER'
-        <!DOCTYPE html>
+<!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8" />
@@ -878,70 +924,76 @@ EXPECTED_CANCELLATION;
             <title>Test Event</title>
         </head>
         <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
                 <tr>
                     <td align="center">
                         <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
+                            
                                                         <tr>
                                 <td style="padding:0;">
                                     <img src="http://example.org/wp-content/uploads/image-e.jpg" alt="Test Event" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" />
                                 </td>
                             </tr>
-                                                        <tr>
+                            
+                            <tr>
                                 <td style="padding:28px 32px 8px;">
                                     <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">Test Event</h1>
                                 </td>
                             </tr>
                             <tr>
                                 <td style="padding:16px 32px 8px;">
-                                                                        <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">Here is the current confirmed roster for Test Event on January 15, 2027.</p>                                                                                                                                                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
+                                    
+                                    <p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:#333;">Here is the current confirmed roster for Test Event on January 15, 2027.</p>
+                                    
+                                    
+                                                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;border-collapse:collapse;">
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Date</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">January 15, 2027</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Date</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">January 15, 2027</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Venue</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">Online</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Venue</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">Online</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Capacity</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">50</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Capacity</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">50</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Confirmed</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">12</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Confirmed</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">12</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Waitlist</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">0</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Waitlist</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">0</td>
                                                 </tr>
                                                                                             <tr>
-                                                    <td style="padding:4px 8px 4px 0;font-size:14px;color:#666;vertical-align:top;white-space:nowrap;">Remaining</td>
-                                                    <td style="padding:4px 0;font-size:14px;color:#222;vertical-align:top;">38</td>
+                                                    <td style="padding:6px 12px 6px 0;font-size:14px;color:#666;vertical-align:top;">Remaining</td>
+                                                    <td style="padding:6px 0;font-size:14px;color:#222;vertical-align:top;text-align:right;white-space:nowrap;">38</td>
                                                 </tr>
                                                                                     </table>
-                                                                                                                <p style="margin:0 0 6px;font-size:14px;font-weight:600;color:#333;">Attendees</p>
+                                    
+                                                                            <p style="margin:0 0 6px;font-size:14px;font-weight:600;color:#333;">Attendees</p>
                                         <ul style="margin:0 0 16px;padding:0 0 0 18px;font-size:14px;line-height:1.6;color:#333;">
                                                                                             <li>Alice — alice@example.test — 555-1111 (web)</li>
                                                                                             <li>Bob — bob@example.test</li>
                                                                                     </ul>
-                                                                    </td>
+                                    
+                                </td>
                             </tr>
                                                         <tr>
-                                <td style="padding:8px 32px 0;">
-                                    <a href="https://example.test/join-e" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
+                                <td style="padding:8px 32px 32px;">
+                                    <a href="https://example.test/join-e" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;border:1px solid #111;">
                                         Join the event                                    </a>
                                 </td>
                             </tr>
-                                                                                    <tr>
-                                <td style="padding:8px 32px 32px;">
-                                    <a href="https://example.test/roster/fixed-id" style="display:inline-block;padding:12px 20px;background:#111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        Open full roster                                    </a>
-                                </td>
-                            </tr>
-                                                        <tr>
+                            
+                            
+                            <tr>
                                 <td style="padding:16px 32px 24px;border-top:1px solid #eee;font-size:12px;color:#888;">
-                                    Test Blog                                </td>
+                                    Test Blog
+                                </td>
                             </tr>
                         </table>
                     </td>

@@ -1456,12 +1456,27 @@ class WooCommerce {
             return $passed;
         }
         $remaining = (int) $this->registrations->remaining_capacity( $event_id, $capacity );
-        if ( $remaining < (int) $quantity && \function_exists( 'wc_add_notice' ) ) {
+
+        // WOO-D26: count what THIS event already holds elsewhere in the cart —
+        // otherwise "3 <= 5, passes" on an empty cart, then "3 <= 5, passes"
+        // again on a second add, leaves 6 seats in a 5-seat cart while every
+        // individual add-to-cart request reported success. This gate is
+        // advisory (cart validation, no lock); reconcile under the per-event
+        // lock at payment time remains the authority that cannot be raced.
+        $already_in_cart = 0;
+        foreach ( $this->get_event_cart_lines() as $line ) {
+            if ( (int) $line['event_id'] === $event_id ) {
+                $already_in_cart += (int) $line['qty'];
+            }
+        }
+        $remaining_after_cart = \max( 0, $remaining - $already_in_cart );
+
+        if ( $remaining_after_cart < (int) $quantity && \function_exists( 'wc_add_notice' ) ) {
             \wc_add_notice(
                 \sprintf(
                     /* translators: 1: remaining seat count, 2: event title. */
                     \__( 'Sorry, only %1$d seat(s) remain for %2$s.', 'anchor-schema' ),
-                    $remaining,
+                    $remaining_after_cart,
                     \get_the_title( $event_id )
                 ),
                 'error'
@@ -1474,9 +1489,15 @@ class WooCommerce {
     /**
      * Clearer messaging when a cart contains more event seats than remain
      * (covers WC silently dropping a now-unpurchasable product — finding #16).
+     *
+     * WOO-D27: this used to only ADD the notice — the over-capacity line
+     * itself had no path back to a valid state except the shopper manually
+     * working the stock cart form. It now clamps the line's quantity to what
+     * actually remains (or removes it, at zero) via WC()->cart->set_quantity(),
+     * so the cart the buyer sees after the notice is one that can check out.
      */
     public function notice_over_capacity_cart_items() {
-        if ( ! \function_exists( 'wc_add_notice' ) ) {
+        if ( ! \function_exists( 'wc_add_notice' ) || ! \function_exists( 'WC' ) || ! WC()->cart ) {
             return;
         }
         foreach ( $this->get_event_cart_lines() as $line ) {
@@ -1490,15 +1511,21 @@ class WooCommerce {
             }
             $remaining = (int) $this->registrations->remaining_capacity( $line['event_id'], $capacity );
             if ( $line['qty'] > $remaining ) {
+                $clamped = \max( 0, $remaining );
                 \wc_add_notice(
                     \sprintf(
                         /* translators: 1: remaining seat count, 2: event title. */
-                        \__( 'Only %1$d seat(s) remain for %2$s. Please adjust the quantity.', 'anchor-schema' ),
-                        $remaining,
+                        \__( 'Only %1$d seat(s) remain for %2$s. The quantity in your cart has been adjusted.', 'anchor-schema' ),
+                        $clamped,
                         $line['event_title']
                     ),
                     'error'
                 );
+                if ( $clamped > 0 ) {
+                    WC()->cart->set_quantity( $line['cart_item_key'], $clamped, true );
+                } else {
+                    WC()->cart->remove_cart_item( $line['cart_item_key'] );
+                }
             }
         }
     }

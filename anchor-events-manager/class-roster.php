@@ -753,8 +753,11 @@ class Roster {
         }
 
         if ( ! empty( $result['created'] ) ) {
+            // finding-13 — pass the seat id through for Events_Log identity
+            // only (two attendees added to the same event must not collapse
+            // into one deduped mail-failure row).
             $emailed = $notify
-                ? $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_CONFIRMED, $guests )
+                ? $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_CONFIRMED, $guests, (int) $result['created'][0] )
                 : Outcome::skipped( 'notify_off' );
             // "and emailed" is only true when an email actually went (REG-D24):
             // notify_user, the per-event confirmation switch and a blank address
@@ -764,7 +767,7 @@ class Roster {
                 : \__( 'Attendee added (no confirmation email sent).', 'anchor-schema' ) );
         } elseif ( ! empty( $result['waitlisted'] ) ) {
             $emailed = $notify
-                ? $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_WAITLIST, $guests )
+                ? $this->module->send_registration_emails( $event_id, $name, $email, Registrations::STATUS_WAITLIST, $guests, (int) $result['waitlisted'][0] )
                 : Outcome::skipped( 'notify_off' );
             $this->redirect( $event_id, 'success', $emailed->is_sent()
                 ? \__( 'Attendee added to the waitlist (event is full) and emailed.', 'anchor-schema' )

@@ -3892,8 +3892,10 @@ class WooCommerce {
             'type'          => 'confirmation',
         ];
         $html = $this->module->build_registration_email_html( $ctx );
+        // finding-13 — the order identity keeps two different buyers on the
+        // same event from collapsing into one deduped mail-failure row.
         return Outcome::from_bool(
-            $this->module->send_html_email( $to, $subject, $html, [], $event_id ),
+            $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => $order_id ] ),
             'wp_mail'
         );
     }
@@ -4012,7 +4014,9 @@ class WooCommerce {
             'type'          => $ctx_type,
         ];
         $html = $this->module->build_registration_email_html( $ctx );
-        return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id ), 'wp_mail' );
+        // finding-13 — the order identity keeps two different orders' notices
+        // on the same event from collapsing into one deduped mail-failure row.
+        return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => (int) $order->get_id() ] ), 'wp_mail' );
     }
 
     /**

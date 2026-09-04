@@ -563,6 +563,33 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * finding-13 (carry-over) — `to` is the only other per-recipient context
+	 * key on a mail failure, and Events_Log::redact() masks it to `***@domain`
+	 * BEFORE the identity is computed, so two attendees on the SAME event AND
+	 * the same email domain used to collapse into one deduped row even though
+	 * they are two different failures about two different people. Passing the
+	 * seat id through (send_html_email()'s $identity param) fixes it: same
+	 * event, same domain, two seats, two rows.
+	 */
+	public function test_a_failed_send_to_two_seats_on_the_same_event_and_domain_is_two_rows() {
+		$event_id = $this->make_event( [ 'title' => 'Same Domain Event' ] );
+		$seat_a   = $this->make_seat( $event_id, [ 'email' => 'alice@example.test' ] );
+		$seat_b   = $this->make_seat( $event_id, [ 'email' => 'bob@example.test' ] );
+
+		add_filter( 'pre_wp_mail', '__return_false' );
+		$this->module()->send_html_email( 'alice@example.test', 'Subject', '<p>a</p>', [], $event_id, [ 'seat' => $seat_a ] );
+		$this->module()->send_html_email( 'bob@example.test', 'Subject', '<p>b</p>', [], $event_id, [ 'seat' => $seat_b ] );
+		remove_filter( 'pre_wp_mail', '__return_false' );
+
+		$rows = array_values( array_filter( $this->error_log_rows(), function ( $row ) {
+			return 'email_send_returned_false' === $row['code'];
+		} ) );
+		$this->assertCount( 2, $rows, 'Two seats on the same event/domain, two rows — not one collapsed by the masked email.' );
+		$this->assertSame( $seat_a, (int) $rows[0]['context']['seat'] );
+		$this->assertSame( $seat_b, (int) $rows[1]['context']['seat'] );
+	}
+
+	/**
 	 * REG-D63 — one spelling for a degraded capacity lock. with_event_lock()
 	 * used to log `lock_unavailable` while the callers that also record the
 	 * degradation logged `capacity_lock_unavailable`, so a search for either

@@ -1354,7 +1354,10 @@ class Module {
             'type'          => 'reminder',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event (and the same email domain) from collapsing into one
+        // deduped error row; see send_html_email()'s docblock.
+        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id, [ 'seat' => (int) ( $seat['id'] ?? 0 ) ] );
 
         // Retry bookkeeping lives at the point of the actual send (audit
         // REG-D5) so the pre-flight bails above — reminders off for this
@@ -1667,9 +1670,17 @@ class Module {
      * Send an HTML email and log any failure (bug #5). Centralizes the two
      * registration wp_mail calls; the full email refactor lands in Phase 6.
      *
+     * @param array $identity finding-13: extra Events_Log identity keys — 'seat'
+     *              or 'order' — so two different recipients within the SAME
+     *              event do not collapse into one deduped error row. Needed
+     *              because `to` (the only other per-recipient context key) is
+     *              PII and gets masked to `***@domain` by Events_Log::redact()
+     *              BEFORE the identity is computed (see error_identity()), so
+     *              two attendees on the same email domain were previously
+     *              indistinguishable to the dedupe window.
      * @return bool True on success.
      */
-    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0 ) {
+    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0, array $identity = [] ) {
         if ( empty( $headers ) ) {
             // Apply the sender identity: the event's own where it sets one,
             // the site-wide setting otherwise (From / Reply-To / Cc / Bcc).
@@ -1702,11 +1713,11 @@ class Module {
             // reason when there is one. wp_mail() can answer false without ever
             // firing wp_mail_failed (a pre_wp_mail short-circuit, say), which is
             // why this side is the one that logs.
-            $context = [
+            $context = \array_merge( [
                 'event'   => (int) $event_id,
                 'to'      => $to,
                 'subject' => $subject,
-            ];
+            ], $identity );
             if ( \is_array( $this->last_mail_error ) ) {
                 $context['message'] = $this->last_mail_error['message'];
                 $context['data']    = $this->last_mail_error['data'];
@@ -9807,7 +9818,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // is promised. Both used to be assumed.
         $is_waitlist = ( $waitlisted && ! $created );
         $reg_status  = $is_waitlist ? Registrations::STATUS_WAITLIST : Registrations::STATUS_CONFIRMED;
-        $emailed     = $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
+        // finding-13 — the seat id is for Events_Log identity only: two
+        // different attendees registering for the same event must not
+        // collapse into one deduped mail-failure row.
+        $seat_id     = (int) ( $is_waitlist ? ( $result['waitlisted'][0] ?? 0 ) : ( $result['created'][0] ?? 0 ) );
+        $emailed     = $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests, $seat_id );
 
         $url = $this->with_message( $redirect, $is_waitlist ? 'registration_waitlisted' : 'registration_success' );
         if ( $emailed->is_sent() ) {
@@ -12940,17 +12955,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * with real data" showed copy a free registration never sent (REG-D1/D45).
      */
     /**
+     * @param int $seat_id finding-13: the seat this registration minted, for
+     *            Events_Log identity only (never business logic here) — see
+     *            send_html_email()'s docblock. 0 when the caller has none
+     *            (kept optional so no existing call site is forced to change).
      * @return Outcome The ATTENDEE email: sent | skipped (notifications_off,
      *                 disabled, no_address) | failed (wp_mail).
      */
-    public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
-        $this->send_registration_admin_notice( $event_id, $name, $email, $status, $guests );
+    public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0 ) {
+        $this->send_registration_admin_notice( $event_id, $name, $email, $status, $guests, $seat_id );
 
         // The ATTENDEE half is what the return value describes: the caller needs
         // to know whether it may promise "check your email" (REG-D24). The
         // organizer copy above is a different recipient with a different switch
         // and is deliberately not folded into this answer.
-        return $this->send_confirmation_email( $event_id, $name, $email, $status, $guests );
+        return $this->send_confirmation_email( $event_id, $name, $email, $status, $guests, $seat_id );
     }
 
     /**
@@ -12965,7 +12984,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * @return void The organizer copy is never what a caller reports to a user.
      */
-    private function send_registration_admin_notice( $event_id, $name, $email, $status, $guests = 0 ) {
+    private function send_registration_admin_notice( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0 ) {
         $settings = $this->get_settings();
         if ( empty( $settings['notify_admin'] ) ) {
             return;
@@ -12985,10 +13004,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // Plain-text email, but still carry the configured sender identity.
         $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
         if ( ! $sent ) {
+            // finding-13 — the seat identity distinguishes two failed notices
+            // about two different registrations on the same event even though
+            // this recipient (the fixed admin address) never varies.
             Events_Log::error( 'email_send_returned_false', [
                 'event'   => (int) $event_id,
                 'to'      => $admin_email,
                 'subject' => $subject,
+                'seat'    => (int) $seat_id,
             ] );
         }
     }
@@ -13002,10 +13025,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * the seat moves off the waitlist reports a registration that did not
      * happen. One builder, two entry points — the pair, and the attendee alone.
      *
+     * @param int $seat_id finding-13: Events_Log identity only — see
+     *            send_html_email()'s docblock. 0 when the caller has none.
      * @return Outcome sent | skipped (notifications_off, disabled, no_address)
      *                 | failed (wp_mail).
      */
-    public function send_confirmation_email( $event_id, $name, $email, $status, $guests = 0 ) {
+    public function send_confirmation_email( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0 ) {
         $settings   = $this->get_settings();
         $event_link = \get_permalink( $event_id );
         $guests     = max( 0, (int) $guests );
@@ -13059,7 +13084,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'cta_url'       => $event_link,
             'type'          => 'confirmation',
         ] );
-        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id ), 'wp_mail' );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event from collapsing into one deduped error row.
+        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => (int) $seat_id ] ), 'wp_mail' );
     }
 
     // -------------------------------------------------------------------------
@@ -13130,7 +13157,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     (string) ( $seat['name'] ?? '' ),
                     (string) ( $seat['email'] ?? '' ),
                     Registrations::STATUS_CONFIRMED,
-                    (int) ( $seat['guests'] ?? 0 )
+                    (int) ( $seat['guests'] ?? 0 ),
+                    (int) $seat_id
                 );
                 continue;
             }
@@ -13231,7 +13259,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'type'          => 'cancellation',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        $sent = $this->send_html_email( $email, $subject, $html, [], $event_id );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event from collapsing into one deduped error row.
+        $sent = $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => $seat_id ] );
         if ( $sent ) {
             // WHEN it was emailed, not merely THAT it was: the value is what
             // survives a later un-cancel/re-cancel cycle being distinguishable

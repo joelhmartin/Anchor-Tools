@@ -8497,26 +8497,46 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * event belongs to the existing admin Posts screen / handle_event_manager_delete(),
      * not to this panel.
      *
+     * Review-round fix (MODEL-D34 fix round 1): refuses when the occurrence
+     * still holds an ACTIVE seat — confirmed, pending, or waitlist
+     * (Registrations::RESERVING_STATUSES + WAITLIST_STATUSES). A soft-closed
+     * occurrence's whole reason for being preserved rather than trashed is a
+     * roster somebody still has to see/email/refund; trashing it out from
+     * under that roster is the "surprise-trashing" retire_child() was written
+     * to avoid, just one click later. Cancelled/refunded/failed seats and the
+     * read-only legacy attended/no_show statuses do NOT block deletion — they
+     * are history, not a live roster. Reuses get_event_summary() (already a
+     * single counts() aggregate) rather than a new query.
+     *
      * Pure logic — no nonce/capability/redirect/exit — so it is directly
      * unit-testable; handle_delete_closed_occurrence() below is the real
      * admin-post entry point (mirrors handle_event_manager_delete()).
      *
      * @param int $event_id
-     * @return bool True if trashed, false if $event_id is not a closed occurrence.
+     * @return array{deleted:bool,active_seats:int} `active_seats` is the
+     *         reason when `deleted` is false and the object check passed
+     *         (0 when refused for any other reason: not an event, or not
+     *         currently closed).
      */
     public function delete_closed_occurrence( $event_id ) {
         $event_id = (int) $event_id;
         if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
-            return false;
+            return [ 'deleted' => false, 'active_seats' => 0 ];
         }
         if ( ! $this->occurrences->is_closed( $event_id ) ) {
-            return false;
+            return [ 'deleted' => false, 'active_seats' => 0 ];
+        }
+
+        $summary = $this->registrations->get_event_summary( $event_id );
+        $active  = (int) $summary['confirmed'] + (int) $summary['pending'] + (int) $summary['waitlist'];
+        if ( $active > 0 ) {
+            return [ 'deleted' => false, 'active_seats' => $active ];
         }
 
         \wp_trash_post( $event_id );
         $this->clear_caches();
 
-        return true;
+        return [ 'deleted' => true, 'active_seats' => 0 ];
     }
 
     /**
@@ -8540,9 +8560,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
         }
 
-        $deleted = $this->delete_closed_occurrence( $event_id );
+        $result   = $this->delete_closed_occurrence( $event_id );
+        $redirect = \add_query_arg( 'anchor_events_closed_deleted', $result['deleted'] ? '1' : '0', $redirect );
+        if ( ! $result['deleted'] && $result['active_seats'] > 0 ) {
+            $redirect = \add_query_arg( 'anchor_events_closed_active_seats', $result['active_seats'], $redirect );
+        }
 
-        \wp_safe_redirect( \add_query_arg( 'anchor_events_closed_deleted', $deleted ? '1' : '0', $redirect ) );
+        \wp_safe_redirect( $redirect );
         exit;
     }
 
@@ -10392,6 +10416,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( isset( $_GET['anchor_events_closed_deleted'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
             if ( $_GET['anchor_events_closed_deleted'] === '1' ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
                 echo '<div class="notice notice-success inline"><p>' . \esc_html__( 'Occurrence deleted.', 'anchor-schema' ) . '</p></div>';
+            } elseif ( isset( $_GET['anchor_events_closed_active_seats'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                $active = (int) $_GET['anchor_events_closed_active_seats']; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                echo '<div class="notice notice-error inline"><p>' . \esc_html( \sprintf(
+                    /* translators: %d: number of active (confirmed/pending/waitlist) seats still registered. */
+                    \_n( 'Cannot delete — %d active seat still registered.', 'Cannot delete — %d active seats still registered.', $active, 'anchor-schema' ),
+                    $active
+                ) ) . '</p></div>';
             } else {
                 echo '<div class="notice notice-error inline"><p>' . \esc_html__( 'That occurrence could not be deleted — it may no longer be closed.', 'anchor-schema' ) . '</p></div>';
             }

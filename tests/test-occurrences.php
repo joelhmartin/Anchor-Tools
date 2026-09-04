@@ -707,18 +707,70 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 		$this->assertSame( [], $this->occurrences()->closed_children() );
 	}
 
-	/** delete_closed_occurrence() trashes a genuinely closed occurrence. */
-	public function test_delete_closed_occurrence_trashes_a_closed_child() {
+	/**
+	 * MODEL-D34 fix round 1 — delete_closed_occurrence() REFUSES a closed
+	 * occurrence that still holds an ACTIVE seat (confirmed, here). The
+	 * whole reason retire_child() preserved this post instead of trashing it
+	 * is a roster somebody still has to see/email/refund; deleting it out
+	 * from under that roster is exactly the "surprise-trashing" it was
+	 * written to avoid, just one click later.
+	 */
+	public function test_delete_closed_occurrence_refuses_when_active_seats_remain() {
 		$parent_id = $this->make_parent( $this->two_rows() );
 		$live      = $this->occurrences()->reconcile( $parent_id );
 		$seated    = $live[0];
-		$this->make_seat( $seated );
+		$this->make_seat( $seated ); // confirmed by default — an ACTIVE seat.
 
 		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
 		$this->occurrences()->reconcile( $parent_id );
 		$this->assertTrue( $this->occurrences()->is_closed( $seated ) );
 
-		$this->assertTrue( $this->module()->delete_closed_occurrence( $seated ) );
+		$result = $this->module()->delete_closed_occurrence( $seated );
+
+		$this->assertFalse( $result['deleted'] );
+		$this->assertSame( 1, $result['active_seats'] );
+		$this->assertNotSame( 'trash', get_post_status( $seated ), 'A closed occurrence with an active seat must not be trashed.' );
+	}
+
+	/**
+	 * Pending and waitlist seats block deletion exactly like confirmed —
+	 * ACTIVE means Registrations::RESERVING_STATUSES + WAITLIST_STATUSES,
+	 * not just `confirmed`.
+	 */
+	public function test_delete_closed_occurrence_refuses_when_only_a_waitlist_seat_remains() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated, [ 'status' => \Anchor\Events\Registrations::STATUS_WAITLIST ] );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$result = $this->module()->delete_closed_occurrence( $seated );
+
+		$this->assertFalse( $result['deleted'] );
+		$this->assertSame( 1, $result['active_seats'] );
+	}
+
+	/**
+	 * Zero active seats — none at all — permits deletion. A cancelled/
+	 * refunded/failed seat is history, not a live roster, so it must not
+	 * count toward the refusal either.
+	 */
+	public function test_delete_closed_occurrence_permits_deletion_with_zero_active_seats() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated, [ 'status' => \Anchor\Events\Registrations::STATUS_CANCELLED ] );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( $this->occurrences()->is_closed( $seated ) );
+
+		$result = $this->module()->delete_closed_occurrence( $seated );
+
+		$this->assertTrue( $result['deleted'] );
+		$this->assertSame( 0, $result['active_seats'] );
 		$this->assertSame( 'trash', get_post_status( $seated ) );
 	}
 
@@ -729,7 +781,10 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 	public function test_delete_closed_occurrence_refuses_a_live_event() {
 		$event_id = $this->make_event();
 
-		$this->assertFalse( $this->module()->delete_closed_occurrence( $event_id ) );
+		$result = $this->module()->delete_closed_occurrence( $event_id );
+
+		$this->assertFalse( $result['deleted'] );
+		$this->assertSame( 0, $result['active_seats'] );
 		$this->assertNotSame( 'trash', get_post_status( $event_id ) );
 	}
 
@@ -737,9 +792,9 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 	public function test_delete_closed_occurrence_refuses_a_non_event_id() {
 		$page_id = self::factory()->post->create( [ 'post_type' => 'page' ] );
 
-		$this->assertFalse( $this->module()->delete_closed_occurrence( $page_id ) );
-		$this->assertFalse( $this->module()->delete_closed_occurrence( 0 ) );
-		$this->assertFalse( $this->module()->delete_closed_occurrence( PHP_INT_MAX ) );
+		$this->assertFalse( $this->module()->delete_closed_occurrence( $page_id )['deleted'] );
+		$this->assertFalse( $this->module()->delete_closed_occurrence( 0 )['deleted'] );
+		$this->assertFalse( $this->module()->delete_closed_occurrence( PHP_INT_MAX )['deleted'] );
 	}
 
 	/**

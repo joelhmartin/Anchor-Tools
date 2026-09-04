@@ -74,6 +74,18 @@ of them. See `EVENTS.md` for both.
 - **Events → Roster** (or the event's roster screen): view attendees, filter/search, export CSV
   (includes the tier). Capability: `manage_woocommerce` when WooCommerce is active, else
   `edit_others_posts`.
+- That capability is resolved in exactly one place — `Module::events_capability()` — and every
+  surface that shows or acts on attendee/customer data uses it: the Roster screen and its manual
+  seat actions, the CSV export, the `[event_registrants_list]` and `[event_manager]` shortcodes,
+  the order actions (Resync / Mark reviewed / Resend confirmation) and their needs-review notice,
+  and the event error log. Override it site-wide with the `anchor_events_capability` filter:
+
+  ```php
+  add_filter( 'anchor_events_capability', fn() => 'manage_event_roster' );
+  ```
+- The CSV export additionally refuses any id that is not a live `event` post (a trashed or deleted
+  event exports nothing), and a manual seat action only accepts a seat that belongs to the event
+  its nonce was issued for.
 - **Add attendee** directly (comped, no order): pick a tier, optionally tick **Allow over capacity** to
   exceed the limit (recorded in the seat's history). Edit/cancel/mark-status are tier-aware.
 

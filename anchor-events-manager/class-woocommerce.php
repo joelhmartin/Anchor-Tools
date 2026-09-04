@@ -3149,16 +3149,18 @@ class WooCommerce {
     }
 
     /**
-     * admin-post handler for the manual "Resync order" button. Caps to
-     * edit_others_posts, verifies the per-order nonce, clears stale needs-review on
-     * a clean pass, runs the identical reconcile, and redirects back.
+     * admin-post handler for the manual "Resync order" button. Verifies the
+     * per-order nonce, then the module capability (WOO-D41: this used to be a
+     * hard-coded edit_others_posts, so a shop manager who could open the roster was
+     * refused here and an Editor who could not was allowed), clears stale
+     * needs-review on a clean pass, runs the identical reconcile, and redirects back.
      */
     public function handle_resync_order() {
         $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        \check_admin_referer( 'anchor_event_resync_' . $order_id );
+        if ( ! Roster::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You are not allowed to resync this order.', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_event_resync_' . $order_id );
 
         $order = \wc_get_order( $order_id );
         if ( $order ) {
@@ -3615,7 +3617,9 @@ class WooCommerce {
      * unsupported bare 'meta_key' shorthand — finding #15), function_exists-guarded.
      */
     public function render_needs_review_notice() {
-        if ( ! \function_exists( 'wc_get_orders' ) || ! \current_user_can( 'edit_others_posts' ) ) {
+        // Same capability as the actions the notice links to (WOO-D41) — a notice
+        // whose every button refuses the reader is worse than no notice.
+        if ( ! \function_exists( 'wc_get_orders' ) || ! Roster::current_user_can_manage() ) {
             return;
         }
         $screen = \get_current_screen();
@@ -3693,14 +3697,14 @@ class WooCommerce {
 
     /**
      * admin-post: clear all needs-review flags from an order ("Mark reviewed").
-     * Cap edit_others_posts + per-order nonce.
+     * Per-order nonce, then Module::events_capability() (WOO-D41).
      */
     public function handle_clear_review() {
         $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        \check_admin_referer( 'anchor_events_clear_review_' . $order_id );
+        if ( ! Roster::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_events_clear_review_' . $order_id );
         Events_Log::clear_review( $order_id );
         \delete_transient( self::NEEDS_REVIEW_TRANSIENT ); // L10 — refresh the notice.
         $this->redirect_back();
@@ -3711,14 +3715,19 @@ class WooCommerce {
      * confirmation"). Re-sends from the order's current active seats and marks the
      * per-event customer emails-sent gates (emails_sent['customer:'.$event_id]) so a
      * later reconcile won't auto-send another confirmation for an already-covered
-     * event. Cap edit_others_posts + per-order nonce.
+     * event. Per-order nonce, then Module::events_capability().
+     *
+     * REG-D62 — this sends real customer mail built from the order's seat data and
+     * rewrites the order's emails-sent gate, so it cannot be gated looser than the
+     * roster that shows the same data. A refused resend returns before the sender
+     * is reached: nothing is sent and no gate is touched.
      */
     public function handle_resend_confirmation() {
         $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        \check_admin_referer( 'anchor_events_resend_' . $order_id );
+        if ( ! Roster::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_events_resend_' . $order_id );
 
         $order = \wc_get_order( $order_id );
         if ( $order ) {
@@ -3902,8 +3911,9 @@ class WooCommerce {
             echo '</ul>';
         }
 
-        // Action buttons (cap edit_others_posts): Resync / Mark reviewed / Resend.
-        if ( \current_user_can( 'edit_others_posts' ) ) {
+        // Action buttons: Resync / Mark reviewed / Resend — rendered only for the
+        // users their handlers will accept (Module::events_capability()).
+        if ( Roster::current_user_can_manage() ) {
             $post_url = \esc_url( \admin_url( 'admin-post.php' ) );
 
             echo '<form method="post" action="' . $post_url . '" style="margin:0 0 6px;">';

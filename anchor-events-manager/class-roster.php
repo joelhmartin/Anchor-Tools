@@ -12,7 +12,9 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * requires the `manage_woocommerce` capability rather than the Editor-held
  * `edit_others_posts`; free/internal installs keep `edit_others_posts`. The submenu
  * registration and every runtime check share a single source of truth via
- * Roster::cap(); current_user_can_manage() is just current_user_can( cap() ).
+ * Roster::cap(), which now just calls Module::events_capability() — the one
+ * function the shortcodes and the WooCommerce order actions call too, so the
+ * hardening cannot be sidestepped through another surface (audit REG-D20).
  *
  * This class NEVER writes seat meta directly: every mutation is delegated to the
  * Registrations data layer (claim_seats / update_status) so capacity, the event
@@ -26,18 +28,23 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 class Roster {
 
     /** Base capability for free/internal installs (no WooCommerce). */
-    const CAP  = 'edit_others_posts';
+    const CAP  = Module::CAP_BASE;
     const SLUG = 'anchor-event-roster';
 
     /**
-     * Capability string used to register the roster submenu (M2). When WooCommerce
-     * is active the roster surfaces customer PII, so require a shop-management
-     * capability; otherwise fall back to the base capability.
+     * Capability string used to register the roster submenu (M2).
+     *
+     * Kept as the roster's public name for the capability, but it no longer
+     * decides anything: Module::events_capability() is the one function that
+     * resolves the events capability for every surface — roster, CSV export,
+     * the WooCommerce order actions, and the front-end console — so hardening
+     * one of them can no longer be sidestepped through another (audit REG-D20,
+     * REG-D62, WOO-D41). Filterable via `anchor_events_capability`.
      *
      * @return string
      */
     public static function cap() {
-        return \class_exists( 'WooCommerce' ) ? 'manage_woocommerce' : self::CAP;
+        return Module::events_capability();
     }
 
     /**
@@ -51,6 +58,55 @@ class Roster {
      */
     public static function current_user_can_manage() {
         return \current_user_can( self::cap() );
+    }
+
+    /**
+     * May this post id have its attendee list exported? (audit REG-D16)
+     *
+     * The capability says who; this says what. Seats are found by the
+     * `_anchor_event_id` meta value, which does not require the referenced post
+     * to exist, to be an event, or to still be published — so without this a
+     * valid nonce exported a full attendee list (names, emails, order numbers)
+     * for a trashed course, a deleted event, or any unrelated post id, under a
+     * filename that named the id and an "Event" column that was blank.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public static function is_exportable_event( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 ) {
+            return false;
+        }
+        if ( \get_post_type( $event_id ) !== Module::CPT ) {
+            return false;
+        }
+        return ! \in_array( (string) \get_post_status( $event_id ), [ 'trash', 'auto-draft' ], true );
+    }
+
+    /**
+     * Does this seat belong to the event whose nonce authorized the action?
+     * (audit REG-D48)
+     *
+     * The manual seat nonces are per-event (`anchor_roster_edit_{event_id}`),
+     * which reads as a per-event authorization — but the handlers only checked
+     * that seat_id was a registration post, so a nonce for event A could edit or
+     * cancel a seat on event B and the change landed where nobody was looking.
+     *
+     * @param int $seat_id
+     * @param int $event_id
+     * @return bool
+     */
+    public static function seat_belongs_to_event( $seat_id, $event_id ) {
+        $seat_id  = (int) $seat_id;
+        $event_id = (int) $event_id;
+        if ( $seat_id <= 0 || $event_id <= 0 ) {
+            return false;
+        }
+        if ( \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return false;
+        }
+        return (int) \get_post_meta( $seat_id, '_anchor_event_id', true ) === $event_id;
     }
 
     /** @var Module */
@@ -498,7 +554,10 @@ class Roster {
         $seat_id  = isset( $_POST['seat_id'] ) ? (int) \wp_unslash( $_POST['seat_id'] ) : 0;
         $this->guard( 'anchor_roster_edit_' . $event_id );
 
-        if ( \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+        // REG-D48 — the nonce is per-event, so the seat has to be this event's.
+        // Deliberately the same message either way: a seat that exists on another
+        // event must not be distinguishable from one that does not exist.
+        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
             $this->redirect( $event_id, 'error', \__( 'Seat not found.', 'anchor-schema' ) );
         }
 
@@ -538,7 +597,8 @@ class Roster {
         $seat_id  = isset( $_REQUEST['seat_id'] ) ? (int) \wp_unslash( $_REQUEST['seat_id'] ) : 0;
         $this->guard( 'anchor_roster_cancel_' . $event_id );
 
-        if ( \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+        // REG-D48 — see handle_edit(): a nonce for one event cancels only its own seats.
+        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
             $this->redirect( $event_id, 'error', \__( 'Seat not found.', 'anchor-schema' ) );
         }
 
@@ -557,11 +617,12 @@ class Roster {
 
     /** Send the organizer roster digest for a specific event (Task 4). */
     public function handle_send_roster() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        // Nonce, then capability, then the object — the same order every handler uses.
+        \check_admin_referer( 'anchor_events_send_roster_' . $event_id );
         if ( ! self::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You do not have permission to do this.', 'anchor-schema' ) );
         }
-        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
-        \check_admin_referer( 'anchor_events_send_roster_' . $event_id );
         if ( \get_post_type( $event_id ) !== Module::CPT ) {
             \wp_die( \esc_html__( 'Invalid event.', 'anchor-schema' ) );
         }
@@ -578,12 +639,18 @@ class Roster {
         }
     }
 
-    /** Capability + nonce gate shared by every manual action. */
+    /**
+     * Nonce + capability gate shared by every manual action.
+     *
+     * Both checks always run, in that order: the request has to be one this site
+     * issued (CSRF) before we say anything about who the user is, and the
+     * capability is the module-wide one, never a per-handler guess.
+     */
     private function guard( $nonce_action ) {
+        \check_admin_referer( $nonce_action );
         if ( ! self::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
         }
-        \check_admin_referer( $nonce_action );
     }
 
     private function redirect( $event_id, $type, $message ) {
@@ -643,14 +710,17 @@ class Roster {
      * ------------------------------------------------------------------- */
 
     public function handle_export() {
+        \check_admin_referer( 'anchor_event_export' );
         if ( ! self::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_event_export' );
 
         $event_id = isset( $_GET['event_id'] ) ? (int) \wp_unslash( $_GET['event_id'] ) : 0;
-        if ( ! $event_id ) {
-            \wp_die( \esc_html__( 'Missing event.', 'anchor-schema' ) );
+        // REG-D16 — a non-zero id is not enough: seats are matched on a meta value,
+        // so a trashed, deleted, or entirely unrelated post id would otherwise
+        // return a CSV of real attendee names and emails named after that id.
+        if ( ! self::is_exportable_event( $event_id ) ) {
+            \wp_die( \esc_html__( 'Invalid event.', 'anchor-schema' ) );
         }
         $scope = ( isset( $_GET['scope'] ) && \wp_unslash( $_GET['scope'] ) === 'active' ) ? 'active' : 'all';
 

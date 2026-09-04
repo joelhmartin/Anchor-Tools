@@ -10,6 +10,15 @@ require_once __DIR__ . '/template-tags.php';
 
 class Module {
     const CPT = 'event';
+
+    /**
+     * Base events-management capability on a site with no store (audit REG-D20).
+     * Roster::CAP is kept as an alias of this for back-compat.
+     */
+    const CAP_BASE = 'edit_others_posts';
+
+    /** Events-management capability once WooCommerce is active — the roster is PII. */
+    const CAP_STORE = 'manage_woocommerce';
     const REG_CPT = 'anchor_event_reg';
 
     // Task 7 (COORD-D2): the only get_meta_schema() keys exposed over REST by
@@ -1727,6 +1736,46 @@ class Module {
 
     public static function instance() {
         return self::$instance;
+    }
+
+    /**
+     * The single events-management capability (audit REG-D20 / REG-D62 / WOO-D41).
+     *
+     * Every roster, export, resend and front-end console surface resolves who may
+     * act here and nowhere else. On a store the roster and the order actions expose
+     * customer PII (billing email, customer ids, order numbers), so they require a
+     * shop-management capability; a free/internal install keeps the Editor-held
+     * `edit_others_posts`. Before this existed the same data was reachable behind
+     * three different capabilities, so hardening one surface simply moved the hole.
+     *
+     * A site whose events are run by a role that holds neither capability can point
+     * the whole module at its own capability with one filter:
+     *
+     *     add_filter( 'anchor_events_capability', fn() => 'manage_event_roster' );
+     *
+     * A filter that returns something unusable (empty string, non-string) is
+     * ignored rather than obeyed — an empty capability string passes
+     * current_user_can() for everyone, which would open every surface at once.
+     *
+     * @return string Capability slug.
+     */
+    public static function events_capability() {
+        $cap = \class_exists( 'WooCommerce' ) ? self::CAP_STORE : self::CAP_BASE;
+
+        /**
+         * Filter the capability required to manage events (rosters, exports,
+         * resends, the front-end console).
+         *
+         * @param string $cap Default: manage_woocommerce on a store, else edit_others_posts.
+         */
+        $filtered = \apply_filters( 'anchor_events_capability', $cap );
+
+        return ( \is_string( $filtered ) && $filtered !== '' ) ? $filtered : $cap;
+    }
+
+    /** Convenience wrapper: does the current user hold events_capability()? */
+    public static function current_user_can_manage_events() {
+        return \current_user_can( self::events_capability() );
     }
 
     /**
@@ -3449,7 +3498,9 @@ class Module {
         }
         ?>
         <p>
-            <a class="button" href="<?php echo esc_url( $export_url ); ?>"><?php echo esc_html__( 'Export CSV', 'anchor-schema' ); ?></a>
+            <?php if ( Roster::current_user_can_manage() ) : // REG-D21 — the handler would refuse it. ?>
+                <a class="button" href="<?php echo esc_url( $export_url ); ?>"><?php echo esc_html__( 'Export CSV', 'anchor-schema' ); ?></a>
+            <?php endif; ?>
             <?php if ( $this->roster ) : ?>
                 <a class="button button-primary" href="<?php echo esc_url( $this->roster->roster_url( $post->ID ) ); ?>"><?php echo esc_html__( 'Open full roster', 'anchor-schema' ); ?></a>
             <?php endif; ?>
@@ -6430,7 +6481,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     public function shortcode_event_registrants_list( $atts ) {
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        // REG-D20 — this prints attendee names and emails, the same PII the Roster
+        // screen protects, so it uses the same single capability. Gating it lower
+        // than the roster made the M2 hardening bypassable from the front end.
+        if ( ! Roster::current_user_can_manage() ) {
             return '';
         }
 
@@ -6504,7 +6558,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $edit_link ) {
                 $output .= '<a href="' . esc_url( $edit_link ) . '">' . esc_html__( 'Edit event', 'anchor-schema' ) . '</a> &middot; ';
             }
-            $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a>';
+            // REG-D21 — never offer a link the export handler will refuse.
+            if ( Roster::current_user_can_manage() ) {
+                $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a>';
+            }
             $output .= '</p>';
 
             if ( empty( $registrations ) ) {
@@ -6542,7 +6599,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return '<div class="anchor-event-manager">' . $this->render_event_manager_notice() . $this->render_event_manager_login_form() . '</div>';
         }
 
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        // REG-D20 — the console's list body prints the same name/email table as
+        // the Roster screen, so it answers to the same capability.
+        if ( ! Roster::current_user_can_manage() ) {
             return '<div class="anchor-event-manager">' . $this->render_event_manager_notice() . $this->render_event_manager_no_access() . '</div>';
         }
 
@@ -6993,7 +7052,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $roster_url = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $event->ID ], $base_url );
             $output .= '<a href="' . esc_url( $roster_url ) . '">' . esc_html__( 'Attendees', 'anchor-schema' ) . '</a> &middot; ';
         }
-        $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a> &middot; ';
+        // REG-D21 — gated with the Attendees link above it: same handler, same cap.
+        if ( Roster::current_user_can_manage() ) {
+            $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a> &middot; ';
+        }
         $output .= '<a class="anchor-event-admin-delete" href="' . esc_url( $delete_url ) . '" data-confirm="' . esc_attr__( 'Move this event to trash?', 'anchor-schema' ) . '">' . esc_html__( 'Delete', 'anchor-schema' ) . '</a>';
         $output .= '</p>';
 
@@ -9493,10 +9555,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Read-only "Event error log" panel for the Events settings tab. Shows the most
      * recent entries from the site-wide anchor_events_error_log option and a nonced
-     * "Clear error log" button. Capped to users with edit_others_posts.
+     * "Clear error log" button. Capped to Module::events_capability().
      */
     private function render_error_log_panel() {
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        if ( ! Roster::current_user_can_manage() ) {
             return;
         }
 
@@ -9585,15 +9647,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * admin-post handler: clear the site-wide event error log. Cap edit_others_posts
-     * + nonce. Lives in the Module (not the WC class) because the error log and its
+     * admin-post handler: clear the site-wide event error log. Nonce, then
+     * Module::events_capability(). Lives in the Module (not the WC class) because the error log and its
      * panel are present on all sites, WooCommerce or not.
      */
     public function handle_clear_error_log() {
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        \check_admin_referer( 'anchor_events_clear_error_log' );
+        if ( ! Roster::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_events_clear_error_log' );
         // REG-D31 — archive rather than destroy. These entries are the ONLY
         // record of email_send_returned_false / capacity_lock_unavailable /
         // illegal_transition / seat_insert_failed; the seat history does not

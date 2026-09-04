@@ -170,12 +170,19 @@ class Test_Ticket_Types extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * WOO-D40: a stored tier row with a blank label read as '' via get()
-	 * (normalize()) but was silently renamed to "Registration" the moment
-	 * any write-back re-persisted the list through save() — normalize() must
-	 * apply the SAME default so the read and write paths never disagree.
+	 * WOO-D40: normalize() (the read path) deliberately preserves a blank
+	 * label as '' — Roster::tier_label() depends on being able to tell "the
+	 * row exists but its label is blank" (an authoring gap, shown as the raw
+	 * tier id) apart from "the row is gone" (shown as "(retired tier)").
+	 * save() legitimately defaults a blank label to "Registration" when an
+	 * admin actually submits the tickets form with an empty label field —
+	 * that direct author-initiated save is fine. The bug was a DIFFERENT
+	 * write path (Product_Sync::write_back_variation_ids(), which only wants
+	 * to update a cached wc_variation_id) round-tripping through save() and
+	 * picking up its label default as an unintended side effect; that is
+	 * fixed at the write side, not by changing what normalize() reports.
 	 */
-	public function test_normalize_and_save_apply_the_same_blank_label_default() {
+	public function test_normalize_preserves_a_blank_label_while_save_still_defaults_it() {
 		$event_id = $this->make_event();
 		update_post_meta(
 			$event_id,
@@ -184,10 +191,11 @@ class Test_Ticket_Types extends Anchor_Events_TestCase {
 		);
 
 		$read = $this->ticket_types()->get( $event_id );
-		$this->assertSame( 'Registration', $read[0]['label'] );
+		$this->assertSame( '', $read[0]['label'], 'The read path must NOT invent a label for an existing row.' );
 
-		// A write-back through save() (preserving the id) must not CHANGE the
-		// displayed label — it already reads the same as save() would store.
+		// An admin who actually submits the tickets FORM with a blank label
+		// still gets the shipped default — this is save()'s existing,
+		// deliberate behavior and WOO-D40 does not change it.
 		$resaved = $this->ticket_types()->save(
 			$event_id,
 			[ [ 'id' => 'abc123', 'label' => '', 'price' => '10', 'active' => 1 ] ]

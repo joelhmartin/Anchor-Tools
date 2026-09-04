@@ -929,7 +929,19 @@ class Product_Sync {
         }
 
         if ( $changed ) {
-            $this->ticket_types->save( $event_id, $rows );
+            // WOO-D40: write the meta DIRECTLY rather than through
+            // Ticket_Types::save() — save() is the authoring sanitizer (it
+            // substitutes the "Registration" default for a blank label,
+            // mints ids, drops empty rows...), all correct when an admin
+            // submits the tickets form, but wrong here: this write only
+            // wants to persist a cached wc_variation_id onto rows that
+            // already went through get()'s normalize(). Routing it through
+            // save() anyway silently renamed a blank-labeled tier to
+            // "Registration" — on the storefront, the variation description
+            // and the checkout heading — the first time any sync changed a
+            // variation id. $rows is already the normalized shape save()
+            // itself persists, so this writes the identical structure.
+            \update_post_meta( $event_id, Ticket_Types::META_KEY, \wp_slash( $rows ) );
         }
     }
 

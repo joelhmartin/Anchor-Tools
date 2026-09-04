@@ -278,16 +278,18 @@ class Ticket_Types {
         if ( $id === '' ) {
             $id = self::PRIMARY_ID;
         }
-        // WOO-D40: save() substitutes the same default for a blank label —
-        // applying it here too means the READ path (get()) and the WRITE
-        // path agree from the start, instead of a stored '' label rendering
-        // as '' on the editor until the next sync's write-back silently
-        // renamed it to "Registration" everywhere else (storefront,
-        // variation description, checkout heading) via save().
-        $label = isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '';
+        // NOTE (WOO-D40): normalize() deliberately does NOT substitute the
+        // "Registration" default for a blank label the way save() does — a
+        // blank label on a row that EXISTS is a real, visible authoring gap
+        // (Roster::tier_label() reads it to distinguish "blank label" from
+        // "the row is gone entirely", falling back to the raw tier id only
+        // for the former). WOO-D40 is fixed at the write side instead: see
+        // Product_Sync::write_back_variation_ids(), which used to round-trip
+        // through save() (applying its label default) merely to update a
+        // cached wc_variation_id.
         return [
             'id'              => $id,
-            'label'           => $label !== '' ? $label : \__( 'Registration', 'anchor-schema' ),
+            'label'           => isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '',
             'price'           => $this->to_price( $row['price'] ?? '' ),
             'quota'           => isset( $row['quota'] ) ? \max( 0, (int) $row['quota'] ) : 0,
             'sale_start'      => isset( $row['sale_start'] ) ? $this->sanitize_date( (string) $row['sale_start'] ) : '',

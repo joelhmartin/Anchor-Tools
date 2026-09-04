@@ -319,4 +319,27 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		$this->assertSame( 0, (int) $this->product_sync()->sync_event( $event_id ) );
 		$this->assertSame( 'draft', get_post_status( $product_id ) );
 	}
+
+	/**
+	 * WOO-D40: write_back_variation_ids() persists the wc_variation_id DIRECTLY
+	 * rather than through Ticket_Types::save() — save() is the authoring
+	 * sanitizer and substitutes "Registration" for a blank label, which used
+	 * to rename a blank-labeled tier the first time any sync changed its
+	 * variation id.
+	 */
+	public function test_sync_does_not_rename_a_blank_labeled_tier_to_registration() {
+		$event_id = $this->make_event();
+		update_post_meta(
+			$event_id,
+			Anchor\Events\Ticket_Types::META_KEY,
+			[ [ 'id' => 'blank1', 'label' => '', 'price' => '10', 'quota' => 0, 'sale_start' => '', 'sale_end' => '', 'active' => true, 'wc_variation_id' => 0 ] ]
+		);
+
+		$product_id = $this->product_sync()->sync_event( $event_id );
+		$this->assertGreaterThan( 0, $product_id );
+
+		$stored = $this->ticket_types()->find( $event_id, 'blank1' );
+		$this->assertSame( '', $stored['label'], 'The write-back must not silently apply save()\'s label default.' );
+		$this->assertGreaterThan( 0, $stored['wc_variation_id'], 'The variation id must still be persisted.' );
+	}
 }

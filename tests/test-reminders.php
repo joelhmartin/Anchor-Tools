@@ -233,6 +233,49 @@ class Test_Reminders extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * finding-7 — the override scan (above) carried no_found_rows but no row
+	 * ceiling, so a site with a very large number of in-window overrides ran
+	 * a fully unbounded query every hour. A hit ceiling must be logged once
+	 * per sweep, not once per event, via the reminder_scan_truncated code.
+	 */
+	public function test_a_hit_scan_ceiling_is_logged_once_per_sweep() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$first  = $this->future_event( time() + 5 * DAY_IN_SECONDS, 'Override A' );
+		$second = $this->future_event( time() + 6 * DAY_IN_SECONDS, 'Override B' );
+		update_post_meta( $first, '_anchor_event_reminder_offsets', '3' );
+		update_post_meta( $second, '_anchor_event_reminder_offsets', '3' );
+
+		$cap = static function () {
+			return 1; // Smaller than the two matching events above.
+		};
+		add_filter( 'anchor_events_reminder_override_scan_limit', $cap );
+		try {
+			$this->module()->run_reminder_sweep();
+		} finally {
+			remove_filter( 'anchor_events_reminder_override_scan_limit', $cap );
+		}
+
+		$log   = get_option( Events_Log::ERROR_OPTION, [] );
+		$codes = is_array( $log ) ? array_column( $log, 'code' ) : [];
+		$this->assertSame( 1, count( array_keys( $codes, 'reminder_scan_truncated', true ) ), 'Exactly one truncation entry per sweep.' );
+	}
+
+	/** A scan that never hits the ceiling logs nothing. */
+	public function test_a_scan_under_the_ceiling_logs_no_truncation() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$event_id = $this->future_event( time() + 5 * DAY_IN_SECONDS, 'Override A' );
+		update_post_meta( $event_id, '_anchor_event_reminder_offsets', '3' );
+
+		$this->module()->run_reminder_sweep();
+
+		$log   = get_option( Events_Log::ERROR_OPTION, [] );
+		$codes = is_array( $log ) ? array_column( $log, 'code' ) : [];
+		$this->assertNotContains( 'reminder_scan_truncated', $codes );
+	}
+
+	/**
 	 * ...and an offset outside the horizon is not stored in the first place,
 	 * so what an author sees saved is what the sweep will honour rather than a
 	 * number that silently means "no reminder".

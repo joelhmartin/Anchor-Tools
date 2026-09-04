@@ -195,6 +195,17 @@ class Module {
     const REMINDER_HORIZON_DAYS = 366;
 
     /**
+     * finding-7 — ceiling on the per-event reminder-override scan inside
+     * run_reminder_sweep() (the query that widens $max_global for events with
+     * their OWN reminder_offsets, bounded to the next REMINDER_HORIZON_DAYS
+     * days). That query already carried no_found_rows but posts_per_page=>-1,
+     * so a site with an unusually large number of events carrying an override
+     * inside the window still ran an unbounded query every hour. Filterable
+     * via `anchor_events_reminder_override_scan_limit` for tests.
+     */
+    const REMINDER_OVERRIDE_SCAN_LIMIT = 500;
+
+    /**
      * Event starts kept in a lifecycle-email marker map (audit MODEL-D16).
      * Keeping the recent ones is what makes "moved away and back again" not
      * re-send; a repeatedly rescheduled event still cannot grow meta for ever.
@@ -769,11 +780,13 @@ class Module {
         // the scan asks only about future events — and never looks further
         // ahead than REMINDER_HORIZON_DAYS whatever an offset claims.
         if ( ! empty( $settings['reminder_enabled'] ) ) {
-            $cap_ts          = $now + ( self::REMINDER_HORIZON_DAYS * DAY_IN_SECONDS );
+            $cap_ts       = $now + ( self::REMINDER_HORIZON_DAYS * DAY_IN_SECONDS );
+            $scan_limit   = (int) \apply_filters( 'anchor_events_reminder_override_scan_limit', self::REMINDER_OVERRIDE_SCAN_LIMIT );
+            $scan_limit   = $scan_limit > 0 ? $scan_limit : self::REMINDER_OVERRIDE_SCAN_LIMIT;
             $override_events = \get_posts( [
                 'post_type'      => self::CPT,
                 'post_status'    => [ 'publish', 'future', 'private' ],
-                'posts_per_page' => -1,
+                'posts_per_page' => $scan_limit,
                 'fields'         => 'ids',
                 'no_found_rows'  => true,
                 'meta_query'     => [
@@ -782,6 +795,13 @@ class Module {
                     [ 'key' => $this->meta_key( 'start_ts' ), 'value' => [ $now, $cap_ts ], 'compare' => 'BETWEEN', 'type' => 'NUMERIC' ],
                 ],
             ] );
+            // finding-7 — a full page means the scan may have missed events past
+            // the ceiling; logged once per sweep (not once per event) so an
+            // operator can raise the limit instead of a silently truncated scan
+            // under-widening $max_global.
+            if ( \count( $override_events ) >= $scan_limit ) {
+                Events_Log::error( 'reminder_scan_truncated', [ 'limit' => $scan_limit ] );
+            }
             foreach ( $override_events as $oid ) {
                 foreach ( array_map( 'intval', explode( ',', (string) \get_post_meta( $oid, $this->meta_key( 'reminder_offsets' ), true ) ) ) as $d ) {
                     $max_global = max( $max_global, $d );

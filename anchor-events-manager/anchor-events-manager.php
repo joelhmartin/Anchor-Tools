@@ -138,6 +138,17 @@ class Module {
     const EMAIL_TEMPLATE_TYPES = [ 'confirmation', 'reminder', 'cancellation', 'roster' ];
 
     /**
+     * The block tokens — regions of the email rendered by this class rather
+     * than authored, so they always carry the stock literal colours and always
+     * go through recolor_email_literals(). See build_registration_email_html().
+     */
+    const EMAIL_BLOCK_TOKENS = [
+        'intro', 'header_image', 'greeting', 'guests_line', 'waitlist_notice',
+        'detail_rows', 'seat_list', 'join_button', 'cta_button', 'cta_button_2',
+        'preheader',
+    ];
+
+    /**
      * Total delivery attempts for one lifecycle email before the retry job is
      * abandoned with a log entry (audit REG-D5). The first send counts as
      * attempt 1, so this is two retries an hour apart, not three.
@@ -3604,6 +3615,11 @@ class Module {
             'attendee_name', 'status', 'join_link', 'event_url', 'site_name', 'event_id',
             'preheader', 'intro', 'greeting', 'header_image', 'guests_line', 'waitlist_notice',
             'detail_rows', 'seat_list', 'cta_button', 'cta_button_2',
+            // REG-D27 — the Email Appearance palette, so a hand-built template
+            // can opt into the site's colours and logo instead of silently
+            // ignoring them.
+            'brand_bg', 'brand_surface', 'brand_heading', 'brand_text',
+            'brand_button', 'brand_button_text', 'logo',
         ];
     }
 
@@ -3671,6 +3687,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'waitlist_notice' => __( 'A note that the recipient is on the waitlist. Empty for everyone else.', 'anchor-schema' ),
             'cta_button'      => __( 'The main button, from the Button field on the left. Empty unless it has both text and a link.', 'anchor-schema' ),
             'cta_button_2'    => __( 'The second button, from the Second button field on the left. Empty unless it has both text and a link.', 'anchor-schema' ),
+            'brand_bg'          => __( 'The Email background colour from Settings. Use it inside a style attribute.', 'anchor-schema' ),
+            'brand_surface'     => __( 'The card colour from Settings — the panel the email sits on.', 'anchor-schema' ),
+            'brand_heading'     => __( 'The heading colour from Settings.', 'anchor-schema' ),
+            'brand_text'        => __( 'The body text colour from Settings.', 'anchor-schema' ),
+            'brand_button'      => __( 'The button colour from Settings.', 'anchor-schema' ),
+            'brand_button_text' => __( 'The colour of the text on a button.', 'anchor-schema' ),
+            'logo'              => __( 'The logo from Settings, as its own table row. Empty when no logo is set.', 'anchor-schema' ),
         ];
     }
 
@@ -3787,7 +3810,22 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
     }
 
-    /** Persist the CTA label/URL pairs posted by the email builder. */
+    /**
+     * Persist the CTA label/URL pairs posted by the email builder.
+     *
+     * REG-D26 — a value equal to the resolved default is DELETED, not written.
+     * The builder shows the default (a virtual event's room link, the event
+     * permalink) as the field's placeholder, but the browser posts whatever is
+     * in the box, and an author who typed over nothing still posts the default
+     * back on the first save of any other field. Writing it froze a live
+     * default into meta: change the event's Zoom URL afterwards and every email
+     * still linked to the old room. Deleting also thaws the events that were
+     * frozen before this fix, on their next save.
+     *
+     * Empty is still written when it DIFFERS from the default: that is the
+     * author clearing the field, which get_email_cta() reads as "deliberately
+     * no button".
+     */
     private function save_email_cta_fields( $post_id, array $src ) {
         // Only when the builder was actually on the page, so a save from any
         // other form cannot blank a button it never rendered.
@@ -3796,20 +3834,57 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
             foreach ( [ 1, 2 ] as $slot ) {
-                $prefix = '_anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
-                $form   = 'anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+                $prefix   = '_anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+                $form     = 'anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+                $defaults = $this->email_cta_defaults( $post_id, $slot );
                 foreach ( [ 'label' => 'sanitize_text_field', 'url' => 'esc_url_raw' ] as $field => $clean ) {
                     $key = $form . $field . '_' . $type;
                     if ( ! isset( $src[ $key ] ) ) {
                         continue;
                     }
-                    $value = \call_user_func( '\\' . $clean, \wp_unslash( $src[ $key ] ) );
-                    // Always written, including empty: an empty value is the
-                    // author saying "no button", which get_email_cta() honours.
-                    \update_post_meta( $post_id, $prefix . $field . '_' . $type, $value );
+                    $value    = (string) \call_user_func( '\\' . $clean, \wp_unslash( $src[ $key ] ) );
+                    $meta_key = $prefix . $field . '_' . $type;
+
+                    if ( $value === '' && ! \metadata_exists( 'post', (int) $post_id, $meta_key ) ) {
+                        // The field showed the default as its PLACEHOLDER, so an
+                        // untouched one posts ''. Writing that would read as
+                        // "deliberately no button" and silently drop the CTA from
+                        // every email the first time any other field is saved —
+                        // which is the same class of bug, in the other direction,
+                        // as the frozen default this fix removes. metadata_exists()
+                        // is the discriminator, exactly as in get_email_cta():
+                        // clearing a field that HAS a value still stores ''.
+                        continue;
+                    }
+
+                    if ( $value === (string) ( $defaults[ $field ] ?? '' ) ) {
+                        // Still the default — keep it a default, so it follows
+                        // the event instead of pinning it to today's value.
+                        \delete_post_meta( $post_id, $meta_key );
+                        continue;
+                    }
+                    \update_post_meta( $post_id, $meta_key, $value );
                 }
             }
         }
+    }
+
+    /**
+     * The default CTA pair one builder field falls back to (REG-D26).
+     *
+     * One resolver for the field's placeholder and for the save path's
+     * "is this still the default?" test — if those two disagreed, the builder
+     * would show one thing and freeze another.
+     *
+     * @param int $event_id
+     * @param int $slot     1 or 2.
+     * @return array{label:string,url:string}
+     */
+    private function email_cta_defaults( $event_id, $slot ) {
+        // Slot 2 has never had a default — it is the optional second button.
+        return ( (int) $slot === 2 )
+            ? [ 'label' => '', 'url' => '' ]
+            : $this->default_email_cta( (int) $event_id );
     }
 
     /**
@@ -3999,7 +4074,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( ! isset( $_POST[ $field ] ) ) {
                 continue; // Metabox not submitted for this type — leave existing meta untouched.
             }
-            $raw      = (string) \wp_unslash( $_POST[ $field ] );
+            // REG-D25 — the doctype is not part of a template (it is emitted on
+            // assembly), so drop it before the "is this still the default?"
+            // comparison as well; otherwise a template that is the default plus
+            // a pasted doctype would be stored as a redundant literal override.
+            $raw      = self::strip_email_doctype( (string) \wp_unslash( $_POST[ $field ] ) );
             $fallback = $this->resolve_email_template( $type, 0 ); // global option -> default constant, no per-event lookup.
 
             if ( \trim( $raw ) === \trim( $fallback ) ) {
@@ -4026,7 +4105,66 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function sanitize_email_template_html( $tpl ) {
-        return (string) \wp_kses( (string) $tpl, $this->get_email_template_allowed_html() );
+        // REG-D25 — the allowlist below cannot express a doctype declaration, so
+        // wp_kses() deletes one silently and every saved template permanently
+        // loses it. Drop it here deliberately instead: the doctype is emitted
+        // once, on assembly, by build_registration_email_html().
+        $tpl = self::strip_email_doctype( (string) $tpl );
+
+        // REG-D27 — safecss_filter_attr() rejects any declaration containing
+        // "}", which is every brand token: `background:{brand_bg}` would be
+        // stripped from the style attribute on save and the palette could never
+        // reach a custom template. Re-test the declaration with the `{token}`
+        // placeholders removed; braces cannot terminate an attribute, and an
+        // unknown token survives expansion as inert text.
+        $allow_tokens = function ( $allow_css, $css_test_string ) {
+            if ( $allow_css ) {
+                return $allow_css;
+            }
+            $stripped = \preg_replace( '/\{[a-z0-9_]+\}/', '', (string) $css_test_string );
+            return \is_string( $stripped ) && 0 === \preg_match( '%[\\\(&=}]|/\*%', $stripped );
+        };
+
+        \add_filter( 'safecss_filter_attr_allow_css', $allow_tokens, 10, 2 );
+        try {
+            return (string) \wp_kses( $tpl, $this->get_email_template_allowed_html() );
+        } finally {
+            \remove_filter( 'safecss_filter_attr_allow_css', $allow_tokens, 10 );
+        }
+    }
+
+    /**
+     * Remove a leading `<!DOCTYPE ...>` declaration (REG-D25).
+     *
+     * One source of truth for the doctype: it is never stored in a template
+     * (kses cannot keep it) and never carried by the default shell — it is
+     * added back by email_document_html() when the assembled email is a full
+     * HTML document.
+     *
+     * @param string $html
+     * @return string
+     */
+    private static function strip_email_doctype( $html ) {
+        $out = \preg_replace( '/^\s*<!doctype[^>]*>[ \t]*(?:\r\n|\n|\r)?/i', '', (string) $html );
+        return \is_string( $out ) ? $out : (string) $html;
+    }
+
+    /**
+     * Emit the doctype for an assembled email (REG-D25).
+     *
+     * Only for a template that is a whole document: a fragment override (a
+     * bare `<div>`, or a single `{detail_rows}`) is not a document and must
+     * not grow a doctype it never had.
+     *
+     * @param string $html
+     * @return string
+     */
+    private static function email_document_html( $html ) {
+        $html = self::strip_email_doctype( $html );
+        if ( ! \preg_match( '/<html\b/i', $html ) ) {
+            return $html;
+        }
+        return "<!DOCTYPE html>\n" . $html;
     }
 
     /**
@@ -7132,34 +7270,56 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     </button>
 
                                     <?php
-                                    $cta_defaults = $this->default_email_cta( $event_id );
-                                    $cta1 = $this->get_email_cta( $event_id, $type, 1, $cta_defaults );
-                                    $cta2 = $this->get_email_cta( $event_id, $type, 2 );
+                                    /**
+                                     * REG-D26 — the resolved default is the PLACEHOLDER, never the
+                                     * value. Printing it into value= meant the browser posted it
+                                     * back and save_email_cta_fields() wrote it as explicit meta on
+                                     * the first save, freezing a default that was designed to stay
+                                     * live (a virtual event's room link would keep pointing at the
+                                     * old room after the URL changed).
+                                     */
+                                    $cta_fields = [];
+                                    foreach ( [ 1, 2 ] as $cta_slot ) {
+                                        $cta_prefix   = '_anchor_event_email_cta' . ( $cta_slot === 2 ? '2' : '' ) . '_';
+                                        $cta_defaults = $this->email_cta_defaults( $event_id, $cta_slot );
+                                        foreach ( [ 'label', 'url' ] as $cta_field ) {
+                                            $cta_key = $cta_prefix . $cta_field . '_' . $type;
+                                            $cta_set = $event_id && \metadata_exists( 'post', (int) $event_id, $cta_key );
+                                            $cta_fields[ $cta_slot ][ $cta_field ] = [
+                                                'value'       => $cta_set ? (string) \get_post_meta( (int) $event_id, $cta_key, true ) : '',
+                                                'placeholder' => (string) ( $cta_defaults[ $cta_field ] ?? '' ),
+                                            ];
+                                        }
+                                    }
+                                    $cta_hint = [
+                                        'label' => __( 'Button text', 'anchor-schema' ),
+                                        'url'   => 'https://',
+                                    ];
                                     ?>
                                     <label for="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Button', 'anchor-schema' ); ?></label>
                                     <div class="anchor-event-email-cta">
                                         <input type="text" id="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"
-                                            value="<?php echo esc_attr( $cta1['label'] ); ?>"
-                                            placeholder="<?php echo esc_attr__( 'Button text', 'anchor-schema' ); ?>" />
+                                            value="<?php echo esc_attr( $cta_fields[1]['label']['value'] ); ?>"
+                                            placeholder="<?php echo esc_attr( $cta_fields[1]['label']['placeholder'] !== '' ? $cta_fields[1]['label']['placeholder'] : $cta_hint['label'] ); ?>" />
                                         <input type="url" id="anchor_event_email_cta_url_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta_url_<?php echo esc_attr( $type ); ?>"
-                                            value="<?php echo esc_attr( $cta1['url'] ); ?>"
-                                            placeholder="https://" />
+                                            value="<?php echo esc_attr( $cta_fields[1]['url']['value'] ); ?>"
+                                            placeholder="<?php echo esc_attr( $cta_fields[1]['url']['placeholder'] !== '' ? $cta_fields[1]['url']['placeholder'] : $cta_hint['url'] ); ?>" />
                                     </div>
 
                                     <label for="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Second button', 'anchor-schema' ); ?></label>
                                     <div class="anchor-event-email-cta">
                                         <input type="text" id="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"
-                                            value="<?php echo esc_attr( $cta2['label'] ); ?>"
-                                            placeholder="<?php echo esc_attr__( 'Button text', 'anchor-schema' ); ?>" />
+                                            value="<?php echo esc_attr( $cta_fields[2]['label']['value'] ); ?>"
+                                            placeholder="<?php echo esc_attr( $cta_hint['label'] ); ?>" />
                                         <input type="url" id="anchor_event_email_cta2_url_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta2_url_<?php echo esc_attr( $type ); ?>"
-                                            value="<?php echo esc_attr( $cta2['url'] ); ?>"
-                                            placeholder="https://" />
+                                            value="<?php echo esc_attr( $cta_fields[2]['url']['value'] ); ?>"
+                                            placeholder="<?php echo esc_attr( $cta_hint['url'] ); ?>" />
                                     </div>
-                                    <p class="anchor-event-hint"><?php echo esc_html__( 'A button shows only when it has both text and a link. Clear either one to remove it.', 'anchor-schema' ); ?></p>
+                                    <p class="anchor-event-hint"><?php echo esc_html__( 'A button shows only when it has both text and a link. Grey text is the default this event falls back to — fill a field in to override it, or clear a filled-in field to remove the button.', 'anchor-schema' ); ?></p>
 
                                     <?php
                                     /**
@@ -7211,7 +7371,22 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                         <span class="anchor-event-email-note"><?php echo esc_html__( 'Preview fills empty tokens with sample data, and shows text regions a given recipient might not get.', 'anchor-schema' ); ?></span>
                                     </div>
                                     <iframe class="anchor-event-email-frame" title="<?php echo esc_attr( sprintf( __( '%s email preview', 'anchor-schema' ), $label ) ); ?>"></iframe>
-                                    <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
+                                    <?php $email_template = $this->resolve_email_template( $type, $event_id ); ?>
+                                    <?php if ( ! $this->template_uses_brand_tokens( $email_template ) ) : ?>
+                                        <?php
+                                        /**
+                                         * REG-D27 — this template opts into none of the appearance
+                                         * tokens, so the colours and logo set in Settings reach it
+                                         * only if it still contains the stock literal colours. Say
+                                         * so here rather than let the branding silently apply to
+                                         * nothing.
+                                         */
+                                        ?>
+                                        <p class="anchor-event-hint anchor-event-email-appearance-warning">
+                                            <?php echo esc_html__( 'This email uses its own HTML, so the colours and logo set in Settings may not reach it. Use the {brand_bg}, {brand_surface}, {brand_heading}, {brand_text}, {brand_button}, {brand_button_text} and {logo} tokens to opt back in.', 'anchor-schema' ); ?>
+                                        </p>
+                                    <?php endif; ?>
+                                    <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $email_template ); ?></textarea>
                                 </div>
                             </div>
                             <div class="anchor-event-email-modal__foot">
@@ -11411,23 +11586,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      */
     private static function default_email_shell() {
         return <<<'ANCHOR_EVENTS_EMAIL_SHELL'
-        <!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width,initial-scale=1" />
             <title>{event_title}</title>
         </head>
-        <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+        <body style="margin:0;padding:0;background:{brand_bg};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
             {preheader}
-            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{brand_bg};padding:24px 12px;">
                 <tr>
                     <td align="center">
-                        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
+                        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:{brand_surface};border-radius:8px;overflow:hidden;">
+                            {logo}
                             {header_image}
                             <tr>
                                 <td style="padding:28px 32px 8px;">
-                                    <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">{event_title}</h1>
+                                    <h1 style="margin:0;font-size:24px;line-height:1.3;color:{brand_heading};">{event_title}</h1>
                                 </td>
                             </tr>
                             <tr>
@@ -11490,20 +11665,26 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // resolve_email_template( $type, 0 ) inside save_email_templates(),
         // etc. — always sees this as null and this branch never runs.
         if ( $this->preview_template_override !== null && $this->preview_template_override['type'] === $type ) {
-            return $this->preview_template_override['html'];
+            return self::strip_email_doctype( $this->preview_template_override['html'] );
         }
 
+        // One exit, so REG-D25's doctype strip applies to every source: a stored
+        // per-event override written before this fix, a global option template
+        // pasted in with its own doctype, and the shipped shell alike. The
+        // builder pre-fill, the "reset to default" text and save_email_templates()'s
+        // "is this still the default?" comparison all read through here, so none
+        // of them can disagree about whether a template carries a doctype.
+        $template = '';
         if ( $event_id > 0 ) {
-            $override = (string) \get_post_meta( $event_id, '_anchor_event_email_tpl_' . $type, true );
-            if ( $override !== '' ) {
-                return $override;
-            }
+            $template = (string) \get_post_meta( $event_id, '_anchor_event_email_tpl_' . $type, true );
         }
-        $global = $this->get_email_template_option( $type );
-        if ( $global !== '' ) {
-            return $global;
+        if ( $template === '' ) {
+            $template = $this->get_email_template_option( $type );
         }
-        return $this->default_email_template( $type );
+        if ( $template === '' ) {
+            $template = $this->default_email_template( $type );
+        }
+        return self::strip_email_doctype( $template );
     }
 
     /**
@@ -11844,6 +12025,45 @@ ANCHOR_EVENTS_EMAIL_SHELL;
      * @return string
      */
     private function apply_email_appearance( $html, array $settings ) {
+        $html = $this->recolor_email_literals( $html, $settings );
+
+        $logo = $this->email_logo_row( $settings );
+        if ( $logo === '' ) {
+            return $html;
+        }
+
+        // Anchor on the 600px content table's opening tag, not on its style
+        // attribute: kses rewrites that attribute (and the card color may have
+        // just been swapped above), so matching the full tag string means the
+        // logo silently never renders on any customized template. width="600"
+        // is unique to this table in the shell.
+        $out = \preg_replace_callback(
+            '/<table\b[^>]*\bwidth="600"[^>]*>/',
+            function ( $m ) use ( $logo ) {
+                return $m[0] . $logo;
+            },
+            $html,
+            1
+        );
+
+        return \is_string( $out ) ? $out : $html;
+    }
+
+    /**
+     * The colour half of apply_email_appearance(): rewrite the stock literal
+     * declarations to the configured palette.
+     *
+     * Split out for REG-D27. A template that opts into the {brand_*} tokens
+     * gets its colours from the token layer instead, but the block-token
+     * fragments this class generates (greeting, intro, detail rows, CTA
+     * buttons) still carry the stock literals — they are rendered by PHP, not
+     * authored — so they go through here on every path.
+     *
+     * @param string $html
+     * @param array  $settings
+     * @return string
+     */
+    private function recolor_email_literals( $html, array $settings ) {
         $html = (string) $html;
 
         foreach ( $this->email_appearance_map() as $key => $spec ) {
@@ -11871,32 +12091,89 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             }
         }
 
+        return $html;
+    }
+
+    /**
+     * The logo table row, or '' when no logo is configured.
+     *
+     * One renderer for both placements: the {logo} token (REG-D27) and
+     * apply_email_appearance()'s width="600" anchor, which stays as the
+     * fallback for templates that use none of the tokens.
+     *
+     * @param array $settings
+     * @return string
+     */
+    private function email_logo_row( array $settings ) {
         $logo_url = \esc_url( $settings['email_logo_url'] ?? '' );
         if ( $logo_url === '' ) {
-            return $html;
+            return '';
         }
-
-        $logo = '<tr><td align="center" style="padding:24px 32px 0;">'
+        return '<tr><td align="center" style="padding:24px 32px 0;">'
             . '<img src="' . $logo_url . '" alt="' . esc_attr( \get_bloginfo( 'name' ) ) . '" width="160" style="display:block;max-width:160px;width:100%;height:auto;border:0;" />'
             . '</td></tr>';
+    }
 
-        // Anchor on the 600px content table's opening tag, not on its style
-        // attribute: kses rewrites that attribute (and the card color may have
-        // just been swapped above), so matching the full tag string means the
-        // logo silently never renders on any customized template. width="600"
-        // is unique to this table in the shell. preg_replace_callback (not
-        // preg_replace) because the alt text is the site name, and a site
-        // named e.g. "Cash $1 Co" would otherwise be read as a backreference.
-        $out = \preg_replace_callback(
-            '/<table\b[^>]*\bwidth="600"[^>]*>/',
-            function ( $m ) use ( $logo ) {
-                return $m[0] . $logo;
-            },
-            $html,
-            1
-        );
+    /**
+     * The Email Appearance palette, exposed as template tokens (REG-D27).
+     *
+     * apply_email_appearance() applies the palette by rewriting the stock
+     * literal colour strings, which works only for a template that still
+     * contains them — a hand-built one (production event 7258) uses its own
+     * colours and its own table markup, so the branding settings and the logo
+     * applied to nothing and nothing said so. These tokens are the opt-in a
+     * custom template can use instead.
+     *
+     * The value is the STOCK LITERAL whenever the setting is unset or equal to
+     * it, for the same reason apply_email_appearance() skips an unchanged
+     * setting: an install that never touched Email Appearance must render the
+     * byte-for-byte email it rendered before. Note the spellings are the
+     * markup's (`#111`), not email_appearance_map()'s comparison values
+     * (`#111111`).
+     *
+     * @return array<string,array{0:string,1:string}> token => [ settings key, stock literal ]
+     */
+    private function email_brand_map() {
+        return [
+            'brand_bg'          => [ 'email_background_color', '#f4f4f4' ],
+            'brand_surface'     => [ 'email_card_color', '#ffffff' ],
+            'brand_heading'     => [ 'email_heading_color', '#111' ],
+            'brand_text'        => [ 'email_text_color', '#333' ],
+            'brand_button'      => [ 'email_button_color', '#111' ],
+            // No settings field of its own — the stock button label colour, so a
+            // template that opts in does not have to hard-code white.
+            'brand_button_text' => [ 'email_button_text_color', '#ffffff' ],
+        ];
+    }
 
-        return \is_string( $out ) ? $out : $html;
+    /**
+     * Resolve the {brand_*} and {logo} tokens for one send.
+     *
+     * @param array $settings
+     * @return array<string,string>
+     */
+    private function email_brand_tokens( array $settings ) {
+        $tokens = [];
+        foreach ( $this->email_brand_map() as $token => $spec ) {
+            list( $key, $stock ) = $spec;
+            $value = \sanitize_hex_color( $settings[ $key ] ?? '' );
+            $tokens[ $token ] = ( $value && $this->normalize_hex_color( $value ) !== $this->normalize_hex_color( $stock ) )
+                ? $value
+                : $stock;
+        }
+        $tokens['logo'] = $this->email_logo_row( $settings );
+        return $tokens;
+    }
+
+    /** Whether $template opts into the appearance token layer (REG-D27). */
+    private function template_uses_brand_tokens( $template ) {
+        $template = (string) $template;
+        foreach ( \array_merge( \array_keys( $this->email_brand_map() ), [ 'logo' ] ) as $token ) {
+            if ( \strpos( $template, '{' . $token . '}' ) !== false ) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -12112,8 +12389,36 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             $scalars
         ) );
 
-        $html = $this->expand_email_tokens( $template, $tokens );
-        $html = $this->apply_email_appearance( $html, $this->get_settings() );
+        // REG-D27 — two ways the Email Appearance palette reaches the email, and
+        // exactly one of them runs. A template that opts into the {brand_*}/
+        // {logo} tokens gets the palette through the same token layer as
+        // everything else; one that does not falls back to
+        // apply_email_appearance()'s literal rewrite, so an install that never
+        // customized its template renders byte-for-byte what it always did.
+        //
+        // The block tokens above are markup this class generates with the stock
+        // literals baked in, so on the token path they still need the rewrite —
+        // otherwise opting a template in would silently stop recolouring the
+        // greeting, the detail rows and the CTA buttons.
+        $email_settings = $this->get_settings();
+        $tokens         = \array_merge( $tokens, $this->email_brand_tokens( $email_settings ) );
+
+        if ( $this->template_uses_brand_tokens( $template ) ) {
+            foreach ( self::EMAIL_BLOCK_TOKENS as $block ) {
+                if ( isset( $tokens[ $block ] ) && $tokens[ $block ] !== '' ) {
+                    $tokens[ $block ] = $this->recolor_email_literals( $tokens[ $block ], $email_settings );
+                }
+            }
+            $html = $this->expand_email_tokens( $template, $tokens );
+        } else {
+            $html = $this->expand_email_tokens( $template, $tokens );
+            $html = $this->apply_email_appearance( $html, $email_settings );
+        }
+
+        // REG-D25 — the doctype belongs to the assembled document, not to the
+        // stored template: the kses allowlist cannot express one, so every
+        // saved template loses it and the mail renders in quirks mode.
+        $html = self::email_document_html( $html );
 
         return \apply_filters( 'anchor_events_registration_email_html', $html, $ctx );
     }

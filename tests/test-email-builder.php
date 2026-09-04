@@ -419,4 +419,339 @@ class Test_Email_Builder extends Anchor_Events_TestCase {
 		$this->assertTrue( $response['success'] );
 		$this->assertStringContainsString( 'Full Endpoint Event', $response['data']['html'] );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * REG-D25 — the doctype survives a saved template.
+	 *
+	 * The kses allowlist cannot express a doctype declaration, so a template
+	 * that carries one loses it permanently on save (production event 7258's
+	 * four stored templates all begin with whitespace then <html>). The fix
+	 * moves the doctype OUT of the stored/edited document and emits it at the
+	 * assembly point, so there is exactly one source of truth for it.
+	 * ------------------------------------------------------------------- */
+
+	/** A stock event's email is a complete HTML document — doctype included, exactly once. */
+	public function test_default_email_is_emitted_with_a_doctype() {
+		$event_id = $this->make_event( [ 'title' => 'Doctype Event' ] );
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+
+		$this->assertStringStartsWith( '<!DOCTYPE html>', $html );
+		$this->assertSame( 1, substr_count( strtoupper( $html ), '<!DOCTYPE' ) );
+	}
+
+	/** The template the builder pre-fills (and stores) carries no doctype of its own. */
+	public function test_resolved_template_carries_no_doctype() {
+		$event_id = $this->make_event();
+
+		$this->assertStringNotContainsStringIgnoringCase(
+			'<!DOCTYPE',
+			$this->module()->resolve_email_template( 'confirmation', $event_id )
+		);
+		$this->assertStringNotContainsStringIgnoringCase(
+			'<!DOCTYPE',
+			$this->module()->default_email_template( 'confirmation' )
+		);
+	}
+
+	/**
+	 * The 7258 signature: a hand-built full-document override, saved through
+	 * the builder with a leading doctype. The doctype is not stored (kses
+	 * cannot express it), but the sent email still has one.
+	 */
+	public function test_saved_full_document_override_still_sends_with_a_doctype() {
+		$event_id = $this->make_event( [ 'title' => 'Override Doctype Event' ] );
+
+		$submitted = "<!DOCTYPE html>\n<html><head><title>{event_title}</title></head>"
+			. '<body style="background:#0b1220"><p>Hand built</p></body></html>';
+
+		$_POST = $this->post_payload( [ 'anchor_email_tpl_confirmation' => $submitted ] );
+		$this->module()->save_meta( $event_id );
+
+		$stored = get_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', true );
+		$this->assertStringNotContainsStringIgnoringCase( '<!DOCTYPE', $stored, 'The doctype is not stored — it is emitted on assembly.' );
+		$this->assertStringStartsWith( '<html', $stored );
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+		$this->assertStringStartsWith( '<!DOCTYPE html>', $html );
+		$this->assertSame( 1, substr_count( strtoupper( $html ), '<!DOCTYPE' ) );
+	}
+
+	/** A fragment override is not a document, so it gets no doctype (unchanged behaviour). */
+	public function test_fragment_override_gets_no_doctype() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '<div id="custom">{event_title}</div>' );
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+
+		$this->assertStringNotContainsStringIgnoringCase( '<!DOCTYPE', $html );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * REG-D26 — the resolved default stays a live default.
+	 * ------------------------------------------------------------------- */
+
+	/** Invoke the private CTA save path with a $_POST-shaped array. */
+	private function save_cta( $event_id, array $src ) {
+		$method = new ReflectionMethod( Module::class, 'save_email_cta_fields' );
+		$method->setAccessible( true );
+		$method->invoke( $this->module(), $event_id, array_merge( [ 'anchor_event_email_cta_present' => '1' ], $src ) );
+	}
+
+	/**
+	 * The defect: the builder posts the resolved default back, the save path
+	 * writes it as explicit meta, and the "live default" is frozen. Change the
+	 * event's Zoom URL afterwards and every email still links to the old room.
+	 */
+	public function test_posting_the_resolved_default_writes_no_cta_meta() {
+		$event_id = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://zoom.test/room-one' ] );
+
+		$this->save_cta( $event_id, [
+			'anchor_event_email_cta_label_confirmation' => 'Join the event',
+			'anchor_event_email_cta_url_confirmation'   => 'https://zoom.test/room-one',
+		] );
+
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_email_cta_label_confirmation' ) );
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_email_cta_url_confirmation' ) );
+
+		// The default still follows the event: repoint the room and the email
+		// links to the new one rather than to the URL that was current on save.
+		update_post_meta( $event_id, '_anchor_event_virtual_url', 'https://zoom.test/room-two' );
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+		$this->assertStringContainsString( 'href="https://zoom.test/room-two"', $html );
+		$this->assertStringNotContainsString( 'href="https://zoom.test/room-one"', $html );
+	}
+
+	/** 7258's frozen meta thaws on the next save through the builder. */
+	public function test_saving_thaws_a_previously_frozen_default() {
+		$event_id = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://zoom.test/room-one' ] );
+		update_post_meta( $event_id, '_anchor_event_email_cta_label_confirmation', 'Join the event' );
+		update_post_meta( $event_id, '_anchor_event_email_cta_url_confirmation', 'https://zoom.test/room-one' );
+
+		$this->save_cta( $event_id, [
+			'anchor_event_email_cta_label_confirmation' => 'Join the event',
+			'anchor_event_email_cta_url_confirmation'   => 'https://zoom.test/room-one',
+		] );
+
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_email_cta_label_confirmation' ) );
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_email_cta_url_confirmation' ) );
+	}
+
+	/**
+	 * Clearing a field that HAS a value is still "deliberately no button".
+	 * metadata_exists() is the discriminator, exactly as in get_email_cta().
+	 */
+	public function test_explicitly_emptied_cta_is_stored_as_empty() {
+		$event_id = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://zoom.test/room-one' ] );
+		update_post_meta( $event_id, '_anchor_event_email_cta_label_confirmation', 'Come along' );
+		update_post_meta( $event_id, '_anchor_event_email_cta_url_confirmation', 'https://example.test/come' );
+
+		$this->save_cta( $event_id, [
+			'anchor_event_email_cta_label_confirmation' => '',
+			'anchor_event_email_cta_url_confirmation'   => '',
+		] );
+
+		$this->assertTrue( metadata_exists( 'post', $event_id, '_anchor_event_email_cta_label_confirmation' ) );
+		$this->assertSame( '', get_post_meta( $event_id, '_anchor_event_email_cta_label_confirmation', true ) );
+		$cta = $this->module()->get_email_cta( $event_id, 'confirmation', 1, [ 'label' => 'View event details', 'url' => 'https://example.test/' ] );
+		$this->assertSame( '', $cta['label'], 'Empty meta still means "no button".' );
+	}
+
+	/**
+	 * The other half of the placeholder change, and the one that would have
+	 * been a far worse bug than the frozen default: the builder now renders the
+	 * default as a PLACEHOLDER, so an untouched field posts ''. That must not
+	 * be written — it would read as "deliberately no button" and drop the CTA
+	 * from every email on the first save of any other field.
+	 */
+	public function test_untouched_placeholder_does_not_blank_the_default_cta() {
+		$event_id = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://zoom.test/room-one' ] );
+
+		$this->save_cta( $event_id, [
+			'anchor_event_email_cta_label_confirmation' => '',
+			'anchor_event_email_cta_url_confirmation'   => '',
+			'anchor_event_email_cta2_label_confirmation' => '',
+			'anchor_event_email_cta2_url_confirmation'   => '',
+		] );
+
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_email_cta_label_confirmation' ) );
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_email_cta_url_confirmation' ) );
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+		$this->assertStringContainsString( 'href="https://zoom.test/room-one"', $html );
+		$this->assertStringContainsString( 'Join the event', $html );
+	}
+
+	/** A genuinely customized CTA is written exactly as posted. */
+	public function test_customized_cta_is_stored() {
+		$event_id = $this->make_event();
+
+		$this->save_cta( $event_id, [
+			'anchor_event_email_cta_label_reminder' => 'Get directions',
+			'anchor_event_email_cta_url_reminder'   => 'https://maps.example.test/venue',
+		] );
+
+		$this->assertSame( 'Get directions', get_post_meta( $event_id, '_anchor_event_email_cta_label_reminder', true ) );
+		$this->assertSame( 'https://maps.example.test/venue', get_post_meta( $event_id, '_anchor_event_email_cta_url_reminder', true ) );
+	}
+
+	/** The builder shows the default as a placeholder, not as a value, until the author sets one. */
+	public function test_builder_renders_the_default_cta_as_a_placeholder() {
+		$event_id = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://zoom.test/room-one' ] );
+
+		$method = new ReflectionMethod( Module::class, 'render_event_manager_form' );
+		$method->setAccessible( true );
+		$html = $method->invoke( $this->module(), $event_id );
+
+		$this->assertStringContainsString( 'placeholder="https://zoom.test/room-one"', $html );
+		$this->assertStringContainsString( 'placeholder="Join the event"', $html );
+
+		// The CTA inputs themselves carry an EMPTY value — printing the default
+		// there is what the browser posts back and what freezes it on save.
+		// (The event's own Virtual URL field legitimately holds the same string,
+		// so match the CTA inputs specifically.)
+		$this->assertMatchesRegularExpression(
+			'/name="anchor_event_email_cta_url_confirmation"\s*\n?\s*value=""/',
+			$html,
+			'The default must not be printed into the CTA value= attribute.'
+		);
+		$this->assertMatchesRegularExpression(
+			'/name="anchor_event_email_cta_label_confirmation"\s*\n?\s*value=""/',
+			$html
+		);
+	}
+
+	/* ---------------------------------------------------------------------
+	 * REG-D27 — appearance settings reach a custom template through tokens.
+	 * ------------------------------------------------------------------- */
+
+	private function set_appearance() {
+		update_option( Module::OPTION_KEY, [
+			'email_logo_url'         => 'https://example.test/logo.png',
+			'email_background_color' => '#0b1220',
+			'email_card_color'       => '#101820',
+			'email_text_color'       => '#e5e7eb',
+			'email_heading_color'    => '#f9fafb',
+			'email_button_color'     => '#b91c1c',
+		], false );
+	}
+
+	/** Brace tokens inside a style attribute must survive the email-safe kses. */
+	public function test_brand_tokens_survive_the_email_kses() {
+		$event_id = $this->make_event();
+
+		$_POST = $this->post_payload( [
+			'anchor_email_tpl_confirmation' => '<div style="background:{brand_bg};color:{brand_text}">{logo}{intro}</div>',
+		] );
+		$this->module()->save_meta( $event_id );
+
+		$stored = get_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', true );
+		$this->assertStringContainsString( '{brand_bg}', $stored );
+		$this->assertStringContainsString( '{brand_text}', $stored );
+		$this->assertStringContainsString( '{logo}', $stored );
+	}
+
+	/** A hand-built template that opts in gets the palette and the logo. */
+	public function test_brand_tokens_resolve_from_the_appearance_settings() {
+		$this->set_appearance();
+		$event_id = $this->make_event( [ 'title' => 'Token Branding Event' ] );
+		update_post_meta(
+			$event_id,
+			'_anchor_event_email_tpl_confirmation',
+			'<html><body style="background:{brand_bg}"><table width="700"><tr><td>own markup</td></tr>{logo}</table>'
+				. '<p style="color:{brand_text}">{event_title}</p>'
+				. '<a style="background:{brand_button};color:{brand_button_text}">go</a></body></html>'
+		);
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+
+		$this->assertStringContainsString( 'background:#0b1220', $html );
+		$this->assertStringContainsString( 'color:#e5e7eb', $html );
+		$this->assertStringContainsString( 'background:#b91c1c', $html );
+		$this->assertStringContainsString( 'https://example.test/logo.png', $html );
+		$this->assertStringNotContainsString( '{brand_bg}', $html );
+		$this->assertStringNotContainsString( '{logo}', $html );
+
+		delete_option( Module::OPTION_KEY );
+	}
+
+	/** With no logo configured, {logo} renders nothing rather than a broken image. */
+	public function test_logo_token_is_empty_without_a_logo_setting() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '<div id="c">[{logo}]</div>' );
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+
+		$this->assertStringContainsString( '[]', $html );
+	}
+
+	/** The literal rewrite stays as the fallback for templates that use none of the tokens. */
+	public function test_literal_rewrite_still_applies_to_token_less_templates() {
+		$this->set_appearance();
+		$event_id = $this->make_event();
+		update_post_meta(
+			$event_id,
+			'_anchor_event_email_tpl_confirmation',
+			'<html><body style="background:#f4f4f4"><table width="600"><tr><td>{intro}</td></tr></table></body></html>'
+		);
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Jane',
+			'status'   => 'confirmed',
+			'type'     => 'confirmation',
+		] );
+
+		$this->assertStringContainsString( 'background:#0b1220', $html );
+		$this->assertStringContainsString( 'https://example.test/logo.png', $html );
+
+		delete_option( Module::OPTION_KEY );
+	}
+
+	/** The builder says so when the template can never pick up the appearance settings. */
+	public function test_builder_warns_when_a_template_uses_no_brand_tokens() {
+		$event_id = $this->make_event();
+		$method   = new ReflectionMethod( Module::class, 'render_event_manager_form' );
+		$method->setAccessible( true );
+
+		$this->assertStringNotContainsString( 'anchor-event-email-appearance-warning', $method->invoke( $this->module(), $event_id ) );
+
+		update_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', '<div id="own">{intro}</div>' );
+		$this->assertStringContainsString( 'anchor-event-email-appearance-warning', $method->invoke( $this->module(), $event_id ) );
+	}
 }

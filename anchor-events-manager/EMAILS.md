@@ -173,6 +173,36 @@ a custom template can't become a stored-injection vector):
 | `{seat_list}` | A list of named seats (multi-seat orders) |
 | `{join_button}` | A styled "Join" button linking `{join_link}`, when set |
 | `{cta_button}` | A styled call-to-action button (e.g. "View event details") |
+| `{cta_button_2}` | The optional second call-to-action button |
+| `{logo}` | The Email Appearance logo, as its own table row. Empty when no logo is set |
+
+**Appearance tokens** (REG-D27). The Email Appearance settings are otherwise
+applied by rewriting the stock literal colour strings in the rendered HTML, which
+reaches only a template that still contains them — a hand-built template using its
+own colours and its own table markup silently ignored the branding, logo included.
+These tokens are the opt-in:
+
+| Token | Resolves to |
+|---|---|
+| `{brand_bg}` | `email_background_color` (stock `#f4f4f4`) |
+| `{brand_surface}` | `email_card_color` (stock `#ffffff`) |
+| `{brand_heading}` | `email_heading_color` (stock `#111`) |
+| `{brand_text}` | `email_text_color` (stock `#333`) |
+| `{brand_button}` | `email_button_color` (stock `#111`) |
+| `{brand_button_text}` | `email_button_text_color` (stock `#ffffff`; no settings field of its own) |
+
+Each resolves to the **stock literal** when its setting is unset or equal to it, so
+an install that never touched Email Appearance renders byte-for-byte what it always
+did. A template that uses at least one of these (or `{logo}`) opts out of the literal
+rewrite entirely; one that uses none keeps it, and the Emails builder shows an inline
+warning that the appearance settings may not reach it.
+
+**The doctype is not part of a template** (REG-D25). The kses allowlist cannot express
+a `<!DOCTYPE>` declaration, so one stored in a template was deleted on every save and
+the mail rendered in quirks mode. It is stripped on the way in
+(`sanitize_email_template_html()`, `resolve_email_template()`) and emitted once by
+`build_registration_email_html()` when the assembled email is a whole document — a
+fragment override never grows one.
 
 The **token-insert palette** in the Emails builder UI offers a curated subset of the
 above (`event_title`, `event_date`, `event_time`, `venue`, `attendee_name`,

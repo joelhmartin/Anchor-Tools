@@ -241,6 +241,20 @@ class Test_Roster extends Anchor_Events_TestCase {
 	}
 
 	/* -----------------------------------------------------------------
+	 * REG-D33 — one status list, not two
+	 * --------------------------------------------------------------- */
+
+	public function test_the_status_select_offers_every_status_the_model_accepts() {
+		$options = $this->module()->roster->status_options();
+
+		$this->assertSame( Registrations::STATUSES, array_keys( $options ) );
+		foreach ( Registrations::STATUSES as $status ) {
+			$this->assertTrue( $this->registrations()->valid_status( $status ) );
+			$this->assertNotSame( '', (string) $options[ $status ] );
+		}
+	}
+
+	/* -----------------------------------------------------------------
 	 * REG-D13 — the status filter links are actually rendered
 	 * --------------------------------------------------------------- */
 

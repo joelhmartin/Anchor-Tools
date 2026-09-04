@@ -1009,8 +1009,20 @@ class Roster {
             : (string) $key;
     }
 
+    /**
+     * The status <select> offered by the roster edit form and the front-end
+     * console, and the label map status_label() reads.
+     *
+     * REG-D33 — built FROM Registrations::STATUSES rather than re-listed here.
+     * The two lists used to be maintained separately, and a seat whose status
+     * was not among the options got silently rewritten to the first option on
+     * save: the browser selects option one when nothing matches, and "Save
+     * seat" then posted `confirmed` without the operator choosing it. A status
+     * the model accepts but this map has no label for still gets an option,
+     * labelled from its own key, so the drift can no longer eat a value.
+     */
     public function status_options() {
-        return [
+        $labels = [
             Registrations::STATUS_CONFIRMED => \__( 'Confirmed', 'anchor-schema' ),
             Registrations::STATUS_PENDING   => \__( 'Pending', 'anchor-schema' ),
             Registrations::STATUS_WAITLIST  => \__( 'Waitlist', 'anchor-schema' ),
@@ -1018,6 +1030,11 @@ class Roster {
             Registrations::STATUS_REFUNDED  => \__( 'Refunded', 'anchor-schema' ),
             Registrations::STATUS_FAILED    => \__( 'Failed', 'anchor-schema' ),
         ];
+        $options = [];
+        foreach ( Registrations::STATUSES as $status ) {
+            $options[ $status ] = $labels[ $status ] ?? \ucfirst( \str_replace( '_', ' ', (string) $status ) );
+        }
+        return $options;
     }
 
     /** Human label for a status. */

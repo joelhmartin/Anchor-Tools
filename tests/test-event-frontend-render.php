@@ -12,15 +12,6 @@
  * @package Anchor\Events\Tests
  */
 
-// RENDER-D21: a minimal stand-in for Yoast's own frontend class, so the
-// canonical-emission tests below can flip class_exists( 'WPSEO_Frontend' )
-// to true without needing the real plugin installed. Nothing else in this
-// suite checks for WPSEO_Frontend, so declaring it here is inert everywhere
-// but the tests that specifically look for it.
-if ( ! class_exists( 'WPSEO_Frontend' ) ) {
-	class WPSEO_Frontend {}
-}
-
 use Anchor\Events\Series;
 
 /**
@@ -205,12 +196,36 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 
 	/**
 	 * RENDER-D21: output_canonical_url() must stay silent when an SEO plugin
-	 * that already emits its own canonical tag is active — Yoast here, via
-	 * class_exists( 'WPSEO_Frontend' ). Before the fix this echoed
+	 * that already emits its own canonical tag is active (Yoast, Rank Math,
+	 * All in One SEO or SEOPress — should_emit_canonical() ORs four
+	 * class_exists()/defined() checks together). Before the fix this echoed
 	 * unconditionally, so a Yoast site got two <link rel="canonical"> tags on
 	 * a `?anchor_events_month=` URL.
+	 *
+	 * Item 5 (final fix wave) — this coverage used to fake detection with a
+	 * `class WPSEO_Frontend {}` stand-in declared at FILE SCOPE, so
+	 * `class_exists( 'WPSEO_Frontend' )` was true for the rest of the suite
+	 * from the moment this file loaded, not just for the one test that
+	 * needed it. That made EVERY canonical test in the suite — including
+	 * the two filter tests below — exercise the "SEO plugin detected"
+	 * branch, and the actual default happy path (no SEO plugin, our tag
+	 * emitted) was never covered by anything. A PHP class declaration can't
+	 * be un-declared once made, and `@runInSeparateProcess` is not viable in
+	 * this suite (see test-email-builder.php's ensure_ajax_die_is_catchable()
+	 * docblock — process isolation fails outright, "Serialization of
+	 * 'Closure' is not allowed", given this suite's fixtures). The stub is
+	 * gone; the class_exists()/defined() OR-chain itself is accepted as
+	 * untested (none of its four markers exist in this environment, and
+	 * faking any of them the same way would reproduce the identical leak),
+	 * and coverage instead moves to what it gates: the default with nothing
+	 * detected (below) and the operator override in both directions (the
+	 * two filter tests that follow).
 	 */
-	public function test_output_canonical_url_is_silent_when_yoast_is_active() {
+	public function test_output_canonical_url_emits_by_default_with_no_seo_plugin_active() {
+		$this->assertFalse(
+			class_exists( 'WPSEO_Frontend' ) || defined( 'RANK_MATH_VERSION' ) || defined( 'AIOSEO_VERSION' ) || defined( 'SEOPRESS_VERSION' ),
+			'Fixture invalid: a real SEO-plugin marker is present, so this is no longer the happy path.'
+		);
 		$_GET['anchor_events_month'] = '2026-10';
 
 		ob_start();
@@ -219,10 +234,14 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 
 		unset( $_GET['anchor_events_month'] );
 
-		$this->assertSame( '', $html, 'output_canonical_url() must not print a tag when Yoast (WPSEO_Frontend) is active.' );
+		$this->assertStringContainsString(
+			'<link rel="canonical"',
+			$html,
+			'With no SEO plugin detected and no filter override, this module must print its own fallback canonical tag.'
+		);
 	}
 
-	/** The `anchor_events_emit_canonical` filter can force our own tag back on even with an SEO plugin detected. */
+	/** The `anchor_events_emit_canonical` filter can force our own tag on even with no SEO plugin detected. */
 	public function test_output_canonical_url_filter_can_force_emission() {
 		$_GET['anchor_events_month'] = '2026-10';
 		add_filter( 'anchor_events_emit_canonical', '__return_true' );

@@ -114,6 +114,14 @@ class WooCommerce {
         \add_filter( 'woocommerce_add_to_cart_validation', [ $this, 'validate_add_to_cart' ], 10, 4 );
         \add_action( 'woocommerce_check_cart_items', [ $this, 'notice_over_capacity_cart_items' ] );
 
+        // WOO-D18 — snapshot the event id onto the CART item at add-to-cart
+        // time. Without this, get_event_cart_lines() re-derives the event
+        // live on every read; removing the product's link (or trashing the
+        // event) while the cart is still open makes the line stop being an
+        // event line mid-cart — no attendee fields, no capacity check, and a
+        // paid order reconciles as a complete no-op with nothing recorded.
+        \add_filter( 'woocommerce_add_cart_item_data', [ $this, 'snapshot_event_on_add_to_cart' ], 10, 3 );
+
         // Checkout attendee capture (classic shortcode checkout).
         /**
          * Where the per-seat attendee fields render on the checkout.
@@ -1447,8 +1455,39 @@ class WooCommerce {
      * ------------------------------------------------------------------- */
 
     /**
-     * Cart lines that register for an event, keyed by cart_item_key. Uses the
-     * resolver (master toggle respected via event_for_line).
+     * WOO-D18 — snapshot the resolved event id onto the cart item at
+     * add-to-cart time, the way persist_attendees_to_line_item() already
+     * snapshots it onto the ORDER line at checkout. Runs for every add-to-cart
+     * on the store, not just this plugin's own AJAX endpoint, so a purchase
+     * through the legacy product-link escape hatch (or a direct add-to-cart
+     * form on a managed variation) is covered too.
+     *
+     * Hook: woocommerce_add_cart_item_data( array $cart_item_data,
+     *       int $product_id, int $variation_id ).
+     *
+     * @param array $cart_item_data
+     * @param int   $product_id
+     * @param int   $variation_id
+     * @return array
+     */
+    public function snapshot_event_on_add_to_cart( $cart_item_data, $product_id, $variation_id ) {
+        $cart_item_data = \is_array( $cart_item_data ) ? $cart_item_data : [];
+        $event_id       = $this->event_for_line( (int) $product_id, (int) $variation_id );
+        if ( $event_id > 0 ) {
+            $cart_item_data['anchor_event_id'] = $event_id;
+        }
+        return $cart_item_data;
+    }
+
+    /**
+     * Cart lines that register for an event, keyed by cart_item_key.
+     *
+     * WOO-D18: prefers the snapshot taken at add-to-cart time
+     * (snapshot_event_on_add_to_cart()) over the live resolver — an admin
+     * unticking the product's link, re-pointing it, or trashing the event
+     * while the cart is still open must not silently turn the line into a
+     * non-event line (no attendee fields, no capacity check, and a paid order
+     * whose reconcile then skips it with no trace at all).
      *
      * @return array<string,array{cart_item_key:string,product_id:int,variation_id:int,event_id:int,event_title:string,qty:int}>
      */
@@ -1460,7 +1499,10 @@ class WooCommerce {
         foreach ( WC()->cart->get_cart() as $cart_item_key => $item ) {
             $product_id   = (int) ( $item['product_id'] ?? 0 );
             $variation_id = (int) ( $item['variation_id'] ?? 0 );
-            $event_id     = $this->event_for_line( $product_id, $variation_id );
+            $event_id     = isset( $item['anchor_event_id'] ) ? $this->validate_event_id( (int) $item['anchor_event_id'] ) : 0;
+            if ( $event_id <= 0 ) {
+                $event_id = $this->event_for_line( $product_id, $variation_id );
+            }
             if ( $event_id <= 0 ) {
                 continue;
             }
@@ -1790,7 +1832,17 @@ class WooCommerce {
         }
         $product_id   = (int) $item->get_product_id();
         $variation_id = (int) $item->get_variation_id();
-        $event_id     = $this->event_for_line( $product_id, $variation_id );
+        // WOO-D18: prefer the snapshot taken at add-to-cart time — $values is
+        // the cart item array, which carries it when the line was added
+        // through an add-to-cart path (snapshot_event_on_add_to_cart()). The
+        // live resolver is the fallback for a line added before this snapshot
+        // existed, or added programmatically with no cart item data at all.
+        $event_id = ( \is_array( $values ) && isset( $values['anchor_event_id'] ) )
+            ? $this->validate_event_id( (int) $values['anchor_event_id'] )
+            : 0;
+        if ( $event_id <= 0 ) {
+            $event_id = $this->event_for_line( $product_id, $variation_id );
+        }
         if ( $event_id <= 0 ) {
             return;
         }
@@ -1836,9 +1888,15 @@ class WooCommerce {
         }
         // Link snapshot — survives later un-linking; used by reconcile to resolve
         // the event without re-querying live product meta.
+        //
+        // WOO-D7: `_anchor_product_id` / `_anchor_variation_id` used to be
+        // written here too, "for when the link is gone" — but the order ITEM
+        // already carries its own product/variation id via WC_Order_Item_
+        // Product::get_product_id()/get_variation_id() regardless of any
+        // later re-link, so those two keys had zero readers anywhere in the
+        // plugin or theme. Only the event id needs a snapshot, because THAT is
+        // the fact a re-link/un-link can actually change out from under the line.
         $item->update_meta_data( '_anchor_event_id', $event_id );
-        $item->update_meta_data( '_anchor_product_id', $product_id );
-        $item->update_meta_data( '_anchor_variation_id', $variation_id );
     }
 
     /**

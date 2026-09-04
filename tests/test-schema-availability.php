@@ -502,6 +502,54 @@ class Test_Schema_Availability extends Anchor_Events_TestCase {
 		$this->assertSame( 'https://schema.org/EventMovedOnline', $node['eventStatus'] );
 	}
 
+	/**
+	 * finding-16 (carry-over, Task 34 review ruling) — a postponed event with
+	 * OPEN SEATS must not publish InStock at the old date: bookability() now
+	 * resolves 'closed' for a postponed event (same short-circuit cancelled
+	 * already had), so the Offer is omitted entirely in the same node that
+	 * says EventPostponed — never the InStock-while-postponed mismatch the
+	 * audit found.
+	 */
+	public function test_postponed_event_with_open_seats_emits_no_offer_not_instock() {
+		$event = $this->make_event(
+			[
+				'registration_enabled' => true,
+				'registration_mode'    => 'wc',
+				'status_mode'          => 'manual',
+				'status'               => 'postponed',
+				'start_date'           => '2030-01-01',
+				'timezone'             => 'UTC',
+			],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventPostponed', $node['eventStatus'] );
+		$this->assertArrayNotHasKey( 'offers', $node, 'A postponed course has nothing to advertise at the old date.' );
+	}
+
+	/** The ruling's other half: 'moved_online' stays bookable, so its Offer is unaffected. */
+	public function test_moved_online_event_with_open_seats_still_emits_instock() {
+		$event = $this->make_event(
+			[
+				'registration_enabled' => true,
+				'registration_mode'    => 'wc',
+				'status_mode'          => 'manual',
+				'status'               => 'moved_online',
+				'start_date'           => '2030-01-01',
+				'timezone'             => 'UTC',
+			],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventMovedOnline', $node['eventStatus'] );
+		$this->assertArrayHasKey( 'offers', $node );
+		$this->assertSame( 'https://schema.org/InStock', $node['offers'][0]['availability'] );
+	}
+
 	/** Precondition guard: an ordinary scheduled event never gets a stray previousStartDate. */
 	public function test_scheduled_event_has_no_previous_start_date() {
 		$event = $this->make_event( [

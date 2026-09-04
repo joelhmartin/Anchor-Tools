@@ -430,6 +430,50 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'data-add-to-cart', $html );
 	}
 
+	/**
+	 * finding-16 (carry-over, Task 34 review ruling) — a postponed course
+	 * sells nothing: the original date is off and no new one is known yet.
+	 * Before this, bookability() never consulted 'postponed' and a postponed
+	 * event with open seats still resolved 'open', so it stayed purchasable
+	 * while its own JSON-LD said EventPostponed.
+	 */
+	public function test_postponed_event_is_not_purchasable() {
+		list( $event, $tiers ) = $this->make_ticketed_event();
+		update_post_meta( $event, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event, '_anchor_event_status', 'postponed' );
+
+		$this->assertFalse(
+			$this->woocommerce()->filter_is_purchasable( true, $this->variation( $event, $tiers[0] ) )
+		);
+	}
+
+	/** ...and its storefront row says so instead of offering a quantity box. */
+	public function test_storefront_row_is_closed_for_a_postponed_event() {
+		list( $event ) = $this->make_ticketed_event();
+		update_post_meta( $event, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event, '_anchor_event_status', 'postponed' );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Registration closed', $html );
+		$this->assertStringNotContainsString( 'data-add-to-cart', $html );
+	}
+
+	/**
+	 * The ruling's other half: 'moved_online' stays bookable — same date,
+	 * still happens, just virtually. Only 'postponed' is excluded from
+	 * bookability()'s status short-circuit.
+	 */
+	public function test_moved_online_event_stays_purchasable() {
+		list( $event, $tiers ) = $this->make_ticketed_event();
+		update_post_meta( $event, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event, '_anchor_event_status', 'moved_online' );
+
+		$this->assertTrue(
+			$this->woocommerce()->filter_is_purchasable( true, $this->variation( $event, $tiers[0] ) )
+		);
+	}
+
 	/* ------------------------------------------------------------------
 	 * WOO-D2 — the legacy manually-linked-product escape hatch.
 	 * ------------------------------------------------------------------ */

@@ -12295,6 +12295,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                it still has a date somebody can take (parent_bookability()),
      *   closed    — a soft-closed occurrence, still reachable by direct URL,
      *   cancelled — the author's own word, via get_event_status(),
+     *   postponed — likewise the author's own word (finding-16): the original
+     *   date is off and no new one is known yet, so nothing sells until the
+     *   event is rescheduled or cancelled outright. 'moved_online' is NOT
+     *   included here — same date, still happens, still bookable,
      *   then the seat-layer capacity authority (open|waitlist|full|closed),
      *   which owns the sold_out flag, the registration window, the past-event
      *   check, the event total and the per-tier quota,
@@ -12339,7 +12343,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // say (THEME-D25). Read through the accessor, not the raw row: auto
         // mode owns that row and never computes 'cancelled', so only a
         // hand-pinned (or soft-closed) event reaches this.
-        if ( $this->get_event_status( $event_id, $meta ) === 'cancelled' ) {
+        //
+        // finding-16 (Task 34 review ruling) — 'postponed' sells nothing
+        // either: the ORIGINAL date is off, and nobody knows the new one yet
+        // (that is what distinguishes it from a reschedule, which just moves
+        // start_ts and stays bookable normally). Before this, a postponed
+        // event with open seats still resolved 'open'/'waitlist' here, so its
+        // JSON-LD said EventPostponed while offering InStock at the old date
+        // — see Event_Schema's postponed/cancelled handling this now agrees
+        // with. 'moved_online' is deliberately NOT included: the event still
+        // happens, on the SAME date, just virtually — it stays bookable.
+        $status = $this->get_event_status( $event_id, $meta );
+        if ( $status === 'cancelled' || $status === 'postponed' ) {
             return 'closed';
         }
 

@@ -779,16 +779,21 @@ class Module {
             $sent_map = $this->reminder_markers( $seat['id'], $start_ts, true );
             $target   = null;
             foreach ( $due as $offset ) {
-                if ( ! isset( $sent_map[ $offset ] ) ) {
-                    $target = $offset;
-                    break;
+                if ( isset( $sent_map[ $offset ] ) ) {
+                    continue; // sent, or superseded.
                 }
+                if ( ! \apply_filters( 'anchor_events_should_send_reminder', true, $seat, $offset ) ) {
+                    // Blocked, and left UNMARKED on purpose so the filter can
+                    // allow it later. Fall through to the next-widest due
+                    // offset rather than silencing the seat entirely: the old
+                    // loop would still have sent that one.
+                    continue;
+                }
+                $target = $offset;
+                break;
             }
             if ( null === $target ) {
-                continue; // every due offset already accounted for.
-            }
-            if ( ! \apply_filters( 'anchor_events_should_send_reminder', true, $seat, $target ) ) {
-                continue; // left unmarked on purpose: the filter may allow it later.
+                continue; // every due offset already accounted for, or blocked.
             }
 
             $this->deliver_reminder( $seat, $event_id, $target, $start_ts, $settings );
@@ -892,7 +897,7 @@ class Module {
         $raw = \get_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, true );
         list( $keyed, ) = $this->normalize_marker_map( $raw, $start_ts );
         $keyed[ (int) $start_ts ][ (int) $offset ] = (int) $sent_at;
-        \update_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, $this->prune_marker_map( $keyed ) );
+        \update_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, $this->prune_marker_map( $keyed, $start_ts ) );
     }
 
     /**
@@ -929,15 +934,35 @@ class Module {
      * event: the most recent starts are the only ones a sweep can ever match
      * again (the sweep only looks at events whose start_ts is in the future).
      *
+     * $keep_ts is retained unconditionally. It is the date the caller has just
+     * written a marker for, and dropping it would be worse than any amount of
+     * meta growth: an event moved EARLIER than ten already-stored dates is the
+     * oldest key in the map, so a plain "keep the newest ten" would delete the
+     * marker on the way out and re-mail the whole roster on the next sweep.
+     *
      * @param array $keyed
+     * @param int   $keep_ts Start the caller just wrote; 0 for none.
      * @return array
      */
-    private function prune_marker_map( array $keyed ) {
+    private function prune_marker_map( array $keyed, $keep_ts = 0 ) {
         if ( \count( $keyed ) <= self::MAX_MARKER_DATES ) {
             return $keyed;
         }
+        $keep_ts = (int) $keep_ts;
+        $kept    = [];
+        if ( $keep_ts > 0 && \array_key_exists( $keep_ts, $keyed ) ) {
+            $kept[ $keep_ts ] = $keyed[ $keep_ts ];
+            unset( $keyed[ $keep_ts ] );
+        }
         \krsort( $keyed, SORT_NUMERIC );
-        return \array_slice( $keyed, 0, self::MAX_MARKER_DATES, true );
+        foreach ( $keyed as $ts => $value ) {
+            if ( \count( $kept ) >= self::MAX_MARKER_DATES ) {
+                break;
+            }
+            $kept[ $ts ] = $value;
+        }
+        \krsort( $kept, SORT_NUMERIC );
+        return $kept;
     }
 
     /* ---------------------------------------------------------------------
@@ -953,19 +978,37 @@ class Module {
      * transition could re-enqueue — which a seat that is already terminal can
      * never make.
      *
+     * A seat holds one job at a time, so the attempt count is per JOB TYPE, not
+     * per seat: without that reset, a confirmed seat carrying a reminder job at
+     * two spent attempts would have its first failed cancellation email treated
+     * as the third and abandoned on the spot.
+     *
      * @param int   $seat_id
      * @param array $job {type, plus whatever the sender needs to try again}.
      */
     private function queue_email_retry( $seat_id, array $job ) {
-        $seat_id  = (int) $seat_id;
-        $existing = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
-        $attempts = ( \is_array( $existing ) ? (int) ( $existing['attempts'] ?? 0 ) : 0 ) + 1;
+        $seat_id   = (int) $seat_id;
+        $type      = (string) ( $job['type'] ?? '' );
+        $existing  = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
+        $same_type = \is_array( $existing ) && (string) ( $existing['type'] ?? '' ) === $type;
+        $attempts  = ( $same_type ? (int) ( $existing['attempts'] ?? 0 ) : 0 ) + 1;
 
         if ( $attempts >= self::MAX_EMAIL_ATTEMPTS ) {
             \delete_post_meta( $seat_id, Registrations::META_EMAIL_RETRY );
+
+            // An abandoned REMINDER has to be recorded as accounted for, not
+            // merely dropped: the sweep skips a seat only while a reminder job
+            // exists, so an unmarked offset would be picked up by the very same
+            // sweep's reminder pass, sent, and re-queued at one attempt — a
+            // permanently failing mailer would cycle for ever and fill the
+            // capped error log. Marking it superseded (0) ends it for good.
+            if ( 'reminder' === $type && (int) ( $job['start_ts'] ?? 0 ) > 0 && (int) ( $job['offset'] ?? 0 ) > 0 ) {
+                $this->mark_reminder_sent( $seat_id, (int) $job['start_ts'], (int) $job['offset'], 0 );
+            }
+
             Events_Log::error( 'email_retry_abandoned', [
                 'seat'     => $seat_id,
-                'type'     => (string) ( $job['type'] ?? '' ),
+                'type'     => $type,
                 'attempts' => $attempts,
             ] );
             return;
@@ -976,9 +1019,24 @@ class Module {
         \update_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, $job );
     }
 
-    /** Drop a seat's retry job — it was delivered, or it no longer applies. */
-    private function clear_email_retry( $seat_id ) {
-        \delete_post_meta( (int) $seat_id, Registrations::META_EMAIL_RETRY );
+    /**
+     * Drop a seat's retry job — it was delivered, or it no longer applies.
+     *
+     * @param int    $seat_id
+     * @param string $type Clear only a job of this type. A sender must pass its
+     *                     own type: one seat holds one job, so an unqualified
+     *                     delete would let a delivered reminder throw away a
+     *                     cancellation still waiting to be retried.
+     */
+    private function clear_email_retry( $seat_id, $type = '' ) {
+        $seat_id = (int) $seat_id;
+        if ( '' !== $type ) {
+            $job = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
+            if ( \is_array( $job ) && (string) ( $job['type'] ?? '' ) !== $type ) {
+                return; // someone else's job
+            }
+        }
+        \delete_post_meta( $seat_id, Registrations::META_EMAIL_RETRY );
     }
 
     /**
@@ -1031,7 +1089,7 @@ class Module {
             // queue being re-read for ever.
             $after = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
             if ( \is_array( $after ) && (int) ( $after['attempts'] ?? 0 ) === (int) ( $job['attempts'] ?? 0 ) ) {
-                $this->clear_email_retry( $seat_id );
+                $this->clear_email_retry( $seat_id, (string) $job['type'] );
                 Events_Log::error( 'email_retry_undeliverable', [
                     'seat' => (int) $seat_id,
                     'type' => (string) $job['type'],
@@ -1054,7 +1112,7 @@ class Module {
         $event_id = (int) ( $job['event_id'] ?? 0 );
         $offset   = (int) ( $job['offset'] ?? 0 );
         if ( ! $seat || $seat['status'] !== Registrations::STATUS_CONFIRMED || $event_id <= 0 || $offset <= 0 ) {
-            $this->clear_email_retry( $seat_id );
+            $this->clear_email_retry( $seat_id, 'reminder' );
             return;
         }
         $meta     = $this->get_meta( $event_id );
@@ -1063,7 +1121,7 @@ class Module {
             || $start_ts !== (int) ( $job['start_ts'] ?? 0 )
             || 'cancelled' === $this->get_event_status( $event_id, $meta )
             || $this->occurrences->is_closed( $event_id ) ) {
-            $this->clear_email_retry( $seat_id );
+            $this->clear_email_retry( $seat_id, 'reminder' );
             return;
         }
         $this->deliver_reminder( $seat, $event_id, $offset, $start_ts, $this->get_settings() );
@@ -1123,7 +1181,7 @@ class Module {
         $seat_id = (int) ( $seat['id'] ?? 0 );
         if ( $seat_id > 0 ) {
             if ( $sent ) {
-                $this->clear_email_retry( $seat_id );
+                $this->clear_email_retry( $seat_id, 'reminder' );
             } else {
                 $this->queue_email_retry( $seat_id, [
                     'type'     => 'reminder',
@@ -1222,7 +1280,7 @@ class Module {
         }
         if ( $this->send_roster_email( $event_id ) ) {
             $markers[ $start_ts ] = $now;
-            \update_post_meta( $event_id, $this->meta_key( 'roster_sent' ), $this->prune_marker_map( $markers ) );
+            \update_post_meta( $event_id, $this->meta_key( 'roster_sent' ), $this->prune_marker_map( $markers, $start_ts ) );
         }
     }
 
@@ -11175,7 +11233,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     public function send_cancellation_email( $seat_id ) {
         $seat_id = (int) $seat_id;
         if ( (int) \get_post_meta( $seat_id, Registrations::META_CANCEL_EMAILED, true ) > 0 ) {
-            $this->clear_email_retry( $seat_id ); // nothing left to retry
+            $this->clear_email_retry( $seat_id, 'cancellation' ); // nothing left to retry
             return false;
         }
         // Defense-in-depth: this method is public, so re-honor the toggle here even
@@ -11240,7 +11298,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // survives a later un-cancel/re-cancel cycle being distinguishable
             // from the marker update_status() cleared.
             \update_post_meta( $seat_id, Registrations::META_CANCEL_EMAILED, \time() );
-            $this->clear_email_retry( $seat_id );
+            $this->clear_email_retry( $seat_id, 'cancellation' );
         } else {
             // The in-memory queue was emptied before this ran, and the seat is
             // already terminal, so nothing else will ever re-enqueue it

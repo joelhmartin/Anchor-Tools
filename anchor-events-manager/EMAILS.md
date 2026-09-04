@@ -233,6 +233,8 @@ Both are executed by a single recurring cron hook (`anchor_events_reminder_sweep
 
 **Scheduled roster marker:** Per-event `_anchor_event_roster_sent` meta, `[ start_ts => sent_unix ]`, with the same re-arm-on-reschedule behaviour. A pre-upgrade bare timestamp is read and rewritten the same way.
 
+> **Any change to an event's start timestamp re-arms both.** That is the design (MODEL-D16), and it is deliberately not limited to a "real" postponement — `start_ts` is what the markers are keyed on, so correcting an event's start *time* by fifteen minutes while it sits inside the reminder window will send that window's reminder again, and the roster digest again. Nothing else can tell a typo fix from a postponement, and re-sending about a date that moved is the safer of the two failures. Fix start times before the first window opens.
+
 **Cancellation marker:** Per-seat `_anchor_event_cancel_emailed` — the Unix time that cancellation was emailed about. `Registrations::update_status()` deletes it whenever a seat leaves a terminal status, so a seat restored by a roster edit and cancelled again emails the attendee again. `send_cancellation_email()` returns `true` only when `wp_mail()` accepted the message; a skip returns `false`.
 
 ### Retry queue

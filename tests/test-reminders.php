@@ -430,6 +430,166 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $this->log_count( 'email_retry_undeliverable' ) );
 	}
 
+	/**
+	 * The ceiling has to hold for reminders too. The drain runs BEFORE the
+	 * reminder pass, and the pass skips a seat only while a reminder job
+	 * exists — so an abandoned job that left the offset unmarked would be
+	 * picked straight back up by the same sweep, sent, and re-queued at one
+	 * attempt, for ever. Abandoning marks the offset superseded instead.
+	 */
+	public function test_a_permanently_failing_reminder_stops_after_three_attempts() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 20 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'never@example.com' ] );
+
+		$attempts = 0;
+		add_filter( 'pre_wp_mail', function () use ( &$attempts ) {
+			$attempts++;
+			return false;
+		}, 10, 2 );
+
+		$this->module()->run_reminder_sweep();   // attempt 1 (the pass)
+		$this->assertSame( 1, $attempts );
+
+		$this->make_retry_due( $seat_id );
+		$this->module()->run_reminder_sweep();   // attempt 2 (the drain)
+		$this->assertSame( 2, $attempts );
+
+		$this->make_retry_due( $seat_id );
+		$this->module()->run_reminder_sweep();   // attempt 3 — and the last
+		$this->assertSame( 3, $attempts, 'The abandoning sweep must not send again from its own reminder pass.' );
+
+		$this->module()->run_reminder_sweep();
+		$this->module()->run_reminder_sweep();
+		$this->assertSame( 3, $attempts, 'After giving up, the sweep is silent about this offset for ever.' );
+
+		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ) );
+		$this->assertSame( 0, (int) ( $this->markers( $seat_id, $start_ts )[1] ?? -1 ), 'The abandoned offset is marked superseded, not left open.' );
+		$this->assertSame( 1, $this->log_count( 'email_retry_abandoned' ), 'One abandon entry — not one per hour for ever.' );
+	}
+
+	/**
+	 * One seat holds one job, so attempts are counted per job TYPE. A seat
+	 * that has burned two reminder attempts must still get three goes at
+	 * telling its attendee they were cancelled.
+	 */
+	public function test_a_cancellation_does_not_inherit_a_reminders_spent_attempts() {
+		$this->configure( [
+			'reminder_enabled'       => true,
+			'reminder_offsets'       => '1',
+			'organizer_roster_email' => false,
+			'notify_cancellation'    => true,
+		] );
+
+		$event_id = $this->future_event( time() + 20 * HOUR_IN_SECONDS );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'both@example.com' ] );
+
+		$this->fail_mail();
+		$this->module()->run_reminder_sweep();  // reminder attempt 1
+		$this->make_retry_due( $seat_id );
+		$this->module()->run_reminder_sweep();  // reminder attempt 2
+		$this->assertSame( 2, (int) get_post_meta( $seat_id, '_anchor_event_email_retry', true )['attempts'] );
+
+		$this->registrations()->update_status( $seat_id, Registrations::STATUS_CANCELLED );
+		$this->module()->flush_cancellation_emails();
+
+		$job = get_post_meta( $seat_id, '_anchor_event_email_retry', true );
+		$this->assertIsArray( $job, 'The cancellation must not be abandoned on its first failure.' );
+		$this->assertSame( 'cancellation', $job['type'] );
+		$this->assertSame( 1, (int) $job['attempts'], 'A different job type starts its own count.' );
+		$this->assertSame( 0, $this->log_count( 'email_retry_abandoned' ) );
+	}
+
+	/**
+	 * …and for the same reason a delivered email may only clear its OWN job.
+	 * The cancellation job here is written directly: reaching this state
+	 * through the status API is impossible by design (update_status() drops a
+	 * cancellation retry when a seat is restored), which is exactly why the
+	 * guard has to be asserted rather than assumed.
+	 */
+	public function test_a_delivered_reminder_does_not_clear_a_cancellation_retry() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 20 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'mixed@example.com' ] );
+
+		update_post_meta( $seat_id, '_anchor_event_email_retry', [
+			'type'     => 'cancellation',
+			'attempts' => 2,
+			'next_at'  => time() + HOUR_IN_SECONDS, // not due this sweep
+		] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( [ 'mixed@example.com' ], $sent, 'A reminder job is what the pass skips — a cancellation job is not.' );
+		$job = get_post_meta( $seat_id, '_anchor_event_email_retry', true );
+		$this->assertIsArray( $job, 'The cancellation retry must survive an unrelated successful send.' );
+		$this->assertSame( 2, (int) $job['attempts'] );
+	}
+
+	/* ------------------------------------------------------------------
+	 * Offset selection edge cases
+	 * ------------------------------------------------------------------ */
+
+	public function test_a_blocked_nearest_offset_falls_through_to_the_next_one() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'filtered@example.com' ] );
+
+		add_filter( 'anchor_events_should_send_reminder', function ( $send, $seat, $offset ) {
+			return 1 === (int) $offset ? false : $send;
+		}, 10, 3 );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( [ 'filtered@example.com' ], $sent, 'Blocking the 1-day reminder must not silence the seat entirely.' );
+		$markers = $this->markers( $seat_id, $start_ts );
+		$this->assertGreaterThan( 0, (int) ( $markers[7] ?? 0 ), 'The 7-day reminder is what went out.' );
+		$this->assertArrayNotHasKey( 1, $markers, 'A blocked offset stays unmarked — the filter may allow it later.' );
+	}
+
+	/**
+	 * An event moved EARLIER than every start already in its marker map is the
+	 * oldest key in that map. A plain "keep the newest ten" would delete the
+	 * marker the sweep had just written and re-mail the whole roster.
+	 */
+	public function test_pruning_never_drops_the_date_the_marker_was_just_written_for() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 20 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'crowded@example.com' ] );
+
+		// Ten later dates already on record — the map is full before this send.
+		$existing = [];
+		for ( $i = 1; $i <= 10; $i++ ) {
+			$existing[ $start_ts + $i * DAY_IN_SECONDS ] = [ 1 => time() - $i ];
+		}
+		update_post_meta( $seat_id, '_anchor_event_reminders_sent', $existing );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+
+		$this->module()->run_reminder_sweep();
+		$this->assertSame( [ 'crowded@example.com' ], $sent );
+
+		$map = get_post_meta( $seat_id, '_anchor_event_reminders_sent', true );
+		$this->assertCount( 10, $map, 'The map is still capped.' );
+		$this->assertGreaterThan( 0, (int) ( $map[ $start_ts ][1] ?? 0 ), 'The date just mailed about must be one of the ten kept.' );
+
+		$this->module()->run_reminder_sweep();
+		$this->assertCount( 1, $sent, 'Because the marker survived, the next sweep sends nothing.' );
+	}
+
 	public function test_a_failed_reminder_is_retried_by_the_same_mechanism() {
 		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
 

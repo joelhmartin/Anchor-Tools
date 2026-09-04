@@ -583,10 +583,18 @@ class WooCommerce {
      * @return array<int,string> event id => title (published events).
      */
     private function event_options() {
+        // WOO-D32: memoized per request AND capped. This is called once for
+        // the simple-product event select PLUS once per VARIATION row on the
+        // product editor — a variable product with 40 variations used to run
+        // 41 full, uncapped event queries on one admin page load.
+        static $cache = null;
+        if ( $cache !== null ) {
+            return $cache;
+        }
         $events = \get_posts( [
             'post_type'      => Module::CPT,
             'post_status'    => 'publish',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::LINK_QUERY_CAP,
             'orderby'        => 'title',
             'order'          => 'ASC',
             'no_found_rows'  => true,
@@ -595,7 +603,8 @@ class WooCommerce {
         foreach ( $events as $event ) {
             $out[ (int) $event->ID ] = $event->post_title;
         }
-        return $out;
+        $cache = $out;
+        return $cache;
     }
 
     /* ---------------------------------------------------------------------

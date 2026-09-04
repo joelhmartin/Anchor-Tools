@@ -151,4 +151,49 @@ class Test_WooCommerce_Admin_Linking extends Anchor_Events_TestCase {
 			$this->assertGreaterThan( 0, $per_page, 'Must never be the uncapped -1.' );
 		}
 	}
+
+	/** An unmanaged variation on a plain (non-managed) variable product. */
+	private function unmanaged_variation() {
+		$product = new WC_Product_Variable();
+		$product->set_name( 'Self-managed ' . uniqid() );
+		$product_id = $product->save();
+		$variation = new WC_Product_Variation();
+		$variation->set_parent_id( $product_id );
+		$variation_id = $variation->save();
+		return get_post( $variation_id );
+	}
+
+	/**
+	 * WOO-D32: event_options() is called once for the simple-product select
+	 * PLUS once per variation row — a variable product with many variations
+	 * used to run one full, uncapped event query PER ROW. Memoized per
+	 * process, so two rows on the same admin page load must not run the
+	 * query twice.
+	 */
+	public function test_event_options_is_memoized_across_variation_rows() {
+		$this->make_event( [ 'title' => 'Memoization Probe ' . uniqid() ] );
+
+		$count = 0;
+		$spy   = function ( $query ) use ( &$count ) {
+			if (
+				$query->get( 'post_type' ) === \Anchor\Events\Module::CPT
+				&& (int) $query->get( 'posts_per_page' ) === WooCommerce::LINK_QUERY_CAP
+			) {
+				$count++;
+			}
+			return $query;
+		};
+		add_action( 'pre_get_posts', $spy );
+		ob_start();
+		$this->woocommerce()->render_variation_fields( 0, [], $this->unmanaged_variation() );
+		$this->woocommerce()->render_variation_fields( 1, [], $this->unmanaged_variation() );
+		ob_end_clean();
+		remove_action( 'pre_get_posts', $spy );
+
+		$this->assertLessThanOrEqual(
+			1,
+			$count,
+			'event_options() must be memoized, not re-queried for every variation row.'
+		);
+	}
 }

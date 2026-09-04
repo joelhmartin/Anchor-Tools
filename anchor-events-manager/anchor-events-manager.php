@@ -6821,7 +6821,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'login_empty'    => [ 'err', __( 'Please enter your username and password.', 'anchor-schema' ) ],
             'logged_out'     => [ 'ok',  __( 'You have been signed out.', 'anchor-schema' ) ],
             'lostpass_sent'  => [ 'ok',  __( 'Check your email for a link to reset your password.', 'anchor-schema' ) ],
-            'lostpass_error' => [ 'err', __( 'We could not find an account matching that username or email.', 'anchor-schema' ) ],
             'lostpass_empty' => [ 'err', __( 'Please enter your username or email address.', 'anchor-schema' ) ],
         ];
         foreach ( $this->group_notice_map() as $code => $notice ) {
@@ -6981,7 +6980,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         } else {
             $user = \get_user_by( 'login', $login );
         }
-        // Always report success to avoid leaking which accounts exist.
+        // REG-D47 — every branch from here down answers the same way. The
+        // "no such user" branch was already deliberately silent about account
+        // existence, but a real user whose reset was denied, whose key could
+        // not be minted, or whose mail failed answered `lostpass_error`, so
+        // submitting a list of candidate logins told an attacker which ones
+        // existed from the difference alone — and the error text ("we could not
+        // find an account matching that username or email") actively
+        // misdescribed two of those three cases. The real reason goes to the
+        // error log, where the operator can see it and the submitter cannot.
         if ( ! $user ) {
             \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
             exit;
@@ -6989,13 +6996,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $allow = \apply_filters( 'allow_password_reset', true, $user->ID );
         if ( \is_wp_error( $allow ) || ! $allow ) {
-            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            Events_Log::error( 'lostpass_reset_denied', [ 'user' => $user->ID ] );
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
             exit;
         }
 
         $key = \get_password_reset_key( $user );
         if ( \is_wp_error( $key ) ) {
-            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            Events_Log::error( 'lostpass_key_failed', [ 'user' => $user->ID, 'detail' => $key->get_error_code() ] );
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
             exit;
         }
 
@@ -7012,7 +7021,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $message = \apply_filters( 'retrieve_password_message', $message, $key, $user->user_login, $user );
 
         if ( $message && ! \wp_mail( $user->user_email, \wp_specialchars_decode( $title ), $message ) ) {
-            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            Events_Log::error( 'lostpass_mail_failed', [ 'user' => $user->ID ] );
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
             exit;
         }
 

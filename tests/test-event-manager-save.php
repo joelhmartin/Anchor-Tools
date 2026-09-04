@@ -34,6 +34,7 @@
  * @package Anchor\Events\Tests
  */
 
+use Anchor\Events\Events_Log;
 use Anchor\Events\Module;
 use Anchor\Events\Ticket_Types;
 
@@ -253,4 +254,70 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 		$this->expectException( WPDieException::class );
 		$this->module()->handle_event_manager_save();
 	}
+
+	/* ------------------------------------------------------------------
+	 * REG-D47 — the lost-password form answers the same way every time
+	 * ------------------------------------------------------------------ */
+
+	/** POST the lost-password form and return where it redirected. */
+	private function post_lostpass( $login ) {
+		$_POST = [
+			'_anchor_lostpass_nonce' => wp_create_nonce( 'anchor_event_manager_lostpass' ),
+			'redirect_to'            => 'https://example.org/manager/',
+			'user_login'             => $login,
+		];
+		$_REQUEST = $_POST;
+
+		$trap = function ( $location ) {
+			throw new Anchor_Lostpass_Redirected( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		try {
+			$this->module()->handle_event_manager_lostpass();
+		} catch ( Anchor_Lostpass_Redirected $e ) {
+			return $e->getMessage();
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+		}
+
+		$this->fail( 'handle_event_manager_lostpass() did not redirect.' );
+	}
+
+	/** The codes recorded in the site-wide error log. @return string[] */
+	private function logged_codes() {
+		$log = get_option( Events_Log::ERROR_OPTION, [] );
+		return is_array( $log ) ? array_column( $log, 'code' ) : [];
+	}
+
+	/**
+	 * A real account whose reset is denied must be indistinguishable from an
+	 * account that does not exist. It used to answer `lostpass_error` while a
+	 * missing account answered `lostpass_sent`, so submitting a list of
+	 * candidate logins told an attacker which ones were real.
+	 */
+	public function test_a_denied_reset_answers_exactly_like_an_unknown_account() {
+		delete_option( Events_Log::ERROR_OPTION );
+		self::factory()->user->create( [ 'user_login' => 'realmanager', 'role' => 'editor' ] );
+
+		$unknown = $this->post_lostpass( 'nobody-here' );
+		$this->assertStringContainsString( 'lostpass_sent', $unknown );
+
+		$deny = '__return_false';
+		add_filter( 'allow_password_reset', $deny );
+		try {
+			$denied = $this->post_lostpass( 'realmanager' );
+		} finally {
+			remove_filter( 'allow_password_reset', $deny );
+		}
+
+		$this->assertStringContainsString( 'lostpass_sent', $denied );
+		$this->assertStringNotContainsString( 'lostpass_error', $denied );
+		// The operator still learns what happened — from the error log, not the page.
+		$this->assertContains( 'lostpass_reset_denied', $this->logged_codes() );
+
+		delete_option( Events_Log::ERROR_OPTION );
+	}
 }
+
+/** Thrown from the wp_redirect filter so the handler's exit never runs. */
+class Anchor_Lostpass_Redirected extends \Exception {}

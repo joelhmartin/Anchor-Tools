@@ -389,18 +389,24 @@ class Roster {
         if ( $tier_id === '' ) {
             $tier_id = Ticket_Types::PRIMARY_ID;
         }
+        $fallback = $tier_id === Ticket_Types::PRIMARY_ID ? \__( 'Primary', 'anchor-schema' ) : $tier_id;
+
         $tt = isset( $this->module->ticket_types ) ? $this->module->ticket_types : null;
-        if ( $tt ) {
-            $tier = $tt->find( (int) $event_id, $tier_id );
-            if ( \is_array( $tier ) && isset( $tier['label'] ) && $tier['label'] !== '' ) {
-                return (string) $tier['label'];
-            }
+        if ( ! $tt ) {
+            return $fallback;
         }
-        return \sprintf(
-            /* translators: %s: the stored ticket-tier id, which no longer exists on the event. */
-            \__( '%s (retired tier)', 'anchor-schema' ),
-            $tier_id === Ticket_Types::PRIMARY_ID ? \__( 'Primary', 'anchor-schema' ) : $tier_id
-        );
+        $tier = $tt->find( (int) $event_id, $tier_id );
+        if ( ! \is_array( $tier ) ) {
+            // The row is GONE — the only case that earns the marker.
+            return \sprintf(
+                /* translators: %s: the stored ticket-tier id, which no longer exists on the event. */
+                \__( '%s (retired tier)', 'anchor-schema' ),
+                $fallback
+            );
+        }
+        // The row exists but was saved with a blank label: show what it has, as
+        // before. That is an authoring gap, not a dangling reference.
+        return ( isset( $tier['label'] ) && $tier['label'] !== '' ) ? (string) $tier['label'] : $fallback;
     }
 
     /* ---------------------------------------------------------------------

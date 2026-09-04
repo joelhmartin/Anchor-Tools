@@ -2336,17 +2336,30 @@ class WooCommerce {
         // under the lock below.
         $tier        = ( $this->module->ticket_types ) ? $this->module->ticket_types->find( $event_id, $tier_id ) : null;
         $tier_quota  = $tier ? (int) ( $tier['quota'] ?? 0 ) : 0;
+        // WOO-D58 (quota half): a tier row the organizer DELETED from the Tickets
+        // metabox resolves to null here, and null used to collapse into quota 0 —
+        // which the block below reads as "unlimited". A tier with twelve sold
+        // seats therefore became the one tier nothing could bind, and a late
+        // order on it minted seats no quota, and no roster column, accounted for.
+        // A tier that no longer exists is treated as EXHAUSTED for new seats
+        // instead: seats already sold on it stay, keep their tag and keep
+        // consuming the event capacity, but the reconcile refuses to mint more
+        // and says so (logged + flagged needs-review below) rather than
+        // overselling in silence.
+        $tier_retired = ( $this->module->ticket_types && ! $tier );
 
         $result = $this->registrations->with_event_lock( $event_id, function ( $locked ) use (
             $event_id, $item_id, $expected, $active_target, $removal_status, $capacity, $unlimited,
             $waitlist_enabled, $terminal_set, $attendees, $can_create, $billing, $payload_base, $order_id,
-            $tier_id, $tier_quota
+            $tier_id, $tier_quota, $tier_retired
         ) {
             $created   = [];
             $revived   = [];
             $removed   = [];
             $flipped   = [];
             $overfill  = false;
+            // WOO-D58 — a create refused because the line's tier row is gone.
+            $retired_blocked = false;
             $moved_out = [];
             // L7 — count only removed seats that actually consumed capacity
             // (confirmed/pending); waitlist seats never did, so they must not be
@@ -2436,7 +2449,10 @@ class WooCommerce {
                 // P4 — per-tier remaining quota, recounted FRESH under the same lock
                 // (folds in the old claim_woo_seats tier logic). quota<=0 ⇒ the tier
                 // is bounded only by the event total.
-                $tier_unlimited = ( $tier_quota <= 0 );
+                // A RETIRED tier is never unlimited — quota 0 means "bounded only
+                // by the event total" for a tier that exists, and "no more seats"
+                // for one that does not (WOO-D58).
+                $tier_unlimited = ( ! $tier_retired && $tier_quota <= 0 );
                 $tier_left      = $tier_unlimited
                     ? PHP_INT_MAX
                     : max( 0, $tier_quota - $this->registrations->count_reserved_for_tier( $event_id, $tier_id, true ) );
@@ -2502,8 +2518,16 @@ class WooCommerce {
                                 // tier quota is exhausted while the event still has
                                 // room (and we're not waitlisting): buyer paid but no
                                 // tier seat can be created → leave uncreated and flag
-                                // overfill so it surfaces in needs-review (spec §7/§9.3).
-                                $overfill = true;
+                                // so it surfaces in needs-review (spec §7/§9.3).
+                                // A retired tier gets its OWN reason: "capacity
+                                // overfill" would send the organizer to look for
+                                // seats that do not exist, when the fix is to put
+                                // the tier row back (or re-tag the seats).
+                                if ( $tier_retired && $event_has_room ) {
+                                    $retired_blocked = true;
+                                } else {
+                                    $overfill = true;
+                                }
                                 break;
                             }
                             // Seat-index identity stays max+1 (stable idempotency key).
@@ -2590,6 +2614,7 @@ class WooCommerce {
                 'flipped'           => $flipped,
                 'moved_out'         => $moved_out,
                 'overfill'          => $overfill,
+                'retired_tier'      => $retired_blocked,
                 'released_capacity' => $released_capacity,
                 'dup_prevented'     => $dup_prevented,
                 'lock_unavailable'  => ! $locked,
@@ -2614,6 +2639,24 @@ class WooCommerce {
         }
         if ( ! empty( $result['overfill'] ) ) {
             $review_flags[] = $this->make_flag( 'capacity_overfill', 'event ' . $event_id . ' item ' . $item_id );
+        }
+        if ( ! empty( $result['retired_tier'] ) ) {
+            // WOO-D58: the buyer paid for a tier the event no longer offers. Nothing
+            // here can guess what the organizer meant, so the pass refuses to mint
+            // seats and hands the decision back — flag, order-visible sync-log line,
+            // and the site-wide error log so it is inspectable without the order.
+            $detail         = 'event ' . $event_id . ' item ' . $item_id . ' tier ' . $tier_id;
+            $review_flags[] = $this->make_flag( 'retired_tier', $detail );
+            $log_entries[]  = $this->make_log_entry(
+                'Ticket tier no longer exists on the event; no seats created.',
+                [ 'item' => $item_id, 'event' => $event_id, 'tier' => $tier_id ]
+            );
+            Events_Log::error( 'retired_tier', [
+                'order' => $order_id,
+                'item'  => $item_id,
+                'event' => $event_id,
+                'tier'  => $tier_id,
+            ] );
         }
         if ( ! empty( $result['dup_prevented'] ) ) {
             $review_flags[] = $this->make_flag( 'duplicate_seat_prevented', 'event ' . $event_id . ' item ' . $item_id );

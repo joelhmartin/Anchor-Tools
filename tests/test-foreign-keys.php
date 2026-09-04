@@ -411,4 +411,61 @@ class Test_Foreign_Keys extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( '(retired tier)', $label );
 		$this->assertStringContainsString( $tiers[1]['id'], $label, 'The raw id stays visible for diagnosis.' );
 	}
+
+	/** A tier that EXISTS with a blank label is an authoring gap, not a dangling id. */
+	public function test_a_blank_label_on_a_live_tier_is_not_marked_retired() {
+		$event_id = $this->make_event( [ 'title' => 'Blank Label' ] );
+
+		// Ticket_Types::save() defaults a blank label to "Registration", so write
+		// the stored shape directly — the row exists, its label does not.
+		update_post_meta(
+			$event_id,
+			\Anchor\Events\Ticket_Types::META_KEY,
+			[ [ 'id' => 'ga', 'label' => '', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->assertNotNull( $this->ticket_types()->find( $event_id, 'ga' ) );
+
+		$this->assertSame( 'ga', $this->module()->roster->tier_label( $event_id, 'ga' ) );
+	}
+
+	/** With the product gone, the demote still repairs the event side. */
+	public function test_demote_clears_tier_ids_and_mirror_when_the_product_is_gone() {
+		list( $event_id, $tier, $product_id ) = $this->paid_event();
+
+		$this->assertGreaterThan( 0, (int) $this->ticket_types()->find( $event_id, $tier['id'] )['wc_variation_id'] );
+		$this->assertNotSame( [], $this->woocommerce()->products_for_event( $event_id ) );
+
+		// The product is deleted outright; the event keeps its stale pointer, its
+		// cached variation id and its mirror.
+		wp_delete_post( $product_id, true );
+		wp_cache_flush();
+		$this->assertSame( $product_id, $this->product_sync()->stored_product_id( $event_id ) );
+
+		// Deactivate the tier → the demote branch, with no product to demote.
+		$this->ticket_types()->save(
+			$event_id,
+			[ [ 'id' => $tier['id'], 'label' => 'General', 'price' => '10', 'active' => 0 ] ]
+		);
+		$this->assertSame( 0, (int) $this->product_sync()->sync_event( $event_id ) );
+
+		$this->assertSame( 0, (int) $this->ticket_types()->find( $event_id, $tier['id'] )['wc_variation_id'] );
+		$this->assertFalse( $this->woocommerce()->event_is_linked( $event_id ) );
+	}
+
+	/** An event that never had a product is untouched by the demote branch. */
+	public function test_demote_is_a_no_op_for_an_event_that_never_had_a_product() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Free' ],
+			[ [ 'label' => 'Free', 'price' => '0', 'active' => 1 ] ]
+		);
+
+		$this->assertSame( 0, (int) $this->product_sync()->sync_event( $event_id ) );
+
+		$this->assertSame( '', (string) get_post_meta( $event_id, Product_Sync::EVENT_PRODUCT_META, true ) );
+		$this->assertSame(
+			'',
+			(string) get_post_meta( $event_id, '_anchor_event_linked_products', true ),
+			'No mirror is minted for an event that never sold anything.'
+		);
+	}
 }

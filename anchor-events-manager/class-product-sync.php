@@ -382,44 +382,58 @@ class Product_Sync {
      *
      * Never deletes: orders reference these posts.
      *
-     * @param int $product_id Validated managed product id.
+     * Steps 2 and 3 run even when there is no product to demote ($product_id 0:
+     * deleted, trashed, or a pointer that turned out to belong to another
+     * event). The event-side state is the half we can always fix, and leaving
+     * its tier rows naming variations that no longer resolve — or a mirror
+     * listing a product that is gone — is the same stale-pointer defect one
+     * level up. Guarded on the event ever having HAD a pointer, so an event
+     * that never sold anything (much the commonest case, and re-synced on
+     * every save) does no work at all.
+     *
+     * @param int $product_id Validated managed product id, or 0 when there is none.
      * @param int $event_id
      */
     private function demote_product( $product_id, $event_id ) {
         $product_id = (int) $product_id;
         $event_id   = (int) $event_id;
-        if ( $product_id <= 0 ) {
+        if ( $event_id <= 0 ) {
             return;
         }
+        if ( $product_id <= 0 && $this->stored_product_id( $event_id ) <= 0 ) {
+            return; // Never had a managed product — nothing to take out of circulation.
+        }
 
-        self::$in_flight['product'][ $product_id ] = true;
-        try {
-            $product = \wc_get_product( $product_id );
-            if ( $product && $product->get_status() !== 'draft' ) {
-                $product->set_status( 'draft' );
-                $product->save();
-            }
+        if ( $product_id > 0 ) {
+            self::$in_flight['product'][ $product_id ] = true;
+            try {
+                $product = \wc_get_product( $product_id );
+                if ( $product && $product->get_status() !== 'draft' ) {
+                    $product->set_status( 'draft' );
+                    $product->save();
+                }
 
-            foreach ( $this->variation_ids_for_product( $product_id ) as $vid ) {
-                $variation = \wc_get_product( $vid );
-                if ( ! $variation ) {
-                    continue;
+                foreach ( $this->variation_ids_for_product( $product_id ) as $vid ) {
+                    $variation = \wc_get_product( $vid );
+                    if ( ! $variation ) {
+                        continue;
+                    }
+                    $dirty = false;
+                    if ( $variation->get_status() !== 'private' ) {
+                        $variation->set_status( 'private' );
+                        $dirty = true;
+                    }
+                    if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '0' ) {
+                        $variation->update_meta_data( self::VARIATION_ACTIVE_META, '0' );
+                        $dirty = true;
+                    }
+                    if ( $dirty ) {
+                        $variation->save();
+                    }
                 }
-                $dirty = false;
-                if ( $variation->get_status() !== 'private' ) {
-                    $variation->set_status( 'private' );
-                    $dirty = true;
-                }
-                if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '0' ) {
-                    $variation->update_meta_data( self::VARIATION_ACTIVE_META, '0' );
-                    $dirty = true;
-                }
-                if ( $dirty ) {
-                    $variation->save();
-                }
+            } finally {
+                unset( self::$in_flight['product'][ $product_id ] );
             }
-        } finally {
-            unset( self::$in_flight['product'][ $product_id ] );
         }
 
         // Stop the tier list advertising variations nothing can sell. Reuses the

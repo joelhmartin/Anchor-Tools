@@ -152,4 +152,118 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $this->count_seats( $ctx['event_id'], Registrations::STATUS_REFUNDED ) );
 		$this->assertSame( 1, $this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ) );
 	}
+
+	/* ------------------------------------------------------------------
+	 * WOO-D58 (quota half) — the order's tier row was removed from the event.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * A two-tier paid event, synced. @return array{event_id:int,tiers:array}
+	 */
+	private function two_tier_event() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Two Tier Reconcile', 'capacity' => 0 ],
+			[
+				[ 'label' => 'General', 'price' => '10', 'active' => 1 ],
+				[ 'label' => 'VIP', 'price' => '10', 'active' => 1 ],
+			]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		return [ 'event_id' => $event_id, 'tiers' => $this->ticket_types()->get( $event_id ) ];
+	}
+
+	/** Needs-review reasons currently flagged on an order. @return string[] */
+	private function review_reasons( $order_id ) {
+		$flags = wc_get_order( $order_id )->get_meta( \Anchor\Events\Events_Log::ORDER_REVIEW_META );
+		return is_array( $flags ) ? array_column( $flags, 'reason' ) : [];
+	}
+
+	/** Error-log codes recorded site-wide. @return string[] */
+	private function error_codes() {
+		$log = get_option( \Anchor\Events\Events_Log::ERROR_OPTION, [] );
+		return is_array( $log ) ? array_column( $log, 'code' ) : [];
+	}
+
+	/**
+	 * The organizer deletes a tier row that has an order against it. A missing
+	 * tier used to read as quota 0 = UNLIMITED, so the reconcile happily minted
+	 * seats no quota could bind. It must mint none, log, and flag instead.
+	 */
+	public function test_order_for_a_removed_tier_creates_no_seats_and_flags_review() {
+		$ctx      = $this->two_tier_event();
+		$event_id = $ctx['event_id'];
+		$vip      = $ctx['tiers'][1];
+		$vip_vid  = (int) $this->product_sync()->variation_for_tier( $event_id, $vip['id'] );
+		$this->assertGreaterThan( 0, $vip_vid );
+
+		// Remove the VIP row from the Tickets metabox FIRST (the variation is
+		// untouched, so a line bought against it still resolves to the now-dead
+		// tier id) — then the order arrives and reconciles.
+		$this->ticket_types()->save(
+			$event_id,
+			[ [ 'id' => $ctx['tiers'][0]['id'], 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->assertNull( $this->ticket_types()->find( $event_id, $vip['id'] ) );
+
+		delete_option( \Anchor\Events\Events_Log::ERROR_OPTION );
+		$res      = $this->make_order( $vip_vid, 2 );
+		$order_id = $res['order']->get_id();
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'test' );
+
+		$this->assertSame( 0, $this->count_seats( $event_id, null, $vip['id'] ), 'No seat on a retired tier.' );
+		$this->assertSame( 0, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+		$this->assertContains( 'retired_tier', $this->review_reasons( $order_id ) );
+		$this->assertContains( 'retired_tier', $this->error_codes() );
+	}
+
+	/** …while an order whose tier still exists reconciles exactly as before. */
+	public function test_order_for_a_live_tier_still_reconciles() {
+		$ctx      = $this->two_tier_event();
+		$event_id = $ctx['event_id'];
+		$ga       = $ctx['tiers'][0];
+		$ga_vid   = (int) $this->product_sync()->variation_for_tier( $event_id, $ga['id'] );
+
+		$res      = $this->make_order( $ga_vid, 2 );
+		$order_id = $res['order']->get_id();
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'test' );
+
+		$this->assertSame( 2, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED, $ga['id'] ) );
+		$this->assertNotContains( 'retired_tier', $this->review_reasons( $order_id ) );
+	}
+
+	/**
+	 * Seats already sold on a tier survive its removal and keep consuming the
+	 * EVENT capacity — the retirement blocks new seats, it does not release old
+	 * ones.
+	 */
+	public function test_existing_seats_on_a_removed_tier_survive_and_still_count() {
+		$ctx      = $this->two_tier_event();
+		$event_id = $ctx['event_id'];
+		$vip      = $ctx['tiers'][1];
+		$vip_vid  = (int) $this->product_sync()->variation_for_tier( $event_id, $vip['id'] );
+
+		$res      = $this->make_order( $vip_vid, 2 );
+		$order_id = $res['order']->get_id();
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'initial' );
+		$this->assertSame( 2, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED, $vip['id'] ) );
+
+		$this->ticket_types()->save(
+			$event_id,
+			[ [ 'id' => $ctx['tiers'][0]['id'], 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'after retirement' );
+
+		$this->assertSame(
+			2,
+			$this->count_seats( $event_id, Registrations::STATUS_CONFIRMED, $vip['id'] ),
+			'Converged seats are left alone; nothing is removed by the retirement.'
+		);
+		$this->assertSame(
+			2,
+			(int) $this->registrations()->count_reserved_seats( $event_id, true ),
+			'…and they still consume the event capacity.'
+		);
+	}
 }

@@ -691,15 +691,14 @@ class Occurrences {
      *
      * The plugin has no cascade: permanently deleting a group parent leaves its
      * seated, soft-closed children with `group_role`='child' and a `group_id`
-     * pointing at a dead id (audit MODEL-D22). Seven callers then read fields
+     * pointing at a dead id (audit MODEL-D22). Five callers then read fields
      * off that id — Series::representative_id() renders a session row from it,
      * the DEKA theme reads its meta, title and permalink — and if WordPress has
      * reissued the id to an unrelated post, the child silently inherits that
-     * post's fields. The ordinary trashed-parent case is milder but still
-     * wrong: occurrence_label() builds its prefix from a trashed post's title.
+     * post's fields.
      *
      * So the pointer is validated here once, for every caller, rather than
-     * seven times (and only one of the seven did it). Callers that LINK to the
+     * five times (and only one of the five did it). Callers that LINK to the
      * parent keep their own `publish` check on top — a trashed parent is not a
      * parent at all now, but a private/draft one is still real and still must
      * not be linked (render_sibling_dates()).

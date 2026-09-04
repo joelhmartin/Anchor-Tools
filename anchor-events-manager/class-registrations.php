@@ -1138,8 +1138,15 @@ class Registrations {
      * directly (HPOS governs orders/items, not the seat CPT). Returns null when the
      * id isn't a seat post.
      *
+     * REG-D53 — name, email and order_id are part of the snapshot. They used to
+     * be missing, so send_cancellation_email() (this method's only non-Woo
+     * caller) reached around the data layer for all three with direct
+     * get_post_meta() calls and a comment explaining why. This class's whole
+     * premise is that hiding seat storage behind it is what would make a move
+     * to a custom table containable; that was the leak.
+     *
      * @param int $seat_id Seat post ID.
-     * @return array{id:int,status:string,seat_index:int,event_id:int,order_item_id:int}|null
+     * @return array{id:int,status:string,seat_index:int,event_id:int,order_item_id:int,name:string,email:string,order_id:int,ticket_type_id:string}|null
      */
     public function get_seat_info( $seat_id ) {
         $seat_id = (int) $seat_id;
@@ -1153,6 +1160,9 @@ class Registrations {
             'seat_index'    => (int) \get_post_meta( $seat_id, '_anchor_event_seat_index', true ),
             'event_id'      => (int) \get_post_meta( $seat_id, '_anchor_event_id', true ),
             'order_item_id' => (int) \get_post_meta( $seat_id, '_anchor_event_order_item_id', true ),
+            'name'          => (string) \get_post_meta( $seat_id, '_anchor_event_name', true ),
+            'email'         => (string) \get_post_meta( $seat_id, '_anchor_event_email', true ),
+            'order_id'      => (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true ),
             // Pre-tier seats have no meta — default to the primary tier id.
             'ticket_type_id' => (string) ( \get_post_meta( $seat_id, '_anchor_event_ticket_type_id', true ) ?: 'primary' ),
         ];

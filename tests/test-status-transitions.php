@@ -89,6 +89,27 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * REG-D53 — the seat snapshot carries the contact fields its consumer
+	 * needs. send_cancellation_email() used to take get_seat_info() and then
+	 * read name/email/order_id with three direct get_post_meta() calls,
+	 * reaching straight past the data layer that exists to own seat storage.
+	 */
+	public function test_the_seat_snapshot_carries_name_email_and_order() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [
+			'name'     => 'Ada Lovelace',
+			'email'    => 'ada@example.org',
+			'order_id' => 4321,
+		] );
+
+		$info = $this->registrations()->get_seat_info( $seat_id );
+
+		$this->assertSame( 'Ada Lovelace', $info['name'] );
+		$this->assertSame( 'ada@example.org', $info['email'] );
+		$this->assertSame( 4321, $info['order_id'] );
+	}
+
+	/**
 	 * REG-D50 — the attendee name lives in the meta; post_title is a derived
 	 * display copy. Whichever one is written, the other follows, so a bulk
 	 * edit or an import can no longer leave the roster and the REST listing

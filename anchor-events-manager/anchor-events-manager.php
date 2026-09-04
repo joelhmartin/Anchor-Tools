@@ -12096,10 +12096,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Build + send one attendee cancellation/refund email; idempotent via marker.
      *
-     * Note: Registrations::get_seat_info() does not return email, name, or order_id
-     * (it returns id, status, seat_index, event_id, order_item_id). Those three
-     * fields are read directly from seat post meta here.
-     *
      * Answers `sent` ONLY when wp_mail() accepted the message. Every reason it
      * does not mail — already emailed about this cancellation, cancellation
      * emails switched off, no address on the seat, the seat gone — is a
@@ -12127,10 +12123,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! \is_array( $info ) ) {
             return Outcome::skipped( 'seat_gone' );
         }
-        // get_seat_info() omits email, name, order_id — read from meta directly.
-        $email    = (string) \get_post_meta( $seat_id, '_anchor_event_email', true );
-        $name     = (string) \get_post_meta( $seat_id, '_anchor_event_name', true );
-        $order_id = (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true );
+        // REG-D53 — the snapshot carries these now; no reaching around the
+        // data layer for seat storage.
+        $email    = (string) $info['email'];
+        $name     = (string) $info['name'];
+        $order_id = (int) $info['order_id'];
         if ( $email === '' ) {
             return Outcome::skipped( 'no_address' );
         }

@@ -229,7 +229,58 @@ class Test_Reminders extends Anchor_Events_TestCase {
 			);
 		}
 
-		$this->assertSame( 1, $override_scans, 'The sweep still folds in per-event offsets, exactly once.' );
+		// finding-2 (bot review, PR #20): the sweep now runs TWO bounded
+		// override scans — a `posts_per_page => 1` query ordered by the
+		// offset meta DESC that finds the TRUE largest override regardless
+		// of scan-limit page size, plus the original capped page (per-event
+		// pass + truncation log). Both stay bounded by start_ts; neither
+		// scans every event that ever set an override.
+		$this->assertSame( 2, $override_scans, 'The sweep runs the true-max scan and the capped per-event scan, both bounded.' );
+	}
+
+	/**
+	 * finding-2 (bot review, PR #20): the capped, unordered per-event page
+	 * can miss the event holding the single largest override offset when
+	 * that event isn't among the first $scan_limit rows returned — and
+	 * $max_global (derived from that page) sets the horizon for the main
+	 * scan, so the missed event's own reminder was silently dropped, not
+	 * merely scanned late. With the cap filtered down to 2 and three
+	 * in-window events whose largest offset belongs to the LAST one
+	 * (so a naive capped-and-unordered read is likely to miss it), the
+	 * scan must still widen far enough to reach it and send its reminder.
+	 */
+	public function test_the_true_max_override_is_found_even_past_a_capped_page() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$first  = $this->future_event( time() + 5 * DAY_IN_SECONDS, 'Override A' );
+		$second = $this->future_event( time() + 6 * DAY_IN_SECONDS, 'Override B' );
+		// The largest offset (40 days) belongs to the event that starts
+		// FURTHEST out — well past reminder_offsets' global max of 7 — and is
+		// the third/last override row.
+		$third  = $this->future_event( time() + 40 * DAY_IN_SECONDS, 'Override C' );
+		update_post_meta( $first, '_anchor_event_reminder_offsets', '2' );
+		update_post_meta( $second, '_anchor_event_reminder_offsets', '3' );
+		update_post_meta( $third, '_anchor_event_reminder_offsets', '40' );
+
+		$seat_id = $this->make_seat( $third, [ 'email' => 'farout@example.com' ] );
+
+		$cap = static function () {
+			return 2; // Smaller than the three matching override events above.
+		};
+		add_filter( 'anchor_events_reminder_override_scan_limit', $cap );
+		$sent = [];
+		$this->capture_mail( $sent );
+		try {
+			$this->module()->run_reminder_sweep();
+		} finally {
+			remove_filter( 'anchor_events_reminder_override_scan_limit', $cap );
+		}
+
+		$this->assertContains(
+			'farout@example.com',
+			$sent,
+			'The event 40 days out — past the capped page and past the global max offset of 7 — must still be reached and reminded.'
+		);
 	}
 
 	/**

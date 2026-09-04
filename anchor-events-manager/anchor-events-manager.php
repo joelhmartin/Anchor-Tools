@@ -847,7 +847,45 @@ class Module {
         // the scan asks only about future events — and never looks further
         // ahead than REMINDER_HORIZON_DAYS whatever an offset claims.
         if ( ! empty( $settings['reminder_enabled'] ) ) {
-            $cap_ts       = $now + ( self::REMINDER_HORIZON_DAYS * DAY_IN_SECONDS );
+            $cap_ts      = $now + ( self::REMINDER_HORIZON_DAYS * DAY_IN_SECONDS );
+            $override_meta_query = [
+                'relation' => 'AND',
+                [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ],
+                [ 'key' => $this->meta_key( 'start_ts' ), 'value' => [ $now, $cap_ts ], 'compare' => 'BETWEEN', 'type' => 'NUMERIC' ],
+            ];
+
+            // finding-2 (bot review, PR #20) — the capped, UNORDERED page below
+            // can omit the very event whose override carries the largest
+            // offset (it only has to be one of the events NOT returned in the
+            // first $scan_limit rows), and $max_global sets the horizon the
+            // main scan below relies on — under-widening it silently drops
+            // that event's reminder entirely rather than merely scanning it
+            // late. sanitize_offset_csv() always rsort()s before storing, so
+            // the FIRST number in an event's CSV is always that event's own
+            // max; ordering by the meta field DESC and taking one row
+            // therefore finds the TRUE global max in one small, indexed
+            // query, independent of $scan_limit.
+            $max_row = \get_posts( [
+                'post_type'      => self::CPT,
+                'post_status'    => [ 'publish', 'future', 'private' ],
+                'posts_per_page' => 1,
+                'fields'         => 'ids',
+                'no_found_rows'  => true,
+                'meta_key'       => $this->meta_key( 'reminder_offsets' ), // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- required for orderby=meta_value_num below.
+                'orderby'        => 'meta_value_num',
+                'order'          => 'DESC',
+                'meta_query'     => $override_meta_query,
+            ] );
+            if ( ! empty( $max_row ) ) {
+                foreach ( array_map( 'intval', explode( ',', (string) \get_post_meta( (int) $max_row[0], $this->meta_key( 'reminder_offsets' ), true ) ) ) as $d ) {
+                    $max_global = max( $max_global, $d );
+                }
+            }
+
+            // The capped page stays for the per-event pass below (folding in
+            // any smaller overrides the true-max row above didn't carry) and
+            // for the truncation log an operator can act on; it is no longer
+            // the only source $max_global depends on for correctness.
             $scan_limit   = (int) \apply_filters( 'anchor_events_reminder_override_scan_limit', self::REMINDER_OVERRIDE_SCAN_LIMIT );
             $scan_limit   = $scan_limit > 0 ? $scan_limit : self::REMINDER_OVERRIDE_SCAN_LIMIT;
             $override_events = \get_posts( [
@@ -856,11 +894,7 @@ class Module {
                 'posts_per_page' => $scan_limit,
                 'fields'         => 'ids',
                 'no_found_rows'  => true,
-                'meta_query'     => [
-                    'relation' => 'AND',
-                    [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ],
-                    [ 'key' => $this->meta_key( 'start_ts' ), 'value' => [ $now, $cap_ts ], 'compare' => 'BETWEEN', 'type' => 'NUMERIC' ],
-                ],
+                'meta_query'     => $override_meta_query,
             ] );
             // finding-7 — a full page means the scan may have missed events past
             // the ceiling; logged once per sweep (not once per event) so an

@@ -8320,8 +8320,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return 'external';
         }
 
-        $managed_product = \get_post_meta( $event_id, $this->meta_key( 'managed_product' ), true );
-        if ( ! empty( $managed_product ) ) {
+        // MODEL-D23: the cached pointer used to be tested with empty() alone, so
+        // an event whose managed product had been DELETED (or a site migrated
+        // without its products) still derived 'wc' — render_registration_form()
+        // then routed to the WooCommerce branch with nothing to sell and the
+        // event became unbookable instead of falling back to the free form.
+        // Product_Sync::managed_product_id() is the validated accessor (it also
+        // rejects a trashed product and a pointer copied from another event);
+        // without WooCommerce there is no Product_Sync, so validate in place.
+        $managed_product = $this->product_sync
+            ? $this->product_sync->managed_product_id( $event_id )
+            : (int) \get_post_meta( $event_id, $this->meta_key( 'managed_product' ), true );
+        if ( $managed_product > 0 && \get_post_type( $managed_product ) === 'product' ) {
             return 'wc';
         }
         foreach ( $this->ticket_types->get( $event_id ) as $tier ) {

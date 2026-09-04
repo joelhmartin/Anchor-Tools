@@ -356,7 +356,15 @@ class WooCommerce {
         ] );
         foreach ( $variations as $vid ) {
             $parent = (int) \wp_get_post_parent_id( $vid );
-            if ( $parent > 0 && $this->product_link_enabled( $parent ) ) {
+            // The parent's STATUS as well as its toggle (audit WOO-D48). The
+            // simple-product branch above filters on post_status='publish'; this
+            // branch filtered the variation but never its parent, so a demoted
+            // (draft) managed product whose variations were left publish still
+            // counted as "linked". Live: event 7909 listed all three variations
+            // of drafted product 7910, so event_is_linked() said true, and
+            // can_view_virtual_link() gated the "Join here" link behind a
+            // confirmed seat that nothing could sell.
+            if ( $parent > 0 && \get_post_status( $parent ) === 'publish' && $this->product_link_enabled( $parent ) ) {
                 $out[] = [ 'product_id' => $parent, 'variation_id' => (int) $vid ];
             }
         }
@@ -1091,7 +1099,13 @@ class WooCommerce {
         }
 
         $meta              = $this->module->get_meta( $event_id );
-        $parent_product_id = (int) $this->module->product_sync->managed_product_id( $event_id );
+        // Sellable, not merely pointed-at (WOO-D23/D50): a demoted product is
+        // still THE managed product, and adding a draft parent to the cart
+        // succeeds for an editor and fails silently for everyone else. Asking
+        // the sellable question here turns that into one honest message.
+        $parent_product_id = $this->module->product_sync->managed_product_is_sellable( $event_id )
+            ? (int) $this->module->product_sync->managed_product_id( $event_id )
+            : 0;
         if ( $parent_product_id <= 0 ) {
             \wp_send_json_error( [ 'messages' => [ \__( 'Registration is not available for this event.', 'anchor-schema' ) ] ] );
         }
@@ -1240,6 +1254,19 @@ class WooCommerce {
         $event_id = $this->event_for_product_object( $product );
         if ( $event_id <= 0 ) {
             return $purchasable;
+        }
+
+        // WOO-D50: a variation is only as sellable as its parent. WooCommerce's
+        // own is_purchasable() lets anyone with edit_post through an unpublished
+        // parent, so an editor could buy a seat off a DEMOTED product — the very
+        // state the plugin uses to mean "this event has nothing to sell". Same
+        // rule products_for_event() applies when it qualifies a variation, so
+        // the storefront mirror and the cart agree.
+        if ( $product->is_type( 'variation' ) ) {
+            $parent_id = (int) $product->get_parent_id();
+            if ( $parent_id > 0 && \get_post_status( $parent_id ) !== 'publish' ) {
+                return false;
+            }
         }
 
         // WOO-D2: one question, one authority. This used to re-implement the

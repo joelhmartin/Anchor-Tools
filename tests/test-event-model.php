@@ -86,9 +86,24 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertSame( 'wc', $this->module()->registration_mode( $event_id ) );
 	}
 
-	/** registration_mode(): a managed product also derives 'wc'. */
+	/**
+	 * registration_mode(): a managed product also derives 'wc'.
+	 *
+	 * The fixture used to be the bare integer 123, which pinned the bug
+	 * MODEL-D23 describes: the pointer was tested with empty() only, so ANY
+	 * non-zero value derived 'wc' — including an id whose product had been
+	 * deleted, leaving a legacy event routed to a WooCommerce branch with
+	 * nothing to sell. The pointer must now name a real product; the
+	 * deleted-target half is pinned by
+	 * Test_Foreign_Keys::test_registration_mode_falls_back_to_free_when_managed_product_deleted.
+	 */
 	public function test_registration_mode_derives_wc_from_managed_product() {
-		$event_id = $this->make_event( [ 'managed_product' => 123 ] );
+		$this->require_wc();
+
+		$product_id = self::factory()->post->create(
+			[ 'post_type' => 'product', 'post_status' => 'publish' ]
+		);
+		$event_id = $this->make_event( [ 'managed_product' => $product_id ] );
 
 		$this->assertSame( 'wc', $this->module()->registration_mode( $event_id ) );
 	}

@@ -676,7 +676,23 @@ class Occurrences {
     }
 
     /**
-     * The parent event post id for a child (0 when not a child).
+     * The parent event post id for a child (0 when not a child, and 0 when the
+     * id it stores no longer names a live event).
+     *
+     * The plugin has no cascade: permanently deleting a group parent leaves its
+     * seated, soft-closed children with `group_role`='child' and a `group_id`
+     * pointing at a dead id (audit MODEL-D22). Seven callers then read fields
+     * off that id — Series::representative_id() renders a session row from it,
+     * the DEKA theme reads its meta, title and permalink — and if WordPress has
+     * reissued the id to an unrelated post, the child silently inherits that
+     * post's fields. The ordinary trashed-parent case is milder but still
+     * wrong: occurrence_label() builds its prefix from a trashed post's title.
+     *
+     * So the pointer is validated here once, for every caller, rather than
+     * seven times (and only one of the seven did it). Callers that LINK to the
+     * parent keep their own `publish` check on top — a trashed parent is not a
+     * parent at all now, but a private/draft one is still real and still must
+     * not be linked (render_sibling_dates()).
      *
      * @param int $child_id
      * @return int
@@ -686,7 +702,14 @@ class Occurrences {
         if ( $child_id <= 0 || ! $this->is_group_child( $child_id ) ) {
             return 0;
         }
-        return (int) \get_post_meta( $child_id, $this->module->meta_key( 'group_id' ), true );
+        $parent_id = (int) \get_post_meta( $child_id, $this->module->meta_key( 'group_id' ), true );
+        if ( $parent_id <= 0 || \get_post_type( $parent_id ) !== Module::CPT ) {
+            return 0; // Deleted, or an id reissued to something else.
+        }
+        if ( \get_post_status( $parent_id ) === 'trash' ) {
+            return 0;
+        }
+        return $parent_id;
     }
 
     /**
@@ -1360,7 +1383,11 @@ class Occurrences {
         if ( ! $this->module->product_sync || ! \function_exists( 'wc_get_product' ) ) {
             return;
         }
-        $product_id = (int) $this->module->product_sync->managed_product_id( $child_id );
+        // The RAW pointer on purpose: managed_product_id() now REJECTS a
+        // borrowed pointer (WOO-D23), which is the very row this method exists
+        // to delete. Reading the validated accessor here would make the read
+        // safe and leave the stale meta on the post forever.
+        $product_id = (int) $this->module->product_sync->stored_product_id( $child_id );
         if ( $product_id <= 0 ) {
             return;
         }

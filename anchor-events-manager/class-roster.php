@@ -367,10 +367,18 @@ class Roster {
     }
 
     /**
-     * Resolve a ticket-type id to its human label for an event. Falls back to the
-     * tier id (or "Primary" for the implicit-primary id) when the tier can't be
-     * resolved — e.g. a legacy seat or a removed tier. Used by the roster list
-     * table column and the CSV export.
+     * Resolve a ticket-type id to its human label for an event. The single tier
+     * column shared by the roster metabox table, the registrants list table and
+     * the CSV export.
+     *
+     * A seat stores its tier as a bare id and nothing repoints or relabels it
+     * when the organizer removes that row from the Tickets metabox (audit
+     * WOO-D58): Ticket_Types::find() returns null forever after, and the column
+     * used to print the raw id — a twelve-character hash that reads as data
+     * corruption rather than as "this tier no longer exists". The id is still
+     * shown, because it is the only handle anyone has on those seats (the
+     * quota that used to bind them is gone too, and the seats are invisible to
+     * every tier count), but it is now labelled for what it is.
      *
      * @param int    $event_id
      * @param string $tier_id
@@ -379,7 +387,7 @@ class Roster {
     public function tier_label( $event_id, $tier_id ) {
         $tier_id = (string) $tier_id;
         if ( $tier_id === '' ) {
-            $tier_id = 'primary';
+            $tier_id = Ticket_Types::PRIMARY_ID;
         }
         $tt = isset( $this->module->ticket_types ) ? $this->module->ticket_types : null;
         if ( $tt ) {
@@ -388,7 +396,11 @@ class Roster {
                 return (string) $tier['label'];
             }
         }
-        return $tier_id === 'primary' ? \__( 'Primary', 'anchor-schema' ) : $tier_id;
+        return \sprintf(
+            /* translators: %s: the stored ticket-tier id, which no longer exists on the event. */
+            \__( '%s (retired tier)', 'anchor-schema' ),
+            $tier_id === Ticket_Types::PRIMARY_ID ? \__( 'Primary', 'anchor-schema' ) : $tier_id
+        );
     }
 
     /* ---------------------------------------------------------------------

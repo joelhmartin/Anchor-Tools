@@ -492,4 +492,116 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 		$this->assertSame( 'publish', get_post_status( $child ) );
 		$this->assertCount( 2, $this->all_child_posts( $parent_id ), 'No second post for a revived date.' );
 	}
+
+	/* ------------------------------------------------------------------
+	 * (e) Retiring a duplicate must not demote the CANONICAL child's product.
+	 *
+	 * A duplicate-post copy carries the original's
+	 * `_anchor_event_managed_product` pointer, and wp_trash_post() fires
+	 * Product_Sync::on_event_trashed_or_deleted(), which reads that forward
+	 * pointer only — so trashing the copy would set the live date's product to
+	 * draft and quietly stop it being purchasable.
+	 * ------------------------------------------------------------------ */
+
+	/** A paid parent whose children therefore get managed products. */
+	protected function make_paid_parent( array $rows ) {
+		$parent_id = $this->make_event(
+			[ 'title' => 'Workshop', 'venue' => 'Main Hall', 'timezone' => 'UTC' ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $rows );
+		return $parent_id;
+	}
+
+	public function test_trashing_a_duplicate_does_not_draft_the_canonical_childs_product() {
+		$this->require_wc();
+
+		$parent_id  = $this->make_paid_parent( $this->two_rows() );
+		$live       = $this->occurrences()->reconcile( $parent_id );
+		$child      = (int) $live[0];
+		$product_id = (int) $this->product_sync()->sync_event( $child );
+
+		$this->assertGreaterThan( 0, $product_id, 'Precondition: the canonical child owns a managed product.' );
+		$this->assertSame( 'publish', wc_get_product( $product_id )->get_status() );
+
+		$clone = $this->clone_child( $child );
+		$this->assertSame(
+			$product_id,
+			(int) get_post_meta( $clone, \Anchor\Events\Product_Sync::EVENT_PRODUCT_META, true ),
+			"Precondition: the copy carries the original's product pointer."
+		);
+
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame( 'trash', get_post_status( $clone ), 'Precondition: the duplicate is retired by trashing.' );
+
+		wp_cache_flush();
+		$product = wc_get_product( $product_id );
+		$this->assertSame(
+			'publish',
+			$product->get_status(),
+			"Trashing a duplicate must not draft the live date's product."
+		);
+		$this->assertSame(
+			$child,
+			(int) $product->get_meta( \Anchor\Events\Product_Sync::PRODUCT_EVENT_META ),
+			'The product still belongs to the canonical child.'
+		);
+		$this->assertSame(
+			0,
+			(int) get_post_meta( $clone, \Anchor\Events\Product_Sync::EVENT_PRODUCT_META, true ),
+			'The retired duplicate no longer claims a product it never owned.'
+		);
+	}
+
+	/**
+	 * The same exposure through retire_all_children() (parent trashed): the
+	 * canonical child holds a roster so it is only soft-closed — its product is
+	 * deliberately left published — while the unseated duplicate is trashed.
+	 */
+	public function test_parent_trash_duplicate_does_not_draft_the_preserved_childs_product() {
+		$this->require_wc();
+
+		$parent_id  = $this->make_paid_parent( $this->two_rows() );
+		$live       = $this->occurrences()->reconcile( $parent_id );
+		$child      = (int) $live[0];
+		$product_id = (int) $this->product_sync()->sync_event( $child );
+		$this->make_seat( $child, [ 'status' => Registrations::STATUS_CONFIRMED ] );
+
+		$clone = $this->clone_child( $child );
+
+		$this->occurrences()->retire_all_children( $parent_id );
+
+		$this->assertSame( 'publish', get_post_status( $child ), 'A seated child is preserved.' );
+		$this->assertSame( 'trash', get_post_status( $clone ) );
+
+		wp_cache_flush();
+		$this->assertSame(
+			'publish',
+			wc_get_product( $product_id )->get_status(),
+			"Retiring the duplicate must not draft the preserved child's product."
+		);
+	}
+
+	/** A child that DOES own its product still demotes it on trash. */
+	public function test_retiring_a_child_that_owns_its_product_still_drafts_it() {
+		$this->require_wc();
+
+		$parent_id  = $this->make_paid_parent( $this->two_rows() );
+		$live       = $this->occurrences()->reconcile( $parent_id );
+		$child      = (int) $live[0];
+		$product_id = (int) $this->product_sync()->sync_event( $child );
+		$this->assertSame( 'publish', wc_get_product( $product_id )->get_status() );
+
+		$this->drop_first_date( $parent_id );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame( 'trash', get_post_status( $child ) );
+		wp_cache_flush();
+		$this->assertSame(
+			'draft',
+			wc_get_product( $product_id )->get_status(),
+			'The owning event still drafts its own product when it is retired.'
+		);
+	}
 }

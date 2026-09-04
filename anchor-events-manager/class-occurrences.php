@@ -1049,7 +1049,49 @@ class Occurrences {
             $this->soft_close( $child_id );
             return;
         }
+        // The trash is what demotes a managed product, so a child that does not
+        // own the product it points at must let go of it first.
+        $this->disown_foreign_product( $child_id );
         \wp_trash_post( $child_id );
+    }
+
+    /**
+     * Drop a child's managed-product pointer when the product it names belongs
+     * to a DIFFERENT event.
+     *
+     * A duplicate produced by a duplicate-post plugin copies
+     * `_anchor_event_managed_product` along with everything else, so two child
+     * posts point at one product — but the product's own back-pointer
+     * (Product_Sync::PRODUCT_EVENT_META) still names exactly one owner. Trashing
+     * the copy fires Product_Sync::on_event_trashed_or_deleted(), which reads
+     * only the forward pointer and would set the CANONICAL child's product to
+     * draft: the live date silently stops being purchasable. Clearing the
+     * borrowed pointer first makes that trash a no-op for the product, and also
+     * stops a preserved (soft-closed) duplicate from later adopting — and
+     * re-owning — a product that is not its own.
+     *
+     * A child that genuinely owns its product keeps the pointer, so trashing a
+     * real occurrence still drafts its product exactly as before.
+     *
+     * @param int $child_id
+     */
+    private function disown_foreign_product( $child_id ) {
+        $child_id = (int) $child_id;
+        if ( ! $this->module->product_sync || ! \function_exists( 'wc_get_product' ) ) {
+            return;
+        }
+        $product_id = (int) $this->module->product_sync->managed_product_id( $child_id );
+        if ( $product_id <= 0 ) {
+            return;
+        }
+        $product = \wc_get_product( $product_id );
+        if ( ! $product ) {
+            return; // Dangling pointer: there is no product to demote or steal.
+        }
+        if ( (int) $product->get_meta( Product_Sync::PRODUCT_EVENT_META ) === $child_id ) {
+            return; // This child owns it.
+        }
+        \delete_post_meta( $child_id, Product_Sync::EVENT_PRODUCT_META );
     }
 
     /**
@@ -1233,15 +1275,12 @@ class Occurrences {
      * @return array<string,int[]> occurrence_key => child ids, canonical first.
      */
     private function existing_children_map( $parent_id, $include_trashed = false ) {
-        // 'any' is exactly get_post_stati( [ 'exclude_from_search' => false ] );
-        // spelling it out is the only way to ADD trash to it.
-        $statuses = $include_trashed
-            ? \array_merge( \array_values( \get_post_stati( [ 'exclude_from_search' => false ] ) ), [ 'trash' ] )
-            : 'any';
-
+        // 'any' means every status that isn't excluded from search — i.e.
+        // everything but trash and auto-draft — and WP_Query drops an exclusion
+        // that is ALSO listed explicitly, so [ 'any', 'trash' ] is "any + trash".
         $ids = \get_posts( [
             'post_type'      => Module::CPT,
-            'post_status'    => $statuses,
+            'post_status'    => $include_trashed ? [ 'any', 'trash' ] : 'any',
             'posts_per_page' => -1,
             'fields'         => 'ids',
             'no_found_rows'  => true,
@@ -1339,6 +1378,10 @@ class Occurrences {
                 if ( \get_post_status( $duplicate_id ) === 'trash' || $this->is_closed( $duplicate_id ) ) {
                     continue; // Already retired — nothing to do, nothing to report.
                 }
+                // Both retirement outcomes: a soft-closed duplicate must not
+                // keep a borrowed product pointer either (it would let a later
+                // sync re-own the canonical child's product).
+                $this->disown_foreign_product( $duplicate_id );
                 $this->retire_child( $duplicate_id );
                 Events_Log::error( 'duplicate_occurrence', [
                     'parent_id'      => (int) $parent_id,

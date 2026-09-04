@@ -5432,6 +5432,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 continue;
             }
             $key = (string) ( $row['key'] ?? 'custom' );
+            // MODEL-D44: sanitize_labels_rows() clamps an unknown key to
+            // 'custom' at write time, but a key can leave the vocabulary
+            // AFTER a row was saved — a site removing 'level' via the
+            // anchor_events_labels_vocabulary filter leaves stored
+            // {key:'level', value:'Advanced'} rows in place. Re-apply the
+            // same clamp here so every reader (get_labels(), get_label(),
+            // render_labels_badges() — all of which call this method) sees a
+            // key that is always either a live vocabulary entry or 'custom',
+            // never a stale one whose caption can only resolve to ''.
+            if ( ! isset( $vocabulary[ $key ] ) ) {
+                $key = 'custom';
+            }
             $rows[] = [
                 'key'     => $key,
                 'label'   => (string) ( $row['label'] ?? '' ),

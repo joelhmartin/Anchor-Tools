@@ -200,6 +200,28 @@ class Test_Event_Labels extends Anchor_Events_TestCase {
 		$this->assertSame( 'Cohort', $rows[1]['caption'], 'Custom rows use the author-typed caption.' );
 	}
 
+	/**
+	 * MODEL-D44 — a stored key that has since left the vocabulary (e.g. a
+	 * site removed it via the anchor_events_labels_vocabulary filter) is
+	 * normalised to 'custom' on READ, the same clamp sanitize_labels_rows()
+	 * already applies on write. Written directly via update_post_meta() to
+	 * simulate a row saved BEFORE the key was removed, bypassing save_meta()
+	 * entirely — exactly the shape a stale stored row has.
+	 */
+	public function test_labels_accessor_normalises_a_key_that_left_the_vocabulary() {
+		$event_id = $this->make_event();
+
+		\update_post_meta( $event_id, '_anchor_event_labels', [
+			[ 'key' => 'retired-key', 'label' => '', 'value' => 'Advanced' ],
+		] );
+
+		$rows = anchor_event_labels( $event_id );
+
+		$this->assertCount( 1, $rows );
+		$this->assertSame( 'custom', $rows[0]['key'], 'A key outside the vocabulary must read back as custom, matching the write-side clamp.' );
+		$this->assertSame( 'Advanced', $rows[0]['value'] );
+	}
+
 	/** An event with no labels yields an empty array, never null. */
 	public function test_labels_accessor_on_unlabelled_event_returns_empty_array() {
 		$event_id = $this->make_event();

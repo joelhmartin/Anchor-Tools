@@ -615,4 +615,50 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertContains( 'roster_invalid_event', $this->error_codes() );
 	}
 
+	/**
+	 * REG-D17 — a roster send with nowhere to send it logs its own code, and
+	 * a roster switched off says so in the notice instead of pointing the
+	 * operator at an error log that has nothing in it.
+	 */
+	public function test_a_roster_digest_with_no_recipient_logs_a_distinct_code() {
+		$event_id = $this->make_event();
+		// The site fallback is admin_email, and WP refuses to store an empty
+		// one — filter it away for the length of the assertion instead.
+		$blank = static function () {
+			return '';
+		};
+		add_filter( 'option_admin_email', $blank );
+
+		try {
+			$result = $this->module()->send_roster_email( $event_id );
+		} finally {
+			remove_filter( 'option_admin_email', $blank );
+		}
+
+		$this->assertTrue( $result->is_failed() );
+		$this->assertSame( 'no_address', $result->reason() );
+		$this->assertContains( 'roster_no_address', $this->error_codes() );
+	}
+
+	public function test_a_switched_off_roster_send_names_the_reason_in_the_notice() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_email_off_roster', '1' );
+
+		$_POST    = [
+			'event_id' => $event_id,
+			'_wpnonce' => wp_create_nonce( 'anchor_events_send_roster_' . $event_id ),
+		];
+		$_REQUEST = $_POST;
+
+		$location = '';
+		try {
+			$this->module()->roster->handle_send_roster();
+		} catch ( Anchor_Roster_Redirect_Signal $e ) {
+			$location = $e->getMessage();
+		}
+
+		$this->assertStringContainsString( 'switched off', $this->message_of( $location ) );
+		$this->assertNotContains( 'roster_disabled', $this->error_codes() );
+	}
+
 }

@@ -66,13 +66,25 @@ class Registrations {
     const META_CANCEL_EMAILED = '_anchor_event_cancel_emailed';
     const META_EMAIL_RETRY    = '_anchor_event_email_retry';
 
-    /** Allowed status transitions (spec §4.3). Illegal transitions are logged + no-oped. */
+    /**
+     * Allowed status transitions (spec §4.3). Illegal transitions are logged + no-oped.
+     *
+     * `cancelled -> waitlist` and `failed -> waitlist` exist for
+     * change_status_with_capacity()'s overflow branch (REG-D38): reviving a
+     * seat onto a full event that runs a waitlist has to put it SOMEWHERE
+     * honest, and the waitlist is that place. Without them the revive answered
+     * `illegal_transition` — an error-logged refusal for something the module
+     * itself had just decided to do.
+     *
+     * `refunded` stays terminal in both directions: money moved, and a refunded
+     * seat is never revived by any path.
+     */
     protected static $transitions = [
         self::STATUS_PENDING   => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED, self::STATUS_WAITLIST ],
         self::STATUS_CONFIRMED => [ self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED ],
         self::STATUS_WAITLIST  => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED ],
-        self::STATUS_FAILED    => [ self::STATUS_CONFIRMED, self::STATUS_PENDING ],
-        self::STATUS_CANCELLED => [ self::STATUS_CONFIRMED, self::STATUS_PENDING ],
+        self::STATUS_FAILED    => [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST ],
+        self::STATUS_CANCELLED => [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST ],
         self::STATUS_REFUNDED  => [], // terminal — never auto-revived.
     ];
 
@@ -445,19 +457,25 @@ class Registrations {
             }
 
             if ( ! $fits && ! $allow_over ) {
-                // A seat coming back from cancelled can go somewhere honest —
-                // the waitlist — when the event runs one. A seat that is ALREADY
-                // waitlisted has nowhere to go, so that is a refusal.
-                if ( $from !== self::STATUS_WAITLIST && ! empty( $meta['waitlist'] ) ) {
-                    $note_full = \trim( $note . ' ' . \__( '(event full — waitlisted instead)', 'anchor-schema' ) );
-                    $out = $this->update_status( $seat_id, self::STATUS_WAITLIST, $note_full, $actor );
-                    return $out->is_sent() ? Outcome::sent( 'waitlisted' ) : $out;
-                }
+                // The confirm is refused either way — this records WHY, once,
+                // whichever of the two branches below answers it.
                 Events_Log::error( 'capacity_refused', [
                     'event' => $event_id,
                     'seat'  => $seat_id,
                     'from'  => $from,
                 ] );
+                // A seat coming back from cancelled or failed can go somewhere
+                // honest — the waitlist — when the event runs one. (The
+                // transition table carries cancelled|failed -> waitlist for
+                // exactly this; without it the revive answered
+                // `illegal_transition` and the operator was told the change was
+                // not allowed.) A seat that is ALREADY waitlisted has nowhere
+                // to go, so that is a plain refusal.
+                if ( $from !== self::STATUS_WAITLIST && ! empty( $meta['waitlist'] ) ) {
+                    $note_full = \trim( $note . ' ' . \__( '(event full — waitlisted instead)', 'anchor-schema' ) );
+                    $out = $this->update_status( $seat_id, self::STATUS_WAITLIST, $note_full, $actor );
+                    return $out->is_sent() ? Outcome::sent( 'waitlisted' ) : $out;
+                }
                 return Outcome::failed( 'capacity_full' );
             }
 

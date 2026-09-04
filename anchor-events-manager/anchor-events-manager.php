@@ -247,8 +247,20 @@ class Module {
     /** @var Event_Schema|null schema.org/Event JSON-LD data builder (Phase 4, Task 4.1; always loaded, read-only). */
     public $event_schema = null;
 
-    /** @var int[] Seat ids queued for a cancellation email this request. */
-    private $pending_cancellation_emails = [];
+    /**
+     * Seat lifecycle emails queued for the end of this request, `seat_id => type`
+     * ('cancellation' | 'promotion').
+     *
+     * ONE queue, because they need the same thing: a send that happens OUTSIDE
+     * the per-event capacity lock. update_status() fires its hook while
+     * change_status_with_capacity() (and the WooCommerce reconcile) still hold
+     * that lock, and wp_mail() can block for as long as the SMTP host feels
+     * like — holding a MySQL named lock for the duration would stall every
+     * other buyer on that event.
+     *
+     * @var array<int,string>
+     */
+    private $pending_seat_emails = [];
 
     /**
      * Task 3.2 — transient (never persisted) substitution for
@@ -500,7 +512,7 @@ class Module {
         // v1.1: attendee cancellation/refund email (spec §7). Enqueue on transition,
         // flush after the event lock releases (shutdown) so no wp_mail runs under GET_LOCK.
         \add_action( 'anchor_events_seat_status_changed', [ $this, 'on_seat_status_changed' ], 10, 4 );
-        \add_action( 'shutdown', [ $this, 'flush_cancellation_emails' ] );
+        \add_action( 'shutdown', [ $this, 'flush_seat_emails' ] );
     }
 
     /**
@@ -12114,12 +12126,31 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * store's own subject (when a store has set one) overrides it in the
      * WooCommerce sender only.
      *
-     * @param array $settings Module settings.
+     * A waitlisted seat borrows the SAME editable setting — REG-D58 made
+     * `confirmation_subject` the one subject an author can change, and a second
+     * field would undo that — but its built-in fallback says waitlist rather
+     * than "You are registered", which was simply untrue for that recipient. An
+     * author who has typed their own subject keeps it for both.
+     *
+     * @param array  $settings Module settings.
+     * @param string $status   Seat status the mail describes.
      * @return string
      */
-    public function default_confirmation_subject( array $settings ) {
+    public function default_confirmation_subject( array $settings, $status = Registrations::STATUS_CONFIRMED ) {
         $subject = (string) ( $settings['confirmation_subject'] ?? '' );
-        return $subject !== '' ? $subject : __( 'You are registered for {event_title}', 'anchor-schema' );
+        $shipped = (string) ( $this->default_settings()['confirmation_subject'] ?? '' );
+
+        // Wording somebody chose wins for BOTH outcomes — a second setting
+        // would undo REG-D58's "one subject an author can change".
+        if ( $subject !== '' && $subject !== $shipped ) {
+            return $subject;
+        }
+        // Untouched site: the shipped default says "You are registered for X",
+        // which is simply untrue for a waitlisted seat.
+        if ( Registrations::STATUS_WAITLIST === $status ) {
+            return __( 'You are on the waitlist for {event_title}', 'anchor-schema' );
+        }
+        return $subject !== '' ? $subject : $shipped;
     }
 
     private function default_confirmation_intro( array $settings ) {
@@ -12203,7 +12234,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 $event_id,
                 'confirmation',
                 'subject',
-                $this->default_confirmation_subject( $settings )
+                $this->default_confirmation_subject( $settings, (string) $status )
             ),
             $tokens
         );
@@ -12247,16 +12278,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // switches (notify_user and the per-event confirmation toggle), rather
         // than growing a fifth template.
         if ( $from === Registrations::STATUS_WAITLIST && $to === Registrations::STATUS_CONFIRMED ) {
-            $seat = $this->registrations->get_seat( (int) $seat_id );
-            if ( \is_array( $seat ) ) {
-                $this->send_registration_emails(
-                    (int) \get_post_meta( (int) $seat_id, '_anchor_event_id', true ),
-                    (string) ( $seat['name'] ?? '' ),
-                    (string) ( $seat['email'] ?? '' ),
-                    Registrations::STATUS_CONFIRMED,
-                    (int) ( $seat['guests'] ?? 0 )
-                );
-            }
+            // QUEUED, not sent here: this hook fires from update_status(), and
+            // the promotion's own caller (change_status_with_capacity()) is
+            // still holding the event's capacity lock. Same queue and same
+            // flush point as a cancellation, for the same reason.
+            $this->pending_seat_emails[ (int) $seat_id ] = 'promotion';
             return;
         }
 
@@ -12274,19 +12300,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( (int) \get_post_meta( (int) $seat_id, Registrations::META_CANCEL_EMAILED, true ) > 0 ) {
             return;
         }
-        $this->pending_cancellation_emails[ (int) $seat_id ] = (int) $seat_id;
+        $this->pending_seat_emails[ (int) $seat_id ] = 'cancellation';
     }
 
-    /** Flush queued cancellation emails outside any lock (shutdown + explicit end-of-reconcile). */
-    public function flush_cancellation_emails() {
-        if ( empty( $this->pending_cancellation_emails ) ) {
+    /**
+     * Flush queued seat lifecycle emails outside any lock (shutdown + explicit
+     * end-of-reconcile). Dispatches on the queued type, so cancellations and
+     * waitlist promotions share one queue, one flush point and one guarantee:
+     * nothing is mailed while the event lock is held.
+     */
+    public function flush_seat_emails() {
+        if ( empty( $this->pending_seat_emails ) ) {
             return;
         }
-        $queue = $this->pending_cancellation_emails;
-        $this->pending_cancellation_emails = [];
-        foreach ( $queue as $seat_id ) {
+        $queue = $this->pending_seat_emails;
+        $this->pending_seat_emails = [];
+        foreach ( $queue as $seat_id => $type ) {
+            if ( 'promotion' === $type ) {
+                $seat = $this->registrations->get_seat( (int) $seat_id );
+                if ( ! \is_array( $seat ) || ( $seat['status'] ?? '' ) !== Registrations::STATUS_CONFIRMED ) {
+                    continue; // cancelled again before the flush — nothing to announce.
+                }
+                $this->send_registration_emails(
+                    (int) \get_post_meta( (int) $seat_id, '_anchor_event_id', true ),
+                    (string) ( $seat['name'] ?? '' ),
+                    (string) ( $seat['email'] ?? '' ),
+                    Registrations::STATUS_CONFIRMED,
+                    (int) ( $seat['guests'] ?? 0 )
+                );
+                continue;
+            }
             $this->send_cancellation_email( (int) $seat_id );
         }
+    }
+
+    /**
+     * Historical name for flush_seat_emails(), kept because it is the flush
+     * point every caller already knows (the shutdown hook, the WooCommerce
+     * reconcile, and the email tests). A forwarder, not a second queue.
+     */
+    public function flush_cancellation_emails() {
+        $this->flush_seat_emails();
     }
 
     /**

@@ -286,6 +286,29 @@ Both are executed by a single recurring cron hook (`anchor_events_reminder_sweep
 
 **Cancellation marker:** Per-seat `_anchor_event_cancel_emailed` — the Unix time that cancellation was emailed about. `Registrations::update_status()` deletes it whenever a seat leaves a terminal status, so a seat restored by a roster edit and cancelled again emails the attendee again. `send_cancellation_email()` answers `sent` only when `wp_mail()` accepted the message (see **Dispatch results** below).
 
+### Seat-email queue (nothing mails inside the lock)
+
+`Module::on_seat_status_changed()` never sends: it puts `seat_id => type` on one
+in-request queue (`cancellation` | `promotion`) that `Module::flush_seat_emails()`
+drains on `shutdown` (and explicitly at the end of the WooCommerce reconcile).
+`Registrations::update_status()` fires that hook while its caller may still hold
+the per-event capacity lock — `change_status_with_capacity()` always does — and
+`wp_mail()` can block for as long as the SMTP host feels like, so a send from
+inside the hook would hold a MySQL named lock for the length of an SMTP round
+trip and stall every other buyer on that event.
+
+One entry per seat, so a seat promoted and then cancelled again in the same
+request announces the state it ENDED in, not both. A promotion whose seat is no
+longer `confirmed` at flush time is dropped. `flush_cancellation_emails()` is
+kept as a forwarder to the same method — the flush point older callers know.
+
+**Waitlist promotion** (`waitlist -> confirmed`, only ever operator-driven from
+the roster) reuses the confirmation sender, so it answers to `notify_user` and
+the per-event confirmation switch like any other confirmation. On a site that
+has not customised **Confirmation subject**, a waitlisted send falls back to
+"You are on the waitlist for {event_title}" instead of the shipped "You are
+registered for…"; wording an author has typed is used for both outcomes.
+
 ### Dispatch results
 
 Every sender — the WooCommerce buyer confirmation, the WooCommerce organizer notices, the reminder, the roster digest, the cancellation — and `Registrations::update_status()` return an `Outcome`, not a boolean:

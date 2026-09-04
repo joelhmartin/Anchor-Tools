@@ -613,6 +613,10 @@ class Test_Roster extends Anchor_Events_TestCase {
 			Registrations::STATUS_CONFIRMED,
 			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
 		);
+		// Queued, not sent inside the lock — the shutdown hook drains it in
+		// production; here the test drains it explicitly.
+		$this->assertNull( $this->mail_to( 'promoted@example.org' ) );
+		$this->module()->flush_seat_emails();
 		$this->assertNotNull(
 			$this->mail_to( 'promoted@example.org' ),
 			'A waitlist promotion told nobody they got a seat.'
@@ -795,4 +799,293 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertNotContains( 'roster_disabled', $this->error_codes() );
 	}
 
+
+	/* -----------------------------------------------------------------
+	 * Fix round 1
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * REG-D38 — the "waitlist instead of refuse" branch has to be REACHABLE.
+	 * The transition table forbade cancelled -> waitlist, so a revive on a full
+	 * event that runs a waitlist answered illegal_transition (logged as an
+	 * error) and the operator was told the change was not allowed.
+	 */
+	public function test_reviving_a_cancelled_seat_onto_a_full_waitlisted_event_waitlists_it() {
+		$event_id = $this->make_event(
+			[
+				'capacity' => 1,
+				'waitlist' => true,
+			]
+		);
+		$this->make_seat( $event_id );
+		$seat_id = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CANCELLED ] );
+
+		$location = $this->post_edit(
+			$event_id,
+			$seat_id,
+			[ 'roster_status' => Registrations::STATUS_CONFIRMED ]
+		);
+
+		$this->assertSame(
+			Registrations::STATUS_WAITLIST,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true ),
+			'The revive had somewhere honest to go and did not take it.'
+		);
+		$this->assertSame( '', $this->code_of( $location ), 'A waitlisted revive is not a refusal.' );
+		$this->assertStringContainsString( 'waitlist', strtolower( $this->message_of( $location ) ) );
+		$this->assertContains( 'capacity_refused', $this->error_codes() );
+		$this->assertNotContains(
+			'illegal_transition',
+			$this->error_codes(),
+			'The module refused a transition it had itself decided to make.'
+		);
+	}
+
+	public function test_a_failed_seat_revived_onto_a_full_waitlisted_event_waitlists_too() {
+		$event_id = $this->make_event(
+			[
+				'capacity' => 1,
+				'waitlist' => true,
+			]
+		);
+		$this->make_seat( $event_id );
+		$seat_id = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_FAILED ] );
+
+		$this->post_edit( $event_id, $seat_id, [ 'roster_status' => Registrations::STATUS_CONFIRMED ] );
+
+		$this->assertSame(
+			Registrations::STATUS_WAITLIST,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
+		);
+		$this->assertNotContains( 'illegal_transition', $this->error_codes() );
+	}
+
+	/** A refunded seat is terminal in both directions and stays that way. */
+	public function test_a_refunded_seat_is_still_never_revived() {
+		$event_id = $this->make_event( [ 'waitlist' => true ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_REFUNDED ] );
+
+		$location = $this->post_edit( $event_id, $seat_id, [ 'roster_status' => Registrations::STATUS_CONFIRMED ] );
+
+		$this->assertSame( 'invalid', $this->code_of( $location ) );
+		$this->assertSame(
+			Registrations::STATUS_REFUNDED,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
+		);
+	}
+
+	/**
+	 * The promotion email must not go out while the event's capacity lock is
+	 * held — wp_mail() can block for as long as the SMTP host feels like.
+	 */
+	public function test_the_promotion_email_is_sent_after_the_lock_releases() {
+		$this->set_notifications( true );
+		$event_id = $this->make_event(
+			[
+				'title'    => 'Deferred Promotion',
+				'capacity' => 5,
+				'waitlist' => true,
+			]
+		);
+		$seat_id = $this->make_seat(
+			$event_id,
+			[
+				'status' => Registrations::STATUS_WAITLIST,
+				'email'  => 'deferred@example.org',
+			]
+		);
+
+		$result = $this->registrations()->change_status_with_capacity(
+			$seat_id,
+			Registrations::STATUS_CONFIRMED,
+			'test promotion',
+			'user:1'
+		);
+
+		$this->assertTrue( $result->is_sent() );
+		$this->assertNull(
+			$this->mail_to( 'deferred@example.org' ),
+			'The promotion emailed from inside the capacity lock.'
+		);
+
+		$this->module()->flush_seat_emails();
+
+		$this->assertNotNull(
+			$this->mail_to( 'deferred@example.org' ),
+			'The promotion never reached the flush.'
+		);
+	}
+
+	/** One queue: the historical flush name still drains promotions too. */
+	public function test_the_legacy_flush_name_still_drains_the_queue() {
+		$this->set_notifications( true );
+		$event_id = $this->make_event( [ 'capacity' => 5, 'waitlist' => true ] );
+		$seat_id  = $this->make_seat(
+			$event_id,
+			[
+				'status' => Registrations::STATUS_WAITLIST,
+				'email'  => 'legacy@example.org',
+			]
+		);
+
+		$this->registrations()->change_status_with_capacity( $seat_id, Registrations::STATUS_CONFIRMED, '', 'user:1' );
+		$this->module()->flush_cancellation_emails();
+
+		$this->assertNotNull( $this->mail_to( 'legacy@example.org' ) );
+	}
+
+	/**
+	 * One entry per seat: a seat promoted and then cancelled again in the same
+	 * request announces the state it ENDED in, never both.
+	 */
+	public function test_a_promotion_undone_before_the_flush_announces_the_cancellation() {
+		$this->set_notifications( true );
+		$event_id = $this->make_event( [ 'capacity' => 5, 'waitlist' => true ] );
+		$seat_id  = $this->make_seat(
+			$event_id,
+			[
+				'status' => Registrations::STATUS_WAITLIST,
+				'email'  => 'undone@example.org',
+			]
+		);
+
+		$this->registrations()->change_status_with_capacity( $seat_id, Registrations::STATUS_CONFIRMED, '', 'user:1' );
+		$this->registrations()->update_status( $seat_id, Registrations::STATUS_CANCELLED, 'changed my mind', 'user:1' );
+		$this->module()->flush_seat_emails();
+
+		foreach ( $this->sent as $args ) {
+			if ( in_array( 'undone@example.org', (array) $args['to'], true ) ) {
+				$this->assertStringNotContainsString(
+					'registered',
+					strtolower( (string) $args['subject'] ),
+					'A promotion that was undone still announced a seat.'
+				);
+			}
+		}
+		$this->assertSame(
+			Registrations::STATUS_CANCELLED,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
+		);
+	}
+
+	/** A group container has no roster of its own — its dates do. */
+	public function test_manual_add_to_a_group_parent_is_refused_as_invalid() {
+		$parent_id = $this->make_event( [ 'title' => 'Offering', 'timezone' => 'UTC' ] );
+		update_post_meta(
+			$parent_id,
+			'_anchor_event_offering_dates',
+			[
+				[ 'date' => '2027-05-01', 'start_time' => '09:00', 'end_time' => '11:00', 'capacity' => 5 ],
+				[ 'date' => '2027-05-08', 'start_time' => '09:00', 'end_time' => '11:00', 'capacity' => 5 ],
+			]
+		);
+		$live = $this->module()->occurrences->reconcile( $parent_id );
+		$this->assertNotEmpty( $live, 'Fixture invalid: the offering generated no dates.' );
+
+		$location = $this->post_add( $parent_id );
+
+		$this->assertSame( 'invalid', $this->code_of( $location ) );
+		$this->assertSame( 0, $this->count_seats( $parent_id ), 'A container took a seat of its own.' );
+		$this->assertStringContainsString( 'date', strtolower( $this->message_of( $location ) ) );
+	}
+
+	/** …but a single date with registration switched off still takes a manual add. */
+	public function test_manual_add_to_a_registration_disabled_event_still_works() {
+		$event_id = $this->make_event( [ 'registration_enabled' => false ] );
+
+		$location = $this->post_add( $event_id );
+
+		$this->assertSame( '', $this->code_of( $location ) );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+	}
+
+	/** A checkbox must not carry a width class on any surface. */
+	public function test_the_admin_add_form_checkbox_carries_no_width_class() {
+		$event_id = $this->event_with_checkbox_question();
+
+		$method = new ReflectionMethod( $this->module()->roster, 'render_add_form' );
+		$method->setAccessible( true );
+		ob_start();
+		$method->invoke( $this->module()->roster, $event_id );
+		$html = (string) ob_get_clean();
+
+		$this->assertMatchesRegularExpression( '/<input type="checkbox"[^>]*name="roster_field\[parking\]"/', $html );
+		$this->assertDoesNotMatchRegularExpression(
+			'/<input type="checkbox"[^>]*class="[^"]*"[^>]*name="roster_field\[parking\]"/',
+			$html,
+			'A width class on a checkbox stretches it across the row.'
+		);
+	}
+
+	public function test_the_question_control_renderer_gives_a_checkbox_no_class() {
+		$q = [
+			'key'      => 'parking',
+			'label'    => 'Parking',
+			'type'     => 'checkbox',
+			'options'  => [],
+			'required' => false,
+		];
+
+		$html = $this->module()->render_registration_question_control( $q, [
+			'name'           => 'anchor_attendees[x][1][fields][parking]',
+			'class'          => '',
+			'checkbox_label' => 'Yes',
+			'checkbox_class' => 'anchor-event-attendee-check',
+		] );
+
+		$this->assertStringContainsString( '<label class="anchor-event-attendee-check">', $html );
+		$this->assertStringNotContainsString( 'input-text', $html );
+		$this->assertDoesNotMatchRegularExpression( '/<input type="checkbox"[^>]*\sclass=/', $html );
+	}
+
+	/** A waitlist confirmation must not open with "You are registered". */
+	public function test_a_waitlisted_attendee_email_does_not_claim_a_seat() {
+		$this->set_notifications( true );
+		$event_id = $this->make_event( [ 'title' => 'Subject Event' ] );
+
+		$this->module()->send_registration_emails(
+			$event_id,
+			'Wait Lister',
+			'subject@example.org',
+			Registrations::STATUS_WAITLIST
+		);
+
+		$mail = $this->mail_to( 'subject@example.org' );
+		$this->assertNotNull( $mail );
+		$this->assertStringContainsString( 'waitlist', strtolower( $mail['subject'] ) );
+		$this->assertStringNotContainsString( 'you are registered', strtolower( $mail['subject'] ) );
+	}
+
+	/** An author's own subject still wins for both outcomes. */
+	public function test_an_authored_subject_is_used_for_a_waitlisted_seat_too() {
+		$settings                         = $this->module()->get_settings();
+		$settings['confirmation_subject'] = 'Your place at {event_title}';
+		update_option( Module::OPTION_KEY, $settings, false );
+
+		$this->assertSame(
+			'Your place at {event_title}',
+			$this->module()->default_confirmation_subject(
+				$this->module()->get_settings(),
+				Registrations::STATUS_WAITLIST
+			)
+		);
+	}
+
+	/** An event asking one checkbox question. */
+	private function event_with_checkbox_question() {
+		$event_id = $this->make_event();
+		update_post_meta(
+			$event_id,
+			Module::QUESTIONS_META,
+			[
+				[
+					'key'      => 'parking',
+					'label'    => 'Parking needed',
+					'type'     => 'checkbox',
+					'required' => false,
+				],
+			]
+		);
+		return $event_id;
+	}
 }

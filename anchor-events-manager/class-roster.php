@@ -504,7 +504,9 @@ class Roster {
             echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
                 'name'  => 'roster_field[' . $q['key'] . ']',
                 'id'    => $id,
-                'class' => $q['type'] === 'select' ? '' : 'regular-text',
+                // `.regular-text` is a width, so it belongs on the text and
+                // textarea controls only — never on a checkbox or a select.
+                'class' => \in_array( $q['type'], [ 'select', 'checkbox' ], true ) ? '' : 'regular-text',
             ] );
             echo '</td></tr>';
         }
@@ -588,6 +590,18 @@ class Roster {
         // Nonce, capability, THEN the object — the order every handler uses.
         if ( \get_post_type( $event_id ) !== Module::CPT ) {
             $this->redirect( $event_id, 'error', \__( 'That is not an event.', 'anchor-schema' ), 'invalid' );
+        }
+        // A group container is not a seat and never has been: its capacity,
+        // roster and tiers all live on its dates. bookability() answers
+        // 'parent' for it, and a seat minted here would be invisible to every
+        // date's roster and counted by none of them. There is nothing to
+        // override, so this is `invalid` rather than `closed`.
+        //
+        // `disabled` — registration switched off — is deliberately NOT refused:
+        // adding somebody by hand to a course that takes no public sign-ups is
+        // the whole point of this form.
+        if ( $this->module->occurrences && $this->module->occurrences->is_group_parent( $event_id ) ) {
+            $this->redirect( $event_id, 'error', \__( 'This is a multi-date offering — add the attendee to one of its dates, not to the container.', 'anchor-schema' ), 'invalid' );
         }
 
         $name   = \sanitize_text_field( \wp_unslash( $_POST['roster_name'] ?? '' ) );

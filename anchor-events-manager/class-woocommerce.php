@@ -1563,7 +1563,10 @@ class WooCommerce {
                     echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
                         'name'           => $base . '[fields][' . $q['key'] . ']',
                         'value'          => (string) ( $q_values[ $q['key'] ] ?? '' ),
-                        'class'          => $q['type'] === 'select' ? 'select' : 'input-text',
+                        // Woo's own field classes, and NOT on a checkbox:
+                        // Storefront styles `input.input-text { width:100% }`,
+                        // which stretches a checkbox across the row.
+                        'class'          => $this->question_control_class( $q['type'] ),
                         'checkbox_label' => \__( 'Yes', 'anchor-schema' ),
                         'checkbox_class' => 'anchor-event-attendee-check',
                     ] );
@@ -1577,6 +1580,22 @@ class WooCommerce {
         }
 
         echo '</div>';
+    }
+
+    /**
+     * The Woo field class for one question type. A text input and a textarea
+     * are `.input-text`, a select is `.select`, and a checkbox carries NO class
+     * at all — Storefront's `input.input-text { width: 100% }` stretches a
+     * checkbox across the whole row.
+     *
+     * @param string $type
+     * @return string
+     */
+    private function question_control_class( $type ) {
+        if ( $type === 'checkbox' ) {
+            return '';
+        }
+        return $type === 'select' ? 'select' : 'input-text';
     }
 
     /**
@@ -2110,7 +2129,7 @@ class WooCommerce {
             // both the event-level seat lock and the order-level named lock have
             // been released.  Shutdown still covers correctness; this call is
             // best-effort promptness only.
-            $this->module->flush_cancellation_emails();
+            $this->module->flush_seat_emails();
         } finally {
             unset( self::$in_flight[ $order_id ] );
         }

@@ -170,27 +170,42 @@ class Ticket_Types {
      * @return bool
      */
     public function is_on_sale( array $tier, $now = 0 ) {
-        $now = (int) $now;
-        if ( $now <= 0 ) {
-            $now = (int) \current_time( 'timestamp' );
-        }
+        return $this->sale_state( $tier, $now ) === 'open';
+    }
+
+    /**
+     * The reason a tier is or isn't on sale right now (audit WOO-D4/WOO-D5).
+     *
+     * Compares Y-m-d strings — the way Registrations::capacity_decision()
+     * compares its own registration-window dates — rather than parsing
+     * `strtotime($date.' 00:00:00')` against `current_time('timestamp')`. Those
+     * two are NOT the same clock: current_time('timestamp') is time() shifted
+     * by the site's gmt_offset, while strtotime() parses in PHP's default
+     * timezone (UTC, forced by WordPress) — so every boundary used to be off by
+     * the site's UTC offset, opening or closing a window early. Comparing two
+     * Y-m-d strings sidesteps the mismatch entirely: both sides are read in the
+     * same site-local "what day is it" the admin used when they typed the date.
+     *
+     * @param array  $tier
+     * @param int    $now Optional Unix timestamp override (tests only); its
+     *                    Y-m-d in the site's timezone is what gets compared.
+     * @return string 'before' (sale not open yet), 'after' (window closed), or
+     *                'open' (no window, or inside it).
+     */
+    public function sale_state( array $tier, $now = 0 ) {
+        $now   = (int) $now;
+        $today = $now > 0 ? \wp_date( 'Y-m-d', $now ) : \current_time( 'Y-m-d' );
 
         $start = isset( $tier['sale_start'] ) ? (string) $tier['sale_start'] : '';
         $end   = isset( $tier['sale_end'] ) ? (string) $tier['sale_end'] : '';
 
-        if ( $start !== '' ) {
-            $start_ts = \strtotime( $start . ' 00:00:00' );
-            if ( $start_ts !== false && $now < $start_ts ) {
-                return false;
-            }
+        if ( $start !== '' && $today < $start ) {
+            return 'before';
         }
-        if ( $end !== '' ) {
-            $end_ts = \strtotime( $end . ' 23:59:59' );
-            if ( $end_ts !== false && $now > $end_ts ) {
-                return false;
-            }
+        if ( $end !== '' && $today > $end ) {
+            return 'after';
         }
-        return true;
+        return 'open';
     }
 
     /**

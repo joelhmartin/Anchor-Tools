@@ -128,6 +128,52 @@ class Test_Ticket_Types extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * WOO-D5: is_on_sale()/sale_state() compare Y-m-d strings in the SITE's
+	 * timezone, not `strtotime($date.' 00:00:00')` (parsed in PHP's default
+	 * timezone, forced to UTC by WordPress) against a raw timestamp. On a
+	 * site with a negative gmt_offset the old comparison opened a sale window
+	 * hours before the site's own local calendar day reached sale_start.
+	 */
+	public function test_is_on_sale_compares_in_site_local_time_not_utc() {
+		update_option( 'timezone_string', '' );
+		update_option( 'gmt_offset', -5 );
+		$this->assertSame( '-05:00', wp_timezone_string(), 'Precondition: a negative-offset site.' );
+
+		$tier = [ 'sale_start' => '2026-09-04', 'sale_end' => '' ];
+
+		// 2026-09-04 00:30 UTC == 2026-09-03 19:30 site-local (UTC-5): the sale
+		// window has NOT opened yet in the site's own local day.
+		$now = gmmktime( 0, 30, 0, 9, 4, 2026 );
+		$this->assertSame( '2026-09-03', wp_date( 'Y-m-d', $now ), 'Precondition: local date is still the 3rd.' );
+
+		$this->assertFalse( $this->ticket_types()->is_on_sale( $tier, $now ) );
+		$this->assertSame( 'before', $this->ticket_types()->sale_state( $tier, $now ) );
+	}
+
+	/**
+	 * WOO-D4: sale_state() tells "not open yet" apart from "already closed" —
+	 * a CLOSED tier must never be reported as "before" (which the storefront
+	 * renders as "Sales open <sale_start>", advertising a future opening for a
+	 * window that has already ended).
+	 */
+	public function test_sale_state_distinguishes_before_from_after() {
+		$now = strtotime( '2026-09-03 12:00:00' );
+
+		$this->assertSame(
+			'after',
+			$this->ticket_types()->sale_state( [ 'sale_start' => '2026-01-01', 'sale_end' => '2026-02-01' ], $now )
+		);
+		$this->assertSame(
+			'before',
+			$this->ticket_types()->sale_state( [ 'sale_start' => '2026-12-01', 'sale_end' => '' ], $now )
+		);
+		$this->assertSame(
+			'open',
+			$this->ticket_types()->sale_state( [ 'sale_start' => '', 'sale_end' => '' ], $now )
+		);
+	}
+
 	/** primary_id() returns the first ACTIVE tier id. */
 	public function test_primary_id_is_first_active_tier() {
 		$event_id = $this->make_event();

@@ -822,7 +822,13 @@ class WooCommerce {
         $any_sellable = false;
         foreach ( $paid_active as $tier ) {
             $state = $this->module->bookability( $event_id, $tier );
-            if ( $this->module->is_bookable( $state ) && $this->module->ticket_types->is_on_sale( $tier ) ) {
+            // WOO-D38: a tier with no LIVE managed variation (deleted, or never
+            // synced) can never actually be added to the cart, so it must not
+            // count toward "something here is sellable" either — otherwise the
+            // button renders and every click fails at the AJAX endpoint.
+            $has_variation = ! $this->module->product_sync
+                || (int) $this->module->product_sync->variation_for_tier( $event_id, (string) $tier['id'] ) > 0;
+            if ( $has_variation && $this->module->is_bookable( $state ) && $this->module->ticket_types->is_on_sale( $tier ) ) {
                 $any_sellable = true;
             }
             $rows .= $this->render_ticket_row( $event_id, $tier, $state, count( $paid_active ) === 1 );
@@ -891,12 +897,36 @@ class WooCommerce {
         $row .= '<span class="anchor-event-ticket-label">' . \esc_html( $label ) . '</span>';
         $row .= '<span class="anchor-event-ticket-price">' . $price_html . '</span>';
 
+        // WOO-D38: a tier whose managed variation is gone (deleted, or never
+        // synced) still offered a quantity box here — the AJAX endpoint then
+        // answered "Ticket is not available." Ask the SAME resolver the cart
+        // uses, before any other state check.
+        if (
+            $this->module->product_sync
+            && (int) $this->module->product_sync->variation_for_tier( $event_id, $tier_id ) <= 0
+        ) {
+            $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-unavailable" aria-disabled="true">'
+                . \esc_html__( 'Unavailable', 'anchor-schema' ) . '</span>';
+            $row .= '</div>';
+            return $row;
+        }
+
         // Outside the sale window → message only, no quantity input.
-        if ( ! $this->module->ticket_types->is_on_sale( $tier ) ) {
+        //
+        // WOO-D4: sale_state() distinguishes "hasn't opened yet" from "already
+        // closed" — is_on_sale() alone can't, so a tier whose window had ENDED
+        // used to render "Sales open <sale_start>", advertising a future
+        // opening for a window that was already over.
+        $sale_state = $this->module->ticket_types->sale_state( $tier );
+        if ( $sale_state !== 'open' ) {
             $start = (string) ( $tier['sale_start'] ?? '' );
-            $msg   = ( $start !== '' )
-                ? \sprintf( /* translators: %s: sale-start date. */ \__( 'Sales open %s', 'anchor-schema' ), $start )
-                : \__( 'Not on sale', 'anchor-schema' );
+            if ( 'before' === $sale_state && $start !== '' ) {
+                $msg = \sprintf( /* translators: %s: sale-start date. */ \__( 'Sales open %s', 'anchor-schema' ), $start );
+            } elseif ( 'after' === $sale_state ) {
+                $msg = \__( 'Sales closed', 'anchor-schema' );
+            } else {
+                $msg = \__( 'Not on sale', 'anchor-schema' );
+            }
             $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-upcoming">' . \esc_html( $msg ) . '</span>';
             $row .= '</div>';
             return $row;

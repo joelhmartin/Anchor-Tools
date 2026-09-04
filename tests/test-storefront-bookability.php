@@ -270,6 +270,72 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * WOO-D4: a tier whose sale window has ALREADY ENDED must read "Sales
+	 * closed", never "Sales open <date>" — the old message came from checking
+	 * only "is sale_start non-empty", which can't tell a closed window from
+	 * one that hasn't opened.
+	 */
+	public function test_storefront_row_says_closed_not_open_for_an_ended_sale_window() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [], [
+			[
+				'label'      => 'Early bird',
+				'price'      => '25',
+				'active'     => 1,
+				'sale_start' => '2026-01-01',
+				'sale_end'   => '2026-02-01',
+			],
+		] );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Sales closed', $html );
+		$this->assertStringNotContainsString( 'Sales open', $html );
+	}
+
+	/**
+	 * WOO-D38: a tier whose managed variation was deleted must not render a
+	 * quantity box that the AJAX endpoint would then refuse — it renders
+	 * "Unavailable" instead.
+	 */
+	public function test_storefront_row_is_unavailable_when_its_variation_is_gone() {
+		list( $event, $tiers ) = $this->make_ticketed_event();
+		$vid = (int) $this->product_sync()->variation_for_tier( $event, $tiers[0]['id'] );
+		$this->assertGreaterThan( 0, $vid );
+		wc_get_product( $vid )->delete( true );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Unavailable', $html );
+		$this->assertStringNotContainsString( 'anchor-event-ticket-qty', $html );
+		$this->assertStringNotContainsString(
+			'data-add-to-cart',
+			$html,
+			'The only tier has no variation to sell — no button that would only fail.'
+		);
+	}
+
+	/**
+	 * WOO-D39 (already closed, pinned here): when every tier is outside its
+	 * sale window (or sold out with no waitlist) the "Register / Add to cart"
+	 * button is omitted, not rendered to fail with "Please choose at least
+	 * one ticket."
+	 */
+	public function test_no_add_to_cart_button_when_no_tier_is_sellable() {
+		list( $event ) = $this->make_ticketed_event( [], [
+			[
+				'label'      => 'Early bird',
+				'price'      => '25',
+				'active'     => 1,
+				'sale_start' => gmdate( 'Y-m-d', time() + 30 * DAY_IN_SECONDS ),
+			],
+		] );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringNotContainsString( 'data-add-to-cart', $html );
+	}
+
 	/* ------------------------------------------------------------------
 	 * RENDER-D32 / MODEL-D42 — the picker and the series archive.
 	 * ------------------------------------------------------------------ */

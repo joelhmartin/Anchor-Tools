@@ -1040,9 +1040,18 @@ class Registrations {
         if ( $event_id <= 0 || $tier_id === '' ) {
             return false;
         }
+        // REG-D54 — 'publish', like every other seat query in this class. This
+        // one asked for 'any', so a trashed seat stopped counting against
+        // capacity (counts(), tier_counts(), query_seats(), find_seat_by_item(),
+        // get_seats_for_order() and seats_by_email() all skip it) while still
+        // blocking Product_Sync from deleting the tier's managed variation. The
+        // plugin never trashes a seat, so the two answers could only ever
+        // disagree about a seat something else put in the trash — and then they
+        // disagreed in the worst direction. The GDPR eraser is the one
+        // deliberate exception; see seats_by_email().
         $q = new \WP_Query( [
             'post_type'      => Module::REG_CPT,
-            'post_status'    => 'any',
+            'post_status'    => 'publish',
             'fields'         => 'ids',
             'posts_per_page' => 1,
             'no_found_rows'  => true,

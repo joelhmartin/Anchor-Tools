@@ -102,6 +102,29 @@ class Test_Capacity extends Anchor_Events_TestCase {
 		$this->assertTrue( $this->registrations()->valid_status( $decision ) );
 	}
 
+	/**
+	 * REG-D54 — one status set for the seat CPT. tier_has_seats() asked for
+	 * 'any' while every counting query asks for 'publish', so a trashed seat
+	 * stopped consuming capacity but still blocked Product_Sync from deleting
+	 * the tier's managed variation.
+	 */
+	public function test_a_trashed_seat_is_invisible_to_every_seat_query_alike() {
+		$event_id = $this->make_event( [ 'capacity' => 10 ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
+
+		$this->assertSame( 1, $this->registrations()->count_reserved_seats( $event_id ) );
+		$this->assertTrue( $this->registrations()->tier_has_seats( $event_id, 'primary' ) );
+
+		wp_trash_post( $seat_id );
+		$this->registrations()->bust_cache( $event_id );
+
+		$this->assertSame( 0, $this->registrations()->count_reserved_seats( $event_id ) );
+		$this->assertFalse(
+			$this->registrations()->tier_has_seats( $event_id, 'primary' ),
+			'A seat the capacity count cannot see must not keep a tier alive either.'
+		);
+	}
+
 	/** capacity_decision: a tier quota exhausted (event has room) returns 'full', no waitlist. */
 	public function test_capacity_decision_tier_quota() {
 		$event_id = $this->make_event( [ 'capacity' => 100, 'waitlist' => true ] );

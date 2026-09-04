@@ -24,7 +24,7 @@ Usage:
 
 == Changelog ==
 
-= 3.26.0 (unreleased) =
+= 3.26.0 =
 
 Events Manager — access change on WooCommerce sites:
 

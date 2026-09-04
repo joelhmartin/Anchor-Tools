@@ -6,9 +6,11 @@
  * place for: a site-wide error log (option-backed, capped), a per-order sync log
  * (order meta, HPOS-safe via WC CRUD), and per-order "needs review" flags.
  *
- * The per-event activity roll-up (Events_Log::event) is intentionally a no-op in
- * MVP — the activity log + Activity panel are deferred (spec finding #20). The
- * method exists so callers don't branch and so a future build can fill it in.
+ * There is deliberately NO per-event activity roll-up here. One existed as an
+ * empty Events_Log::event() with a full docblock, so any caller would have
+ * looked like it was recording activity and recorded nothing; REG-D30 removed
+ * it, along with the reserved 'activity' event meta key, until the Activity
+ * panel that would read them actually ships.
  *
  * @package AnchorTools\Events
  */
@@ -25,6 +27,47 @@ class Events_Log {
     /** Max entries kept in the site-wide error log. */
     const ERROR_CAP = 200;
 
+    /**
+     * Archive of cleared error-log entries (REG-D31). "Clear error log" is a
+     * tidy-up button, not a destruction order: the entries it removes are the
+     * only record of failed sends, illegal transitions and lock degradations,
+     * so they move here instead of being deleted.
+     */
+    const ERROR_ARCHIVE_OPTION = 'anchor_events_error_log_archive';
+
+    /** Max entries kept in the archive (autoload=false, still bounded). */
+    const ERROR_ARCHIVE_CAP = 500;
+
+    /**
+     * Max entries any ONE code may hold in the error log (REG-D46). The global
+     * cap alone let a single repeating failure evict every other code, taking
+     * the seat_insert_failed / illegal_transition row an operator needs with it.
+     */
+    const ERROR_CODE_CAP = 25;
+
+    /**
+     * Window in which a repeat of the same (code, subject) collapses into the
+     * existing row instead of appending a new one (REG-D46). Measured from the
+     * row's LAST sighting, so an ongoing failure stays one counted row while a
+     * failure that returns after a day of quiet is recorded as news.
+     */
+    const ERROR_DEDUPE_WINDOW = 86400; // DAY_IN_SECONDS, without the load-order bet.
+
+    /**
+     * Context keys that identify WHAT a failure was about. Two entries sharing a
+     * code but naming different subjects are different failures and must not
+     * collapse into each other (REG-D46) — the same email failing for order 12
+     * and order 13 is two problems, not one seen twice.
+     *
+     * Beyond the entity ids, three keys name WHICH failure about a subject:
+     * `from` (the transition a seat was refused), `to` (what it was refused TO
+     * — two rejected targets on one seat are two bugs, and on a mail failure it
+     * is the redacted recipient, so a send failing for two people is two
+     * problems) and `exception` (two different throws from one event's product
+     * sync are two faults).
+     */
+    const ERROR_IDENTITY_KEYS = [ 'order', 'event', 'seat', 'item', 'tier', 'parent_id', 'occurrence_key', 'type', 'source', 'from', 'to', 'exception' ];
+
     /** Order meta key: capped sync-log ring buffer. */
     const ORDER_LOG_META = '_anchor_event_sync_log';
 
@@ -39,7 +82,8 @@ class Events_Log {
      * and always appends to the capped site-wide option log so failures are
      * inspectable without enabling global debug.
      *
-     * @param string $code    Short machine code, e.g. 'email_failed', 'lock_unavailable'.
+     * @param string $code    Short machine code, e.g. 'email_send_returned_false',
+     *                        'capacity_lock_unavailable'.
      * @param array  $context Arbitrary context (kept small; not escaped).
      */
     public static function error( $code, array $context = [] ) {
@@ -52,19 +96,128 @@ class Events_Log {
             \Anchor_Schema_Logger::log( 'events:' . $code, $context );
         }
 
-        $log = \get_option( self::ERROR_OPTION, [] );
+        $code = (string) $code;
+        $log  = \get_option( self::ERROR_OPTION, [] );
         if ( ! \is_array( $log ) ) {
             $log = [];
         }
+
+        $now      = \time();
+        $identity = self::error_identity( $code, $context );
+
+        // REG-D46 — collapse a repeat of the same (code, subject) seen inside the
+        // window into the existing row: {first_time, time (last seen), count}.
+        // The row moves to the end so "most recent first" stays honest.
+        foreach ( $log as $i => $entry ) {
+            if ( ! \is_array( $entry ) || ( $entry['code'] ?? '' ) !== $code ) {
+                continue;
+            }
+            $last = (int) ( $entry['time'] ?? 0 );
+            if ( $now - $last > self::ERROR_DEDUPE_WINDOW ) {
+                continue; // Outside the window: a genuinely new failure, never swallowed.
+            }
+            if ( self::error_identity( $code, (array) ( $entry['context'] ?? [] ) ) !== $identity ) {
+                continue;
+            }
+            unset( $log[ $i ] );
+            $log    = \array_values( $log );
+            $log[]  = [
+                'code'       => $code,
+                'first_time' => (int) ( $entry['first_time'] ?? $last ),
+                'time'       => $now,
+                'count'      => (int) ( $entry['count'] ?? 1 ) + 1,
+                'context'    => $context,
+            ];
+            \update_option( self::ERROR_OPTION, $log, false );
+            return;
+        }
+
         $log[] = [
-            'code'    => (string) $code,
-            'time'    => \time(),
-            'context' => $context,
+            'code'       => $code,
+            'first_time' => $now,
+            'time'       => $now,
+            'count'      => 1,
+            'context'    => $context,
         ];
+        $log = self::enforce_code_cap( $log, $code );
         if ( \count( $log ) > self::ERROR_CAP ) {
             $log = \array_slice( $log, -self::ERROR_CAP );
         }
         \update_option( self::ERROR_OPTION, $log, false );
+    }
+
+    /**
+     * The subject a failure is about, as a dedupe key. Codes that carry no
+     * subject id at all (email_send_returned_false, say) collapse by code alone
+     * — deliberately: those are exactly the floods REG-D46 is about, and the
+     * count plus the latest context still say what is happening.
+     *
+     * @param string $code
+     * @param array  $context
+     * @return string
+     */
+    private static function error_identity( $code, array $context ) {
+        $parts = [ (string) $code ];
+        foreach ( self::ERROR_IDENTITY_KEYS as $key ) {
+            if ( isset( $context[ $key ] ) && \is_scalar( $context[ $key ] ) ) {
+                $parts[] = $key . '=' . (string) $context[ $key ];
+            }
+        }
+        return \implode( '|', $parts );
+    }
+
+    /**
+     * Drop the oldest rows of ONE code once it exceeds its per-code allowance,
+     * so a flood evicts only itself (REG-D46).
+     *
+     * @param array  $log
+     * @param string $code
+     * @return array
+     */
+    private static function enforce_code_cap( array $log, $code ) {
+        $positions = [];
+        foreach ( $log as $i => $entry ) {
+            if ( \is_array( $entry ) && ( $entry['code'] ?? '' ) === $code ) {
+                $positions[] = $i;
+            }
+        }
+        $excess = \count( $positions ) - self::ERROR_CODE_CAP;
+        if ( $excess <= 0 ) {
+            return $log;
+        }
+        foreach ( \array_slice( $positions, 0, $excess ) as $i ) {
+            unset( $log[ $i ] );
+        }
+        return \array_values( $log );
+    }
+
+    /**
+     * Move the site-wide error log into the archive and empty it (REG-D31).
+     * Called by the "Clear error log" button so tidying the panel never destroys
+     * the only record of a failure.
+     *
+     * @return int Number of entries archived.
+     */
+    public static function archive_and_clear() {
+        $log = \get_option( self::ERROR_OPTION, [] );
+        if ( ! \is_array( $log ) ) {
+            $log = [];
+        }
+        if ( ! empty( $log ) ) {
+            $archive = \get_option( self::ERROR_ARCHIVE_OPTION, [] );
+            if ( ! \is_array( $archive ) ) {
+                $archive = [];
+            }
+            foreach ( $log as $entry ) {
+                $archive[] = $entry;
+            }
+            if ( \count( $archive ) > self::ERROR_ARCHIVE_CAP ) {
+                $archive = \array_slice( $archive, -self::ERROR_ARCHIVE_CAP );
+            }
+            \update_option( self::ERROR_ARCHIVE_OPTION, $archive, false );
+        }
+        \delete_option( self::ERROR_OPTION );
+        return \count( $log );
     }
 
     /**
@@ -134,6 +287,7 @@ class Events_Log {
         ];
         $order->update_meta_data( self::ORDER_REVIEW_META, $flags );
         self::safe_save( $order );
+        self::bust_needs_review_cache();
     }
 
     /**
@@ -152,18 +306,22 @@ class Events_Log {
         }
         $order->delete_meta_data( self::ORDER_REVIEW_META );
         self::safe_save( $order );
+        self::bust_needs_review_cache();
     }
 
     /**
-     * Per-event activity roll-up. DEFERRED in MVP (spec finding #20): no-op.
-     * Reserved so callers don't need to branch and a future build can populate it.
+     * WOO-D16 — invalidate the cached needs-review count the admin notice reads.
      *
-     * @param int    $event_id Event post ID.
-     * @param string $type     Activity type.
-     * @param array  $context  Optional context.
+     * apply_review_flags() already does this for flags raised inside reconcile;
+     * these static entry points (guard_block_checkout, the amount-only refund
+     * branch, a failed manual resend) did not, so a count of 0 cached moments
+     * earlier hid a freshly flagged order for the transient's five minutes.
+     * Uses WooCommerce::NEEDS_REVIEW_TRANSIENT — the same key, not a new one.
      */
-    public static function event( $event_id, $type, array $context = [] ) {
-        // Intentionally empty — activity log deferred (spec §2, §11.6).
+    private static function bust_needs_review_cache() {
+        if ( \function_exists( 'delete_transient' ) && \class_exists( __NAMESPACE__ . '\\WooCommerce' ) ) {
+            \delete_transient( WooCommerce::NEEDS_REVIEW_TRANSIENT );
+        }
     }
 
     /**

@@ -90,9 +90,38 @@ class Test_Capacity extends Anchor_Events_TestCase {
 		$this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
 		$meta = $this->module()->get_meta( $event_id );
 
-		$this->assertSame(
-			Registrations::STATUS_WAITLIST,
-			$this->registrations()->capacity_decision( $event_id, $meta, 1 )
+		$decision = $this->registrations()->capacity_decision( $event_id, $meta, 1 );
+		$this->assertSame( Registrations::STATUS_WAITLIST, $decision );
+
+		// REG-D52 — pinned deliberately: the one return value mixes the decision
+		// vocabulary ('open'|'closed'|'full') with a SEAT STATUS. A caller that
+		// reads it as a decision alone books a waitlist seat as confirmed. The
+		// register's fix is a {decision, seat_status} pair, which would change
+		// this signature, so the shape is recorded here instead of changed.
+		$this->assertNotContains( $decision, [ 'open', 'closed', 'full' ] );
+		$this->assertTrue( $this->registrations()->valid_status( $decision ) );
+	}
+
+	/**
+	 * REG-D54 — one status set for the seat CPT. tier_has_seats() asked for
+	 * 'any' while every counting query asks for 'publish', so a trashed seat
+	 * stopped consuming capacity but still blocked Product_Sync from deleting
+	 * the tier's managed variation.
+	 */
+	public function test_a_trashed_seat_is_invisible_to_every_seat_query_alike() {
+		$event_id = $this->make_event( [ 'capacity' => 10 ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
+
+		$this->assertSame( 1, $this->registrations()->count_reserved_seats( $event_id ) );
+		$this->assertTrue( $this->registrations()->tier_has_seats( $event_id, 'primary' ) );
+
+		wp_trash_post( $seat_id );
+		$this->registrations()->bust_cache( $event_id );
+
+		$this->assertSame( 0, $this->registrations()->count_reserved_seats( $event_id ) );
+		$this->assertFalse(
+			$this->registrations()->tier_has_seats( $event_id, 'primary' ),
+			'A seat the capacity count cannot see must not keep a tier alive either.'
 		);
 	}
 
@@ -381,6 +410,95 @@ class Test_Capacity extends Anchor_Events_TestCase {
 		$this->assertSame( 'full', $this->module()->bookability( $event, $tier ) );
 		// The event itself still has room.
 		$this->assertSame( 'open', $this->module()->bookability( $event ) );
+	}
+
+	/* -----------------------------------------------------------------
+	 * change_status_with_capacity(): the two ceilings answer differently
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * A revive blocked by the EVENT total goes to the waitlist, as it always
+	 * has — the event total is the only ceiling the waitlist answers to.
+	 */
+	public function test_a_revive_blocked_by_the_event_total_is_waitlisted() {
+		$event_id = $this->make_event( [ 'capacity' => 1, 'waitlist' => true ] );
+		$this->make_seat( $event_id );
+		$seat_id = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CANCELLED ] );
+
+		$out = $this->registrations()->change_status_with_capacity( $seat_id, Registrations::STATUS_CONFIRMED );
+
+		$this->assertTrue( $out->is_sent() );
+		$this->assertSame( 'waitlisted', $out->reason() );
+		$this->assertSame(
+			Registrations::STATUS_WAITLIST,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
+		);
+	}
+
+	/**
+	 * A revive blocked ONLY by the tier quota is refused as `tier_full` and
+	 * left where it was. It used to be waitlisted with "(event full —
+	 * waitlisted instead)" on an event with 99 empty seats: `$fits` went false
+	 * for both ceilings, so the tier shortage borrowed the event's answer.
+	 * capacity_decision() and claim_seats() have always said a sold-out tier
+	 * never waitlists.
+	 */
+	public function test_a_revive_blocked_only_by_the_tier_quota_is_refused_not_waitlisted() {
+		$event_id = $this->make_event(
+			[ 'capacity' => 100, 'waitlist' => true ],
+			[ [ 'label' => 'Limited', 'price' => '0', 'active' => 1, 'quota' => 1 ] ]
+		);
+		$tier = $this->ticket_types()->get( $event_id )[0];
+
+		$this->make_seat( $event_id, [ 'ticket_type_id' => $tier['id'] ] );
+		$seat_id = $this->make_seat(
+			$event_id,
+			[ 'status' => Registrations::STATUS_CANCELLED, 'ticket_type_id' => $tier['id'] ]
+		);
+
+		$out = $this->registrations()->change_status_with_capacity( $seat_id, Registrations::STATUS_CONFIRMED );
+
+		$this->assertTrue( $out->is_failed() );
+		$this->assertSame( 'tier_full', $out->reason() );
+		$this->assertSame(
+			Registrations::STATUS_CANCELLED,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true ),
+			'A tier-only shortage moved the seat anyway.'
+		);
+		$this->assertSame(
+			0,
+			$this->registrations()->count_waitlist_seats( $event_id, true ),
+			'A sold-out tier put a seat on the event waitlist.'
+		);
+	}
+
+	/** The override still confirms straight past a tier-only shortage. */
+	public function test_the_override_confirms_past_a_tier_only_shortage() {
+		$event_id = $this->make_event(
+			[ 'capacity' => 100, 'waitlist' => true ],
+			[ [ 'label' => 'Limited', 'price' => '0', 'active' => 1, 'quota' => 1 ] ]
+		);
+		$tier = $this->ticket_types()->get( $event_id )[0];
+
+		$this->make_seat( $event_id, [ 'ticket_type_id' => $tier['id'] ] );
+		$seat_id = $this->make_seat(
+			$event_id,
+			[ 'status' => Registrations::STATUS_CANCELLED, 'ticket_type_id' => $tier['id'] ]
+		);
+
+		$out = $this->registrations()->change_status_with_capacity(
+			$seat_id,
+			Registrations::STATUS_CONFIRMED,
+			'',
+			'user:1',
+			true // allow_over
+		);
+
+		$this->assertTrue( $out->is_sent() );
+		$this->assertSame(
+			Registrations::STATUS_CONFIRMED,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
+		);
 	}
 
 	/** bookability(): a group PARENT is a container, never a seat — 'parent'. */

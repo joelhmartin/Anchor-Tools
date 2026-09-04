@@ -43,6 +43,18 @@ class Product_Sync {
     /** Custom product attribute name used to vary the managed product. */
     const ATTRIBUTE_NAME = 'Ticket';
 
+    /**
+     * Event meta: the last product-sync failure, or absent when the last pass
+     * completed (WOO-D13). Shape: [reason, exception, message, event, time].
+     *
+     * The sync engine had no try/catch, no Events_Log call and no needs-review
+     * write: a WC_Product_Variation::save() that threw part-way through aborted
+     * save_post, left the product half-reconciled against a tier list still
+     * holding the OLD variation ids, and showed the editor a PHP fatal with
+     * nothing recorded anywhere. Self-clearing: a pass that completes deletes it.
+     */
+    const SYNC_FAILED_META = '_anchor_event_sync_failed';
+
     /** @var Module */
     private $module;
 
@@ -85,6 +97,9 @@ class Product_Sync {
 
         // Admin notice surfaced after a re-assert.
         \add_action( 'admin_notices', [ $this, 'render_managed_notice' ] );
+
+        // WOO-D13 — surface a captured sync failure on the event being edited.
+        \add_action( 'admin_notices', [ $this, 'render_sync_failure_notice' ] );
     }
 
     /* ---------------------------------------------------------------------
@@ -116,7 +131,23 @@ class Product_Sync {
 
         self::$in_flight['event'][ $event_id ] = true;
         try {
-            return $this->do_sync_event( $event_id );
+            $product_id = $this->do_sync_event( $event_id );
+            // WOO-D13 — the condition that raised the marker (a pass that could
+            // not finish) has passed: a pass just did. Self-clearing, so the
+            // notice does not outlive the problem.
+            $this->clear_sync_failure( $event_id );
+            return $product_id;
+        } catch ( \Throwable $e ) {
+            // WOO-D13 — a mid-sync throw used to abort save_post with an uncaught
+            // exception. Capture it instead: the save completes, the failure is in
+            // the error log and on the event, and NOTHING is re-raised.
+            // …and re-adopt a product the throw orphaned. A handler that threw
+            // from save_post_product lands AFTER the product exists but BEFORE
+            // the event → product pointer is written, so the next sync would see
+            // no pointer and mint a SECOND product for the same event.
+            $this->recover_product_pointer( $event_id );
+            $this->record_sync_failure( $event_id, $e );
+            return $this->managed_product_id( $event_id );
         } finally {
             unset( self::$in_flight['event'][ $event_id ] );
         }
@@ -917,5 +948,94 @@ class Product_Sync {
             return;
         }
         \set_transient( $this->notice_transient_key(), 1, 60 );
+    }
+
+    /* ---------------------------------------------------------------------
+     * WOO-D13 — sync failure capture
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Record a sync failure: the site-wide error log (so it is inspectable
+     * without the event) plus a needs-review marker on the event itself (so the
+     * next editor to open it is told the product may be half-reconciled).
+     *
+     * @param int        $event_id
+     * @param \Throwable $e
+     */
+    private function record_sync_failure( $event_id, $e ) {
+        $event_id = (int) $event_id;
+        Events_Log::error( 'product_sync_failed', [
+            'event'     => $event_id,
+            'exception' => \get_class( $e ),
+            'message'   => $e->getMessage(),
+        ] );
+        \update_post_meta( $event_id, self::SYNC_FAILED_META, [
+            'reason'    => 'product_sync_failed',
+            'event'     => $event_id,
+            'exception' => \get_class( $e ),
+            'message'   => (string) $e->getMessage(),
+            'time'      => \time(),
+        ] );
+    }
+
+    /**
+     * Re-point an event at the managed product it already owns, when the pointer
+     * is missing but the product's own back-pointer names this event. One
+     * bounded query, and a complete no-op when the pointer is already there.
+     *
+     * @param int $event_id
+     */
+    private function recover_product_pointer( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || $this->stored_product_id( $event_id ) > 0 ) {
+            return;
+        }
+        $found = \get_posts( [
+            'post_type'        => 'product',
+            'post_status'      => 'any',
+            'numberposts'      => 1,
+            'fields'           => 'ids',
+            'meta_key'         => self::PRODUCT_EVENT_META, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+            'meta_value'       => $event_id,                // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+            'no_found_rows'    => true,
+            'suppress_filters' => false,
+        ] );
+        if ( ! empty( $found ) && (int) $found[0] > 0 ) {
+            \update_post_meta( $event_id, self::EVENT_PRODUCT_META, (int) $found[0] );
+        }
+    }
+
+    /** Drop the failure marker once a pass completes (idempotent). */
+    private function clear_sync_failure( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id > 0 && \get_post_meta( $event_id, self::SYNC_FAILED_META, true ) !== '' ) {
+            \delete_post_meta( $event_id, self::SYNC_FAILED_META );
+        }
+    }
+
+    /**
+     * Admin notice for an event whose last product sync failed. Rendered on that
+     * event's editor only — the failure is per-event, and so is the fix.
+     */
+    public function render_sync_failure_notice() {
+        if ( ! \function_exists( 'get_current_screen' ) ) {
+            return;
+        }
+        $screen = \get_current_screen();
+        if ( ! $screen || 'post' !== $screen->base || Module::CPT !== $screen->post_type ) {
+            return;
+        }
+        $event_id = isset( $GLOBALS['post'] ) && $GLOBALS['post'] instanceof \WP_Post ? (int) $GLOBALS['post']->ID : 0;
+        if ( $event_id <= 0 || ! \current_user_can( 'edit_post', $event_id ) ) {
+            return;
+        }
+        $failure = \get_post_meta( $event_id, self::SYNC_FAILED_META, true );
+        if ( ! \is_array( $failure ) ) {
+            return;
+        }
+        echo '<div class="notice notice-error"><p><strong>'
+            . \esc_html__( 'Anchor Events:', 'anchor-schema' ) . '</strong> '
+            . \esc_html__( 'the last ticket/product sync for this event did not finish, so its product and variations may be out of step with the ticket tiers. Save the event again to retry; if it keeps failing, check the event error log.', 'anchor-schema' )
+            . '</p><p><code>' . \esc_html( (string) ( $failure['exception'] ?? '' ) . ': ' . (string) ( $failure['message'] ?? '' ) ) . '</code></p></div>';
     }
 }

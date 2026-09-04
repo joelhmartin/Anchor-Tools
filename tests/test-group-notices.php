@@ -323,6 +323,55 @@ class Test_Group_Notices extends Anchor_Events_TestCase {
 		$this->assertArrayNotHasKey( 'anchor_event_notices', $response->get_data() );
 	}
 
+	/* ------------------------------------------------------------------
+	 * REG-D61 — a dropped Cc/Bcc entry says so.
+	 * ---------------------------------------------------------------- */
+
+	/**
+	 * email_address_list() discards anything that is not an address on
+	 * purpose: one typo must not cost an event its confirmation emails. What
+	 * was missing was any signal to the person who made the typo — the field
+	 * simply came back shorter, or empty.
+	 */
+	public function test_a_dropped_bcc_entry_is_named_in_a_notice() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			Module::NONCE                     => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date'         => '2027-04-01',
+			'anchor_event_sender_present'     => '1',
+			'anchor_event_email_bcc'          => 'good@example.org, compliance@exampl,e.com',
+		];
+		$this->module()->save_meta( $event_id );
+
+		// The drop itself is unchanged: only the usable address is stored.
+		$this->assertSame( 'good@example.org', get_post_meta( $event_id, '_anchor_event_email_bcc', true ) );
+
+		$_GET['post'] = $event_id;
+		ob_start();
+		$this->module()->admin_notices();
+		$notice = ob_get_clean();
+
+		$this->assertStringContainsString( 'Bcc addresses were not valid', $notice );
+		$this->assertStringContainsString( 'compliance@exampl', $notice, 'The notice has to name what it threw away.' );
+		$this->assertStringContainsString( 'e.com', $notice );
+	}
+
+	/** A clean list queues nothing. */
+	public function test_a_valid_bcc_list_queues_no_notice() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			Module::NONCE                 => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date'     => '2027-04-01',
+			'anchor_event_sender_present' => '1',
+			'anchor_event_email_bcc'      => 'one@example.org, two@example.org',
+		];
+		$this->module()->save_meta( $event_id );
+
+		$this->assertSame( [], $this->queued( $event_id ) );
+	}
+
 	/** Notices are per user: another editor's save is not shown to this one. */
 	public function test_queued_notices_are_scoped_to_the_author_who_saved() {
 		$event_id = $this->make_offering_parent();

@@ -427,4 +427,312 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 		$this->assertSame( 'internal', get_post_meta( $event_id, '_anchor_event_registration_type', true ) );
 		$this->assertSame( 'free', $this->module()->registration_mode( $event_id ) );
 	}
+
+	/* ------------------------------------------------------------------
+	 * Task 28 (MODEL-D24 / REG-D49) — ONE shared authoring persister.
+	 *
+	 * save_meta() (wp-admin metabox) and save_event_manager_fields()
+	 * (front-end Events Manager console) used to run DIFFERENT sets of
+	 * sub-savers: only the console persisted attendee questions, email
+	 * wording, the per-type on/off switches, the CTA pairs and the sender
+	 * identity. Anything authored on one surface was therefore invisible
+	 * to — and unchangeable from — the other. Both now end in
+	 * persist_event_authoring(), so the two paths cannot drift again.
+	 * ---------------------------------------------------------------- */
+
+	/**
+	 * A question authored in wp-admin is persisted, and so are the email
+	 * wording, template, switch, CTA and sender fields the metabox save used
+	 * to drop on the floor.
+	 *
+	 * Every value carries a LITERAL BACKSLASH, and the whole payload is
+	 * wp_slash()ed the way PHP hands a real request over. That is the only
+	 * shape that pins the boundary: a quoted string survives 0, 1 or 2
+	 * unslashes identically, but `C:\path` does not. The savers unslash once
+	 * and sanitize, and update_post_meta() unslashes AGAIN
+	 * (wp-includes/meta.php, update_metadata()), so the sanitized value has to
+	 * be wp_slash()ed back at the write or the backslash is destroyed:
+	 * `C:\\path` posted -> `C:\path` sanitized -> `C:path` stored.
+	 */
+	public function test_a_literal_backslash_survives_the_metabox_save_on_every_shared_field() {
+		$event_id = $this->make_event();
+
+		$template = '<p>Room "A\B" — CSS content:\2014 for {event_title}</p>';
+
+		$payload = [
+			Module::NONCE => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-01',
+
+			// Attendee questions (repeater on screen, one row).
+			'anchor_event_questions_present' => '1',
+			'anchor_event_questions' => [
+				[ 'key' => '', 'label' => 'Room "A\B"', 'type' => 'text', 'required' => '1' ],
+			],
+
+			// Wording.
+			'anchor_event_email_subject_confirmation' => 'Your seat — Suite C:\Rooms',
+			'anchor_event_email_intro_confirmation' => '<p>Find us at C:\Users\Reception.</p>',
+
+			// The raw template (its own kses-validated saver).
+			'anchor_email_tpl_confirmation' => $template,
+
+			// Per-type on/off switches: confirmation on, everything else off.
+			'anchor_event_email_switches_present' => '1',
+			'anchor_event_email_on_confirmation' => '1',
+
+			// CTA pair (slot 1).
+			'anchor_event_email_cta_present' => '1',
+			'anchor_event_email_cta_label_confirmation' => 'Open C:\calendar',
+			'anchor_event_email_cta_url_confirmation' => 'https://example.test/cal',
+
+			// Sender identity.
+			'anchor_event_sender_present' => '1',
+			'anchor_event_email_from_name' => 'A\B Dental',
+			'anchor_event_email_from_address' => 'academy@example.test',
+
+			// Two more writers on the same shared tail: the ticket table and
+			// the (unslashed-at-source) labels/external fields of $input.
+			'anchor_event_tickets' => [
+				[ 'label' => 'General\Admission', 'price' => '25', 'active' => '1' ],
+			],
+			'anchor_event_labels' => [
+				[ 'key' => 'custom', 'label' => '2 Day\Course', 'value' => 'yes' ],
+			],
+			'anchor_event_external_display_price' => 'C:\495',
+		];
+
+		// Exactly what PHP does to $_POST before any handler sees it.
+		$_POST = wp_slash( $payload );
+		$this->module()->save_meta( $event_id );
+
+		$questions = $this->module()->get_registration_questions( $event_id );
+		$this->assertCount( 1, $questions, 'The metabox save must persist the question repeater it was handed.' );
+		$this->assertSame( 'Room "A\B"', $questions[0]['label'], 'A question label must round-trip a literal backslash.' );
+		$this->assertNotSame( '', $questions[0]['key'], 'A new question still gets a stable key (Task 26).' );
+
+		$this->assertSame(
+			'Your seat — Suite C:\Rooms',
+			get_post_meta( $event_id, '_anchor_event_email_subject_confirmation', true ),
+			'The subject must round-trip a literal backslash: one unslash in, one wp_slash() back out at the write.'
+		);
+		$this->assertSame( '<p>Find us at C:\Users\Reception.</p>', get_post_meta( $event_id, '_anchor_event_email_intro_confirmation', true ) );
+		$this->assertSame( $template, get_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', true ), 'A custom email template must round-trip its CSS escapes byte for byte.' );
+
+		$this->assertTrue( $this->module()->is_email_enabled( $event_id, 'confirmation' ) );
+		$this->assertFalse( $this->module()->is_email_enabled( $event_id, 'reminder' ), 'An administrator must be able to switch an event email off from wp-admin.' );
+
+		$this->assertSame( 'Open C:\calendar', get_post_meta( $event_id, '_anchor_event_email_cta_label_confirmation', true ) );
+		$this->assertSame( 'https://example.test/cal', get_post_meta( $event_id, '_anchor_event_email_cta_url_confirmation', true ) );
+
+		$this->assertSame( 'A\B Dental', get_post_meta( $event_id, '_anchor_event_email_from_name', true ) );
+		$this->assertSame( 'academy@example.test', get_post_meta( $event_id, '_anchor_event_email_from_address', true ) );
+
+		$tiers = get_post_meta( $event_id, '_anchor_event_ticket_types', true );
+		$this->assertSame( 'General\Admission', $tiers[0]['label'], 'A ticket tier label must round-trip a literal backslash.' );
+
+		$labels = get_post_meta( $event_id, '_anchor_event_labels', true );
+		$this->assertSame( '2 Day\Course', $labels[0]['label'], 'A custom label caption must round-trip a literal backslash.' );
+
+		$this->assertSame( 'C:\495', get_post_meta( $event_id, '_anchor_event_external_display_price', true ) );
+	}
+
+	/**
+	 * The absent-field guarantee, end to end: everything the console authored
+	 * must survive a wp-admin save that posts NONE of it. This is the whole
+	 * point of wiring the five savers into the metabox path — they had to
+	 * become no-ops on a form that does not render them, or sharing the tail
+	 * would have been a data-loss bug rather than a fix.
+	 */
+	public function test_a_bare_metabox_save_leaves_console_authored_email_settings_untouched() {
+		$event_id = $this->make_event();
+
+		$_POST = wp_slash( [
+			'anchor_event_email_switches_present' => '1',
+			// reminder + cancellation deliberately unticked; the other two on.
+			'anchor_event_email_on_confirmation' => '1',
+			'anchor_event_email_on_roster' => '1',
+			'anchor_event_email_cta_present' => '1',
+			'anchor_event_email_cta_label_confirmation' => 'Open C:\calendar',
+			'anchor_event_email_cta_url_confirmation' => 'https://example.test/cal',
+			'anchor_event_sender_present' => '1',
+			'anchor_event_email_from_address' => 'academy@example.test',
+			'anchor_event_email_subject_confirmation' => 'Your seat — Suite C:\Rooms',
+		] );
+		$this->save_via_console( $event_id );
+
+		// A wp-admin save whose metabox renders none of those inputs.
+		$_POST = [
+			Module::NONCE => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-01',
+		];
+		$this->module()->save_meta( $event_id );
+
+		$this->assertFalse( $this->module()->is_email_enabled( $event_id, 'reminder' ), 'A switch the metabox never rendered must not be read as "back on".' );
+		$this->assertFalse( $this->module()->is_email_enabled( $event_id, 'cancellation' ) );
+		$this->assertTrue( $this->module()->is_email_enabled( $event_id, 'confirmation' ) );
+		$this->assertSame( 'Open C:\calendar', get_post_meta( $event_id, '_anchor_event_email_cta_label_confirmation', true ) );
+		$this->assertSame( 'https://example.test/cal', get_post_meta( $event_id, '_anchor_event_email_cta_url_confirmation', true ) );
+		$this->assertSame( 'academy@example.test', get_post_meta( $event_id, '_anchor_event_email_from_address', true ) );
+		$this->assertSame( 'Your seat — Suite C:\Rooms', get_post_meta( $event_id, '_anchor_event_email_subject_confirmation', true ) );
+	}
+
+	/**
+	 * Group authoring is part of the shared tail, so it must read the $src it
+	 * was handed — not $_POST behind its caller's back. Both real callers
+	 * still pass $_POST, so this is invisible in production today; it is what
+	 * makes the tail one honest function instead of one that half-cheats, and
+	 * what lets the whole path be exercised without a superglobal.
+	 *
+	 * The offering row label also round-trips a literal backslash, on the
+	 * parent AND on the child the reconcile creates from it.
+	 */
+	public function test_group_authoring_reads_the_src_it_is_handed_not_the_superglobal() {
+		$event_id = $this->make_event();
+
+		// A decoy in the superglobal: if anything below still reads $_POST,
+		// these are the rows that get stored.
+		$_POST = [
+			'anchor_event_offering_dates' => [
+				[ 'date' => '2027-01-01', 'start_time' => '08:00', 'label' => 'from the superglobal' ],
+			],
+		];
+
+		$src = wp_slash( [
+			'anchor_event_offering_dates' => [
+				[ 'date' => '2027-05-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Room C:\Alpha', 'capacity' => 5 ],
+			],
+			'anchor_event_registration_apply_to_dates' => '1',
+			'anchor_event_registration_enabled' => '1',
+		] );
+
+		$method = new ReflectionMethod( Module::class, 'persist_group_authoring' );
+		$method->setAccessible( true );
+		$method->invoke( $this->module(), $event_id, 'offering', $src );
+
+		$rows = get_post_meta( $event_id, '_anchor_event_offering_dates', true );
+		$this->assertCount( 1, $rows );
+		$this->assertSame( '2027-05-01', $rows[0]['date'], 'The rows must come from $src, not from $_POST.' );
+		$this->assertSame( 'Room C:\Alpha', $rows[0]['label'], 'An offering row label must round-trip a literal backslash.' );
+
+		$children = $this->occurrences()->children( $event_id );
+		$this->assertCount( 1, $children );
+		$child_id = (int) $children[0];
+		$this->assertSame( 'Room C:\Alpha', get_post_meta( $child_id, '_anchor_event_label', true ), '...and so must the copy the reconcile writes onto the date.' );
+		$this->assertTrue(
+			(bool) get_post_meta( $child_id, '_anchor_event_registration_enabled', true ),
+			'The apply-to-all-dates action must read $src too.'
+		);
+	}
+
+	/**
+	 * The other half of the same guarantee, and the trap the naive fix falls
+	 * into: the wp-admin metabox does NOT render the question repeater, so a
+	 * plain metabox save posts no question keys at all. That absence must
+	 * read as "this form did not edit questions", never as "there are no
+	 * questions" — otherwise every wp-admin save silently deletes the
+	 * repeater the console authored.
+	 */
+	public function test_admin_metabox_save_does_not_wipe_questions_authored_in_the_console() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			'anchor_event_questions_present' => '1',
+			'anchor_event_questions' => [
+				[ 'key' => '', 'label' => 'Dietary needs', 'type' => 'text' ],
+			],
+		];
+		$this->save_via_console( $event_id );
+		$this->assertCount( 1, $this->module()->get_registration_questions( $event_id ) );
+
+		// A metabox save that never rendered the repeater.
+		$_POST = [
+			Module::NONCE => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-01',
+		];
+		$this->module()->save_meta( $event_id );
+
+		$saved = $this->module()->get_registration_questions( $event_id );
+		$this->assertCount( 1, $saved, 'A repeater the form never rendered must not be read as "no questions".' );
+		$this->assertSame( 'Dietary needs', $saved[0]['label'] );
+	}
+
+	/**
+	 * ...and the console can still clear the last question. It renders the
+	 * repeater, so it posts the presence marker even when every row has been
+	 * removed — which is what distinguishes "cleared" from "not edited".
+	 */
+	public function test_console_save_can_still_clear_every_question() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			'anchor_event_questions_present' => '1',
+			'anchor_event_questions' => [ [ 'key' => '', 'label' => 'Dietary needs', 'type' => 'text' ] ],
+		];
+		$this->save_via_console( $event_id );
+		$this->assertCount( 1, $this->module()->get_registration_questions( $event_id ) );
+
+		$_POST = [ 'anchor_event_questions_present' => '1' ];
+		$this->save_via_console( $event_id );
+
+		$this->assertSame( [], $this->module()->get_registration_questions( $event_id ) );
+		$this->assertSame( '', get_post_meta( $event_id, Module::QUESTIONS_META, true ) );
+	}
+
+	/**
+	 * The cross-surface round trip the two spec entries are really about: a
+	 * question authored in wp-admin is editable from the console afterwards,
+	 * and keeps its stable key across the hand-off so existing answers stay
+	 * attached to it (Task 26).
+	 */
+	public function test_a_question_authored_in_wp_admin_is_editable_from_the_console() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			Module::NONCE => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-01',
+			'anchor_event_questions_present' => '1',
+			'anchor_event_questions' => [
+				[ 'key' => '', 'label' => 'Practice name', 'type' => 'text' ],
+			],
+			'anchor_event_email_subject_confirmation' => 'Written in wp-admin',
+		];
+		$this->module()->save_meta( $event_id );
+
+		$key = $this->module()->get_registration_questions( $event_id )[0]['key'];
+
+		// The console re-renders that row (hidden key input) and the author
+		// renames it — the same edit the repeater makes in the browser.
+		$_POST = [
+			'anchor_event_questions_present' => '1',
+			'anchor_event_questions' => [
+				[ 'key' => $key, 'label' => 'Practice or organization', 'type' => 'text' ],
+			],
+		];
+		$this->save_via_console( $event_id );
+
+		$saved = $this->module()->get_registration_questions( $event_id );
+		$this->assertCount( 1, $saved );
+		$this->assertSame( $key, $saved[0]['key'], 'The key must survive the hand-off between the two surfaces.' );
+		$this->assertSame( 'Practice or organization', $saved[0]['label'] );
+
+		// And the wording written in wp-admin is still there afterwards.
+		$this->assertSame( 'Written in wp-admin', get_post_meta( $event_id, '_anchor_event_email_subject_confirmation', true ) );
+	}
+
+	/** @return \Anchor\Events\Occurrences */
+	private function occurrences() {
+		return $this->module()->occurrences;
+	}
+
+	/**
+	 * Run the front-end Events Manager console's save path over the current
+	 * $_POST. save_event_manager_fields() is protected on purpose (it writes
+	 * meta with no guards of its own); the same ReflectionMethod pattern the
+	 * rest of this suite uses.
+	 */
+	private function save_via_console( $event_id ) {
+		$method = new ReflectionMethod( Module::class, 'save_event_manager_fields' );
+		$method->setAccessible( true );
+		return $method->invoke( $this->module(), $event_id, '2026-09-01', $this->module()->registration_mode( $event_id ) );
+	}
 }

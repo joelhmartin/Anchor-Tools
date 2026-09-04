@@ -664,4 +664,235 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 			'The owning event still drafts its own product when it is retired.'
 		);
 	}
+
+	/* ------------------------------------------------------------------
+	 * (e) The engine owns "next date" (MODEL-D4 / NEW-D1).
+	 *
+	 * children() is the raw LIVE set — every published, non-soft-closed
+	 * occurrence, past ones included, which is exactly what the parent's own
+	 * span and the admin counts want. What every "advertise a date" reader
+	 * wants is narrower, and each of them used to narrow it for itself (or
+	 * not at all): upcoming_children() drops the dates that have been and
+	 * gone, bookable_children() drops the ones nobody can book, and
+	 * Module::next_occurrence() is the one answer to "which date does this
+	 * container advertise".
+	 * ------------------------------------------------------------------ */
+
+	/** A parent with a past date and a future one, both live (nothing closed). */
+	protected function past_and_future_parent() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2020-01-06', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Gone', 'capacity' => 10 ],
+			[ 'date' => '2030-03-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Ahead', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertCount( 2, $live, 'Both dates are live: a past occurrence is not automatically closed — that is the defect.' );
+		$this->assertFalse(
+			$this->occurrences()->is_closed( (int) $live[0] ),
+			'Precondition: the past date is live, so children() still returns it.'
+		);
+
+		return [ $parent_id, (int) $live[0], (int) $live[1] ];
+	}
+
+	public function test_children_still_returns_a_past_live_child() {
+		list( $parent_id, $past ) = $this->past_and_future_parent();
+
+		$this->assertContains(
+			$past,
+			$this->occurrences()->children( $parent_id ),
+			'children() stays the raw live set — the admin counts and the parent span depend on it.'
+		);
+	}
+
+	public function test_upcoming_children_drops_a_past_live_child() {
+		list( $parent_id, $past, $future ) = $this->past_and_future_parent();
+
+		$this->assertSame( [ $future ], $this->occurrences()->upcoming_children( $parent_id ) );
+	}
+
+	public function test_bookable_children_drops_a_sold_out_child() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-02-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Full', 'capacity' => 1 ],
+			[ 'date' => '2030-02-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Open', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		$this->make_seat( (int) $live[0] ); // fills the 2030-02-01 date.
+
+		$this->assertSame( [ (int) $live[1] ], $this->occurrences()->bookable_children( $parent_id ) );
+		$this->assertCount( 2, $this->occurrences()->children( $parent_id ), 'A sold-out date is still live.' );
+	}
+
+	public function test_bookable_children_drops_a_past_child() {
+		list( $parent_id, $past, $future ) = $this->past_and_future_parent();
+
+		$this->assertSame( [ $future ], $this->occurrences()->bookable_children( $parent_id ) );
+	}
+
+	public function test_bookable_children_is_empty_for_a_non_parent() {
+		$event = $this->make_event( [ 'start_date' => '2030-01-01' ] );
+
+		$this->assertSame( [], $this->occurrences()->bookable_children( $event ) );
+		$this->assertSame( [], $this->occurrences()->upcoming_children( $event ) );
+	}
+
+	/**
+	 * The per-request memo must not outlive the reconcile that changed the
+	 * answer: a listing asks these lists several times over, and a save path
+	 * that reconciles mid-request would otherwise keep serving the pre-save
+	 * set.
+	 */
+	public function test_bookable_children_memo_is_invalidated_by_reconcile() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+
+		// Seated BEFORE the first read on purpose. Creating a seat bumps the
+		// listing cache generation, which is part of the memo key — so a seat
+		// created BETWEEN the two reads would invalidate the memo by itself
+		// and the test would pass with no flush in reconcile() at all. Doing
+		// it first means the only thing that can change the second answer is
+		// reconcile() dropping the memo by hand, which is the whole point:
+		// soft-closing a date is a pure meta write and bumps no counter.
+		$this->make_seat( (int) $live[0], [ 'status' => Registrations::STATUS_CONFIRMED ] );
+
+		$this->assertSame(
+			[ (int) $live[0], (int) $live[1] ],
+			$this->occurrences()->bookable_children( $parent_id ),
+			'Fixture: both dates are still live and bookable (the seat does not fill a capacity-0 date).'
+		);
+
+		$this->drop_first_date( $parent_id );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame(
+			[ (int) $live[1] ],
+			$this->occurrences()->bookable_children( $parent_id ),
+			'The memo must be dropped when reconcile() changes which dates are live.'
+		);
+	}
+
+	/* ---- Module::next_occurrence() ---------------------------------- */
+
+	public function test_next_occurrence_is_the_first_bookable_date_not_the_first_live_one() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-04-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Full', 'capacity' => 1 ],
+			[ 'date' => '2030-04-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Open', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		$this->make_seat( (int) $live[0] );
+
+		$this->assertSame( (int) $live[1], $this->module()->next_occurrence( $parent_id ) );
+	}
+
+	public function test_next_occurrence_skips_a_past_date() {
+		list( $parent_id, $past, $future ) = $this->past_and_future_parent();
+
+		$this->assertSame( $future, $this->module()->next_occurrence( $parent_id ) );
+	}
+
+	public function test_next_occurrence_falls_back_to_the_first_upcoming_date_when_nothing_is_bookable() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-05-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Full', 'capacity' => 1 ],
+			[ 'date' => '2030-05-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Also full', 'capacity' => 1 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		$this->make_seat( (int) $live[0] );
+		$this->make_seat( (int) $live[1], [ 'email' => 'second@example.test' ] );
+
+		$this->assertSame(
+			(int) $live[0],
+			$this->module()->next_occurrence( $parent_id ),
+			'A fully-booked offering still advertises its next date rather than none at all.'
+		);
+	}
+
+	public function test_next_occurrence_is_zero_when_every_date_has_passed() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2020-01-06', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Gone', 'capacity' => 10 ],
+		] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame( 0, $this->module()->next_occurrence( $parent_id ) );
+	}
+
+	public function test_next_occurrence_is_zero_for_a_plain_event() {
+		$event = $this->make_event( [ 'start_date' => '2030-01-01' ] );
+
+		$this->assertSame( 0, $this->module()->next_occurrence( $event ) );
+	}
+
+	/* ---- the parent's own bookability -------------------------------- */
+
+	public function test_parent_with_one_bookable_date_still_reads_parent() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-06-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Full', 'capacity' => 1 ],
+			[ 'date' => '2030-06-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Open', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		$this->make_seat( (int) $live[0] );
+
+		$this->assertSame( 'parent', $this->module()->bookability( $parent_id ) );
+	}
+
+	public function test_parent_whose_every_date_is_sold_out_reads_full() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-07-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Full', 'capacity' => 1 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		$this->make_seat( (int) $live[0] );
+
+		$this->assertSame( 'full', $this->module()->bookability( $parent_id ) );
+	}
+
+	public function test_parent_whose_dates_have_all_passed_reads_closed() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2020-01-06', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Gone', 'capacity' => 10 ],
+		] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame( 'closed', $this->module()->bookability( $parent_id ) );
+	}
+
+	/**
+	 * Registration off on every date is 'disabled', NOT 'closed'.
+	 *
+	 * Registration off is the default state of an event and the permanent
+	 * state of every display-only site, and Event_Schema::omits_offer() keeps
+	 * publishing an Offer for 'disabled' while withholding one for 'closed'
+	 * (NEW-D2). Collapsing the two would have stripped the price out of the
+	 * markup of every offering on every site that never switched registration
+	 * on.
+	 */
+	public function test_parent_whose_every_date_has_registration_off_reads_disabled() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-08-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'One', 'capacity' => 10 ],
+			[ 'date' => '2030-08-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Two', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		foreach ( $live as $child_id ) {
+			update_post_meta( (int) $child_id, '_anchor_event_registration_enabled', false );
+		}
+
+		$this->assertSame( 'disabled', $this->module()->bookability( $parent_id ) );
+	}
+
+	/** A sold-out date outranks a switched-off one, exactly as it does on one event. */
+	public function test_parent_with_a_sold_out_and_a_switched_off_date_reads_full() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2030-09-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Full', 'capacity' => 1 ],
+			[ 'date' => '2030-09-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Off', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		$this->make_seat( (int) $live[0] );
+		update_post_meta( (int) $live[1], '_anchor_event_registration_enabled', false );
+
+		$this->assertSame( 'full', $this->module()->bookability( $parent_id ) );
+	}
+
+	public function test_parent_with_no_dates_at_all_reads_closed() {
+		$parent_id = $this->make_parent( [] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame( 'closed', $this->module()->bookability( $parent_id ) );
+	}
 }

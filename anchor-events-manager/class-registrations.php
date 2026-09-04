@@ -27,30 +27,229 @@ class Registrations {
     const STATUS_CANCELLED = 'cancelled'; // kept, excluded from counts.
     const STATUS_REFUNDED  = 'refunded';  // kept, terminal, never revived.
     const STATUS_FAILED    = 'failed';    // kept, excluded from counts.
-    const STATUS_ATTENDED  = 'attended';  // reserved vocabulary (check-in deferred); NOT counted in MVP.
-    const STATUS_NO_SHOW   = 'no_show';   // reserved vocabulary; inactive.
 
-    /** Statuses that consume capacity. `attended` is intentionally NOT here in MVP (spec finding #21). */
+    // READ-ONLY LEGACY (see LEGACY_STATUSES): storable by history, never by a
+    // new write.
+    const STATUS_ATTENDED = 'attended';
+    const STATUS_NO_SHOW  = 'no_show';
+
+    /**
+     * Every status a NEW write may put a seat into — the writable vocabulary.
+     *
+     * REG-D32 removed `attended`/`no_show` from here because nothing could set
+     * them, and that part stands: no path creates or moves a seat INTO either.
+     * They are not gone from the model, though — see LEGACY_STATUSES.
+     */
+    const STATUSES = [
+        self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST,
+        self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED,
+    ];
+
+    /**
+     * Statuses a seat may HOLD but nothing may write.
+     *
+     * A site that ran an earlier version has seats stored as `attended` or
+     * `no_show`. REG-D32 dropped both from the vocabulary outright, which made
+     * those stored values unreadable rather than unwritable: summaries omitted
+     * them (so the seats vanished from every count an operator sees) and every
+     * status change out of them answered `invalid_status`, stranding the seat
+     * in a state no screen could move it out of.
+     *
+     * So they are read-only rather than absent. valid_status() accepts them,
+     * get_event_summary() counts them under their own labels, and the
+     * transition table lets an operator move one on to `confirmed` or
+     * `cancelled`. What they are NOT is offered: Roster::status_options() is
+     * built from STATUSES, and create_seat() rejects them, so no new seat ever
+     * enters either state. No migration — the stored values are the record of
+     * what happened, and rewriting them would be inventing history.
+     */
+    const LEGACY_STATUSES = [ self::STATUS_ATTENDED, self::STATUS_NO_SHOW ];
+
+    /**
+     * Every status a seat may legally hold: writable plus read-only legacy.
+     * A method, not a constant, because a constant expression cannot merge two
+     * arrays and a hand-written third list is exactly the drift REG-D33 fixed.
+     *
+     * @return string[]
+     */
+    public static function all_statuses() {
+        return \array_merge( self::STATUSES, self::LEGACY_STATUSES );
+    }
+
+    /** Statuses that consume capacity. */
     const RESERVING_STATUSES = [ self::STATUS_CONFIRMED, self::STATUS_PENDING ];
 
     /** Statuses counted as waitlist (never toward capacity). */
     const WAITLIST_STATUSES = [ self::STATUS_WAITLIST ];
 
-    /** Allowed status transitions (spec §4.3). Illegal transitions are logged + no-oped. */
+    /**
+     * The statuses a cancellation/refund email is sent ABOUT (audit REG-D4).
+     *
+     * One definition for the whole module: Module::on_seat_status_changed()
+     * decides whether to enqueue from it, and update_status() below clears the
+     * "already emailed" marker from it, so "terminal" can never come to mean
+     * two different things in the enqueue path and the clear path.
+     */
+    const TERMINAL_STATUSES = [ self::STATUS_CANCELLED, self::STATUS_REFUNDED ];
+
+    /**
+     * Seat meta keys for the lifecycle-email markers. Named here — the seat
+     * data layer owns seat storage — so the sweep, the senders and the clear
+     * path in update_status() all spell them the same way.
+     */
+    const META_REMINDERS_SENT = '_anchor_event_reminders_sent';
+    const META_CANCEL_EMAILED = '_anchor_event_cancel_emailed';
+    const META_EMAIL_RETRY    = '_anchor_event_email_retry';
+
+    /**
+     * Allowed status transitions (spec §4.3). Illegal transitions are logged + no-oped.
+     *
+     * `cancelled -> waitlist` and `failed -> waitlist` exist for
+     * change_status_with_capacity()'s overflow branch (REG-D38): reviving a
+     * seat onto a full event that runs a waitlist has to put it SOMEWHERE
+     * honest, and the waitlist is that place. Without them the revive answered
+     * `illegal_transition` — an error-logged refusal for something the module
+     * itself had just decided to do.
+     *
+     * `refunded` stays terminal in both directions: money moved, and a refunded
+     * seat is never revived by any path.
+     */
     protected static $transitions = [
         self::STATUS_PENDING   => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED, self::STATUS_WAITLIST ],
-        self::STATUS_CONFIRMED => [ self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED, self::STATUS_ATTENDED, self::STATUS_NO_SHOW ],
+        self::STATUS_CONFIRMED => [ self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED ],
         self::STATUS_WAITLIST  => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED, self::STATUS_FAILED, self::STATUS_REFUNDED ],
-        self::STATUS_FAILED    => [ self::STATUS_CONFIRMED, self::STATUS_PENDING ],
-        self::STATUS_CANCELLED => [ self::STATUS_CONFIRMED, self::STATUS_PENDING ],
+        self::STATUS_FAILED    => [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST ],
+        self::STATUS_CANCELLED => [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST ],
         self::STATUS_REFUNDED  => [], // terminal — never auto-revived.
+        // Read-only legacy (LEGACY_STATUSES): nothing transitions INTO these,
+        // but a seat already holding one has to be movable, or it is stuck in a
+        // state the module no longer writes. Out only, and only to the two
+        // states that describe a seat after the fact: it counts, or it doesn't.
+        self::STATUS_ATTENDED  => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED ],
+        self::STATUS_NO_SHOW   => [ self::STATUS_CONFIRMED, self::STATUS_CANCELLED ],
     ];
 
     /** @var Module */
     private $module;
 
+    /**
+     * True while write_seat_title() is inside its own wp_update_post().
+     *
+     * The title sync listens on save_post, and the write it makes fires
+     * save_post again — so without this the sync re-enters itself. It cannot
+     * be left to "is the stored title already what we want?", because the
+     * title WordPress stores is kses-filtered (see write_seat_title()).
+     *
+     * @var bool
+     */
+    private $syncing_seat_title = false;
+
     public function __construct( Module $module ) {
         $this->module = $module;
+
+        // REG-D50 — the attendee name is stored twice: as `_anchor_event_name`
+        // (what get_registrations() and every reader use) and as the seat's
+        // post_title (what the REST listing and seat_dto()'s fallback use).
+        // They used to be kept in step only by whichever writer remembered to
+        // write both, so anything else that touched one — a bulk edit, an
+        // import, a direct wp_update_post() — drifted them apart invisibly.
+        // The meta is the source of truth and the title is a derived display
+        // copy, so ONE place derives it, in both directions: whenever the meta
+        // is written, and whenever the seat post is saved by anybody.
+        \add_action( 'added_post_meta', [ $this, 'sync_seat_title' ], 10, 4 );
+        \add_action( 'updated_post_meta', [ $this, 'sync_seat_title' ], 10, 4 );
+        \add_action( 'save_post_' . Module::REG_CPT, [ $this, 'sync_seat_title_on_save' ], 10, 1 );
+    }
+
+    /** The post_title a seat should carry for $name (never empty). */
+    private static function seat_title_for( $name ) {
+        $name = \trim( (string) $name );
+        return $name !== '' ? $name : \__( '(attendee)', 'anchor-schema' );
+    }
+
+    /**
+     * Keep a seat's post_title equal to its `_anchor_event_name` meta.
+     * Fires on added_post_meta/updated_post_meta; a no-op for every other key
+     * and every other post type, so a site that never used events pays nothing.
+     *
+     * @param int    $meta_id
+     * @param int    $post_id
+     * @param string $meta_key
+     * @param mixed  $meta_value
+     */
+    public function sync_seat_title( $meta_id, $post_id, $meta_key, $meta_value ) {
+        if ( '_anchor_event_name' !== $meta_key ) {
+            return;
+        }
+        $this->write_seat_title( (int) $post_id, self::seat_title_for( $meta_value ) );
+    }
+
+    /**
+     * The other direction: a seat saved by any path gets its title re-derived
+     * from the meta, so a wp_update_post() that renamed the post alone cannot
+     * leave the roster and the REST listing disagreeing about who this is.
+     *
+     * @param int $post_id
+     */
+    public function sync_seat_title_on_save( $post_id ) {
+        if ( \defined( 'DOING_AUTOSAVE' ) && \DOING_AUTOSAVE ) {
+            return;
+        }
+        $name = \get_post_meta( (int) $post_id, '_anchor_event_name', true );
+        if ( '' === $name || null === $name ) {
+            return; // No stored name yet (create_seat() writes the post first).
+        }
+        $this->write_seat_title( (int) $post_id, self::seat_title_for( $name ) );
+    }
+
+    /**
+     * Write $title onto a seat post.
+     *
+     * The equality check is a fast path, NOT the recursion guard. WordPress
+     * runs `title_save_pre` on the way in, and for any actor without
+     * `unfiltered_html` that includes wp_filter_kses() — so "Smith & Sons" is
+     * stored as "Smith &amp; Sons" and never equals what we asked for. With
+     * only the comparison in place, wp_update_post() fired save_post, which
+     * synced, which compared, which never matched, which wrote again: an
+     * unbounded loop on every public registration, WooCommerce checkout and
+     * cron seat write. The re-entrancy flag is the guard.
+     *
+     * @param int    $post_id
+     * @param string $title
+     */
+    private function write_seat_title( $post_id, $title ) {
+        $post_id = (int) $post_id;
+        if ( $this->syncing_seat_title || $post_id <= 0 ) {
+            return;
+        }
+        if ( \get_post_type( $post_id ) !== Module::REG_CPT ) {
+            return;
+        }
+        // Read raw: get_post_field() defaults to the DISPLAY context, which
+        // runs the value through display filters and would compare a formatted
+        // title against an unformatted one.
+        $stored = (string) \get_post_field( 'post_title', $post_id, 'raw' );
+
+        // wp_insert_post() stores wp_unslash( sanitize_post( $data, 'db' ) ),
+        // and that db pass is where title_save_pre (kses, for an actor without
+        // unfiltered_html) turns "Smith & Sons" into "Smith &amp; Sons". Run
+        // the same pass here so the fast path compares like with like instead
+        // of asking for a write on every single save of a name with an entity
+        // in it.
+        $slashed  = \wp_slash( (string) $title );
+        $expected = \wp_unslash( (string) \sanitize_post_field( 'post_title', $slashed, $post_id, 'db' ) );
+        if ( $stored === (string) $title || $stored === $expected ) {
+            return; // Already in step; nothing to write.
+        }
+
+        $this->syncing_seat_title = true;
+        try {
+            // wp_slash(): wp_insert_post() unslashes what it is given, so an
+            // already-unslashed title would lose every literal backslash.
+            \wp_update_post( [ 'ID' => $post_id, 'post_title' => $slashed ] );
+        } finally {
+            $this->syncing_seat_title = false;
+        }
     }
 
     /* ---------------------------------------------------------------------
@@ -88,7 +287,9 @@ class Registrations {
         }
 
         $name   = \sanitize_text_field( (string) ( $args['name'] ?? '' ) );
-        $status = $this->valid_status( $args['status'] ?? self::STATUS_CONFIRMED ) ? $args['status'] : self::STATUS_CONFIRMED;
+        // writable_status(), not valid_status(): a seat may HOLD a read-only
+        // legacy status, but no new seat may be born into one.
+        $status = $this->writable_status( $args['status'] ?? self::STATUS_CONFIRMED ) ? $args['status'] : self::STATUS_CONFIRMED;
         $source = (string) ( $args['source'] ?? 'internal' );
         $actor  = (string) ( $args['actor'] ?? 'system' );
         $note   = (string) ( $args['note'] ?? '' );
@@ -137,23 +338,29 @@ class Registrations {
 
     /**
      * Change a seat's status with transition validation + history append.
-     * No-ops (returns true) for same-status calls without a note; logs and returns
-     * false for illegal transitions. Never fatal.
+     *
+     * Answers the tri-state (audit REG-D37): `sent` when the status actually
+     * changed, `skipped` for every same-status call — with no note nothing is
+     * written at all, and with a note the note is still recorded, but the
+     * STATUS did not move, so a caller reporting "Seat cancelled." for it is
+     * asserting a change that did not happen — and `failed` for an id that is
+     * not a seat, an unknown status, or a transition the table forbids. Never
+     * fatal.
      *
      * @param int    $seat_id Seat post ID.
      * @param string $to      Target status.
      * @param string $note    History note.
      * @param string $actor   History actor.
-     * @return bool True if the status changed (or was a benign no-op).
+     * @return Outcome sent = changed, skipped = benign no-op, failed = rejected.
      */
     public function update_status( $seat_id, $to, $note = '', $actor = 'system' ) {
         $seat_id = (int) $seat_id;
         if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
-            return false;
+            return Outcome::failed( 'not_a_seat' );
         }
         if ( ! $this->valid_status( $to ) ) {
             Events_Log::error( 'invalid_status', [ 'seat' => $seat_id, 'to' => $to ] );
-            return false;
+            return Outcome::failed( 'invalid_status' );
         }
 
         $from = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
@@ -161,16 +368,18 @@ class Registrations {
             $from = self::STATUS_CONFIRMED;
         }
 
-        // Same status: no-op unless a note is supplied (then just record the note).
+        // Same status: no-op unless a note is supplied (then just record the
+        // note). Either way this is not a change — see the return below.
         if ( $from === $to && $note === '' ) {
-            return true;
+            return Outcome::skipped( 'same_status' );
         }
+        $changed = ( $from !== $to );
 
         if ( $from !== $to ) {
             $allowed = self::$transitions[ $from ] ?? [];
             if ( ! \in_array( $to, $allowed, true ) ) {
                 Events_Log::error( 'illegal_transition', [ 'seat' => $seat_id, 'from' => $from, 'to' => $to ] );
-                return false;
+                return Outcome::failed( 'illegal_transition' );
             }
         }
 
@@ -195,33 +404,73 @@ class Registrations {
         $history[] = [ 'status' => $to, 'time' => \time(), 'note' => (string) $note, 'actor' => (string) $actor ];
         \update_post_meta( $seat_id, '_anchor_event_history', $history );
 
+        // Leaving a terminal status re-arms the cancellation email (audit
+        // REG-D4). The marker used to be a write-once boolean with no clear
+        // path, so a seat cancelled → restored by a roster edit → cancelled
+        // again never told the attendee about the second cancellation. It is
+        // now a per-transition timestamp, and this is the one place it is
+        // cleared: the seat is live again, so whatever was emailed about the
+        // last cancellation no longer describes it. Any cancellation email
+        // still queued for retry is dropped for the same reason.
+        if ( \in_array( $from, self::TERMINAL_STATUSES, true ) && ! \in_array( $to, self::TERMINAL_STATUSES, true ) ) {
+            \delete_post_meta( $seat_id, self::META_CANCEL_EMAILED );
+            $job = \get_post_meta( $seat_id, self::META_EMAIL_RETRY, true );
+            if ( \is_array( $job ) && ( $job['type'] ?? '' ) === 'cancellation' ) {
+                \delete_post_meta( $seat_id, self::META_EMAIL_RETRY );
+            }
+        }
+
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
         \do_action( 'anchor_events_seat_status_changed', $seat_id, $from, $to, (string) $actor );
-        return true;
+
+        // The roster's Cancel action passes a note, so a click on an
+        // already-cancelled row reaches this far: the note is recorded, the
+        // status is exactly where it was. Reporting that as a change is what
+        // put "Seat cancelled." on screen for a click that cancelled nothing
+        // (audit REG-D37).
+        return $changed ? Outcome::sent() : Outcome::skipped( 'same_status' );
     }
 
     /**
      * Update a seat's editable contact fields (name/email/phone). Status is NOT
-     * touched here — use update_status() for that. Keeps the post_title in sync
-     * with the attendee name. Used by the roster manual-edit action so callers
+     * touched here — use update_status() for that. The post_title follows the
+     * name meta on its own (REG-D50). Used by the roster manual-edit action so callers
      * never write seat meta directly.
+     *
+     * A blank name is REFUSED, not quietly dropped (audit REG-D34). The old
+     * code wrapped the name write in `if ( $name !== '' )` and still returned
+     * true, so an operator who cleared the field to blank out a mistaken entry
+     * was told "Seat updated." while the old name stayed on the roster and in
+     * the export. Every seat has a name — create_seat() falls back to a
+     * placeholder rather than storing nothing — so "" is not a value here, it
+     * is a mistake, and the caller has to be able to say so.
+     *
+     * Validation happens BEFORE the first write, so a refused edit changes
+     * nothing at all: half-saving the email while rejecting the name would be
+     * the same lie in a smaller place.
      *
      * @param int   $seat_id
      * @param array $fields {name?, email?, phone?}
-     * @return bool
+     * @return Outcome sent | skipped (nothing_to_change) | failed (not_a_seat, empty_name)
      */
     public function update_contact( $seat_id, array $fields ) {
         $seat_id = (int) $seat_id;
         if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
-            return false;
+            return Outcome::failed( 'not_a_seat' );
         }
+
+        $name = null;
         if ( \array_key_exists( 'name', $fields ) ) {
             $name = \sanitize_text_field( (string) $fields['name'] );
-            if ( $name !== '' ) {
-                \wp_update_post( [ 'ID' => $seat_id, 'post_title' => $name ] );
-                \update_post_meta( $seat_id, '_anchor_event_name', $name );
+            if ( \trim( $name ) === '' ) {
+                return Outcome::failed( 'empty_name' );
             }
+        }
+
+        if ( null !== $name ) {
+            // The post_title follows the meta through sync_seat_title().
+            \update_post_meta( $seat_id, '_anchor_event_name', $name );
         }
         if ( \array_key_exists( 'email', $fields ) ) {
             \update_post_meta( $seat_id, '_anchor_event_email', \sanitize_email( (string) $fields['email'] ) );
@@ -231,7 +480,141 @@ class Registrations {
         }
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
-        return true;
+
+        if ( null === $name && ! \array_key_exists( 'email', $fields ) && ! \array_key_exists( 'phone', $fields ) ) {
+            return Outcome::skipped( 'nothing_to_change' );
+        }
+        return Outcome::sent();
+    }
+
+
+    /**
+     * A status change that would CONSUME a seat, decided under the event lock
+     * (audit REG-D38).
+     *
+     * `cancelled -> confirmed` and `waitlist -> confirmed` are legal
+     * transitions, and both are reachable from the roster edit form. They used
+     * to go straight to update_status(), which takes no lock, recounts nothing
+     * and asks no capacity question — so an event at capacity 20 with 20
+     * confirmed went to 21 the moment an operator revived a cancelled seat,
+     * silently, with no overbooked warning at the moment of the change. This is
+     * also the module's ONLY waitlist promotion (there is no automatic one), so
+     * it is the place the promotion has to be told about.
+     *
+     * Anything that does not consume a seat — a cancel, a refund, a check-in,
+     * or a revive on an event with no capacity — falls straight through to
+     * update_status(); this method never becomes a second transition authority.
+     *
+     * @param int    $seat_id
+     * @param string $to
+     * @param string $note
+     * @param string $actor
+     * @param bool   $allow_over Explicit operator override ("Allow over capacity").
+     * @return Outcome sent | sent('waitlisted') | skipped |
+     *                 failed('capacity_full' = the event total, 'tier_full' =
+     *                 this ticket type only, ...)
+     */
+    public function change_status_with_capacity( $seat_id, $to, $note = '', $actor = 'system', $allow_over = false ) {
+        $seat_id = (int) $seat_id;
+        if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return Outcome::failed( 'not_a_seat' );
+        }
+        $from = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
+        if ( $from === '' ) {
+            $from = self::STATUS_CONFIRMED;
+        }
+        $consumes = \in_array( $to, self::RESERVING_STATUSES, true )
+            && ! \in_array( $from, self::RESERVING_STATUSES, true );
+        if ( ! $consumes ) {
+            return $this->update_status( $seat_id, $to, $note, $actor );
+        }
+
+        $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
+        $meta     = $this->module->get_meta( $event_id );
+
+        return $this->with_event_lock( $event_id, function ( $locked ) use ( $seat_id, $event_id, $meta, $from, $to, $note, $actor, $allow_over ) {
+            $capacity = (int) ( $meta['capacity'] ?? 0 );
+            $weight   = 1 + max( 0, (int) \get_post_meta( $seat_id, '_anchor_event_guests', true ) );
+
+            // Fresh recount INSIDE the lock — never the cache, the same rule
+            // claim_seats() follows.
+            //
+            // The two ceilings are kept APART, because only one of them can
+            // send a seat to the waitlist. capacity_decision() says it and
+            // claim_seats() implements it: the event total governs the
+            // waitlist, and a tier that is sold out on an event with room is
+            // simply `full` for that tier — it never waitlists. Collapsed into
+            // one `$fits` these two produced "(event full — waitlisted
+            // instead)" on an event that was not full, and a seat on the
+            // waitlist of an event with empty seats.
+            $event_fits = ( $capacity <= 0 ) || ( ( $this->count_reserved_seats( $event_id, true ) + $weight ) <= $capacity );
+            $tier_fits  = true;
+
+            if ( $event_fits ) {
+                $tier_id = \sanitize_key( (string) \get_post_meta( $seat_id, '_anchor_event_ticket_type_id', true ) );
+                if ( $tier_id === '' ) {
+                    $tier_id = 'primary';
+                }
+                $tier = $this->module->ticket_types ? $this->module->ticket_types->find( $event_id, $tier_id ) : null;
+                $quota = \is_array( $tier ) ? (int) ( $tier['quota'] ?? 0 ) : 0;
+                if ( $quota > 0 && ( $this->count_reserved_for_tier( $event_id, $tier_id, true ) + $weight ) > $quota ) {
+                    $tier_fits = false;
+                }
+            }
+            $fits = $event_fits && $tier_fits;
+
+            if ( ! $fits && ! $allow_over ) {
+                // The confirm is refused either way — this records WHY, once,
+                // whichever of the two branches below answers it, and WHICH
+                // ceiling said no.
+                Events_Log::error( 'capacity_refused', [
+                    'event' => $event_id,
+                    'seat'  => $seat_id,
+                    'from'  => $from,
+                    'scope' => $event_fits ? 'tier' : 'event',
+                ] );
+                // A seat coming back from cancelled or failed can go somewhere
+                // honest — the waitlist — when the event runs one. (The
+                // transition table carries cancelled|failed -> waitlist for
+                // exactly this; without it the revive answered
+                // `illegal_transition` and the operator was told the change was
+                // not allowed.) A seat that is ALREADY waitlisted has nowhere
+                // to go, so that is a plain refusal.
+                // Asked of the transition table rather than spelled out here:
+                // `refunded` and the read-only legacy statuses have no route to
+                // the waitlist either, and offering them one produced an
+                // `illegal_transition` refusal for a move the module had just
+                // chosen to make.
+                if ( ! $event_fits
+                    && \in_array( self::STATUS_WAITLIST, self::$transitions[ $from ] ?? [], true )
+                    && ! empty( $meta['waitlist'] )
+                ) {
+                    $note_full = \trim( $note . ' ' . \__( '(event full — waitlisted instead)', 'anchor-schema' ) );
+                    $out = $this->update_status( $seat_id, self::STATUS_WAITLIST, $note_full, $actor );
+                    return $out->is_sent() ? Outcome::sent( 'waitlisted' ) : $out;
+                }
+                // Named apart so the operator is told which ceiling to raise:
+                // "the event is full" is wrong, and unactionable, when the
+                // event has room and this ticket type does not.
+                return Outcome::failed( $event_fits ? 'tier_full' : 'capacity_full' );
+            }
+
+            if ( ! $fits ) {
+                // The operator ticked the box. Recorded the same way the paid
+                // path records a deliberate oversell, never as the default.
+                Events_Log::error( 'capacity_overfill', [
+                    'event'  => $event_id,
+                    'seat'   => $seat_id,
+                    'source' => 'roster',
+                ] );
+                $note = \trim( $note . ' ' . \__( '(capacity override)', 'anchor-schema' ) );
+            }
+            if ( ! $locked ) {
+                Events_Log::error( 'capacity_lock_unavailable', [ 'event' => $event_id, 'source' => 'roster' ] );
+            }
+
+            return $this->update_status( $seat_id, $to, $note, $actor );
+        } );
     }
 
     /* ---------------------------------------------------------------------
@@ -468,6 +851,19 @@ class Registrations {
      * "sold out" never triggers the waitlist — the waitlist stays event-level,
      * spec §7).
      *
+     * KNOWN, DELIBERATELY UNCHANGED (audit REG-D52): the one returned string
+     * mixes two vocabularies — 'open' | 'closed' | 'full' are decisions, while
+     * STATUS_WAITLIST is a seat status meaning "proceed, but the seat you
+     * create is a waitlist seat". Every caller has to know that, which is why
+     * handle_registration() re-derives its seat status from the claim result
+     * rather than trusting this, and why render_registration_form() branches on
+     * it separately. The register's fix — returning {decision, seat_status} —
+     * would change the signature of one of the module's load-bearing
+     * interfaces, and this batch is explicitly not allowed to do that. If it is
+     * ever taken on, the seam is here and the four values are pinned by
+     * Test_Capacity::test_capacity_decision_* — including the waitlist one,
+     * which asserts the seat status by name.
+     *
      * @param int        $event_id
      * @param array      $meta      Event meta (capacity, waitlist, window).
      * @param int        $requested Seats requested.
@@ -550,7 +946,12 @@ class Registrations {
         $got    = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $name, 5 ) );
         $locked = ( 1 === $got );
         if ( ! $locked ) {
-            Events_Log::error( 'lock_unavailable', [ 'event' => (int) $event_id ] );
+            // REG-D63 — one spelling. This used to be `lock_unavailable` while
+            // the callers that also record the degradation used
+            // `capacity_lock_unavailable`, so a search for either found half
+            // the incidents. The callers' rows carry a `source`, which is an
+            // error-identity key, so they still stay separate rows.
+            Events_Log::error( 'capacity_lock_unavailable', [ 'event' => (int) $event_id, 'source' => 'lock' ] );
         }
         try {
             return $fn( $locked );
@@ -782,9 +1183,18 @@ class Registrations {
         if ( $event_id <= 0 || $tier_id === '' ) {
             return false;
         }
+        // REG-D54 — 'publish', like every other seat query in this class. This
+        // one asked for 'any', so a trashed seat stopped counting against
+        // capacity (counts(), tier_counts(), query_seats(), find_seat_by_item(),
+        // get_seats_for_order() and seats_by_email() all skip it) while still
+        // blocking Product_Sync from deleting the tier's managed variation. The
+        // plugin never trashes a seat, so the two answers could only ever
+        // disagree about a seat something else put in the trash — and then they
+        // disagreed in the worst direction. The GDPR eraser is the one
+        // deliberate exception; see seats_by_email().
         $q = new \WP_Query( [
             'post_type'      => Module::REG_CPT,
-            'post_status'    => 'any',
+            'post_status'    => 'publish',
             'fields'         => 'ids',
             'posts_per_page' => 1,
             'no_found_rows'  => true,
@@ -810,9 +1220,18 @@ class Registrations {
         if ( $email === '' ) {
             return [];
         }
+        // REG-D55 — 'any', and deliberately unlike every other seat query in
+        // this class (see tier_has_seats()). This one feeds the GDPR exporter
+        // and eraser, and a request to erase somebody's data is not answered by
+        // "we only looked at the published rows": a trashed seat kept the
+        // attendee's name, email and phone while the eraser reported done.
+        // Capacity and idempotency are what 'publish' is for; thoroughness is
+        // what this is for. Spelled out rather than 'any', because WP_Query's
+        // 'any' drops every status flagged exclude_from_search — `trash`
+        // included, which is the exact row this fix is about.
         $q = new \WP_Query( [
             'post_type'      => Module::REG_CPT,
-            'post_status'    => 'publish',
+            'post_status'    => [ 'publish', 'pending', 'draft', 'future', 'private', 'trash' ],
             'fields'         => 'ids',
             'posts_per_page' => max( 1, (int) $per_page ),
             'paged'          => max( 1, (int) $paged ),
@@ -843,7 +1262,6 @@ class Registrations {
         \update_post_meta( $seat_id, '_anchor_event_phone', '' );
         // D: attendee-provided custom registration fields may hold PII too — clear them.
         \update_post_meta( $seat_id, '_anchor_event_reg_fields', [] );
-        \wp_update_post( [ 'ID' => $seat_id, 'post_title' => $anon ] );
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
         return true;
@@ -881,8 +1299,15 @@ class Registrations {
      * directly (HPOS governs orders/items, not the seat CPT). Returns null when the
      * id isn't a seat post.
      *
+     * REG-D53 — name, email and order_id are part of the snapshot. They used to
+     * be missing, so send_cancellation_email() (this method's only non-Woo
+     * caller) reached around the data layer for all three with direct
+     * get_post_meta() calls and a comment explaining why. This class's whole
+     * premise is that hiding seat storage behind it is what would make a move
+     * to a custom table containable; that was the leak.
+     *
      * @param int $seat_id Seat post ID.
-     * @return array{id:int,status:string,seat_index:int,event_id:int,order_item_id:int}|null
+     * @return array{id:int,status:string,seat_index:int,event_id:int,order_item_id:int,name:string,email:string,order_id:int,ticket_type_id:string}|null
      */
     public function get_seat_info( $seat_id ) {
         $seat_id = (int) $seat_id;
@@ -896,6 +1321,9 @@ class Registrations {
             'seat_index'    => (int) \get_post_meta( $seat_id, '_anchor_event_seat_index', true ),
             'event_id'      => (int) \get_post_meta( $seat_id, '_anchor_event_id', true ),
             'order_item_id' => (int) \get_post_meta( $seat_id, '_anchor_event_order_item_id', true ),
+            'name'          => (string) \get_post_meta( $seat_id, '_anchor_event_name', true ),
+            'email'         => (string) \get_post_meta( $seat_id, '_anchor_event_email', true ),
+            'order_id'      => (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true ),
             // Pre-tier seats have no meta — default to the primary tier id.
             'ticket_type_id' => (string) ( \get_post_meta( $seat_id, '_anchor_event_ticket_type_id', true ) ?: 'primary' ),
         ];
@@ -1080,6 +1508,26 @@ class Registrations {
     }
 
     /**
+     * One seat as the SAME DTO query_seats() returns.
+     *
+     * The lifecycle-email retry drain (audit REG-D5) has a seat id and needs
+     * the record every sender already takes; without this it would have to
+     * rebuild the DTO by hand and drift from seat_dto() the moment a field is
+     * added. Returns null for anything that is not a seat post.
+     *
+     * @param int $seat_id
+     * @return array|null
+     */
+    public function get_seat( $seat_id ) {
+        $seat_id = (int) $seat_id;
+        if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
+            return null;
+        }
+        $post = \get_post( $seat_id );
+        return $post ? $this->seat_dto( $post ) : null;
+    }
+
+    /**
      * Build a seat DTO from a (meta-cache-primed) seat post.
      *
      * @param \WP_Post $post
@@ -1091,6 +1539,7 @@ class Registrations {
             return \get_post_meta( $id, $k, true );
         };
         $status = (string) $g( '_anchor_event_reg_status' );
+        $stored = $g( '_anchor_event_reg_fields' );
         return [
             'id'            => $id,
             'name'          => (string) ( $g( '_anchor_event_name' ) ?: \get_the_title( $post ) ),
@@ -1107,7 +1556,15 @@ class Registrations {
             'seat_index'    => (int) $g( '_anchor_event_seat_index' ),
             // Pre-tier seats have no meta — default to the primary tier id.
             'ticket_type_id' => (string) ( $g( '_anchor_event_ticket_type_id' ) ?: 'primary' ),
-            'reg_fields'    => \is_array( $g( '_anchor_event_reg_fields' ) ) ? $g( '_anchor_event_reg_fields' ) : [],
+            // Resolved against the event's CURRENT questions (REG-D10/D11): the
+            // one place stored answers become question-keyed, so the roster
+            // table, the roster list table and the CSV export all read the same
+            // key and a legacy label-keyed answer (every pre-fix WooCommerce
+            // seat) lands in its own column instead of a second one.
+            'reg_fields'    => $this->module->resolve_registration_answers(
+                (int) $g( '_anchor_event_id' ),
+                \is_array( $stored ) ? $stored : []
+            ),
             'date'          => \get_the_date( 'Y-m-d', $post ),
         ];
     }
@@ -1126,7 +1583,10 @@ class Registrations {
 
         $c          = $this->counts( $event_id );
         $per_status = [];
-        foreach ( [ self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST, self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED, self::STATUS_ATTENDED, self::STATUS_NO_SHOW ] as $s ) {
+        // all_statuses(), not STATUSES: a seat stored as `attended`/`no_show`
+        // by an earlier version is still a seat, and a summary that omits it
+        // is a count an operator cannot reconcile against the roster.
+        foreach ( self::all_statuses() as $s ) {
             $per_status[ $s ] = [
                 'seats'   => $c[ $s ]['seats'] ?? 0,
                 'records' => $c[ $s ]['records'] ?? 0,
@@ -1150,6 +1610,10 @@ class Registrations {
             'cancelled'          => $per_status[ self::STATUS_CANCELLED ]['seats'],
             'refunded'           => $per_status[ self::STATUS_REFUNDED ]['seats'],
             'failed'             => $per_status[ self::STATUS_FAILED ]['seats'],
+            // Read-only legacy, flat like the rest so a caller reading a named
+            // key does not have to know which statuses are legacy.
+            'attended'           => $per_status[ self::STATUS_ATTENDED ]['seats'],
+            'no_show'            => $per_status[ self::STATUS_NO_SHOW ]['seats'],
             'remaining'          => $capacity > 0 ? max( 0, $capacity - $reserved ) : -1, // -1 = unlimited.
             'has_linked_product' => $has_linked,
             'is_overbooked'      => $capacity > 0 && $reserved > $capacity,
@@ -1268,11 +1732,20 @@ class Registrations {
      * ------------------------------------------------------------------- */
 
     public function valid_status( $status ) {
-        return \in_array( $status, [
-            self::STATUS_CONFIRMED, self::STATUS_PENDING, self::STATUS_WAITLIST,
-            self::STATUS_CANCELLED, self::STATUS_REFUNDED, self::STATUS_FAILED,
-            self::STATUS_ATTENDED, self::STATUS_NO_SHOW,
-        ], true );
+        return \in_array( $status, self::all_statuses(), true );
+    }
+
+    /**
+     * Whether a NEW write may put a seat into $status. valid_status() answers
+     * "may a seat hold this" (legacy included, so stored values stay readable
+     * and movable); this answers "may we put one there", which the read-only
+     * legacy statuses fail.
+     *
+     * @param string $status
+     * @return bool
+     */
+    public function writable_status( $status ) {
+        return \in_array( $status, self::STATUSES, true );
     }
 
     /**

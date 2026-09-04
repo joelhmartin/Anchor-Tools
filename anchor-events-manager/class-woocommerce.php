@@ -1544,30 +1544,32 @@ class WooCommerce {
                 // Whatever else this event asks its attendees. Answers land on the
                 // seat in _anchor_event_reg_fields, which the roster and the CSV
                 // export already turn into columns.
-                foreach ( $this->module->get_registration_questions( (int) $line['event_id'] ) as $q ) {
-                    $q_name  = $base . '[fields][' . $q['key'] . ']';
-                    $q_value = isset( $posted[ $cart_item_key ][ $i ]['fields'][ $q['key'] ] )
-                        ? \sanitize_text_field( $posted[ $cart_item_key ][ $i ]['fields'][ $q['key'] ] )
-                        : '';
-                    $req_attr = $q['required'] ? ' required' : '';
+                // One question model, one validator, one control renderer across
+                // the free form, this checkout and the roster's manual add
+                // (REG-D39). The redisplay values go through the SAME sanitizer
+                // the writer uses, so a textarea answer keeps its newlines here
+                // too instead of being flattened on the way back to the screen.
+                $q_rows   = $this->module->get_registration_questions( (int) $line['event_id'] );
+                $q_values = $this->module->sanitize_registration_answers(
+                    (int) $line['event_id'],
+                    $posted[ $cart_item_key ][ $i ]['fields'] ?? [],
+                    $q_rows
+                )['answers'];
+                foreach ( $q_rows as $q ) {
                     $req_mark = $q['required'] ? ' <abbr class="required" title="required">*</abbr>' : '';
 
                     echo '<p class="form-row ' . \esc_attr( $row_class( $q['type'] === 'textarea' ) ) . '">';
                     echo '<label>' . \esc_html( $q['label'] ) . $req_mark . '</label>'; // phpcs:ignore WordPress.Security.EscapeOutput -- $req_mark is a literal.
-                    if ( $q['type'] === 'textarea' ) {
-                        echo '<textarea class="input-text" rows="3" name="' . \esc_attr( $q_name ) . '"' . $req_attr . '>' . \esc_textarea( $q_value ) . '</textarea>'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.
-                    } elseif ( $q['type'] === 'select' ) {
-                        echo '<select class="select" name="' . \esc_attr( $q_name ) . '"' . $req_attr . '>'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.
-                        echo '<option value="">' . \esc_html__( '— Select —', 'anchor-schema' ) . '</option>';
-                        foreach ( $q['options'] as $opt ) {
-                            echo '<option value="' . \esc_attr( $opt ) . '"' . \selected( $q_value, $opt, false ) . '>' . \esc_html( $opt ) . '</option>';
-                        }
-                        echo '</select>';
-                    } elseif ( $q['type'] === 'checkbox' ) {
-                        echo '<label class="anchor-event-attendee-check"><input type="checkbox" value="yes" name="' . \esc_attr( $q_name ) . '"' . \checked( $q_value, 'yes', false ) . $req_attr . ' /> ' . \esc_html__( 'Yes', 'anchor-schema' ) . '</label>'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.
-                    } else {
-                        echo '<input type="text" class="input-text" name="' . \esc_attr( $q_name ) . '" value="' . \esc_attr( $q_value ) . '"' . $req_attr . ' />'; // phpcs:ignore WordPress.Security.EscapeOutput -- literal.
-                    }
+                    echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
+                        'name'           => $base . '[fields][' . $q['key'] . ']',
+                        'value'          => (string) ( $q_values[ $q['key'] ] ?? '' ),
+                        // Woo's own field classes, and NOT on a checkbox:
+                        // Storefront styles `input.input-text { width:100% }`,
+                        // which stretches a checkbox across the row.
+                        'class'          => $this->question_control_class( $q['type'] ),
+                        'checkbox_label' => \__( 'Yes', 'anchor-schema' ),
+                        'checkbox_class' => 'anchor-event-attendee-check',
+                    ] );
                     echo '</p>';
                 }
 
@@ -1578,6 +1580,22 @@ class WooCommerce {
         }
 
         echo '</div>';
+    }
+
+    /**
+     * The Woo field class for one question type. A text input and a textarea
+     * are `.input-text`, a select is `.select`, and a checkbox carries NO class
+     * at all — Storefront's `input.input-text { width: 100% }` stretches a
+     * checkbox across the whole row.
+     *
+     * @param string $type
+     * @return string
+     */
+    private function question_control_class( $type ) {
+        if ( $type === 'checkbox' ) {
+            return '';
+        }
+        return $type === 'select' ? 'select' : 'input-text';
     }
 
     /**
@@ -1632,24 +1650,20 @@ class WooCommerce {
 
                 // Required event questions, checked server-side. The inputs carry
                 // `required` too, but that only covers a browser that runs it.
-                foreach ( $this->module->get_registration_questions( $event_id ) as $q ) {
-                    if ( empty( $q['required'] ) ) {
-                        continue;
-                    }
-                    $answer = isset( $posted[ $cart_item_key ][ $i ]['fields'][ $q['key'] ] )
-                        ? \trim( \sanitize_text_field( $posted[ $cart_item_key ][ $i ]['fields'][ $q['key'] ] ) )
-                        : '';
-                    if ( $answer === '' ) {
-                        $errors->add(
-                            'anchor_attendee_' . $cart_item_key . '_' . $i . '_' . $q['key'],
-                            \sprintf(
-                                /* translators: 1: question label, 2: attendee descriptor. */
-                                \__( 'Please answer “%1$s” for %2$s.', 'anchor-schema' ),
-                                $q['label'],
-                                $who
-                            )
-                        );
-                    }
+                $missing = $this->module->sanitize_registration_answers(
+                    $event_id,
+                    $posted[ $cart_item_key ][ $i ]['fields'] ?? []
+                )['missing'];
+                foreach ( $missing as $q ) {
+                    $errors->add(
+                        'anchor_attendee_' . $cart_item_key . '_' . $i . '_' . $q['key'],
+                        \sprintf(
+                            /* translators: 1: question label, 2: attendee descriptor. */
+                            \__( 'Please answer “%1$s” for %2$s.', 'anchor-schema' ),
+                            $q['label'],
+                            $who
+                        )
+                    );
                 }
 
                 if ( $name === '' ) {
@@ -1765,13 +1779,19 @@ class WooCommerce {
             }
             $fields = [];
             if ( isset( $raw[ $i ]['fields'] ) && \is_array( $raw[ $i ]['fields'] ) ) {
-                foreach ( $this->module->get_registration_questions( $event_id ) as $q ) {
-                    $val = $raw[ $i ]['fields'][ $q['key'] ] ?? '';
-                    // Keyed by the question LABEL: these become the CSV column
-                    // headings, and "Practice or organization" is what the
-                    // organizer needs to read, not "practice_or_organization".
-                    $fields[ $q['label'] ] = \sanitize_text_field( (string) $val );
-                }
+                // Keyed by the question's stable KEY, never its label
+                // (REG-D10/D11): the free path stores the same shape, and
+                // renaming a question must not orphan answers already
+                // collected. Readers resolve the heading at render time via
+                // Module::registration_answer_label().
+                //
+                // Through the shared validator (REG-D39), so this writer keeps
+                // a textarea's newlines and normalizes select/checkbox exactly
+                // as handle_registration() does — three call sites, one rule.
+                $fields = $this->module->sanitize_registration_answers(
+                    $event_id,
+                    $raw[ $i ]['fields']
+                )['answers'];
             }
             $attendees[ $i ] = [
                 'name'   => \sanitize_text_field( $raw[ $i ]['name'] ?? '' ),
@@ -1962,14 +1982,12 @@ class WooCommerce {
      * @param string $surplus_status Status applied to surplus active seats on a
      *                               non-terminal order ('cancelled' normally,
      *                               'refunded' from the refund path).
-     * @param bool   $clear_review   Clear stale needs-review flags first (manual
-     *                               resync) so a clean pass leaves none.
      * @param array  $seed_flags     Needs-review flags to thread into the single
      *                               batched save (finding M4 — e.g. the mixed-refund
      *                               extra-amount flag, so a separate stale-instance
      *                               save can't clobber it).
      */
-    public function reconcile_order( $order, $reason = '', $surplus_status = Registrations::STATUS_CANCELLED, $clear_review = false, array $seed_flags = [] ) {
+    public function reconcile_order( $order, $reason = '', $surplus_status = Registrations::STATUS_CANCELLED, array $seed_flags = [] ) {
         if ( ! $order instanceof \WC_Order ) {
             return;
         }
@@ -1990,6 +2008,9 @@ class WooCommerce {
         // Local accumulators flushed once at end of pass.
         $log_entries  = [];
         $review_flags = $seed_flags; // M4: seed threaded flags into the batched save.
+        // WOO-D33: evaluation tokens this pass actually reached, so
+        // apply_review_flags() can tell "checked and clean" from "never checked".
+        $evaluated    = [];
         // Per-event seat-change tally for Phase 6 emails: [ event_id => [confirmed, waitlist, released] ].
         $email_events = [];
 
@@ -2059,7 +2080,8 @@ class WooCommerce {
                     (string) $reason,
                     $log_entries,
                     $review_flags,
-                    $email_events
+                    $email_events,
+                    $evaluated
                 );
             }
 
@@ -2079,12 +2101,12 @@ class WooCommerce {
                 // Phase 6: send buyer/organizer emails for this pass's seat changes.
                 // Appends to $log_entries/$review_flags + writes the emails-sent gate
                 // onto $save_order; everything rides the SINGLE batched save below.
-                $emails_dirty = $this->dispatch_emails( $save_order, $email_events, $log_entries, $review_flags );
+                $emails_dirty = $this->dispatch_emails( $save_order, $email_events, $log_entries, $review_flags, $evaluated );
 
                 // Flush accumulators onto the order meta, then a SINGLE batched save —
                 // only when something actually changed (H2: no-op passes never save).
                 $logged  = $this->apply_order_log( $save_order, $log_entries );
-                $flagged = $this->apply_review_flags( $save_order, $review_flags, (bool) $clear_review );
+                $flagged = $this->apply_review_flags( $save_order, $review_flags, $evaluated );
 
                 if ( $logged || $flagged || $emails_dirty ) {
                     // L8 — a persistence error in a gateway/payment callback must not
@@ -2105,7 +2127,7 @@ class WooCommerce {
             // both the event-level seat lock and the order-level named lock have
             // been released.  Shutdown still covers correctness; this call is
             // best-effort promptness only.
-            $this->module->flush_cancellation_emails();
+            $this->module->flush_seat_emails();
         } finally {
             unset( self::$in_flight[ $order_id ] );
         }
@@ -2226,7 +2248,7 @@ class WooCommerce {
      * @param array     $review_flags  (by ref)
      * @param array     $email_events  (by ref) per-event seat-change tally (Phase 6).
      */
-    private function reconcile_line( $order, $order_id, $item, $item_id, $event_id, $active_target, $removal_status, array $billing, $reason, array &$log_entries, array &$review_flags, array &$email_events ) {
+    private function reconcile_line( $order, $order_id, $item, $item_id, $event_id, $active_target, $removal_status, array $billing, $reason, array &$log_entries, array &$review_flags, array &$email_events, array &$evaluated = [] ) {
         // Expected active seat count for this line. Terminal/null target ⇒ 0.
         // Refund-safe: get_qty_refunded_for_item sign is version-dependent ⇒ abs()
         // (finding #1). Cumulative across all refunds ⇒ re-fire safe.
@@ -2271,6 +2293,13 @@ class WooCommerce {
             // through to the standard missing-attendee handling below so the
             // seat-less paid renewal is flagged needs-review + noted on the order
             // rather than silently skipped (finding M-renewal-3).
+        }
+
+        // WOO-D33 — the attendee condition is only meaningful on a line that
+        // still expects seats. A cancelled order asks for none, so a pass over
+        // it has not re-checked anything and must not clear the flag.
+        if ( $expected > 0 ) {
+            $evaluated['line_attendees'] = true;
         }
 
         if ( $expected > 0 && ! $has_attendees ) {
@@ -2390,6 +2419,12 @@ class WooCommerce {
             $released_capacity = 0;
             // L12 — duplicate-seat prevention parity with the old data-layer contract.
             $dup_prevented = false;
+            // WOO-D33 — whether this pass actually tried to produce a seat. That,
+            // not "could it have", is what re-checks the seat-level conditions:
+            // a revive over capacity CREATES the seat, so the next pass is
+            // converged and would otherwise clear capacity_overfill while the
+            // event is still overbooked — and nothing else records that.
+            $create_attempted = false;
 
             // L1 — map newly-CREATED seats to attendee payloads by a per-line
             // creation-sequence position (0,1,2…) over the present attendee entries
@@ -2456,7 +2491,7 @@ class WooCommerce {
                     // waitlist seat) would silently leave a surplus seat active
                     // while still decrementing the counter (CodeRabbit P2).
                     $was_capacity = \in_array( $s['status'], [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING ], true );
-                    if ( $this->registrations->update_status( $s['id'], $removal_status, 'order #' . $order_id . ' → ' . $removal_status, 'woocommerce' ) ) {
+                    if ( $this->registrations->update_status( $s['id'], $removal_status, 'order #' . $order_id . ' → ' . $removal_status, 'woocommerce' )->is_sent() ) {
                         $removed[] = $s['id'];
                         if ( $was_capacity ) {
                             $released_capacity++; // L7 — only capacity-consuming seats.
@@ -2491,6 +2526,7 @@ class WooCommerce {
                 // plus one new seat doesn't re-use attendee payload #1.
                 $existing_active = \count( $active );
                 if ( $deficit > 0 && $active_target !== null && $can_create ) {
+                    $create_attempted = true;
                     $revivable = \array_values( \array_filter( $matching, function ( $s ) {
                         return \in_array( $s['status'], [ Registrations::STATUS_CANCELLED, Registrations::STATUS_FAILED ], true );
                     } ) );
@@ -2499,32 +2535,55 @@ class WooCommerce {
                     } );
 
                     while ( $deficit > 0 ) {
-                        $has_room = ( $unlimited || $remaining >= 1 );
+                        $event_has_room = ( $unlimited || $remaining >= 1 );
+                        // P4 — the tier ceiling was asked of the CREATE branch
+                        // below and not of the revive, so a revive into a
+                        // sold-out tier on an event with room passed as though
+                        // nothing were wrong and the running tier tally stopped
+                        // matching the seats it was counting.
+                        $tier_has_room = ( $tier_unlimited || $tier_left >= 1 );
+                        $has_room      = $event_has_room && $tier_has_room;
                         if ( ! empty( $revivable ) ) {
                             $seat = \array_shift( $revivable );
-                            // Revival can only go to confirmed/pending (transition
-                            // table forbids cancelled→waitlist); flag overfill if no room.
-                            if ( $this->registrations->update_status( $seat['id'], $active_target, 'order #' . $order_id . ' revived', 'woocommerce' ) ) {
+                            // Revival can only go to confirmed/pending because
+                            // $active_target is constrained to exactly those two
+                            // upstream (reconcile_order(); anything else
+                            // resolves to null and never reaches this branch) —
+                            // not because the transition table forbids anything.
+                            // cancelled|failed → waitlist IS a legal transition;
+                            // a roster revive on a full waitlisted event uses it.
+                            //
+                            // The seat comes back either way — the order is
+                            // paid and the seat is owed, which is why a revive
+                            // has never been refused for want of room. What a
+                            // shortage changes is that it is RECORDED: overfill
+                            // raises the capacity_overfill review flag, for the
+                            // tier ceiling now as well as the event's.
+                            if ( $this->registrations->update_status( $seat['id'], $active_target, 'order #' . $order_id . ' revived', 'woocommerce' )->is_sent() ) {
                                 $revived[] = $seat['id'];
-                                if ( $has_room ) {
+                                if ( $event_has_room ) {
                                     $remaining--;
-                                    // A revived seat re-consumes its tier's quota
-                                    // (it already carries its tier from creation —
-                                    // leave the tag as-is); keep the running tier
-                                    // tally accurate for any new creates this pass.
-                                    if ( ! $tier_unlimited && $tier_left > 0 ) {
-                                        $tier_left--;
-                                    }
-                                } else {
+                                }
+                                // A revived seat re-consumes its tier's quota
+                                // (it already carries its tier from creation —
+                                // leave the tag as-is), so the running tally
+                                // drops whether or not there was room to give:
+                                // it is what the seats now say, and the creates
+                                // later in this pass read it.
+                                if ( ! $tier_unlimited ) {
+                                    $tier_left = \max( 0, $tier_left - 1 );
+                                }
+                                if ( ! $has_room ) {
                                     $overfill = true;
                                 }
                             }
                         } else {
                             // CREATE a new seat at the next free index (max+1).
-                            // P4 — decide against BOTH the event total and the tier
-                            // quota (single authority, both recounted fresh above).
-                            $event_has_room = ( $unlimited || $remaining >= 1 );
-                            $tier_has_room  = ( $tier_unlimited || $tier_left >= 1 );
+                            // P4 — decide against BOTH the event total and the
+                            // tier quota (single authority, both recounted
+                            // fresh above and both answered at the top of this
+                            // iteration, so the revive and the create cannot
+                            // read the ceilings differently).
                             if ( $event_has_room && $tier_has_room ) {
                                 // Both levels have room → confirmed/active; decrement both.
                                 $status = $active_target;
@@ -2623,7 +2682,7 @@ class WooCommerce {
                         continue; // Was surplus-released this pass.
                     }
                     if ( $s['status'] === Registrations::STATUS_PENDING ) {
-                        if ( $this->registrations->update_status( $s['id'], Registrations::STATUS_CONFIRMED, 'order #' . $order_id . ' confirmed', 'woocommerce' ) ) {
+                        if ( $this->registrations->update_status( $s['id'], Registrations::STATUS_CONFIRMED, 'order #' . $order_id . ' confirmed', 'woocommerce' )->is_sent() ) {
                             $flipped[] = $s['id'];
                         }
                     }
@@ -2641,8 +2700,17 @@ class WooCommerce {
                 'released_capacity' => $released_capacity,
                 'dup_prevented'     => $dup_prevented,
                 'lock_unavailable'  => ! $locked,
+                'create_attempted'  => $create_attempted,
             ];
         } );
+
+        // WOO-D33 — the seat-level conditions (overfill, retired tier, duplicate,
+        // lock degradation) are only re-checked on a pass that actually tried to
+        // produce a seat. A converged line, or a line the pass refuses to create
+        // for, has told us nothing about them.
+        if ( ! empty( $result['create_attempted'] ) ) {
+            $evaluated['line_seats'] = true;
+        }
 
         // Translate the locked result into sync-log entries + needs-review flags.
         $changed = \count( $result['created'] ) + \count( $result['revived'] )
@@ -2730,6 +2798,44 @@ class WooCommerce {
         ];
     }
 
+    /**
+     * WOO-D33 — the flag → condition table. ONE place that says which
+     * needs-review reasons a reconcile pass is able to re-check, and what the
+     * pass has to have evaluated for the answer to mean anything.
+     *
+     * A reason maps to the evaluation TOKEN whose condition raised it. When a
+     * pass records that token (it looked) and does not re-raise the reason (it
+     * found nothing), the flag has been fixed and is dropped. When the pass
+     * never reached that check — a cancelled order expects no seats, a settled
+     * confirmation is never re-attempted — the token is absent and the flag is
+     * left exactly where it is.
+     *
+     * A reason ABSENT from this table has no condition: it records a historical
+     * fact ("an amount-only refund was taken against this order") that no later
+     * pass can re-derive or un-happen, so only "Mark reviewed" clears it.
+     *
+     * Tokens:
+     *  - line_attendees  the pass checked a line that expects seats for attendee data.
+     *  - line_seats      the pass actually ATTEMPTED to produce a seat for the line
+     *                    (deficit > 0, active target, creatable). "Could have"
+     *                    is not enough: a revive over capacity creates the seat,
+     *                    so the next pass is converged and would clear
+     *                    capacity_overfill on an event that is still overbooked.
+     *  - customer_email  the pass actually attempted the buyer confirmation.
+     *
+     * @return array<string,string> reason => evaluation token.
+     */
+    private static function review_clear_conditions() {
+        return [
+            'attendees_missing'         => 'line_attendees',
+            'retired_tier'              => 'line_seats',
+            'capacity_overfill'         => 'line_seats',
+            'duplicate_seat_prevented'  => 'line_seats',
+            'capacity_lock_unavailable' => 'line_seats',
+            'customer_email_failed'     => 'customer_email',
+        ];
+    }
+
     /** Build a needs-review flag in the Events_Log::flag_review() shape. */
     private function make_flag( $reason, $detail = '' ) {
         return [
@@ -2764,16 +2870,24 @@ class WooCommerce {
     }
 
     /**
-     * Merge accumulated needs-review flags (deduped by reason). When $clear is true
-     * (manual resync) the existing flags are dropped first so a clean pass leaves
-     * none and only genuinely-still-failing reasons are re-added. Does NOT save.
+     * Merge accumulated needs-review flags (deduped by reason). Does NOT save.
+     *
+     * There is no blanket clear. A manual resync used to pass $clear=true and
+     * replace the whole set with [], which destroyed flags this pass never
+     * looked at — `amount_only_refund` and `mixed_refund_extra_amount` are
+     * seeded by the refund path and evaluated by nothing here, so pressing
+     * "Resync order" silently retired a refund discrepancy nobody had read.
+     * Every pass now drops exactly what it re-checked and found satisfied
+     * (drop_satisfied_flags(), WOO-D33) and keeps the rest. "Mark reviewed"
+     * (handle_clear_review()) is the button that clears everything, and it is
+     * a deliberate human act.
      *
      * @return bool Whether the review meta changed (drives the dirty-flag save — H2).
      */
-    private function apply_review_flags( \WC_Order $order, array $flags, $clear ) {
+    private function apply_review_flags( \WC_Order $order, array $flags, array $evaluated = [] ) {
         $had      = $order->get_meta( Events_Log::ORDER_REVIEW_META );
         $had      = \is_array( $had ) ? $had : [];
-        $existing = $clear ? [] : $had;
+        $existing = $this->drop_satisfied_flags( $had, $flags, $evaluated );
         foreach ( $flags as $flag ) {
             $dupe = false;
             foreach ( $existing as $e ) {
@@ -2797,6 +2911,43 @@ class WooCommerce {
         }
         $order->update_meta_data( Events_Log::ORDER_REVIEW_META, $existing );
         return true;
+    }
+
+    /**
+     * WOO-D33 — drop the flags this pass re-checked and found satisfied.
+     *
+     * Before this, a flag survived until a human pressed "Mark reviewed" or
+     * "Resync order", even after the underlying condition was fixed: attendees
+     * added from the roster left the order in the needs-review count forever.
+     * Now every pass re-evaluates, not just a manual resync.
+     *
+     * @param array $had       Flags already on the order.
+     * @param array $raised    Flags this pass raised.
+     * @param array $evaluated Evaluation tokens this pass actually reached.
+     * @return array Flags to keep.
+     */
+    private function drop_satisfied_flags( array $had, array $raised, array $evaluated ) {
+        if ( empty( $had ) || empty( $evaluated ) ) {
+            return $had;
+        }
+        $conditions = self::review_clear_conditions();
+        $re_raised  = [];
+        foreach ( $raised as $flag ) {
+            if ( isset( $flag['reason'] ) ) {
+                $re_raised[ (string) $flag['reason'] ] = true;
+            }
+        }
+
+        $keep = [];
+        foreach ( $had as $flag ) {
+            $reason = \is_array( $flag ) && isset( $flag['reason'] ) ? (string) $flag['reason'] : '';
+            $token  = $reason !== '' && isset( $conditions[ $reason ] ) ? $conditions[ $reason ] : '';
+            if ( $token !== '' && ! empty( $evaluated[ $token ] ) && empty( $re_raised[ $reason ] ) ) {
+                continue; // Condition re-evaluated this pass and it now passes.
+            }
+            $keep[] = $flag;
+        }
+        return $keep;
     }
 
     /**
@@ -3057,21 +3208,27 @@ class WooCommerce {
     }
 
     /**
-     * admin-post handler for the manual "Resync order" button. Caps to
-     * edit_others_posts, verifies the per-order nonce, clears stale needs-review on
-     * a clean pass, runs the identical reconcile, and redirects back.
+     * admin-post handler for the manual "Resync order" button. Verifies the
+     * per-order nonce, then the module capability (WOO-D41: this used to be a
+     * hard-coded edit_others_posts, so a shop manager who could open the roster was
+     * refused here and an Editor who could not was allowed), runs the identical
+     * reconcile — which re-evaluates the needs-review flags like any other pass,
+     * rather than clearing them wholesale — and redirects back.
      */
     public function handle_resync_order() {
         $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        \check_admin_referer( 'anchor_event_resync_' . $order_id );
+        if ( ! Roster::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You are not allowed to resync this order.', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_event_resync_' . $order_id );
 
         $order = \wc_get_order( $order_id );
         if ( $order ) {
-            // surplus_status = cancelled; clear_review = true (clean pass clears stale flags).
-            $this->reconcile_order( $order, 'manual resync', Registrations::STATUS_CANCELLED, true );
+            // surplus_status = cancelled. NOT a blanket flag clear: a resync
+            // re-evaluates like every other pass and drops only what it
+            // re-checked and found satisfied. "Mark reviewed" is the button
+            // that clears everything, and it is a separate handler.
+            $this->reconcile_order( $order, 'manual resync' );
         }
 
         $redirect = \wp_get_referer();
@@ -3104,7 +3261,7 @@ class WooCommerce {
      * @param array     $review_flags (by ref)
      * @return bool Whether the EMAILS_SENT gate was modified (dirty-flag save — H2).
      */
-    private function dispatch_emails( \WC_Order $order, array $email_events, array &$log_entries, array &$review_flags ) {
+    private function dispatch_emails( \WC_Order $order, array $email_events, array &$log_entries, array &$review_flags, array &$evaluated = [] ) {
         if ( empty( $email_events ) ) {
             return false;
         }
@@ -3144,17 +3301,59 @@ class WooCommerce {
                 }
             }
             if ( $uncovered ) {
-                if ( $this->send_customer_confirmation( $order, $settings ) ) {
+                $primary_id = 0;
+                $result     = $this->send_customer_confirmation( $order, $settings, $primary_id );
+                // WOO-D33 — only a real attempt re-decides customer_email_failed.
+                // A skip (disabled, nothing to confirm) and a pass that never gets
+                // here at all both leave a previous failure standing: the buyer
+                // still has not received the confirmation that failed.
+                if ( ! $result->is_skipped() ) {
+                    $evaluated['customer_email'] = true;
+                }
+                if ( $result->is_sent() ) {
+                    // The email lists every active seat on the order, so every
+                    // event it covered is covered for good.
                     $now = \time();
                     foreach ( $email_events as $eid => $ev ) {
                         if ( ! empty( $ev['confirmed'] ) || ! empty( $ev['waitlist'] ) ) {
                             $sent[ 'customer:' . (int) $eid ] = $now;
                         }
                     }
+                } elseif ( $result->is_skipped() && 'disabled' === $result->reason() && $primary_id > 0 ) {
+                    // The gate records "this event is settled", not "mail left
+                    // the building": a switch-off the organizer chose is just
+                    // as settled as a send, and stamping it stops the next
+                    // reconcile re-deciding it (audit REG-D6). Only the event
+                    // whose switch was actually consulted is stamped, so the
+                    // rest of the order's gates stay open.
+                    // A skip with nothing to confirm settles nothing at all and
+                    // is deliberately absent from both branches (audit WOO-D15).
+                    //
+                    // KNOWN LIMITATION — narrowing the stamp does NOT rescue the
+                    // mixed order (confirmation disabled on event A, enabled on
+                    // event B). send_customer_confirmation() re-derives
+                    // $primary_id from collect_order_seats() on every pass and
+                    // always lands on the same first event, so if that primary
+                    // is the disabled one the call returns skipped('disabled')
+                    // forever and B's open gate is never reached. The stamp only
+                    // keeps A from being re-decided; making the confirmation
+                    // resolve its enable switch per event (or send one mail per
+                    // event) is the follow-up that actually fixes it.
+                    $sent[ 'customer:' . (int) $primary_id ] = \time();
+                }
+                if ( $result->is_sent() ) {
                     $log_entries[] = $this->make_log_entry( 'Customer confirmation email sent.', [ 'to' => $order->get_billing_email() ] );
+                } elseif ( $result->is_skipped() ) {
+                    $log_entries[] = $this->make_log_entry( 'Customer confirmation email skipped.', [
+                        'to'     => $order->get_billing_email(),
+                        'reason' => $result->reason(),
+                    ] );
                 } else {
                     $review_flags[] = $this->make_flag( 'customer_email_failed', 'order #' . $order_id );
-                    $log_entries[]  = $this->make_log_entry( 'Customer confirmation email FAILED.', [ 'to' => $order->get_billing_email() ] );
+                    $log_entries[]  = $this->make_log_entry( 'Customer confirmation email FAILED.', [
+                        'to'     => $order->get_billing_email(),
+                        'reason' => $result->reason(),
+                    ] );
                 }
             }
         }
@@ -3167,21 +3366,34 @@ class WooCommerce {
             $gate_key    = 'organizer:' . $event_id;
 
             if ( $notify_organizer && $has_confirm && empty( $sent[ $gate_key ] ) ) {
-                if ( $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed' ) ) {
+                $notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed' );
+                if ( $notice->is_sent() || ( $notice->is_skipped() && 'disabled' === $notice->reason() ) ) {
+                    // Same rule as the buyer confirmation: a type the organizer
+                    // switched off is settled, not failed. This gate is already
+                    // per event, so there is nothing to narrow.
                     $sent[ $gate_key ] = \time();
-                    $log_entries[]     = $this->make_log_entry( 'Organizer notice sent.', [ 'event' => $event_id ] );
+                }
+                if ( $notice->is_sent() ) {
+                    $log_entries[] = $this->make_log_entry( 'Organizer notice sent.', [ 'event' => $event_id ] );
+                } elseif ( $notice->is_skipped() ) {
+                    $log_entries[] = $this->make_log_entry( 'Organizer notice skipped.', [ 'event' => $event_id, 'reason' => $notice->reason() ] );
                 } else {
-                    $log_entries[] = $this->make_log_entry( 'Organizer notice FAILED.', [ 'event' => $event_id ] );
+                    $log_entries[] = $this->make_log_entry( 'Organizer notice FAILED.', [ 'event' => $event_id, 'reason' => $notice->reason() ] );
                 }
             }
 
             // Seats-released organizer notice (cancelled/refunded). Not gated by
             // emails_sent: idempotent because reconcile only releases seats once.
             if ( $notify_organizer && $has_release ) {
-                if ( $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released' ) ) {
+                $released_notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released' );
+                if ( $released_notice->is_sent() ) {
                     $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice sent.', [ 'event' => $event_id, 'released' => (int) $ev['released'] ] );
+                } elseif ( $released_notice->is_skipped() ) {
+                    // Ungated by design (reconcile releases seats once), so
+                    // there is no gate to stamp — only a log line to get right.
+                    $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice skipped.', [ 'event' => $event_id, 'reason' => $released_notice->reason() ] );
                 } else {
-                    $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice FAILED.', [ 'event' => $event_id ] );
+                    $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice FAILED.', [ 'event' => $event_id, 'reason' => $released_notice->reason() ] );
                 }
             }
         }
@@ -3226,17 +3438,30 @@ class WooCommerce {
 
     /**
      * Build + send the one-per-order buyer confirmation listing all current active
-     * seats across every event line. Returns the send result (false → caller flags
-     * customer_email_failed). Also used by the manual "Resend confirmation" button.
+     * seats across every event line. Also used by the manual "Resend
+     * confirmation" button.
+     *
+     * Answers the tri-state (audit WOO-D14/WOO-D15/REG-D6/REG-D41). It used to
+     * answer `true` when there was nothing to confirm and `false` when the
+     * organizer had switched the email off — so a no-op stamped the gate that
+     * makes the real confirmation unsendable, and a deliberate setting flagged
+     * the order for review on every reconcile for ever.
      *
      * @param \WC_Order $order
-     * @param array     $settings Module settings.
-     * @return bool
+     * @param array     $settings   Module settings.
+     * @param int       $primary_id (out) The event whose on/off switch and copy
+     *                              this email was resolved from — 0 when the
+     *                              method bailed before that was known. The
+     *                              caller may only stamp the gate for THIS
+     *                              event on a `disabled` skip: the order can
+     *                              carry a second event whose confirmation is
+     *                              still switched on.
+     * @return Outcome sent | skipped (nothing_to_send, disabled) | failed.
      */
-    private function send_customer_confirmation( \WC_Order $order, array $settings ) {
+    private function send_customer_confirmation( \WC_Order $order, array $settings, &$primary_id = 0 ) {
         $to = (string) $order->get_billing_email();
         if ( $to === '' ) {
-            return false;
+            return Outcome::failed( 'no_address' );
         }
         $order_id = (int) $order->get_id();
         $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
@@ -3246,7 +3471,7 @@ class WooCommerce {
         $detail_rows  = [];
         $any_waitlist = false;
         $total_seats  = 0;
-        $primary_id   = 0;
+        $primary_id   = 0; // out-param: reset for this call, filled in below.
         foreach ( $by_event as $event_id => $seats ) {
             $event_id = (int) $event_id;
             if ( $primary_id === 0 ) {
@@ -3268,7 +3493,9 @@ class WooCommerce {
             }
         }
         if ( $total_seats === 0 ) {
-            return true; // Nothing active to confirm — treat as a no-op success.
+            // Nothing active to confirm. NOT a send: the gate must stay open so
+            // a later pass that does see seats still mails the buyer.
+            return Outcome::skipped( 'nothing_to_send' );
         }
 
         $tokens = [
@@ -3282,7 +3509,7 @@ class WooCommerce {
         // The event can switch its confirmation email off. Checked here, where
         // the order's primary event is finally known.
         if ( $primary_id && ! $this->module->is_email_enabled( $primary_id, 'confirmation' ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         // Per-event overrides win; otherwise the site setting, otherwise the shipped default.
         $subject = $this->module->expand_email_tokens(
@@ -3290,7 +3517,12 @@ class WooCommerce {
                 $primary_id,
                 'confirmation',
                 'subject',
-                $settings['wc_customer_subject'] !== '' ? $settings['wc_customer_subject'] : \__( 'Your event registration is confirmed', 'anchor-schema' )
+                // REG-D58 — the store's own subject when it has one, otherwise
+                // the site-wide confirmation subject every other send resolves
+                // through (never a third literal that only lives here).
+                $settings['wc_customer_subject'] !== ''
+                    ? $settings['wc_customer_subject']
+                    : $this->module->default_confirmation_subject( $settings )
             ),
             $tokens
         );
@@ -3317,7 +3549,10 @@ class WooCommerce {
             'type'          => 'confirmation',
         ];
         $html = $this->module->build_registration_email_html( $ctx );
-        return $this->module->send_html_email( $to, $subject, $html, [], $primary_id );
+        return Outcome::from_bool(
+            $this->module->send_html_email( $to, $subject, $html, [], $primary_id ),
+            'wp_mail'
+        );
     }
 
     /**
@@ -3330,13 +3565,22 @@ class WooCommerce {
      * @param int       $event_id
      * @param array     $ev       [confirmed,waitlist,released] tally for this event.
      * @param string    $kind     'confirmed'|'released'.
-     * @return bool
+     * @return Outcome sent | skipped (disabled) | failed (no_address, wp_mail).
      */
     private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind ) {
         $event_id = (int) $event_id;
-        $to       = $this->organizer_recipient( $event_id, $settings );
+        // The event can switch this email type off. Checked before anything is
+        // built, so a disabled type resolves no template and never fires the
+        // anchor_events_registration_email_html filter — send_customer_confirmation()
+        // already had this check; this sender was the one missing it (REG-D7).
+        // The type mapping matches the $ctx built at the bottom of this method.
+        $ctx_type = ( $kind === 'released' ) ? 'cancellation' : 'confirmation';
+        if ( ! $this->module->is_email_enabled( $event_id, $ctx_type ) ) {
+            return Outcome::skipped( 'disabled' );
+        }
+        $to = $this->organizer_recipient( $event_id, $settings );
         if ( $to === '' ) {
-            return false;
+            return Outcome::failed( 'no_address' );
         }
         $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
         if ( $buyer === '' ) {
@@ -3419,11 +3663,13 @@ class WooCommerce {
             'cta_label'     => \__( 'View event', 'anchor-schema' ),
             'cta_url'       => \get_permalink( $event_id ),
             // 'released' notices are about seats being cancelled/refunded — map
-            // to the cancellation email type; 'confirmed' notices map to confirmation.
-            'type'          => ( $kind === 'released' ) ? 'cancellation' : 'confirmation',
+            // to the cancellation email type; 'confirmed' notices map to
+            // confirmation. Resolved once at the top of this method, so the
+            // type that is gated is always the type that is rendered.
+            'type'          => $ctx_type,
         ];
         $html = $this->module->build_registration_email_html( $ctx );
-        return $this->module->send_html_email( $to, $subject, $html, [], $event_id );
+        return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id ), 'wp_mail' );
     }
 
     /**
@@ -3449,7 +3695,9 @@ class WooCommerce {
      * unsupported bare 'meta_key' shorthand — finding #15), function_exists-guarded.
      */
     public function render_needs_review_notice() {
-        if ( ! \function_exists( 'wc_get_orders' ) || ! \current_user_can( 'edit_others_posts' ) ) {
+        // Same capability as the actions the notice links to (WOO-D41) — a notice
+        // whose every button refuses the reader is worse than no notice.
+        if ( ! \function_exists( 'wc_get_orders' ) || ! Roster::current_user_can_manage() ) {
             return;
         }
         $screen = \get_current_screen();
@@ -3527,14 +3775,14 @@ class WooCommerce {
 
     /**
      * admin-post: clear all needs-review flags from an order ("Mark reviewed").
-     * Cap edit_others_posts + per-order nonce.
+     * Per-order nonce, then Module::events_capability() (WOO-D41).
      */
     public function handle_clear_review() {
         $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        \check_admin_referer( 'anchor_events_clear_review_' . $order_id );
+        if ( ! Roster::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_events_clear_review_' . $order_id );
         Events_Log::clear_review( $order_id );
         \delete_transient( self::NEEDS_REVIEW_TRANSIENT ); // L10 — refresh the notice.
         $this->redirect_back();
@@ -3545,25 +3793,30 @@ class WooCommerce {
      * confirmation"). Re-sends from the order's current active seats and marks the
      * per-event customer emails-sent gates (emails_sent['customer:'.$event_id]) so a
      * later reconcile won't auto-send another confirmation for an already-covered
-     * event. Cap edit_others_posts + per-order nonce.
+     * event. Per-order nonce, then Module::events_capability().
+     *
+     * REG-D62 — this sends real customer mail built from the order's seat data and
+     * rewrites the order's emails-sent gate, so it cannot be gated looser than the
+     * roster that shows the same data. A refused resend returns before the sender
+     * is reached: nothing is sent and no gate is touched.
      */
     public function handle_resend_confirmation() {
         $order_id = isset( $_POST['order_id'] ) ? (int) $_POST['order_id'] : 0;
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        \check_admin_referer( 'anchor_events_resend_' . $order_id );
+        if ( ! Roster::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_events_resend_' . $order_id );
 
         $order = \wc_get_order( $order_id );
         if ( $order ) {
             $settings = $this->module->get_settings();
-            $ok       = $this->send_customer_confirmation( $order, $settings );
+            $result   = $this->send_customer_confirmation( $order, $settings );
 
             $sent = $order->get_meta( self::EMAILS_SENT_META );
             if ( ! \is_array( $sent ) ) {
                 $sent = [];
             }
-            if ( $ok ) {
+            if ( $result->is_sent() ) {
                 // finding-5 — dispatch_emails() gates the buyer confirmation PER
                 // EVENT (emails_sent['customer:'.$event_id]); the legacy 'customer'
                 // key is no longer consulted. Mark every event the order currently
@@ -3576,6 +3829,12 @@ class WooCommerce {
                 $order->update_meta_data( self::EMAILS_SENT_META, $sent );
                 $order->save();
                 Events_Log::order( $order_id, 'Customer confirmation re-sent (manual).' );
+            } elseif ( $result->is_skipped() ) {
+                // A fully-refunded order has nothing to confirm, and an event
+                // can have the email switched off. Neither is a send and
+                // neither is a defect — the log used to assert a send that
+                // never happened (audit REG-D41).
+                Events_Log::order( $order_id, 'Customer confirmation re-send skipped.', [ 'reason' => $result->reason() ] );
             } else {
                 Events_Log::flag_review( $order_id, 'customer_email_failed', 'manual resend' );
             }
@@ -3730,8 +3989,9 @@ class WooCommerce {
             echo '</ul>';
         }
 
-        // Action buttons (cap edit_others_posts): Resync / Mark reviewed / Resend.
-        if ( \current_user_can( 'edit_others_posts' ) ) {
+        // Action buttons: Resync / Mark reviewed / Resend — rendered only for the
+        // users their handlers will accept (Module::events_capability()).
+        if ( Roster::current_user_can_manage() ) {
             $post_url = \esc_url( \admin_url( 'admin-post.php' ) );
 
             echo '<form method="post" action="' . $post_url . '" style="margin:0 0 6px;">';
@@ -3806,7 +4066,7 @@ class WooCommerce {
         // line | mixed → surplus active seats become 'refunded' (count-based,
         // newest-first). expected already subtracts abs(get_qty_refunded_for_item)
         // so cumulative partials monotonically lower expected and re-fire is a no-op.
-        $this->reconcile_order( $order, 'refund', Registrations::STATUS_REFUNDED, false, $seed_flags );
+        $this->reconcile_order( $order, 'refund', Registrations::STATUS_REFUNDED, $seed_flags );
     }
 
     /**

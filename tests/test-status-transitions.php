@@ -19,7 +19,7 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$reg      = $this->registrations();
 
 		$this->assertTrue(
-			$reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'paid', 'tester' )
+			$reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'paid', 'tester' )->is_sent()
 		);
 		$this->assertSame(
 			Registrations::STATUS_CONFIRMED,
@@ -34,14 +34,14 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$this->assertSame( 'tester', $last['actor'] );
 	}
 
-	/** An illegal transition returns false and leaves the status unchanged. */
+	/** An illegal transition is reported as failed and leaves the status unchanged. */
 	public function test_illegal_transition_rejected() {
 		$event_id = $this->make_event();
 		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
 		$reg      = $this->registrations();
 
 		// confirmed → pending is not in the transition table.
-		$this->assertFalse( $reg->update_status( $seat_id, Registrations::STATUS_PENDING ) );
+		$this->assertTrue( $reg->update_status( $seat_id, Registrations::STATUS_PENDING )->is_failed() );
 		$this->assertSame(
 			Registrations::STATUS_CONFIRMED,
 			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
@@ -54,9 +54,9 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
 		$reg      = $this->registrations();
 
-		$this->assertTrue( $reg->update_status( $seat_id, Registrations::STATUS_REFUNDED ) );
+		$this->assertTrue( $reg->update_status( $seat_id, Registrations::STATUS_REFUNDED )->is_sent() );
 		// refunded → confirmed must be rejected.
-		$this->assertFalse( $reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED ) );
+		$this->assertTrue( $reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED )->is_failed() );
 		$this->assertSame(
 			Registrations::STATUS_REFUNDED,
 			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
@@ -67,7 +67,196 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 	public function test_invalid_status_rejected() {
 		$event_id = $this->make_event();
 		$seat_id  = $this->make_seat( $event_id );
-		$this->assertFalse( $this->registrations()->update_status( $seat_id, 'bogus' ) );
+		$this->assertTrue( $this->registrations()->update_status( $seat_id, 'bogus' )->is_failed() );
+	}
+
+	/**
+	 * REG-D32 — nothing may WRITE `attended`/`no_show`: no transition leads
+	 * into either, and create_seat() refuses to be born into one.
+	 */
+	public function test_the_deferred_check_in_statuses_can_not_be_written() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id );
+
+		$this->assertFalse( $this->registrations()->writable_status( 'attended' ) );
+		$this->assertFalse( $this->registrations()->writable_status( 'no_show' ) );
+		$this->assertTrue( $this->registrations()->update_status( $seat_id, 'attended' )->is_failed() );
+
+		$born = $this->registrations()->create_seat( [
+			'event_id' => $event_id,
+			'name'     => 'Legacy Hopeful',
+			'status'   => 'attended',
+		] );
+		$this->assertSame(
+			Registrations::STATUS_CONFIRMED,
+			get_post_meta( $born, '_anchor_event_reg_status', true ),
+			'create_seat() let a new seat be born into a read-only legacy status.'
+		);
+	}
+
+	/**
+	 * ...but a seat a PREVIOUS version stored as `attended` is still readable:
+	 * REG-D32 dropped both statuses outright, which stranded those seats — they
+	 * were omitted from every summary and every move out of them answered
+	 * `invalid_status`.
+	 */
+	public function test_a_legacy_attended_seat_is_counted_and_can_be_moved_on() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id );
+		$this->store_legacy_status( $event_id, $seat_id, Registrations::STATUS_ATTENDED );
+
+		$this->assertTrue( $this->registrations()->valid_status( 'attended' ) );
+		$this->assertTrue( $this->registrations()->valid_status( 'no_show' ) );
+
+		$summary = $this->registrations()->get_event_summary( $event_id );
+		$this->assertArrayHasKey( 'attended', $summary['per_status'] );
+		$this->assertSame( 1, $summary['per_status']['attended']['records'] );
+		$this->assertSame( 1, $summary['attended'] );
+
+		$this->assertTrue(
+			$this->registrations()->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'moved on' )->is_sent(),
+			'A seat stranded in `attended` could not be moved to confirmed.'
+		);
+		$this->assertSame(
+			Registrations::STATUS_CONFIRMED,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
+		);
+	}
+
+	/** A `no_show` seat has the same two ways out. */
+	public function test_a_legacy_no_show_seat_can_be_cancelled() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id );
+		$this->store_legacy_status( $event_id, $seat_id, Registrations::STATUS_NO_SHOW );
+
+		$this->assertTrue(
+			$this->registrations()->update_status( $seat_id, Registrations::STATUS_CANCELLED )->is_sent()
+		);
+	}
+
+	/** The read-only legacy statuses are not offered for new writes. */
+	public function test_the_legacy_statuses_are_not_in_the_roster_status_select() {
+		$options = $this->module()->roster->status_options();
+
+		$this->assertArrayNotHasKey( 'attended', $options );
+		$this->assertArrayNotHasKey( 'no_show', $options );
+		$this->assertSame( Registrations::STATUSES, array_keys( $options ) );
+	}
+
+	/**
+	 * A seat that HOLDS a legacy status still gets its own option, or the
+	 * browser selects the first one and "Save seat" silently rewrites it
+	 * (the REG-D33 failure, which the read-only statuses would re-open).
+	 */
+	public function test_a_held_legacy_status_keeps_its_own_option() {
+		$options = $this->module()->roster->status_options_for( Registrations::STATUS_ATTENDED );
+
+		$this->assertSame( 'attended', array_key_first( $options ) );
+		$this->assertSame( 'Attended', $options['attended'] );
+	}
+
+	/** Store a status no writer produces, the way an earlier version left it. */
+	private function store_legacy_status( $event_id, $seat_id, $status ) {
+		update_post_meta( $seat_id, '_anchor_event_reg_status', $status );
+		$this->registrations()->bust_cache( $event_id );
+	}
+
+	/**
+	 * REG-D53 — the seat snapshot carries the contact fields its consumer
+	 * needs. send_cancellation_email() used to take get_seat_info() and then
+	 * read name/email/order_id with three direct get_post_meta() calls,
+	 * reaching straight past the data layer that exists to own seat storage.
+	 */
+	public function test_the_seat_snapshot_carries_name_email_and_order() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [
+			'name'     => 'Ada Lovelace',
+			'email'    => 'ada@example.org',
+			'order_id' => 4321,
+		] );
+
+		$info = $this->registrations()->get_seat_info( $seat_id );
+
+		$this->assertSame( 'Ada Lovelace', $info['name'] );
+		$this->assertSame( 'ada@example.org', $info['email'] );
+		$this->assertSame( 4321, $info['order_id'] );
+	}
+
+	/**
+	 * REG-D50 — the attendee name lives in the meta; post_title is a derived
+	 * display copy. Whichever one is written, the other follows, so a bulk
+	 * edit or an import can no longer leave the roster and the REST listing
+	 * naming two different people.
+	 */
+	public function test_the_seat_title_follows_the_attendee_name_meta() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Jane Doe' ] );
+		$this->assertSame( 'Jane Doe', get_post_field( 'post_title', $seat_id ) );
+
+		// The data layer's own edit path.
+		$this->assertTrue( $this->registrations()->update_contact( $seat_id, [ 'name' => 'Jane Roe' ] )->is_sent() );
+		$this->assertSame( 'Jane Roe', get_post_meta( $seat_id, '_anchor_event_name', true ) );
+		$this->assertSame( 'Jane Roe', get_post_field( 'post_title', $seat_id ) );
+
+		// A write that reaches around it — an import, a bulk edit — is corrected.
+		wp_update_post( [ 'ID' => $seat_id, 'post_title' => 'Somebody Else' ] );
+		$this->assertSame( 'Jane Roe', get_post_field( 'post_title', get_post( $seat_id ) ) );
+
+		// And a direct meta write carries the title with it.
+		update_post_meta( $seat_id, '_anchor_event_name', 'Jane Q. Roe' );
+		$this->assertSame( 'Jane Q. Roe', get_post_field( 'post_title', $seat_id ) );
+	}
+
+	/**
+	 * REG-D50 fix round 1 — the sync cannot re-enter itself.
+	 *
+	 * The recursion guard used to be "is the stored title already what we
+	 * want?", which is not a guard at all: WordPress runs title_save_pre on
+	 * the way in, and for any actor without unfiltered_html that includes
+	 * wp_filter_kses(), so "Smith & Sons" is STORED as "Smith &amp; Sons" and
+	 * never equals what was asked for. wp_update_post() then fired save_post,
+	 * which synced, which compared, which never matched — an unbounded loop on
+	 * every public registration, WooCommerce checkout and cron seat write.
+	 */
+	public function test_a_name_with_entities_syncs_once_and_does_not_recurse() {
+		// An anonymous actor: no unfiltered_html, so the kses title filters are on.
+		wp_set_current_user( 0 );
+		kses_init_filters();
+
+		$writes = 0;
+		$count  = function ( $post_id ) use ( &$writes ) {
+			$writes++;
+		};
+		add_action( 'save_post_' . \Anchor\Events\Module::REG_CPT, $count, 99 );
+
+		try {
+			$event_id = $this->make_event();
+			$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Smith & <b>Sons</b>' ] );
+			$this->assertGreaterThan( 0, $seat_id );
+
+			$before = $writes;
+			update_post_meta( $seat_id, '_anchor_event_name', 'Jones & <i>Co</i>' );
+			$this->assertSame( 1, $writes - $before, 'One meta write must cause exactly one title write.' );
+
+			$title = (string) get_post_field( 'post_title', $seat_id, 'raw' );
+			$this->assertStringContainsString( 'Jones', $title );
+			$this->assertNotSame( '', trim( $title ) );
+
+			// A second identical meta write is a no-op: the fast path has to
+			// recognise the kses-filtered title as already in step.
+			$before = $writes;
+			update_post_meta( $seat_id, '_anchor_event_name', 'Jones & <i>Co</i>' );
+			$this->assertSame( $before, $writes, 'A name already in step must not be rewritten.' );
+
+			// And an external rename is still corrected, exactly once.
+			$before = $writes;
+			wp_update_post( [ 'ID' => $seat_id, 'post_title' => wp_slash( 'Somebody Else' ) ] );
+			$this->assertLessThanOrEqual( 2, $writes - $before );
+			$this->assertStringContainsString( 'Jones', (string) get_post_field( 'post_title', $seat_id, 'raw' ) );
+		} finally {
+			remove_action( 'save_post_' . \Anchor\Events\Module::REG_CPT, $count, 99 );
+			kses_remove_filters();
+		}
 	}
 
 	/** anonymize_seat scrubs name/email/phone + custom reg fields, keeps status. */
@@ -109,5 +298,31 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 
 		$this->registrations()->anonymize_seat( $seat_id );
 		$this->assertSame( [], $this->registrations()->seats_by_email( 'find-me@example.test' ) );
+	}
+
+	/**
+	 * REG-D55 — the eraser is exhaustive, and says what it kept. It used to
+	 * match published seats only, so a trashed seat kept the attendee's name,
+	 * email and phone after the eraser reported done; and it reported
+	 * items_retained with no message, leaving the operator to assume the
+	 * retained part carried nothing that resolves back to a person.
+	 */
+	public function test_the_eraser_reaches_a_trashed_seat_and_names_what_it_retained() {
+		$event_id = $this->make_event();
+		$live     = $this->make_seat( $event_id, [ 'email' => 'erase-me@example.test', 'name' => 'Live Seat' ] );
+		$trashed  = $this->make_seat( $event_id, [ 'email' => 'erase-me@example.test', 'name' => 'Trashed Seat', 'order_id' => 99 ] );
+		wp_trash_post( $trashed );
+
+		$found = $this->registrations()->seats_by_email( 'erase-me@example.test' );
+		$this->assertContains( $trashed, $found, 'A trashed seat still holds the attendee PII.' );
+		$this->assertContains( $live, $found );
+
+		$result = $this->module()->privacy_erase( 'erase-me@example.test' );
+
+		$this->assertTrue( $result['items_retained'] );
+		$this->assertNotEmpty( $result['messages'], 'items_retained with no message says nothing about what was kept.' );
+		$this->assertStringContainsString( 'order', strtolower( $result['messages'][0] ) );
+		$this->assertSame( '', get_post_meta( $trashed, '_anchor_event_email', true ) );
+		$this->assertNotSame( 'Trashed Seat', get_post_meta( $trashed, '_anchor_event_name', true ) );
 	}
 }

@@ -94,14 +94,17 @@ effective template for a type on a given event, in order:
 
 1. **Per-event override** — post meta `_anchor_event_email_tpl_{type}` on the event
    (registered via `register_post_meta()` for all four types), when non-empty.
-2. **Global default** — the site-wide option `anchor_events_email_tpl_{type}`
-   (`Module::get_email_template_option( $type )`), when non-empty.
-3. **Default constant** — `Module::default_email_template( $type )`, currently the
-   same shared shell for every type.
+2. **Default constant** — `Module::default_email_template( $type )`. It dispatches on
+   `$type` (REG-D60 — the parameter used to be ignored), with all four types currently
+   answering with the same shared shell; diverging one is an edit to its own arm.
 
 `resolve_email_template( $type, 0 )` (no event id) skips step 1 and resolves the
-global-or-default fallback only — this is also what a per-event save compares against
-to decide whether to store an override at all (see below).
+default only — this is also what a per-event save compares against to decide whether
+to store an override at all (see below).
+
+> REG-D12 — an earlier revision documented a middle "site-wide default" tier backed by
+> the option `anchor_events_email_tpl_{type}`. Nothing in the plugin ever wrote that
+> option, so the tier was unreachable; it has been removed rather than given a UI.
 
 ### Per-event Emails builder metabox
 
@@ -114,7 +117,7 @@ one tab per email type, each with:
 - A **token-insert palette** — buttons for the curated subset of body tokens
   documented as safe/useful to hand-insert (`Module::documented_email_tokens()`; see
   the token table below — the palette omits a few internal-only tokens like
-  `{event_id}`/`{status}`/`{greeting}`/`{waitlist_notice}`/`{join_button}` and offers
+  `{event_id}`/`{status}`/`{greeting}`/`{waitlist_notice}` and offers
   no `{footer}` token since the footer region only ever substitutes `{site_name}`).
 - A **live preview iframe** that shows the raw template with tokens literal until...
 - ...**"Preview with real data"** is clicked, which AJAX-renders the in-progress
@@ -171,8 +174,54 @@ a custom template can't become a stored-injection vector):
 | `{waitlist_notice}` | Waitlist-specific notice, when status is `waitlist` |
 | `{detail_rows}` | A table of label/value detail rows |
 | `{seat_list}` | A list of named seats (multi-seat orders) |
-| `{join_button}` | A styled "Join" button linking `{join_link}`, when set |
 | `{cta_button}` | A styled call-to-action button (e.g. "View event details") |
+| `{cta_button_2}` | The optional second call-to-action button |
+| `{logo}` | The Email Appearance logo, as its own table row. Empty when no logo is set |
+
+**Appearance tokens** (REG-D27). The Email Appearance settings are otherwise
+applied by rewriting the stock literal colour strings in the rendered HTML, which
+reaches only a template that still contains them — a hand-built template using its
+own colours and its own table markup silently ignored the branding, logo included.
+These tokens are the opt-in:
+
+| Token | Resolves to |
+|---|---|
+| `{brand_bg}` | `email_background_color` (stock `#f4f4f4`) |
+| `{brand_surface}` | `email_card_color` (stock `#ffffff`) |
+| `{brand_heading}` | `email_heading_color` (stock `#111`) |
+| `{brand_text}` | `email_text_color` (stock `#333`) |
+| `{brand_button}` | `email_button_color` (stock `#111`) |
+| `{brand_button_text}` | `email_button_text_color` (stock `#ffffff`; no settings field of its own) |
+
+Each resolves to the **stock literal** when its setting is unset or equal to it, so
+an install that never touched Email Appearance renders byte-for-byte what it always
+did. A template that uses at least one of these (or `{logo}`) opts out of the literal
+rewrite entirely; one that uses none keeps it, and the Emails builder shows an inline
+warning that the appearance settings may not reach it.
+
+**Tokens go between tags, never inside an attribute value** — with one exception.
+`{brand_bg}` and the other appearance colours are *designed* to sit inside a `style`
+attribute (`style="background:{brand_bg}"`), and `sanitize_email_template_html()`
+keeps them alive through WordPress's safe-CSS filter, which otherwise rejects any
+declaration containing `}`. Every OTHER token must not go in an attribute: the block
+tokens (`{intro}`, `{cta_button}`, `{header_image}`, `{logo}` …) expand to whole
+`<tr>`/`<p>` fragments, and the scalars are escaped for HTML text, not for an
+attribute — `href="{event_url}"` happens to work, `alt="{venue}"` will not survive a
+venue containing a quote. Put a token where the content goes.
+
+**The wp-admin metabox's live preview does not expand tokens.** The pane beside the
+Monaco editor is a raw client-side render of exactly what is in the textarea, so every
+`{token}` shows literally and every conditional region looks empty. That is the
+documented behaviour, not a broken template — click **Preview with real data** (the
+AJAX endpoint, `ajax_email_preview()`) to see the email as it would send. The
+front-end builder's Preview tab already uses that endpoint.
+
+**The doctype is not part of a template** (REG-D25). The kses allowlist cannot express
+a `<!DOCTYPE>` declaration, so one stored in a template was deleted on every save and
+the mail rendered in quirks mode. It is stripped on the way in
+(`sanitize_email_template_html()`, `resolve_email_template()`) and emitted once by
+`build_registration_email_html()` when the assembled email is a whole document — a
+fragment override never grows one.
 
 The **token-insert palette** in the Emails builder UI offers a curated subset of the
 above (`event_title`, `event_date`, `event_time`, `venue`, `attendee_name`,
@@ -222,13 +271,67 @@ both disabled site-wide, and no start date/time set yet.
 ### Reminders & Scheduled Roster
 
 Both are executed by a single recurring cron hook (`anchor_events_reminder_sweep`) on the **hourly** schedule. This cron:
-- Runs once per hour and identifies events whose reminders or roster digests are due based on event start time and configured offsets.
-- Uses idempotency markers to ensure each email sends exactly once per offset (reminders) or per event (roster), even if cron overlaps or the event date is moved.
+- Drains the lifecycle-email retry queue (below) before anything else.
+- Identifies events whose reminders or roster digests are due based on event start time and configured offsets.
+- Uses idempotency markers to ensure each email sends exactly once per offset per date (reminders) or once per date (roster), even if cron overlaps.
 - Respects event timezones via the pre-computed `start_ts` Unix timestamp (no extra timezone math needed).
 
-**Reminder marker:** Per-seat `_anchor_event_reminders_sent` meta (array of `offset_days => sent_unix`). Each offset fires at most once.
+**One reminder per seat per sweep.** When several offsets are due at once — a registration taken inside the shortest window, or reminders switched on late — only the offset **closest to the event** is sent; the wider ones are marked superseded so they cannot fire an hour later. Without this, offsets `7,1` mailed a 12-hours-before registrant twice in the same minute.
 
-**Scheduled roster marker:** Per-event `_anchor_event_roster_sent` meta (Unix timestamp of send, or 0 if not sent). Fires once per event.
+**Reminder marker:** Per-seat `_anchor_event_reminders_sent` meta, keyed by the event start it was sent **about**: `[ start_ts => [ offset_days => sent_unix ] ]`. `sent_unix` of `0` means the offset was superseded, not sent. Rescheduling the event changes `start_ts`, which re-arms every offset for the new date; moving it back onto a date already mailed about finds that date's markers still standing, so it does not re-send. The pre-upgrade flat `[ offset_days => sent_unix ]` shape reads as "sent for the date the event is on now" and is rewritten on the next sweep.
+
+**Scheduled roster marker:** Per-event `_anchor_event_roster_sent` meta, `[ start_ts => sent_unix ]`, with the same re-arm-on-reschedule behaviour. A pre-upgrade bare timestamp is read and rewritten the same way.
+
+> **Any change to an event's start timestamp re-arms both.** That is the design (MODEL-D16), and it is deliberately not limited to a "real" postponement — `start_ts` is what the markers are keyed on, so correcting an event's start *time* by fifteen minutes while it sits inside the reminder window will send that window's reminder again, and the roster digest again. Nothing else can tell a typo fix from a postponement, and re-sending about a date that moved is the safer of the two failures. Fix start times before the first window opens.
+
+**Cancellation marker:** Per-seat `_anchor_event_cancel_emailed` — the Unix time that cancellation was emailed about. `Registrations::update_status()` deletes it whenever a seat leaves a terminal status, so a seat restored by a roster edit and cancelled again emails the attendee again. `send_cancellation_email()` answers `sent` only when `wp_mail()` accepted the message (see **Dispatch results** below).
+
+### Seat-email queue (nothing mails inside the lock)
+
+`Module::on_seat_status_changed()` never sends: it puts `seat_id => type` on one
+in-request queue (`cancellation` | `promotion`) that `Module::flush_seat_emails()`
+drains on `shutdown` (and explicitly at the end of the WooCommerce reconcile).
+`Registrations::update_status()` fires that hook while its caller may still hold
+the per-event capacity lock — `change_status_with_capacity()` always does — and
+`wp_mail()` can block for as long as the SMTP host feels like, so a send from
+inside the hook would hold a MySQL named lock for the length of an SMTP round
+trip and stall every other buyer on that event.
+
+One entry per seat, so a seat promoted and then cancelled again in the same
+request announces the state it ENDED in, not both. A promotion whose seat is no
+longer `confirmed` at flush time is dropped. `flush_cancellation_emails()` is
+kept as a forwarder to the same method — the flush point older callers know.
+
+**Waitlist promotion** (`waitlist -> confirmed`, only ever operator-driven from
+the roster) reuses the ATTENDEE confirmation sender —
+`Module::send_confirmation_email()`, the second half of
+`send_registration_emails()` — so it answers to `notify_user` and the per-event
+confirmation switch like any other confirmation. It deliberately does not send
+the organizer's "New registration" notice: the seat already exists, and its
+creation sent that notice once. On a site that
+has not customised **Confirmation subject**, a waitlisted send falls back to
+"You are on the waitlist for {event_title}" instead of the shipped "You are
+registered for…"; wording an author has typed is used for both outcomes.
+
+### Dispatch results
+
+Every sender — the WooCommerce buyer confirmation, the WooCommerce organizer notices, the reminder, the roster digest, the cancellation — and `Registrations::update_status()` return an `Outcome`, not a boolean:
+
+| state | meaning | what a caller does with it |
+| --- | --- | --- |
+| `sent` | the mail left (or the status changed) | mark the gate/marker, log the send |
+| `skipped` | deliberately not done — the type is switched off for the event, there is nothing to describe, the seat holds that status already (a same-status write records its note but still reports `skipped` — the status did not move) | never flag review, never queue a retry, never log it as a send |
+| `failed` | attempted and rejected (`wp_mail()` said no, an illegal transition) | flag review / queue the retry |
+
+`reason()` carries the detail (`disabled`, `nothing_to_send`, `already_sent`, `no_address`, `wp_mail`, `same_status`, `illegal_transition`, …) and goes in the log line.
+
+> **Breaking change for custom code (3.26.0).** `Registrations::update_status()` and the senders used to return a bool. An `Outcome` is always truthy, so `if ( $reg->update_status( ... ) )` now always takes the true branch — use `->is_sent()` / `->is_failed()`. (Related 3.26.0 note: event meta saved before 3.26.0 could lose backslashes; those are not recoverable, but values round-trip from the next save.)
+
+Two skips are handled differently by the order dispatcher: a `disabled` confirmation **stamps** the per-event emails-sent gate (the organizer's choice is settled; the next reconcile must not re-decide it), while `nothing_to_send` deliberately leaves the gate open, because seats the pass could not see may exist on the next one. The buyer confirmation resolves its switch from ONE event (the order's primary), so a `disabled` skip stamps **only that event's** gate — an order carrying a disabled event and an enabled one must leave the enabled one's gate open. The organizer notice's gate is already per event, so there is nothing to narrow.
+
+### Retry queue
+
+A lifecycle email whose `wp_mail()` returns false leaves a job on the seat in `_anchor_event_email_retry` (`{type, attempts, next_at, …}`). The hourly sweep drains it — before its own sends, and regardless of whether reminders or roster digests are switched on at all, because a queued cancellation is governed by `notify_cancellation`. Jobs are retried hourly up to `Module::MAX_EMAIL_ATTEMPTS` (3 attempts including the original send), then abandoned with an `email_retry_abandoned` entry in the events error log. A job the sender can never satisfy (email type switched off, no address, seat gone) is retired immediately with `email_retry_undeliverable`.
 
 ### Manual Roster Send
 

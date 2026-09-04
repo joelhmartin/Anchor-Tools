@@ -164,6 +164,28 @@ unchanged after upgrade.
   - When both `external_embed` and `external_url` are set, the embed renders and the
     plain link does not.
 
+### Attendee questions
+
+An event can ask anything on top of name/email/phone: rows in
+`_anchor_event_reg_questions` (`key`, `label`, `type` = text|textarea|select|checkbox,
+`options`, `required`), read through `Module::get_registration_questions()`. **All three**
+seat-creating paths render them — the free form, the WooCommerce checkout's attendee
+fieldset, and the roster's manual add (both the wp-admin form and the front-end console)
+— and all three enforce `required` client- and server-side. One control renderer
+(`Module::render_registration_question_control()`) and one validator
+(`Module::sanitize_registration_answers()`) serve all of them, so the types on offer,
+the select constraint, the checkbox normalization and the textarea's newlines cannot
+differ by path.
+
+Answers live on the seat in `_anchor_event_reg_fields`, **keyed by the question's
+stable `key`, never by its label**, so renaming a question keeps its answers. The label
+is a display value only: every reader (roster table, roster list table, CSV header,
+privacy export) resolves it at render time via
+`Module::registration_answer_label()`, and `Module::resolve_registration_answers()` —
+called once, in `Registrations::seat_dto()` — maps a seat's stored answers onto the
+current question set, lazily migrating pre-fix label-keyed rows and keeping the stored
+key for an answer whose question has been deleted.
+
 ---
 
 ## Authoring
@@ -253,7 +275,7 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 - `for_event( $event_id ): array` — schema.org/Event JSON-LD node (no `@context`), dispatching on type: group child/parent, `multisession`, or plain single. See "JSON-LD" below.
 
 **`Module`**
-- `resolve_email_template( string $type, int $event_id ): string` — per-event override → global option → default constant.
+- `resolve_email_template( string $type, int $event_id ): string` — per-event override → default constant (REG-D12 retired the never-written global-option tier).
 - `compute_email_schedule( int $event_id ): array` — read-only upcoming reminder/roster schedule (see `EMAILS.md`).
 - `event_type( $event_id )`, `registration_mode( $event_id )`, `get_meta( $event_id )`, `meta_key( $key )`, `get_sessions( $event_id )`.
 - `get_labels( $event_id )`, `get_label( $event_id, $key )`, `labels_vocabulary()` — see "Event Labels" below.
@@ -386,5 +408,6 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 | `anchor_events_query_args` | `$query_args, $atts` | Adjust the `WP_Query` args behind event listing shortcodes. |
 | `anchor_events_event_classes` | `$classes, $post_id, $context` | Extra CSS classes on a rendered event card/row. |
 | `anchor_events_registration_form` | `'', $post_id, $meta` | Override seam — return non-empty HTML to replace the registration form entirely (used by the WooCommerce integration for the ticketed buy UI). |
-| `anchor_events_registration_fields` | `$fields` | Extra custom fields on the free registration form. |
 | `anchor_events_registration_email_html` | `$html, $ctx` | Final filter on any built registration/lifecycle email HTML. |
+| `anchor_events_default_email_template` | `$html, $type` | The shipped default body for one email type (`confirmation` \| `reminder` \| `cancellation` \| `roster`) — the fallback behind "Reset to default". Override one type without touching the other three. |
+| `anchor_events_capability` | `$cap, $wc_active` | The single capability every roster / export / resend / console surface resolves. Default: `manage_woocommerce` on a WooCommerce site, else `edit_others_posts`. A non-string or empty return is ignored. |

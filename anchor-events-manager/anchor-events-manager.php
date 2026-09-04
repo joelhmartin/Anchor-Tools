@@ -10,6 +10,15 @@ require_once __DIR__ . '/template-tags.php';
 
 class Module {
     const CPT = 'event';
+
+    /**
+     * Base events-management capability on a site with no store (audit REG-D20).
+     * Roster::CAP is kept as an alias of this for back-compat.
+     */
+    const CAP_BASE = 'edit_others_posts';
+
+    /** Events-management capability once WooCommerce is active — the roster is PII. */
+    const CAP_STORE = 'manage_woocommerce';
     const REG_CPT = 'anchor_event_reg';
 
     // Task 7 (COORD-D2): the only get_meta_schema() keys exposed over REST by
@@ -127,15 +136,52 @@ class Module {
     const REG_NONCE = 'anchor_event_reg_nonce';
 
     /**
-     * Task 3.1 — editable lifecycle-email types. Each has a global default
-     * option (`anchor_events_email_tpl_{type}`) and a per-event override meta
-     * key (`_anchor_event_email_tpl_{type}`). Orientation found that ALL FOUR
+     * Task 3.1 — editable lifecycle-email types. Each has a per-event override
+     * meta key (`_anchor_event_email_tpl_{type}`); REG-D12 retired the
+     * never-written global `anchor_events_email_tpl_{type}` option tier that
+     * used to sit between it and the default. Orientation found that ALL FOUR
      * currently render through the exact same shared shell in
      * build_registration_email_html() — including the roster digest, which
      * was hypothesized to differ but does not — so all four DEFAULT templates
      * are (for now) identical text; Task 3.2's builder can diverge them later.
      */
     const EMAIL_TEMPLATE_TYPES = [ 'confirmation', 'reminder', 'cancellation', 'roster' ];
+
+    /**
+     * The block tokens — regions of the email rendered by this class rather
+     * than authored, so they always carry the stock literal colours and always
+     * go through recolor_email_literals(). See build_registration_email_html().
+     */
+    const EMAIL_BLOCK_TOKENS = [
+        'intro', 'header_image', 'greeting', 'guests_line', 'waitlist_notice',
+        'detail_rows', 'seat_list', 'cta_button', 'cta_button_2',
+        'preheader',
+    ];
+
+    /**
+     * Total delivery attempts for one lifecycle email before the retry job is
+     * abandoned with a log entry (audit REG-D5). The first send counts as
+     * attempt 1, so this is two retries an hour apart, not three.
+     */
+    const MAX_EMAIL_ATTEMPTS = 3;
+
+    /** Seats whose retry jobs one sweep will drain. Bounds an hourly cron run. */
+    const EMAIL_RETRY_BATCH = 100;
+
+    /**
+     * How far ahead the hourly reminder sweep will ever look, in days
+     * (audit REG-D36). The scan window is normally the largest reminder offset
+     * in play; this is the ceiling on that, so one absurd per-event offset
+     * cannot turn an hourly cron into a full-table scan of the calendar.
+     */
+    const REMINDER_HORIZON_DAYS = 366;
+
+    /**
+     * Event starts kept in a lifecycle-email marker map (audit MODEL-D16).
+     * Keeping the recent ones is what makes "moved away and back again" not
+     * re-send; a repeatedly rescheduled event still cannot grow meta for ever.
+     */
+    const MAX_MARKER_DATES = 10;
 
     private static $instance = null;
     private $assets_enqueued = false;
@@ -153,6 +199,21 @@ class Module {
 
     /** Unsaved subject/intro supplied by a live preview request; see get_email_field(). */
     private $preview_field_override = null;
+
+
+    /**
+     * The mailer's own reason for the send in progress, captured from the
+     * `wp_mail_failed` action (REG-D63). The hook used to log a row of its own
+     * (`email_failed`) while send_html_email() logged a second one
+     * (`email_send_returned_false`) for the same failure, so the 200-entry log
+     * filled at twice the rate and an operator counting failures counted each
+     * one twice. The hook now only hands over what it knows — the mailer
+     * message and data — and the ONE row is written where the recipient, the
+     * subject and the event are also known.
+     *
+     * @var array{message:string,data:mixed}|null
+     */
+    private $last_mail_error = null;
 
     /** @var Registrations Seat data-access layer (always loaded). */
     public $registrations = null;
@@ -178,8 +239,20 @@ class Module {
     /** @var Event_Schema|null schema.org/Event JSON-LD data builder (Phase 4, Task 4.1; always loaded, read-only). */
     public $event_schema = null;
 
-    /** @var int[] Seat ids queued for a cancellation email this request. */
-    private $pending_cancellation_emails = [];
+    /**
+     * Seat lifecycle emails queued for the end of this request, `seat_id => type`
+     * ('cancellation' | 'promotion').
+     *
+     * ONE queue, because they need the same thing: a send that happens OUTSIDE
+     * the per-event capacity lock. update_status() fires its hook while
+     * change_status_with_capacity() (and the WooCommerce reconcile) still hold
+     * that lock, and wp_mail() can block for as long as the SMTP host feels
+     * like — holding a MySQL named lock for the duration would stall every
+     * other buyer on that event.
+     *
+     * @var array<int,string>
+     */
+    private $pending_seat_emails = [];
 
     /**
      * Task 3.2 — transient (never persisted) substitution for
@@ -241,6 +314,8 @@ class Module {
         // Always-on data layer (spec §3, approach B). WC-gated classes load in Phase 1.
         $dir = \plugin_dir_path( __FILE__ );
         require_once $dir . 'class-events-log.php';
+        // The tri-state every sender and every status write answers with.
+        require_once $dir . 'class-outcome.php';
         require_once $dir . 'class-registrations.php';
         require_once $dir . 'class-roster.php';
         require_once $dir . 'class-ticket-types.php';
@@ -429,7 +504,7 @@ class Module {
         // v1.1: attendee cancellation/refund email (spec §7). Enqueue on transition,
         // flush after the event lock releases (shutdown) so no wp_mail runs under GET_LOCK.
         \add_action( 'anchor_events_seat_status_changed', [ $this, 'on_seat_status_changed' ], 10, 4 );
-        \add_action( 'shutdown', [ $this, 'flush_cancellation_emails' ] );
+        \add_action( 'shutdown', [ $this, 'flush_seat_emails' ] );
     }
 
     /**
@@ -612,6 +687,17 @@ class Module {
         $settings = $this->get_settings();
         $now      = \time();
 
+        // Retries first (audit REG-D5). A lifecycle email whose wp_mail()
+        // returned false leaves a job on the seat; this is the only thing that
+        // drains it, and it must run BEFORE the early return below because a
+        // queued CANCELLATION retry is governed by `notify_cancellation`, not
+        // by whether this site sends reminders or roster digests at all.
+        //
+        // Draining before the reminder pass also keeps a reminder retry from
+        // being attempted twice in the same hour: the drain writes the sent
+        // marker, and the pass below then sees the offset as already sent.
+        $this->drain_email_retry_queue( $now );
+
         if ( empty( $settings['reminder_enabled'] ) && empty( $settings['organizer_roster_email'] ) ) {
             return; // nothing to do
         }
@@ -625,14 +711,28 @@ class Module {
 
         // Fold in per-event reminder override offsets so events whose largest
         // per-event offset exceeds $max_global are still pulled into the scan.
+        //
+        // REG-D36 — bounded twice over. The query used to be every event that
+        // has EVER set an override, with no date bound, loaded every hour; one
+        // archived course with `reminder_offsets = 365` therefore widened the
+        // main scan below to every event starting in the next year, and the
+        // per-seat query then ran once per due offset per event. An override
+        // only matters while the event it belongs to is still ahead of us, so
+        // the scan asks only about future events — and never looks further
+        // ahead than REMINDER_HORIZON_DAYS whatever an offset claims.
         if ( ! empty( $settings['reminder_enabled'] ) ) {
+            $cap_ts          = $now + ( self::REMINDER_HORIZON_DAYS * DAY_IN_SECONDS );
             $override_events = \get_posts( [
                 'post_type'      => self::CPT,
                 'post_status'    => [ 'publish', 'future', 'private' ],
                 'posts_per_page' => -1,
                 'fields'         => 'ids',
                 'no_found_rows'  => true,
-                'meta_query'     => [ [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ] ],
+                'meta_query'     => [
+                    'relation' => 'AND',
+                    [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ],
+                    [ 'key' => $this->meta_key( 'start_ts' ), 'value' => [ $now, $cap_ts ], 'compare' => 'BETWEEN', 'type' => 'NUMERIC' ],
+                ],
             ] );
             foreach ( $override_events as $oid ) {
                 foreach ( array_map( 'intval', explode( ',', (string) \get_post_meta( $oid, $this->meta_key( 'reminder_offsets' ), true ) ) ) as $d ) {
@@ -641,7 +741,8 @@ class Module {
             }
         }
 
-        $horizon    = $now + ( max( 1, $max_global ) * DAY_IN_SECONDS );
+        $max_global = min( max( 1, $max_global ), self::REMINDER_HORIZON_DAYS );
+        $horizon    = $now + ( $max_global * DAY_IN_SECONDS );
 
         $event_ids = \get_posts( [
             'post_type'      => self::CPT,
@@ -681,38 +782,444 @@ class Module {
 
             // --- Reminder pass ---
             if ( ! empty( $settings['reminder_enabled'] ) ) {
-                foreach ( $this->effective_offsets( $event_id, $settings, $meta ) as $offset ) {
-                    if ( ! ( ( $start_ts - $offset * DAY_IN_SECONDS ) <= $now && $now < $start_ts ) ) {
-                        continue; // offset not due this sweep
-                    }
-                    $seats = $this->registrations->query_seats( [
-                        'event_id' => $event_id,
-                        'status'   => \Anchor\Events\Registrations::STATUS_CONFIRMED,
-                        'per_page' => -1,
-                    ] );
-                    foreach ( $seats['items'] as $seat ) {
-                        $sent_map = \get_post_meta( $seat['id'], '_anchor_event_reminders_sent', true );
-                        if ( ! \is_array( $sent_map ) ) {
-                            $sent_map = [];
-                        }
-                        if ( isset( $sent_map[ $offset ] ) ) {
-                            continue; // already sent this offset
-                        }
-                        if ( ! \apply_filters( 'anchor_events_should_send_reminder', true, $seat, $offset ) ) {
-                            continue;
-                        }
-                        if ( $this->send_reminder_email( $seat, $event_id, $offset, $settings ) ) {
-                            $sent_map[ $offset ] = $now;
-                            \update_post_meta( $seat['id'], '_anchor_event_reminders_sent', $sent_map );
-                            \update_post_meta( $seat['id'], '_anchor_event_attendee_notified', true );
-                        }
-                    }
-                }
+                $this->send_due_reminders( $event_id, $start_ts, $settings, $meta, $now );
             }
 
             // --- Scheduled roster pass (implemented in Task 4) ---
             $this->maybe_send_scheduled_roster( $event_id, $meta, $settings, $now );
         }
+    }
+
+    /**
+     * Send ONE reminder per confirmed seat: the due offset closest to the
+     * event that this seat has not been reminded about yet (audit REG-D3).
+     *
+     * The old loop sent every offset whose window had opened. With the
+     * production offsets "7,1", a registration taken 12 hours before the
+     * course matched `start-7d <= now` AND `start-1d <= now` on the very next
+     * sweep and mailed that attendee twice in the same minute; switching
+     * reminders on inside the last day did it to the whole roster at once.
+     *
+     * Two rules, together:
+     *   1. Only the SMALLEST due unsent offset is sent. It is the reminder
+     *      that actually describes the situation ("tomorrow", not "next
+     *      week").
+     *   2. Every larger due offset is marked as superseded (value 0) rather
+     *      than left unsent, so it cannot fire an hour later and turn the
+     *      double into a delayed double.
+     *
+     * The audit also floated gating on "the window opened within the last
+     * sweep interval". That is deliberately NOT used as the send condition:
+     * it silences a legitimately-due reminder whenever the registration
+     * arrives after the window opened (the exact case above) or the hourly
+     * cron misses a run — a reminder nobody gets is a worse failure than a
+     * reminder that arrives a few hours into its window. The supersede rule
+     * gets the same "never fire two at once" guarantee without dropping mail.
+     *
+     * @param int   $event_id
+     * @param int   $start_ts Event start the markers are keyed to.
+     * @param array $settings
+     * @param array $meta     Pre-loaded event meta.
+     * @param int   $now
+     */
+    private function send_due_reminders( $event_id, $start_ts, array $settings, array $meta, $now ) {
+        // An event whose reminders are switched off is asked nothing further:
+        // no seat query, and — the point — no markers. Deciding it per seat
+        // inside the loop would record every due offset as accounted for, so
+        // switching reminders back ON mid-window would silently send nothing
+        // (audit WOO-D14: check the switch BEFORE the sender, not after).
+        if ( ! $this->is_email_enabled( $event_id, 'reminder' ) ) {
+            return;
+        }
+
+        $due = [];
+        foreach ( $this->effective_offsets( $event_id, $settings, $meta ) as $offset ) {
+            if ( ( $start_ts - $offset * DAY_IN_SECONDS ) <= $now && $now < $start_ts ) {
+                $due[] = (int) $offset;
+            }
+        }
+        if ( empty( $due ) ) {
+            return;
+        }
+        \sort( $due ); // ascending — the offset nearest the event first.
+
+        $seats = $this->registrations->query_seats( [
+            'event_id' => $event_id,
+            'status'   => Registrations::STATUS_CONFIRMED,
+            'per_page' => -1,
+        ] );
+
+        foreach ( $seats['items'] as $seat ) {
+            // A seat whose reminder is already queued for retry belongs to the
+            // drain, which ran at the top of this sweep. Attempting it again
+            // here would burn a second attempt in the same hour.
+            $job = \get_post_meta( $seat['id'], Registrations::META_EMAIL_RETRY, true );
+            if ( \is_array( $job ) && ( $job['type'] ?? '' ) === 'reminder' ) {
+                continue;
+            }
+
+            $sent_map = $this->reminder_markers( $seat['id'], $start_ts, true );
+            $target   = null;
+            foreach ( $due as $offset ) {
+                if ( isset( $sent_map[ $offset ] ) ) {
+                    continue; // sent, or superseded.
+                }
+                if ( ! \apply_filters( 'anchor_events_should_send_reminder', true, $seat, $offset ) ) {
+                    // Blocked, and left UNMARKED on purpose so the filter can
+                    // allow it later. Fall through to the next-widest due
+                    // offset rather than silencing the seat entirely: the old
+                    // loop would still have sent that one.
+                    continue;
+                }
+                $target = $offset;
+                break;
+            }
+            if ( null === $target ) {
+                continue; // every due offset already accounted for, or blocked.
+            }
+
+            $result = $this->deliver_reminder( $seat, $event_id, $target, $start_ts, $settings );
+
+            // A skip is something no retry and no later sweep can fix (this
+            // seat has no address). Record the offset as superseded (0) rather
+            // than leaving it unsent: an unmarked offset is re-attempted by
+            // every sweep for the rest of the window. A FAILURE is different —
+            // it owns a retry job, so it stays unmarked (audit REG-D5).
+            if ( $result->is_skipped() ) {
+                $this->mark_reminder_sent( $seat['id'], $start_ts, $target, 0 );
+            }
+
+            // Whether or not that send succeeded, the wider windows are stale.
+            foreach ( $due as $offset ) {
+                if ( $offset > $target && ! isset( $sent_map[ $offset ] ) ) {
+                    $this->mark_reminder_sent( $seat['id'], $start_ts, $offset, 0 );
+                }
+            }
+        }
+    }
+
+    /**
+     * Send one reminder and record it. The single place a reminder send is
+     * turned into a marker, shared by the sweep and the retry drain so the two
+     * can never disagree about what "sent" means.
+     *
+     * @param array $seat     Seat DTO.
+     * @param int   $event_id
+     * @param int   $offset   Days-before-start offset being sent.
+     * @param int   $start_ts Event start the marker is keyed to.
+     * @param array $settings
+     * @return Outcome
+     */
+    private function deliver_reminder( array $seat, $event_id, $offset, $start_ts, array $settings ) {
+        $result = $this->send_reminder_email( $seat, $event_id, $offset, $settings );
+        if ( $result->is_sent() ) {
+            // REG-D29 — this used to also write _anchor_event_attendee_notified.
+            // Nothing ever read it, and its name claimed a general "the attendee
+            // has been notified" fact that only a reminder could set, so a later
+            // reader would have taken it to mean the confirmation went out. The
+            // reminders_sent map below is the record.
+            $this->mark_reminder_sent( $seat['id'], $start_ts, $offset, \time() );
+        }
+        return $result;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Lifecycle-email markers (audit MODEL-D16 / REG-D42)
+     *
+     * Both markers are keyed by the start_ts they were written ABOUT, so a
+     * rescheduled event re-arms on its own — no clear step in the save path to
+     * forget, and moving an event BACK onto a date it already mailed about
+     * does not mail about it twice.
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Normalize a stored marker map to `[ start_ts => [ key => value ] ]`.
+     *
+     * A pre-upgrade seat holds the flat `[ offset => sent_at ]` shape with no
+     * date attached. The only defensible reading of it is "these were sent
+     * about the date this event is on now" — treating it as unsent would mail
+     * the whole roster a second time on the upgrade sweep.
+     *
+     * @param mixed $raw      Stored meta value.
+     * @param int   $start_ts Current event start.
+     * @return array{0:array,1:bool} [ normalized map, whether it differed from $raw ]
+     */
+    private function normalize_marker_map( $raw, $start_ts ) {
+        if ( ! \is_array( $raw ) || empty( $raw ) ) {
+            return [ [], false ];
+        }
+        $keyed  = [];
+        $legacy = false;
+        foreach ( $raw as $key => $value ) {
+            if ( \is_array( $value ) ) {
+                $keyed[ (int) $key ] = $value;
+                continue;
+            }
+            $legacy = true;
+            $keyed[ (int) $start_ts ][ (int) $key ] = $value;
+        }
+        return [ $keyed, $legacy ];
+    }
+
+    /**
+     * A seat's reminder markers for one event start.
+     *
+     * @param int  $seat_id
+     * @param int  $start_ts
+     * @param bool $migrate  Rewrite a legacy flat map in place. The sweep does;
+     *                       compute_email_schedule() must not — it is
+     *                       documented as a read with no side effects.
+     * @return array [ offset => sent_at ]; 0 means "superseded, never sent".
+     */
+    private function reminder_markers( $seat_id, $start_ts, $migrate = false ) {
+        $raw = \get_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, true );
+        list( $keyed, $legacy ) = $this->normalize_marker_map( $raw, $start_ts );
+        if ( $legacy && $migrate ) {
+            \update_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, $keyed );
+        }
+        return isset( $keyed[ (int) $start_ts ] ) ? $keyed[ (int) $start_ts ] : [];
+    }
+
+    /**
+     * Record one reminder marker.
+     *
+     * @param int $seat_id
+     * @param int $start_ts
+     * @param int $offset
+     * @param int $sent_at  Send time, or 0 for "superseded by a nearer offset".
+     */
+    private function mark_reminder_sent( $seat_id, $start_ts, $offset, $sent_at ) {
+        $raw = \get_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, true );
+        list( $keyed, ) = $this->normalize_marker_map( $raw, $start_ts );
+        $keyed[ (int) $start_ts ][ (int) $offset ] = (int) $sent_at;
+        \update_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, $this->prune_marker_map( $keyed, $start_ts ) );
+    }
+
+    /**
+     * An event's roster-digest markers, keyed by start_ts.
+     *
+     * @param int  $event_id
+     * @param int  $start_ts
+     * @param bool $migrate  Rewrite a legacy bare timestamp in place.
+     * @return array [ start_ts => sent_at ]
+     */
+    private function roster_sent_markers( $event_id, $start_ts, $migrate = false ) {
+        $raw = \get_post_meta( $event_id, $this->meta_key( 'roster_sent' ), true );
+        if ( ! \is_array( $raw ) ) {
+            // Pre-upgrade shape: a bare timestamp for whatever date the event
+            // was on when the digest went out. Read it as the current date.
+            $ts     = (int) $raw;
+            $keyed  = $ts > 0 ? [ (int) $start_ts => $ts ] : [];
+            $legacy = $ts > 0;
+        } else {
+            $keyed  = [];
+            $legacy = false;
+            foreach ( $raw as $key => $value ) {
+                $keyed[ (int) $key ] = (int) $value;
+            }
+        }
+        if ( $legacy && $migrate ) {
+            \update_post_meta( $event_id, $this->meta_key( 'roster_sent' ), $keyed );
+        }
+        return $keyed;
+    }
+
+    /**
+     * Keep marker maps from growing without bound on a heavily rescheduled
+     * event: the most recent starts are the only ones a sweep can ever match
+     * again (the sweep only looks at events whose start_ts is in the future).
+     *
+     * $keep_ts is retained unconditionally. It is the date the caller has just
+     * written a marker for, and dropping it would be worse than any amount of
+     * meta growth: an event moved EARLIER than ten already-stored dates is the
+     * oldest key in the map, so a plain "keep the newest ten" would delete the
+     * marker on the way out and re-mail the whole roster on the next sweep.
+     *
+     * @param array $keyed
+     * @param int   $keep_ts Start the caller just wrote; 0 for none.
+     * @return array
+     */
+    private function prune_marker_map( array $keyed, $keep_ts = 0 ) {
+        if ( \count( $keyed ) <= self::MAX_MARKER_DATES ) {
+            return $keyed;
+        }
+        $keep_ts = (int) $keep_ts;
+        $kept    = [];
+        if ( $keep_ts > 0 && \array_key_exists( $keep_ts, $keyed ) ) {
+            $kept[ $keep_ts ] = $keyed[ $keep_ts ];
+            unset( $keyed[ $keep_ts ] );
+        }
+        \krsort( $keyed, SORT_NUMERIC );
+        foreach ( $keyed as $ts => $value ) {
+            if ( \count( $kept ) >= self::MAX_MARKER_DATES ) {
+                break;
+            }
+            $kept[ $ts ] = $value;
+        }
+        \krsort( $kept, SORT_NUMERIC );
+        return $kept;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Lifecycle-email retry queue (audit REG-D5)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Queue (or re-queue) a lifecycle email whose wp_mail() returned false.
+     *
+     * Before this, a cancellation email that hit an SMTP blip was simply gone:
+     * flush_cancellation_emails() had already emptied its in-memory queue, the
+     * "emailed" marker was never written, and only a fresh live→terminal
+     * transition could re-enqueue — which a seat that is already terminal can
+     * never make.
+     *
+     * A seat holds one job at a time, so the attempt count is per JOB TYPE, not
+     * per seat: without that reset, a confirmed seat carrying a reminder job at
+     * two spent attempts would have its first failed cancellation email treated
+     * as the third and abandoned on the spot.
+     *
+     * @param int   $seat_id
+     * @param array $job {type, plus whatever the sender needs to try again}.
+     */
+    private function queue_email_retry( $seat_id, array $job ) {
+        $seat_id   = (int) $seat_id;
+        $type      = (string) ( $job['type'] ?? '' );
+        $existing  = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
+        $same_type = \is_array( $existing ) && (string) ( $existing['type'] ?? '' ) === $type;
+        $attempts  = ( $same_type ? (int) ( $existing['attempts'] ?? 0 ) : 0 ) + 1;
+
+        if ( $attempts >= self::MAX_EMAIL_ATTEMPTS ) {
+            \delete_post_meta( $seat_id, Registrations::META_EMAIL_RETRY );
+
+            // An abandoned REMINDER has to be recorded as accounted for, not
+            // merely dropped: the sweep skips a seat only while a reminder job
+            // exists, so an unmarked offset would be picked up by the very same
+            // sweep's reminder pass, sent, and re-queued at one attempt — a
+            // permanently failing mailer would cycle for ever and fill the
+            // capped error log. Marking it superseded (0) ends it for good.
+            if ( 'reminder' === $type && (int) ( $job['start_ts'] ?? 0 ) > 0 && (int) ( $job['offset'] ?? 0 ) > 0 ) {
+                $this->mark_reminder_sent( $seat_id, (int) $job['start_ts'], (int) $job['offset'], 0 );
+            }
+
+            Events_Log::error( 'email_retry_abandoned', [
+                'seat'     => $seat_id,
+                'type'     => $type,
+                'attempts' => $attempts,
+            ] );
+            return;
+        }
+
+        $job['attempts'] = $attempts;
+        $job['next_at']  = \time() + HOUR_IN_SECONDS;
+        \update_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, $job );
+    }
+
+    /**
+     * Drop a seat's retry job — it was delivered, or it no longer applies.
+     *
+     * @param int    $seat_id
+     * @param string $type Clear only a job of this type. A sender must pass its
+     *                     own type: one seat holds one job, so an unqualified
+     *                     delete would let a delivered reminder throw away a
+     *                     cancellation still waiting to be retried.
+     */
+    private function clear_email_retry( $seat_id, $type = '' ) {
+        $seat_id = (int) $seat_id;
+        if ( '' !== $type ) {
+            $job = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
+            if ( \is_array( $job ) && (string) ( $job['type'] ?? '' ) !== $type ) {
+                return; // someone else's job
+            }
+        }
+        \delete_post_meta( $seat_id, Registrations::META_EMAIL_RETRY );
+    }
+
+    /**
+     * Re-attempt every lifecycle email whose retry is due. Called at the top
+     * of the hourly sweep, before its own sends.
+     *
+     * @param int|null $now
+     */
+    public function drain_email_retry_queue( $now = null ) {
+        $now      = null === $now ? \time() : (int) $now;
+        $seat_ids = \get_posts( [
+            'post_type'      => self::REG_CPT,
+            'post_status'    => 'publish',
+            'posts_per_page' => self::EMAIL_RETRY_BATCH,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+            'orderby'        => 'ID',
+            'order'          => 'ASC',
+            'meta_query'     => [
+                [ 'key' => Registrations::META_EMAIL_RETRY, 'compare' => 'EXISTS' ],
+            ],
+        ] );
+
+        foreach ( $seat_ids as $seat_id ) {
+            $job = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
+            if ( ! \is_array( $job ) || empty( $job['type'] ) ) {
+                $this->clear_email_retry( $seat_id );
+                continue;
+            }
+            if ( (int) ( $job['next_at'] ?? 0 ) > $now ) {
+                continue; // not due yet
+            }
+
+            // Both senders own their own marker + retry bookkeeping, so a
+            // success clears the job and a mail failure re-queues it with one
+            // more attempt spent.
+            if ( 'cancellation' === $job['type'] ) {
+                $this->send_cancellation_email( $seat_id );
+            } elseif ( 'reminder' === $job['type'] ) {
+                $this->retry_reminder( (int) $seat_id, $job, $now );
+            } else {
+                $this->clear_email_retry( $seat_id );
+                continue;
+            }
+
+            // A job whose attempt count did not move is one the sender never
+            // got as far as mailing: the email type is switched off, the seat
+            // has no address, the record is gone. An hourly retry cannot
+            // change any of those, so retire it rather than let it sit in the
+            // queue being re-read for ever.
+            $after = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
+            if ( \is_array( $after ) && (int) ( $after['attempts'] ?? 0 ) === (int) ( $job['attempts'] ?? 0 ) ) {
+                $this->clear_email_retry( $seat_id, (string) $job['type'] );
+                Events_Log::error( 'email_retry_undeliverable', [
+                    'seat' => (int) $seat_id,
+                    'type' => (string) $job['type'],
+                ] );
+            }
+        }
+    }
+
+    /**
+     * One queued reminder retry. Abandons the job (without sending) when the
+     * reminder no longer applies — the event has started, been cancelled, or
+     * been rescheduled away from the date the job was queued for.
+     *
+     * @param int   $seat_id
+     * @param array $job
+     * @param int   $now
+     */
+    private function retry_reminder( $seat_id, array $job, $now ) {
+        $seat     = $this->registrations->get_seat( $seat_id );
+        $event_id = (int) ( $job['event_id'] ?? 0 );
+        $offset   = (int) ( $job['offset'] ?? 0 );
+        if ( ! $seat || $seat['status'] !== Registrations::STATUS_CONFIRMED || $event_id <= 0 || $offset <= 0 ) {
+            $this->clear_email_retry( $seat_id, 'reminder' );
+            return;
+        }
+        $meta     = $this->get_meta( $event_id );
+        $start_ts = (int) ( $meta['start_ts'] ?? 0 );
+        if ( $start_ts <= $now
+            || $start_ts !== (int) ( $job['start_ts'] ?? 0 )
+            || 'cancelled' === $this->get_event_status( $event_id, $meta )
+            || $this->occurrences->is_closed( $event_id ) ) {
+            $this->clear_email_retry( $seat_id, 'reminder' );
+            return;
+        }
+        $this->deliver_reminder( $seat, $event_id, $offset, $start_ts, $this->get_settings() );
     }
 
     /**
@@ -722,14 +1229,24 @@ class Module {
      * @param int        $event_id
      * @param int        $offset   Days-before-start offset being sent.
      * @param array|null $settings Pre-resolved settings; loaded if not supplied.
-     * @return bool True on successful send.
+     * @return Outcome sent | skipped (disabled, no_address) | failed (wp_mail).
      */
     public function send_reminder_email( array $seat, $event_id, $offset, $settings = null ) {
+        // REG-D40 — three different refusals used to leave the same silence.
+        // The reason string tells the CALLER them apart; these codes tell the
+        // OPERATOR, who otherwise reads an unsent reminder as a mail failure.
+        // 'disabled' is deliberately not logged: it is the organizer's own
+        // setting, not a defect (see Outcome), and logging it would fill the
+        // error log with every seat of every event that switched reminders off.
         if ( ! $this->is_email_enabled( $event_id, 'reminder' ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         if ( empty( $seat['email'] ) ) {
-            return false;
+            Events_Log::error( 'reminder_no_address', [
+                'event' => (int) $event_id,
+                'seat'  => (int) ( $seat['id'] ?? 0 ),
+            ] );
+            return Outcome::skipped( 'no_address' );
         }
         if ( ! \is_array( $settings ) ) {
             $settings = $this->get_settings();
@@ -760,22 +1277,53 @@ class Module {
             'type'          => 'reminder',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        return $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id );
+        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id );
+
+        // Retry bookkeeping lives at the point of the actual send (audit
+        // REG-D5) so the pre-flight bails above — reminders off for this
+        // event, no address on the seat — never burn an attempt on something
+        // no retry could fix.
+        $seat_id = (int) ( $seat['id'] ?? 0 );
+        if ( $seat_id > 0 ) {
+            if ( $sent ) {
+                $this->clear_email_retry( $seat_id, 'reminder' );
+            } else {
+                $this->queue_email_retry( $seat_id, [
+                    'type'     => 'reminder',
+                    'event_id' => (int) $event_id,
+                    'offset'   => (int) $offset,
+                    'start_ts' => (int) ( $this->get_meta( (int) $event_id )['start_ts'] ?? 0 ),
+                ] );
+            }
+        }
+        // A delivery failure is NOT logged here: send_html_email() already
+        // records email_send_returned_false for it. What was missing was a
+        // record of the refusals ABOVE, which never reached a send at all.
+        return Outcome::from_bool( $sent, 'wp_mail' );
     }
 
-    /** Build + send the organizer roster digest (confirmed attendees + counts). */
+    /**
+     * Build + send the organizer roster digest (confirmed attendees + counts).
+     *
+     * @param int $event_id
+     * @return Outcome sent | skipped (disabled) | failed (invalid_event, no_address, wp_mail).
+     */
     public function send_roster_email( $event_id ) {
         if ( ! $this->is_email_enabled( $event_id, 'roster' ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         $event_id = (int) $event_id;
         if ( \get_post_type( $event_id ) !== self::CPT ) {
-            return false;
+            // REG-D40 — each refusal names itself, so "the roster never arrived"
+            // can be told apart from "the roster bounced" without guesswork.
+            Events_Log::error( 'roster_invalid_event', [ 'event' => $event_id ] );
+            return Outcome::failed( 'invalid_event' );
         }
         $settings = $this->get_settings();
         $to       = $this->resolve_organizer_email( $event_id, $settings );
         if ( $to === '' ) {
-            return false;
+            Events_Log::error( 'roster_no_address', [ 'event' => $event_id ] );
+            return Outcome::failed( 'no_address' );
         }
         $summary = $this->registrations->get_event_summary( $event_id );
         $seats   = $this->registrations->query_seats( [
@@ -822,7 +1370,8 @@ class Module {
             'type'          => 'roster',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        return $this->send_html_email( $to, $subject, $html, [], $event_id );
+        // Delivery failure is send_html_email()'s to log (email_send_returned_false).
+        return Outcome::from_bool( $this->send_html_email( $to, $subject, $html, [], $event_id ), 'wp_mail' );
     }
 
     /**
@@ -839,11 +1388,17 @@ class Module {
         if ( ! ( ( $start_ts - $offset * DAY_IN_SECONDS ) <= $now && $now < $start_ts ) ) {
             return; // not due
         }
-        if ( (int) ( $meta['roster_sent'] ?? 0 ) > 0 ) {
-            return; // already sent
+        // Keyed by the start_ts the digest was sent ABOUT (audit REG-D42): the
+        // marker used to be a bare "sent" timestamp, so a course postponed by
+        // three weeks never earned the organizer a roster for the date they
+        // actually needed — and the Upcoming Sends panel reported it as Sent.
+        $markers = $this->roster_sent_markers( $event_id, $start_ts, true );
+        if ( (int) ( $markers[ $start_ts ] ?? 0 ) > 0 ) {
+            return; // already sent for THIS date
         }
-        if ( $this->send_roster_email( $event_id ) ) {
-            \update_post_meta( $event_id, $this->meta_key( 'roster_sent' ), $now );
+        if ( $this->send_roster_email( $event_id )->is_sent() ) {
+            $markers[ $start_ts ] = $now;
+            \update_post_meta( $event_id, $this->meta_key( 'roster_sent' ), $this->prune_marker_map( $markers, $start_ts ) );
         }
     }
 
@@ -932,8 +1487,13 @@ class Module {
                 $scheduled_ts = $start_ts - ( $offset * DAY_IN_SECONDS );
                 $sent_count   = 0;
                 foreach ( $seats['items'] as $seat ) {
-                    $sent_map = \get_post_meta( $seat['id'], '_anchor_event_reminders_sent', true );
-                    if ( \is_array( $sent_map ) && isset( $sent_map[ $offset ] ) ) {
+                    // Markers are read, never migrated, here — this method is
+                    // documented as having no side effects. A 0 marker means
+                    // the offset was superseded by a nearer reminder (REG-D3)
+                    // and was never actually sent, so it must not be counted:
+                    // the row then reports 'past', which is the truth.
+                    $sent_map = $this->reminder_markers( $seat['id'], $start_ts );
+                    if ( ! empty( $sent_map[ $offset ] ) ) {
                         $sent_count++;
                     }
                 }
@@ -956,7 +1516,9 @@ class Module {
         if ( $roster_on ) {
             $offset       = (int) $settings['roster_auto_offset'];
             $scheduled_ts = $start_ts - ( $offset * DAY_IN_SECONDS );
-            $already_sent = (int) ( $meta['roster_sent'] ?? 0 ) > 0;
+            // Sent FOR THIS DATE (audit REG-D42) — a digest sent about the
+            // date this event has since moved off is not this row's send.
+            $already_sent = (int) ( $this->roster_sent_markers( $event_id, $start_ts )[ $start_ts ] ?? 0 ) > 0;
             $email        = $this->resolve_organizer_email( $event_id, $settings );
 
             $rows[] = [
@@ -1010,12 +1572,18 @@ class Module {
      * @param \WP_Error $error
      */
     public function capture_mail_failure( $error ) {
-        if ( \is_wp_error( $error ) ) {
-            Events_Log::error( 'email_failed', [
-                'message' => $error->get_error_message(),
-                'data'    => $error->get_error_data(),
-            ] );
+        if ( ! \is_wp_error( $error ) ) {
+            return;
         }
+        // REG-D63 — record, do not log. send_html_email() writes the single row
+        // for this failure and folds this detail into it. (This is a global
+        // wp_mail_failed listener, so it also used to log every OTHER plugin's
+        // mail failure into the events error log; now an unrelated failure just
+        // leaves a note nobody reads.)
+        $this->last_mail_error = [
+            'message' => $error->get_error_message(),
+            'data'    => $error->get_error_data(),
+        ];
     }
 
     /**
@@ -1045,10 +1613,30 @@ class Module {
                 array_unshift( $headers, 'Content-Type: text/html; charset=UTF-8' );
             }
         }
-        $sent = \wp_mail( $to, $subject, $html, $headers );
+        // REG-D46 named the event on the failure row; REG-D63 made this the ONE
+        // place that writes it, so the event no longer has to be smuggled to
+        // the wp_mail_failed handler through a request-scoped property — it is
+        // right here as $event_id.
+        $previous_error        = $this->last_mail_error;
+        $this->last_mail_error = null;
+        $sent                  = \wp_mail( $to, $subject, $html, $headers );
         if ( ! $sent ) {
-            Events_Log::error( 'email_send_returned_false', [ 'to' => $to, 'subject' => $subject ] );
+            // REG-D63 — ONE row per failed send, carrying the mailer's own
+            // reason when there is one. wp_mail() can answer false without ever
+            // firing wp_mail_failed (a pre_wp_mail short-circuit, say), which is
+            // why this side is the one that logs.
+            $context = [
+                'event'   => (int) $event_id,
+                'to'      => $to,
+                'subject' => $subject,
+            ];
+            if ( \is_array( $this->last_mail_error ) ) {
+                $context['message'] = $this->last_mail_error['message'];
+                $context['data']    = $this->last_mail_error['data'];
+            }
+            Events_Log::error( 'email_send_returned_false', $context );
         }
+        $this->last_mail_error = $previous_error;
         return (bool) $sent;
     }
 
@@ -1119,15 +1707,55 @@ class Module {
      * one typo should not cost an event its confirmation emails.
      */
     public function email_address_list( $raw ) {
-        $parts = \preg_split( '/[,;\r\n]+/', (string) $raw, -1, PREG_SPLIT_NO_EMPTY );
-        $out   = [];
+        return $this->split_email_address_list( $raw )['kept'];
+    }
+
+    /**
+     * The entries of a Cc/Bcc list that email_address_list() would drop.
+     *
+     * The drop itself is deliberate — see email_address_list() — but silence
+     * about it is not (audit REG-D61): "compliance@exampl,e.com" splits into
+     * two fragments, both are discarded, and the field comes back empty with
+     * nothing said. Same split, same trim, so what this reports is exactly
+     * what the saver threw away.
+     *
+     * @param string $raw
+     * @return string[]
+     */
+    public function rejected_email_addresses( $raw ) {
+        return $this->split_email_address_list( $raw )['dropped'];
+    }
+
+    /**
+     * The one splitter both of the above read: every entry of a comma/newline
+     * separated address list, sorted into the addresses that survived and the
+     * fragments that did not.
+     *
+     * One implementation, because the two answers have to agree by
+     * construction — a second copy of the split/trim/validate rules is a
+     * notice that names an entry the saver actually kept, or stays silent
+     * about one it threw away.
+     *
+     * @param string $raw
+     * @return array{kept:string[],dropped:string[]}
+     */
+    private function split_email_address_list( $raw ) {
+        $parts   = \preg_split( '/[,;\r\n]+/', (string) $raw, -1, PREG_SPLIT_NO_EMPTY );
+        $kept    = [];
+        $dropped = [];
         foreach ( (array) $parts as $part ) {
-            $address = \sanitize_email( \trim( $part ) );
+            $part = \trim( $part );
+            if ( $part === '' ) {
+                continue;
+            }
+            $address = \sanitize_email( $part );
             if ( $address !== '' && \is_email( $address ) ) {
-                $out[] = $address;
+                $kept[] = $address;
+            } else {
+                $dropped[] = $part;
             }
         }
-        return $out;
+        return [ 'kept' => $kept, 'dropped' => $dropped ];
     }
 
     /** Quote a display name for an email header if it contains characters that need it. */
@@ -1185,15 +1813,21 @@ class Module {
 
             // C: attendee-provided custom registration fields can themselves be PII,
             // so include them in the export (one row per field).
-            $reg_fields = \get_post_meta( $seat_id, '_anchor_event_reg_fields', true );
-            if ( \is_array( $reg_fields ) ) {
-                foreach ( $reg_fields as $field_key => $field_value ) {
-                    $value = \is_scalar( $field_value ) ? (string) $field_value : \wp_json_encode( $field_value );
-                    $data[] = [
-                        'name'  => (string) $field_key,
-                        'value' => (string) $value,
-                    ];
-                }
+            // Resolved against the event's current questions (REG-D10), so a
+            // label-keyed legacy answer exports once, under the heading the
+            // organizer sees everywhere else.
+            $questions  = $this->get_registration_questions( $event_id );
+            $reg_fields = $this->resolve_registration_answers(
+                $event_id,
+                \get_post_meta( $seat_id, '_anchor_event_reg_fields', true ),
+                $questions
+            );
+            foreach ( $reg_fields as $field_key => $field_value ) {
+                $value  = \is_scalar( $field_value ) ? (string) $field_value : \wp_json_encode( $field_value );
+                $data[] = [
+                    'name'  => $this->registration_answer_label( $event_id, $field_key, $questions ),
+                    'value' => (string) $value,
+                ];
             }
 
             $items[] = [
@@ -1229,18 +1863,82 @@ class Module {
             $this->registrations->anonymize_seat( $seat_id );
         }
 
+        // REG-D55 — say WHAT was retained. anonymize_seat() scrubs name, email,
+        // phone and the custom answers but deliberately keeps the seat's
+        // customer id and order id, either of which resolves straight back to
+        // the person through the WP user record or the WooCommerce order's
+        // billing email. Reporting items_retained with no message left the
+        // operator to assume the retained part was anonymous.
+        $messages = [];
+        if ( ! empty( $seat_ids ) ) {
+            $messages[] = \__( 'Event registrations were kept for capacity and audit purposes with the attendee name, email, phone and answers removed. Each seat still records the WordPress customer id and WooCommerce order id it came from; those links are cleared by WooCommerce\'s own eraser.', 'anchor-schema' );
+        }
+
         return [
             // Seats are retained with PII scrubbed (kept for capacity + audit), not
             // physically deleted — so nothing is "removed", everything is "retained".
             'items_removed'  => false,
             'items_retained' => ! empty( $seat_ids ),
-            'messages'       => [],
+            'messages'       => $messages,
             'done'           => \count( $seat_ids ) < $per_page,
         ];
     }
 
     public static function instance() {
         return self::$instance;
+    }
+
+    /**
+     * The single events-management capability (audit REG-D20 / REG-D62 / WOO-D41).
+     *
+     * Every roster, export, resend and front-end console surface resolves who may
+     * act here and nowhere else. On a store the roster and the order actions expose
+     * customer PII (billing email, customer ids, order numbers), so they require a
+     * shop-management capability; a free/internal install keeps the Editor-held
+     * `edit_others_posts`. Before this existed the same data was reachable behind
+     * three different capabilities, so hardening one surface simply moved the hole.
+     *
+     * A site whose events are run by a role that holds neither capability can point
+     * the whole module at its own capability with one filter:
+     *
+     *     add_filter( 'anchor_events_capability', fn() => 'manage_event_roster' );
+     *
+     * A filter that returns something unusable (empty string, non-string) is
+     * ignored rather than obeyed — an empty capability string passes
+     * current_user_can() for everyone, which would open every surface at once.
+     *
+     * @return string Capability slug.
+     */
+    public static function events_capability() {
+        return self::capability_for( \class_exists( 'WooCommerce' ) );
+    }
+
+    /**
+     * The store-aware half of events_capability(), with the runtime taken as an
+     * argument rather than read from class_exists().
+     *
+     * Split out so both answers are reachable in one process: CI installs
+     * WooCommerce for every run, so without this the `edit_others_posts` branch —
+     * the one every non-store site in the fleet resolves to — would be exercised
+     * by nothing at all.
+     *
+     * @param bool $wc_active Whether WooCommerce is active.
+     * @return string Capability slug.
+     */
+    public static function capability_for( $wc_active ) {
+        $wc_active = (bool) $wc_active;
+        $cap       = $wc_active ? self::CAP_STORE : self::CAP_BASE;
+
+        /**
+         * Filter the capability required to manage events (rosters, exports,
+         * resends, the front-end console).
+         *
+         * @param string $cap       Default: manage_woocommerce on a store, else edit_others_posts.
+         * @param bool   $wc_active Whether WooCommerce is active.
+         */
+        $filtered = \apply_filters( 'anchor_events_capability', $cap, $wc_active );
+
+        return ( \is_string( $filtered ) && $filtered !== '' ) ? $filtered : $cap;
     }
 
     /**
@@ -1629,21 +2327,27 @@ class Module {
             'auth_callback' => $reg_auth_callback,
         ] );
 
-        // L15: spec-reserved attendee-notified flag (honors the `notify_attendee`
-        // reservation; not yet written, registered so the key is recognized).
-        \register_post_meta( self::REG_CPT, '_anchor_event_attendee_notified', [
-            'type' => 'boolean',
-            'single' => true,
-            'show_in_rest' => true,
-            'auth_callback' => $reg_auth_callback,
-        ] );
-
         // v1.1 lifecycle email markers (spec §4.2). Written by cron/cancel tasks only.
-        \register_post_meta( self::REG_CPT, '_anchor_event_reminders_sent', [
+        //
+        // reminders_sent is keyed by the event's start_ts (audit MODEL-D16):
+        // [ start_ts => [ offset => sent_at ] ]. Keying by the date the
+        // reminder was sent ABOUT is what re-arms a rescheduled event, and —
+        // unlike clearing the marker when the date moves — it still remembers
+        // the original date if the event is moved back onto it.
+        \register_post_meta( self::REG_CPT, Registrations::META_REMINDERS_SENT, [
             'type' => 'array', 'single' => true, 'show_in_rest' => false, 'auth_callback' => $reg_auth_callback,
         ] );
-        \register_post_meta( self::REG_CPT, '_anchor_event_cancel_emailed', [
-            'type' => 'boolean', 'single' => true, 'show_in_rest' => false, 'auth_callback' => $reg_auth_callback,
+        // A TIMESTAMP, not a boolean (audit REG-D4): it records which
+        // cancellation was emailed about, and Registrations::update_status()
+        // clears it whenever the seat leaves a terminal status.
+        \register_post_meta( self::REG_CPT, Registrations::META_CANCEL_EMAILED, [
+            'type' => 'integer', 'single' => true, 'show_in_rest' => false, 'auth_callback' => $reg_auth_callback,
+        ] );
+        // Retry job for a lifecycle email whose wp_mail() returned false
+        // (audit REG-D5): { type, attempts, next_at, ... }. Drained by the
+        // hourly sweep; deleted on success or after MAX_EMAIL_ATTEMPTS.
+        \register_post_meta( self::REG_CPT, Registrations::META_EMAIL_RETRY, [
+            'type' => 'array', 'single' => true, 'show_in_rest' => false, 'auth_callback' => $reg_auth_callback,
         ] );
     }
 
@@ -1774,10 +2478,13 @@ class Module {
             'organizer_email' => [ 'type' => 'string' ],
             // v1.1 lifecycle email per-event overrides (spec §4.2).
             'reminder_offsets' => [ 'type' => 'string' ],
-            'roster_sent' => [ 'type' => 'integer', 'show_in_rest' => false ],
-            // Per-event activity roll-up: data-model reserved only; NOT written/surfaced
-            // in MVP (activity log deferred — spec §2, §11.6).
-            'activity' => [ 'type' => 'array', 'show_in_rest' => false ],
+            // Organizer-digest markers, keyed by the start_ts each digest was
+            // sent ABOUT (audit REG-D42/MODEL-D16): [ start_ts => sent_at ].
+            // Was a bare timestamp, which latched an event to its first date
+            // for ever; a pre-upgrade int still reads as "sent for the date
+            // this event is on now" (roster_sent_markers()) and is rewritten
+            // into the keyed shape on the next sweep.
+            'roster_sent' => [ 'type' => 'array', 'show_in_rest' => false ],
             // Event-type / registration-mode data model (Task 1.1+1.2). Metabox
             // authoring UI + save_meta() wiring landed in Task 1.3+1.4; front-end
             // manager-form parity (same fields, same sanitize_event_type_input()
@@ -1817,7 +2524,7 @@ class Module {
             // Engine-owned: written only by Occurrences, never by save_meta()'s
             // allow-list (see the $input array in save_meta() below — these five
             // keys are intentionally absent from it, same pattern as
-            // linked_products/roster_sent/activity above). show_in_rest=false so
+            // linked_products/roster_sent above). show_in_rest=false so
             // REST/Gutenberg can never write them either.
             'group_role' => [ 'type' => 'string', 'show_in_rest' => false ],
             'group_id' => [ 'type' => 'integer', 'show_in_rest' => false ],
@@ -1893,8 +2600,7 @@ class Module {
             'linked_products' => [],
             'organizer_email' => '',
             'reminder_offsets' => '',
-            'roster_sent' => 0,
-            'activity' => [],
+            'roster_sent' => [],
             'type' => 'single',
             'sessions' => [],
             'labels' => [],
@@ -2942,9 +3648,11 @@ class Module {
         }
         ?>
         <p>
-            <a class="button" href="<?php echo esc_url( $export_url ); ?>"><?php echo esc_html__( 'Export CSV', 'anchor-schema' ); ?></a>
-            <?php if ( $this->roster ) : ?>
-                <a class="button button-primary" href="<?php echo esc_url( $this->roster->roster_url( $post->ID ) ); ?>"><?php echo esc_html__( 'Open full roster', 'anchor-schema' ); ?></a>
+            <?php if ( Roster::current_user_can_manage() ) : // REG-D21 — both handlers would refuse these. ?>
+                <a class="button" href="<?php echo esc_url( $export_url ); ?>"><?php echo esc_html__( 'Export CSV', 'anchor-schema' ); ?></a>
+                <?php if ( $this->roster ) : ?>
+                    <a class="button button-primary" href="<?php echo esc_url( $this->roster->roster_url( $post->ID ) ); ?>"><?php echo esc_html__( 'Open full roster', 'anchor-schema' ); ?></a>
+                <?php endif; ?>
             <?php endif; ?>
         </p>
         <div class="anchor-event-registrants">
@@ -3038,7 +3746,14 @@ class Module {
         return \get_post_meta( (int) $event_id, '_anchor_event_email_off_' . $type, true ) !== '1';
     }
 
-    /** Persist the per-type on/off switches posted by the email builder. */
+    /**
+     * Persist the per-type on/off switches posted by the email builder.
+     *
+     * No wp_slash() here, deliberately: this saver stores the literal '1' (or
+     * deletes the row), never a value the author typed, so there is no
+     * backslash for update_post_meta()'s unslash to eat. It is the one
+     * exception in persist_event_authoring()'s list — see that docblock.
+     */
     private function save_email_switches( $post_id, array $src ) {
         // Only trust the post when the builder was actually on screen, otherwise
         // a save from anywhere else would read "absent" as "turned off".
@@ -3072,7 +3787,10 @@ class Module {
                 if ( \trim( (string) $value ) === '' ) {
                     \delete_post_meta( $post_id, $meta );   // empty means "use the site default"
                 } else {
-                    \update_post_meta( $post_id, $meta, $value );
+                    // wp_slash(): re-slash the sanitized value, because
+                    // update_post_meta() unslashes again — see
+                    // persist_event_authoring()'s docblock.
+                    \update_post_meta( $post_id, $meta, \wp_slash( $value ) );
                 }
             }
         }
@@ -3089,8 +3807,14 @@ class Module {
      */
     public function email_field_default( $type, $field ) {
         $s = $this->get_settings();
+        // REG-D58 — the confirmation subject resolves through the one place
+        // both senders resolve it, so the placeholder an author is told they
+        // are overriding is the string that would actually go out.
+        if ( 'confirmation' === $type && 'subject' === $field ) {
+            return $this->default_confirmation_subject( $s );
+        }
         $map = [
-            'confirmation' => [ 'subject' => 'wc_customer_subject', 'intro' => 'confirmation_message' ],
+            'confirmation' => [ 'subject' => 'confirmation_subject', 'intro' => 'confirmation_message' ],
             'reminder'     => [ 'subject' => 'reminder_subject',     'intro' => 'reminder_intro' ],
             'cancellation' => [ 'subject' => 'cancellation_subject', 'intro' => 'cancellation_intro' ],
             'roster'       => [ 'subject' => 'roster_subject',       'intro' => 'roster_intro' ],
@@ -3115,25 +3839,48 @@ class Module {
      * four silently expanded to nothing.
      */
     private function wording_email_tokens() {
-        return [
-            'event_title', 'event_date', 'event_time', 'venue', 'days_until',
-            'attendee_name', 'join_link', 'event_url', 'site_name',
-            'remaining', 'seat_count', 'status', 'order_number', 'order_url',
-        ];
+        // REG-D59 — read off the map that actually runs, not re-typed beside
+        // it. email_tokens() is what expand_email_tokens() is handed for every
+        // subject and every opening line, so its keys ARE this vocabulary; a
+        // token added or removed there can no longer leave a stale palette
+        // button that expands to nothing. The empty context is deliberate: no
+        // event, no seat, no order — it costs no query and the VALUES are
+        // irrelevant here, only the key set.
+        return \array_keys( $this->email_tokens( [] ) );
     }
 
     /**
      * Tokens that resolve inside the raw HTML template — the scalars plus the
-     * pre-rendered block regions. Mirrors the $tokens map built in
-     * build_registration_email_html(); every name here is a real key there.
+     * pre-rendered block regions.
+     *
+     * REG-D59 — assembled from the three sources build_registration_email_html()
+     * actually builds the body map from, rather than re-typed as a fourth list:
+     * the subject/intro scalars it carries over, EMAIL_BLOCK_TOKENS, and the
+     * Email Appearance palette from email_brand_map(). Test_Email_Builder
+     * renders a template made of every name this returns and fails if any of
+     * them survives unexpanded.
      */
     private function template_email_tokens() {
-        return [
-            'event_title', 'event_date', 'event_time', 'venue', 'days_until',
-            'attendee_name', 'status', 'join_link', 'event_url', 'site_name', 'event_id',
-            'preheader', 'intro', 'greeting', 'header_image', 'guests_line', 'waitlist_notice',
-            'detail_rows', 'seat_list', 'cta_button', 'cta_button_2',
-        ];
+        // Four subject/intro scalars are NOT carried into the body map: the two
+        // order fields belong to a WooCommerce context the body builder is not
+        // given, and remaining/seat_count are roster-digest counts the digest
+        // puts in its detail rows. Listing them here is what made {order_number}
+        // expand to nothing when an author typed it into a template.
+        $body_scalars = \array_diff(
+            $this->wording_email_tokens(),
+            [ 'order_number', 'order_url', 'remaining', 'seat_count' ]
+        );
+
+        return \array_values( \array_unique( \array_merge(
+            $body_scalars,
+            [ 'event_id' ], // built by the body map only.
+            self::EMAIL_BLOCK_TOKENS,
+            // REG-D27 — the Email Appearance palette, so a hand-built template
+            // can opt into the site's colours and logo instead of silently
+            // ignoring them.
+            \array_keys( $this->email_brand_map() ),
+            [ 'logo' ]
+        ) ) );
     }
 
     /**
@@ -3200,6 +3947,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'waitlist_notice' => __( 'A note that the recipient is on the waitlist. Empty for everyone else.', 'anchor-schema' ),
             'cta_button'      => __( 'The main button, from the Button field on the left. Empty unless it has both text and a link.', 'anchor-schema' ),
             'cta_button_2'    => __( 'The second button, from the Second button field on the left. Empty unless it has both text and a link.', 'anchor-schema' ),
+            'brand_bg'          => __( 'The Email background colour from Settings. Use it inside a style attribute.', 'anchor-schema' ),
+            'brand_surface'     => __( 'The card colour from Settings — the panel the email sits on.', 'anchor-schema' ),
+            'brand_heading'     => __( 'The heading colour from Settings.', 'anchor-schema' ),
+            'brand_text'        => __( 'The body text colour from Settings.', 'anchor-schema' ),
+            'brand_button'      => __( 'The button colour from Settings.', 'anchor-schema' ),
+            'brand_button_text' => __( 'The colour of the text on a button.', 'anchor-schema' ),
+            'logo'              => __( 'The logo from Settings, as its own table row. Empty when no logo is set.', 'anchor-schema' ),
         ];
     }
 
@@ -3308,15 +4062,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( ! isset( $src[ $form ] ) ) {
                 continue;
             }
-            $raw   = \wp_unslash( $src[ $form ] );
-            $value = ( $clean === 'list' )
-                ? \implode( ', ', $this->email_address_list( $raw ) )
-                : \call_user_func( '\\' . $clean, $raw );
-            \update_post_meta( $post_id, '_anchor_event_' . $key, $value );
+            $raw = \wp_unslash( $src[ $form ] );
+            if ( $clean === 'list' ) {
+                // REG-D61 — the drop stays (a malformed Cc can bounce the whole
+                // message), but the person who typed it is told which entries
+                // did not survive instead of watching the field empty itself.
+                // One split answers both halves.
+                $split   = $this->split_email_address_list( $raw );
+                $value   = \implode( ', ', $split['kept'] );
+                $dropped = $split['dropped'];
+                if ( ! empty( $dropped ) ) {
+                    $this->queue_group_notice(
+                        $key === 'email_bcc' ? 'email_bcc_invalid' : 'email_cc_invalid',
+                        $post_id,
+                        \implode( ', ', $dropped )
+                    );
+                }
+            } else {
+                $value = \call_user_func( '\\' . $clean, $raw );
+            }
+            // wp_slash(): see persist_event_authoring()'s docblock — a From
+            // name is free text and may legitimately contain a backslash.
+            \update_post_meta( $post_id, '_anchor_event_' . $key, \wp_slash( $value ) );
         }
     }
 
-    /** Persist the CTA label/URL pairs posted by the email builder. */
+    /**
+     * Persist the CTA label/URL pairs posted by the email builder.
+     *
+     * REG-D26 — a value equal to the resolved default is DELETED, not written.
+     * The builder shows the default (a virtual event's room link, the event
+     * permalink) as the field's placeholder, but the browser posts whatever is
+     * in the box, and an author who typed over nothing still posts the default
+     * back on the first save of any other field. Writing it froze a live
+     * default into meta: change the event's Zoom URL afterwards and every email
+     * still linked to the old room. Deleting also thaws the events that were
+     * frozen before this fix, on their next save.
+     *
+     * Empty is still written when it DIFFERS from the default: that is the
+     * author clearing the field, which get_email_cta() reads as "deliberately
+     * no button".
+     */
     private function save_email_cta_fields( $post_id, array $src ) {
         // Only when the builder was actually on the page, so a save from any
         // other form cannot blank a button it never rendered.
@@ -3325,20 +4111,82 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
             foreach ( [ 1, 2 ] as $slot ) {
-                $prefix = '_anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
-                $form   = 'anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+                $prefix   = '_anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+                $form     = 'anchor_event_email_cta' . ( $slot === 2 ? '2' : '' ) . '_';
+                $defaults = $this->email_cta_defaults( $post_id, $slot );
                 foreach ( [ 'label' => 'sanitize_text_field', 'url' => 'esc_url_raw' ] as $field => $clean ) {
                     $key = $form . $field . '_' . $type;
                     if ( ! isset( $src[ $key ] ) ) {
                         continue;
                     }
-                    $value = \call_user_func( '\\' . $clean, \wp_unslash( $src[ $key ] ) );
-                    // Always written, including empty: an empty value is the
-                    // author saying "no button", which get_email_cta() honours.
-                    \update_post_meta( $post_id, $prefix . $field . '_' . $type, $value );
+                    $value    = (string) \call_user_func( '\\' . $clean, \wp_unslash( $src[ $key ] ) );
+                    $meta_key = $prefix . $field . '_' . $type;
+
+                    if ( ! $this->cta_field_is_authored( $post_id, $meta_key, $value ) ) {
+                        // An untouched placeholder — leave the field unset so the
+                        // default keeps resolving. See cta_field_is_authored().
+                        continue;
+                    }
+
+                    if ( $value === (string) ( $defaults[ $field ] ?? '' ) ) {
+                        // Still the default — keep it a default, so it follows
+                        // the event instead of pinning it to today's value.
+                        \delete_post_meta( $post_id, $meta_key );
+                        continue;
+                    }
+                    // wp_slash(): see persist_event_authoring()'s docblock.
+                    // The default comparison above deliberately uses the
+                    // UNSLASHED $value — it is comparing meaning, not bytes.
+                    \update_post_meta( $post_id, $meta_key, \wp_slash( $value ) );
                 }
             }
         }
+    }
+
+    /**
+     * Did the author actually put something in this CTA field? (REG-D26)
+     *
+     * The one predicate behind BOTH the save path and the live preview, because
+     * the builder renders the default as the field's PLACEHOLDER: an untouched
+     * field posts ''. On save, writing that would read as "deliberately no
+     * button" and silently drop the CTA from every email; in the preview,
+     * honouring it shows no button where the send would put one — and an author
+     * who believes the preview will re-type the default into the field, which is
+     * exactly the freeze this fix removed. Both surfaces have to answer the
+     * question the same way, so they ask it here.
+     *
+     * metadata_exists() is the discriminator, the same one get_email_cta() uses
+     * to tell "no meta" from "empty meta": clearing a field that HAS a value is
+     * still a deliberate "no button".
+     *
+     * @param int    $event_id
+     * @param string $meta_key The field's `_anchor_event_email_cta*_{field}_{type}` key.
+     * @param string $value    The posted, sanitized value.
+     * @return bool
+     */
+    private function cta_field_is_authored( $event_id, $meta_key, $value ) {
+        if ( (string) $value !== '' ) {
+            return true;
+        }
+        return \metadata_exists( 'post', (int) $event_id, (string) $meta_key );
+    }
+
+    /**
+     * The default CTA pair one builder field falls back to (REG-D26).
+     *
+     * One resolver for the field's placeholder and for the save path's
+     * "is this still the default?" test — if those two disagreed, the builder
+     * would show one thing and freeze another.
+     *
+     * @param int $event_id
+     * @param int $slot     1 or 2.
+     * @return array{label:string,url:string}
+     */
+    private function email_cta_defaults( $event_id, $slot ) {
+        // Slot 2 has never had a default — it is the optional second button.
+        return ( (int) $slot === 2 )
+            ? [ 'label' => '', 'url' => '' ]
+            : $this->default_email_cta( (int) $event_id );
     }
 
     /**
@@ -3400,6 +4248,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <p class="description">
                 <?php echo esc_html__( 'Customize the HTML sent for this event only. Leave a tab untouched (or use "Reset to default") to keep using the site-wide template for that email type.', 'anchor-schema' ); ?>
             </p>
+            <?php // REG-D49 — this metabox renders the four templates and nothing else.
+                  // The save path now persists every email field (save_meta() and the
+                  // console share persist_event_authoring()), so anything authored in the
+                  // console survives a save here untouched — but the inputs for those
+                  // fields live on the console, and this says so instead of leaving an
+                  // administrator to guess they do not exist. ?>
+            <p class="description">
+                <?php echo esc_html__( 'Subject lines, opening lines, the on/off switch, the buttons, the sender identity and the attendee questions are edited in the Events Manager console. Saving here leaves all of them exactly as the console set them.', 'anchor-schema' ); ?>
+            </p>
             <div class="anchor-email-tabs">
                 <?php $first = true; foreach ( $labels as $type => $label ) : ?>
                     <button type="button" class="anchor-email-tab<?php echo $first ? ' is-active' : ''; ?>" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html( $label ); ?></button>
@@ -3416,12 +4273,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     <button type="button" class="button button-small anchor-email-token" data-token="<?php echo esc_attr( '{' . $token . '}' ); ?>">{<?php echo esc_html( $token ); ?>}</button>
                                 <?php endforeach; ?>
                             </div>
+                            <?php $email_template = $this->resolve_email_template( $type, $post->ID ); ?>
                             <div class="anchor-monaco" data-anchor-monaco='<?php echo esc_attr( wp_json_encode( [
                                 [ 'id' => 'anchor_email_tpl_' . $type, 'label' => __( 'HTML', 'anchor-schema' ), 'lang' => 'html' ],
                             ] ) ); ?>'>
                                 <label for="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" class="screen-reader-text"><?php echo esc_html( $label ); ?></label>
-                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code"><?php echo esc_textarea( $this->resolve_email_template( $type, $post->ID ) ); ?></textarea>
+                                <textarea id="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="18" class="widefat code"><?php echo esc_textarea( $email_template ); ?></textarea>
                             </div>
+                            <?php if ( ! $this->template_uses_brand_tokens( $email_template ) ) : ?>
+                                <?php
+                                /**
+                                 * REG-D27 — same warning as the front-end builder's HTML
+                                 * view, for the same reason: this template opts into none
+                                 * of the appearance tokens, so the colours and logo set in
+                                 * Settings reach it only if it still carries the stock
+                                 * literal colours. One warning per surface beats branding
+                                 * that silently applies to nothing.
+                                 */
+                                ?>
+                                <p class="description anchor-event-email-appearance-warning">
+                                    <?php echo esc_html__( 'This email uses its own HTML, so the colours and logo set in Settings may not reach it. Use the {brand_bg}, {brand_surface}, {brand_heading}, {brand_text}, {brand_button}, {brand_button_text} and {logo} tokens to opt back in.', 'anchor-schema' ); ?>
+                                </p>
+                            <?php endif; ?>
                             <p>
                                 <button type="button" class="button anchor-email-preview-real" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Preview with real data', 'anchor-schema' ); ?></button>
                                 <button type="button" class="button anchor-email-reset" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Reset to default', 'anchor-schema' ); ?></button>
@@ -3513,23 +4386,33 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * pattern already used for other engine/UI-owned fields): every posted
      * value here goes through an email-safe wp_kses() allowlist before it is
      * ever written, and content that matches the event's override-less
-     * resolved default (global option, else the default constant — i.e.
+     * resolved default (the default constant — i.e.
      * resolve_email_template( $type, 0 )) is stored as '' instead of a
      * redundant literal copy, exactly like clicking "Reset to default" and
      * saving without further edits would produce. Called from save_meta()
      * AFTER that method's own nonce + DOING_AUTOSAVE + edit_post cap checks —
      * this method assumes the caller already gated the request.
      *
-     * @param int $post_id
+     * Task 28 — $src (a raw, NOT-yet-unslashed $_POST-shaped array) is passed
+     * in rather than read off $_POST here, so this saver takes the same input
+     * as its five siblings and persist_event_authoring() can hand all six the
+     * one array both save surfaces built.
+     *
+     * @param int   $post_id
+     * @param array $src     Raw input array ($_POST-shaped, still slashed).
      */
-    private function save_email_templates( $post_id ) {
+    private function save_email_templates( $post_id, array $src ) {
         foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
             $field = 'anchor_email_tpl_' . $type;
-            if ( ! isset( $_POST[ $field ] ) ) {
-                continue; // Metabox not submitted for this type — leave existing meta untouched.
+            if ( ! isset( $src[ $field ] ) ) {
+                continue; // Form not submitted for this type — leave existing meta untouched.
             }
-            $raw      = (string) \wp_unslash( $_POST[ $field ] );
-            $fallback = $this->resolve_email_template( $type, 0 ); // global option -> default constant, no per-event lookup.
+            // REG-D25 — the doctype is not part of a template (it is emitted on
+            // assembly), so drop it before the "is this still the default?"
+            // comparison as well; otherwise a template that is the default plus
+            // a pasted doctype would be stored as a redundant literal override.
+            $raw      = self::strip_email_doctype( (string) \wp_unslash( $src[ $field ] ) );
+            $fallback = $this->resolve_email_template( $type, 0 ); // default constant, no per-event lookup.
 
             if ( \trim( $raw ) === \trim( $fallback ) ) {
                 // Unmodified (or explicitly reset by the JS "Reset to default"
@@ -3539,7 +4422,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 continue;
             }
 
-            \update_post_meta( $post_id, '_anchor_event_email_tpl_' . $type, $this->sanitize_email_template_html( $raw ) );
+            // wp_slash(): update_post_meta() unslashes what it is given, so an
+            // already-unslashed template would lose every CSS escape and every
+            // literal backslash in it. See persist_event_authoring()'s docblock.
+            \update_post_meta( $post_id, '_anchor_event_email_tpl_' . $type, \wp_slash( $this->sanitize_email_template_html( $raw ) ) );
         }
     }
 
@@ -3555,7 +4441,83 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function sanitize_email_template_html( $tpl ) {
-        return (string) \wp_kses( (string) $tpl, $this->get_email_template_allowed_html() );
+        // REG-D25 — the allowlist below cannot express a doctype declaration, so
+        // wp_kses() deletes one silently and every saved template permanently
+        // loses it. Drop it here deliberately instead: the doctype is emitted
+        // once, on assembly, by build_registration_email_html().
+        $tpl = self::strip_email_doctype( (string) $tpl );
+
+        // REG-D27 — safecss_filter_attr() rejects any declaration containing
+        // "}", which is every brand token: `background:{brand_bg}` would be
+        // stripped from the style attribute on save and the palette could never
+        // reach a custom template. Re-test the declaration with the `{token}`
+        // placeholders removed; braces cannot terminate an attribute, and an
+        // unknown token survives expansion as inert text.
+        $allow_tokens = function ( $allow_css, $css_test_string ) {
+            if ( $allow_css ) {
+                return $allow_css;
+            }
+            // Only ever RE-runs safecss_filter_attr()'s own verdict on a string
+            // with the `{token}` placeholders removed — it never widens what
+            // that check permits. The pattern below is a VERBATIM COPY of the
+            // one in safecss_filter_attr() (wp-includes/kses.php, "Disallow CSS
+            // containing \ ( & } = or comments"); if WordPress tightens it, copy
+            // the new one here. Anything that check rejects for a reason other
+            // than our braces — url(javascript:…), expression(), a stray `}`,
+            // a comment — is still rejected, and the filter is removed again
+            // before this method returns, so no other kses() call is affected.
+            $stripped = \preg_replace( '/\{[a-z0-9_]+\}/', '', (string) $css_test_string );
+            return \is_string( $stripped ) && 0 === \preg_match( '%[\\\(&=}]|/\*%', $stripped );
+        };
+
+        \add_filter( 'safecss_filter_attr_allow_css', $allow_tokens, 10, 2 );
+        try {
+            return (string) \wp_kses( $tpl, $this->get_email_template_allowed_html() );
+        } finally {
+            \remove_filter( 'safecss_filter_attr_allow_css', $allow_tokens, 10 );
+        }
+    }
+
+    /**
+     * Remove a leading `<!DOCTYPE ...>` declaration (REG-D25).
+     *
+     * One source of truth for the doctype: it is never stored in a template
+     * (kses cannot keep it) and never carried by the default shell — it is
+     * added back by email_document_html() when the assembled email is a full
+     * HTML document.
+     *
+     * @param string $html
+     * @return string
+     */
+    private static function strip_email_doctype( $html ) {
+        // A UTF-8 BOM ahead of the declaration is tolerated (and dropped with
+        // it): an editor that saves the template as "UTF-8 with BOM" would
+        // otherwise leave the doctype unmatched here and un-stripped, and the
+        // assembled email would carry two.
+        $out = \preg_replace( '/^(?:\xEF\xBB\xBF)?\s*<!doctype[^>]*>[ \t]*(?:\r\n|\n|\r)?/i', '', (string) $html );
+        return \is_string( $out ) ? $out : (string) $html;
+    }
+
+    /**
+     * Emit the doctype for an assembled email (REG-D25).
+     *
+     * Only for a template that is a whole document: a fragment override (a
+     * bare `<div>`, or a single `{detail_rows}`) is not a document and must
+     * not grow a doctype it never had.
+     *
+     * @param string $html
+     * @return string
+     */
+    private static function email_document_html( $html ) {
+        $html = self::strip_email_doctype( $html );
+        if ( ! \preg_match( '/<html\b/i', $html ) ) {
+            return $html;
+        }
+        // A BOM the template arrived with must not end up BETWEEN the doctype
+        // and the document; strip_email_doctype() already drops one that sat in
+        // front of a declaration, this covers a template that never had one.
+        $html = \preg_replace( '/^\xEF\xBB\xBF/', '', $html );
+        return "<!DOCTYPE html>\n" . $html;
     }
 
     /**
@@ -3828,16 +4790,37 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         ];
         $this->preview_field_override = \array_filter( $this->preview_field_override, function ( $v ) { return $v !== null; } );
 
+        // REG-D26 — the same authored/not-authored rule the save path applies, so
+        // the preview shows the button that would actually send. The builder now
+        // renders the default as a placeholder, so an untouched field posts '';
+        // taking that literally previewed NO button while the send had one, and
+        // the author's fix for that is to re-type the default into the field —
+        // re-freezing the very default this task unfroze.
         $cta_override = [ 'type' => $type ];
         foreach ( [ 1 => '', 2 => '2' ] as $slot => $suffix ) {
             $label_key = 'cta' . $suffix . '_label';
             $url_key   = 'cta' . $suffix . '_url';
-            if ( isset( $_POST[ $label_key ] ) || isset( $_POST[ $url_key ] ) ) {
-                $cta_override[ $slot ] = [
-                    'label' => \sanitize_text_field( \wp_unslash( $_POST[ $label_key ] ?? '' ) ),
-                    'url'   => \esc_url_raw( \wp_unslash( $_POST[ $url_key ] ?? '' ) ),
-                ];
+            if ( ! isset( $_POST[ $label_key ] ) && ! isset( $_POST[ $url_key ] ) ) {
+                continue;
             }
+            $posted = [
+                'label' => \sanitize_text_field( \wp_unslash( $_POST[ $label_key ] ?? '' ) ),
+                'url'   => \esc_url_raw( \wp_unslash( $_POST[ $url_key ] ?? '' ) ),
+            ];
+            // What this slot resolves to with nothing posted — stored meta, else
+            // the same default the builder printed as the placeholder. Read now,
+            // while preview_cta_override is still null, so get_email_cta() answers
+            // from the event rather than from the override being built.
+            $resolved = $this->get_email_cta( $event_id, $type, $slot, $this->email_cta_defaults( $event_id, $slot ) );
+
+            $pair = [];
+            foreach ( [ 'label', 'url' ] as $field ) {
+                $meta_key = '_anchor_event_email_cta' . $suffix . '_' . $field . '_' . $type;
+                $pair[ $field ] = $this->cta_field_is_authored( $event_id, $meta_key, $posted[ $field ] )
+                    ? $posted[ $field ]
+                    : (string) ( $resolved[ $field ] ?? '' );
+            }
+            $cta_override[ $slot ] = $pair;
         }
         $this->preview_cta_override = ( \count( $cta_override ) > 1 ) ? $cta_override : null;
 
@@ -3949,33 +4932,110 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \update_post_meta( $post_id, $this->meta_key( $key ), $value );
         }
 
+        // Everything the two authoring surfaces share — tickets, the
+        // auto-appended shortcode, email templates/wording/switches/CTA/sender,
+        // attendee questions, group authoring and the cache flush — is ONE
+        // function (MODEL-D24 / REG-D49). Before Task 28 this metabox path ran
+        // a shorter list than the front-end console did, so five whole
+        // families of field were silently dropped on every wp-admin save.
+        $this->persist_event_authoring( $post_id, $_POST, $input );
+    }
+
+    /**
+     * Task 28 (MODEL-D24 / REG-D49) — the shared tail of BOTH event save
+     * surfaces: the wp-admin metabox (save_meta()) and the front-end Events
+     * Manager console (save_event_manager_fields()).
+     *
+     * Until this existed the two paths ran different sub-saver lists — the
+     * console persisted attendee questions, email wording, the per-type on/off
+     * switches, the CTA pairs and the sender identity; the metabox persisted
+     * none of them. A field authored on one surface was therefore invisible to
+     * the other, and an administrator in wp-admin could not turn an event's
+     * email off at all. Both paths now end here, so they cannot drift again.
+     *
+     * This is ORCHESTRATION ONLY. Every rule about what a field means lives in
+     * the saver that owns it — placeholder-vs-default semantics in
+     * save_email_cta_fields(), stable question keys in
+     * save_registration_questions(), the kses allowlist in
+     * save_email_templates() — and none of it is restated here.
+     *
+     * ORDER MATTERS, and is the console's pre-existing order preserved
+     * verbatim: persist_group_authoring() is LAST because its reconcile copies
+     * the parent's freshly-saved rows down onto the children, so everything
+     * above it is an input to that copy. See persist_group_authoring()'s
+     * docblock.
+     *
+     * $src is a raw, NOT-yet-unslashed input array shaped like $_POST — the
+     * same shape both callers hold, and the shape every sub-saver already
+     * expects (each does its own wp_unslash() at the point of use). Do NOT
+     * unslash it here.
+     *
+     * THE SLASH CONTRACT, because it is counter-intuitive and it bit this
+     * code: WordPress's meta setters take SLASHED input. add_metadata(),
+     * update_metadata() and the by-value delete_metadata() each call
+     * wp_unslash() on the value themselves (wp-includes/meta.php). So a saver
+     * that unslashes the post and hands the sanitized result straight to
+     * update_post_meta() has unslashed TWICE, and the second one destroys any
+     * literal backslash the value legitimately contains —
+     *   posted `C:\\path` -> unslash -> `C:\path` -> update_post_meta -> `C:path`.
+     * Every saver below therefore does ONE wp_unslash() on the way in (it must:
+     * wp_kses() and friends have to see the real characters) and wp_slash()es
+     * the sanitized value back at the update_post_meta() call. wp_slash() maps
+     * over arrays and leaves non-strings alone, so an array-valued meta (the
+     * question repeater, ticket tiers, offering rows, labels) is slashed the
+     * same way. Values that were NEVER unslashed — most of the callers'
+     * $input allow-list, which feeds $_POST straight into sanitize_text_field()
+     * — are already in the slashed domain and must NOT be slashed again.
+     *
+     * Callers gate the request themselves (save_meta() checks nonce +
+     * DOING_AUTOSAVE + edit_post; handle_event_manager_save() checks its own
+     * nonce + capability before calling save_event_manager_fields()); this
+     * method assumes that has already happened.
+     *
+     * @param int   $post_id Event post ID, already inserted/updated.
+     * @param array $src     Raw input array ($_POST-shaped, still slashed).
+     * @param array $input   The sanitized meta the caller just wrote — read for
+     *                       the auto-append shortcode decision and the event
+     *                       `type` that drives group authoring.
+     */
+    private function persist_event_authoring( $post_id, array $src, array $input ) {
         // Ticket tiers (spec §3.2). The Ticket_Types model sanitizes the rows,
         // assigns stable ids, drops empty rows, and persists. An empty table
         // clears the meta so the legacy single `price` field stays the
         // implicit-primary fallback.
-        $ticket_rows = isset( $_POST['anchor_event_tickets'] ) && is_array( $_POST['anchor_event_tickets'] )
-            ? \wp_unslash( $_POST['anchor_event_tickets'] )
+        $ticket_rows = isset( $src['anchor_event_tickets'] ) && is_array( $src['anchor_event_tickets'] )
+            ? \wp_unslash( $src['anchor_event_tickets'] )
             : [];
         $this->ticket_types->save( $post_id, $ticket_rows );
 
         $this->maybe_append_registration_shortcode( $post_id, $input );
 
         // Task 3.2 — per-event lifecycle-email template overrides. Deliberately
-        // NOT part of the generic $input allow-list above (see the property
-        // docblock on the meta keys' register_post_meta() call); this is the
-        // one dedicated, email-safe-kses-validated place they're written.
-        $this->save_email_templates( $post_id );
+        // NOT part of the callers' generic $input allow-list loop (see the
+        // property docblock on the meta keys' register_post_meta() call); this
+        // is the one dedicated, email-safe-kses-validated place they're written.
+        $this->save_email_templates( $post_id, $src );
+
+        // The five savers that used to be console-only (REG-D49). Each is a
+        // no-op when its own fields are absent from $src — the three "…_present"
+        // markers and save_email_fields()'s per-field isset() — so a surface
+        // that does not render a given family never blanks it.
+        $this->save_registration_questions( $post_id, $src );
+        $this->save_email_fields( $post_id, $src );
+        $this->save_email_switches( $post_id, $src );
+        $this->save_email_cta_fields( $post_id, $src );
+        $this->save_email_sender_fields( $post_id, $src );
 
         // Group authoring (offering_dates / recurrence / group_role) — Phase 2,
-        // Task 2.3. Deliberately NOT part of the generic $input allow-list
-        // above (see get_meta_schema()'s docblock on those keys); this is the
-        // one dedicated, validated place they're written, and the only place
-        // Occurrences::reconcile() is ever called from.
+        // Task 2.3. Deliberately NOT part of the callers' generic $input
+        // allow-list loop (see get_meta_schema()'s docblock on those keys);
+        // this is the one dedicated, validated place they're written, and the
+        // only place Occurrences::reconcile() is ever called from.
         //
         // LAST, after every other sub-saver: it reconciles, and the reconcile
         // copies the parent's rows down onto the children. See the ORDERING
         // note in persist_group_authoring()'s docblock.
-        $this->persist_group_authoring( $post_id, $input['type'] );
+        $this->persist_group_authoring( $post_id, $input['type'], $src );
 
         $this->clear_caches();
     }
@@ -3990,7 +5050,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * $src is a raw, NOT-yet-unslashed input array shaped like $_POST; every
      * value is wp_unslash()ed here (esp. external_embed, unslashed BEFORE it
-     * hits wp_kses() in sanitize_external_embed() — never store it raw).
+     * hits wp_kses() in sanitize_external_embed() — never store it raw) and
+     * the sanitized result is wp_slash()ed back before it is returned.
+     *
+     * That last step is not decoration: the returned array is merged straight
+     * into both callers' $input and written by their generic
+     * update_post_meta() loop, and update_post_meta() unslashes. Without it
+     * these six keys would be unslashed TWICE and any literal backslash in
+     * them — a CSS escape inside external_embed, a `C:\path` in a session
+     * label — would be destroyed. Every other producer in that $input array
+     * never unslashes at all, so the whole array is in one (slashed) domain.
+     * See persist_event_authoring()'s docblock for the full contract.
      *
      * @param array  $src                        Raw input array ($_POST-shaped).
      * @param string $registration_mode_fallback Pre-resolved registration_mode()
@@ -4014,7 +5084,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             ? \wp_unslash( $src['anchor_event_sessions'] )
             : [];
 
-        return [
+        return \wp_slash( [
             'type' => $this->sanitize_event_type( \wp_unslash( $src['anchor_event_type'] ?? '' ) ),
             'registration_mode' => $this->sanitize_registration_mode( \wp_unslash( $src['anchor_event_registration_mode'] ?? '' ), $registration_mode_fallback ),
             'sessions' => $this->sanitize_sessions_rows( $sessions_raw ),
@@ -4024,7 +5094,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // raw regardless of which save path wrote it.
             'external_embed' => $this->sanitize_external_embed( \wp_unslash( $src['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
             'external_display_price' => sanitize_text_field( \wp_unslash( $src['anchor_event_external_display_price'] ?? '' ) ),
-        ];
+        ] );
     }
 
     /**
@@ -4183,7 +5253,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             ? \wp_unslash( $src['anchor_event_labels'] )
             : [];
 
-        return $this->sanitize_labels_rows( $raw );
+        // wp_slash(): the result goes STRAIGHT into both save paths' generic
+        // update_post_meta() loop, which unslashes what it is given. This is
+        // one of only two producers in that $input array that unslash at all
+        // (the other is sanitize_event_type_input()); everything else feeds
+        // $_POST into a sanitizer without unslashing and is therefore already
+        // in the slashed domain the loop expects. Re-slashing here keeps the
+        // whole array in ONE domain. See persist_event_authoring()'s docblock.
+        return \wp_slash( $this->sanitize_labels_rows( $raw ) );
     }
 
     /**
@@ -4328,8 +5405,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * @param int    $post_id
      * @param string $type Already-sanitized event type (sanitize_event_type_input()'s 'type').
+     * @param array  $src  Raw input array ($_POST-shaped, still slashed) — the
+     *                     SAME array persist_event_authoring() hands every
+     *                     other sub-saver. Threaded through (Task 28 fix round
+     *                     1) rather than read off $_POST down in
+     *                     persist_group_structure(), so the shared tail has
+     *                     exactly one input and can be exercised without a
+     *                     superglobal. Both real callers pass $_POST, so this
+     *                     changes no production behaviour.
      */
-    private function persist_group_authoring( $post_id, $type ) {
+    private function persist_group_authoring( $post_id, $type, array $src ) {
         if ( self::$reconciling ) {
             return;
         }
@@ -4337,11 +5422,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
 
-        $this->persist_group_structure( $post_id, $type );
+        $this->persist_group_structure( $post_id, $type, $src );
 
         // One call site, after every structural branch above (including the
         // guards' early returns, which live inside persist_group_structure()).
-        $this->maybe_apply_registration_to_dates( $post_id );
+        $this->maybe_apply_registration_to_dates( $post_id, $src );
     }
 
     /**
@@ -4353,12 +5438,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * @param int    $post_id
      * @param string $type
+     * @param array  $src Raw input array ($_POST-shaped, still slashed).
      */
-    private function persist_group_structure( $post_id, $type ) {
+    private function persist_group_structure( $post_id, $type, array $src ) {
         $was_parent = $this->occurrences->is_group_parent( $post_id );
 
         if ( $type === 'offering' ) {
-            $rows = $this->sanitize_offering_dates_rows( $_POST['anchor_event_offering_dates'] ?? [], $post_id );
+            $rows = $this->sanitize_offering_dates_rows( $src['anchor_event_offering_dates'] ?? [], $post_id );
 
             if ( empty( $rows ) && $this->offering_has_dates_to_protect( $post_id ) ) {
                 // Guard (audit MODEL-D14): an offering that ALREADY has dates
@@ -4377,7 +5463,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 return;
             }
 
-            \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), $rows );
+            // wp_slash(): sanitize_offering_dates_rows() unslashed the posted
+            // rows and update_post_meta() unslashes again, so a row `label`
+            // reading `Room C:\Alpha` would otherwise arrive as `Room C:Alpha`.
+            // See persist_event_authoring()'s docblock.
+            \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), \wp_slash( $rows ) );
             \update_post_meta( $post_id, $this->meta_key( 'recurrence' ), [] );
 
             if ( empty( $rows ) ) {
@@ -4393,7 +5483,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         if ( $type === 'recurring' ) {
-            $rule = $this->sanitize_recurrence_rule( $_POST['anchor_event_recurrence'] ?? [] );
+            // The rule carries no free text (freq/interval/times/counts/dates
+            // only), so there is nothing for a re-slash to protect here.
+            $rule = $this->sanitize_recurrence_rule( $src['anchor_event_recurrence'] ?? [] );
             \update_post_meta( $post_id, $this->meta_key( 'recurrence' ), $rule );
             \update_post_meta( $post_id, $this->meta_key( 'offering_dates' ), [] );
 
@@ -4452,15 +5544,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * never touched). A no-op on anything that is not a group parent, so the
      * key is inert if it ever arrives on a single event's save.
      *
-     * @param int $post_id
+     * @param int   $post_id
+     * @param array $src Raw input array ($_POST-shaped) threaded down from
+     *                   persist_event_authoring(), not read off the superglobal.
      */
-    private function maybe_apply_registration_to_dates( $post_id ) {
-        // phpcs:disable WordPress.Security.NonceVerification.Missing -- both callers verify their own nonce before reaching persist_group_authoring().
-        if ( empty( $_POST['anchor_event_registration_apply_to_dates'] ) ) {
+    private function maybe_apply_registration_to_dates( $post_id, array $src ) {
+        if ( empty( $src['anchor_event_registration_apply_to_dates'] ) ) {
             return;
         }
-        $enabled = ! empty( $_POST['anchor_event_registration_enabled'] );
-        // phpcs:enable WordPress.Security.NonceVerification.Missing
+        $enabled = ! empty( $src['anchor_event_registration_enabled'] );
 
         $this->occurrences->apply_registration_to_children( $post_id, $enabled );
     }
@@ -4796,6 +5888,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 'level' => 'warning',
                 'message' => \__( 'Registration questions or email wording were removed from this event\'s dates, because the event itself no longer has them — every date follows the event. To keep them, set them here on the event and save again.', 'anchor-schema' ),
             ],
+            // REG-D61 — email_address_list() drops anything that is not an
+            // address on purpose (one typo must not cost an event its
+            // confirmation emails), but the field then silently came back
+            // shorter than it was typed. The detail names what was dropped.
+            'email_cc_invalid' => [
+                'level' => 'warning',
+                'message' => \__( 'Some Cc addresses were not valid email addresses and were not saved.', 'anchor-schema' ),
+            ],
+            'email_bcc_invalid' => [
+                'level' => 'warning',
+                'message' => \__( 'Some Bcc addresses were not valid email addresses and were not saved.', 'anchor-schema' ),
+            ],
         ];
     }
 
@@ -4834,7 +5938,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @param string $code    A key of group_notice_map().
      * @param int    $post_id
      */
-    public function queue_group_notice( $code, $post_id = 0 ) {
+    public function queue_group_notice( $code, $post_id = 0, $detail = '' ) {
         $post_id = (int) $post_id;
         $user_id = \get_current_user_id();
         if ( $post_id <= 0 || $user_id <= 0 ) {
@@ -4842,29 +5946,53 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // nobody to tell.
             return;
         }
-        $codes = $this->queued_group_notice_codes( $post_id );
-        if ( in_array( $code, $codes, true ) ) {
+        $entries = $this->queued_group_notice_entries( $post_id );
+        if ( \array_key_exists( $code, $entries ) ) {
             return;
         }
-        $codes[] = $code;
-        \set_transient( $this->group_notice_key( $post_id ), $codes, self::NOTICE_TTL );
+        $entries[ $code ] = \sanitize_text_field( (string) $detail );
+        \set_transient( $this->group_notice_key( $post_id ), $entries, self::NOTICE_TTL );
     }
 
     /**
-     * The queued codes for a post, WITHOUT consuming them.
+     * The queued notices for a post as code => detail, WITHOUT consuming them.
+     *
+     * REG-D61 — the queue used to be a bare list of codes, which is all a
+     * fixed sentence needs. A notice that has to name the thing it is about
+     * (the Cc entries that were dropped) needs somewhere to put it, so the
+     * stored shape is a map now. A transient written before this change is
+     * still a list; both shapes read.
      *
      * @param int $post_id
-     * @return string[]
+     * @return array<string,string>
      */
-    private function queued_group_notice_codes( $post_id ) {
-        $codes = \get_transient( $this->group_notice_key( (int) $post_id ) );
-        if ( ! is_array( $codes ) ) {
+    private function queued_group_notice_entries( $post_id ) {
+        $stored = \get_transient( $this->group_notice_key( (int) $post_id ) );
+        if ( ! is_array( $stored ) ) {
             return [];
         }
         $map = $this->group_notice_map();
-        return \array_values( \array_filter( $codes, function ( $code ) use ( $map ) {
-            return isset( $map[ $code ] );
-        } ) );
+        $out = [];
+        foreach ( $stored as $key => $value ) {
+            $code   = \is_int( $key ) ? (string) $value : (string) $key;
+            $detail = \is_int( $key ) ? '' : (string) $value;
+            if ( isset( $map[ $code ] ) ) {
+                $out[ $code ] = $detail;
+            }
+        }
+        return $out;
+    }
+
+    /** One notice's copy, with the detail it names appended when there is one. */
+    private function group_notice_message( $code, $detail ) {
+        $map     = $this->group_notice_map();
+        $message = (string) ( $map[ $code ]['message'] ?? '' );
+        $detail  = \trim( (string) $detail );
+        if ( $detail !== '' ) {
+            /* translators: %s: comma-separated list of the entries that were rejected. */
+            $message .= ' ' . \sprintf( \__( 'Rejected: %s', 'anchor-schema' ), $detail );
+        }
+        return $message;
     }
 
     /**
@@ -4875,11 +6003,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string[]
      */
     private function take_group_notices( $post_id ) {
-        $codes = $this->queued_group_notice_codes( $post_id );
-        if ( ! empty( $codes ) ) {
+        $entries = $this->queued_group_notice_entries( $post_id );
+        if ( ! empty( $entries ) ) {
             \delete_transient( $this->group_notice_key( (int) $post_id ) );
         }
-        return $codes;
+        return $entries;
     }
 
     /**
@@ -4894,11 +6022,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     public function queued_group_notices( $post_id ) {
         $map = $this->group_notice_map();
         $out = [];
-        foreach ( $this->queued_group_notice_codes( $post_id ) as $code ) {
+        foreach ( $this->queued_group_notice_entries( $post_id ) as $code => $detail ) {
             $out[] = [
                 'code' => $code,
                 'level' => $map[ $code ]['level'],
-                'message' => $map[ $code ]['message'],
+                'message' => $this->group_notice_message( $code, $detail ),
             ];
         }
         return $out;
@@ -4914,7 +6042,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * @return string
      */
     private function event_manager_notice_arg( $base_code, $post_id ) {
-        $codes = \array_filter( \array_merge( [ $base_code ], $this->take_group_notices( $post_id ) ) );
+        $codes = \array_filter( \array_merge( [ $base_code ], \array_keys( $this->take_group_notices( $post_id ) ) ) );
         return \implode( ',', \array_unique( $codes ) );
     }
 
@@ -5019,9 +6147,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         $map = $this->group_notice_map();
-        foreach ( $this->take_group_notices( $post_id ) as $code ) {
+        foreach ( $this->take_group_notices( $post_id ) as $code => $detail ) {
             $class = $map[ $code ]['level'] === 'warning' ? 'notice-warning' : 'notice-error';
-            echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( $map[ $code ]['message'] ) . '</p></div>';
+            echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( $this->group_notice_message( $code, $detail ) ) . '</p></div>';
         }
     }
 
@@ -5578,7 +6706,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     public function shortcode_event_registrants_list( $atts ) {
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        // REG-D20 — this prints attendee names and emails, the same PII the Roster
+        // screen protects, so it uses the same single capability. Gating it lower
+        // than the roster made the M2 hardening bypassable from the front end.
+        if ( ! Roster::current_user_can_manage() ) {
             return '';
         }
 
@@ -5591,7 +6722,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $this->enqueue_frontend_assets();
 
-        // $public = false: this shortcode is gated on edit_others_posts and
+        // $public = false: this shortcode is gated on the module capability
+        // (manage_woocommerce on a store, edit_others_posts otherwise, and
+        // whatever `anchor_events_capability` returns if a site filters it) and
         // exists to reach rosters. A soft-closed date still HAS a roster to
         // email or refund, so the occurrence_closed half of the exclusion is
         // not applied here — hide_from_archive still is.
@@ -5619,8 +6752,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         foreach ( $events as $event ) {
             $meta = $this->get_meta( $event->ID );
             $registrations = $this->get_registrations( $event->ID, 0 );
-            $count = count( $registrations );
-            $attendees = $this->get_attendee_count( $event->ID );
             $waitlist = $this->get_registration_count( $event->ID, 'waitlist' );
             $edit_link = \get_edit_post_link( $event->ID );
             $export_url = \wp_nonce_url(
@@ -5635,14 +6766,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $date_label ) {
                 $output .= ' <span class="anchor-event-admin-date">' . esc_html( $date_label ) . '</span>';
             }
-            $output .= ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
-                \_n( '%d registrant', '%d registrants', $count, 'anchor-schema' ),
-                $count
-            ) );
-            if ( $attendees !== $count ) {
-                $output .= ' <span class="anchor-event-admin-attendees">(' . esc_html( sprintf( __( '%d total attendees', 'anchor-schema' ), $attendees ) ) . ')</span>';
-            }
-            $output .= '</span>';
+            $output .= $this->render_registrant_counts( $event->ID );
             $output .= '</summary>';
             $output .= '<div class="anchor-event-admin-body">';
             $output .= '<p class="anchor-event-admin-meta">';
@@ -5652,7 +6776,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $edit_link ) {
                 $output .= '<a href="' . esc_url( $edit_link ) . '">' . esc_html__( 'Edit event', 'anchor-schema' ) . '</a> &middot; ';
             }
-            $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a>';
+            // REG-D21 — never offer a link the export handler will refuse.
+            if ( Roster::current_user_can_manage() ) {
+                $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a>';
+            }
             $output .= '</p>';
 
             if ( empty( $registrations ) ) {
@@ -5690,7 +6817,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return '<div class="anchor-event-manager">' . $this->render_event_manager_notice() . $this->render_event_manager_login_form() . '</div>';
         }
 
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        // REG-D20 — the console's list body prints the same name/email table as
+        // the Roster screen, so it answers to the same capability.
+        if ( ! Roster::current_user_can_manage() ) {
             return '<div class="anchor-event-manager">' . $this->render_event_manager_notice() . $this->render_event_manager_no_access() . '</div>';
         }
 
@@ -5842,7 +6971,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'login_empty'    => [ 'err', __( 'Please enter your username and password.', 'anchor-schema' ) ],
             'logged_out'     => [ 'ok',  __( 'You have been signed out.', 'anchor-schema' ) ],
             'lostpass_sent'  => [ 'ok',  __( 'Check your email for a link to reset your password.', 'anchor-schema' ) ],
-            'lostpass_error' => [ 'err', __( 'We could not find an account matching that username or email.', 'anchor-schema' ) ],
             'lostpass_empty' => [ 'err', __( 'Please enter your username or email address.', 'anchor-schema' ) ],
         ];
         foreach ( $this->group_notice_map() as $code => $notice ) {
@@ -6002,7 +7130,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         } else {
             $user = \get_user_by( 'login', $login );
         }
-        // Always report success to avoid leaking which accounts exist.
+        // REG-D47 — every branch from here down answers the same way. The
+        // "no such user" branch was already deliberately silent about account
+        // existence, but a real user whose reset was denied, whose key could
+        // not be minted, or whose mail failed answered `lostpass_error`, so
+        // submitting a list of candidate logins told an attacker which ones
+        // existed from the difference alone — and the error text ("we could not
+        // find an account matching that username or email") actively
+        // misdescribed two of those three cases. The real reason goes to the
+        // error log, where the operator can see it and the submitter cannot.
         if ( ! $user ) {
             \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
             exit;
@@ -6010,13 +7146,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $allow = \apply_filters( 'allow_password_reset', true, $user->ID );
         if ( \is_wp_error( $allow ) || ! $allow ) {
-            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            Events_Log::error( 'lostpass_reset_denied', [ 'user' => $user->ID ] );
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
             exit;
         }
 
         $key = \get_password_reset_key( $user );
         if ( \is_wp_error( $key ) ) {
-            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            Events_Log::error( 'lostpass_key_failed', [ 'user' => $user->ID, 'detail' => $key->get_error_code() ] );
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
             exit;
         }
 
@@ -6033,7 +7171,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $message = \apply_filters( 'retrieve_password_message', $message, $key, $user->user_login, $user );
 
         if ( $message && ! \wp_mail( $user->user_email, \wp_specialchars_decode( $title ), $message ) ) {
-            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_error', $lost_view_url ) );
+            Events_Log::error( 'lostpass_mail_failed', [ 'user' => $user->ID ] );
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'lostpass_sent', $redirect ) );
             exit;
         }
 
@@ -6085,8 +7224,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     private function render_event_manager_item( $event ) {
         $meta = $this->get_meta( $event->ID );
         $registrations = $this->get_registrations( $event->ID, 0 );
-        $count = count( $registrations );
-        $attendees = $this->get_attendee_count( $event->ID );
         $waitlist = $this->get_registration_count( $event->ID, 'waitlist' );
 
         $base_url = \remove_query_arg( [ 'event_action', 'event_id', 'event_manager_notice' ] );
@@ -6118,14 +7255,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $event->post_status !== 'publish' ) {
             $output .= ' <span class="anchor-event-admin-date">[' . esc_html( $event->post_status ) . ']</span>';
         }
-        $output .= ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
-            \_n( '%d registrant', '%d registrants', $count, 'anchor-schema' ),
-            $count
-        ) );
-        if ( $attendees !== $count ) {
-            $output .= ' <span class="anchor-event-admin-attendees">(' . esc_html( sprintf( __( '%d total attendees', 'anchor-schema' ), $attendees ) ) . ')</span>';
-        }
-        $output .= '</span>';
+        $output .= $this->render_registrant_counts( $event->ID );
         $output .= '</summary>';
 
         $output .= '<div class="anchor-event-admin-body">';
@@ -6141,7 +7271,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $roster_url = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $event->ID ], $base_url );
             $output .= '<a href="' . esc_url( $roster_url ) . '">' . esc_html__( 'Attendees', 'anchor-schema' ) . '</a> &middot; ';
         }
-        $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a> &middot; ';
+        // REG-D21 — gated with the Attendees link above it: same handler, same cap.
+        if ( Roster::current_user_can_manage() ) {
+            $output .= '<a href="' . esc_url( $export_url ) . '">' . esc_html__( 'Export CSV', 'anchor-schema' ) . '</a> &middot; ';
+        }
         $output .= '<a class="anchor-event-admin-delete" href="' . esc_url( $delete_url ) . '" data-confirm="' . esc_attr__( 'Move this event to trash?', 'anchor-schema' ) . '">' . esc_html__( 'Delete', 'anchor-schema' ) . '</a>';
         $output .= '</p>';
 
@@ -6478,6 +7611,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 <h3><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Anything you want to ask each person attending, on top of their name, email and phone. Each question becomes a column on the registration list and in the CSV export.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-questions">
+                    <?php // Task 28 — tells save_registration_questions() the repeater was on
+                          // screen, so removing the last row CLEARS the questions instead of
+                          // reading as "this form did not edit them". ?>
+                    <input type="hidden" name="anchor_event_questions_present" value="1" />
                     <table class="widefat anchor-event-questions-table">
                         <thead>
                             <tr>
@@ -6661,34 +7798,56 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                     </button>
 
                                     <?php
-                                    $cta_defaults = $this->default_email_cta( $event_id );
-                                    $cta1 = $this->get_email_cta( $event_id, $type, 1, $cta_defaults );
-                                    $cta2 = $this->get_email_cta( $event_id, $type, 2 );
+                                    /**
+                                     * REG-D26 — the resolved default is the PLACEHOLDER, never the
+                                     * value. Printing it into value= meant the browser posted it
+                                     * back and save_email_cta_fields() wrote it as explicit meta on
+                                     * the first save, freezing a default that was designed to stay
+                                     * live (a virtual event's room link would keep pointing at the
+                                     * old room after the URL changed).
+                                     */
+                                    $cta_fields = [];
+                                    foreach ( [ 1, 2 ] as $cta_slot ) {
+                                        $cta_prefix   = '_anchor_event_email_cta' . ( $cta_slot === 2 ? '2' : '' ) . '_';
+                                        $cta_defaults = $this->email_cta_defaults( $event_id, $cta_slot );
+                                        foreach ( [ 'label', 'url' ] as $cta_field ) {
+                                            $cta_key = $cta_prefix . $cta_field . '_' . $type;
+                                            $cta_set = $event_id && \metadata_exists( 'post', (int) $event_id, $cta_key );
+                                            $cta_fields[ $cta_slot ][ $cta_field ] = [
+                                                'value'       => $cta_set ? (string) \get_post_meta( (int) $event_id, $cta_key, true ) : '',
+                                                'placeholder' => (string) ( $cta_defaults[ $cta_field ] ?? '' ),
+                                            ];
+                                        }
+                                    }
+                                    $cta_hint = [
+                                        'label' => __( 'Button text', 'anchor-schema' ),
+                                        'url'   => 'https://',
+                                    ];
                                     ?>
                                     <label for="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Button', 'anchor-schema' ); ?></label>
                                     <div class="anchor-event-email-cta">
                                         <input type="text" id="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta_label_<?php echo esc_attr( $type ); ?>"
-                                            value="<?php echo esc_attr( $cta1['label'] ); ?>"
-                                            placeholder="<?php echo esc_attr__( 'Button text', 'anchor-schema' ); ?>" />
+                                            value="<?php echo esc_attr( $cta_fields[1]['label']['value'] ); ?>"
+                                            placeholder="<?php echo esc_attr( $cta_fields[1]['label']['placeholder'] !== '' ? $cta_fields[1]['label']['placeholder'] : $cta_hint['label'] ); ?>" />
                                         <input type="url" id="anchor_event_email_cta_url_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta_url_<?php echo esc_attr( $type ); ?>"
-                                            value="<?php echo esc_attr( $cta1['url'] ); ?>"
-                                            placeholder="https://" />
+                                            value="<?php echo esc_attr( $cta_fields[1]['url']['value'] ); ?>"
+                                            placeholder="<?php echo esc_attr( $cta_fields[1]['url']['placeholder'] !== '' ? $cta_fields[1]['url']['placeholder'] : $cta_hint['url'] ); ?>" />
                                     </div>
 
                                     <label for="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"><?php echo esc_html__( 'Second button', 'anchor-schema' ); ?></label>
                                     <div class="anchor-event-email-cta">
                                         <input type="text" id="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta2_label_<?php echo esc_attr( $type ); ?>"
-                                            value="<?php echo esc_attr( $cta2['label'] ); ?>"
-                                            placeholder="<?php echo esc_attr__( 'Button text', 'anchor-schema' ); ?>" />
+                                            value="<?php echo esc_attr( $cta_fields[2]['label']['value'] ); ?>"
+                                            placeholder="<?php echo esc_attr( $cta_hint['label'] ); ?>" />
                                         <input type="url" id="anchor_event_email_cta2_url_<?php echo esc_attr( $type ); ?>"
                                             name="anchor_event_email_cta2_url_<?php echo esc_attr( $type ); ?>"
-                                            value="<?php echo esc_attr( $cta2['url'] ); ?>"
-                                            placeholder="https://" />
+                                            value="<?php echo esc_attr( $cta_fields[2]['url']['value'] ); ?>"
+                                            placeholder="<?php echo esc_attr( $cta_hint['url'] ); ?>" />
                                     </div>
-                                    <p class="anchor-event-hint"><?php echo esc_html__( 'A button shows only when it has both text and a link. Clear either one to remove it.', 'anchor-schema' ); ?></p>
+                                    <p class="anchor-event-hint"><?php echo esc_html__( 'A button shows only when it has both text and a link. Grey text is the default this event falls back to — fill a field in to override it, or clear a filled-in field to remove the button.', 'anchor-schema' ); ?></p>
 
                                     <?php
                                     /**
@@ -6740,7 +7899,22 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                                         <span class="anchor-event-email-note"><?php echo esc_html__( 'Preview fills empty tokens with sample data, and shows text regions a given recipient might not get.', 'anchor-schema' ); ?></span>
                                     </div>
                                     <iframe class="anchor-event-email-frame" title="<?php echo esc_attr( sprintf( __( '%s email preview', 'anchor-schema' ), $label ) ); ?>"></iframe>
-                                    <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $this->resolve_email_template( $type, $event_id ) ); ?></textarea>
+                                    <?php $email_template = $this->resolve_email_template( $type, $event_id ); ?>
+                                    <?php if ( ! $this->template_uses_brand_tokens( $email_template ) ) : ?>
+                                        <?php
+                                        /**
+                                         * REG-D27 — this template opts into none of the appearance
+                                         * tokens, so the colours and logo set in Settings reach it
+                                         * only if it still contains the stock literal colours. Say
+                                         * so here rather than let the branding silently apply to
+                                         * nothing.
+                                         */
+                                        ?>
+                                        <p class="anchor-event-hint anchor-event-email-appearance-warning">
+                                            <?php echo esc_html__( 'This email uses its own HTML, so the colours and logo set in Settings may not reach it. Use the {brand_bg}, {brand_surface}, {brand_heading}, {brand_text}, {brand_button}, {brand_button_text} and {logo} tokens to opt back in.', 'anchor-schema' ); ?>
+                                        </p>
+                                    <?php endif; ?>
+                                    <textarea class="anchor-event-email-source code" name="anchor_email_tpl_<?php echo esc_attr( $type ); ?>" rows="24" hidden><?php echo esc_textarea( $email_template ); ?></textarea>
                                 </div>
                             </div>
                             <div class="anchor-event-email-modal__foot">
@@ -6836,9 +8010,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $event_id = (int) ( $_POST['event_id'] ?? 0 );
         $is_edit = $event_id > 0;
 
-        $capability_ok = $is_edit
-            ? \current_user_can( 'edit_post', $event_id )
-            : \current_user_can( 'edit_others_posts' );
+        // Nonce (above), then the module capability, then the per-post check. The
+        // console that posts this form is gated on events_capability(); without
+        // the same gate here a user who cannot open the console could still POST
+        // to it and create or edit events.
+        //
+        // The create branch stops at the module capability on purpose. It used to
+        // ALSO require the hard-coded CAP_BASE, which silently un-did
+        // `anchor_events_capability`: a role pointed at a custom capability could
+        // open the console and edit, but every create was denied because it did
+        // not additionally hold edit_others_posts. The edit branch keeps
+        // `edit_post` because that is an object-level check the module capability
+        // cannot answer (is THIS post editable by THIS user), not a second
+        // gatekeeper for the module.
+        $capability_ok = Roster::current_user_can_manage()
+            && ( ! $is_edit || \current_user_can( 'edit_post', $event_id ) );
         if ( ! $capability_ok ) {
             \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'denied', $redirect ) );
             exit;
@@ -7019,27 +8205,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \delete_post_thumbnail( $saved_id );
         }
 
-        // Ticket tiers use the same model/sanitizer as the admin metabox.
-        $ticket_rows = isset( $_POST['anchor_event_tickets'] ) && is_array( $_POST['anchor_event_tickets'] )
-            ? \wp_unslash( $_POST['anchor_event_tickets'] )
-            : [];
-        $this->ticket_types->save( $saved_id, $ticket_rows );
-
-        $this->maybe_append_registration_shortcode( $saved_id, $input );
-        $this->save_email_templates( $saved_id );
-        $this->save_registration_questions( $saved_id, $_POST );
-        $this->save_email_fields( $saved_id, $_POST );
-        $this->save_email_switches( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
-        $this->save_email_cta_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
-        $this->save_email_sender_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
-
-        // Group authoring (Task 2.3) — SAME dedicated validated persist+reconcile
-        // step as save_meta(), reused (not duplicated) so the two save paths can
-        // never drift, and LAST for the same reason: everything above is an
-        // input to the copy it makes. See persist_group_authoring()'s docblock.
-        $this->persist_group_authoring( $saved_id, $input['type'] );
-
-        $this->clear_caches();
+        // Tickets, the auto-appended shortcode, email templates/wording/
+        // switches/CTA/sender, attendee questions, group authoring and the
+        // cache flush are the SAME shared tail the wp-admin metabox runs
+        // (Task 28, MODEL-D24 / REG-D49) — one function, called from both, so
+        // the two surfaces cannot drift on which fields a save persists.
+        $this->persist_event_authoring( $saved_id, $_POST, $input ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
 
         return $input;
     }
@@ -7052,6 +8223,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         if ( ! $event_id || \get_post_type( $event_id ) !== self::CPT ) {
             \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'error', $redirect ) );
+            exit;
+        }
+        // Same order as handle_event_manager_save(): nonce (above), then the
+        // module capability, then the object check. `delete_post` alone let any
+        // author who could delete the post trash an event straight from a link,
+        // without ever holding the capability the console itself is gated on.
+        if ( ! Roster::current_user_can_manage() ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'denied', $redirect ) );
             exit;
         }
         if ( ! \current_user_can( 'delete_post', $event_id ) ) {
@@ -7245,13 +8424,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $output;
     }
 
+    /**
+     * The on-screen answer to a registration POST (audit REG-D24).
+     *
+     * Two things used to be wrong here at once. A waitlisted registration and a
+     * confirmed one came back under the SAME key, so somebody who had just been
+     * put on a waitlist read "Registration received. Check your email for
+     * confirmation." and had no way to learn otherwise until (or unless) the
+     * email arrived. And that sentence promised an email unconditionally — it
+     * was shown just the same when `notify_user` was off or the event's
+     * confirmation email was switched off, i.e. when no email would ever come.
+     *
+     * So the outcome and the promise are now two separate facts: the key says
+     * WHAT HAPPENED (received / waitlisted), and the `event_registration_email`
+     * flag — set by handle_registration() only when the sender reported an
+     * actual send — decides whether "check your email" is appended.
+     */
     public function render_registration_notice() {
         if ( empty( $_GET['event_registration'] ) ) {
             return '';
         }
-        $key = sanitize_text_field( $_GET['event_registration'] );
+        $key = sanitize_text_field( \wp_unslash( $_GET['event_registration'] ) );
         $messages = [
-            'registration_success' => __( 'Registration received. Check your email for confirmation.', 'anchor-schema' ),
+            'registration_success' => __( 'Registration received.', 'anchor-schema' ),
+            'registration_waitlisted' => __( 'This event is full — you have been added to the waitlist. We will be in touch if a seat opens up.', 'anchor-schema' ),
             'registration_closed' => __( 'Registration is closed for this event.', 'anchor-schema' ),
             'registration_invalid' => __( 'Please complete all required registration fields.', 'anchor-schema' ),
             'registration_error' => __( 'Registration could not be processed. Please try again.', 'anchor-schema' ),
@@ -7259,7 +8455,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! isset( $messages[ $key ] ) ) {
             return '';
         }
-        return '<div class="anchor-event-notice">' . esc_html( $messages[ $key ] ) . '</div>';
+        $message = $messages[ $key ];
+        if ( ! empty( $_GET['event_registration_email'] ) ) {
+            $message .= ' ' . __( 'Check your email for confirmation.', 'anchor-schema' );
+        }
+        return '<div class="anchor-event-notice">' . esc_html( $message ) . '</div>';
     }
 
     /**
@@ -7547,8 +8747,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $notice = '<div class="anchor-event-notice">' . esc_html__( 'This event is full. You will be added to the waitlist.', 'anchor-schema' ) . '</div>';
         }
 
-        $fields = $this->get_registration_fields();
-        $redirect = \get_permalink( $post_id );
+        $questions = $this->get_registration_questions( $post_id );
+        $redirect  = \get_permalink( $post_id );
 
         $output = $notice;
         $output .= '<form class="anchor-event-registration" method="post" action="' . esc_url( \admin_url( 'admin-post.php' ) ) . '">';
@@ -7601,14 +8801,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $output .= '</div>';
         }
 
-        foreach ( $fields as $field ) {
-            $field_id = sanitize_key( $field['id'] );
-            $label = $field['label'] ?? $field_id;
-            $type = $field['type'] ?? 'text';
-            $required = ! empty( $field['required'] );
+        // Whatever else this event asks its attendees (REG-D9). The SAME question
+        // model the WooCommerce checkout renders and the roster/CSV column onto,
+        // so a free course and a ticketed one ask the same things and store the
+        // answers under the same keys. `required` is asserted here for the
+        // browser and re-checked in handle_registration() for everything else.
+        foreach ( $questions as $q ) {
+            $id       = 'anchor_event_field_' . $q['key'];
+            $req_mark = ! empty( $q['required'] ) ? ' <span class="anchor-event-required" aria-hidden="true">*</span>' : '';
+
             $output .= '<div class="anchor-event-field">';
-            $output .= '<label for="anchor_event_field_' . esc_attr( $field_id ) . '">' . esc_html( $label ) . '</label>';
-            $output .= '<input type="' . esc_attr( $type ) . '" id="anchor_event_field_' . esc_attr( $field_id ) . '" name="anchor_event_field[' . esc_attr( $field_id ) . ']"' . ( $required ? ' required' : '' ) . ' />';
+            $output .= '<label for="' . esc_attr( $id ) . '">' . esc_html( $q['label'] ) . $req_mark . '</label>';
+            $output .= $this->render_registration_question_control( $q, [
+                'name' => 'anchor_event_field[' . $q['key'] . ']',
+                'id'   => $id,
+            ] );
             $output .= '</div>';
         }
 
@@ -7664,8 +8871,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * "Choose a date" picker for a group PARENT single-event page (Task 2.4):
      * lists the parent's LIVE children — Occurrences::children($parent_id,
      * false), which already excludes soft-closed occurrences via the
-     * engine's own bookkeeping (never a meta-value check) — ordered by date
-     * ascending (children() itself returns them pre-sorted), each with a
+     * engine's own bookkeeping (never a meta-value check) — ordered by
+     * Occurrences::order_by_bookability(): the dates a visitor can act on
+     * first, then upcoming-but-unbookable ones, then the ones that have been
+     * and gone, each block earliest-first. Every live date is still listed
+     * (somebody looking for the date they booked has to find it) and each row
+     * says which kind it is (MODEL-D4 / NEW-D1) — the picker used to lead
+     * with a sold-out or finished date and put a live Register CTA on it.
+     * Each row carries a
      * date/time label, an availability hint sourced from the same seat-layer
      * capacity authority the registration form uses, and a link to that
      * child's own page. The parent is a container, never directly bookable,
@@ -7677,7 +8890,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      */
     public function render_choose_date_list( $parent_id ) {
         $parent_id = (int) $parent_id;
-        $children  = $this->occurrences->children( $parent_id, false );
+        $children  = $this->occurrences->order_by_bookability(
+            $this->occurrences->children( $parent_id, false )
+        );
 
         $output  = '<section class="anchor-event-choose-date">';
         $output .= '<h2 class="anchor-event-choose-date-title">' . esc_html__( 'Choose a date', 'anchor-schema' ) . '</h2>';
@@ -7721,7 +8936,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $parent_id <= 0 ) {
             return '';
         }
-        $siblings = $this->occurrences->siblings( $child_id, false );
+        $siblings = $this->occurrences->order_by_bookability(
+            $this->occurrences->siblings( $child_id, false )
+        );
 
         $output  = '<section class="anchor-event-other-dates">';
         $output .= '<h2 class="anchor-event-other-dates-title">' . esc_html__( 'Other dates', 'anchor-schema' ) . '</h2>';
@@ -7768,7 +8985,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $date_text = $this->format_date_time( $meta, true );
 
-        $output  = '<li class="anchor-event-choose-date-row">';
+        // Same predicate the ordering above ranks on, so the row's mark and
+        // its position can never describe the date differently.
+        $state   = $this->occurrences->picker_state( $event_id );
+        $output  = '<li class="anchor-event-choose-date-row anchor-event-choose-date-row--' . esc_attr( $state ) . '">';
         $output .= '<a class="anchor-event-choose-date-link" href="' . esc_url( \get_permalink( $event_id ) ) . '">';
         $output .= '<span class="anchor-event-choose-date-date">' . esc_html( $date_text ) . '</span>';
         // An occurrence with no authored label resolves to the formatted date
@@ -7779,7 +8999,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $output .= '</a>';
         $output .= '<span class="anchor-event-choose-date-availability">' . esc_html( $this->choose_date_availability_hint( $event_id, $meta ) ) . '</span>';
-        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $event_id ) ) . '</a>';
+        $output .= '<a class="anchor-event-button anchor-event-choose-date-cta" href="' . esc_url( \get_permalink( $event_id ) ) . '">' . esc_html( $this->choose_date_cta_label( $state ) ) . '</a>';
         $output .= '</li>';
 
         return $output;
@@ -7823,8 +9043,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Short availability hint for a choose-date row, rendered from
      * bookability() — the single purchasability authority — as "Sold out" /
-     * "Waitlist only" / "Registration closed" / "N spot(s) left" / "Open"
-     * (unlimited capacity).
+     * "Waitlist only" / "Date passed" / "Registration closed" / "N spot(s)
+     * left" / "Open" (unlimited capacity).
      *
      * Public because the series archive renders the same hint for the same
      * question (MODEL-D42): Series::availability_hint() used to re-decide it
@@ -7851,12 +9071,22 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return \__( 'Waitlist only', 'anchor-schema' );
         }
         if ( $state === 'closed' || $state === 'disabled' ) {
-            return \__( 'Registration closed', 'anchor-schema' );
+            // MODEL-D4: a date that has been and gone is still LISTED — the
+            // picker no longer leads with it, but somebody looking for the
+            // date they attended has to find it — so it gets the word for what
+            // it actually is rather than "Registration closed", which reads
+            // like a date you just missed the deadline for.
+            return $this->occurrences->is_past( $event_id )
+                ? \__( 'Date passed', 'anchor-schema' )
+                : \__( 'Registration closed', 'anchor-schema' );
         }
 
-        // 'open' — and 'parent', defensively: render_choose_date_row() is
-        // documented as tolerating the parent itself, which has no capacity
-        // of its own and so reads as unlimited/"Open" here.
+        // 'open' — and 'parent', which is now the ONE container state that
+        // reaches this line: a group with nothing left to book answers
+        // 'full'/'disabled'/'closed' above and gets that word, and a group
+        // that still has a bookable date has no capacity of its own, so it
+        // reads as unlimited/"Open". render_choose_date_row() is documented
+        // as tolerating a parent id for exactly this reason.
         $capacity = (int) ( $meta['capacity'] ?? 0 );
         if ( $capacity <= 0 ) {
             return \__( 'Open', 'anchor-schema' );
@@ -7869,15 +9099,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * CTA label for a choose-date row: "Details" when the occurrence isn't
      * currently accepting new registrations (closed/full/registration
-     * disabled/a container), else "Register".
+     * disabled/a container/a date that has been and gone), else "Register".
      *
-     * @param int $event_id
+     * Takes the row's already-resolved Occurrences::picker_state() rather than
+     * re-asking bookability() — RENDER-D32's point is that the CTA, the hint
+     * beside it and the row's position in the picker are one answer, so the
+     * row can never say "Sold out" and "Register" at once, or rank a date as
+     * bookable and then label it "Details".
+     *
+     * @param string $picker_state 'bookable'|'unavailable'|'past'.
      * @return string
      */
-    private function choose_date_cta_label( $event_id ) {
-        // RENDER-D32: same authority as the hint beside it, so the row can
-        // never say "Sold out" and "Register" at once.
-        return $this->is_bookable( $this->bookability( $event_id ) )
+    private function choose_date_cta_label( $picker_state ) {
+        return $picker_state === 'bookable'
             ? \__( 'Register', 'anchor-schema' )
             : \__( 'Details', 'anchor-schema' );
     }
@@ -7926,11 +9160,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             exit;
         }
 
-        $extra_fields = [];
-        if ( ! empty( $_POST['anchor_event_field'] ) && is_array( $_POST['anchor_event_field'] ) ) {
-            foreach ( wp_unslash( $_POST['anchor_event_field'] ) as $key => $value ) {
-                $extra_fields[ sanitize_key( $key ) ] = sanitize_text_field( $value );
-            }
+        // The event's own attendee questions (REG-D9/D10). Read from the question
+        // model rather than from whatever the POST happened to carry, so the
+        // stored answer set is exactly this event's questions, keyed by their
+        // stable ids — the same shape the WooCommerce checkout writes.
+        $posted_answers = ( ! empty( $_POST['anchor_event_field'] ) && is_array( $_POST['anchor_event_field'] ) )
+            ? wp_unslash( $_POST['anchor_event_field'] ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- sanitized per answer below.
+            : [];
+        $validated    = $this->sanitize_registration_answers( $event_id, $posted_answers );
+        $extra_fields = $validated['answers'];
+        // Required answers are enforced server-side too: the inputs carry
+        // `required`, but that only covers a browser that runs it.
+        if ( ! empty( $validated['missing'] ) ) {
+            \wp_safe_redirect( $this->with_message( $redirect, 'registration_invalid' ) );
+            exit;
         }
 
         $max_guests = (int) ( $settings['max_guests'] ?? 0 );
@@ -8009,10 +9252,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             Events_Log::error( 'capacity_lock_unavailable', [ 'event' => $event_id, 'source' => 'internal' ] );
         }
 
-        $reg_status = ( $waitlisted && ! $created ) ? 'waitlist' : 'confirmed';
-        $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
+        // REG-D24 — the seat that was actually minted decides what the visitor
+        // is told, and whether an email was actually sent decides whether one
+        // is promised. Both used to be assumed.
+        $is_waitlist = ( $waitlisted && ! $created );
+        $reg_status  = $is_waitlist ? Registrations::STATUS_WAITLIST : Registrations::STATUS_CONFIRMED;
+        $emailed     = $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
 
-        \wp_safe_redirect( $this->with_message( $redirect, 'registration_success' ) );
+        $url = $this->with_message( $redirect, $is_waitlist ? 'registration_waitlisted' : 'registration_success' );
+        if ( $emailed->is_sent() ) {
+            $url = \add_query_arg( 'event_registration_email', '1', $url );
+        }
+        \wp_safe_redirect( $url );
         exit;
     }
 
@@ -8241,6 +9492,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <?php
         }, 'anchor_events_settings', 'anchor_events_registration' );
 
+        \add_settings_field( 'confirmation_subject', __( 'Confirmation subject', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[confirmation_subject]" value="<?php echo esc_attr( $opts['confirmation_subject'] ); ?>" class="regular-text" />
+            <p class="description"><?php echo esc_html__( 'Subject line for the attendee confirmation. Tokens: {event_title}, {attendee_name}, {event_date}, {site_name}.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_registration' );
+
         \add_settings_field( 'confirmation_message', __( 'Confirmation message', 'anchor-schema' ), function() {
             $opts = $this->get_settings();
             ?>
@@ -8387,6 +9646,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <?php
         }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
 
+        \add_settings_field( 'refund_subject', __( 'Refund subject', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[refund_subject]" value="<?php echo esc_attr( $opts['refund_subject'] ); ?>" class="regular-text" />
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
+        \add_settings_field( 'refund_intro', __( 'Refund email intro', 'anchor-schema' ), function() {
+            $opts = $this->get_settings();
+            ?>
+            <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[refund_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['refund_intro'] ); ?></textarea>
+            <p class="description"><?php echo esc_html__( 'Sent instead of the cancellation wording when a seat is refunded. Tokens: {event_title}, {attendee_name}, {status}, {site_name}.', 'anchor-schema' ); ?></p>
+            <?php
+        }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
+
         \add_settings_field( 'organizer_email', __( 'Default organizer email', 'anchor-schema' ), function() {
             $opts = $this->get_settings();
             ?>
@@ -8441,7 +9715,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     public function sanitize_settings( $input ) {
-        $defaults = $this->get_settings();
+        // MODEL-D29 — two different questions, two different arrays.
+        //
+        //   $defaults = what this plugin SHIPS. A cleared text field or an
+        //               unreadable colour falls back to this, so "empty the
+        //               box and save" now means "reset to the shipped value"
+        //               instead of "put back whatever is already stored",
+        //               which is what a single get_settings() array made every
+        //               `?:` on this page do.
+        //   $stored   = what is on this site RIGHT NOW. Used only where the
+        //               form deliberately does not render a field (the
+        //               WooCommerce subsection on a site without WooCommerce)
+        //               and the stored value has to survive the save untouched.
+        $defaults = $this->default_settings();
+        $stored   = $this->get_settings();
         $output = [
             'timezone_mode' => in_array( $input['timezone_mode'] ?? 'site', [ 'site', 'event' ], true ) ? $input['timezone_mode'] : 'site',
             'archive_hide_past' => ! empty( $input['archive_hide_past'] ),
@@ -8450,11 +9737,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),
             'notify_user' => ! empty( $input['notify_user'] ),
+            'confirmation_subject' => sanitize_text_field( $input['confirmation_subject'] ?? '' ) ?: $defaults['confirmation_subject'],
             'confirmation_message' => isset( $input['confirmation_message'] ) ? sanitize_textarea_field( $input['confirmation_message'] ) : $defaults['confirmation_message'],
             'max_guests' => max( 0, min( 50, (int) ( $input['max_guests'] ?? 0 ) ) ),
             'register_button_label' => sanitize_text_field( $input['register_button_label'] ?? '' ),
             'register_button_color' => \sanitize_hex_color( $input['register_button_color'] ?? '' ) ?: $defaults['register_button_color'],
-            'event_slug' => sanitize_title( $input['event_slug'] ?? $defaults['event_slug'] ),
+            // A field that is not in $input at all is not a field somebody
+            // cleared, so the slug keeps what the site has; a field that is
+            // there but empty falls back to the shipped 'event' below.
+            'event_slug' => sanitize_title( $input['event_slug'] ?? $stored['event_slug'] ),
         ];
         if ( ! $output['event_slug'] ) {
             $output['event_slug'] = $defaults['event_slug'];
@@ -8469,15 +9760,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( \class_exists( 'WooCommerce' ) ) {
             $output['wc_notify_customer']   = ! empty( $input['wc_notify_customer'] );
             $output['wc_notify_organizer']  = ! empty( $input['wc_notify_organizer'] );
-            $output['wc_customer_subject']  = sanitize_text_field( $input['wc_customer_subject'] ?? $defaults['wc_customer_subject'] );
-            $output['wc_customer_intro']    = sanitize_textarea_field( $input['wc_customer_intro'] ?? $defaults['wc_customer_intro'] );
-            $output['wc_organizer_subject'] = sanitize_text_field( $input['wc_organizer_subject'] ?? $defaults['wc_organizer_subject'] );
+            $output['wc_customer_subject']  = sanitize_text_field( $input['wc_customer_subject'] ?? $stored['wc_customer_subject'] );
+            $output['wc_customer_intro']    = sanitize_textarea_field( $input['wc_customer_intro'] ?? $stored['wc_customer_intro'] );
+            $output['wc_organizer_subject'] = sanitize_text_field( $input['wc_organizer_subject'] ?? $stored['wc_organizer_subject'] );
         } else {
-            $output['wc_notify_customer']   = $defaults['wc_notify_customer'];
-            $output['wc_notify_organizer']  = $defaults['wc_notify_organizer'];
-            $output['wc_customer_subject']  = $defaults['wc_customer_subject'];
-            $output['wc_customer_intro']    = $defaults['wc_customer_intro'];
-            $output['wc_organizer_subject'] = $defaults['wc_organizer_subject'];
+            $output['wc_notify_customer']   = $stored['wc_notify_customer'];
+            $output['wc_notify_organizer']  = $stored['wc_notify_organizer'];
+            $output['wc_customer_subject']  = $stored['wc_customer_subject'];
+            $output['wc_customer_intro']    = $stored['wc_customer_intro'];
+            $output['wc_organizer_subject'] = $stored['wc_organizer_subject'];
         }
         // Email sender identity (applied as per-message headers on event emails).
         $output['email_from_name']        = sanitize_text_field( $input['email_from_name'] ?? '' );
@@ -8493,17 +9784,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output['email_heading_color']    = \sanitize_hex_color( $input['email_heading_color'] ?? '' ) ?: $defaults['email_heading_color'];
         $output['email_button_color']     = \sanitize_hex_color( $input['email_button_color'] ?? '' ) ?: $defaults['email_button_color'];
 
-        // Reserved/unused — preserve stored value (no UI field).
-        $output['notify_attendee'] = $defaults['notify_attendee'];
-
         // v1.1 lifecycle email settings (always saved — not WC-gated).
         $output['reminder_enabled']     = ! empty( $input['reminder_enabled'] );
-        $output['reminder_offsets']     = $this->sanitize_offset_csv( $input['reminder_offsets'] ?? $defaults['reminder_offsets'] );
+        $output['reminder_offsets']     = $this->sanitize_offset_csv( $input['reminder_offsets'] ?? $stored['reminder_offsets'] );
         $output['reminder_subject']     = \sanitize_text_field( $input['reminder_subject'] ?? '' ) ?: $defaults['reminder_subject'];
         $output['reminder_intro']       = \sanitize_textarea_field( $input['reminder_intro'] ?? '' ) ?: $defaults['reminder_intro'];
         $output['notify_cancellation']  = ! empty( $input['notify_cancellation'] );
         $output['cancellation_subject'] = \sanitize_text_field( $input['cancellation_subject'] ?? '' ) ?: $defaults['cancellation_subject'];
         $output['cancellation_intro']   = \sanitize_textarea_field( $input['cancellation_intro'] ?? '' ) ?: $defaults['cancellation_intro'];
+        $output['refund_subject']       = \sanitize_text_field( $input['refund_subject'] ?? '' ) ?: $defaults['refund_subject'];
+        $output['refund_intro']         = \sanitize_textarea_field( $input['refund_intro'] ?? '' ) ?: $defaults['refund_intro'];
         $output['organizer_roster_email'] = ! empty( $input['organizer_roster_email'] );
         $output['roster_auto_offset']   = max( 0, (int) ( $input['roster_auto_offset'] ?? 1 ) );
         $output['roster_subject']       = \sanitize_text_field( $input['roster_subject'] ?? '' ) ?: $defaults['roster_subject'];
@@ -8514,7 +9804,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /** Normalize a CSV of day offsets → sorted-descending, de-duped, positive ints (≤5). */
     private function sanitize_offset_csv( $raw ) {
-        $days = array_filter( array_map( 'intval', explode( ',', (string) $raw ) ), function ( $d ) { return $d > 0; } );
+        // REG-D36 — an offset larger than the sweep's horizon can never fire:
+        // the scan would have to look further ahead than REMINDER_HORIZON_DAYS
+        // to reach the event it belongs to, and it deliberately will not. Clamp
+        // at the point of storage so what an author sees saved is what the
+        // sweep will actually honour, rather than a number that silently means
+        // "no reminder".
+        $days = array_filter(
+            array_map( 'intval', explode( ',', (string) $raw ) ),
+            function ( $d ) { return $d > 0 && $d <= self::REMINDER_HORIZON_DAYS; }
+        );
         $days = array_values( array_unique( $days ) );
         rsort( $days );
         $days = array_slice( $days, 0, 5 );
@@ -8529,7 +9828,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         echo '<li><code>[event_calendar]</code> ' . \esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_registration]</code> ' . \esc_html__( 'Registration form for an event. Attributes: id=POST_ID, slug=event-slug, show_title (yes|no), show_notice (yes|no). Auto-appended to an event\'s content when you enable registration, so it survives page builders like Divi.', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_gallery]</code> ' . \esc_html__( 'Photo gallery for an event. Attributes: id=POST_ID, slug=event-slug, size=thumbnail|medium|large|full, columns=1-6. Defaults to the current event when used on an event page.', 'anchor-schema' ) . '</li>';
-        echo '<li><code>[event_registrants_list]</code> ' . \esc_html__( 'Admin-only: list every event with a collapsible panel of registrants. Only visible to users with edit_others_posts (admins + editors). Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_registrants_list]</code> ' . \esc_html__( 'Admin-only: list every event with a collapsible panel of registrants. Only visible to users who can manage events (shop managers on a WooCommerce store, otherwise admins + editors; sites can point this at their own capability with the anchor_events_capability filter). Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_manager]</code> ' . \esc_html__( 'Admin-only frontend dashboard: list, accordion registrants, create, edit, and trash events with a native WP media picker for featured image + gallery. Only visible to admins/editors. Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '</ul>';
         echo '<p>' . \esc_html__( 'You can also link to the events archive at /event/ (or your custom slug).', 'anchor-schema' ) . '</p>';
@@ -8545,10 +9844,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Read-only "Event error log" panel for the Events settings tab. Shows the most
      * recent entries from the site-wide anchor_events_error_log option and a nonced
-     * "Clear error log" button. Capped to users with edit_others_posts.
+     * "Clear error log" button. Capped to Module::events_capability().
      */
     private function render_error_log_panel() {
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        if ( ! Roster::current_user_can_manage() ) {
             return;
         }
 
@@ -8561,59 +9860,123 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         echo '<h2>' . \esc_html__( 'Event error log', 'anchor-schema' ) . '</h2>';
         echo '<p class="description">' . \esc_html__( 'Recent registration/email/sync failures. Most recent first.', 'anchor-schema' ) . '</p>';
 
-        if ( isset( $_GET['anchor_events_log_cleared'] ) ) {
-            echo '<div class="notice notice-success inline"><p>' . \esc_html__( 'Error log cleared.', 'anchor-schema' ) . '</p></div>';
+        $archive = \get_option( Events_Log::ERROR_ARCHIVE_OPTION, [] );
+        $archive = \is_array( $archive ) ? $archive : [];
+
+        if ( isset( $_GET['anchor_events_log_cleared'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            $moved = (int) $_GET['anchor_events_log_cleared']; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            // Only when something actually moved — "cleared 0 entries" is noise.
+            if ( $moved > 0 ) {
+                echo '<div class="notice notice-success inline"><p>' . \esc_html( \sprintf(
+                    /* translators: %d: number of entries moved to the archive. */
+                    \_n( 'Error log cleared. %d entry kept in the archive.', 'Error log cleared. %d entries kept in the archive.', $moved, 'anchor-schema' ),
+                    $moved
+                ) ) . '</p></div>';
+            }
         }
 
         if ( empty( $log ) ) {
             echo '<p>' . \esc_html__( 'No errors logged.', 'anchor-schema' ) . '</p>';
-            return;
+        } else {
+            $this->render_error_log_table( $log );
         }
 
-        echo '<table class="widefat striped" style="max-width:840px;">';
-        echo '<thead><tr>';
-        echo '<th>' . \esc_html__( 'Time', 'anchor-schema' ) . '</th>';
-        echo '<th>' . \esc_html__( 'Code', 'anchor-schema' ) . '</th>';
-        echo '<th>' . \esc_html__( 'Context', 'anchor-schema' ) . '</th>';
-        echo '</tr></thead><tbody>';
-        foreach ( \array_slice( \array_reverse( $log ), 0, 100 ) as $entry ) {
-            $time    = isset( $entry['time'] ) ? (int) $entry['time'] : 0;
-            $code    = isset( $entry['code'] ) ? (string) $entry['code'] : '';
-            $context = isset( $entry['context'] ) ? $entry['context'] : [];
-            $when    = $time ? \date_i18n( 'Y-m-d H:i:s', $time ) : '';
-            $ctx_str = \is_scalar( $context ) ? (string) $context : \wp_json_encode( $context );
-            echo '<tr>';
-            echo '<td>' . \esc_html( $when ) . '</td>';
-            echo '<td><code>' . \esc_html( $code ) . '</code></td>';
-            echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
-            echo '</tr>';
+        // REG-D31 — the archive is the "undo" for the Clear button, so it has to
+        // be readable from here. Collapsed, read-only, same row markup.
+        if ( ! empty( $archive ) ) {
+            echo '<details style="margin-top:12px;max-width:840px;"><summary style="cursor:pointer;">'
+                . \esc_html( \sprintf(
+                    /* translators: %d: number of archived entries. */
+                    \_n( 'Archived entries (%d)', 'Archived entries (%d)', \count( $archive ), 'anchor-schema' ),
+                    \count( $archive )
+                ) ) . '</summary>';
+            echo '<p class="description">' . \esc_html__( 'Entries removed by a previous "Clear error log". Kept read-only so a cleared failure is still recoverable.', 'anchor-schema' ) . '</p>';
+            $this->render_error_log_table( $archive );
+            echo '</details>';
         }
-        echo '</tbody></table>';
+
+        if ( empty( $log ) ) {
+            return;
+        }
 
         echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-top:12px;">';
         echo '<input type="hidden" name="action" value="anchor_events_clear_error_log" />';
         \wp_nonce_field( 'anchor_events_clear_error_log' );
-        \submit_button( \__( 'Clear error log', 'anchor-schema' ), 'delete', 'submit', false );
+        // REG-D31 — a confirm step, and the copy says the entries are archived
+        // rather than destroyed so nobody presses this expecting either outcome.
+        \submit_button(
+            \__( 'Clear error log', 'anchor-schema' ),
+            'delete',
+            'submit',
+            false,
+            [ 'onclick' => 'return confirm(' . \wp_json_encode( \__( 'Clear the error log? The entries move to the archive and stay recoverable.', 'anchor-schema' ) ) . ');' ]
+        );
         echo '</form>';
     }
 
     /**
-     * admin-post handler: clear the site-wide event error log. Cap edit_others_posts
-     * + nonce. Lives in the Module (not the WC class) because the error log and its
+     * Render one error-log table. Shared by the live log and the archive so the
+     * two can never drift apart (REG-D31/REG-D46). Read-only; escapes everything.
+     *
+     * @param array $rows Log entries, oldest first.
+     */
+    private function render_error_log_table( array $rows ) {
+        echo '<table class="widefat striped" style="max-width:840px;">';
+        echo '<thead><tr>';
+        echo '<th>' . \esc_html__( 'Last seen', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Code', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Count', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Context', 'anchor-schema' ) . '</th>';
+        echo '</tr></thead><tbody>';
+        foreach ( \array_slice( \array_reverse( $rows ), 0, 100 ) as $entry ) {
+            $entry   = \is_array( $entry ) ? $entry : [];
+            $time    = isset( $entry['time'] ) ? (int) $entry['time'] : 0;
+            $first   = isset( $entry['first_time'] ) ? (int) $entry['first_time'] : $time;
+            $count   = isset( $entry['count'] ) ? max( 1, (int) $entry['count'] ) : 1;
+            $code    = isset( $entry['code'] ) ? (string) $entry['code'] : '';
+            $context = isset( $entry['context'] ) ? $entry['context'] : [];
+            $when    = $time ? \date_i18n( 'Y-m-d H:i:s', $time ) : '';
+            $ctx_str = \is_scalar( $context ) ? (string) $context : \wp_json_encode( $context );
+            $tally   = $count > 1 && $first
+                ? \sprintf(
+                    /* translators: 1: repeat count, 2: first-seen timestamp. */
+                    \__( '%1$d× since %2$s', 'anchor-schema' ),
+                    $count,
+                    \date_i18n( 'Y-m-d H:i:s', $first )
+                )
+                : (string) $count;
+            echo '<tr>';
+            echo '<td>' . \esc_html( $when ) . '</td>';
+            echo '<td><code>' . \esc_html( $code ) . '</code></td>';
+            echo '<td>' . \esc_html( $tally ) . '</td>';
+            echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
+            echo '</tr>';
+        }
+        echo '</tbody></table>';
+    }
+
+    /**
+     * admin-post handler: clear the site-wide event error log. Nonce, then
+     * Module::events_capability(). Lives in the Module (not the WC class) because the error log and its
      * panel are present on all sites, WooCommerce or not.
      */
     public function handle_clear_error_log() {
-        if ( ! \current_user_can( 'edit_others_posts' ) ) {
+        \check_admin_referer( 'anchor_events_clear_error_log' );
+        if ( ! Roster::current_user_can_manage() ) {
             \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
         }
-        \check_admin_referer( 'anchor_events_clear_error_log' );
-        \delete_option( Events_Log::ERROR_OPTION );
+        // REG-D31 — archive rather than destroy. These entries are the ONLY
+        // record of email_send_returned_false / capacity_lock_unavailable /
+        // illegal_transition / seat_insert_failed; the seat history does not
+        // carry them, and there is no per-event activity log to fall back on
+        // (REG-D30 retired the no-op that pretended otherwise).
+        $archived = Events_Log::archive_and_clear();
 
         $redirect = \wp_get_referer();
         if ( ! $redirect ) {
             $redirect = \admin_url();
         }
-        \wp_safe_redirect( \add_query_arg( 'anchor_events_log_cleared', '1', $redirect ) );
+        \wp_safe_redirect( \add_query_arg( 'anchor_events_log_cleared', (string) $archived, $redirect ) );
         exit;
     }
 
@@ -10025,8 +11388,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Only the `hide_from_archive` half is an exclusion for STAFF, though. A
      * soft-closed date keeps its roster — that is the entire point of a soft
      * close — and somebody has to email or refund those attendees, so the two
-     * capability-gated surfaces ([event_registrants_list], which requires
-     * edit_others_posts, and the front-end Events Manager console) pass
+     * capability-gated surfaces ([event_registrants_list] and the front-end
+     * Events Manager console, both of which require the module capability —
+     * manage_woocommerce on a store, edit_others_posts otherwise, filterable
+     * through `anchor_events_capability`) pass
      * $public = false and keep cancelled dates in the list. Folding the closed
      * half in unconditionally would have made a cancelled date's roster
      * unreachable from the surfaces built to manage it.
@@ -10120,7 +11485,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * The branch order says WHAT THE EVENT IS before it says whether the
      * button is on, and render_registration_form() mirrors it:
-     *   parent    — a group container is never itself a seat,
+     *   parent    — a group container is never itself a seat, but only while
+     *                it still has a date somebody can take (parent_bookability()),
      *   closed    — a soft-closed occurrence, still reachable by direct URL,
      *   cancelled — the author's own word, via get_event_status(),
      *   then the seat-layer capacity authority (open|waitlist|full|closed),
@@ -10155,7 +11521,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return 'closed';
         }
         if ( $this->occurrences->is_group_parent( $event_id ) ) {
-            return 'parent';
+            return $this->parent_bookability( $event_id );
         }
         if ( $this->is_closed_group_child( $event_id ) ) {
             return 'closed';
@@ -10187,6 +11553,97 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * A group container's own bookability (audit MODEL-D4 / NEW-D1).
+     *
+     * 'parent' used to be unconditional, which said only "this is a
+     * container" and never "there is nothing left in it": a parent whose
+     * every date was sold out, and one whose every date had passed, both read
+     * exactly like one with November wide open. Every reader that wanted the
+     * difference had to compute it — the DEKA theme derived "sold out" and
+     * "closed" for containers itself, from its own copy of the bookable-child
+     * loop, and the picker/archive simply did not show it.
+     *
+     * The vocabulary is unchanged, which is the point: 'parent' still means
+     * "choose a date" (WooCommerce::bookability_message() says exactly that,
+     * and Event_Schema::omits_offer() still withholds the container's Offer),
+     * and a container with nothing left borrows the words the rest of the
+     * module already uses for one date, in the same order bookability()
+     * itself resolves them:
+     *   'full'     — a date is sold out (the seats going outranks the button
+     *                being gone, NEW-D2),
+     *   'disabled' — registration is simply switched off on every date,
+     *   'closed'   — finished, cancelled, outside its window, or no dates.
+     *
+     * The 'disabled' rung is not cosmetic. Registration off is the DEFAULT
+     * state of an event and the PERMANENT state of every display-only site,
+     * and Event_Schema::omits_offer() deliberately keeps publishing an Offer
+     * for it while withholding one for 'closed' — collapsing it into 'closed'
+     * would have stripped the price out of the markup of every offering on
+     * every site that has never switched registration on. A past date can
+     * never report 'full' or 'disabled' (capacity_decision() answers 'closed'
+     * for a finished event before it looks at anything else), so a container
+     * whose dates have all run still reads 'closed'.
+     *
+     * @param int $parent_id
+     * @return string parent|full|disabled|closed
+     */
+    private function parent_bookability( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        if ( ! empty( $this->occurrences->bookable_children( $parent_id ) ) ) {
+            return 'parent';
+        }
+
+        $states = [];
+        foreach ( $this->occurrences->children( $parent_id, false ) as $child_id ) {
+            $states[ $this->bookability( (int) $child_id ) ] = true;
+        }
+
+        if ( isset( $states['full'] ) ) {
+            return 'full';
+        }
+        if ( isset( $states['disabled'] ) ) {
+            return 'disabled';
+        }
+        return 'closed';
+    }
+
+    /**
+     * The occurrence a group parent currently advertises — its soonest
+     * BOOKABLE date, falling back to its soonest date still to come, and 0
+     * when it is not a container or has nothing ahead of it (MODEL-D4 /
+     * NEW-D1).
+     *
+     * The one answer to "which date does this container show", so the card's
+     * date, its city, its sort key and its CTA cannot each pick a different
+     * one. Bookable first because that is the date a visitor can act on
+     * (production parent 7258 advertised a sold-out September while its own
+     * picker offered November); upcoming second so a fully-booked offering
+     * still shows a date rather than nothing.
+     *
+     * 0 is deliberate for "every date has passed": the parent's own
+     * start_date already spans its live children (Occurrences::
+     * sync_parent_span()), so a caller falling back to the parent id gets
+     * that span rather than a wrong "next" date.
+     *
+     * @param int $parent_id
+     * @return int Occurrence post id, or 0.
+     */
+    public function next_occurrence( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 || ! $this->occurrences->is_group_parent( $parent_id ) ) {
+            return 0;
+        }
+
+        $bookable = $this->occurrences->bookable_children( $parent_id );
+        if ( ! empty( $bookable ) ) {
+            return (int) $bookable[0];
+        }
+
+        $upcoming = $this->occurrences->upcoming_children( $parent_id );
+        return empty( $upcoming ) ? 0 : (int) $upcoming[0];
+    }
+
+    /**
      * Whether a bookability() state can still take a seat. 'waitlist' counts:
      * a waitlist request is a real, accepted transaction (Registrations::
      * claim_seats() resolves it at creation), which is exactly why the cart
@@ -10214,6 +11671,277 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     public function get_registration_questions( $event_id ) {
         $raw = \get_post_meta( (int) $event_id, self::QUESTIONS_META, true );
         return $this->normalize_registration_questions( \is_array( $raw ) ? $raw : [] );
+    }
+
+    /**
+     * The registrant breakdown behind every "N registrants" headline (REG-D22).
+     *
+     * `count( get_registrations( $id, 0 ) )` counted RECORDS OF EVERY STATUS —
+     * cancelled, refunded and failed seats included — so an event with three
+     * live registrations and seven cancellations announced "10 registrants
+     * (3 total attendees)": two numbers computed on different axes, with the
+     * wrong one in the headline. The live count and the cancelled count are now
+     * two separate, named facts drawn from the SAME source the roster header
+     * uses (get_event_summary()), so the two screens cannot disagree.
+     *
+     * `active` is records, not weighted seats — it answers "how many people
+     * signed up" — while `attendees` stays the weighted confirmed figure
+     * (registrant + guests) the parenthetical has always meant.
+     *
+     * @param int $event_id
+     * @return array{active:int,confirmed:int,pending:int,waitlist:int,cancelled:int,attendees:int}
+     */
+    public function registrant_counts( $event_id ) {
+        $summary = $this->registrations->get_event_summary( (int) $event_id );
+        $per     = isset( $summary['per_status'] ) && \is_array( $summary['per_status'] ) ? $summary['per_status'] : [];
+        $records = function ( $status ) use ( $per ) {
+            return (int) ( $per[ $status ]['records'] ?? 0 );
+        };
+
+        $confirmed = $records( Registrations::STATUS_CONFIRMED );
+        $pending   = $records( Registrations::STATUS_PENDING );
+        $waitlist  = $records( Registrations::STATUS_WAITLIST );
+        $cancelled = $records( Registrations::STATUS_CANCELLED )
+            + $records( Registrations::STATUS_REFUNDED )
+            + $records( Registrations::STATUS_FAILED );
+
+        return [
+            'active'    => $confirmed + $pending + $waitlist,
+            'confirmed' => $confirmed,
+            'pending'   => $pending,
+            'waitlist'  => $waitlist,
+            'cancelled' => $cancelled,
+            'attendees' => (int) ( $summary['confirmed'] ?? 0 ),
+        ];
+    }
+
+    /**
+     * The headline + breakdown markup for one event's registrant counts. One
+     * implementation for both admin list surfaces ([event_registrants_list] and
+     * the [event_manager] item), which used to carry identical copies of the
+     * wrong sum (REG-D22).
+     *
+     * @param int $event_id
+     * @return string
+     */
+    private function render_registrant_counts( $event_id ) {
+        $c   = $this->registrant_counts( $event_id );
+        $out = ' <span class="anchor-event-admin-count">' . esc_html( sprintf(
+            \_n( '%d registrant', '%d registrants', $c['active'], 'anchor-schema' ),
+            $c['active']
+        ) );
+        if ( $c['attendees'] !== $c['active'] ) {
+            $out .= ' <span class="anchor-event-admin-attendees">(' . esc_html( sprintf( __( '%d total attendees', 'anchor-schema' ), $c['attendees'] ) ) . ')</span>';
+        }
+        if ( $c['cancelled'] > 0 ) {
+            $out .= ' <span class="anchor-event-admin-cancelled">' . esc_html( sprintf(
+                /* translators: %d: number of cancelled/refunded/failed seats, which are NOT in the headline count. */
+                __( '+%d cancelled', 'anchor-schema' ),
+                $c['cancelled']
+            ) ) . '</span>';
+        }
+        $out .= '</span>';
+        return $out;
+    }
+
+    /**
+     * Sanitize one posted answer set against an event's OWN question model —
+     * the single validator every write path uses (REG-D9/D39).
+     *
+     * There used to be three copies of this loop: the free handler, the
+     * WooCommerce checkout validator and the WooCommerce item writer. Copies
+     * that have to AGREE to be correct drift, and these had: two of them ran
+     * every answer through sanitize_text_field(), which strips newlines, so a
+     * textarea answer ("no nuts, and I use a wheelchair") arrived on the roster
+     * as one run-on line while the third path kept it intact. One
+     * implementation, three call sites.
+     *
+     * Answers come back keyed by the question's stable key — never its label
+     * (REG-D10) — with select values constrained to the offered options and a
+     * checkbox normalized to 'yes' | ''. `missing` lists the required questions
+     * that were left blank, so each caller can phrase its own refusal.
+     *
+     * @param int        $event_id
+     * @param mixed      $posted    Raw posted answers, keyed by question key.
+     * @param array|null $questions Pre-fetched question set (loop hoist).
+     * @return array{answers:array<string,string>,missing:array<int,array>}
+     */
+    public function sanitize_registration_answers( $event_id, $posted, $questions = null ) {
+        $questions = \is_array( $questions ) ? $questions : $this->get_registration_questions( (int) $event_id );
+        $posted    = \is_array( $posted ) ? $posted : [];
+
+        $answers = [];
+        $missing = [];
+        foreach ( $questions as $q ) {
+            $raw    = $posted[ $q['key'] ] ?? '';
+            $answer = '';
+            if ( \is_scalar( $raw ) ) {
+                // A textarea is the one type whose newlines are part of the
+                // answer; sanitize_text_field() would flatten them.
+                $answer = ( $q['type'] === 'textarea' )
+                    ? \sanitize_textarea_field( (string) $raw )
+                    : \sanitize_text_field( (string) $raw );
+            }
+            if ( $q['type'] === 'checkbox' ) {
+                $answer = ( $answer !== '' && $answer !== '0' ) ? 'yes' : '';
+            } elseif ( $q['type'] === 'select' && $answer !== '' && ! \in_array( $answer, $q['options'], true ) ) {
+                $answer = ''; // not one of the offered choices
+            }
+            if ( ! empty( $q['required'] ) && \trim( $answer ) === '' ) {
+                $missing[] = $q;
+            }
+            $answers[ $q['key'] ] = $answer;
+        }
+
+        return [
+            'answers' => $answers,
+            'missing' => $missing,
+        ];
+    }
+
+    /**
+     * The form control for ONE attendee question — the single renderer behind
+     * the free registration form, the WooCommerce checkout attendee block and
+     * the roster's manual add form (REG-D39).
+     *
+     * Only the control is rendered, never the wrapper or the label: the three
+     * surfaces put their fields in a `.anchor-event-field` div, a Woo
+     * `.form-row` paragraph and a `.form-table` row respectively, and that is
+     * their business. What must not vary is which types exist, what a select
+     * offers, and what a checkbox posts — those are the question model, and
+     * they now have one implementation.
+     *
+     * @param array $q    Normalized question row.
+     * @param array $args {
+     *     @type string $name           Input name attribute (required).
+     *     @type string $id             Input id, omitted when ''.
+     *     @type string $value          Current value (redisplay).
+     *     @type string $class          class attribute, omitted when ''.
+     *     @type bool   $required       Defaults to the question's own flag.
+     *     @type string $checkbox_label Text beside a checkbox; when non-empty the
+     *                                  input is wrapped in a <label>.
+     *     @type string $checkbox_class class for that wrapping <label>.
+     * }
+     * @return string
+     */
+    public function render_registration_question_control( array $q, array $args = [] ) {
+        $args = \array_merge( [
+            'name'           => '',
+            'id'             => '',
+            'value'          => '',
+            'class'          => '',
+            'required'       => ! empty( $q['required'] ),
+            'checkbox_label' => '',
+            'checkbox_class' => '',
+        ], $args );
+
+        $id    = $args['id'] !== '' ? ' id="' . \esc_attr( $args['id'] ) . '"' : '';
+        $class = $args['class'] !== '' ? ' class="' . \esc_attr( $args['class'] ) . '"' : '';
+        $name  = ' name="' . \esc_attr( $args['name'] ) . '"';
+        $req   = $args['required'] ? ' required' : '';
+        $value = (string) $args['value'];
+        $type  = isset( $q['type'] ) ? (string) $q['type'] : 'text';
+
+        if ( $type === 'textarea' ) {
+            return '<textarea' . $id . $class . $name . ' rows="3"' . $req . '>' . \esc_textarea( $value ) . '</textarea>';
+        }
+
+        if ( $type === 'select' ) {
+            $out = '<select' . $id . $class . $name . $req . '>';
+            $out .= '<option value="">' . \esc_html__( '— Select —', 'anchor-schema' ) . '</option>';
+            foreach ( (array) ( $q['options'] ?? [] ) as $opt ) {
+                $out .= '<option value="' . \esc_attr( $opt ) . '"' . \selected( $value, $opt, false ) . '>' . \esc_html( $opt ) . '</option>';
+            }
+            return $out . '</select>';
+        }
+
+        if ( $type === 'checkbox' ) {
+            $input = '<input type="checkbox"' . $id . $class . $name . ' value="yes"' . \checked( $value, 'yes', false ) . $req . ' />';
+            if ( $args['checkbox_label'] === '' ) {
+                return $input;
+            }
+            $wrap = $args['checkbox_class'] !== '' ? ' class="' . \esc_attr( $args['checkbox_class'] ) . '"' : '';
+            return '<label' . $wrap . '>' . $input . ' ' . \esc_html( $args['checkbox_label'] ) . '</label>';
+        }
+
+        return '<input type="text"' . $id . $class . $name . ' value="' . \esc_attr( $value ) . '"' . $req . ' />';
+    }
+
+    /**
+     * Map a seat's stored answers onto the event's CURRENT question set
+     * (REG-D10 / REG-D11).
+     *
+     * Answers are keyed by the question's stable key on every write path. Seats
+     * booked before that was true — every WooCommerce seat up to it — hold
+     * LABEL-keyed answers, so a stored key that matches a current question's
+     * label is migrated onto that question's key HERE, on read: no data
+     * rewrite, and a rename can never orphan an answer because the label is
+     * only ever a display value.
+     *
+     * An answer whose question no longer exists keeps the key it was stored
+     * under, so it still reaches the roster and the CSV instead of vanishing.
+     *
+     * @param int        $event_id
+     * @param mixed      $stored    Raw _anchor_event_reg_fields value.
+     * @param array|null $questions Pre-fetched question set (loop hoist).
+     * @return array<string,mixed> Answers keyed by question key.
+     */
+    public function resolve_registration_answers( $event_id, $stored, $questions = null ) {
+        if ( ! \is_array( $stored ) || empty( $stored ) ) {
+            return [];
+        }
+        $questions = \is_array( $questions ) ? $questions : $this->get_registration_questions( $event_id );
+        if ( empty( $questions ) ) {
+            return $stored;
+        }
+
+        $keys     = [];
+        $by_label = [];
+        foreach ( $questions as $q ) {
+            $keys[ $q['key'] ] = true;
+            $by_label[ $this->registration_answer_index( $q['label'] ) ] = $q['key'];
+        }
+
+        $out = [];
+        foreach ( $stored as $stored_key => $value ) {
+            $key = (string) $stored_key;
+            if ( ! isset( $keys[ $key ] ) ) {
+                $index = $this->registration_answer_index( $key );
+                // Only migrate when the question does not ALSO have an id-keyed
+                // answer on this seat — that one is the current spelling and wins.
+                if ( isset( $by_label[ $index ] ) && ! \array_key_exists( $by_label[ $index ], $stored ) ) {
+                    $key = $by_label[ $index ];
+                }
+            }
+            $out[ $key ] = $value;
+        }
+        return $out;
+    }
+
+    /**
+     * Display label for a stored answer key: the current question's label, or
+     * the stored key itself once that question is gone (REG-D10). The one place
+     * the roster table, the roster list table, the CSV header and the privacy
+     * export ask, so a heading cannot mean two things in two readers.
+     *
+     * @param int        $event_id
+     * @param string     $key
+     * @param array|null $questions Pre-fetched question set (loop hoist).
+     * @return string
+     */
+    public function registration_answer_label( $event_id, $key, $questions = null ) {
+        $questions = \is_array( $questions ) ? $questions : $this->get_registration_questions( $event_id );
+        foreach ( $questions as $q ) {
+            if ( $q['key'] === (string) $key ) {
+                return $q['label'];
+            }
+        }
+        return (string) $key;
+    }
+
+    /** Comparison form for matching a stored key against a question label. */
+    private function registration_answer_index( $value ) {
+        return \strtolower( \trim( (string) $value ) );
     }
 
     /**
@@ -10285,8 +12013,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $clean;
     }
 
-    /** Persist the posted question repeater for an event. */
+    /**
+     * Persist the posted question repeater for an event.
+     *
+     * Task 28 — "the repeater was on screen and is now empty" and "this form
+     * never rendered the repeater" post the SAME thing: no
+     * anchor_event_questions rows at all. Only the first may clear the meta.
+     * The console therefore ships a hidden anchor_event_questions_present
+     * marker (mirroring the email builder's three "…_present" markers), and a
+     * save carrying neither the marker nor any rows — a plain wp-admin metabox
+     * save, whose Emails/details metaboxes do not render this repeater — is a
+     * no-op here rather than a silent delete of every question the console
+     * authored. Rows without the marker are still honoured, so an older cached
+     * form (or a direct call) keeps working.
+     */
     private function save_registration_questions( $post_id, array $src ) {
+        if ( ! isset( $src['anchor_event_questions'] ) && empty( $src['anchor_event_questions_present'] ) ) {
+            return;
+        }
         $raw = isset( $src['anchor_event_questions'] ) && \is_array( $src['anchor_event_questions'] )
             ? \wp_unslash( $src['anchor_event_questions'] )
             : [];
@@ -10295,7 +12039,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \delete_post_meta( $post_id, self::QUESTIONS_META );
             return;
         }
-        \update_post_meta( $post_id, self::QUESTIONS_META, $clean );
+        // wp_slash(): the rows were unslashed on the way in, and
+        // update_post_meta() unslashes again — wp_slash() maps over the array,
+        // so a label reading `Room C:\Alpha` survives. See
+        // persist_event_authoring()'s docblock.
+        \update_post_meta( $post_id, self::QUESTIONS_META, \wp_slash( $clean ) );
     }
 
     /**
@@ -10346,12 +12094,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return (string) \ob_get_clean();
     }
 
-    private function get_registration_fields() {
-        $fields = [];
-        // Allow developers to extend registration fields with custom inputs.
-        return \apply_filters( 'anchor_events_registration_fields', $fields );
-    }
-
     public function ajax_calendar() {
         \check_ajax_referer( 'anchor_events_calendar', 'nonce' );
         $month = isset( $_POST['month'] ) ? sanitize_text_field( wp_unslash( $_POST['month'] ) ) : '';
@@ -10374,39 +12116,200 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $this->registrations->attendee_count( $event_id, $status );
     }
 
+    /**
+     * The opening lines a confirmation falls back to when the event saved no
+     * override: the site setting, or the sentence this plugin has always
+     * shipped. One definition, because two copies of a default that have to
+     * agree are two copies that will eventually disagree.
+     *
+     * @param array $settings Module settings.
+     * @return string
+     */
+    /**
+     * The subject a confirmation falls back to when the event saved no
+     * override (audit REG-D58).
+     *
+     * There used to be three strings for one concept: the free path hard-coded
+     * "You are registered for %s", the WooCommerce path used
+     * `wc_customer_subject`, and the Emails builder showed that same WC setting
+     * to the author as the placeholder they were told they were overriding.
+     * `wc_customer_subject` is only ever persisted inside
+     * `if ( class_exists( 'WooCommerce' ) )`, so on a free site the builder
+     * offered a placeholder nobody could change that no send ever used.
+     * `confirmation_subject` is the concept, it is saved on every site, and the
+     * store's own subject (when a store has set one) overrides it in the
+     * WooCommerce sender only.
+     *
+     * A waitlisted seat borrows the SAME editable setting — REG-D58 made
+     * `confirmation_subject` the one subject an author can change, and a second
+     * field would undo that — but its built-in fallback says waitlist rather
+     * than "You are registered", which was simply untrue for that recipient. An
+     * author who has typed their own subject keeps it for both.
+     *
+     * @param array  $settings Module settings.
+     * @param string $status   Seat status the mail describes.
+     * @return string
+     */
+    public function default_confirmation_subject( array $settings, $status = Registrations::STATUS_CONFIRMED ) {
+        $subject = (string) ( $settings['confirmation_subject'] ?? '' );
+        $shipped = (string) ( $this->default_settings()['confirmation_subject'] ?? '' );
+
+        // Wording somebody chose wins for BOTH outcomes — a second setting
+        // would undo REG-D58's "one subject an author can change".
+        if ( $subject !== '' && $subject !== $shipped ) {
+            return $subject;
+        }
+        // Untouched site: the shipped default says "You are registered for X",
+        // which is simply untrue for a waitlisted seat.
+        if ( Registrations::STATUS_WAITLIST === $status ) {
+            return __( 'You are on the waitlist for {event_title}', 'anchor-schema' );
+        }
+        return $subject !== '' ? $subject : $shipped;
+    }
+
+    private function default_confirmation_intro( array $settings ) {
+        return ( isset( $settings['confirmation_message'] ) && $settings['confirmation_message'] !== '' )
+            ? (string) $settings['confirmation_message']
+            : __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' );
+    }
+
+    /**
+     * The free/manual registration emails: the site's own "new registration"
+     * notice, and the attendee's confirmation.
+     *
+     * The two answer to different switches. `notify_admin` governs the internal
+     * notice; the per-event "confirmation" switch and `notify_user` govern the
+     * attendee email. They used to share one guard at the top of this method, so
+     * an organizer who unticked "Confirmation" because they were emailing
+     * attendees by hand also stopped their own site telling them anyone had
+     * registered (REG-D8).
+     *
+     * The attendee's subject and opening lines resolve through get_email_field()
+     * so the per-event overrides the Emails builder writes reach this path too —
+     * they previously reached only the WooCommerce sender, which meant "Preview
+     * with real data" showed copy a free registration never sent (REG-D1/D45).
+     */
+    /**
+     * @return Outcome The ATTENDEE email: sent | skipped (notifications_off,
+     *                 disabled, no_address) | failed (wp_mail).
+     */
     public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
-        if ( ! $this->is_email_enabled( $event_id, 'confirmation' ) ) {
+        $this->send_registration_admin_notice( $event_id, $name, $email, $status, $guests );
+
+        // The ATTENDEE half is what the return value describes: the caller needs
+        // to know whether it may promise "check your email" (REG-D24). The
+        // organizer copy above is a different recipient with a different switch
+        // and is deliberately not folded into this answer.
+        return $this->send_confirmation_email( $event_id, $name, $email, $status, $guests );
+    }
+
+    /**
+     * The site's own "somebody registered" notice. Split out of
+     * send_registration_emails() so the one path that must NOT re-send it — a
+     * waitlist promotion, where the seat's creation already sent it — can call
+     * the attendee half alone instead of the pair.
+     *
+     * Governed by `notify_admin` alone — REG-D8: an organizer who unticked the
+     * event's Confirmation switch because they were mailing attendees by hand
+     * did not thereby ask to stop being told anyone had registered.
+     *
+     * @return void The organizer copy is never what a caller reports to a user.
+     */
+    private function send_registration_admin_notice( $event_id, $name, $email, $status, $guests = 0 ) {
+        $settings = $this->get_settings();
+        if ( empty( $settings['notify_admin'] ) ) {
             return;
         }
-        $settings = $this->get_settings();
-        $event_title = \get_the_title( $event_id );
+        $guests      = max( 0, (int) $guests );
+        $admin_email = $settings['admin_email'] ?: \get_option( 'admin_email' );
+        $subject     = sprintf( __( 'New registration for %s', 'anchor-schema' ), \get_the_title( $event_id ) );
+        $message     = sprintf(
+            __( "Name: %s\nEmail: %s\nStatus: %s\nGuests: %d\nParty size: %d\nEvent: %s", 'anchor-schema' ),
+            $name,
+            $email,
+            $status,
+            $guests,
+            1 + $guests,
+            \get_permalink( $event_id )
+        );
+        // Plain-text email, but still carry the configured sender identity.
+        $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
+        if ( ! $sent ) {
+            Events_Log::error( 'email_send_returned_false', [
+                'event'   => (int) $event_id,
+                'to'      => $admin_email,
+                'subject' => $subject,
+            ] );
+        }
+    }
+
+    /**
+     * The attendee's confirmation, and nothing else.
+     *
+     * The whole of send_registration_emails()' second half, called directly by
+     * the waitlist promotion: that seat's original creation already told the
+     * organizer somebody had registered, so announcing it a second time when
+     * the seat moves off the waitlist reports a registration that did not
+     * happen. One builder, two entry points — the pair, and the attendee alone.
+     *
+     * @return Outcome sent | skipped (notifications_off, disabled, no_address)
+     *                 | failed (wp_mail).
+     */
+    public function send_confirmation_email( $event_id, $name, $email, $status, $guests = 0 ) {
+        $settings   = $this->get_settings();
         $event_link = \get_permalink( $event_id );
-        $guests = max( 0, (int) $guests );
+        $guests     = max( 0, (int) $guests );
 
-        if ( ! empty( $settings['notify_admin'] ) ) {
-            $admin_email = $settings['admin_email'] ?: \get_option( 'admin_email' );
-            $subject = sprintf( __( 'New registration for %s', 'anchor-schema' ), $event_title );
-            $message = sprintf(
-                __( "Name: %s\nEmail: %s\nStatus: %s\nGuests: %d\nParty size: %d\nEvent: %s", 'anchor-schema' ),
-                $name,
-                $email,
-                $status,
-                $guests,
-                1 + $guests,
-                $event_link
-            );
-            // Plain-text email, but still carry the configured sender identity.
-            $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
-            if ( ! $sent ) {
-                Events_Log::error( 'email_send_returned_false', [ 'to' => $admin_email, 'subject' => $subject ] );
-            }
+        if ( empty( $settings['notify_user'] ) ) {
+            return Outcome::skipped( 'notifications_off' );
         }
-
-        if ( ! empty( $settings['notify_user'] ) ) {
-            $subject = sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title );
-            $html = $this->build_registration_email_html( $event_id, $name, $status, $settings, $guests );
-            $this->send_html_email( $email, $subject, $html, [], $event_id );
+        if ( ! $this->is_email_enabled( $event_id, 'confirmation' ) ) {
+            return Outcome::skipped( 'disabled' );
         }
+        if ( \sanitize_email( (string) $email ) === '' ) {
+            return Outcome::skipped( 'no_address' );
+        }
+        $tokens = $this->email_tokens( [
+            'event_id' => $event_id,
+            'seat'     => [ 'name' => $name, 'email' => $email, 'status' => $status ],
+        ] );
+        // Per-event override -> site setting -> the default this path has
+        // always used. Same three-step resolution, and the same fallbacks,
+        // as every other sender: nothing changes for an event with no
+        // override saved.
+        $subject = $this->expand_email_tokens(
+            $this->get_email_field(
+                $event_id,
+                'confirmation',
+                'subject',
+                $this->default_confirmation_subject( $settings, (string) $status )
+            ),
+            $tokens
+        );
+        $intro = $this->expand_email_tokens(
+            $this->get_email_field(
+                $event_id,
+                'confirmation',
+                'intro',
+                $this->default_confirmation_intro( $settings )
+            ),
+            $tokens
+        );
+        // The $ctx form of the builder, not the positional shim: the shim
+        // resolves the intro from the settings alone, which is the bug.
+        $html = $this->build_registration_email_html( [
+            'event_id'      => (int) $event_id,
+            'name'          => (string) $name,
+            'status'        => (string) $status,
+            'intro_message' => $intro,
+            'guests'        => $guests,
+            'detail_rows'   => [],
+            'seat_list'     => [],
+            'cta_label'     => __( 'View event details', 'anchor-schema' ),
+            'cta_url'       => $event_link,
+            'type'          => 'confirmation',
+        ] );
+        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id ), 'wp_mail' );
     }
 
     // -------------------------------------------------------------------------
@@ -10415,86 +12318,151 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /** Enqueue (do not send) on a live→cancelled/refunded transition (spec §7.2). */
     public function on_seat_status_changed( $seat_id, $from, $to, $actor ) {
-        $terminal = [ \Anchor\Events\Registrations::STATUS_CANCELLED, \Anchor\Events\Registrations::STATUS_REFUNDED ];
-        $live     = [ \Anchor\Events\Registrations::STATUS_CONFIRMED, \Anchor\Events\Registrations::STATUS_WAITLIST ];
-        if ( ! \in_array( $to, $terminal, true ) || ! \in_array( $from, $live, true ) ) {
+        // A waitlist promotion is the one non-terminal transition an attendee
+        // has to hear about (audit REG-D38). It is the module's ONLY promotion
+        // — there is no automatic one — and it used to send nothing at all, so
+        // somebody who had been told "you are on the waitlist" got a seat and
+        // was never told. Reuses the attendee confirmation sender, which owns
+        // both switches (notify_user and the per-event confirmation toggle),
+        // rather than growing a fifth template — and ONLY that sender: see the
+        // flush, where the organizer's copy is deliberately not repeated.
+        if ( $from === Registrations::STATUS_WAITLIST && $to === Registrations::STATUS_CONFIRMED ) {
+            // QUEUED, not sent here: this hook fires from update_status(), and
+            // the promotion's own caller (change_status_with_capacity()) is
+            // still holding the event's capacity lock. Same queue and same
+            // flush point as a cancellation, for the same reason.
+            $this->pending_seat_emails[ (int) $seat_id ] = 'promotion';
+            return;
+        }
+
+        $live = [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_WAITLIST ];
+        if ( ! \in_array( $to, Registrations::TERMINAL_STATUSES, true ) || ! \in_array( $from, $live, true ) ) {
             return;
         }
         $settings = $this->get_settings();
         if ( empty( $settings['notify_cancellation'] ) ) {
             return;
         }
-        if ( \get_post_meta( (int) $seat_id, '_anchor_event_cancel_emailed', true ) ) {
+        // The marker is per cancellation, not per seat (audit REG-D4): a seat
+        // restored to confirmed had it cleared by update_status(), so a second
+        // cancellation enqueues a second email instead of being swallowed.
+        if ( (int) \get_post_meta( (int) $seat_id, Registrations::META_CANCEL_EMAILED, true ) > 0 ) {
             return;
         }
-        $this->pending_cancellation_emails[ (int) $seat_id ] = (int) $seat_id;
+        $this->pending_seat_emails[ (int) $seat_id ] = 'cancellation';
     }
 
-    /** Flush queued cancellation emails outside any lock (shutdown + explicit end-of-reconcile). */
-    public function flush_cancellation_emails() {
-        if ( empty( $this->pending_cancellation_emails ) ) {
+    /**
+     * Flush queued seat lifecycle emails outside any lock (shutdown + explicit
+     * end-of-reconcile). Dispatches on the queued type, so cancellations and
+     * waitlist promotions share one queue, one flush point and one guarantee:
+     * nothing is mailed while the event lock is held.
+     */
+    public function flush_seat_emails() {
+        if ( empty( $this->pending_seat_emails ) ) {
             return;
         }
-        $queue = $this->pending_cancellation_emails;
-        $this->pending_cancellation_emails = [];
-        foreach ( $queue as $seat_id ) {
+        $queue = $this->pending_seat_emails;
+        $this->pending_seat_emails = [];
+        foreach ( $queue as $seat_id => $type ) {
+            if ( 'promotion' === $type ) {
+                $seat = $this->registrations->get_seat( (int) $seat_id );
+                if ( ! \is_array( $seat ) || ( $seat['status'] ?? '' ) !== Registrations::STATUS_CONFIRMED ) {
+                    continue; // cancelled again before the flush — nothing to announce.
+                }
+                // The ATTENDEE half only. The seat already exists — its
+                // creation sent the organizer's "New registration" notice — so
+                // sending the pair here told the site a second time that
+                // somebody had registered, for a registration that happened
+                // once. Same builder, same switches, one recipient.
+                $this->send_confirmation_email(
+                    (int) \get_post_meta( (int) $seat_id, '_anchor_event_id', true ),
+                    (string) ( $seat['name'] ?? '' ),
+                    (string) ( $seat['email'] ?? '' ),
+                    Registrations::STATUS_CONFIRMED,
+                    (int) ( $seat['guests'] ?? 0 )
+                );
+                continue;
+            }
             $this->send_cancellation_email( (int) $seat_id );
         }
     }
 
     /**
+     * Historical name for flush_seat_emails(), kept because it is the flush
+     * point every caller already knows (the shutdown hook, the WooCommerce
+     * reconcile, and the email tests). A forwarder, not a second queue.
+     */
+    public function flush_cancellation_emails() {
+        $this->flush_seat_emails();
+    }
+
+    /**
      * Build + send one attendee cancellation/refund email; idempotent via marker.
      *
-     * Note: Registrations::get_seat_info() does not return email, name, or order_id
-     * (it returns id, status, seat_index, event_id, order_item_id). Those three
-     * fields are read directly from seat post meta here.
+     * Answers `sent` ONLY when wp_mail() accepted the message. Every reason it
+     * does not mail — already emailed about this cancellation, cancellation
+     * emails switched off, no address on the seat, the seat gone — is a
+     * `skipped`, not a failure: none of them is fixable by a retry, and none is
+     * a send (audit REG-D4/REG-D6). `failed` is reserved for wp_mail() saying
+     * no, which is the one case that earns a retry job.
      *
      * @param int $seat_id
-     * @return bool
+     * @return Outcome sent | skipped (already_sent, notifications_off, seat_gone,
+     *                 no_address, disabled) | failed (wp_mail).
      */
     public function send_cancellation_email( $seat_id ) {
         $seat_id = (int) $seat_id;
-        if ( \get_post_meta( $seat_id, '_anchor_event_cancel_emailed', true ) ) {
-            return true;
+        if ( (int) \get_post_meta( $seat_id, Registrations::META_CANCEL_EMAILED, true ) > 0 ) {
+            $this->clear_email_retry( $seat_id, 'cancellation' ); // nothing left to retry
+            return Outcome::skipped( 'already_sent' );
         }
         // Defense-in-depth: this method is public, so re-honor the toggle here even
         // though on_seat_status_changed() already gates the normal enqueue path.
         $settings = $this->get_settings();
         if ( empty( $settings['notify_cancellation'] ) ) {
-            return false;
+            return Outcome::skipped( 'notifications_off' );
         }
         $info  = $this->registrations->get_seat_info( $seat_id );
         if ( ! \is_array( $info ) ) {
-            return false;
+            return Outcome::skipped( 'seat_gone' );
         }
-        // get_seat_info() omits email, name, order_id — read from meta directly.
-        $email    = (string) \get_post_meta( $seat_id, '_anchor_event_email', true );
-        $name     = (string) \get_post_meta( $seat_id, '_anchor_event_name', true );
-        $order_id = (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true );
+        // REG-D53 — the snapshot carries these now; no reaching around the
+        // data layer for seat storage.
+        $email    = (string) $info['email'];
+        $name     = (string) $info['name'];
+        $order_id = (int) $info['order_id'];
         if ( $email === '' ) {
-            return false;
+            return Outcome::skipped( 'no_address' );
         }
         $event_id = (int) $info['event_id'];
         if ( ! $this->is_email_enabled( $event_id, 'cancellation' ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         $status   = (string) $info['status']; // cancelled | refunded
         $order    = ( $order_id > 0 && \function_exists( 'wc_get_order' ) ) ? \wc_get_order( $order_id ) : null;
 
         $tokens = $this->email_tokens( [ 'event_id' => $event_id, 'seat' => array_merge( $info, [ 'name' => $name, 'status' => $status ] ), 'order' => $order ?: null ] );
         $is_refund = ( $status === \Anchor\Events\Registrations::STATUS_REFUNDED );
-        $subject = $this->expand_email_tokens(
-            $is_refund
-                ? \str_ireplace( 'cancelled', 'refunded', $this->get_email_field( $event_id, 'cancellation', 'subject', $settings['cancellation_subject'] ) )
-                : $this->get_email_field( $event_id, 'cancellation', 'subject', $settings['cancellation_subject'] ),
-            $tokens
-        );
-        $intro = $this->expand_email_tokens(
-            $is_refund
-                ? \str_ireplace( 'cancelled', 'refunded', $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] ) )
-                : $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] ),
-            $tokens
-        );
+
+        // REG-D51 — a refund has its own subject and opening lines. This used
+        // to be str_ireplace( 'cancelled', 'refunded', ... ) over the author's
+        // own prose: copy that never says "cancelled" ("Sorry — your seat has
+        // been released") went out with no mention of a refund at all, and copy
+        // that says it twice came out as "your refunded registration for the
+        // refundation policy course". A word-level rewrite of admin-authored
+        // text in an arbitrary language cannot be made to work; a second pair
+        // of fields can. Per-event overrides stay with the cancellation tab
+        // that owns them until a refund tab exists to write a refund one.
+        if ( $is_refund ) {
+            $subject_source = (string) $settings['refund_subject'];
+            $intro_source   = (string) $settings['refund_intro'];
+        } else {
+            $subject_source = $this->get_email_field( $event_id, 'cancellation', 'subject', $settings['cancellation_subject'] );
+            $intro_source   = $this->get_email_field( $event_id, 'cancellation', 'intro', $settings['cancellation_intro'] );
+        }
+        $subject = $this->expand_email_tokens( $subject_source, $tokens );
+        $intro   = $this->expand_email_tokens( $intro_source, $tokens );
         $detail_rows = [ [ 'label' => \__( 'Event', 'anchor-schema' ), 'value' => $tokens['event_title'] ] ];
         if ( $tokens['event_date'] !== '' ) {
             $detail_rows[] = [ 'label' => \__( 'Date', 'anchor-schema' ), 'value' => $tokens['event_date'] ];
@@ -10515,9 +12483,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $html = $this->build_registration_email_html( $ctx );
         $sent = $this->send_html_email( $email, $subject, $html, [], $event_id );
         if ( $sent ) {
-            \update_post_meta( $seat_id, '_anchor_event_cancel_emailed', true );
+            // WHEN it was emailed, not merely THAT it was: the value is what
+            // survives a later un-cancel/re-cancel cycle being distinguishable
+            // from the marker update_status() cleared.
+            \update_post_meta( $seat_id, Registrations::META_CANCEL_EMAILED, \time() );
+            $this->clear_email_retry( $seat_id, 'cancellation' );
+        } else {
+            // The in-memory queue was emptied before this ran, and the seat is
+            // already terminal, so nothing else will ever re-enqueue it
+            // (audit REG-D5). Leave the job for the hourly sweep to drain.
+            $this->queue_email_retry( $seat_id, [ 'type' => 'cancellation' ] );
         }
-        return $sent;
+        return Outcome::from_bool( $sent, 'wp_mail' );
     }
 
     /**
@@ -10616,30 +12593,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * input (tags stripped, but not entity-escaped). Block tokens (pre-rendered
      * HTML fragments for the structured/conditional regions):
      * {header_image} {greeting} {intro} {guests_line} {waitlist_notice}
-     * {detail_rows} {seat_list} {join_button} {cta_button}. There is no
+     * {detail_rows} {seat_list} {cta_button}. There is no
      * separate {footer} block token — the footer region is static markup
      * with only a scalar {site_name} substitution, so no block extraction
      * was needed for it.
      */
     private static function default_email_shell() {
         return <<<'ANCHOR_EVENTS_EMAIL_SHELL'
-        <!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width,initial-scale=1" />
             <title>{event_title}</title>
         </head>
-        <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+        <body style="margin:0;padding:0;background:{brand_bg};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
             {preheader}
-            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{brand_bg};padding:24px 12px;">
                 <tr>
                     <td align="center">
-                        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;">
+                        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:{brand_surface};border-radius:8px;overflow:hidden;">
+                            {logo}
                             {header_image}
                             <tr>
                                 <td style="padding:28px 32px 8px;">
-                                    <h1 style="margin:0;font-size:24px;line-height:1.3;color:#111;">{event_title}</h1>
+                                    <h1 style="margin:0;font-size:24px;line-height:1.3;color:{brand_heading};">{event_title}</h1>
                                 </td>
                             </tr>
                             <tr>
@@ -10670,24 +12647,65 @@ ANCHOR_EVENTS_EMAIL_SHELL;
     }
 
     /**
-     * Default template constant for $type — the ultimate fallback (Task 3.1
-     * orientation: all four share the same shell today). Public so the
-     * Task 3.2 builder UI can offer a "reset to default" preview.
+     * Default template for $type — the ultimate fallback. Public so the
+     * builder UI can offer a "reset to default" preview.
+     *
+     * REG-D60 — the body used to be a bare `return self::default_email_shell();`
+     * with $type unused, so the signature and EMAILS.md both promised a
+     * per-type default that did not exist: "Reset to default" on the
+     * cancellation tab restored the confirmation-shaped shell, and any attempt
+     * to diverge the four would have silently done nothing until this method
+     * was rewritten. All four still map to the same shell today — that is a
+     * decision, and it is written down here — but the seam is where the name
+     * says it is.
+     *
+     * @param string $type One of EMAIL_TEMPLATE_TYPES.
+     * @return string
      */
     public function default_email_template( $type ) {
-        return self::default_email_shell();
-    }
-
-    /** Global per-type default option, or empty string if unset. */
-    public function get_email_template_option( $type ) {
         $type = \in_array( $type, self::EMAIL_TEMPLATE_TYPES, true ) ? (string) $type : 'confirmation';
-        $value = \get_option( 'anchor_events_email_tpl_' . $type, '' );
-        return \is_string( $value ) ? $value : '';
+
+        // One arm per type on purpose: diverging one of the four is an edit to
+        // its own line, not a rewrite of this method.
+        switch ( $type ) {
+            case 'reminder':
+                $shell = self::default_email_shell();
+                break;
+            case 'cancellation':
+                $shell = self::default_email_shell();
+                break;
+            case 'roster':
+                $shell = self::default_email_shell();
+                break;
+            case 'confirmation':
+            default:
+                $shell = self::default_email_shell();
+                break;
+        }
+
+        /**
+         * The shipped default body for one email type.
+         *
+         * The seam the method name promises, reachable from outside as well as
+         * in: a site that wants a cancellation that does not look like a
+         * confirmation can answer for that one type without touching the
+         * other three.
+         *
+         * @param string $shell The default template HTML.
+         * @param string $type  One of Module::EMAIL_TEMPLATE_TYPES.
+         */
+        return (string) \apply_filters( 'anchor_events_default_email_template', $shell, $type );
     }
 
     /**
      * Resolve the effective template for $type on $event_id: per-event
-     * override meta -> global default option -> default constant.
+     * override meta -> default constant.
+     *
+     * REG-D12 — there used to be a middle "site-wide default" tier reading the
+     * option `anchor_events_email_tpl_{type}`. No UI, saver or migration ever
+     * wrote that option, so the tier could never be populated by an
+     * administrator and only ever added an unreachable branch. It is gone;
+     * per-event overrides and the shipped default are the whole story.
      *
      * @param string $type     One of EMAIL_TEMPLATE_TYPES.
      * @param int    $event_id 0 = no per-event override lookup.
@@ -10702,20 +12720,23 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // resolve_email_template( $type, 0 ) inside save_email_templates(),
         // etc. — always sees this as null and this branch never runs.
         if ( $this->preview_template_override !== null && $this->preview_template_override['type'] === $type ) {
-            return $this->preview_template_override['html'];
+            return self::strip_email_doctype( $this->preview_template_override['html'] );
         }
 
+        // One exit, so REG-D25's doctype strip applies to every source: a stored
+        // per-event override written before this fix, a global option template
+        // pasted in with its own doctype, and the shipped shell alike. The
+        // builder pre-fill, the "reset to default" text and save_email_templates()'s
+        // "is this still the default?" comparison all read through here, so none
+        // of them can disagree about whether a template carries a doctype.
+        $template = '';
         if ( $event_id > 0 ) {
-            $override = (string) \get_post_meta( $event_id, '_anchor_event_email_tpl_' . $type, true );
-            if ( $override !== '' ) {
-                return $override;
-            }
+            $template = (string) \get_post_meta( $event_id, '_anchor_event_email_tpl_' . $type, true );
         }
-        $global = $this->get_email_template_option( $type );
-        if ( $global !== '' ) {
-            return $global;
+        if ( $template === '' ) {
+            $template = $this->default_email_template( $type );
         }
-        return $this->default_email_template( $type );
+        return self::strip_email_doctype( $template );
     }
 
     /**
@@ -10949,25 +12970,6 @@ ANCHOR_EVENTS_EMAIL_SHELL;
 
     /**
      * Block-token renderer — verbatim byte-for-byte extraction of the
-     * original inline `join_button` conditional from build_registration_email_html().
-     * Returns '' when the condition is false, exactly as before.
-     */
-    private function tpl_block_join_button( $join_url ) {
-        \ob_start();
-        ?><?php if ( $join_url ) : ?>
-                            <tr>
-                                <td style="padding:8px 32px 0;">
-                                    <a href="<?php echo esc_url( $join_url ); ?>" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;background:#0f766e;color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px;">
-                                        <?php echo esc_html__( 'Join the event', 'anchor-schema' ); ?>
-                                    </a>
-                                </td>
-                            </tr>
-                            <?php endif; ?><?php
-        return \ob_get_clean();
-    }
-
-    /**
-     * Block-token renderer — verbatim byte-for-byte extraction of the
      * original inline `cta_button` conditional from build_registration_email_html().
      * Returns '' when the condition is false, exactly as before.
      */
@@ -11056,6 +13058,45 @@ ANCHOR_EVENTS_EMAIL_SHELL;
      * @return string
      */
     private function apply_email_appearance( $html, array $settings ) {
+        $html = $this->recolor_email_literals( $html, $settings );
+
+        $logo = $this->email_logo_row( $settings );
+        if ( $logo === '' ) {
+            return $html;
+        }
+
+        // Anchor on the 600px content table's opening tag, not on its style
+        // attribute: kses rewrites that attribute (and the card color may have
+        // just been swapped above), so matching the full tag string means the
+        // logo silently never renders on any customized template. width="600"
+        // is unique to this table in the shell.
+        $out = \preg_replace_callback(
+            '/<table\b[^>]*\bwidth="600"[^>]*>/',
+            function ( $m ) use ( $logo ) {
+                return $m[0] . $logo;
+            },
+            $html,
+            1
+        );
+
+        return \is_string( $out ) ? $out : $html;
+    }
+
+    /**
+     * The colour half of apply_email_appearance(): rewrite the stock literal
+     * declarations to the configured palette.
+     *
+     * Split out for REG-D27. A template that opts into the {brand_*} tokens
+     * gets its colours from the token layer instead, but the block-token
+     * fragments this class generates (greeting, intro, detail rows, CTA
+     * buttons) still carry the stock literals — they are rendered by PHP, not
+     * authored — so they go through here on every path.
+     *
+     * @param string $html
+     * @param array  $settings
+     * @return string
+     */
+    private function recolor_email_literals( $html, array $settings ) {
         $html = (string) $html;
 
         foreach ( $this->email_appearance_map() as $key => $spec ) {
@@ -11083,32 +13124,89 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             }
         }
 
+        return $html;
+    }
+
+    /**
+     * The logo table row, or '' when no logo is configured.
+     *
+     * One renderer for both placements: the {logo} token (REG-D27) and
+     * apply_email_appearance()'s width="600" anchor, which stays as the
+     * fallback for templates that use none of the tokens.
+     *
+     * @param array $settings
+     * @return string
+     */
+    private function email_logo_row( array $settings ) {
         $logo_url = \esc_url( $settings['email_logo_url'] ?? '' );
         if ( $logo_url === '' ) {
-            return $html;
+            return '';
         }
-
-        $logo = '<tr><td align="center" style="padding:24px 32px 0;">'
+        return '<tr><td align="center" style="padding:24px 32px 0;">'
             . '<img src="' . $logo_url . '" alt="' . esc_attr( \get_bloginfo( 'name' ) ) . '" width="160" style="display:block;max-width:160px;width:100%;height:auto;border:0;" />'
             . '</td></tr>';
+    }
 
-        // Anchor on the 600px content table's opening tag, not on its style
-        // attribute: kses rewrites that attribute (and the card color may have
-        // just been swapped above), so matching the full tag string means the
-        // logo silently never renders on any customized template. width="600"
-        // is unique to this table in the shell. preg_replace_callback (not
-        // preg_replace) because the alt text is the site name, and a site
-        // named e.g. "Cash $1 Co" would otherwise be read as a backreference.
-        $out = \preg_replace_callback(
-            '/<table\b[^>]*\bwidth="600"[^>]*>/',
-            function ( $m ) use ( $logo ) {
-                return $m[0] . $logo;
-            },
-            $html,
-            1
-        );
+    /**
+     * The Email Appearance palette, exposed as template tokens (REG-D27).
+     *
+     * apply_email_appearance() applies the palette by rewriting the stock
+     * literal colour strings, which works only for a template that still
+     * contains them — a hand-built one (production event 7258) uses its own
+     * colours and its own table markup, so the branding settings and the logo
+     * applied to nothing and nothing said so. These tokens are the opt-in a
+     * custom template can use instead.
+     *
+     * The value is the STOCK LITERAL whenever the setting is unset or equal to
+     * it, for the same reason apply_email_appearance() skips an unchanged
+     * setting: an install that never touched Email Appearance must render the
+     * byte-for-byte email it rendered before. Note the spellings are the
+     * markup's (`#111`), not email_appearance_map()'s comparison values
+     * (`#111111`).
+     *
+     * @return array<string,array{0:string,1:string}> token => [ settings key, stock literal ]
+     */
+    private function email_brand_map() {
+        return [
+            'brand_bg'          => [ 'email_background_color', '#f4f4f4' ],
+            'brand_surface'     => [ 'email_card_color', '#ffffff' ],
+            'brand_heading'     => [ 'email_heading_color', '#111' ],
+            'brand_text'        => [ 'email_text_color', '#333' ],
+            'brand_button'      => [ 'email_button_color', '#111' ],
+            // No settings field of its own — the stock button label colour, so a
+            // template that opts in does not have to hard-code white.
+            'brand_button_text' => [ 'email_button_text_color', '#ffffff' ],
+        ];
+    }
 
-        return \is_string( $out ) ? $out : $html;
+    /**
+     * Resolve the {brand_*} and {logo} tokens for one send.
+     *
+     * @param array $settings
+     * @return array<string,string>
+     */
+    private function email_brand_tokens( array $settings ) {
+        $tokens = [];
+        foreach ( $this->email_brand_map() as $token => $spec ) {
+            list( $key, $stock ) = $spec;
+            $value = \sanitize_hex_color( $settings[ $key ] ?? '' );
+            $tokens[ $token ] = ( $value && $this->normalize_hex_color( $value ) !== $this->normalize_hex_color( $stock ) )
+                ? $value
+                : $stock;
+        }
+        $tokens['logo'] = $this->email_logo_row( $settings );
+        return $tokens;
+    }
+
+    /** Whether $template opts into the appearance token layer (REG-D27). */
+    private function template_uses_brand_tokens( $template ) {
+        $template = (string) $template;
+        foreach ( \array_merge( \array_keys( $this->email_brand_map() ), [ 'logo' ] ) as $token ) {
+            if ( \strpos( $template, '{' . $token . '}' ) !== false ) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -11136,9 +13234,16 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             $ctx = $arg;
         } else {
             $settings = \is_array( $settings ) ? $settings : $this->get_settings();
-            $intro    = isset( $settings['confirmation_message'] ) && $settings['confirmation_message'] !== ''
-                ? $settings['confirmation_message']
-                : __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' );
+            // Same resolution the live caller (send_registration_emails()) uses,
+            // minus the token expansion it does with a seat in hand — a
+            // positional caller must not be the one path that ignores the
+            // event's own opening lines (REG-D1).
+            $intro = $this->get_email_field(
+                (int) $arg,
+                'confirmation',
+                'intro',
+                $this->default_confirmation_intro( $settings )
+            );
             $ctx = [
                 'event_id'      => (int) $arg,
                 'name'          => (string) $name,
@@ -11205,12 +13310,13 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // $ctx so every send path — free, WooCommerce, reminder, cancellation,
         // roster — picks them up from one place.
         //
-        // A virtual event defaults to its room link. That replaces the separate
+        // A virtual event defaults to its room link. That replaced the separate
         // {join_button} region, which was a second button no field controlled:
         // it appeared and disappeared on rules the author could not see, and
         // read as a stray duplicate of the CTA sitting right beside it. Same
         // link, same place, but now it is in a field that can be renamed,
-        // repointed, or emptied.
+        // repointed, or emptied. REG-D28 removed the leftover region and its
+        // token, which no shipped template and no palette ever offered.
         $cta  = $this->get_email_cta( $event_id, $type, 1, $this->default_email_cta( $event_id, [ 'label' => $cta_label, 'url' => $cta_url ] ) );
         $cta2 = $this->get_email_cta( $event_id, $type, 2 );
 
@@ -11222,10 +13328,11 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             // A stand-in room link ONLY for an event that is actually virtual
             // and simply has no URL saved yet. Never for an in-person event.
             //
-            // {join_button} is a full-width button, and faking one put a second
-            // button in the preview of an event that will never send it —
-            // indistinguishable from the CTA buttons that ARE configured just
-            // above it. Same reason {header_image} gets no stand-in photo: a
+            // The retired {join_button} was a full-width button, and faking one
+            // put a second button in the preview of an event that will never
+            // send it — indistinguishable from the CTA buttons that ARE
+            // configured just above it. Same reason {header_image} gets no
+            // stand-in photo: a
             // sample is helpful when it is obviously filling a gap in a line of
             // text, and misleading when it renders as a piece of the layout the
             // author did not put there. The {join_link} SCALAR still gets a
@@ -11287,7 +13394,14 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'waitlist_notice'  => $this->tpl_block_waitlist_notice( $preview ? 'waitlist' : $status ),
             'detail_rows'      => $this->tpl_block_detail_rows( $detail_rows ),
             'seat_list'        => $this->tpl_block_seat_list( $seat_list ),
-            'join_button'      => $this->tpl_block_join_button( $join_url ),
+            // REG-D28 — retired, but still a key. The region and its renderer
+            // are gone (the CTA slot carries the room link now) and the token
+            // is in no palette and no doc, but expand_email_tokens() is a plain
+            // str_replace: without this entry, a live per-event template that
+            // still contains {join_button} would email the literal text. It
+            // expands to nothing instead, which is what the region rendered for
+            // every non-virtual event anyway.
+            'join_button'      => '',
             'cta_button'       => $this->tpl_block_cta_button( $cta['url'], $cta['label'] ),
             'cta_button_2'     => $this->tpl_block_cta_button( $cta2['url'], $cta2['label'], '#ffffff', '#111' ),
         ];
@@ -11317,8 +13431,36 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             $scalars
         ) );
 
-        $html = $this->expand_email_tokens( $template, $tokens );
-        $html = $this->apply_email_appearance( $html, $this->get_settings() );
+        // REG-D27 — two ways the Email Appearance palette reaches the email, and
+        // exactly one of them runs. A template that opts into the {brand_*}/
+        // {logo} tokens gets the palette through the same token layer as
+        // everything else; one that does not falls back to
+        // apply_email_appearance()'s literal rewrite, so an install that never
+        // customized its template renders byte-for-byte what it always did.
+        //
+        // The block tokens above are markup this class generates with the stock
+        // literals baked in, so on the token path they still need the rewrite —
+        // otherwise opting a template in would silently stop recolouring the
+        // greeting, the detail rows and the CTA buttons.
+        $email_settings = $this->get_settings();
+        $tokens         = \array_merge( $tokens, $this->email_brand_tokens( $email_settings ) );
+
+        if ( $this->template_uses_brand_tokens( $template ) ) {
+            foreach ( self::EMAIL_BLOCK_TOKENS as $block ) {
+                if ( isset( $tokens[ $block ] ) && $tokens[ $block ] !== '' ) {
+                    $tokens[ $block ] = $this->recolor_email_literals( $tokens[ $block ], $email_settings );
+                }
+            }
+            $html = $this->expand_email_tokens( $template, $tokens );
+        } else {
+            $html = $this->expand_email_tokens( $template, $tokens );
+            $html = $this->apply_email_appearance( $html, $email_settings );
+        }
+
+        // REG-D25 — the doctype belongs to the assembled document, not to the
+        // stored template: the kses allowlist cannot express one, so every
+        // saved template loses it and the mail renders in quirks mode.
+        $html = self::email_document_html( $html );
 
         return \apply_filters( 'anchor_events_registration_email_html', $html, $ctx );
     }
@@ -11328,8 +13470,24 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         return \add_query_arg( 'event_registration', $message, $url );
     }
 
-    public function get_settings() {
-        $defaults = [
+    /**
+     * The settings this plugin SHIPS with — the values a site has never
+     * touched, and the values a cleared field returns to.
+     *
+     * MODEL-D29 — this literal used to live inside get_settings(), which meant
+     * sanitize_settings() had nothing to reach for but get_settings() itself.
+     * Its fallback array was called `$defaults` while actually holding the
+     * CURRENT merged settings, so `sanitize_text_field( '' ) ?: $defaults[...]`
+     * evaluated to the value already stored: clearing "Reminder subject" and
+     * saving put the same text straight back, the admin saw a save that did
+     * nothing, and no text setting or colour could ever be reset to what the
+     * plugin ships. get_settings() is now this array merged with the stored
+     * option — byte-identical output — and the saver can tell the two apart.
+     *
+     * @return array
+     */
+    public function default_settings() {
+        return [
             'timezone_mode' => 'site',
             'archive_hide_past' => true,
             'template_source' => 'theme',
@@ -11337,6 +13495,10 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'admin_email' => '',
             'notify_admin' => true,
             'notify_user' => true,
+            // The one confirmation subject (audit REG-D58). Site-wide and
+            // WooCommerce-independent; `wc_customer_subject` below is the
+            // store's optional override of it, not a second concept.
+            'confirmation_subject' => __( 'You are registered for {event_title}', 'anchor-schema' ),
             'confirmation_message' => __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' ),
             'max_guests' => 0,
             'register_button_label' => '',
@@ -11357,12 +13519,14 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'notify_cancellation'    => true,
             'cancellation_subject'   => __( 'Your registration for {event_title} has been cancelled', 'anchor-schema' ),
             'cancellation_intro'     => __( 'Your registration for {event_title} has been cancelled. If this is unexpected, please contact us.', 'anchor-schema' ),
+            // A refund is its own message, not the cancellation copy with a word
+            // swapped in it (audit REG-D51).
+            'refund_subject'         => __( 'Your registration for {event_title} has been refunded', 'anchor-schema' ),
+            'refund_intro'           => __( 'Your registration for {event_title} has been refunded. If this is unexpected, please contact us.', 'anchor-schema' ),
             'organizer_roster_email' => false,
             'roster_auto_offset'     => 1,
             'roster_subject'         => __( 'Final roster for {event_title}', 'anchor-schema' ),
             'roster_intro'           => __( 'Here is the current confirmed roster for {event_title} on {event_date}.', 'anchor-schema' ),
-            // Reserved/unused in MVP (per-attendee emails are deferred).
-            'notify_attendee'      => false,
             // Email sender identity (applied as per-message headers on event emails).
             'email_from_name'        => '',
             'email_from_address'     => '',
@@ -11377,10 +13541,13 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'email_heading_color'    => '#111111',
             'email_button_color'     => '#111111',
         ];
+    }
+
+    public function get_settings() {
         $settings = \get_option( self::OPTION_KEY, [] );
         if ( ! is_array( $settings ) ) {
             $settings = [];
         }
-        return \wp_parse_args( $settings, $defaults );
+        return \wp_parse_args( $settings, $this->default_settings() );
     }
 }

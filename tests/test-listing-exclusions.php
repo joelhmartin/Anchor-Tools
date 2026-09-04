@@ -184,10 +184,21 @@ class Test_Listing_Exclusions extends Anchor_Events_TestCase {
 	 * hide_from_archive half.
 	 * ------------------------------------------------------------------ */
 
-	/** Log in as somebody who passes the edit_others_posts gate on both surfaces. */
+	/**
+	 * Log in as somebody who passes the staff gate on both surfaces.
+	 *
+	 * That gate is Module::events_capability() (audit REG-D20), not a hard-coded
+	 * edit_others_posts: on a store the two shortcodes print the same customer
+	 * PII as the Roster screen, so they require the same capability it does. An
+	 * Editor is therefore not staff on a WooCommerce site, and the capability
+	 * has to be granted explicitly for this fixture to mean what it says.
+	 */
 	private function login_as_staff() {
-		wp_set_current_user( self::factory()->user->create( [ 'role' => 'editor' ] ) );
-		$this->assertTrue( current_user_can( 'edit_others_posts' ) );
+		$uid  = self::factory()->user->create( [ 'role' => 'editor' ] );
+		$user = new WP_User( $uid );
+		$user->add_cap( \Anchor\Events\Module::events_capability() );
+		wp_set_current_user( $uid );
+		$this->assertTrue( \Anchor\Events\Roster::current_user_can_manage() );
 	}
 
 	public function test_staff_clause_keeps_soft_closed_dates_and_still_drops_hidden_ones() {

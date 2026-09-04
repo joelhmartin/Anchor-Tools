@@ -1,0 +1,652 @@
+<?php
+/**
+ * Authorization hygiene for the events module (Wave 3).
+ *
+ * Every roster / export / resend / console surface has to agree about who is
+ * allowed to see attendee PII and act on it. Before this task there were three
+ * different answers in the code: Roster::cap() (manage_woocommerce on a store),
+ * a hard-coded `edit_others_posts` in the two front-end shortcodes, and another
+ * hard-coded `edit_others_posts` on the three WooCommerce order actions. On a
+ * store that meant an Editor denied the Roster screen could read the same names
+ * and emails from the front-end console and resend customer mail.
+ *
+ * These tests pin the single authority — Module::events_capability(), filtered
+ * through `anchor_events_capability` — plus the two object checks that a
+ * capability alone cannot make: an export target must be a real, live event
+ * (REG-D16) and a seat may only be acted on through the event whose nonce
+ * authorized the action (REG-D48).
+ *
+ * IDs: REG-D20, REG-D62, WOO-D41, REG-D16, REG-D21, REG-D48.
+ *
+ * @package Anchor\Events\Tests
+ */
+
+use Anchor\Events\Module;
+use Anchor\Events\Registrations;
+use Anchor\Events\Roster;
+
+/** Thrown from the wp_redirect filter so a handler's exit() never runs. */
+class Anchor_Caps_Redirected extends \Exception {}
+
+/**
+ * @group capabilities
+ * @group roster
+ */
+class Test_Capabilities extends Anchor_Events_TestCase {
+
+	/** Synthetic capability used to prove the gate reads events_capability(). */
+	const TEST_CAP = 'anchor_events_test_cap';
+
+	/** Every wp_mail() call made during the test. */
+	private $sent = [];
+
+	public function set_up() {
+		parent::set_up();
+		$this->sent = [];
+		add_filter( 'wp_mail', [ $this, 'capture_mail' ] );
+		add_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
+	}
+
+	public function tear_down() {
+		remove_filter( 'wp_mail', [ $this, 'capture_mail' ] );
+		remove_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
+		remove_all_filters( 'anchor_events_capability' );
+		$_GET     = [];
+		$_POST    = [];
+		$_REQUEST = [];
+		parent::tear_down();
+	}
+
+	public function capture_mail( $args ) {
+		$this->sent[] = $args;
+		$args['to']   = 'nobody@example.org';
+		return $args;
+	}
+
+	public function trap_redirect( $location ) {
+		throw new Anchor_Caps_Redirected( (string) $location );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Helpers                                                             */
+	/* ------------------------------------------------------------------ */
+
+	/** Force the module capability to a synthetic one nobody holds by default. */
+	private function force_test_cap() {
+		add_filter( 'anchor_events_capability', function () {
+			return self::TEST_CAP;
+		} );
+	}
+
+	/** A user who holds only the synthetic events capability. */
+	private function user_with_test_cap() {
+		$uid  = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		$user = new WP_User( $uid );
+		$user->add_cap( self::TEST_CAP );
+		return $uid;
+	}
+
+	/** An event with one confirmed seat; returns [ event_id, seat_id, email ]. */
+	private function event_with_seat( $email = 'roster-pii@example.org' ) {
+		$event_id = $this->make_event( [
+			'title'      => 'Capability Fixture',
+			'start_date' => gmdate( 'Y-m-d', time() + DAY_IN_SECONDS ),
+			// The shortcode orders by start_ts, so the meta join has to match.
+			'start_ts'   => time() + DAY_IN_SECONDS,
+		] );
+		$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Pat Attendee', 'email' => $email ] );
+		return [ $event_id, (int) $seat_id, $email ];
+	}
+
+	/** Run the export handler with a valid nonce and return the wp_die message. */
+	private function export_die_message( $event_id, $scope = 'all' ) {
+		$_GET = [
+			'event_id' => $event_id,
+			'scope'    => $scope,
+			'_wpnonce' => wp_create_nonce( 'anchor_event_export' ),
+		];
+		$_REQUEST = $_GET;
+
+		ob_start();
+		try {
+			$this->module()->roster->handle_export();
+		} catch ( WPDieException $e ) {
+			ob_end_clean();
+			return $e->getMessage();
+		} catch ( \Throwable $e ) {
+			ob_end_clean();
+			$this->fail( 'handle_export() threw ' . get_class( $e ) . ': ' . $e->getMessage() );
+		}
+		$body = ob_get_clean();
+		$this->fail( 'handle_export() did not refuse; it emitted ' . strlen( $body ) . ' bytes of CSV.' );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* One capability, one function                                        */
+	/* ------------------------------------------------------------------ */
+
+	public function test_events_capability_is_woocommerce_aware() {
+		$expected = class_exists( 'WooCommerce' ) ? 'manage_woocommerce' : 'edit_others_posts';
+		$this->assertSame( $expected, Module::events_capability() );
+	}
+
+	public function test_capability_for_covers_both_arms_in_one_process() {
+		// CI installs WooCommerce for every run, so class_exists('WooCommerce') is
+		// always true here and events_capability() alone can never reach the
+		// no-store answer — which is the value every non-store site in the fleet
+		// resolves to. capability_for() takes the runtime as an argument so both
+		// arms are exercised regardless of what this process has loaded.
+		$this->assertSame( 'manage_woocommerce', Module::capability_for( true ) );
+		$this->assertSame( 'edit_others_posts', Module::capability_for( false ) );
+		$this->assertSame( Module::CAP_STORE, Module::capability_for( true ) );
+		$this->assertSame( Module::CAP_BASE, Module::capability_for( false ) );
+		$this->assertSame( 'edit_others_posts', Roster::CAP );
+
+		// events_capability() is capability_for() with the runtime filled in.
+		$this->assertSame(
+			Module::capability_for( class_exists( 'WooCommerce' ) ),
+			Module::events_capability()
+		);
+	}
+
+	public function test_capability_for_tells_the_filter_which_arm_it_is_on() {
+		$seen = [];
+		add_filter( 'anchor_events_capability', function ( $cap, $wc ) use ( &$seen ) {
+			$seen[] = [ $cap, $wc ];
+			return $cap;
+		}, 10, 2 );
+
+		Module::capability_for( true );
+		Module::capability_for( false );
+
+		$this->assertSame( [ [ 'manage_woocommerce', true ], [ 'edit_others_posts', false ] ], $seen );
+	}
+
+	public function test_both_arms_reject_a_useless_filter_value() {
+		add_filter( 'anchor_events_capability', '__return_empty_string' );
+		$this->assertSame( 'manage_woocommerce', Module::capability_for( true ) );
+		$this->assertSame( 'edit_others_posts', Module::capability_for( false ) );
+	}
+
+	public function test_events_capability_is_filterable() {
+		$this->force_test_cap();
+		$this->assertSame( self::TEST_CAP, Module::events_capability() );
+	}
+
+	public function test_events_capability_ignores_a_useless_filter_value() {
+		add_filter( 'anchor_events_capability', '__return_empty_string' );
+		$this->assertNotSame( '', Module::events_capability() );
+		remove_filter( 'anchor_events_capability', '__return_empty_string' );
+
+		add_filter( 'anchor_events_capability', '__return_empty_array' );
+		$this->assertIsString( Module::events_capability() );
+	}
+
+	public function test_roster_cap_delegates_to_the_module() {
+		$this->assertSame( Module::events_capability(), Roster::cap() );
+		$this->force_test_cap();
+		$this->assertSame( self::TEST_CAP, Roster::cap() );
+	}
+
+	public function test_current_user_can_manage_follows_the_filtered_capability() {
+		$this->force_test_cap();
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertFalse( Roster::current_user_can_manage(), 'An administrator without the events capability must be denied.' );
+
+		wp_set_current_user( $this->user_with_test_cap() );
+		$this->assertTrue( Roster::current_user_can_manage(), 'The holder of the events capability must be allowed.' );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* REG-D20 — the two shortcodes are the same gate as the roster        */
+	/* ------------------------------------------------------------------ */
+
+	public function test_registrants_list_shortcode_is_gated_on_the_events_capability() {
+		list( , , $email ) = $this->event_with_seat( 'reg-list@example.org' );
+		$this->force_test_cap();
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$denied = $this->module()->shortcode_event_registrants_list( [] );
+		$this->assertStringNotContainsString( $email, (string) $denied, '[event_registrants_list] leaked attendee email to a user without the events capability.' );
+
+		wp_set_current_user( $this->user_with_test_cap() );
+		$allowed = $this->module()->shortcode_event_registrants_list( [] );
+		$this->assertStringContainsString( $email, (string) $allowed, 'The events-capability holder must still see the roster.' );
+	}
+
+	public function test_event_manager_shortcode_is_gated_on_the_events_capability() {
+		list( , , $email ) = $this->event_with_seat( 'manager-console@example.org' );
+		$this->force_test_cap();
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$denied = (string) $this->module()->shortcode_event_manager( [] );
+		$this->assertStringNotContainsString( $email, $denied, '[event_manager] leaked attendee email to a user without the events capability.' );
+		$this->assertStringContainsString( 'No access', $denied );
+	}
+
+	public function test_editor_is_denied_the_console_on_a_store() {
+		$this->require_wc();
+		list( , , $email ) = $this->event_with_seat( 'editor-denied@example.org' );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'editor' ] ) );
+		$this->assertFalse( Roster::current_user_can_manage(), 'M2: an Editor has no manage_woocommerce, so the roster is closed.' );
+		$this->assertStringNotContainsString( $email, (string) $this->module()->shortcode_event_registrants_list( [] ) );
+		$this->assertStringNotContainsString( $email, (string) $this->module()->shortcode_event_manager( [] ) );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* REG-D21 — no Export link a user cannot use                          */
+	/* ------------------------------------------------------------------ */
+
+	public function test_export_links_and_the_export_handler_agree() {
+		list( $event_id ) = $this->event_with_seat( 'export-link@example.org' );
+		$this->force_test_cap();
+
+		// Denied: no link anywhere, and the handler refuses.
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertStringNotContainsString(
+			'anchor_event_export',
+			(string) $this->module()->shortcode_event_registrants_list( [] )
+		);
+		$this->assertStringNotContainsString(
+			'anchor_event_export',
+			(string) $this->module()->shortcode_event_manager( [] )
+		);
+		$this->assertSame( 'Unauthorized', $this->export_die_message( $event_id ) );
+
+		// Allowed: the link is offered, and the handler accepts the target.
+		wp_set_current_user( $this->user_with_test_cap() );
+		$this->assertStringContainsString(
+			'anchor_event_export',
+			(string) $this->module()->shortcode_event_registrants_list( [] )
+		);
+		$this->assertTrue( Roster::is_exportable_event( $event_id ) );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* REG-D16 — the export target must be a live event                    */
+	/* ------------------------------------------------------------------ */
+
+	public function test_is_exportable_event_predicate() {
+		list( $event_id ) = $this->event_with_seat();
+		$page_id = self::factory()->post->create( [ 'post_type' => 'page' ] );
+
+		$this->assertTrue( Roster::is_exportable_event( $event_id ) );
+		$this->assertFalse( Roster::is_exportable_event( 0 ) );
+		$this->assertFalse( Roster::is_exportable_event( $page_id ), 'A page is not an event.' );
+		$this->assertFalse( Roster::is_exportable_event( $event_id + 100000 ), 'A missing post is not an event.' );
+
+		wp_trash_post( $event_id );
+		$this->assertFalse( Roster::is_exportable_event( $event_id ), 'A trashed event must not export its attendee list.' );
+	}
+
+	public function test_export_refuses_a_non_event_id() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$page_id = self::factory()->post->create( [ 'post_type' => 'page' ] );
+		$this->assertSame( 'Invalid event.', $this->export_die_message( $page_id ) );
+	}
+
+	public function test_export_refuses_a_missing_post() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertSame( 'Invalid event.', $this->export_die_message( 987654 ) );
+	}
+
+	public function test_export_refuses_a_trashed_event() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_id ) = $this->event_with_seat( 'trashed-export@example.org' );
+		wp_trash_post( $event_id );
+		$this->assertSame( 'Invalid event.', $this->export_die_message( $event_id ) );
+	}
+
+	public function test_export_refuses_a_missing_event_id() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertSame( 'Invalid event.', $this->export_die_message( 0 ) );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* REG-D48 — a seat belongs to the event the nonce was minted for      */
+	/* ------------------------------------------------------------------ */
+
+	public function test_seat_belongs_to_event_predicate() {
+		list( $event_a, $seat_a ) = $this->event_with_seat( 'a@example.org' );
+		list( $event_b, $seat_b ) = $this->event_with_seat( 'b@example.org' );
+
+		$this->assertTrue( Roster::seat_belongs_to_event( $seat_a, $event_a ) );
+		$this->assertFalse( Roster::seat_belongs_to_event( $seat_b, $event_a ) );
+		$this->assertFalse( Roster::seat_belongs_to_event( $event_a, $event_a ), 'An event post is not a seat.' );
+		$this->assertFalse( Roster::seat_belongs_to_event( 0, $event_a ) );
+		$this->assertFalse( Roster::seat_belongs_to_event( $seat_a, 0 ) );
+	}
+
+	public function test_roster_edit_refuses_a_seat_from_another_event() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_a ) = $this->event_with_seat( 'a-edit@example.org' );
+		list( , $seat_b ) = $this->event_with_seat( 'b-edit@example.org' );
+
+		$_POST = [
+			'event_id'      => $event_a,
+			'seat_id'       => $seat_b,
+			'roster_name'   => 'Hijacked',
+			'roster_email'  => 'hijacked@example.org',
+			'roster_status' => Registrations::STATUS_CANCELLED,
+			'_wpnonce'      => wp_create_nonce( 'anchor_roster_edit_' . $event_a ),
+		];
+		$_REQUEST = $_POST;
+
+		$location = null;
+		try {
+			$this->module()->roster->handle_edit();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			$location = $e->getMessage();
+		}
+		$this->assertNotNull( $location, 'handle_edit() must refuse and redirect.' );
+		$this->assertStringContainsString( 'roster_type=error', rawurldecode( (string) $location ) );
+
+		// No state change on the foreign seat.
+		$this->assertSame( 'b-edit@example.org', (string) get_post_meta( $seat_b, '_anchor_event_email', true ) );
+		$this->assertSame(
+			Registrations::STATUS_CONFIRMED,
+			(string) get_post_meta( $seat_b, '_anchor_event_reg_status', true )
+		);
+	}
+
+	public function test_roster_cancel_refuses_a_seat_from_another_event() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_a ) = $this->event_with_seat( 'a-cancel@example.org' );
+		list( , $seat_b ) = $this->event_with_seat( 'b-cancel@example.org' );
+
+		$_REQUEST = [
+			'event_id' => $event_a,
+			'seat_id'  => $seat_b,
+			'_wpnonce' => wp_create_nonce( 'anchor_roster_cancel_' . $event_a ),
+		];
+		$_GET = $_REQUEST;
+
+		$location = null;
+		try {
+			$this->module()->roster->handle_cancel();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			$location = $e->getMessage();
+		}
+		$this->assertNotNull( $location, 'handle_cancel() must refuse and redirect.' );
+		$this->assertStringContainsString( 'roster_type=error', rawurldecode( (string) $location ) );
+		$this->assertSame(
+			Registrations::STATUS_CONFIRMED,
+			(string) get_post_meta( $seat_b, '_anchor_event_reg_status', true ),
+			'A foreign seat must not be cancelled through another event\'s nonce.'
+		);
+	}
+
+	public function test_roster_cancel_still_works_on_its_own_event() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_a, $seat_a ) = $this->event_with_seat( 'own-cancel@example.org' );
+
+		$_REQUEST = [
+			'event_id' => $event_a,
+			'seat_id'  => $seat_a,
+			'_wpnonce' => wp_create_nonce( 'anchor_roster_cancel_' . $event_a ),
+		];
+		$_GET = $_REQUEST;
+
+		try {
+			$this->module()->roster->handle_cancel();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			// expected
+		}
+		$this->assertSame(
+			Registrations::STATUS_CANCELLED,
+			(string) get_post_meta( $seat_a, '_anchor_event_reg_status', true )
+		);
+	}
+
+	public function test_roster_edit_panel_will_not_render_a_foreign_seat() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_a ) = $this->event_with_seat( 'a-panel@example.org' );
+		list( , $seat_b ) = $this->event_with_seat( 'b-panel@example.org' );
+
+		// The wp-admin screen's edit panel, driven the way ?edit_seat= drives it.
+		// Called directly because the rest of render_page() needs WP_List_Table,
+		// which only exists inside a real admin request.
+		$method = new ReflectionMethod( Roster::class, 'render_edit_form' );
+		$method->setAccessible( true );
+
+		ob_start();
+		$method->invoke( $this->module()->roster, $event_a, $seat_b );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringNotContainsString(
+			'b-panel@example.org',
+			$html,
+			'REG-D48: the edit panel rendered another event\'s attendee PII under this event\'s heading.'
+		);
+		$this->assertStringContainsString( 'Seat not found.', $html );
+
+		// Positive control: its own seat still opens.
+		list( $event_c, $seat_c ) = $this->event_with_seat( 'c-panel@example.org' );
+		ob_start();
+		$method->invoke( $this->module()->roster, $event_c, $seat_c );
+		$this->assertStringContainsString( 'c-panel@example.org', (string) ob_get_clean() );
+	}
+
+	public function test_frontend_console_will_not_open_a_foreign_seat() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		list( $event_a ) = $this->event_with_seat( 'a-fe@example.org' );
+		list( , $seat_b ) = $this->event_with_seat( 'b-fe@example.org' );
+
+		$_GET     = [ 'seat_id' => $seat_b ];
+		$_REQUEST = $_GET;
+
+		$html = (string) $this->module()->roster->render_frontend( $event_a, home_url( '/manage/' ) );
+
+		$this->assertStringNotContainsString( 'b-fe@example.org', $html );
+		$this->assertStringContainsString( 'Seat not found.', $html );
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* The console save answers to the same capability as the console      */
+	/* ------------------------------------------------------------------ */
+
+	public function test_console_save_requires_the_events_capability() {
+		$this->force_test_cap();
+		// An administrator holds edit_others_posts but not the events capability.
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$before = (int) wp_count_posts( Module::CPT )->publish;
+
+		$_POST = [
+			'anchor_event_manager_nonce' => wp_create_nonce( 'anchor_event_manager_save' ),
+			'redirect_to'                => home_url( '/manage/' ),
+			'event_id'                   => 0,
+			'anchor_event_title'         => 'Smuggled event',
+			'post_status'                => 'publish',
+		];
+		$_REQUEST = $_POST;
+
+		$location = null;
+		try {
+			$this->module()->handle_event_manager_save();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			$location = $e->getMessage();
+		}
+		$this->assertNotNull( $location, 'The save handler must refuse and redirect.' );
+		$this->assertStringContainsString( 'event_manager_notice=denied', (string) $location );
+		$this->assertSame( $before, (int) wp_count_posts( Module::CPT )->publish, 'No event may be created.' );
+	}
+
+	/**
+	 * The create branch must stop at the module capability. It used to ALSO
+	 * demand the hard-coded CAP_BASE, which quietly un-did
+	 * `anchor_events_capability`: a role pointed at a custom capability could
+	 * open the console and edit existing events, but every create was denied
+	 * because the role did not additionally hold edit_others_posts.
+	 */
+	public function test_console_save_lets_the_filtered_capability_create_an_event() {
+		$this->force_test_cap();
+		wp_set_current_user( $this->user_with_test_cap() );
+
+		$location = $this->run_console_create( 'Filtered create' );
+
+		$this->assertNotNull( $location, 'The save handler must redirect.' );
+		$this->assertStringNotContainsString( 'event_manager_notice=denied', (string) $location );
+		$this->assertNotSame(
+			[],
+			get_posts( [
+				'post_type'   => Module::CPT,
+				'post_status' => 'any',
+				'title'       => 'Filtered create',
+				'fields'      => 'ids',
+			] ),
+			'A holder of the filtered capability must be able to create an event.'
+		);
+	}
+
+	/** Control: the same user without the filter holds nothing and is refused. */
+	public function test_console_save_still_refuses_a_user_without_the_capability() {
+		wp_set_current_user( $this->user_with_test_cap() ); // No filter: TEST_CAP gates nothing.
+
+		$location = $this->run_console_create( 'Unfiltered create' );
+
+		$this->assertStringContainsString( 'event_manager_notice=denied', (string) $location );
+		$this->assertSame(
+			[],
+			get_posts( [
+				'post_type'   => Module::CPT,
+				'post_status' => 'any',
+				'title'       => 'Unfiltered create',
+				'fields'      => 'ids',
+			] ),
+			'No event may be created without the events capability.'
+		);
+	}
+
+	/**
+	 * The trash link is nonce → module capability → object capability, the same
+	 * order the save handler uses. `delete_post` alone let anyone who could
+	 * delete the post trash an event without ever holding the capability the
+	 * console itself is gated on.
+	 */
+	public function test_console_delete_requires_the_events_capability() {
+		$this->force_test_cap();
+		// An administrator can delete_post but does not hold the events capability.
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$event_id = $this->make_event( [ 'title' => 'Not yours to trash' ] );
+
+		$location = $this->run_console_delete( $event_id );
+
+		$this->assertStringContainsString( 'event_manager_notice=denied', (string) $location );
+		$this->assertSame( 'publish', get_post_status( $event_id ), 'The event must not be trashed.' );
+	}
+
+	/** And the capability holder still gets through to the object check. */
+	public function test_console_delete_accepts_the_capability_holder() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$event_id = $this->make_event( [ 'title' => 'Trash me' ] );
+
+		$location = $this->run_console_delete( $event_id );
+
+		$this->assertStringContainsString( 'event_manager_notice=deleted', (string) $location );
+		$this->assertSame( 'trash', get_post_status( $event_id ) );
+	}
+
+	/**
+	 * Drive the real handle_event_manager_save() create path; returns the
+	 * trapped redirect target (the handler's exit() never runs).
+	 *
+	 * @return string|null
+	 */
+	private function run_console_create( $title ) {
+		$_POST = [
+			'anchor_event_manager_nonce' => wp_create_nonce( 'anchor_event_manager_save' ),
+			'redirect_to'                => home_url( '/manage/' ),
+			'event_id'                   => 0,
+			'anchor_event_title'         => $title,
+			'anchor_event_start_date'    => gmdate( 'Y-m-d', time() + DAY_IN_SECONDS ),
+			'anchor_event_post_status'   => 'publish',
+		];
+		$_REQUEST = $_POST;
+
+		try {
+			$this->module()->handle_event_manager_save();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			return $e->getMessage();
+		}
+		return null;
+	}
+
+	/**
+	 * Drive the real handle_event_manager_delete(); returns the trapped
+	 * redirect target.
+	 *
+	 * @return string|null
+	 */
+	private function run_console_delete( $event_id ) {
+		$_GET = [
+			'event_id'    => $event_id,
+			'redirect_to' => rawurlencode( home_url( '/manage/' ) ),
+			'_wpnonce'    => wp_create_nonce( 'anchor_event_manager_delete_' . $event_id ),
+		];
+		$_REQUEST = $_GET;
+
+		try {
+			$this->module()->handle_event_manager_delete();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			return $e->getMessage();
+		}
+		return null;
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* REG-D62 + WOO-D41 — the three order actions share the gate          */
+	/* ------------------------------------------------------------------ */
+
+	/** @return string|null wp_die message, or null when the handler ran. */
+	private function run_woo_handler( $method, $nonce_action, $order_id ) {
+		$_POST = [
+			'order_id' => $order_id,
+			'_wpnonce' => wp_create_nonce( $nonce_action . $order_id ),
+		];
+		$_REQUEST = $_POST;
+		try {
+			$this->woocommerce()->{$method}();
+		} catch ( WPDieException $e ) {
+			return $e->getMessage();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			return null;
+		}
+		return null;
+	}
+
+	public function test_order_actions_require_the_events_capability() {
+		$this->require_wc();
+		$this->force_test_cap();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$this->assertNotNull( $this->run_woo_handler( 'handle_resync_order', 'anchor_event_resync_', 4242 ) );
+		$this->assertNotNull( $this->run_woo_handler( 'handle_clear_review', 'anchor_events_clear_review_', 4242 ) );
+		$this->assertNotNull( $this->run_woo_handler( 'handle_resend_confirmation', 'anchor_events_resend_', 4242 ) );
+		$this->assertSame( [], $this->sent, 'A refused resend must never reach the sender.' );
+	}
+
+	public function test_order_actions_accept_the_events_capability_holder() {
+		$this->require_wc();
+		$this->force_test_cap();
+		wp_set_current_user( $this->user_with_test_cap() );
+
+		$this->assertNull( $this->run_woo_handler( 'handle_resync_order', 'anchor_event_resync_', 4242 ) );
+		$this->assertNull( $this->run_woo_handler( 'handle_clear_review', 'anchor_events_clear_review_', 4242 ) );
+		$this->assertNull( $this->run_woo_handler( 'handle_resend_confirmation', 'anchor_events_resend_', 4242 ) );
+	}
+
+	public function test_editor_cannot_resend_a_customer_confirmation_on_a_store() {
+		$this->require_wc();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'editor' ] ) );
+		$this->assertNotNull(
+			$this->run_woo_handler( 'handle_resend_confirmation', 'anchor_events_resend_', 4242 ),
+			'REG-D62: an Editor denied the roster must not be able to resend customer mail.'
+		);
+		$this->assertSame( [], $this->sent );
+	}
+}

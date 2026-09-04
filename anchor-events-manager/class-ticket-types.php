@@ -132,7 +132,13 @@ class Ticket_Types {
             return [ $this->implicit_primary( $event_id ) ];
         }
 
-        \update_post_meta( $event_id, self::META_KEY, $clean );
+        // wp_slash(): the rows arrive already unslashed (both save paths
+        // wp_unslash() $_POST['anchor_event_tickets'] before calling), and
+        // update_post_meta() unslashes AGAIN — so a tier label reading
+        // `General\Admission` would be stored as `GeneralAdmission`. See
+        // Module::persist_event_authoring()'s docblock for the contract. The
+        // RETURNED rows stay unslashed: they are the literal values.
+        \update_post_meta( $event_id, self::META_KEY, \wp_slash( $clean ) );
         return $clean;
     }
 

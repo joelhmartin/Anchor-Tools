@@ -30,6 +30,98 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->module()->register_meta();
 	}
 
+	/* ------------------------------------------------------------------
+	 * Module settings: the shipped defaults, and what a save may reach for.
+	 * ---------------------------------------------------------------- */
+
+	/**
+	 * MODEL-D29 — clearing a text setting resets it to the shipped default.
+	 *
+	 * sanitize_settings()'s fallback array was called `$defaults` but held the
+	 * CURRENT merged settings, so `sanitize_text_field( '' ) ?: $defaults[...]`
+	 * evaluated to the value already stored: the field reappeared unchanged
+	 * and the admin saw a save that did nothing.
+	 */
+	public function test_clearing_a_text_setting_restores_the_shipped_default() {
+		$shipped = $this->module()->default_settings();
+
+		update_option( Anchor\Events\Module::OPTION_KEY, array_merge(
+			$this->module()->get_settings(),
+			[ 'reminder_subject' => 'Custom reminder subject', 'email_heading_color' => '#abcdef' ]
+		), false );
+		$this->assertSame( 'Custom reminder subject', $this->module()->get_settings()['reminder_subject'] );
+
+		$saved = $this->module()->sanitize_settings( [
+			'reminder_subject'    => '',
+			'email_heading_color' => '',
+		] );
+
+		$this->assertSame( $shipped['reminder_subject'], $saved['reminder_subject'] );
+		$this->assertSame( $shipped['email_heading_color'], $saved['email_heading_color'] );
+
+		delete_option( Anchor\Events\Module::OPTION_KEY );
+	}
+
+	/** get_settings() is still the shipped defaults merged with the stored option. */
+	public function test_get_settings_is_the_defaults_merged_with_the_option() {
+		$this->assertSame( $this->module()->default_settings(), $this->module()->get_settings() );
+
+		update_option( Anchor\Events\Module::OPTION_KEY, [ 'reminder_subject' => 'Mine' ], false );
+		$merged = $this->module()->get_settings();
+
+		$this->assertSame( 'Mine', $merged['reminder_subject'] );
+		$this->assertSame( $this->module()->default_settings()['roster_subject'], $merged['roster_subject'] );
+
+		delete_option( Anchor\Events\Module::OPTION_KEY );
+	}
+
+	/**
+	 * REG-D58 fix round 1 — the Confirmation subject field is on the page.
+	 *
+	 * It was registered under the section `anchor_events_emails`, which does
+	 * not exist (the page's sections are main, email_sender, email_appearance,
+	 * registration, wc_emails, lifecycle_emails and slugs), so it never
+	 * rendered — and a settings save therefore posted no value for it, which
+	 * sanitize_settings() answered by resetting it to the shipped default
+	 * every single time.
+	 */
+	public function test_every_settings_field_this_batch_added_actually_renders() {
+		global $wp_settings_sections, $wp_settings_fields;
+		$wp_settings_sections = [];
+		$wp_settings_fields   = [];
+
+		$this->module()->register_settings();
+
+		ob_start();
+		do_settings_sections( 'anchor_events_settings' );
+		$html = (string) ob_get_clean();
+
+		foreach ( [ 'confirmation_subject', 'refund_subject', 'refund_intro' ] as $field ) {
+			$this->assertStringContainsString(
+				'[' . $field . ']',
+				$html,
+				$field . ' is registered under a section the page never renders.'
+			);
+		}
+
+		// No field on this page may name a section that was never added.
+		$sections = array_keys( $wp_settings_sections['anchor_events_settings'] ?? [] );
+		foreach ( array_keys( $wp_settings_fields['anchor_events_settings'] ?? [] ) as $section ) {
+			$this->assertContains( $section, $sections, 'Fields are registered under the unknown section ' . $section . '.' );
+		}
+	}
+
+	/**
+	 * REG-D64 / MODEL-D28 — `notify_attendee` is gone. It was declared in the
+	 * defaults as "Reserved/unused in MVP", carried through every save
+	 * verbatim, and read by nothing, so a reader would reasonably conclude
+	 * attendee notification was switched off site-wide when it was not.
+	 */
+	public function test_the_reserved_notify_attendee_setting_is_gone() {
+		$this->assertArrayNotHasKey( 'notify_attendee', $this->module()->default_settings() );
+		$this->assertArrayNotHasKey( 'notify_attendee', $this->module()->sanitize_settings( [] ) );
+	}
+
 	/** event_type() falls back to 'single' when no type meta is stored. */
 	public function test_event_type_defaults_to_single() {
 		$event_id = $this->make_event();

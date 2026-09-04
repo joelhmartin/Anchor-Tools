@@ -366,4 +366,59 @@ class Test_Schema_Availability extends Anchor_Events_TestCase {
 
 		$this->assertArrayNotHasKey( 'offers', $node, 'A cancelled date has nothing to advertise at all.' );
 	}
+
+	/* ------------------------------------------------------------------
+	 * Group parents (MODEL-D4 / NEW-D1): the container's SPAN is the whole
+	 * live set, past dates included — a course that ran in January and runs
+	 * again in December really does span both, and its own status ('ongoing')
+	 * is computed from exactly that. What changed is the parent's
+	 * bookability, which is no longer an unconditional 'parent'; the node
+	 * must still publish no Offer of its own whatever that answers.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * A reconciled offering parent with the given rows.
+	 *
+	 * @param array $rows Offering-dates rows.
+	 * @return int Parent post id.
+	 */
+	protected function make_offering_parent( array $rows ) {
+		$parent = $this->make_event( [
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'registration_mode'    => 'free',
+			'timezone'             => 'UTC',
+		] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', $rows );
+		$this->module()->occurrences->reconcile( $parent );
+		return (int) $parent;
+	}
+
+	public function test_group_parent_span_covers_every_live_child_including_a_past_one() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2020-01-06', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'Gone', 'capacity' => 0 ],
+			[ 'date' => '2030-11-13', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'Ahead', 'capacity' => 0 ],
+		] );
+
+		$node = $this->schema()->for_event( $parent );
+
+		$this->assertCount( 2, $node['subEvent'], 'Every LIVE child is a subEvent — the span is not the picker.' );
+		$this->assertStringStartsWith( '2020-01-06T08:00', $node['startDate'] );
+		$this->assertStringStartsWith( '2030-11-13T18:00', $node['endDate'] );
+	}
+
+	public function test_group_parent_with_only_sold_out_dates_still_publishes_no_offer() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2030-12-01', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'Full', 'capacity' => 1 ],
+		] );
+		$live = $this->module()->occurrences->children( $parent );
+		$this->make_seat( (int) $live[0] );
+
+		$this->assertSame( 'full', $this->module()->bookability( $parent ), 'Precondition: the container reads sold out.' );
+
+		$node = $this->schema()->for_event( $parent );
+
+		$this->assertArrayNotHasKey( 'offers', $node, 'A container never carries an Offer of its own, whatever its state.' );
+		$this->assertSame( 'https://schema.org/SoldOut', $node['subEvent'][0]['offers'][0]['availability'] );
+	}
 }

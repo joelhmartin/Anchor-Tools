@@ -32,7 +32,10 @@ class Test_Shortcode_Parent extends Anchor_Events_TestCase {
 		$html = do_shortcode( '[event_registration id="' . $parent . '"]' );
 
 		$this->assertStringContainsString( 'anchor-event-choose-date-list', $html );
-		$this->assertSame( 2, substr_count( $html, 'anchor-event-choose-date-row' ) );
+		// The opening tag, not the bare class name: each row also carries a
+		// state modifier (anchor-event-choose-date-row--bookable/--unavailable/
+		// --past, MODEL-D4) which the bare substring would count twice.
+		$this->assertSame( 2, substr_count( $html, '<li class="anchor-event-choose-date-row' ) );
 	}
 
 	public function test_shortcode_still_renders_form_for_single_event() {

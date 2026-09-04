@@ -1941,11 +1941,6 @@ class Module {
         return ( \is_string( $filtered ) && $filtered !== '' ) ? $filtered : $cap;
     }
 
-    /** Convenience wrapper: does the current user hold events_capability()? */
-    public static function current_user_can_manage_events() {
-        return \current_user_can( self::events_capability() );
-    }
-
     /**
      * Get the canonical URL for the current page (without calendar month parameters).
      * This prevents search engines from indexing each month view as a separate page.
@@ -6727,7 +6722,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $this->enqueue_frontend_assets();
 
-        // $public = false: this shortcode is gated on edit_others_posts and
+        // $public = false: this shortcode is gated on the module capability
+        // (manage_woocommerce on a store, edit_others_posts otherwise, and
+        // whatever `anchor_events_capability` returns if a site filters it) and
         // exists to reach rosters. A soft-closed date still HAS a roster to
         // email or refund, so the occurrence_closed half of the exclusion is
         // not applied here — hide_from_archive still is.
@@ -8017,9 +8014,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // console that posts this form is gated on events_capability(); without
         // the same gate here a user who cannot open the console could still POST
         // to it and create or edit events.
-        $capability_ok = Roster::current_user_can_manage() && ( $is_edit
-            ? \current_user_can( 'edit_post', $event_id )
-            : \current_user_can( self::CAP_BASE ) );
+        //
+        // The create branch stops at the module capability on purpose. It used to
+        // ALSO require the hard-coded CAP_BASE, which silently un-did
+        // `anchor_events_capability`: a role pointed at a custom capability could
+        // open the console and edit, but every create was denied because it did
+        // not additionally hold edit_others_posts. The edit branch keeps
+        // `edit_post` because that is an object-level check the module capability
+        // cannot answer (is THIS post editable by THIS user), not a second
+        // gatekeeper for the module.
+        $capability_ok = Roster::current_user_can_manage()
+            && ( ! $is_edit || \current_user_can( 'edit_post', $event_id ) );
         if ( ! $capability_ok ) {
             \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'denied', $redirect ) );
             exit;
@@ -8218,6 +8223,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         if ( ! $event_id || \get_post_type( $event_id ) !== self::CPT ) {
             \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'error', $redirect ) );
+            exit;
+        }
+        // Same order as handle_event_manager_save(): nonce (above), then the
+        // module capability, then the object check. `delete_post` alone let any
+        // author who could delete the post trash an event straight from a link,
+        // without ever holding the capability the console itself is gated on.
+        if ( ! Roster::current_user_can_manage() ) {
+            \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'denied', $redirect ) );
             exit;
         }
         if ( ! \current_user_can( 'delete_post', $event_id ) ) {
@@ -9815,7 +9828,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         echo '<li><code>[event_calendar]</code> ' . \esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_registration]</code> ' . \esc_html__( 'Registration form for an event. Attributes: id=POST_ID, slug=event-slug, show_title (yes|no), show_notice (yes|no). Auto-appended to an event\'s content when you enable registration, so it survives page builders like Divi.', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_gallery]</code> ' . \esc_html__( 'Photo gallery for an event. Attributes: id=POST_ID, slug=event-slug, size=thumbnail|medium|large|full, columns=1-6. Defaults to the current event when used on an event page.', 'anchor-schema' ) . '</li>';
-        echo '<li><code>[event_registrants_list]</code> ' . \esc_html__( 'Admin-only: list every event with a collapsible panel of registrants. Only visible to users with edit_others_posts (admins + editors). Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[event_registrants_list]</code> ' . \esc_html__( 'Admin-only: list every event with a collapsible panel of registrants. Only visible to users who can manage events (shop managers on a WooCommerce store, otherwise admins + editors; sites can point this at their own capability with the anchor_events_capability filter). Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_manager]</code> ' . \esc_html__( 'Admin-only frontend dashboard: list, accordion registrants, create, edit, and trash events with a native WP media picker for featured image + gallery. Only visible to admins/editors. Attributes: show_past (yes|no), limit, order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '</ul>';
         echo '<p>' . \esc_html__( 'You can also link to the events archive at /event/ (or your custom slug).', 'anchor-schema' ) . '</p>';
@@ -11375,8 +11388,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Only the `hide_from_archive` half is an exclusion for STAFF, though. A
      * soft-closed date keeps its roster — that is the entire point of a soft
      * close — and somebody has to email or refund those attendees, so the two
-     * capability-gated surfaces ([event_registrants_list], which requires
-     * edit_others_posts, and the front-end Events Manager console) pass
+     * capability-gated surfaces ([event_registrants_list] and the front-end
+     * Events Manager console, both of which require the module capability —
+     * manage_woocommerce on a store, edit_others_posts otherwise, filterable
+     * through `anchor_events_capability`) pass
      * $public = false and keep cancelled dates in the list. Folding the closed
      * half in unconditionally would have made a cancelled date's roster
      * unreachable from the surfaces built to manage it.

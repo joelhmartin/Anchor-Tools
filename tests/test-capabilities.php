@@ -474,6 +474,130 @@ class Test_Capabilities extends Anchor_Events_TestCase {
 		$this->assertSame( $before, (int) wp_count_posts( Module::CPT )->publish, 'No event may be created.' );
 	}
 
+	/**
+	 * The create branch must stop at the module capability. It used to ALSO
+	 * demand the hard-coded CAP_BASE, which quietly un-did
+	 * `anchor_events_capability`: a role pointed at a custom capability could
+	 * open the console and edit existing events, but every create was denied
+	 * because the role did not additionally hold edit_others_posts.
+	 */
+	public function test_console_save_lets_the_filtered_capability_create_an_event() {
+		$this->force_test_cap();
+		wp_set_current_user( $this->user_with_test_cap() );
+
+		$location = $this->run_console_create( 'Filtered create' );
+
+		$this->assertNotNull( $location, 'The save handler must redirect.' );
+		$this->assertStringNotContainsString( 'event_manager_notice=denied', (string) $location );
+		$this->assertNotSame(
+			[],
+			get_posts( [
+				'post_type'   => Module::CPT,
+				'post_status' => 'any',
+				'title'       => 'Filtered create',
+				'fields'      => 'ids',
+			] ),
+			'A holder of the filtered capability must be able to create an event.'
+		);
+	}
+
+	/** Control: the same user without the filter holds nothing and is refused. */
+	public function test_console_save_still_refuses_a_user_without_the_capability() {
+		wp_set_current_user( $this->user_with_test_cap() ); // No filter: TEST_CAP gates nothing.
+
+		$location = $this->run_console_create( 'Unfiltered create' );
+
+		$this->assertStringContainsString( 'event_manager_notice=denied', (string) $location );
+		$this->assertSame(
+			[],
+			get_posts( [
+				'post_type'   => Module::CPT,
+				'post_status' => 'any',
+				'title'       => 'Unfiltered create',
+				'fields'      => 'ids',
+			] ),
+			'No event may be created without the events capability.'
+		);
+	}
+
+	/**
+	 * The trash link is nonce → module capability → object capability, the same
+	 * order the save handler uses. `delete_post` alone let anyone who could
+	 * delete the post trash an event without ever holding the capability the
+	 * console itself is gated on.
+	 */
+	public function test_console_delete_requires_the_events_capability() {
+		$this->force_test_cap();
+		// An administrator can delete_post but does not hold the events capability.
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$event_id = $this->make_event( [ 'title' => 'Not yours to trash' ] );
+
+		$location = $this->run_console_delete( $event_id );
+
+		$this->assertStringContainsString( 'event_manager_notice=denied', (string) $location );
+		$this->assertSame( 'publish', get_post_status( $event_id ), 'The event must not be trashed.' );
+	}
+
+	/** And the capability holder still gets through to the object check. */
+	public function test_console_delete_accepts_the_capability_holder() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$event_id = $this->make_event( [ 'title' => 'Trash me' ] );
+
+		$location = $this->run_console_delete( $event_id );
+
+		$this->assertStringContainsString( 'event_manager_notice=deleted', (string) $location );
+		$this->assertSame( 'trash', get_post_status( $event_id ) );
+	}
+
+	/**
+	 * Drive the real handle_event_manager_save() create path; returns the
+	 * trapped redirect target (the handler's exit() never runs).
+	 *
+	 * @return string|null
+	 */
+	private function run_console_create( $title ) {
+		$_POST = [
+			'anchor_event_manager_nonce' => wp_create_nonce( 'anchor_event_manager_save' ),
+			'redirect_to'                => home_url( '/manage/' ),
+			'event_id'                   => 0,
+			'anchor_event_title'         => $title,
+			'anchor_event_start_date'    => gmdate( 'Y-m-d', time() + DAY_IN_SECONDS ),
+			'anchor_event_post_status'   => 'publish',
+		];
+		$_REQUEST = $_POST;
+
+		try {
+			$this->module()->handle_event_manager_save();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			return $e->getMessage();
+		}
+		return null;
+	}
+
+	/**
+	 * Drive the real handle_event_manager_delete(); returns the trapped
+	 * redirect target.
+	 *
+	 * @return string|null
+	 */
+	private function run_console_delete( $event_id ) {
+		$_GET = [
+			'event_id'    => $event_id,
+			'redirect_to' => rawurlencode( home_url( '/manage/' ) ),
+			'_wpnonce'    => wp_create_nonce( 'anchor_event_manager_delete_' . $event_id ),
+		];
+		$_REQUEST = $_GET;
+
+		try {
+			$this->module()->handle_event_manager_delete();
+		} catch ( Anchor_Caps_Redirected $e ) {
+			return $e->getMessage();
+		}
+		return null;
+	}
+
 	/* ------------------------------------------------------------------ */
 	/* REG-D62 + WOO-D41 — the three order actions share the gate          */
 	/* ------------------------------------------------------------------ */

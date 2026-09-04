@@ -280,9 +280,16 @@ class Ticket_Types {
         if ( $id === '' ) {
             $id = self::PRIMARY_ID;
         }
+        // WOO-D40: save() substitutes the same default for a blank label —
+        // applying it here too means the READ path (get()) and the WRITE
+        // path agree from the start, instead of a stored '' label rendering
+        // as '' on the editor until the next sync's write-back silently
+        // renamed it to "Registration" everywhere else (storefront,
+        // variation description, checkout heading) via save().
+        $label = isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '';
         return [
             'id'              => $id,
-            'label'           => isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '',
+            'label'           => $label !== '' ? $label : \__( 'Registration', 'anchor-schema' ),
             'price'           => $this->to_price( $row['price'] ?? '' ),
             'quota'           => isset( $row['quota'] ) ? \max( 0, (int) $row['quota'] ) : 0,
             'sale_start'      => isset( $row['sale_start'] ) ? $this->sanitize_date( (string) $row['sale_start'] ) : '',

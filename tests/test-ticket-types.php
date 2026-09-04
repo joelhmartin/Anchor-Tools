@@ -147,6 +147,32 @@ class Test_Ticket_Types extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * WOO-D40: a stored tier row with a blank label read as '' via get()
+	 * (normalize()) but was silently renamed to "Registration" the moment
+	 * any write-back re-persisted the list through save() — normalize() must
+	 * apply the SAME default so the read and write paths never disagree.
+	 */
+	public function test_normalize_and_save_apply_the_same_blank_label_default() {
+		$event_id = $this->make_event();
+		update_post_meta(
+			$event_id,
+			Ticket_Types::META_KEY,
+			[ [ 'id' => 'abc123', 'label' => '', 'price' => '10', 'active' => true, 'quota' => 0, 'sale_start' => '', 'sale_end' => '', 'wc_variation_id' => 0 ] ]
+		);
+
+		$read = $this->ticket_types()->get( $event_id );
+		$this->assertSame( 'Registration', $read[0]['label'] );
+
+		// A write-back through save() (preserving the id) must not CHANGE the
+		// displayed label — it already reads the same as save() would store.
+		$resaved = $this->ticket_types()->save(
+			$event_id,
+			[ [ 'id' => 'abc123', 'label' => '', 'price' => '10', 'active' => 1 ] ]
+		);
+		$this->assertSame( 'Registration', $resaved[0]['label'] );
+	}
+
+	/**
 	 * WOO-D29: a reversed sale window (sale_end before sale_start) made a
 	 * tier permanently unsellable while still advertising "Sales open
 	 * <sale_start>" forever. save() swaps the pair rather than storing a

@@ -8298,12 +8298,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * re-save. Reconciling every parent instead would create/trash posts as a
      * side effect of an upgrade; this only writes one meta row per child.
      *
+     * Reads the parent's desired rows through Occurrences::desired_rows_by_key(),
+     * NOT `offering_dates` directly, so a RECURRING parent's children are
+     * covered too — their rows come from expand_recurrence() over the parent's
+     * rule, and re-deriving the offering path here would have silently skipped
+     * them. Today an expanded row's label is always empty: expand_recurrence()
+     * reads `label` off the rule, but no authoring UI or sanitizer ever writes
+     * one (audit MODEL-D35), so a recurring occurrence has never HAD an
+     * authored label — '' is the honest value, and the renderer falls back to
+     * the formatted date exactly as it did before. If D35 is fixed later, the
+     * labels arrive by the ordinary route rather than needing this pass again:
+     * writing a label onto the rule IS a parent save, which reconciles and
+     * stamps every child through apply_occurrence_editable_fields().
+     *
      * Idempotent and self-terminating: it selects children that have NO label
-     * row at all and always writes one (an unlabelled row writes ''), so the
+     * row at all and ALWAYS writes one (an unlabelled row writes ''), so the
      * window always moves, a hand-edited label is never clobbered, and a second
-     * pass is a no-op. Batched at 200 per admin request, and capability-gated
-     * for the same reason backfill_timestamps() is — admin_init fires before
-     * auth on admin-post.php.
+     * pass is a no-op. Skipping a write instead would leave those children in
+     * the query's window for ever — on a site with more than one batch of them
+     * the short-batch flag would never be set and this would re-run on every
+     * admin request, doing nothing, indefinitely. Batched at 200 per admin
+     * request, and capability-gated for the same reason backfill_timestamps()
+     * is — admin_init fires before auth on admin-post.php.
      */
     public function backfill_occurrence_labels() {
         if ( ! \current_user_can( 'edit_posts' ) ) {
@@ -8332,33 +8348,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \update_meta_cache( 'post', $ids );
         }
 
-        $rows_by_parent = [];
+        $labels_by_parent = [];
         foreach ( $ids as $child_id ) {
             $child_id  = (int) $child_id;
             $parent_id = (int) \get_post_meta( $child_id, $this->meta_key( 'group_id' ), true );
 
-            if ( $parent_id > 0 && ! isset( $rows_by_parent[ $parent_id ] ) ) {
-                $raw   = \get_post_meta( $parent_id, $this->meta_key( 'offering_dates' ), true );
-                $rows  = [];
-                foreach ( ( \is_array( $raw ) ? $raw : [] ) as $row ) {
-                    if ( \is_array( $row ) ) {
-                        $rows[ $this->occurrences->occurrence_key( $row ) ] = (string) ( $row['label'] ?? '' );
-                    }
+            if ( $parent_id > 0 && ! isset( $labels_by_parent[ $parent_id ] ) ) {
+                $labels = [];
+                foreach ( $this->occurrences->desired_rows_by_key( $parent_id ) as $key => $row ) {
+                    $labels[ $key ] = (string) ( $row['label'] ?? '' );
                 }
-                $rows_by_parent[ $parent_id ] = $rows;
+                $labels_by_parent[ $parent_id ] = $labels;
             }
 
-            // The child's own key, spelled the way the parent's rows are — a
-            // pre-MODEL-D8 child still carries the date alone.
-            $key = (string) \get_post_meta( $child_id, $this->meta_key( 'occurrence_key' ), true );
-            if ( $key !== '' && \strpos( $key, '|' ) === false ) {
-                $key .= '|' . (string) \get_post_meta( $child_id, $this->meta_key( 'start_time' ), true );
-            }
+            // The child's own key, spelled the way the parent's rows are — one
+            // normalizer for both sides, so a pre-MODEL-D8 date-only key means
+            // the same thing here as it does to reconcile().
+            $key = $this->occurrences->stored_occurrence_key( $child_id );
 
             // An orphaned child (no parent, or a key its parent no longer
             // offers) is still stamped with '' — the row must leave the query's
             // window or the batch would return it for ever.
-            \update_post_meta( $child_id, $this->meta_key( 'label' ), $rows_by_parent[ $parent_id ][ $key ] ?? '' );
+            \update_post_meta( $child_id, $this->meta_key( 'label' ), $labels_by_parent[ $parent_id ][ $key ] ?? '' );
         }
 
         if ( count( $ids ) < $batch ) {

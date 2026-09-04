@@ -66,6 +66,28 @@ class Test_Occurrence_Identity extends Anchor_Events_TestCase {
 		return (string) get_post_meta( (int) $child_id, '_anchor_event_occurrence_key', true );
 	}
 
+	/** The one child of $parent_id carrying $key (fails the test when there isn't exactly one). */
+	protected function child_for_key( $parent_id, $key ) {
+		$found = [];
+		foreach ( $this->occurrences()->children( $parent_id, true ) as $child_id ) {
+			if ( $this->key_of( $child_id ) === $key ) {
+				$found[] = (int) $child_id;
+			}
+		}
+		$this->assertCount( 1, $found, "Expected exactly one child on {$key}." );
+		return $found[0];
+	}
+
+	/** Seat post ids booked on an occurrence, ascending. */
+	protected function seat_ids( $event_id ) {
+		$result = $this->registrations()->query_seats( [ 'event_id' => (int) $event_id, 'status' => 'all' ] );
+		$ids    = array_map( function ( $seat ) {
+			return (int) $seat['id'];
+		}, $result['items'] );
+		sort( $ids );
+		return $ids;
+	}
+
 	/* ------------------------------------------------------------------
 	 * 1. Identity = date + start time.
 	 * ------------------------------------------------------------------ */
@@ -141,6 +163,105 @@ class Test_Occurrence_Identity extends Anchor_Events_TestCase {
 		$this->assertSame( '2027-10-05|13:00', $this->key_of( $child ) );
 		$this->assertSame( '13:00', get_post_meta( $child, '_anchor_event_start_time', true ) );
 		$this->assertCount( 1, $this->occurrences()->children( $parent_id, true ) );
+	}
+
+	/**
+	 * Two sessions on one day, ONE of them re-timed: the re-timed session keeps
+	 * its own post and its own roster, and the untouched session is not
+	 * disturbed. One candidate, one claimant — unambiguous.
+	 */
+	public function test_one_of_two_sessions_retimed_keeps_its_own_child_and_roster() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2027-10-05', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Morning', 'capacity' => 10 ],
+			[ 'date' => '2027-10-05', 'start_time' => '13:00', 'end_time' => '15:00', 'label' => 'Afternoon', 'capacity' => 10 ],
+		] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$morning   = $this->child_for_key( $parent_id, '2027-10-05|09:00' );
+		$afternoon = $this->child_for_key( $parent_id, '2027-10-05|13:00' );
+		$seat_id   = $this->make_seat( $morning );
+
+		// Re-time the morning session only.
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2027-10-05', 'start_time' => '10:00', 'end_time' => '12:00', 'label' => 'Morning', 'capacity' => 10 ],
+			[ 'date' => '2027-10-05', 'start_time' => '13:00', 'end_time' => '15:00', 'label' => 'Afternoon', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+
+		sort( $live );
+		$expected = [ $morning, $afternoon ];
+		sort( $expected );
+		$this->assertSame( $expected, $live, 'Both occurrences keep their own posts.' );
+
+		$this->assertSame( '2027-10-05|10:00', $this->key_of( $morning ), 'The re-timed session is re-keyed in place.' );
+		$this->assertSame( '10:00', get_post_meta( $morning, '_anchor_event_start_time', true ) );
+		$this->assertSame( '2027-10-05|13:00', $this->key_of( $afternoon ), 'The untouched session is left exactly as it was.' );
+		$this->assertSame( '13:00', get_post_meta( $afternoon, '_anchor_event_start_time', true ) );
+
+		// The roster stayed with the session it was booked on.
+		$this->assertSame( [ $seat_id ], $this->seat_ids( $morning ) );
+		$this->assertSame( [], $this->seat_ids( $afternoon ) );
+	}
+
+	/**
+	 * BOTH sessions on one day re-timed at once is ambiguous: no roster may be
+	 * re-pointed at the other session. The seated child is retired
+	 * roster-safely (soft-closed, key untouched) and new children are created.
+	 */
+	public function test_ambiguous_double_retime_never_moves_a_roster() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2027-10-05', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Morning', 'capacity' => 10 ],
+			[ 'date' => '2027-10-05', 'start_time' => '13:00', 'end_time' => '15:00', 'label' => 'Afternoon', 'capacity' => 10 ],
+		] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$morning = $this->child_for_key( $parent_id, '2027-10-05|09:00' );
+		$seat_id = $this->make_seat( $morning );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2027-10-05', 'start_time' => '10:00', 'end_time' => '12:00', 'label' => 'Morning', 'capacity' => 10 ],
+			[ 'date' => '2027-10-05', 'start_time' => '14:00', 'end_time' => '16:00', 'label' => 'Afternoon', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertCount( 2, $live );
+		$this->assertNotContains( $morning, $live, 'An ambiguous re-key must not adopt the seated child.' );
+
+		// The seated occurrence keeps its own key, its seat and its post.
+		$this->assertSame( '2027-10-05|09:00', $this->key_of( $morning ) );
+		$this->assertSame( [ $seat_id ], $this->seat_ids( $morning ) );
+		$this->assertSame( 'publish', get_post_status( $morning ) );
+		$this->assertTrue( $this->occurrences()->is_closed( $morning ), 'A seated, no-longer-offered occurrence is soft-closed.' );
+
+		// Neither new child inherited the roster.
+		foreach ( $live as $child_id ) {
+			$this->assertSame( [], $this->seat_ids( $child_id ) );
+		}
+	}
+
+	/**
+	 * One candidate but TWO claimants: a 09:00 session re-timed to 10:00 while
+	 * an 11:00 session is added the same day. Whichever row ran first would
+	 * otherwise take the existing child — and its roster.
+	 */
+	public function test_retime_plus_added_row_on_one_date_is_ambiguous() {
+		$parent_id = $this->make_parent( [
+			[ 'date' => '2027-10-05', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Morning', 'capacity' => 10 ],
+		] );
+		$original = (int) $this->occurrences()->reconcile( $parent_id )[0];
+		$seat_id  = $this->make_seat( $original );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2027-10-05', 'start_time' => '10:00', 'end_time' => '12:00', 'label' => 'Morning', 'capacity' => 10 ],
+			[ 'date' => '2027-10-05', 'start_time' => '11:00', 'end_time' => '13:00', 'label' => 'Late morning', 'capacity' => 10 ],
+		] );
+		$live = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertCount( 2, $live );
+		$this->assertNotContains( $original, $live, 'Two rows competing for one child is a guess, not a re-key.' );
+		$this->assertSame( '2027-10-05|09:00', $this->key_of( $original ) );
+		$this->assertSame( [ $seat_id ], $this->seat_ids( $original ) );
+		$this->assertTrue( $this->occurrences()->is_closed( $original ) );
 	}
 
 	/* ------------------------------------------------------------------
@@ -310,6 +431,57 @@ class Test_Occurrence_Identity extends Anchor_Events_TestCase {
 		sort( $after );
 		$this->assertSame( $children, $after );
 		$this->assertCount( 3, $this->occurrences()->children( $parent_id, true ) );
+	}
+
+	/**
+	 * The back-fill resolves a parent's rows through desired_rows_by_key(), so
+	 * a RECURRING parent's children are covered too — reading `offering_dates`
+	 * directly would have skipped every one of them. Today an expanded row
+	 * carries no label (nothing writes one onto the rule — audit MODEL-D35), so
+	 * '' is written; the moment the rule does carry one, this pass restores it.
+	 */
+	public function test_backfill_covers_recurring_children() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$parent_id = $this->make_event( [ 'title' => 'Weekly Clinic', 'start_date' => '2027-03-01', 'timezone' => 'UTC' ] );
+		update_post_meta( $parent_id, '_anchor_event_type', 'recurring' );
+		update_post_meta( $parent_id, '_anchor_event_recurrence', [
+			'freq' => 'weekly', 'interval' => 1, 'count' => 2,
+			'start_time' => '09:00', 'end_time' => '10:00', 'capacity' => 5,
+		] );
+
+		$children = $this->occurrences()->reconcile( $parent_id );
+		$this->assertCount( 2, $children );
+
+		foreach ( $children as $child_id ) {
+			$this->assertSame( '', get_post_meta( $child_id, '_anchor_event_label', true ) );
+			delete_post_meta( $child_id, '_anchor_event_label' );
+		}
+		delete_option( 'anchor_events_occurrence_labels_backfilled' );
+
+		$this->module()->backfill_occurrence_labels();
+
+		foreach ( $children as $child_id ) {
+			$this->assertSame( '', get_post_meta( $child_id, '_anchor_event_label', true ), 'A recurring occurrence has no authored label to restore.' );
+		}
+		$this->assertSame( '1', (string) get_option( 'anchor_events_occurrence_labels_backfilled' ), 'The pass must terminate, not leave recurring children in its window.' );
+
+		// And when the rule DOES carry a label (a future MODEL-D35 fix), the
+		// same pass recovers it — no second back-fill needed.
+		update_post_meta( $parent_id, '_anchor_event_recurrence', [
+			'freq' => 'weekly', 'interval' => 1, 'count' => 2, 'label' => 'Weekly clinic',
+			'start_time' => '09:00', 'end_time' => '10:00', 'capacity' => 5,
+		] );
+		foreach ( $children as $child_id ) {
+			delete_post_meta( $child_id, '_anchor_event_label' );
+		}
+		delete_option( 'anchor_events_occurrence_labels_backfilled' );
+
+		$this->module()->backfill_occurrence_labels();
+
+		foreach ( $children as $child_id ) {
+			$this->assertSame( 'Weekly clinic', get_post_meta( $child_id, '_anchor_event_label', true ) );
+		}
 	}
 
 	/* ------------------------------------------------------------------

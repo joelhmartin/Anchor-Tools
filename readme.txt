@@ -71,6 +71,9 @@ Events Manager — breaking change for custom code:
   found satisfied, so a refund discrepancy nobody has read survives a resync.
   ("Mark reviewed" still clears everything.) Custom code passing `$seed_flags`
   positionally must drop the now-absent fourth argument.
+* A seat move refused only by a ticket-tier quota now reports the reason
+  `tier_full` (the event-level shortage keeps `capacity_full`); custom code
+  branching on `->reason() === 'capacity_full'` should also handle `tier_full`.
 * The `anchor_events_registration_fields` filter is gone. The free registration
   form now asks the event's own Attendee questions and keys each answer by its
   question key, so extra fields are added in that UI rather than in code. Custom

@@ -10472,10 +10472,38 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $this->registrations->attendee_count( $event_id, $status );
     }
 
+    /**
+     * The opening lines a confirmation falls back to when the event saved no
+     * override: the site setting, or the sentence this plugin has always
+     * shipped. One definition, because two copies of a default that have to
+     * agree are two copies that will eventually disagree.
+     *
+     * @param array $settings Module settings.
+     * @return string
+     */
+    private function default_confirmation_intro( array $settings ) {
+        return ( isset( $settings['confirmation_message'] ) && $settings['confirmation_message'] !== '' )
+            ? (string) $settings['confirmation_message']
+            : __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' );
+    }
+
+    /**
+     * The free/manual registration emails: the site's own "new registration"
+     * notice, and the attendee's confirmation.
+     *
+     * The two answer to different switches. `notify_admin` governs the internal
+     * notice; the per-event "confirmation" switch and `notify_user` govern the
+     * attendee email. They used to share one guard at the top of this method, so
+     * an organizer who unticked "Confirmation" because they were emailing
+     * attendees by hand also stopped their own site telling them anyone had
+     * registered (REG-D8).
+     *
+     * The attendee's subject and opening lines resolve through get_email_field()
+     * so the per-event overrides the Emails builder writes reach this path too —
+     * they previously reached only the WooCommerce sender, which meant "Preview
+     * with real data" showed copy a free registration never sent (REG-D1/D45).
+     */
     public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
-        if ( ! $this->is_email_enabled( $event_id, 'confirmation' ) ) {
-            return;
-        }
         $settings = $this->get_settings();
         $event_title = \get_the_title( $event_id );
         $event_link = \get_permalink( $event_id );
@@ -10500,9 +10528,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
         }
 
-        if ( ! empty( $settings['notify_user'] ) ) {
-            $subject = sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title );
-            $html = $this->build_registration_email_html( $event_id, $name, $status, $settings, $guests );
+        if ( ! empty( $settings['notify_user'] ) && $this->is_email_enabled( $event_id, 'confirmation' ) ) {
+            $tokens = $this->email_tokens( [
+                'event_id' => $event_id,
+                'seat'     => [ 'name' => $name, 'email' => $email, 'status' => $status ],
+            ] );
+            // Per-event override -> site setting -> the default this path has
+            // always used. Same three-step resolution, and the same fallbacks,
+            // as every other sender: nothing changes for an event with no
+            // override saved.
+            $subject = $this->expand_email_tokens(
+                $this->get_email_field(
+                    $event_id,
+                    'confirmation',
+                    'subject',
+                    sprintf( __( 'You are registered for %s', 'anchor-schema' ), $event_title )
+                ),
+                $tokens
+            );
+            $intro = $this->expand_email_tokens(
+                $this->get_email_field(
+                    $event_id,
+                    'confirmation',
+                    'intro',
+                    $this->default_confirmation_intro( $settings )
+                ),
+                $tokens
+            );
+            // The $ctx form of the builder, not the positional shim: the shim
+            // resolves the intro from the settings alone, which is the bug.
+            $html = $this->build_registration_email_html( [
+                'event_id'      => (int) $event_id,
+                'name'          => (string) $name,
+                'status'        => (string) $status,
+                'intro_message' => $intro,
+                'guests'        => $guests,
+                'detail_rows'   => [],
+                'seat_list'     => [],
+                'cta_label'     => __( 'View event details', 'anchor-schema' ),
+                'cta_url'       => $event_link,
+                'type'          => 'confirmation',
+            ] );
             $this->send_html_email( $email, $subject, $html, [], $event_id );
         }
     }
@@ -11234,9 +11300,16 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             $ctx = $arg;
         } else {
             $settings = \is_array( $settings ) ? $settings : $this->get_settings();
-            $intro    = isset( $settings['confirmation_message'] ) && $settings['confirmation_message'] !== ''
-                ? $settings['confirmation_message']
-                : __( "Thanks for signing up. We're excited to see you at the event!", 'anchor-schema' );
+            // Same resolution the live caller (send_registration_emails()) uses,
+            // minus the token expansion it does with a seat in hand — a
+            // positional caller must not be the one path that ignores the
+            // event's own opening lines (REG-D1).
+            $intro = $this->get_email_field(
+                (int) $arg,
+                'confirmation',
+                'intro',
+                $this->default_confirmation_intro( $settings )
+            );
             $ctx = [
                 'event_id'      => (int) $arg,
                 'name'          => (string) $name,

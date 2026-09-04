@@ -3334,7 +3334,16 @@ class WooCommerce {
      */
     private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind ) {
         $event_id = (int) $event_id;
-        $to       = $this->organizer_recipient( $event_id, $settings );
+        // The event can switch this email type off. Checked before anything is
+        // built, so a disabled type resolves no template and never fires the
+        // anchor_events_registration_email_html filter — send_customer_confirmation()
+        // already had this check; this sender was the one missing it (REG-D7).
+        // The type mapping matches the $ctx built at the bottom of this method.
+        $ctx_type = ( $kind === 'released' ) ? 'cancellation' : 'confirmation';
+        if ( ! $this->module->is_email_enabled( $event_id, $ctx_type ) ) {
+            return false;
+        }
+        $to = $this->organizer_recipient( $event_id, $settings );
         if ( $to === '' ) {
             return false;
         }
@@ -3419,8 +3428,10 @@ class WooCommerce {
             'cta_label'     => \__( 'View event', 'anchor-schema' ),
             'cta_url'       => \get_permalink( $event_id ),
             // 'released' notices are about seats being cancelled/refunded — map
-            // to the cancellation email type; 'confirmed' notices map to confirmation.
-            'type'          => ( $kind === 'released' ) ? 'cancellation' : 'confirmation',
+            // to the cancellation email type; 'confirmed' notices map to
+            // confirmation. Resolved once at the top of this method, so the
+            // type that is gated is always the type that is rendered.
+            'type'          => $ctx_type,
         ];
         $html = $this->module->build_registration_email_html( $ctx );
         return $this->module->send_html_email( $to, $subject, $html, [], $event_id );

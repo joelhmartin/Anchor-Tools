@@ -406,32 +406,24 @@ class Event_Schema {
     }
 
     /**
-     * Resolve the DateTimeZone an event's wall-clock start/end times were
-     * interpreted in. Deliberately mirrors Module::calculate_timestamps()'s
-     * (private) timezone_mode resolution exactly, so the ISO string we
-     * render always matches the wall-clock time that produced the event's
-     * own start_ts/end_ts (same known limitation: a site with only a
-     * floating gmt_offset — no timezone_string — falls back to UTC, same as
-     * the existing save path).
+     * The DateTimeZone an event's wall-clock start/end times were interpreted
+     * in — ASKED of the module, never re-derived (audit RENDER-D2 / MODEL-D20).
+     *
+     * This used to be a second copy of the resolution: `get_option(
+     * 'timezone_string') ?: 'UTC'`. That option is empty on any site
+     * configured with a raw gmt_offset instead of a named zone, and it cannot
+     * translate WordPress's own "UTC-6" form either — so on exactly the sites
+     * Module::normalize_timezone() was written to fix, the module computed
+     * every timestamp at -06:00 while this rendered the same instants at
+     * +00:00. Production published `"startDate":"2026-12-11T14:00:00+00:00"`
+     * for an 08:00 local course, and an all-day node — which collapses to
+     * `Y-m-d` in the RENDERED zone — named the wrong day on a UTC+ site.
      *
      * @param array $meta
      * @return \DateTimeZone
      */
     private function resolve_timezone( array $meta ) {
-        $settings = $this->module->get_settings();
-        $mode     = $settings['timezone_mode'] ?? 'site';
-
-        if ( $mode === 'site' ) {
-            $tz_name = \get_option( 'timezone_string' ) ?: 'UTC';
-        } else {
-            $tz_name = ! empty( $meta['timezone'] ) ? (string) $meta['timezone'] : ( \get_option( 'timezone_string' ) ?: 'UTC' );
-        }
-
-        try {
-            return new \DateTimeZone( $tz_name );
-        } catch ( \Exception $e ) {
-            return new \DateTimeZone( 'UTC' );
-        }
+        return $this->module->event_timezone( $meta );
     }
 
     /**

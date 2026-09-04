@@ -45,8 +45,25 @@ class Module {
      *     Version 1 rows must be recomputed or the past-event guard in
      *     Registrations::capacity_decision() closes such an event at midnight
      *     on the morning it runs.
+     * 3 — both bounds are computed in the site's zone with seconds zeroed, and
+     *     a `_anchor_event_timezone` row that merely restates the site's own
+     *     gmt_offset ("UTC-6" on a -06:00 site) is deleted rather than kept:
+     *     get_meta_defaults() used to MINT that string at read time and
+     *     Occurrences::sync_shared_meta() wrote the invention down as real
+     *     data (audit MODEL-D37). It is not a zone anyone chose, and
+     *     DateTimeZone rejects it outright.
      */
-    const TS_SCHEMA_VERSION = 2;
+    const TS_SCHEMA_VERSION = 3;
+
+    /**
+     * The upper bound of an OPEN-ENDED [events_list] date range —
+     * 2100-01-01T00:00:00Z.
+     *
+     * A constant, not `strtotime('+5 years')` (audit MODEL-D11): the bound goes
+     * into the meta_query that keys the listing transient, so a floating value
+     * gave every request a different cache key and the cache never hit.
+     */
+    const RANGE_OPEN_END_TS = 4102444800;
 
     /**
      * Version of the event-status VALUE schema (`_anchor_event_status`).
@@ -302,6 +319,7 @@ class Module {
         \add_action( 'admin_init', [ $this, 'backfill_status_values' ] );
         \add_action( 'admin_init', [ $this, 'cleanup_legacy_cache_registry' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
+        \add_action( 'admin_notices', [ $this, 'maybe_render_timezone_notice' ] );
 
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
         \add_action( 'admin_post_nopriv_anchor_event_register', [ $this, 'handle_registration' ] );
@@ -4883,6 +4901,85 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
     }
 
+    /**
+     * The DST warning for a site configured with a raw UTC offset instead of a
+     * named zone (audit MODEL-D21), or '' when there is nothing to warn about.
+     *
+     * A fixed ±HH:MM offset does not observe daylight saving, so on a site with
+     * `timezone_string` empty and `gmt_offset` -6 every event is read at UTC-6
+     * all year: a September course is computed an hour later than the time its
+     * author typed, and that hour propagates into the reminder window, the
+     * visibility clause, the wp_date()-rendered email tokens and the JSON-LD
+     * instant. In December the same event is correct — the error appears and
+     * disappears twice a year, which is what makes it hard to see.
+     *
+     * This does NOT change behaviour: the fix is a human setting a named zone
+     * in Settings > General, and nothing here can choose one safely (there are
+     * several zones per offset and picking the wrong one moves real dates).
+     *
+     * Split from the renderer so the condition is testable without a screen.
+     *
+     * @return string
+     */
+    public function timezone_notice_html() {
+        // wp_timezone_string() returns either a named zone or the '+HH:MM'
+        // form it derives from gmt_offset. Only the latter loses DST.
+        $zone = \wp_timezone_string();
+        if ( ! \preg_match( '/^[+-]\d{2}:\d{2}$/', $zone ) ) {
+            return '';
+        }
+        // '+00:00' is the shipped WordPress default (timezone_string '',
+        // gmt_offset 0), so warning on it would put a permanent notice on the
+        // events screens of every untouched install in the fleet without
+        // naming a real problem — the site is being read as UTC, which is what
+        // its setting says. The defect this warns about is a NON-ZERO offset
+        // standing in for a zone that observes DST.
+        if ( $zone === '+00:00' ) {
+            return '';
+        }
+
+        return '<div class="notice notice-warning"><p><strong>'
+            . \esc_html__( 'Events: this site has no time zone, only a UTC offset.', 'anchor-schema' )
+            . '</strong> '
+            . \esc_html(
+                \sprintf(
+                    /* translators: %s: the site's UTC offset, e.g. -06:00. */
+                    \__( 'Event dates are read at a fixed %s all year, so daylight saving time is not observed and events during DST are computed an hour away from the time you typed.', 'anchor-schema' ),
+                    $zone
+                )
+            )
+            . ' <a href="' . \esc_url( \admin_url( 'options-general.php#timezone_string' ) ) . '">'
+            . \esc_html__( 'Choose a named city in Settings → General', 'anchor-schema' )
+            . '</a>.</p></div>';
+    }
+
+    /**
+     * Print timezone_notice_html() once, on the screens whose author can act on
+     * it: the Events settings tab and the event editor/list.
+     */
+    public function maybe_render_timezone_notice() {
+        if ( ! \current_user_can( 'edit_posts' ) || ! \function_exists( 'get_current_screen' ) ) {
+            return;
+        }
+        $screen = \get_current_screen();
+        if ( ! $screen ) {
+            return;
+        }
+
+        $on_events = ( $screen->post_type === self::CPT && \in_array( $screen->base, [ 'post', 'edit' ], true ) );
+        // The Events tab of Settings > Anchor Tools. `tab` is always present
+        // for this tab — events registers at filter priority 40, so it is never
+        // the page's default first tab.
+        if ( ! $on_events && \class_exists( 'Anchor_Settings_Page' ) && $screen->id === 'settings_page_' . \Anchor_Settings_Page::PAGE_SLUG ) {
+            $on_events = ( isset( $_GET['tab'] ) && \sanitize_key( $_GET['tab'] ) === 'events' ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        }
+        if ( ! $on_events ) {
+            return;
+        }
+
+        echo $this->timezone_notice_html(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped at build time.
+    }
+
     public function admin_assets( $hook ) {
         if ( ! in_array( $hook, [ 'post-new.php', 'post.php' ], true ) ) {
             return;
@@ -8810,6 +8907,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $written = 0;
         foreach ( $ids as $event_id ) {
+            // v3: drop the minted offset row BEFORE reading the meta the
+            // recompute uses, so the event is timed by the site's zone from
+            // this pass on rather than by a string DateTimeZone rejects.
+            $this->drop_minted_timezone_row( $event_id );
             $meta = $this->get_meta( $event_id );
             if ( empty( $meta['start_date'] ) ) {
                 // Unfillable, but still stamped — see the docblock. Without the
@@ -8841,6 +8942,32 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // future reader to treat it as authoritative again.
             \delete_option( 'anchor_events_ts_backfilled' );
         }
+    }
+
+    /**
+     * Delete a `_anchor_event_timezone` row that only restates the site's own
+     * gmt_offset — the leftover of get_meta_defaults() minting "UTC-6" at read
+     * time and Occurrences::sync_shared_meta() writing that invention down as
+     * real data on every occurrence child (audit MODEL-D37, cleanup deferred
+     * from the get_meta_defaults() fix).
+     *
+     * Only the site's OWN offset goes. An offset that differs ("UTC-5" on a
+     * -06:00 site) cannot have come from gmt_offset, so somebody chose it, and
+     * deleting it would silently move the event by an hour; a named zone is
+     * always an author's choice. What is removed is exactly the value that
+     * `''` already resolves to, so no event's computed instant changes.
+     *
+     * @param int $event_id
+     */
+    private function drop_minted_timezone_row( $event_id ) {
+        $stored = (string) \get_post_meta( $event_id, $this->meta_key( 'timezone' ), true );
+        if ( $stored === '' || ! \preg_match( '/^UTC[+-]/i', $stored ) ) {
+            return;
+        }
+        if ( $this->normalize_timezone( $stored ) !== $this->normalize_timezone( '' ) ) {
+            return; // An offset nobody could have minted from this site's setting.
+        }
+        \delete_post_meta( $event_id, $this->meta_key( 'timezone' ) );
     }
 
     /**
@@ -9292,12 +9419,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     private function calculate_timestamps( $meta ) {
-        $settings = $this->get_settings();
-        if ( $settings['timezone_mode'] === 'site' ) {
-            $timezone = '';                      // '' = the site's zone, resolved in normalize_timezone()
-        } else {
-            $timezone = $meta['timezone'] ? $meta['timezone'] : '';
-        }
+        $timezone = $this->event_timezone_name( $meta );
         $start_time = $meta['all_day'] ? '00:00' : ( $meta['start_time'] ?: '00:00' );
         $end_date = $meta['end_date'] ?: $meta['start_date'];
         $end_time = ( $meta['all_day'] || ! $meta['end_time'] ) ? '23:59' : $meta['end_time'];
@@ -9327,8 +9449,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * event on this site had a start_ts six hours from the date its admin
      * typed: {event_date} rendered blank or a day early, and the reminder
      * scheduler's start_ts window never matched.
+     *
+     * PUBLIC because Event_Schema is a separate class and must ask rather than
+     * re-implement (audit RENDER-D2 / MODEL-D20): it kept its own
+     * `get_option('timezone_string') ?: 'UTC'` copy, which is empty on exactly
+     * the sites this method exists for, so the module computed every timestamp
+     * at -06:00 while the JSON-LD rendered the same instants at +00:00.
      */
-    private function normalize_timezone( $timezone ) {
+    public function normalize_timezone( $timezone ) {
         $timezone = \trim( (string) $timezone );
 
         if ( $timezone === '' ) {
@@ -9346,16 +9474,60 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $timezone;
     }
 
+    /**
+     * The timezone STRING an event's wall-clock times are read in, per the
+     * site's timezone_mode setting. '' means "the site's own zone" and is
+     * resolved by normalize_timezone().
+     *
+     * @param array $meta
+     * @return string
+     */
+    private function event_timezone_name( array $meta ) {
+        $settings = $this->get_settings();
+        if ( $settings['timezone_mode'] === 'site' ) {
+            return '';
+        }
+        return ! empty( $meta['timezone'] ) ? (string) $meta['timezone'] : '';
+    }
+
+    /**
+     * The ONE answer to "what zone were this event's times typed in" (audit
+     * RENDER-D2 / MODEL-D20). The save path (calculate_timestamps) and the
+     * JSON-LD renderer (Event_Schema::resolve_timezone) both ask here, so the
+     * instant a timestamp encodes and the offset the markup prints can no
+     * longer come from two different derivations.
+     *
+     * @param array $meta
+     * @return \DateTimeZone
+     */
+    public function event_timezone( array $meta ) {
+        return $this->timezone_object( $this->event_timezone_name( $meta ) );
+    }
+
+    /** A DateTimeZone from any stored shape, falling back to UTC rather than throwing mid-render. */
+    private function timezone_object( $timezone ) {
+        try {
+            return new \DateTimeZone( $this->normalize_timezone( $timezone ) );
+        } catch ( \Exception $e ) {
+            return new \DateTimeZone( 'UTC' );
+        }
+    }
+
+    /**
+     * A wall-clock date + time in a given zone as a Unix timestamp.
+     *
+     * The leading `!` in the format resets every field the format does not
+     * name — seconds and microseconds — to zero instead of inheriting them
+     * from the current clock (audit MODEL-D13). Without it the value a save
+     * writes depends on the second it ran, and Occurrences' "an unchanged
+     * desired set produces no meta churn" contract cannot hold.
+     */
     private function to_timestamp( $date, $time, $timezone ) {
         if ( ! $date ) {
             return 0;
         }
-        try {
-            $tz = new \DateTimeZone( $this->normalize_timezone( $timezone ) );
-        } catch ( \Exception $e ) {
-            $tz = new \DateTimeZone( 'UTC' );
-        }
-        $dt = \DateTime::createFromFormat( 'Y-m-d H:i', $date . ' ' . $time, $tz );
+        $tz = $this->timezone_object( $timezone );
+        $dt = \DateTime::createFromFormat( '!Y-m-d H:i', $date . ' ' . $time, $tz );
         if ( ! $dt ) {
             return 0;
         }
@@ -9382,17 +9554,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         } elseif ( ! empty( $atts['month'] ) ) {
             $requested_month = sanitize_text_field( $atts['month'] );
         }
+        // "Now" is a wall-clock question, so it is asked in the site's zone
+        // (audit RENDER-D30). date('Y-m') runs in PHP's default zone — UTC
+        // under WordPress — so at 19:00 local on the last day of a month the
+        // calendar opened on the NEXT month, and diff_months() shifted its
+        // prev/next bounds with it.
+        $current_month = \wp_date( 'Y-m' );
         if ( ! preg_match( '/^\\d{4}-\\d{2}$/', $requested_month ) ) {
-            $requested_month = date( 'Y-m' );
+            $requested_month = $current_month;
         }
 
         $month = $requested_month;
         $month_start = $month . '-01';
         $timezone = '';                          // as above — normalize_timezone() resolves it
+        // BOTH ends of the window in the site's zone (audit MODEL-D12). The end
+        // used to be a raw strtotime() in UTC, so on a UTC-6 site September
+        // stopped at 19:00 local on the 30th and an event later that evening
+        // never appeared in its own month. date() below is pure string
+        // arithmetic on a chosen YYYY-MM-01, which no zone can move.
         $start = $this->to_timestamp( $month_start, '00:00', $timezone );
-        $end = strtotime( '+1 month', strtotime( $month_start ) );
+        $end = $this->to_timestamp( date( 'Y-m-d', strtotime( '+1 month', strtotime( $month_start ) ) ), '00:00', $timezone );
 
-        $diff_to_now = $this->diff_months( $month, date( 'Y-m' ) );
+        $diff_to_now = $this->diff_months( $month, $current_month );
         $prev_month = ( $diff_to_now > -12 ) ? date( 'Y-m', strtotime( '-1 month', strtotime( $month_start ) ) ) : '';
         $next_month = ( $diff_to_now < 12 ) ? date( 'Y-m', strtotime( '+1 month', strtotime( $month_start ) ) ) : '';
 
@@ -9637,8 +9820,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! $start && ! $end ) {
             return null;
         }
-        $start_ts = $start ? strtotime( $start . ' 00:00' ) : 0;
-        $end_ts = $end ? strtotime( $end . ' 23:59' ) : strtotime( '+5 years' );
+        // Both bounds are wall-clock dates an author typed, so they are read in
+        // the site's zone like every other date in this module (audit
+        // MODEL-D11). Raw strtotime() runs in UTC: on a UTC-6 site
+        // start_date="2026-09-15" opened at 2026-09-14 18:00 local and swept in
+        // the previous evening, while end_date's 23:59 closed at 17:59 local
+        // and dropped the last evening.
+        $start_ts = $start ? $this->to_timestamp( $start, '00:00', '' ) : 0;
+        // A FIXED far-future end, not strtotime('+5 years'): the open bound is
+        // part of the transient cache key, and a value that moves every second
+        // meant an open-ended range could never hit its own cache.
+        $end_ts = $end ? $this->to_timestamp( $end, '23:59', '' ) : self::RANGE_OPEN_END_TS;
         return [
             'key' => $this->meta_key( 'start_ts' ),
             'value' => [ $start_ts, $end_ts ],

@@ -277,6 +277,63 @@ class Test_Timestamps extends Anchor_Events_TestCase {
 		$this->assertFalse( get_option( 'anchor_events_ts_backfilled' ), 'The superseded flag must be deleted.' );
 	}
 
+	/**
+	 * v3 cleanup: `get_meta_defaults()` used to MINT the literal "UTC-6" from
+	 * gmt_offset at read time, and Occurrences::sync_shared_meta() then wrote
+	 * that invention down as a real row on every occurrence child. It is not a
+	 * timezone anyone chose — it is the site's own offset spelled in a form
+	 * DateTimeZone rejects — so the back-fill deletes it and lets '' mean
+	 * "the site's zone" again.
+	 */
+	public function test_backfill_deletes_a_minted_offset_timezone_row() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', '' );
+		update_option( 'gmt_offset', -6 );
+
+		$event = $this->make_event( [ 'title' => 'Minted Zone', 'start_date' => '2030-12-05', 'timezone' => 'UTC-6' ] );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame( [], get_post_meta( $event, '_anchor_event_timezone' ), 'A row equal to the site offset was minted, not authored.' );
+		$this->assertNotEmpty( get_post_meta( $event, '_anchor_event_start_ts', true ) );
+	}
+
+	/** A zone an author actually picked survives the pass untouched. */
+	public function test_backfill_keeps_an_authored_named_timezone() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', '' );
+		update_option( 'gmt_offset', -6 );
+
+		$event = $this->make_event( [ 'title' => 'Authored Zone', 'start_date' => '2030-12-05', 'timezone' => 'America/Chicago' ] );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame( 'America/Chicago', get_post_meta( $event, '_anchor_event_timezone', true ) );
+	}
+
+	/**
+	 * An offset row that is NOT the site's own offset cannot have come from
+	 * gmt_offset, so somebody chose it — deleting it would silently move the
+	 * event.
+	 */
+	public function test_backfill_keeps_an_offset_that_is_not_the_sites_own() {
+		$this->login_as_admin();
+		update_option( 'timezone_string', '' );
+		update_option( 'gmt_offset', -6 );
+
+		$event = $this->make_event( [ 'title' => 'Elsewhere', 'start_date' => '2030-12-05', 'timezone' => 'UTC-5' ] );
+		delete_post_meta( $event, '_anchor_event_ts_version' );
+		$this->reset_backfill_state();
+
+		$this->module()->backfill_timestamps();
+
+		$this->assertSame( 'UTC-5', get_post_meta( $event, '_anchor_event_timezone', true ) );
+	}
+
 	/** Both the current option and the flag it replaced, so a run starts from a clean slate. */
 	private function reset_backfill_state() {
 		delete_option( 'anchor_events_ts_version' );

@@ -1549,11 +1549,17 @@ class Occurrences {
         // later, unrelated close cannot replay a stale value.
         $prev_key = $mk( 'occurrence_prev_reg' );
         if ( \metadata_exists( 'post', (int) $child_id, $prev_key ) ) {
-            \update_post_meta(
-                $child_id,
-                $mk( 'registration_enabled' ),
-                (bool) \get_post_meta( $child_id, $prev_key, true )
-            );
+            // Only while the close's own write is still standing. `false` is
+            // what soft_close() wrote; a `true` here means somebody re-opened
+            // this date by hand after it was closed, and their value wins over
+            // a snapshot taken before they did.
+            if ( ! (bool) \get_post_meta( $child_id, $mk( 'registration_enabled' ), true ) ) {
+                \update_post_meta(
+                    $child_id,
+                    $mk( 'registration_enabled' ),
+                    (bool) \get_post_meta( $child_id, $prev_key, true )
+                );
+            }
             \delete_post_meta( $child_id, $prev_key );
         }
 

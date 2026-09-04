@@ -294,6 +294,27 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 		);
 	}
 
+	/** A value the author wrote AFTER the close beats the snapshot taken before it. */
+	public function test_a_hand_reopened_closed_date_keeps_the_authors_value() {
+		list( $parent_id, $child ) = $this->soft_closed_child();
+
+		// The author re-opens bookings on the closed date by hand.
+		update_post_meta( $child, '_anchor_event_registration_enabled', true );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->two_rows() );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertTrue(
+			(bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ),
+			'The revive restores what the close overwrote — it does not undo a later edit.'
+		);
+		$this->assertSame(
+			'',
+			get_post_meta( $child, '_anchor_event_occurrence_prev_reg', true ),
+			'…and the spent snapshot is still cleared.'
+		);
+	}
+
 	/* ------------------------------------------------------------------
 	 * (d) Children are found by GROUP IDENTITY, not by post_status
 	 *     (MODEL-D9) — and two children sharing one occurrence_key no longer

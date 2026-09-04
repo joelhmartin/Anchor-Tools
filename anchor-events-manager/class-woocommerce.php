@@ -3667,13 +3667,22 @@ class WooCommerce {
      * @return array<int,array<int,array>> [ event_id => [ {id,name,status,seat_index} ] ].
      */
     private function collect_order_seats( $order_id ) {
+        $order_id = (int) $order_id;
         $by_event = [];
         $active   = [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING, Registrations::STATUS_WAITLIST ];
-        foreach ( $this->registrations->get_seats_for_order( (int) $order_id ) as $sid ) {
+        foreach ( $this->registrations->get_seats_for_order( $order_id ) as $sid ) {
             $sid    = (int) $sid;
             $status = (string) \get_post_meta( $sid, '_anchor_event_reg_status', true );
             if ( $status === '' ) {
-                $status = Registrations::STATUS_CONFIRMED;
+                // WOO-D44: a seat whose status meta was lost is NOT a
+                // confirmed attendee by default — that default is a guess
+                // presented as fact, and it used to list the seat as active
+                // in the buyer confirmation and the organizer notice (and
+                // consume capacity the same way, via
+                // Registrations::counts()'s matching default). Skip it and
+                // flag the order for review instead of guessing.
+                Events_Log::flag_review( $order_id, 'seat_missing_status', 'seat ' . $sid );
+                continue;
             }
             if ( ! \in_array( $status, $active, true ) ) {
                 continue;
@@ -3720,16 +3729,30 @@ class WooCommerce {
         $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
         $by_event = $this->collect_order_seats( $order_id );
 
-        $seat_list    = [];
-        $detail_rows  = [];
-        $any_waitlist = false;
-        $total_seats  = 0;
-        $primary_id   = 0; // out-param: reset for this call, filled in below.
+        $seat_list      = [];
+        $detail_rows    = [];
+        $any_waitlist   = false;
+        $total_seats    = 0;
+        $primary_id     = 0; // out-param: reset for this call, filled in below.
+        $primary_count  = -1;
+        // WOO-D51: the "primary" event — whose title/CTA/permalink and
+        // per-event email overrides drive the WHOLE confirmation — used to be
+        // silently whichever event's key came first in $by_event (seat
+        // creation order), not a deliberate choice. An order spanning a
+        // container and a real occurrence then reported the CONTAINER's
+        // title, roster and remaining capacity for the entire order. Picking
+        // the event with the most seats is deterministic and meaningful; a
+        // tie keeps whichever was seen first (stable, not arbitrary).
         foreach ( $by_event as $event_id => $seats ) {
             $event_id = (int) $event_id;
-            if ( $primary_id === 0 ) {
-                $primary_id = $event_id;
+            $count    = \count( $seats );
+            if ( $count > $primary_count ) {
+                $primary_count = $count;
+                $primary_id    = $event_id;
             }
+        }
+        foreach ( $by_event as $event_id => $seats ) {
+            $event_id      = (int) $event_id;
             $count         = \count( $seats );
             $detail_rows[] = [
                 'label' => \get_the_title( $event_id ),

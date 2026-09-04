@@ -4014,6 +4014,13 @@ class WooCommerce {
             $ids = \wc_get_orders( [
                 'limit'      => $cap + 1,
                 'return'     => 'ids',
+                // WOO-D54: with no `status` argument, wc_get_orders() inherits
+                // WooCommerce's default status set — which excludes `trash`. A
+                // flagged order that is later trashed dropped out of this scan
+                // while keeping its flag, so the cached count silently
+                // under-reported and the only remaining way to find it was the
+                // per-order metabox, which an admin would have to know to open.
+                'status'     => \array_merge( \array_keys( \wc_get_order_statuses() ), [ 'trash' ] ),
                 'meta_query' => [
                     [
                         'key'     => Events_Log::ORDER_REVIEW_META,

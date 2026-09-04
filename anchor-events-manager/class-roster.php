@@ -784,6 +784,13 @@ class Roster {
                 if ( $changed->reason() === 'capacity_full' ) {
                     $this->redirect( $event_id, 'error', \__( 'Contact details saved, but this event is full — tick “Allow over capacity” to confirm the seat anyway.', 'anchor-schema' ), 'full' );
                 }
+                // The event has room; this seat's ticket type does not. Told
+                // apart because "the event is full" would send the operator to
+                // raise the wrong number — and because a tier sold out on an
+                // event with seats left never goes to the waitlist.
+                if ( $changed->reason() === 'tier_full' ) {
+                    $this->redirect( $event_id, 'error', \__( 'Contact details saved, but this seat’s ticket type is sold out — raise that ticket type’s quota, or tick “Allow over capacity” to confirm the seat anyway.', 'anchor-schema' ), 'tier_full' );
+                }
                 // Illegal transition — contact fields were still saved, but surface
                 // the rejected status change instead of reporting full success (CodeRabbit).
                 $this->redirect( $event_id, 'error', \sprintf(

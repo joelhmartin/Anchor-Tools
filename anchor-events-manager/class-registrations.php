@@ -510,7 +510,9 @@ class Registrations {
      * @param string $note
      * @param string $actor
      * @param bool   $allow_over Explicit operator override ("Allow over capacity").
-     * @return Outcome sent | sent('waitlisted') | skipped | failed('capacity_full', ...)
+     * @return Outcome sent | sent('waitlisted') | skipped |
+     *                 failed('capacity_full' = the event total, 'tier_full' =
+     *                 this ticket type only, ...)
      */
     public function change_status_with_capacity( $seat_id, $to, $note = '', $actor = 'system', $allow_over = false ) {
         $seat_id = (int) $seat_id;
@@ -536,9 +538,19 @@ class Registrations {
 
             // Fresh recount INSIDE the lock — never the cache, the same rule
             // claim_seats() follows.
-            $fits = ( $capacity <= 0 ) || ( ( $this->count_reserved_seats( $event_id, true ) + $weight ) <= $capacity );
+            //
+            // The two ceilings are kept APART, because only one of them can
+            // send a seat to the waitlist. capacity_decision() says it and
+            // claim_seats() implements it: the event total governs the
+            // waitlist, and a tier that is sold out on an event with room is
+            // simply `full` for that tier — it never waitlists. Collapsed into
+            // one `$fits` these two produced "(event full — waitlisted
+            // instead)" on an event that was not full, and a seat on the
+            // waitlist of an event with empty seats.
+            $event_fits = ( $capacity <= 0 ) || ( ( $this->count_reserved_seats( $event_id, true ) + $weight ) <= $capacity );
+            $tier_fits  = true;
 
-            if ( $fits ) {
+            if ( $event_fits ) {
                 $tier_id = \sanitize_key( (string) \get_post_meta( $seat_id, '_anchor_event_ticket_type_id', true ) );
                 if ( $tier_id === '' ) {
                     $tier_id = 'primary';
@@ -546,17 +558,20 @@ class Registrations {
                 $tier = $this->module->ticket_types ? $this->module->ticket_types->find( $event_id, $tier_id ) : null;
                 $quota = \is_array( $tier ) ? (int) ( $tier['quota'] ?? 0 ) : 0;
                 if ( $quota > 0 && ( $this->count_reserved_for_tier( $event_id, $tier_id, true ) + $weight ) > $quota ) {
-                    $fits = false;
+                    $tier_fits = false;
                 }
             }
+            $fits = $event_fits && $tier_fits;
 
             if ( ! $fits && ! $allow_over ) {
                 // The confirm is refused either way — this records WHY, once,
-                // whichever of the two branches below answers it.
+                // whichever of the two branches below answers it, and WHICH
+                // ceiling said no.
                 Events_Log::error( 'capacity_refused', [
                     'event' => $event_id,
                     'seat'  => $seat_id,
                     'from'  => $from,
+                    'scope' => $event_fits ? 'tier' : 'event',
                 ] );
                 // A seat coming back from cancelled or failed can go somewhere
                 // honest — the waitlist — when the event runs one. (The
@@ -570,12 +585,18 @@ class Registrations {
                 // the waitlist either, and offering them one produced an
                 // `illegal_transition` refusal for a move the module had just
                 // chosen to make.
-                if ( \in_array( self::STATUS_WAITLIST, self::$transitions[ $from ] ?? [], true ) && ! empty( $meta['waitlist'] ) ) {
+                if ( ! $event_fits
+                    && \in_array( self::STATUS_WAITLIST, self::$transitions[ $from ] ?? [], true )
+                    && ! empty( $meta['waitlist'] )
+                ) {
                     $note_full = \trim( $note . ' ' . \__( '(event full — waitlisted instead)', 'anchor-schema' ) );
                     $out = $this->update_status( $seat_id, self::STATUS_WAITLIST, $note_full, $actor );
                     return $out->is_sent() ? Outcome::sent( 'waitlisted' ) : $out;
                 }
-                return Outcome::failed( 'capacity_full' );
+                // Named apart so the operator is told which ceiling to raise:
+                // "the event is full" is wrong, and unactionable, when the
+                // event has room and this ticket type does not.
+                return Outcome::failed( $event_fits ? 'tier_full' : 'capacity_full' );
             }
 
             if ( ! $fits ) {

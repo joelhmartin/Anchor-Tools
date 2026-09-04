@@ -543,6 +543,38 @@ class Test_Roster extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * A tier-only shortage gets its own code and its own message: "this event
+	 * is full" points the operator at the wrong number, and the event is not
+	 * full.
+	 */
+	public function test_reviving_a_seat_into_a_sold_out_tier_names_the_tier() {
+		$event_id = $this->make_event(
+			[ 'capacity' => 100, 'waitlist' => true ],
+			[ [ 'label' => 'Limited', 'price' => '0', 'active' => 1, 'quota' => 1 ] ]
+		);
+		$tier = $this->ticket_types()->get( $event_id )[0];
+
+		$this->make_seat( $event_id, [ 'ticket_type_id' => $tier['id'] ] );
+		$seat_id = $this->make_seat(
+			$event_id,
+			[ 'status' => Registrations::STATUS_CANCELLED, 'ticket_type_id' => $tier['id'] ]
+		);
+
+		$location = $this->post_edit(
+			$event_id,
+			$seat_id,
+			[ 'roster_status' => Registrations::STATUS_CONFIRMED ]
+		);
+
+		$this->assertSame( 'tier_full', $this->code_of( $location ) );
+		$this->assertStringContainsString( 'ticket type', strtolower( $this->message_of( $location ) ) );
+		$this->assertSame(
+			Registrations::STATUS_CANCELLED,
+			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
+		);
+	}
+
 	public function test_reviving_a_cancelled_seat_past_capacity_is_refused() {
 		$event_id = $this->make_event( [ 'capacity' => 1 ] );
 		$this->make_seat( $event_id );

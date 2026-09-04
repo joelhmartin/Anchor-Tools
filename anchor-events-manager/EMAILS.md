@@ -265,7 +265,21 @@ Both are executed by a single recurring cron hook (`anchor_events_reminder_sweep
 
 > **Any change to an event's start timestamp re-arms both.** That is the design (MODEL-D16), and it is deliberately not limited to a "real" postponement — `start_ts` is what the markers are keyed on, so correcting an event's start *time* by fifteen minutes while it sits inside the reminder window will send that window's reminder again, and the roster digest again. Nothing else can tell a typo fix from a postponement, and re-sending about a date that moved is the safer of the two failures. Fix start times before the first window opens.
 
-**Cancellation marker:** Per-seat `_anchor_event_cancel_emailed` — the Unix time that cancellation was emailed about. `Registrations::update_status()` deletes it whenever a seat leaves a terminal status, so a seat restored by a roster edit and cancelled again emails the attendee again. `send_cancellation_email()` returns `true` only when `wp_mail()` accepted the message; a skip returns `false`.
+**Cancellation marker:** Per-seat `_anchor_event_cancel_emailed` — the Unix time that cancellation was emailed about. `Registrations::update_status()` deletes it whenever a seat leaves a terminal status, so a seat restored by a roster edit and cancelled again emails the attendee again. `send_cancellation_email()` answers `sent` only when `wp_mail()` accepted the message (see **Dispatch results** below).
+
+### Dispatch results
+
+Every sender — the WooCommerce buyer confirmation, the reminder, the roster digest, the cancellation — and `Registrations::update_status()` return an `Outcome`, not a boolean:
+
+| state | meaning | what a caller does with it |
+| --- | --- | --- |
+| `sent` | the mail left (or the status changed) | mark the gate/marker, log the send |
+| `skipped` | deliberately not done — the type is switched off for the event, there is nothing to describe, the seat holds that status already | never flag review, never queue a retry, never log it as a send |
+| `failed` | attempted and rejected (`wp_mail()` said no, an illegal transition) | flag review / queue the retry |
+
+`reason()` carries the detail (`disabled`, `nothing_to_send`, `already_sent`, `no_address`, `wp_mail`, `same_status`, `illegal_transition`, …) and goes in the log line.
+
+Two skips are handled differently by the order dispatcher: a `disabled` confirmation **stamps** the per-event emails-sent gate (the organizer's choice is settled; the next reconcile must not re-decide it), while `nothing_to_send` deliberately leaves the gate open, because seats the pass could not see may exist on the next one.
 
 ### Retry queue
 

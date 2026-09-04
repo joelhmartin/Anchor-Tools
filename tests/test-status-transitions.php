@@ -19,7 +19,7 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$reg      = $this->registrations();
 
 		$this->assertTrue(
-			$reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'paid', 'tester' )
+			$reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'paid', 'tester' )->is_sent()
 		);
 		$this->assertSame(
 			Registrations::STATUS_CONFIRMED,
@@ -34,14 +34,14 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$this->assertSame( 'tester', $last['actor'] );
 	}
 
-	/** An illegal transition returns false and leaves the status unchanged. */
+	/** An illegal transition is reported as failed and leaves the status unchanged. */
 	public function test_illegal_transition_rejected() {
 		$event_id = $this->make_event();
 		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
 		$reg      = $this->registrations();
 
 		// confirmed → pending is not in the transition table.
-		$this->assertFalse( $reg->update_status( $seat_id, Registrations::STATUS_PENDING ) );
+		$this->assertTrue( $reg->update_status( $seat_id, Registrations::STATUS_PENDING )->is_failed() );
 		$this->assertSame(
 			Registrations::STATUS_CONFIRMED,
 			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
@@ -54,9 +54,9 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
 		$reg      = $this->registrations();
 
-		$this->assertTrue( $reg->update_status( $seat_id, Registrations::STATUS_REFUNDED ) );
+		$this->assertTrue( $reg->update_status( $seat_id, Registrations::STATUS_REFUNDED )->is_sent() );
 		// refunded → confirmed must be rejected.
-		$this->assertFalse( $reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED ) );
+		$this->assertTrue( $reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED )->is_failed() );
 		$this->assertSame(
 			Registrations::STATUS_REFUNDED,
 			get_post_meta( $seat_id, '_anchor_event_reg_status', true )
@@ -67,7 +67,7 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 	public function test_invalid_status_rejected() {
 		$event_id = $this->make_event();
 		$seat_id  = $this->make_seat( $event_id );
-		$this->assertFalse( $this->registrations()->update_status( $seat_id, 'bogus' ) );
+		$this->assertTrue( $this->registrations()->update_status( $seat_id, 'bogus' )->is_failed() );
 	}
 
 	/** anonymize_seat scrubs name/email/phone + custom reg fields, keeps status. */

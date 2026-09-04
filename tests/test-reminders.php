@@ -344,7 +344,7 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( [ 'cancel@example.com', 'cancel@example.com' ], $sent, 'The attendee must be told about the second cancellation too.' );
 	}
 
-	public function test_send_cancellation_email_returns_false_when_it_skips() {
+	public function test_send_cancellation_email_reports_a_skip_as_a_skip() {
 		$this->configure( [ 'notify_cancellation' => true ] );
 
 		$event_id = $this->future_event( time() + 10 * DAY_IN_SECONDS );
@@ -354,8 +354,10 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->capture_mail( $sent );
 
 		$this->registrations()->update_status( $seat_id, Registrations::STATUS_CANCELLED );
-		$this->assertTrue( $this->module()->send_cancellation_email( $seat_id ), 'The first send reports the wp_mail() result.' );
-		$this->assertFalse( $this->module()->send_cancellation_email( $seat_id ), 'A skipped send is not a successful send.' );
+		$this->assertTrue( $this->module()->send_cancellation_email( $seat_id )->is_sent(), 'The first send reports the wp_mail() result.' );
+		$second = $this->module()->send_cancellation_email( $seat_id );
+		$this->assertFalse( $second->is_sent(), 'A skipped send is not a successful send.' );
+		$this->assertTrue( $second->is_skipped(), 'Nor is it a failure — nothing went wrong (audit WOO-D14).' );
 		$this->assertCount( 1, $sent );
 	}
 

@@ -269,6 +269,8 @@ class Module {
         // Always-on data layer (spec §3, approach B). WC-gated classes load in Phase 1.
         $dir = \plugin_dir_path( __FILE__ );
         require_once $dir . 'class-events-log.php';
+        // The tri-state every sender and every status write answers with.
+        require_once $dir . 'class-outcome.php';
         require_once $dir . 'class-registrations.php';
         require_once $dir . 'class-roster.php';
         require_once $dir . 'class-ticket-types.php';
@@ -761,6 +763,15 @@ class Module {
      * @param int   $now
      */
     private function send_due_reminders( $event_id, $start_ts, array $settings, array $meta, $now ) {
+        // An event whose reminders are switched off is asked nothing further:
+        // no seat query, and — the point — no markers. Deciding it per seat
+        // inside the loop would record every due offset as accounted for, so
+        // switching reminders back ON mid-window would silently send nothing
+        // (audit WOO-D14: check the switch BEFORE the sender, not after).
+        if ( ! $this->is_email_enabled( $event_id, 'reminder' ) ) {
+            return;
+        }
+
         $due = [];
         foreach ( $this->effective_offsets( $event_id, $settings, $meta ) as $offset ) {
             if ( ( $start_ts - $offset * DAY_IN_SECONDS ) <= $now && $now < $start_ts ) {
@@ -807,7 +818,16 @@ class Module {
                 continue; // every due offset already accounted for, or blocked.
             }
 
-            $this->deliver_reminder( $seat, $event_id, $target, $start_ts, $settings );
+            $result = $this->deliver_reminder( $seat, $event_id, $target, $start_ts, $settings );
+
+            // A skip is something no retry and no later sweep can fix (this
+            // seat has no address). Record the offset as superseded (0) rather
+            // than leaving it unsent: an unmarked offset is re-attempted by
+            // every sweep for the rest of the window. A FAILURE is different —
+            // it owns a retry job, so it stays unmarked (audit REG-D5).
+            if ( $result->is_skipped() ) {
+                $this->mark_reminder_sent( $seat['id'], $start_ts, $target, 0 );
+            }
 
             // Whether or not that send succeeded, the wider windows are stale.
             foreach ( $due as $offset ) {
@@ -828,15 +848,15 @@ class Module {
      * @param int   $offset   Days-before-start offset being sent.
      * @param int   $start_ts Event start the marker is keyed to.
      * @param array $settings
-     * @return bool
+     * @return Outcome
      */
     private function deliver_reminder( array $seat, $event_id, $offset, $start_ts, array $settings ) {
-        $sent = $this->send_reminder_email( $seat, $event_id, $offset, $settings );
-        if ( $sent ) {
+        $result = $this->send_reminder_email( $seat, $event_id, $offset, $settings );
+        if ( $result->is_sent() ) {
             $this->mark_reminder_sent( $seat['id'], $start_ts, $offset, \time() );
             \update_post_meta( $seat['id'], '_anchor_event_attendee_notified', true );
         }
-        return $sent;
+        return $result;
     }
 
     /* ---------------------------------------------------------------------
@@ -1145,14 +1165,14 @@ class Module {
      * @param int        $event_id
      * @param int        $offset   Days-before-start offset being sent.
      * @param array|null $settings Pre-resolved settings; loaded if not supplied.
-     * @return bool True on successful send.
+     * @return Outcome sent | skipped (disabled, no_address) | failed (wp_mail).
      */
     public function send_reminder_email( array $seat, $event_id, $offset, $settings = null ) {
         if ( ! $this->is_email_enabled( $event_id, 'reminder' ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         if ( empty( $seat['email'] ) ) {
-            return false;
+            return Outcome::skipped( 'no_address' );
         }
         if ( ! \is_array( $settings ) ) {
             $settings = $this->get_settings();
@@ -1202,22 +1222,27 @@ class Module {
                 ] );
             }
         }
-        return $sent;
+        return Outcome::from_bool( $sent, 'wp_mail' );
     }
 
-    /** Build + send the organizer roster digest (confirmed attendees + counts). */
+    /**
+     * Build + send the organizer roster digest (confirmed attendees + counts).
+     *
+     * @param int $event_id
+     * @return Outcome sent | skipped (disabled) | failed (invalid_event, no_address, wp_mail).
+     */
     public function send_roster_email( $event_id ) {
         if ( ! $this->is_email_enabled( $event_id, 'roster' ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         $event_id = (int) $event_id;
         if ( \get_post_type( $event_id ) !== self::CPT ) {
-            return false;
+            return Outcome::failed( 'invalid_event' );
         }
         $settings = $this->get_settings();
         $to       = $this->resolve_organizer_email( $event_id, $settings );
         if ( $to === '' ) {
-            return false;
+            return Outcome::failed( 'no_address' );
         }
         $summary = $this->registrations->get_event_summary( $event_id );
         $seats   = $this->registrations->query_seats( [
@@ -1264,7 +1289,7 @@ class Module {
             'type'          => 'roster',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        return $this->send_html_email( $to, $subject, $html, [], $event_id );
+        return Outcome::from_bool( $this->send_html_email( $to, $subject, $html, [], $event_id ), 'wp_mail' );
     }
 
     /**
@@ -1289,7 +1314,7 @@ class Module {
         if ( (int) ( $markers[ $start_ts ] ?? 0 ) > 0 ) {
             return; // already sent for THIS date
         }
-        if ( $this->send_roster_email( $event_id ) ) {
+        if ( $this->send_roster_email( $event_id )->is_sent() ) {
             $markers[ $start_ts ] = $now;
             \update_post_meta( $event_id, $this->meta_key( 'roster_sent' ), $this->prune_marker_map( $markers, $start_ts ) );
         }
@@ -11477,41 +11502,43 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * (it returns id, status, seat_index, event_id, order_item_id). Those three
      * fields are read directly from seat post meta here.
      *
-     * Returns true ONLY when wp_mail() accepted the message. A skip — already
-     * emailed about this cancellation, cancellation emails switched off, no
-     * address on the seat — is not a send, and used to be reported as one
-     * (audit REG-D4), which is how a caller could be told a mail went out that
-     * never did.
+     * Answers `sent` ONLY when wp_mail() accepted the message. Every reason it
+     * does not mail — already emailed about this cancellation, cancellation
+     * emails switched off, no address on the seat, the seat gone — is a
+     * `skipped`, not a failure: none of them is fixable by a retry, and none is
+     * a send (audit REG-D4/REG-D6). `failed` is reserved for wp_mail() saying
+     * no, which is the one case that earns a retry job.
      *
      * @param int $seat_id
-     * @return bool
+     * @return Outcome sent | skipped (already_sent, notifications_off, seat_gone,
+     *                 no_address, disabled) | failed (wp_mail).
      */
     public function send_cancellation_email( $seat_id ) {
         $seat_id = (int) $seat_id;
         if ( (int) \get_post_meta( $seat_id, Registrations::META_CANCEL_EMAILED, true ) > 0 ) {
             $this->clear_email_retry( $seat_id, 'cancellation' ); // nothing left to retry
-            return false;
+            return Outcome::skipped( 'already_sent' );
         }
         // Defense-in-depth: this method is public, so re-honor the toggle here even
         // though on_seat_status_changed() already gates the normal enqueue path.
         $settings = $this->get_settings();
         if ( empty( $settings['notify_cancellation'] ) ) {
-            return false;
+            return Outcome::skipped( 'notifications_off' );
         }
         $info  = $this->registrations->get_seat_info( $seat_id );
         if ( ! \is_array( $info ) ) {
-            return false;
+            return Outcome::skipped( 'seat_gone' );
         }
         // get_seat_info() omits email, name, order_id — read from meta directly.
         $email    = (string) \get_post_meta( $seat_id, '_anchor_event_email', true );
         $name     = (string) \get_post_meta( $seat_id, '_anchor_event_name', true );
         $order_id = (int) \get_post_meta( $seat_id, '_anchor_event_order_id', true );
         if ( $email === '' ) {
-            return false;
+            return Outcome::skipped( 'no_address' );
         }
         $event_id = (int) $info['event_id'];
         if ( ! $this->is_email_enabled( $event_id, 'cancellation' ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         $status   = (string) $info['status']; // cancelled | refunded
         $order    = ( $order_id > 0 && \function_exists( 'wc_get_order' ) ) ? \wc_get_order( $order_id ) : null;
@@ -11561,7 +11588,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // (audit REG-D5). Leave the job for the hourly sweep to drain.
             $this->queue_email_retry( $seat_id, [ 'type' => 'cancellation' ] );
         }
-        return $sent;
+        return Outcome::from_bool( $sent, 'wp_mail' );
     }
 
     /**

@@ -518,7 +518,7 @@ class Roster {
         // Status change routed through the data layer (transition rules + history).
         $current = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
         if ( $status !== '' && $status !== $current ) {
-            if ( ! $this->registrations->update_status( $seat_id, $status, 'roster edit', 'user:' . \get_current_user_id() ) ) {
+            if ( $this->registrations->update_status( $seat_id, $status, 'roster edit', 'user:' . \get_current_user_id() )->is_failed() ) {
                 // Illegal transition — contact fields were still saved, but surface
                 // the rejected status change instead of reporting full success (CodeRabbit).
                 $this->redirect( $event_id, 'error', \sprintf(
@@ -542,9 +542,15 @@ class Roster {
             $this->redirect( $event_id, 'error', \__( 'Seat not found.', 'anchor-schema' ) );
         }
 
-        $ok = $this->registrations->update_status( $seat_id, Registrations::STATUS_CANCELLED, 'roster cancel', 'user:' . \get_current_user_id() );
-        if ( $ok ) {
+        // The wp-admin row action only hides Cancel for cancelled/refunded, and a
+        // stale page or a bookmarked cancel URL reaches it either way — so the
+        // notice has to say which of the three things happened (audit REG-D37).
+        $result = $this->registrations->update_status( $seat_id, Registrations::STATUS_CANCELLED, 'roster cancel', 'user:' . \get_current_user_id() );
+        if ( $result->is_sent() ) {
             $this->redirect( $event_id, 'success', \__( 'Seat cancelled.', 'anchor-schema' ) );
+        }
+        if ( $result->is_skipped() ) {
+            $this->redirect( $event_id, 'success', \__( 'This seat was already cancelled — nothing changed.', 'anchor-schema' ) );
         }
         $this->redirect( $event_id, 'error', \__( 'Could not cancel this seat.', 'anchor-schema' ) );
     }
@@ -559,9 +565,13 @@ class Roster {
         if ( \get_post_type( $event_id ) !== Module::CPT ) {
             \wp_die( \esc_html__( 'Invalid event.', 'anchor-schema' ) );
         }
-        $ok = $this->module->send_roster_email( $event_id );
-        if ( $ok ) {
+        $result = $this->module->send_roster_email( $event_id );
+        if ( $result->is_sent() ) {
             $this->redirect( $event_id, 'success', \__( 'Roster sent to organizer.', 'anchor-schema' ) );
+        } elseif ( $result->is_skipped() ) {
+            // Nothing was sent and nothing went wrong: say which it is rather
+            // than pointing the operator at an error log with nothing in it.
+            $this->redirect( $event_id, 'error', \__( 'Roster not sent — the roster email is switched off for this event.', 'anchor-schema' ) );
         } else {
             $this->redirect( $event_id, 'error', \__( 'Roster could not be sent — check the error log.', 'anchor-schema' ) );
         }

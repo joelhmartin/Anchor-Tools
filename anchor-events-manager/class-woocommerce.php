@@ -2458,7 +2458,7 @@ class WooCommerce {
                     // waitlist seat) would silently leave a surplus seat active
                     // while still decrementing the counter (CodeRabbit P2).
                     $was_capacity = \in_array( $s['status'], [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING ], true );
-                    if ( $this->registrations->update_status( $s['id'], $removal_status, 'order #' . $order_id . ' → ' . $removal_status, 'woocommerce' ) ) {
+                    if ( $this->registrations->update_status( $s['id'], $removal_status, 'order #' . $order_id . ' → ' . $removal_status, 'woocommerce' )->is_sent() ) {
                         $removed[] = $s['id'];
                         if ( $was_capacity ) {
                             $released_capacity++; // L7 — only capacity-consuming seats.
@@ -2506,7 +2506,7 @@ class WooCommerce {
                             $seat = \array_shift( $revivable );
                             // Revival can only go to confirmed/pending (transition
                             // table forbids cancelled→waitlist); flag overfill if no room.
-                            if ( $this->registrations->update_status( $seat['id'], $active_target, 'order #' . $order_id . ' revived', 'woocommerce' ) ) {
+                            if ( $this->registrations->update_status( $seat['id'], $active_target, 'order #' . $order_id . ' revived', 'woocommerce' )->is_sent() ) {
                                 $revived[] = $seat['id'];
                                 if ( $has_room ) {
                                     $remaining--;
@@ -2625,7 +2625,7 @@ class WooCommerce {
                         continue; // Was surplus-released this pass.
                     }
                     if ( $s['status'] === Registrations::STATUS_PENDING ) {
-                        if ( $this->registrations->update_status( $s['id'], Registrations::STATUS_CONFIRMED, 'order #' . $order_id . ' confirmed', 'woocommerce' ) ) {
+                        if ( $this->registrations->update_status( $s['id'], Registrations::STATUS_CONFIRMED, 'order #' . $order_id . ' confirmed', 'woocommerce' )->is_sent() ) {
                             $flipped[] = $s['id'];
                         }
                     }
@@ -3146,17 +3146,34 @@ class WooCommerce {
                 }
             }
             if ( $uncovered ) {
-                if ( $this->send_customer_confirmation( $order, $settings ) ) {
+                $result = $this->send_customer_confirmation( $order, $settings );
+                if ( $result->is_sent() || ( $result->is_skipped() && 'disabled' === $result->reason() ) ) {
+                    // The gate records "this event is settled", not "mail left
+                    // the building": a switch-off the organizer chose is just
+                    // as settled as a send, and stamping it is what stops the
+                    // next reconcile re-deciding it (audit REG-D6). A skip with
+                    // nothing to confirm is NOT settled and is deliberately
+                    // absent from this branch (audit WOO-D15).
                     $now = \time();
                     foreach ( $email_events as $eid => $ev ) {
                         if ( ! empty( $ev['confirmed'] ) || ! empty( $ev['waitlist'] ) ) {
                             $sent[ 'customer:' . (int) $eid ] = $now;
                         }
                     }
+                }
+                if ( $result->is_sent() ) {
                     $log_entries[] = $this->make_log_entry( 'Customer confirmation email sent.', [ 'to' => $order->get_billing_email() ] );
+                } elseif ( $result->is_skipped() ) {
+                    $log_entries[] = $this->make_log_entry( 'Customer confirmation email skipped.', [
+                        'to'     => $order->get_billing_email(),
+                        'reason' => $result->reason(),
+                    ] );
                 } else {
                     $review_flags[] = $this->make_flag( 'customer_email_failed', 'order #' . $order_id );
-                    $log_entries[]  = $this->make_log_entry( 'Customer confirmation email FAILED.', [ 'to' => $order->get_billing_email() ] );
+                    $log_entries[]  = $this->make_log_entry( 'Customer confirmation email FAILED.', [
+                        'to'     => $order->get_billing_email(),
+                        'reason' => $result->reason(),
+                    ] );
                 }
             }
         }
@@ -3228,17 +3245,23 @@ class WooCommerce {
 
     /**
      * Build + send the one-per-order buyer confirmation listing all current active
-     * seats across every event line. Returns the send result (false → caller flags
-     * customer_email_failed). Also used by the manual "Resend confirmation" button.
+     * seats across every event line. Also used by the manual "Resend
+     * confirmation" button.
+     *
+     * Answers the tri-state (audit WOO-D14/WOO-D15/REG-D6/REG-D41). It used to
+     * answer `true` when there was nothing to confirm and `false` when the
+     * organizer had switched the email off — so a no-op stamped the gate that
+     * makes the real confirmation unsendable, and a deliberate setting flagged
+     * the order for review on every reconcile for ever.
      *
      * @param \WC_Order $order
      * @param array     $settings Module settings.
-     * @return bool
+     * @return Outcome sent | skipped (nothing_to_send, disabled) | failed.
      */
     private function send_customer_confirmation( \WC_Order $order, array $settings ) {
         $to = (string) $order->get_billing_email();
         if ( $to === '' ) {
-            return false;
+            return Outcome::failed( 'no_address' );
         }
         $order_id = (int) $order->get_id();
         $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
@@ -3270,7 +3293,9 @@ class WooCommerce {
             }
         }
         if ( $total_seats === 0 ) {
-            return true; // Nothing active to confirm — treat as a no-op success.
+            // Nothing active to confirm. NOT a send: the gate must stay open so
+            // a later pass that does see seats still mails the buyer.
+            return Outcome::skipped( 'nothing_to_send' );
         }
 
         $tokens = [
@@ -3284,7 +3309,7 @@ class WooCommerce {
         // The event can switch its confirmation email off. Checked here, where
         // the order's primary event is finally known.
         if ( $primary_id && ! $this->module->is_email_enabled( $primary_id, 'confirmation' ) ) {
-            return false;
+            return Outcome::skipped( 'disabled' );
         }
         // Per-event overrides win; otherwise the site setting, otherwise the shipped default.
         $subject = $this->module->expand_email_tokens(
@@ -3319,7 +3344,10 @@ class WooCommerce {
             'type'          => 'confirmation',
         ];
         $html = $this->module->build_registration_email_html( $ctx );
-        return $this->module->send_html_email( $to, $subject, $html, [], $primary_id );
+        return Outcome::from_bool(
+            $this->module->send_html_email( $to, $subject, $html, [], $primary_id ),
+            'wp_mail'
+        );
     }
 
     /**
@@ -3570,13 +3598,13 @@ class WooCommerce {
         $order = \wc_get_order( $order_id );
         if ( $order ) {
             $settings = $this->module->get_settings();
-            $ok       = $this->send_customer_confirmation( $order, $settings );
+            $result   = $this->send_customer_confirmation( $order, $settings );
 
             $sent = $order->get_meta( self::EMAILS_SENT_META );
             if ( ! \is_array( $sent ) ) {
                 $sent = [];
             }
-            if ( $ok ) {
+            if ( $result->is_sent() ) {
                 // finding-5 — dispatch_emails() gates the buyer confirmation PER
                 // EVENT (emails_sent['customer:'.$event_id]); the legacy 'customer'
                 // key is no longer consulted. Mark every event the order currently
@@ -3589,6 +3617,12 @@ class WooCommerce {
                 $order->update_meta_data( self::EMAILS_SENT_META, $sent );
                 $order->save();
                 Events_Log::order( $order_id, 'Customer confirmation re-sent (manual).' );
+            } elseif ( $result->is_skipped() ) {
+                // A fully-refunded order has nothing to confirm, and an event
+                // can have the email switched off. Neither is a send and
+                // neither is a defect — the log used to assert a send that
+                // never happened (audit REG-D41).
+                Events_Log::order( $order_id, 'Customer confirmation re-send skipped.', [ 'reason' => $result->reason() ] );
             } else {
                 Events_Log::flag_review( $order_id, 'customer_email_failed', 'manual resend' );
             }

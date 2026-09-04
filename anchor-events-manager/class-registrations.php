@@ -156,23 +156,28 @@ class Registrations {
 
     /**
      * Change a seat's status with transition validation + history append.
-     * No-ops (returns true) for same-status calls without a note; logs and returns
-     * false for illegal transitions. Never fatal.
+     *
+     * Answers the tri-state (audit REG-D37): `sent` when the status actually
+     * changed, `skipped` for a same-status call with no note — nothing was
+     * written, no history entry exists, and a caller that reports "Seat
+     * cancelled." for it is asserting a change that did not happen — and
+     * `failed` for an id that is not a seat, an unknown status, or a
+     * transition the table forbids. Never fatal.
      *
      * @param int    $seat_id Seat post ID.
      * @param string $to      Target status.
      * @param string $note    History note.
      * @param string $actor   History actor.
-     * @return bool True if the status changed (or was a benign no-op).
+     * @return Outcome sent = changed, skipped = benign no-op, failed = rejected.
      */
     public function update_status( $seat_id, $to, $note = '', $actor = 'system' ) {
         $seat_id = (int) $seat_id;
         if ( $seat_id <= 0 || \get_post_type( $seat_id ) !== Module::REG_CPT ) {
-            return false;
+            return Outcome::failed( 'not_a_seat' );
         }
         if ( ! $this->valid_status( $to ) ) {
             Events_Log::error( 'invalid_status', [ 'seat' => $seat_id, 'to' => $to ] );
-            return false;
+            return Outcome::failed( 'invalid_status' );
         }
 
         $from = (string) \get_post_meta( $seat_id, '_anchor_event_reg_status', true );
@@ -182,14 +187,14 @@ class Registrations {
 
         // Same status: no-op unless a note is supplied (then just record the note).
         if ( $from === $to && $note === '' ) {
-            return true;
+            return Outcome::skipped( 'same_status' );
         }
 
         if ( $from !== $to ) {
             $allowed = self::$transitions[ $from ] ?? [];
             if ( ! \in_array( $to, $allowed, true ) ) {
                 Events_Log::error( 'illegal_transition', [ 'seat' => $seat_id, 'from' => $from, 'to' => $to ] );
-                return false;
+                return Outcome::failed( 'illegal_transition' );
             }
         }
 
@@ -233,7 +238,7 @@ class Registrations {
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
         \do_action( 'anchor_events_seat_status_changed', $seat_id, $from, $to, (string) $actor );
-        return true;
+        return Outcome::sent();
     }
 
     /**

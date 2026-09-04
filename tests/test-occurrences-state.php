@@ -238,6 +238,63 @@ class Test_Occurrences_State extends Anchor_Events_TestCase {
 	}
 
 	/* ------------------------------------------------------------------
+	 * (c2) The close/revive round trip restores the availability the close
+	 *      turned off. soft_close() writes registration_enabled=false as one
+	 *      quarter of the quartet; without a snapshot of what it overwrote,
+	 *      reviving the date brought it back OPEN in the picker and CLOSED to
+	 *      bookings, silently, with a roster already on it.
+	 * ------------------------------------------------------------------ */
+
+	/** A date that was open before it was closed is open again when it returns. */
+	public function test_revived_date_gets_its_registration_back() {
+		list( $parent_id, $child ) = $this->soft_closed_child();
+
+		$this->assertFalse(
+			(bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ),
+			'Precondition: the soft close turned registration off.'
+		);
+
+		// Put the date back.
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->two_rows() );
+		$live = $this->occurrences()->reconcile( $parent_id );
+
+		$this->assertContains( $child, $live, 'The SAME child is revived.' );
+		$this->assertTrue(
+			(bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ),
+			'A date that was bookable before it was closed must be bookable again.'
+		);
+		$this->assertSame(
+			'',
+			get_post_meta( $child, '_anchor_event_occurrence_prev_reg', true ),
+			'The snapshot is consumed by the revive, not left to be replayed later.'
+		);
+	}
+
+	/** …but one that was already closed to bookings stays closed. */
+	public function test_revived_date_that_was_already_off_stays_off() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$child     = (int) $live[0];
+
+		// The author closed THIS date's bookings by hand, before the date was
+		// ever dropped.
+		update_post_meta( $child, '_anchor_event_registration_enabled', false );
+		$this->make_seat( $child, [ 'status' => Registrations::STATUS_CONFIRMED ] );
+
+		$this->drop_first_date( $parent_id );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertSoftClosed( $child );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->two_rows() );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertFalse(
+			(bool) get_post_meta( $child, '_anchor_event_registration_enabled', true ),
+			'Reviving a date must not turn bookings ON for one the author had closed.'
+		);
+	}
+
+	/* ------------------------------------------------------------------
 	 * (d) Children are found by GROUP IDENTITY, not by post_status
 	 *     (MODEL-D9) — and two children sharing one occurrence_key no longer
 	 *     collapse silently (MODEL-D39).

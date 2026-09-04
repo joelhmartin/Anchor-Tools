@@ -367,6 +367,9 @@ class Module {
         // bails there without the metabox nonce, so `untrashed_post` is the
         // only hook that can drive the reconcile.
         \add_action( 'untrashed_post', [ $this, 'restore_children_on_parent_untrash' ] );
+        // …and the status half of the same restore (NEW-D4). See
+        // restore_untrashed_event_status().
+        \add_filter( 'wp_untrash_post_status', [ $this, 'restore_untrashed_event_status' ], 10, 3 );
 
         // SEO: Add canonical URL for calendar month parameter pages
         \add_action( 'wp_head', [ $this, 'output_canonical_url' ], 1 );
@@ -4545,6 +4548,38 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         } finally {
             self::$restoring_children = false;
         }
+    }
+
+    /**
+     * Restore an event to the status it was trashed in, instead of WordPress's
+     * blanket `draft` (audit NEW-D4).
+     *
+     * Since WP 5.6 wp_untrash_post() restores every post type to 'draft' rather
+     * than to its pre-trash status, and offers `wp_untrash_post_status` as the
+     * opt-out. For events that default is actively wrong in a way an author
+     * cannot see: restoring a published group parent brings its occurrences
+     * back published (restore_children_on_parent_untrash() reconciles them) and
+     * leaves the CONTAINER as a draft — a live "choose a date" set hanging off
+     * an unpublished parent, with no notice that anything is amiss. The same
+     * applies to a plain event: its managed product is republished by
+     * Product_Sync::on_event_saved() while the event itself is not.
+     *
+     * `$previous_status` is WordPress's own read of `_wp_trash_meta_status`,
+     * the row wp_trash_post() writes; this is the identical three-line filter
+     * WC_Post_Data uses to keep an order's status across a trash round trip. An
+     * empty previous status (a row written by something that did not record
+     * one) falls back to WordPress's default rather than to a guess.
+     *
+     * @param string $new_status      The status wp_untrash_post() would use.
+     * @param int    $post_id
+     * @param string $previous_status The status the post was trashed in.
+     * @return string
+     */
+    public function restore_untrashed_event_status( $new_status, $post_id, $previous_status ) {
+        if ( \get_post_type( $post_id ) !== self::CPT || (string) $previous_status === '' ) {
+            return $new_status;
+        }
+        return (string) $previous_status;
     }
 
     /**

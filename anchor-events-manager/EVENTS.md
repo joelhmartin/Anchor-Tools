@@ -111,7 +111,8 @@ downstream is identical.
     `label`.
   - *Never copied at all*: engine-owned/product-owned keys (`linked_products`,
     `roster_sent`, `activity`, `type`, `sessions`, `group_role`, `group_id`,
-    `offering_dates`, `recurrence`, `occurrence_key`, `occurrence_closed`).
+    `offering_dates`, `recurrence`, `occurrence_key`, `occurrence_closed`,
+    `occurrence_prev_reg`).
 - **Roster-safe soft-close**: when a previously-desired date is removed from the
   parent, its child is never deleted outright. If it has ANY seats (any status), it is
   *soft-closed*: `status_mode=manual`, `status=cancelled`,
@@ -119,8 +120,9 @@ downstream is identical.
   `_anchor_event_occurrence_closed=1` — post and roster survive untouched, just
   excluded from the "active" child set. A child with zero seats is trashed instead.
   Re-adding the same date later *revives* the same child (clears the closed flag,
-  restores `status_mode=auto`) rather than creating a duplicate, so its historical
-  roster is retained.
+  restores `status_mode=auto`, and puts `registration_enabled` back to the value
+  the close overwrote — snapshotted in `_anchor_event_occurrence_prev_reg`)
+  rather than creating a duplicate, so its historical roster is retained.
 - **Parent trash**: trashing the parent (`wp_trash_post()` doesn't fire `save_post`,
   so `reconcile()` can't run on its own) is handled by
   `Occurrences::retire_all_children()`, which applies the exact same roster-safe
@@ -223,6 +225,7 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 | `group_id` | int | Child → parent post ID — engine-owned |
 | `occurrence_key` | string | Child's date identity, matches its source row — engine-owned |
 | `occurrence_closed` | bool | Soft-close flag — engine-owned |
+| `occurrence_prev_reg` | bool | Pre-close `registration_enabled`, restored on revive — engine-owned |
 | `external_url` | string | External-mode plain link |
 | `external_embed` | string | External-mode sanitized embed markup |
 | `external_display_price` | string | External-mode display-only price text |

@@ -51,8 +51,9 @@
  * with $include_closed=false) while its post + roster survive untouched and
  * remain reachable via children($include_closed=true). Re-adding the same
  * occurrence_key later REVIVES the same child (clears the closed flag,
- * restores auto status/registration) instead of creating a duplicate, so its
- * historical roster is retained.
+ * restores auto status, and puts back the registration_enabled value the
+ * close overwrote — snapshotted in `_anchor_event_occurrence_prev_reg`)
+ * instead of creating a duplicate, so its historical roster is retained.
  *
  * Idempotency: a child is matched to a desired offering-dates row by a
  * stable `occurrence_key` (the row's normalized "<date>|<start time>"
@@ -123,6 +124,9 @@ class Occurrences {
         'recurrence',
         'occurrence_key',
         'occurrence_closed',
+        // soft_close()'s snapshot of the registration_enabled value it
+        // overwrote, consumed by revive_if_closed(). Engine-owned, per date.
+        'occurrence_prev_reg',
     ];
 
     /**
@@ -1426,12 +1430,29 @@ class Occurrences {
      * to the stored '1'/'') — so there are no extra meta rows, no extra
      * revisions and no roster side effects.
      *
+     * The one value the close DESTROYS is `registration_enabled`, so it is
+     * snapshotted first, on the transition only. Without it a parent
+     * trash/untrash round trip — or any drop-and-re-add of a seated date —
+     * handed the author back an occurrence that was listed on the picker and
+     * refused every booking, because revive_if_closed() had nothing to put
+     * back. The snapshot is taken ONLY while the child is not already closed:
+     * re-asserting the quartet on an already-closed row (the MODEL-D6 repair
+     * above) must not overwrite the real pre-close value with the `false` the
+     * first close wrote, and must stay a no-op meta-wise.
+     *
      * @param int $child_id
      */
     private function soft_close( $child_id ) {
         $mk = function ( $k ) {
             return $this->module->meta_key( $k );
         };
+        if ( ! $this->is_closed( $child_id ) ) {
+            \update_post_meta(
+                $child_id,
+                $mk( 'occurrence_prev_reg' ),
+                (bool) \get_post_meta( $child_id, $mk( 'registration_enabled' ), true )
+            );
+        }
         \update_post_meta( $child_id, $mk( 'status_mode' ), 'manual' );
         \update_post_meta( $child_id, $mk( 'status' ), 'cancelled' );
         \update_post_meta( $child_id, $mk( 'registration_enabled' ), false );
@@ -1440,19 +1461,21 @@ class Occurrences {
 
     /**
      * Revive a previously soft-closed child whose occurrence_key has been
-     * re-added to the parent's offering_dates: clear the closed flag and
-     * restore auto status, WITHOUT touching its date or seats. Does NOT
-     * force registration_enabled: that key is PER-OCCURRENCE
-     * (PER_OCCURRENCE_KEYS), so nothing — not this method, not
-     * sync_child_from_parent() — re-applies it from the parent, and a revived
-     * date therefore comes back with registration still OFF (soft_close()
-     * turned it off) until it is opened deliberately: on the child itself, or
-     * group-wide via the parent form's explicit "apply to all dates" action
-     * (apply_registration_to_children(), audit MODEL-D40). An earlier version
-     * of this docblock claimed registration_enabled was a SHARED field
-     * re-synced by sync_child_from_parent() — it never was after the key
-     * moved into PER_OCCURRENCE_KEYS. No-op if the child isn't currently
-     * closed.
+     * re-added to the parent's offering_dates: clear the closed flag, restore
+     * auto status and put back the `registration_enabled` value the close
+     * overwrote, WITHOUT touching its date or seats. No-op if the child isn't
+     * currently closed.
+     *
+     * The registration value is restored from soft_close()'s own snapshot
+     * (`occurrence_prev_reg`), never from the parent: the key is PER-OCCURRENCE
+     * (PER_OCCURRENCE_KEYS), so nothing here re-applies the group's default,
+     * and a date the author had deliberately closed to bookings before it was
+     * dropped comes back closed. This is not "revive forces registration ON" —
+     * it is the close undoing exactly what it did. A child with no snapshot (one
+     * closed before this existed) is left alone for the same reason, and is
+     * opened deliberately: on the child itself, or group-wide via the parent
+     * form's explicit "apply to all dates" action
+     * (apply_registration_to_children(), audit MODEL-D40).
      *
      * The `occurrence_closed` flag is the ONLY reopening trigger, on purpose.
      * Inferring closure from the status half of the quartet (manual +
@@ -1474,6 +1497,20 @@ class Occurrences {
         $mk = function ( $k ) {
             return $this->module->meta_key( $k );
         };
+
+        // Before get_meta(): the restored availability is part of the state the
+        // status is recomputed against, and the snapshot is consumed here so a
+        // later, unrelated close cannot replay a stale value.
+        $prev_key = $mk( 'occurrence_prev_reg' );
+        if ( \metadata_exists( 'post', (int) $child_id, $prev_key ) ) {
+            \update_post_meta(
+                $child_id,
+                $mk( 'registration_enabled' ),
+                (bool) \get_post_meta( $child_id, $prev_key, true )
+            );
+            \delete_post_meta( $child_id, $prev_key );
+        }
+
         $meta = $this->module->get_meta( $child_id );
 
         \update_post_meta( $child_id, $mk( 'occurrence_closed' ), false );

@@ -78,13 +78,46 @@ class Test_Untrash extends Anchor_Events_TestCase {
 			);
 		}
 
-		// NOTE: the PARENT itself comes back as `draft`, not `publish` — that is
-		// WordPress's own wp_untrash_post() default since 5.6, not something this
-		// fix changes, and it applies to every post type the site has. Restoring
-		// the pre-trash status for events is a separate decision (a
-		// `wp_untrash_post_status` filter, the way WC_Post_Data does it for
-		// orders); flagged as a follow-up, deliberately not done here.
-		$this->assertSame( 'draft', get_post_status( $parent_id ) );
+		// …and the PARENT comes back published, not left as WordPress's blanket
+		// post-5.6 `draft` (NEW-D4). A draft container with a live, published
+		// date set hanging off it is invisible to the author: the dates are on
+		// offer and the page that offers them is not.
+		$this->assertSame( 'publish', get_post_status( $parent_id ) );
+	}
+
+	/** A single event restores to the status it was trashed in, too (NEW-D4). */
+	public function test_untrashing_single_event_restores_its_previous_status() {
+		$published = $this->make_event( [ 'title' => 'Published' ] );
+		$draft     = $this->make_event( [ 'title' => 'Draft' ] );
+		wp_update_post( [ 'ID' => $draft, 'post_status' => 'draft' ] );
+
+		foreach ( [ $published, $draft ] as $event_id ) {
+			$before = get_post_status( $event_id );
+			wp_trash_post( $event_id );
+			$this->assertSame( 'trash', get_post_status( $event_id ) );
+
+			wp_untrash_post( $event_id );
+
+			$this->assertSame(
+				$before,
+				get_post_status( $event_id ),
+				'A restored event must come back in the status it was trashed in.'
+			);
+		}
+	}
+
+	/** A non-event post keeps WordPress's own untrash behaviour. */
+	public function test_untrashing_a_plain_post_is_left_to_wordpress() {
+		$post_id = self::factory()->post->create( [ 'post_status' => 'publish' ] );
+
+		wp_trash_post( $post_id );
+		wp_untrash_post( $post_id );
+
+		$this->assertSame(
+			'draft',
+			get_post_status( $post_id ),
+			'The events filter must not change how any other post type is restored.'
+		);
 	}
 
 	/** ...and the parent's date picker lists them again. */
@@ -128,6 +161,36 @@ class Test_Untrash extends Anchor_Events_TestCase {
 			'cancelled',
 			get_post_meta( $seated, '_anchor_event_status', true ),
 			'The reopened occurrence must not stay cancelled.'
+		);
+	}
+
+	/**
+	 * …and it comes back BOOKABLE. The soft close writes
+	 * registration_enabled=false as one quarter of the closed quartet, so a
+	 * parent trash/untrash round trip used to hand the author back a seated
+	 * date that was listed on the picker and refused every booking.
+	 */
+	public function test_untrashing_parent_reopens_registration_on_a_seated_child() {
+		[ $parent_id, $children ] = $this->make_offering();
+		$seated = (int) $children[0];
+		$this->make_seat( $seated );
+
+		$this->assertTrue(
+			(bool) get_post_meta( $seated, '_anchor_event_registration_enabled', true ),
+			'Precondition: the date is bookable before the trash.'
+		);
+
+		wp_trash_post( $parent_id );
+		$this->assertFalse(
+			(bool) get_post_meta( $seated, '_anchor_event_registration_enabled', true ),
+			'The soft close turns registration off.'
+		);
+
+		wp_untrash_post( $parent_id );
+
+		$this->assertTrue(
+			(bool) get_post_meta( $seated, '_anchor_event_registration_enabled', true ),
+			'Restoring the parent must give a reopened date its registration back.'
 		);
 	}
 

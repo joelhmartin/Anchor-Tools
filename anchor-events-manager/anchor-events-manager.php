@@ -48,6 +48,28 @@ class Module {
      */
     const TS_SCHEMA_VERSION = 2;
 
+    /**
+     * Version of the event-status VALUE schema (`_anchor_event_status`).
+     *
+     * Bumped whenever a stored status value is RENAMED, so
+     * backfill_status_values() knows the stored rows spell a state under an
+     * older name. The site-wide option `anchor_events_status_version` records
+     * the version the migration has finished; there is no per-event stamp
+     * because the migration's selection predicate is self-clearing (it looks
+     * for the old value, and rewriting it removes the row from the window).
+     *
+     * 1 — 'draft' (which collided with WordPress's own post_status) became
+     *     'undated' (MODEL-D19).
+     */
+    const STATUS_SCHEMA_VERSION = 1;
+
+    /**
+     * Statuses whose old spelling still exists in the wild, mapped to the
+     * current one. Read through normalize_status(); rewritten on disk by
+     * backfill_status_values().
+     */
+    const LEGACY_STATUS_ALIASES = [ 'draft' => 'undated' ];
+
     /** Per-event attendee questions (see get_registration_questions()). */
     const QUESTIONS_META = '_anchor_event_reg_questions';
     const CACHE_OPTION = 'anchor_events_cache_keys';
@@ -253,6 +275,8 @@ class Module {
         \add_action( 'admin_init', [ $this, 'backfill_timestamps' ] );
         // Same shape, same reasons: capability-gated, flag-guarded, batched.
         \add_action( 'admin_init', [ $this, 'backfill_occurrence_labels' ] );
+        // Same shape again: the 'draft' -> 'undated' status rename (MODEL-D19).
+        \add_action( 'admin_init', [ $this, 'backfill_status_values' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
@@ -466,11 +490,14 @@ class Module {
             ],
         ] );
         foreach ( $events as $event_id ) {
-            $meta = $this->get_meta( $event_id );
-            $computed = $this->calculate_status( $meta );
-            if ( $computed !== $meta['status'] ) {
-                \update_post_meta( $event_id, $this->meta_key( 'status' ), $computed );
-            }
+            // persist_auto_status() is the single writer for the status row
+            // (it is also what the save, transition and REST paths call), so
+            // the sweep cannot drift from them. It owns the "write when the
+            // row is ABSENT, not only when the value differs" rule that
+            // MODEL-D18 is about, and it re-checks manual mode itself — the
+            // query above already excludes manual events, but the guard is
+            // what makes that exclusion a belt rather than the only strap.
+            $this->persist_auto_status( $event_id, $this->get_meta( $event_id ) );
         }
         $this->clear_caches();
     }
@@ -3810,7 +3837,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $input['status'] = $this->calculate_status( $input );
         } else {
             $input['status_mode'] = 'manual';
-            $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true ) ? $status_raw : 'upcoming';
+            // A value that is not an offered choice — including the retired
+            // 'draft' (MODEL-D19) — falls back to what the DATES say rather
+            // than to a hardcoded 'upcoming', so a dateless event does not
+            // silently claim to be upcoming.
+            $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true )
+                ? $status_raw
+                : $this->calculate_status( $input );
         }
 
         // persist_timestamps() is the single writer for the derived rows: it
@@ -4746,7 +4779,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 echo esc_html( $this->format_date_time( $meta ) );
                 break;
             case 'anchor_event_status':
-                echo esc_html( ucfirst( $this->get_event_status( $post_id, $meta ) ) );
+                echo esc_html( $this->status_label( $this->get_event_status( $post_id, $meta ) ) );
                 break;
             case 'anchor_event_venue':
                 echo esc_html( $meta['venue'] );
@@ -4796,10 +4829,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     public function add_quick_filters( $views ) {
         $base_url = \admin_url( 'edit.php?post_type=' . self::CPT );
         $current = sanitize_text_field( $_GET['event_status'] ?? '' );
+        // 'undated' earns a view of its own (MODEL-D19): events with no start
+        // date are the ones most likely to need an editor, and until now there
+        // was no way to list them at all.
         $statuses = [
             'upcoming' => __( 'Upcoming', 'anchor-schema' ),
             'past' => __( 'Past', 'anchor-schema' ),
             'cancelled' => __( 'Cancelled', 'anchor-schema' ),
+            'undated' => __( 'Undated', 'anchor-schema' ),
         ];
         foreach ( $statuses as $key => $label ) {
             $count = $this->count_events_by_status( $key );
@@ -4821,13 +4858,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! $status ) {
             return;
         }
-        $query->set( 'meta_query', [
-            [
-                'key' => $this->meta_key( 'status' ),
-                'value' => $status,
-                'compare' => '=',
-            ],
-        ] );
+        $query->set( 'meta_query', [ $this->build_status_clause( $status ) ] );
     }
 
     public function template_include( $template ) {
@@ -5522,7 +5553,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'anchor_event_export'
         );
         $date_label = $this->format_date_time( $meta );
-        $status = ucfirst( (string) $meta['status'] );
+        $status = $this->status_label( (string) $meta['status'] );
 
         $output = '<details class="anchor-event-admin-item">';
         $output .= '<summary class="anchor-event-admin-summary">';
@@ -6395,7 +6426,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $input['status'] = $this->calculate_status( $input );
         } else {
             $input['status_mode'] = 'manual';
-            $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true ) ? $status_raw : 'upcoming';
+            // A value that is not an offered choice — including the retired
+            // 'draft' (MODEL-D19) — falls back to what the DATES say rather
+            // than to a hardcoded 'upcoming', so a dateless event does not
+            // silently claim to be upcoming.
+            $input['status'] = in_array( $status_raw, array_keys( $this->get_status_options() ), true )
+                ? $status_raw
+                : $this->calculate_status( $input );
         }
 
         // persist_timestamps() is the single writer for the derived rows: it
@@ -6475,11 +6512,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $meta_query = [];
         if ( ! empty( $atts['status'] ) ) {
-            $meta_query[] = [
-                'key' => $this->meta_key( 'status' ),
-                'value' => sanitize_text_field( $atts['status'] ),
-                'compare' => '=',
-            ];
+            $meta_query[] = $this->build_status_clause( $atts['status'] );
         }
 
         if ( empty( $atts['show_past'] ) || $atts['show_past'] === 'no' ) {
@@ -8059,13 +8092,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'post_type' => self::CPT,
             'post_status' => 'publish',
             'fields' => 'ids',
-            'meta_query' => [
-                [
-                    'key' => $this->meta_key( 'status' ),
-                    'value' => $status,
-                    'compare' => '=',
-                ],
-            ],
+            'meta_query' => [ $this->build_status_clause( $status ) ],
         ] );
         return $query->found_posts;
     }
@@ -8088,6 +8115,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
             $defaults[ $key ] = $stored;
         }
+
+        // BC read-map (MODEL-D19): a status stored under its old name reads as
+        // the current one, so the admin column, the card classes, the JSON-LD
+        // and both authoring forms all agree on what a legacy row means while
+        // backfill_status_values() works through the site in batches.
+        $defaults['status'] = $this->normalize_status( $defaults['status'] );
 
         // BC fallback (Task BC): a pre-upgrade external event only ever wrote
         // the legacy `registration_url` meta and never got a chance to write
@@ -8399,6 +8432,71 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * One-time rewrite of status values stored under an old name — today just
+     * 'draft' -> 'undated' (audit MODEL-D19).
+     *
+     * normalize_status() already makes every READER treat a legacy row as
+     * 'undated', so nothing is broken while this runs; what it buys is that
+     * the rows on disk stop saying a word that means something else in
+     * WordPress. Production carried 7 published events whose
+     * `_anchor_event_status` was 'draft', which the admin Status column
+     * printed as "Draft" next to a post whose post_status was "Published".
+     *
+     * Deliberately NOT folded into backfill_timestamps(): that migration is
+     * versioned on TS_SCHEMA_VERSION, which describes the DERIVED TIMESTAMP
+     * rows, and bumping it to carry a value rename would force every event on
+     * every site running this plugin to recompute start_ts/end_ts for no
+     * reason. This one gets its own `anchor_events_status_version` option.
+     *
+     * It also needs no per-event stamp, unlike the timestamp back-fill: the
+     * selection predicate is self-clearing. Every row it matches is rewritten
+     * to a value the predicate no longer matches, so the window always moves
+     * and the pass cannot loop. Same batching (200 per admin page load, option
+     * recorded only when a batch comes back short) and the same capability
+     * gate, for the same reason: admin_init is NOT an authenticated hook —
+     * admin-post.php fires it before it validates the auth cookie, and this
+     * module registers nopriv handlers — so a logged-out visitor's POST
+     * reaches this method.
+     */
+    public function backfill_status_values() {
+        if ( ! \current_user_can( 'edit_posts' ) ) {
+            return;
+        }
+        if ( (int) \get_option( 'anchor_events_status_version' ) >= self::STATUS_SCHEMA_VERSION ) {
+            return;
+        }
+
+        $legacy = array_keys( self::LEGACY_STATUS_ALIASES );
+        $batch  = 200;
+        $ids    = $legacy ? \get_posts( [
+            'post_type' => self::CPT,
+            'post_status' => 'any',
+            'posts_per_page' => $batch,
+            'fields' => 'ids',
+            'no_found_rows' => true,
+            'suppress_filters' => true,
+            'meta_query' => [
+                [ 'key' => $this->meta_key( 'status' ), 'value' => $legacy, 'compare' => 'IN' ],
+            ],
+        ] ) : [];
+
+        foreach ( $ids as $event_id ) {
+            $stored = (string) \get_post_meta( $event_id, $this->meta_key( 'status' ), true );
+            \update_post_meta( $event_id, $this->meta_key( 'status' ), $this->normalize_status( $stored ) );
+        }
+
+        // The renamed rows are what the status meta_queries match on, and the
+        // listing caches are keyed by query args rather than by post state.
+        if ( ! empty( $ids ) ) {
+            $this->clear_caches();
+        }
+
+        if ( count( $ids ) < $batch ) {
+            \update_option( 'anchor_events_status_version', self::STATUS_SCHEMA_VERSION, false );
+        }
+    }
+
+    /**
      * One-time back-fill of the occurrence `label` meta on children created
      * before it existed (audit MODEL-D10 / MODEL-D27).
      *
@@ -8564,14 +8662,51 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $value;
     }
 
+    /**
+     * The statuses an author may PIN an event to in manual mode. Doubles as
+     * the allow-list both save paths validate a submitted status against.
+     *
+     * 'draft' is deliberately absent (MODEL-D19). It was never a choice: it is
+     * what calculate_status() returns for an event with no start date, and
+     * offering it as a manual option let an author pin a fully dated event to
+     * it for ever, under a name that collides with WordPress's post_status.
+     * Its replacement, 'undated', is not offered either — it is computed, and
+     * an author who wants an event hidden has post_status for that.
+     *
+     * @return array<string,string> value => label.
+     */
     private function get_status_options() {
         return [
             'upcoming' => __( 'Upcoming', 'anchor-schema' ),
             'ongoing' => __( 'Ongoing', 'anchor-schema' ),
             'past' => __( 'Past', 'anchor-schema' ),
             'cancelled' => __( 'Cancelled', 'anchor-schema' ),
-            'draft' => __( 'Draft', 'anchor-schema' ),
         ];
+    }
+
+    /**
+     * Every status a reader can encounter, labelled — the manual choices plus
+     * the computed-only ones. Display goes through here rather than
+     * ucfirst()ing the raw value, so a renamed state is renamed in one place.
+     *
+     * @return array<string,string> value => label.
+     */
+    private function get_status_labels() {
+        return $this->get_status_options() + [
+            'undated' => __( 'Undated', 'anchor-schema' ),
+        ];
+    }
+
+    /**
+     * The human label for a stored or computed status value.
+     *
+     * @param string $status
+     * @return string
+     */
+    private function status_label( $status ) {
+        $status = $this->normalize_status( $status );
+        $labels = $this->get_status_labels();
+        return $labels[ $status ] ?? ucfirst( $status );
     }
 
     /**
@@ -8629,9 +8764,81 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
         $computed = $this->calculate_status( $meta );
-        if ( $computed !== ( $meta['status'] ?? '' ) ) {
-            \update_post_meta( $post_id, $this->meta_key( 'status' ), $computed );
+        $key      = $this->meta_key( 'status' );
+
+        // Compare against the ROW, not against $meta['status'] (MODEL-D18).
+        //
+        // get_meta() falls back to the schema default — 'upcoming' — so an
+        // event that has never had the row written is indistinguishable here
+        // from one holding 'upcoming', and the old value comparison found no
+        // difference and wrote nothing. That is invisible to a reader, because
+        // every status meta_query matches the VALUE and a value comparison
+        // INNER-JOINs postmeta: 6 published, future-dated production events
+        // were missing from the admin counts, the quick filters and
+        // [events_list status="upcoming"] for as long as the sweep had been
+        // running "successfully".
+        //
+        // Reading the raw row also catches a value stored under its old name
+        // (LEGACY_STATUS_ALIASES) that get_meta() has already normalized on
+        // the way out, so the sweep repairs it instead of agreeing with it.
+        if ( ! \metadata_exists( 'post', $post_id, $key )
+            || (string) \get_post_meta( $post_id, $key, true ) !== $computed ) {
+            \update_post_meta( $post_id, $key, $computed );
         }
+    }
+
+    /**
+     * The current spelling of a stored status value.
+     *
+     * One read-side map for the whole module, so every consumer of a status
+     * agrees on what a legacy row means while the batched back-fill catches
+     * up (and on a site whose admin is never visited, for ever).
+     *
+     * @param string $status
+     * @return string
+     */
+    private function normalize_status( $status ) {
+        $status = (string) $status;
+        return self::LEGACY_STATUS_ALIASES[ $status ] ?? $status;
+    }
+
+    /**
+     * A meta_query clause matching events whose status is $status — counting
+     * the ones that have never had the row written (MODEL-D18).
+     *
+     * Same NOT-EXISTS-or-equals shape as build_hide_clause(), and for the same
+     * reason: a bare value comparison INNER-JOINs postmeta, so it can only ever
+     * return posts that HAVE the row. For the DEFAULT status that is wrong —
+     * get_meta() reports a rowless event as 'upcoming', so every reader that
+     * goes through get_meta() calls it upcoming while every reader that goes
+     * through a meta_query cannot see it at all. For any other status the exact
+     * match is right: a rowless event is not cancelled.
+     *
+     * The IN arm carries the legacy spellings too, so an "Undated" count is
+     * correct before the back-fill has rewritten the old 'draft' rows.
+     *
+     * @param string $status
+     * @return array meta_query clause.
+     */
+    public function build_status_clause( $status ) {
+        $status  = $this->normalize_status( \sanitize_text_field( (string) $status ) );
+        $aliases = array_keys( self::LEGACY_STATUS_ALIASES, $status, true );
+        $values  = array_merge( [ $status ], $aliases );
+
+        $match = count( $values ) > 1
+            ? [ 'key' => $this->meta_key( 'status' ), 'value' => $values, 'compare' => 'IN' ]
+            : [ 'key' => $this->meta_key( 'status' ), 'value' => $status, 'compare' => '=' ];
+
+        $defaults = $this->get_meta_defaults();
+        if ( ( $defaults['status'] ?? '' ) !== $status ) {
+            return $match;
+        }
+
+        return [
+            'relation' => 'OR',
+            [ 'key' => $this->meta_key( 'status' ), 'compare' => 'NOT EXISTS' ],
+            $match,
+        ];
     }
 
     /**
@@ -8647,7 +8854,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     private function calculate_status( $meta ) {
         if ( empty( $meta['start_date'] ) ) {
-            return 'draft';
+            // 'undated', not 'draft' (MODEL-D19): 'draft' is WordPress's own
+            // post_status, so the admin column printed "Draft" beside a post
+            // whose post_status was "Published" and the card carried
+            // `anchor-event-status-draft` for a live event. The state being
+            // named here is "this event has no start date", which is
+            // orthogonal to whether it is published.
+            return 'undated';
         }
 
         $timestamps = $this->calculate_timestamps( $meta );

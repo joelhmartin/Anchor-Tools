@@ -3946,6 +3946,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             <p class="description">
                 <?php echo esc_html__( 'Customize the HTML sent for this event only. Leave a tab untouched (or use "Reset to default") to keep using the site-wide template for that email type.', 'anchor-schema' ); ?>
             </p>
+            <?php // REG-D49 — this metabox renders the four templates and nothing else.
+                  // The save path now persists every email field (save_meta() and the
+                  // console share persist_event_authoring()), so anything authored in the
+                  // console survives a save here untouched — but the inputs for those
+                  // fields live on the console, and this says so instead of leaving an
+                  // administrator to guess they do not exist. ?>
+            <p class="description">
+                <?php echo esc_html__( 'Subject lines, opening lines, the on/off switch, the buttons, the sender identity and the attendee questions are edited in the Events Manager console. Saving here leaves all of them exactly as the console set them.', 'anchor-schema' ); ?>
+            </p>
             <div class="anchor-email-tabs">
                 <?php $first = true; foreach ( $labels as $type => $label ) : ?>
                     <button type="button" class="anchor-email-tab<?php echo $first ? ' is-active' : ''; ?>" data-email-type="<?php echo esc_attr( $type ); ?>"><?php echo esc_html( $label ); ?></button>
@@ -4066,19 +4075,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * AFTER that method's own nonce + DOING_AUTOSAVE + edit_post cap checks —
      * this method assumes the caller already gated the request.
      *
-     * @param int $post_id
+     * Task 28 — $src (a raw, NOT-yet-unslashed $_POST-shaped array) is passed
+     * in rather than read off $_POST here, so this saver takes the same input
+     * as its five siblings and persist_event_authoring() can hand all six the
+     * one array both save surfaces built.
+     *
+     * @param int   $post_id
+     * @param array $src     Raw input array ($_POST-shaped, still slashed).
      */
-    private function save_email_templates( $post_id ) {
+    private function save_email_templates( $post_id, array $src ) {
         foreach ( self::EMAIL_TEMPLATE_TYPES as $type ) {
             $field = 'anchor_email_tpl_' . $type;
-            if ( ! isset( $_POST[ $field ] ) ) {
-                continue; // Metabox not submitted for this type — leave existing meta untouched.
+            if ( ! isset( $src[ $field ] ) ) {
+                continue; // Form not submitted for this type — leave existing meta untouched.
             }
             // REG-D25 — the doctype is not part of a template (it is emitted on
             // assembly), so drop it before the "is this still the default?"
             // comparison as well; otherwise a template that is the default plus
             // a pasted doctype would be stored as a redundant literal override.
-            $raw      = self::strip_email_doctype( (string) \wp_unslash( $_POST[ $field ] ) );
+            $raw      = self::strip_email_doctype( (string) \wp_unslash( $src[ $field ] ) );
             $fallback = $this->resolve_email_template( $type, 0 ); // global option -> default constant, no per-event lookup.
 
             if ( \trim( $raw ) === \trim( $fallback ) ) {
@@ -4558,28 +4573,89 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \update_post_meta( $post_id, $this->meta_key( $key ), $value );
         }
 
+        // Everything the two authoring surfaces share — tickets, the
+        // auto-appended shortcode, email templates/wording/switches/CTA/sender,
+        // attendee questions, group authoring and the cache flush — is ONE
+        // function (MODEL-D24 / REG-D49). Before Task 28 this metabox path ran
+        // a shorter list than the front-end console did, so five whole
+        // families of field were silently dropped on every wp-admin save.
+        $this->persist_event_authoring( $post_id, $_POST, $input );
+    }
+
+    /**
+     * Task 28 (MODEL-D24 / REG-D49) — the shared tail of BOTH event save
+     * surfaces: the wp-admin metabox (save_meta()) and the front-end Events
+     * Manager console (save_event_manager_fields()).
+     *
+     * Until this existed the two paths ran different sub-saver lists — the
+     * console persisted attendee questions, email wording, the per-type on/off
+     * switches, the CTA pairs and the sender identity; the metabox persisted
+     * none of them. A field authored on one surface was therefore invisible to
+     * the other, and an administrator in wp-admin could not turn an event's
+     * email off at all. Both paths now end here, so they cannot drift again.
+     *
+     * This is ORCHESTRATION ONLY. Every rule about what a field means lives in
+     * the saver that owns it — placeholder-vs-default semantics in
+     * save_email_cta_fields(), stable question keys in
+     * save_registration_questions(), the kses allowlist in
+     * save_email_templates() — and none of it is restated here.
+     *
+     * ORDER MATTERS, and is the console's pre-existing order preserved
+     * verbatim: persist_group_authoring() is LAST because its reconcile copies
+     * the parent's freshly-saved rows down onto the children, so everything
+     * above it is an input to that copy. See persist_group_authoring()'s
+     * docblock.
+     *
+     * $src is a raw, NOT-yet-unslashed input array shaped like $_POST — the
+     * same shape both callers hold, and the shape every sub-saver already
+     * expects (each does its own wp_unslash() at the point of use). Do NOT
+     * unslash it here: update_post_meta() unslashes too, and a double unslash
+     * eats a real backslash out of the stored value.
+     *
+     * Callers gate the request themselves (save_meta() checks nonce +
+     * DOING_AUTOSAVE + edit_post; handle_event_manager_save() checks its own
+     * nonce + capability before calling save_event_manager_fields()); this
+     * method assumes that has already happened.
+     *
+     * @param int   $post_id Event post ID, already inserted/updated.
+     * @param array $src     Raw input array ($_POST-shaped, still slashed).
+     * @param array $input   The sanitized meta the caller just wrote — read for
+     *                       the auto-append shortcode decision and the event
+     *                       `type` that drives group authoring.
+     */
+    private function persist_event_authoring( $post_id, array $src, array $input ) {
         // Ticket tiers (spec §3.2). The Ticket_Types model sanitizes the rows,
         // assigns stable ids, drops empty rows, and persists. An empty table
         // clears the meta so the legacy single `price` field stays the
         // implicit-primary fallback.
-        $ticket_rows = isset( $_POST['anchor_event_tickets'] ) && is_array( $_POST['anchor_event_tickets'] )
-            ? \wp_unslash( $_POST['anchor_event_tickets'] )
+        $ticket_rows = isset( $src['anchor_event_tickets'] ) && is_array( $src['anchor_event_tickets'] )
+            ? \wp_unslash( $src['anchor_event_tickets'] )
             : [];
         $this->ticket_types->save( $post_id, $ticket_rows );
 
         $this->maybe_append_registration_shortcode( $post_id, $input );
 
         // Task 3.2 — per-event lifecycle-email template overrides. Deliberately
-        // NOT part of the generic $input allow-list above (see the property
-        // docblock on the meta keys' register_post_meta() call); this is the
-        // one dedicated, email-safe-kses-validated place they're written.
-        $this->save_email_templates( $post_id );
+        // NOT part of the callers' generic $input allow-list loop (see the
+        // property docblock on the meta keys' register_post_meta() call); this
+        // is the one dedicated, email-safe-kses-validated place they're written.
+        $this->save_email_templates( $post_id, $src );
+
+        // The five savers that used to be console-only (REG-D49). Each is a
+        // no-op when its own fields are absent from $src — the three "…_present"
+        // markers and save_email_fields()'s per-field isset() — so a surface
+        // that does not render a given family never blanks it.
+        $this->save_registration_questions( $post_id, $src );
+        $this->save_email_fields( $post_id, $src );
+        $this->save_email_switches( $post_id, $src );
+        $this->save_email_cta_fields( $post_id, $src );
+        $this->save_email_sender_fields( $post_id, $src );
 
         // Group authoring (offering_dates / recurrence / group_role) — Phase 2,
-        // Task 2.3. Deliberately NOT part of the generic $input allow-list
-        // above (see get_meta_schema()'s docblock on those keys); this is the
-        // one dedicated, validated place they're written, and the only place
-        // Occurrences::reconcile() is ever called from.
+        // Task 2.3. Deliberately NOT part of the callers' generic $input
+        // allow-list loop (see get_meta_schema()'s docblock on those keys);
+        // this is the one dedicated, validated place they're written, and the
+        // only place Occurrences::reconcile() is ever called from.
         //
         // LAST, after every other sub-saver: it reconciles, and the reconcile
         // copies the parent's rows down onto the children. See the ORDERING
@@ -7087,6 +7163,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 <h3><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Anything you want to ask each person attending, on top of their name, email and phone. Each question becomes a column on the registration list and in the CSV export.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-questions">
+                    <?php // Task 28 — tells save_registration_questions() the repeater was on
+                          // screen, so removing the last row CLEARS the questions instead of
+                          // reading as "this form did not edit them". ?>
+                    <input type="hidden" name="anchor_event_questions_present" value="1" />
                     <table class="widefat anchor-event-questions-table">
                         <thead>
                             <tr>
@@ -7665,27 +7745,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \delete_post_thumbnail( $saved_id );
         }
 
-        // Ticket tiers use the same model/sanitizer as the admin metabox.
-        $ticket_rows = isset( $_POST['anchor_event_tickets'] ) && is_array( $_POST['anchor_event_tickets'] )
-            ? \wp_unslash( $_POST['anchor_event_tickets'] )
-            : [];
-        $this->ticket_types->save( $saved_id, $ticket_rows );
-
-        $this->maybe_append_registration_shortcode( $saved_id, $input );
-        $this->save_email_templates( $saved_id );
-        $this->save_registration_questions( $saved_id, $_POST );
-        $this->save_email_fields( $saved_id, $_POST );
-        $this->save_email_switches( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
-        $this->save_email_cta_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
-        $this->save_email_sender_fields( $saved_id, $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
-
-        // Group authoring (Task 2.3) — SAME dedicated validated persist+reconcile
-        // step as save_meta(), reused (not duplicated) so the two save paths can
-        // never drift, and LAST for the same reason: everything above is an
-        // input to the copy it makes. See persist_group_authoring()'s docblock.
-        $this->persist_group_authoring( $saved_id, $input['type'] );
-
-        $this->clear_caches();
+        // Tickets, the auto-appended shortcode, email templates/wording/
+        // switches/CTA/sender, attendee questions, group authoring and the
+        // cache flush are the SAME shared tail the wp-admin metabox runs
+        // (Task 28, MODEL-D24 / REG-D49) — one function, called from both, so
+        // the two surfaces cannot drift on which fields a save persists.
+        $this->persist_event_authoring( $saved_id, $_POST, $input ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
 
         return $input;
     }
@@ -11170,8 +11235,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $clean;
     }
 
-    /** Persist the posted question repeater for an event. */
+    /**
+     * Persist the posted question repeater for an event.
+     *
+     * Task 28 — "the repeater was on screen and is now empty" and "this form
+     * never rendered the repeater" post the SAME thing: no
+     * anchor_event_questions rows at all. Only the first may clear the meta.
+     * The console therefore ships a hidden anchor_event_questions_present
+     * marker (mirroring the email builder's three "…_present" markers), and a
+     * save carrying neither the marker nor any rows — a plain wp-admin metabox
+     * save, whose Emails/details metaboxes do not render this repeater — is a
+     * no-op here rather than a silent delete of every question the console
+     * authored. Rows without the marker are still honoured, so an older cached
+     * form (or a direct call) keeps working.
+     */
     private function save_registration_questions( $post_id, array $src ) {
+        if ( ! isset( $src['anchor_event_questions'] ) && empty( $src['anchor_event_questions_present'] ) ) {
+            return;
+        }
         $raw = isset( $src['anchor_event_questions'] ) && \is_array( $src['anchor_event_questions'] )
             ? \wp_unslash( $src['anchor_event_questions'] )
             : [];

@@ -86,6 +86,11 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		$this->assertSame( $ga['id'], (string) $ga_var->get_meta( Product_Sync::VARIATION_TIER_META ) );
 		$this->assertSame( $vip['id'], (string) $vip_var->get_meta( Product_Sync::VARIATION_TIER_META ) );
 
+		// WOO-D8: the write-only `_anchor_evt_tier_active` meta is gone —
+		// post_status ('publish' here) is the single source of truth.
+		$this->assertSame( '', $ga_var->get_meta( '_anchor_evt_tier_active' ) );
+		$this->assertSame( 'publish', $ga_var->get_status() );
+
 		// Reverse lookup resolves the variation back to its event + tier.
 		$resolved = $this->product_sync()->tier_for_variation( $ga_vid );
 		$this->assertSame( $event_id, $resolved['event_id'] );

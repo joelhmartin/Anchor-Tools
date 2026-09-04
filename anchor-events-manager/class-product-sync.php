@@ -37,9 +37,6 @@ class Product_Sync {
     /** Variation meta: the stable tier id this variation maps to. */
     const VARIATION_TIER_META = '_anchor_evt_tier_id';
 
-    /** Variation meta: '1' active / '0' deactivated (kept for history). */
-    const VARIATION_ACTIVE_META = '_anchor_evt_tier_active';
-
     /** Custom product attribute name used to vary the managed product. */
     const ATTRIBUTE_NAME = 'Ticket';
 
@@ -394,11 +391,11 @@ class Product_Sync {
      * `wc_variation_id` for each of them.
      *
      * So the demote does all three, in the vocabulary the rest of the module
-     * already uses for a retired variation — `private` + VARIATION_ACTIVE_META
-     * '0', exactly what write_variation()'s deactivate branch writes:
+     * already uses for a retired variation — `private`, exactly what
+     * write_variation()'s deactivate branch sets:
      *
      *  1. product      → draft
-     *  2. variations   → private + inactive
+     *  2. variations   → private
      *  3. tier rows    → wc_variation_id 0
      *
      * (3) clears the CACHE, not the author's tier rows — the alternative
@@ -449,16 +446,8 @@ class Product_Sync {
                     if ( ! $variation ) {
                         continue;
                     }
-                    $dirty = false;
                     if ( $variation->get_status() !== 'private' ) {
                         $variation->set_status( 'private' );
-                        $dirty = true;
-                    }
-                    if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '0' ) {
-                        $variation->update_meta_data( self::VARIATION_ACTIVE_META, '0' );
-                        $dirty = true;
-                    }
-                    if ( $dirty ) {
                         $variation->save();
                     }
                 }
@@ -836,18 +825,20 @@ class Product_Sync {
                 $variation->set_status( 'publish' );
                 $dirty = true;
             }
-            if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '1' ) {
-                $variation->update_meta_data( self::VARIATION_ACTIVE_META, '1' );
-                $dirty = true;
-            }
         } else {
-            // Deactivate: private + active flag '0'. Price/label left as-is.
+            // Deactivate: private. Price/label left as-is.
+            //
+            // WOO-D8: this used to also write `_anchor_evt_tier_active`
+            // ('1'/'0') alongside the status — a fact the variation's own
+            // post_status already carries. Every real consumer
+            // (products_for_event(), variation_for_tier(),
+            // is_live_variation()) already keys off post_status or the
+            // tier-id meta; the active flag had zero readers, so a row where
+            // the two disagreed could never be detected. Removed rather than
+            // kept in sync with a second reader, since post_status already IS
+            // the single source of truth here.
             if ( $variation->get_status() !== 'private' ) {
                 $variation->set_status( 'private' );
-                $dirty = true;
-            }
-            if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '0' ) {
-                $variation->update_meta_data( self::VARIATION_ACTIVE_META, '0' );
                 $dirty = true;
             }
         }

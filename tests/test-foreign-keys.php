@@ -247,12 +247,11 @@ class Test_Foreign_Keys extends Anchor_Events_TestCase {
 		$this->assertSame( 0, (int) $this->product_sync()->sync_event( $event_id ) );
 
 		$this->assertSame( 'draft', get_post_status( $product_id ) );
+		// WOO-D8: post_status is the single source of truth for a retired
+		// variation — the `_anchor_evt_tier_active` meta this used to also
+		// assert on was removed (zero readers anywhere in the plugin).
 		foreach ( $this->variation_ids( $product_id ) as $variation_id ) {
 			$this->assertSame( 'private', get_post_status( $variation_id ) );
-			$this->assertSame(
-				'0',
-				(string) get_post_meta( $variation_id, Product_Sync::VARIATION_ACTIVE_META, true )
-			);
 		}
 
 		$stored = $this->ticket_types()->find( $event_id, $tier['id'] );

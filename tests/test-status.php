@@ -288,6 +288,148 @@ class Test_Status extends Anchor_Events_TestCase {
 	}
 
 	/* -----------------------------------------------------------------
+	 * MODEL-D32 — a parent's status follows the span it just recomputed
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * An offering parent whose only date has passed carries status='past'.
+	 * The author adds a future date: reconcile() creates the occurrence and
+	 * sync_parent_span() moves the parent's span forward — and its STATUS has
+	 * to move with it. Left to the daily sweep, the parent reads 'past' for up
+	 * to 24 hours: every raw-meta reader calls it finished and the admin
+	 * "Past" quick filter still counts it.
+	 */
+	public function test_reconcile_moves_a_past_parents_status_forward_with_its_span() {
+		$parent = $this->make_offering_parent(
+			[ [ 'date' => '2020-01-06' ] ],
+			[ 'status_mode' => 'auto', 'status' => 'past' ]
+		);
+		$this->assertSame( 'past', get_post_meta( $parent, $this->key(), true ), 'Fixture precondition.' );
+
+		$this->set_offering_dates( $parent, [ [ 'date' => self::FUTURE ] ] );
+
+		$this->assertSame( self::FUTURE, get_post_meta( $parent, '_anchor_event_start_date', true ) );
+		$this->assertSame(
+			'upcoming',
+			get_post_meta( $parent, $this->key(), true ),
+			'The persisted status must follow the span reconcile() just wrote.'
+		);
+		$this->assertSame( 'upcoming', $this->module()->get_event_status( $parent ) );
+	}
+
+	/**
+	 * Keeping the past date and adding a future one leaves the container
+	 * spanning today — 'ongoing', which is what its dates say and what
+	 * compute_status() returns for that span. The point is that it is no
+	 * longer 'past': the status is derived from the span reconcile() just
+	 * wrote, not from whatever the row said before it.
+	 */
+	public function test_reconcile_reports_a_parent_spanning_today_as_ongoing() {
+		$parent = $this->make_offering_parent(
+			[ [ 'date' => '2020-01-06' ] ],
+			[ 'status_mode' => 'auto', 'status' => 'past' ]
+		);
+
+		$this->set_offering_dates( $parent, [ [ 'date' => '2020-01-06' ], [ 'date' => self::FUTURE ] ] );
+
+		$this->assertSame( 'ongoing', get_post_meta( $parent, $this->key(), true ) );
+	}
+
+	/** The same reconcile leaves a hand-pinned parent status alone. */
+	public function test_reconcile_leaves_a_manually_pinned_parent_status_alone() {
+		$parent = $this->make_offering_parent(
+			[ [ 'date' => '2020-01-06' ] ],
+			[ 'status_mode' => 'manual', 'status' => 'cancelled' ]
+		);
+
+		$this->set_offering_dates( $parent, [ [ 'date' => '2020-01-06' ], [ 'date' => self::FUTURE ] ] );
+
+		$this->assertSame( 'cancelled', get_post_meta( $parent, $this->key(), true ) );
+	}
+
+	/**
+	 * An offering parent with one row per date, already reconciled.
+	 *
+	 * @param array $rows Partial offering rows (only `date` is required).
+	 * @param array $meta Extra parent meta.
+	 * @return int Parent post id.
+	 */
+	private function make_offering_parent( array $rows, array $meta = [] ) {
+		$parent = $this->make_event( array_merge( [
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'timezone'             => 'UTC',
+		], $meta ) );
+		$this->set_offering_dates( $parent, $rows );
+		return $parent;
+	}
+
+	/** Rewrite a parent's offering rows and reconcile, as a parent save does. */
+	private function set_offering_dates( $parent, array $rows ) {
+		$full = [];
+		foreach ( $rows as $row ) {
+			$full[] = array_merge(
+				[ 'start_time' => '08:00', 'end_time' => '18:00', 'label' => '', 'capacity' => 0 ],
+				$row
+			);
+		}
+		update_post_meta( $parent, '_anchor_event_offering_dates', $full );
+		$this->module()->occurrences->reconcile( $parent );
+	}
+
+	/* -----------------------------------------------------------------
+	 * RENDER-D11 / MODEL-D43 — one accessor for the computed status
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * The front-end manager dashboard labelled `ucfirst( $meta['status'] )` —
+	 * the raw row — so an auto-mode event that ended yesterday was still
+	 * listed as "Upcoming" until the daily sweep rewrote the row.
+	 */
+	public function test_manager_item_labels_the_auto_aware_status() {
+		$event = $this->make_event( [
+			'start_date'  => '2020-01-06',
+			'end_date'    => '2020-01-06',
+			'timezone'    => 'UTC',
+			'status_mode' => 'auto',
+			'status'      => 'upcoming', // stale row the sweep has not reached.
+		] );
+
+		$html = $this->call_private( 'render_event_manager_item', [ get_post( $event ) ] );
+
+		$this->assertStringContainsString( 'Status:</strong> Past', $html );
+		$this->assertStringNotContainsString( 'Status:</strong> Upcoming', $html );
+	}
+
+	/** The JSON-LD reads the same accessor, not the raw row. */
+	public function test_schema_event_status_ignores_a_stale_cancelled_row_in_auto_mode() {
+		$event = $this->make_event( [
+			'start_date'  => self::FUTURE,
+			'timezone'    => 'UTC',
+			'status_mode' => 'auto',
+			'status'      => 'cancelled', // not the author's word: auto mode owns this row.
+		] );
+
+		$node = $this->module()->event_schema->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventScheduled', $node['eventStatus'] );
+	}
+
+	/** ...and still reports a MANUAL cancellation, which is the author's word. */
+	public function test_schema_event_status_honours_a_manual_cancellation() {
+		$event = $this->make_event( [
+			'start_date'  => self::FUTURE,
+			'timezone'    => 'UTC',
+			'status_mode' => 'manual',
+			'status'      => 'cancelled',
+		] );
+
+		$node = $this->module()->event_schema->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventCancelled', $node['eventStatus'] );
+	}
+
+	/* -----------------------------------------------------------------
 	 * MODEL-D19 — the one-time back-fill
 	 * --------------------------------------------------------------- */
 

@@ -5572,7 +5572,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'anchor_event_export'
         );
         $date_label = $this->format_date_time( $meta );
-        $status = $this->status_label( (string) $meta['status'] );
+        // MODEL-D43: the auto-aware accessor, not the raw row — an auto-mode
+        // event that ended yesterday is "Past" here the moment it ends, not
+        // when the daily sweep next runs.
+        $status = $this->status_label( $this->get_event_status( $event->ID, $meta ) );
 
         $output = '<details class="anchor-event-admin-item">';
         $output .= '<summary class="anchor-event-admin-summary">';
@@ -6916,6 +6919,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // is_purchasable(). Nothing on this filter may re-introduce a form for
         // a disabled event.
         if ( ! $meta['registration_enabled'] ) {
+            // NEW-D2: the switch suppresses the FORM, not the fact. A course
+            // that is sold out, finished or cancelled is still that, and
+            // rendering nothing at all told the visitor less than the truth
+            // (production child 7528: sold_out=1 + registration off, whose page
+            // said only "Registration closed"). Same branch order, and the same
+            // wording, as the seat-layer checks further down — no booking UI is
+            // reachable from here either way.
+            $state = $this->bookability( $post_id );
+            if ( $state === 'full' ) {
+                return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'This event is full.', 'anchor-schema' ) . '</div>';
+            }
+            if ( $state === 'closed' ) {
+                return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'Registration is closed.', 'anchor-schema' ) . '</div>';
+            }
             return '';
         }
 
@@ -6969,7 +6986,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'Registration is currently disabled.', 'anchor-schema' ) . '</div>';
         }
 
-        $status = $this->get_registration_status( $post_id, $meta );
+        // The same authority the storefront, the cart, the picker and the
+        // JSON-LD ask, so the free form cannot be the one reader that still
+        // books a cancelled course. Past this point registration is on and the
+        // event is neither a parent nor soft-closed, so the states reaching the
+        // branches below are exactly the seat layer's own — plus 'closed' for a
+        // hand-cancelled event, which is the one this form used to miss.
+        $status = $this->bookability( $post_id );
         if ( $status === 'closed' ) {
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'Registration is closed.', 'anchor-schema' ) . '</div>';
         }
@@ -7272,20 +7295,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      */
     public function choose_date_availability_hint( $event_id, array $meta ) {
         // RENDER-D32 / MODEL-D42: one call to the single purchasability
-        // authority, not a local re-decision.
+        // authority, not a local re-decision. "The seats went" outranking "the
+        // button is gone" used to be re-decided here, by asking the seat layer
+        // again whenever bookability() said 'disabled'; that judgement is now
+        // bookability()'s own branch order (NEW-D2), so every reader gets it.
         $state = $this->bookability( $event_id );
-
-        // "The seats went" outranks "the button is gone". A date that sold out
-        // is normally ALSO switched off, and bookability() answers 'disabled'
-        // for that (registration_enabled is the outer gate) — which tells the
-        // visitor less than the truth. So when the switch is off, ask the seat
-        // layer whether capacity was the real story and say so if it was.
-        if ( $state === 'disabled' ) {
-            $seats = $this->get_registration_status( $event_id, $meta );
-            if ( $seats === 'full' || $seats === Registrations::STATUS_WAITLIST ) {
-                $state = $seats;
-            }
-        }
 
         if ( $state === 'full' ) {
             return \__( 'Sold out', 'anchor-schema' );
@@ -7402,6 +7416,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // The resolved tier drives per-tier quota enforcement in both the pre-check
         // and the locked claim below.
         $tier = $this->ticket_types->find( $event_id, $tier_id );
+
+        // A hand-cancelled course takes no seats (THEME-D25). The form has not
+        // rendered for one since bookability() started answering 'closed' for
+        // it, but REG_NONCE is a bare action nonce, so a POST can still arrive
+        // from a stale page — the same reasoning as the external-mode guard
+        // above. Not folded into the decision below because that one carries
+        // the party size and the tier; this is a property of the event.
+        if ( $this->get_event_status( $event_id, $meta ) === 'cancelled' ) {
+            \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
+            exit;
+        }
 
         // Pre-check for user-facing messaging (closed window / full + no waitlist),
         // honoring the tier's own quota.
@@ -8890,10 +8915,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Shared by persist_status_on_transition() and the REST after-insert hook
      * so the two agree on what "auto status" means.
      *
+     * Public for the same reason persist_timestamps() is: the Occurrences
+     * engine lives in its own class and re-derives a group parent's status
+     * from the span it just wrote (MODEL-D32). One writer, so "auto status"
+     * cannot come to mean two things.
+     *
      * @param int   $post_id
      * @param array $meta
      */
-    private function persist_auto_status( $post_id, array $meta ) {
+    public function persist_auto_status( $post_id, array $meta ) {
         if ( ( $meta['status_mode'] ?? 'auto' ) === 'manual' ) {
             return;
         }
@@ -9207,7 +9237,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return implode( ', ', $parts );
     }
 
-    private function get_event_status( $post_id, $meta = null ) {
+    /**
+     * An event's status as a reader must see it: the author's pinned value in
+     * manual mode, the value the dates imply in auto mode.
+     *
+     * The ONE accessor for that fact (audit MODEL-D43 / RENDER-D11). The raw
+     * `_anchor_event_status` row is only refreshed on save, on
+     * transition_post_status and by the daily sweep, so anything reading it
+     * directly disagrees with this for as long as a day: the front-end
+     * manager listed an event that ended yesterday as "Upcoming", and the
+     * JSON-LD derived its eventStatus from a different source than the visible
+     * "Status: Past" beside it. Public because Event_Schema is a separate
+     * class and must ask rather than re-implement.
+     *
+     * @param int        $post_id
+     * @param array|null $meta Already-loaded meta for $post_id, when the
+     *                         caller holds it.
+     * @return string
+     */
+    public function get_event_status( $post_id, $meta = null ) {
         if ( ! $meta ) {
             $meta = $this->get_meta( $post_id );
         }
@@ -9361,14 +9409,31 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * longer read "Join waitlist" on the page, "sold out" at the cart and
      * "InStock" in the markup on the same request.
      *
-     * The branch order mirrors render_registration_form()'s, which is the
-     * canonical statement of what a bookable event is:
-     *   parent   — a group container is never itself a seat,
-     *   closed   — a soft-closed occurrence, still reachable by direct URL,
-     *   disabled — "Enable registration" is unticked,
+     * The branch order says WHAT THE EVENT IS before it says whether the
+     * button is on, and render_registration_form() mirrors it:
+     *   parent    — a group container is never itself a seat,
+     *   closed    — a soft-closed occurrence, still reachable by direct URL,
+     *   cancelled — the author's own word, via get_event_status(),
      *   then the seat-layer capacity authority (open|waitlist|full|closed),
      *   which owns the sold_out flag, the registration window, the past-event
-     *   check, the event total and the per-tier quota.
+     *   check, the event total and the per-tier quota,
+     *   disabled  — "Enable registration" is unticked, and nothing above has
+     *   already answered.
+     *
+     * `disabled` used to come FIRST (audit NEW-D2), so a hand-flagged sold-out
+     * or finished event with registration off — the normal shape, because an
+     * admin who marks a course sold out also unticks the box — reported
+     * 'disabled' and nothing else. Production child 7528 published a JSON-LD
+     * Offer with a price and no availability while its own page said "Sold
+     * out"; choose_date_availability_hint() had to re-ask the seat layer
+     * locally to print anything true; and the DEKA theme grew a second
+     * capacity accessor beside this one. The seats going outranks the button
+     * being gone, so that judgement now lives here, once.
+     *
+     * 'waitlist' is the one seat-layer state the switch DOES outrank, because
+     * is_bookable() accepts it and the cart mints a real waitlist seat from
+     * it: on a disabled event it degrades to 'full' — no seat can be taken,
+     * and "sold out" is the honest half of that answer.
      *
      * @param int        $event_id
      * @param array|null $tier     Normalized ticket-tier row, when the question
@@ -9386,11 +9451,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $this->is_closed_group_child( $event_id ) ) {
             return 'closed';
         }
+
         $meta = $this->get_meta( $event_id );
-        if ( empty( $meta['registration_enabled'] ) ) {
+
+        // A cancelled course sells nothing, whatever its dates or its switch
+        // say (THEME-D25). Read through the accessor, not the raw row: auto
+        // mode owns that row and never computes 'cancelled', so only a
+        // hand-pinned (or soft-closed) event reaches this.
+        if ( $this->get_event_status( $event_id, $meta ) === 'cancelled' ) {
+            return 'closed';
+        }
+
+        $seats   = $this->get_registration_status( $event_id, $meta, 1, $tier );
+        $enabled = ! empty( $meta['registration_enabled'] );
+
+        if ( $seats === 'closed' || $seats === 'full' ) {
+            return $seats;
+        }
+        if ( $seats === Registrations::STATUS_WAITLIST ) {
+            return $enabled ? $seats : 'full';
+        }
+        if ( ! $enabled ) {
             return 'disabled';
         }
-        return $this->get_registration_status( $event_id, $meta, 1, $tier );
+        return $seats;
     }
 
     /**

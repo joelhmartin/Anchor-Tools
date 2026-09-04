@@ -366,7 +366,7 @@ class Event_Schema {
             'name'                => (string) \get_the_title( $event_id ),
             'startDate'           => $this->format_iso( $start_ts, $tz, $all_day ),
             'endDate'             => $this->format_iso( $end_ts, $tz, $all_day ),
-            'eventStatus'         => $this->event_status( $meta ),
+            'eventStatus'         => $this->event_status( $event_id, $meta ),
             'eventAttendanceMode' => $loc['mode'],
             'location'            => $loc['location'],
             'url'                 => (string) \get_permalink( $event_id ),
@@ -437,14 +437,23 @@ class Event_Schema {
     /**
      * eventStatus: EventCancelled when the event/occurrence status is
      * 'cancelled' (this already covers a soft-closed group-offering child —
-     * Occurrences::soft_close() sets status=cancelled), EventScheduled
-     * otherwise.
+     * Occurrences::soft_close() sets status_mode=manual + status=cancelled),
+     * EventScheduled otherwise.
      *
-     * @param array $meta
+     * RENDER-D11: the status comes from Module::get_event_status(), the one
+     * accessor every other renderer uses, not from the raw `$meta['status']`
+     * row. The row is only refreshed on save, on transition_post_status and by
+     * the daily sweep, so reading it directly made the JSON-LD and the visible
+     * "Status: …" on the same page derive one fact from two sources — and a
+     * stale 'cancelled' row on an AUTO-mode event (auto never computes
+     * 'cancelled') published EventCancelled for an event nobody had cancelled.
+     *
+     * @param int   $event_id
+     * @param array $meta     get_meta( $event_id ).
      * @return string
      */
-    private function event_status( array $meta ) {
-        $status = (string) ( $meta['status'] ?? '' );
+    private function event_status( $event_id, array $meta ) {
+        $status = (string) $this->module->get_event_status( $event_id, $meta );
         return $status === 'cancelled' ? 'https://schema.org/EventCancelled' : 'https://schema.org/EventScheduled';
     }
 

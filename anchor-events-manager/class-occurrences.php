@@ -499,6 +499,15 @@ class Occurrences {
      * there are none, so an event that has stopped being a container keeps the
      * dates it had rather than being blanked.
      *
+     * The parent's derived STATUS moves with its span (audit MODEL-D32). A
+     * container whose only date had passed carries status='past'; the author
+     * adds a 2027 date and the span moves forward, but the status row used to
+     * sit stale until the daily sweep ran — up to 24 hours in which every
+     * reader called the parent finished and the admin "Past" quick filter
+     * still counted it. Mirrors what the save paths do, through the same
+     * writer, so manual mode is untouched: a hand-pinned status is the
+     * author's.
+     *
      * @param int   $parent_id
      * @param int[] $live_ids Live children, already sorted earliest-first.
      * @return void
@@ -541,6 +550,7 @@ class Occurrences {
         $meta['end_date']   = $end_date;
 
         $this->module->persist_timestamps( $parent_id, $meta );
+        $this->module->persist_auto_status( $parent_id, $meta );
     }
 
     public function retire_all_children( $parent_id ) {

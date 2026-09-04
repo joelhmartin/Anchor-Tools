@@ -294,6 +294,76 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( '>Register<', $html );
 	}
 
+	/**
+	 * NEW-D2: the production shape — sold out AND switched off. The hint used
+	 * to need a local "ask the seat layer anyway" workaround here because
+	 * bookability() answered 'disabled' first; it now answers 'full', and the
+	 * row must still read "Sold out" without that workaround.
+	 */
+	public function test_choose_date_row_reports_a_sold_out_date_with_registration_off() {
+		$parent = $this->make_event( [
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'timezone'             => 'UTC',
+		] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0 ],
+		] );
+		$live = $this->module()->occurrences->reconcile( $parent );
+		update_post_meta( $live[0], '_anchor_event_sold_out', true );
+		update_post_meta( $live[0], '_anchor_event_registration_enabled', false );
+
+		$html = $this->module()->render_choose_date_list( $parent );
+
+		$this->assertStringContainsString( 'Sold out', $html );
+		$this->assertStringNotContainsString( 'Registration closed', $html );
+		$this->assertStringNotContainsString( '>Register<', $html );
+	}
+
+	/** NEW-D2 / THEME-D25: a hand-cancelled date is closed on every reader. */
+	public function test_choose_date_row_reports_a_manually_cancelled_date() {
+		$parent = $this->make_event( [
+			'type'                 => 'offering',
+			'registration_enabled' => true,
+			'timezone'             => 'UTC',
+		] );
+		update_post_meta( $parent, '_anchor_event_offering_dates', [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0 ],
+		] );
+		$live = $this->module()->occurrences->reconcile( $parent );
+		update_post_meta( $live[0], '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $live[0], '_anchor_event_status', 'cancelled' );
+
+		$html = $this->module()->render_choose_date_list( $parent );
+
+		$this->assertStringContainsString( 'Registration closed', $html );
+		$this->assertStringContainsString( 'Details', $html );
+		$this->assertStringNotContainsString( '>Register<', $html );
+	}
+
+	/** A hand-cancelled course cannot be bought from the product permalink. */
+	public function test_manually_cancelled_event_is_not_purchasable() {
+		list( $event, $tiers ) = $this->make_ticketed_event();
+		update_post_meta( $event, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event, '_anchor_event_status', 'cancelled' );
+
+		$this->assertFalse(
+			$this->woocommerce()->filter_is_purchasable( true, $this->variation( $event, $tiers[0] ) )
+		);
+	}
+
+	/** ...and its storefront row says so instead of offering a quantity box. */
+	public function test_storefront_row_is_closed_for_a_manually_cancelled_event() {
+		list( $event ) = $this->make_ticketed_event();
+		update_post_meta( $event, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event, '_anchor_event_status', 'cancelled' );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Registration closed', $html );
+		$this->assertStringNotContainsString( 'data-add-to-cart', $html );
+	}
+
 	/* ------------------------------------------------------------------
 	 * WOO-D2 — the legacy manually-linked-product escape hatch.
 	 * ------------------------------------------------------------------ */

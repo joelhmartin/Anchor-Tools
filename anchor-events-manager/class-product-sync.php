@@ -649,7 +649,12 @@ class Product_Sync {
                 if ( ! isset( $paid_active_map[ $tier_id ] ) ) {
                     continue;
                 }
-                $label  = $tier['label'] !== '' ? $tier['label'] : \__( 'Ticket', 'anchor-schema' );
+                // finding-19 (carry-over) — defers to Ticket_Types::default_label()
+                // rather than its own literal: the tier's own unlabeled row
+                // and the WooCommerce variation synced from it must agree on
+                // what to call it (Ticket_Types is the source of truth for
+                // tier label regardless of whether Woo is active).
+                $label  = $tier['label'] !== '' ? $tier['label'] : Ticket_Types::default_label();
                 $option = $this->unique_option( $label, $used_opt );
                 $specs[] = [
                     'tier_id'   => $tier_id,
@@ -983,7 +988,9 @@ class Product_Sync {
     private function unique_option( $base, array &$used ) {
         $base = \trim( (string) $base );
         if ( $base === '' ) {
-            $base = \__( 'Ticket', 'anchor-schema' );
+            // finding-19 — same shared default as the tier label itself; see
+            // the call site above.
+            $base = Ticket_Types::default_label();
         }
         $option = $base;
         $n      = 2;

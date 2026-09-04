@@ -28,6 +28,26 @@ class Ticket_Types {
     /** Stable id of the synthesized implicit tier when no list exists. */
     const PRIMARY_ID = 'primary';
 
+    /**
+     * finding-19 (carry-over) — the ONE fallback label for a tier/ticket with
+     * no label of its own. Before this, save() defaulted a blank row to
+     * "Registration" while Product_Sync::do_sync_event() independently
+     * defaulted the SAME blank label to "Ticket" for the managed WooCommerce
+     * variation — two literals that had to agree and did not, so a paid
+     * tier's unlabeled row and its own synced variation disagreed about what
+     * to call it. Ticket_Types is documented as the source of truth for tier
+     * label/price/availability regardless of whether Woo is active, so
+     * Product_Sync (which SYNCS FROM this model) defers to this default
+     * rather than keeping a second one. A static method, not a bare string
+     * constant, so the translatable literal stays inside one `__()` call
+     * i18n tooling can still discover.
+     *
+     * @return string
+     */
+    public static function default_label() {
+        return \__( 'Registration', 'anchor-schema' );
+    }
+
     /** @var Module */
     private $module;
 
@@ -131,7 +151,7 @@ class Ticket_Types {
 
             $tier = [
                 'id'              => $id,
-                'label'          => $label !== '' ? $label : \__( 'Registration', 'anchor-schema' ),
+                'label'          => $label !== '' ? $label : self::default_label(),
                 'price'           => $this->to_price( $price_raw ),
                 'quota'           => $quota,
                 'sale_start'      => $sale_start,
@@ -257,7 +277,7 @@ class Ticket_Types {
 
         return [
             'id'              => self::PRIMARY_ID,
-            'label'           => \__( 'Registration', 'anchor-schema' ),
+            'label'           => self::default_label(),
             'price'           => $price,
             'quota'           => 0,
             'sale_start'      => '',

@@ -342,4 +342,32 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		$this->assertSame( '', $stored['label'], 'The write-back must not silently apply save()\'s label default.' );
 		$this->assertGreaterThan( 0, $stored['wc_variation_id'], 'The variation id must still be persisted.' );
 	}
+
+	/**
+	 * finding-19 (carry-over) — do_sync_event() used to default a blank tier
+	 * label to "Ticket" for the variation's own display/attribute text,
+	 * while Ticket_Types::save()/implicit_primary() defaulted the SAME blank
+	 * label to "Registration". Both now defer to the one
+	 * Ticket_Types::default_label(), so a blank-labeled tier and its synced
+	 * variation agree on what to call it.
+	 */
+	public function test_blank_labeled_tier_variation_uses_the_shared_default_label() {
+		$event_id = $this->make_event();
+		update_post_meta(
+			$event_id,
+			Anchor\Events\Ticket_Types::META_KEY,
+			[ [ 'id' => 'blank1', 'label' => '', 'price' => '10', 'quota' => 0, 'sale_start' => '', 'sale_end' => '', 'active' => true, 'wc_variation_id' => 0 ] ]
+		);
+
+		$this->product_sync()->sync_event( $event_id );
+		$vid = $this->product_sync()->variation_for_tier( $event_id, 'blank1' );
+		$this->assertGreaterThan( 0, $vid );
+
+		$variation = wc_get_product( $vid );
+		$this->assertSame(
+			\Anchor\Events\Ticket_Types::default_label(),
+			(string) $variation->get_description(),
+			'The synced variation must use the SAME default label Ticket_Types itself falls back to.'
+		);
+	}
 }

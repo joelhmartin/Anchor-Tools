@@ -25,6 +25,29 @@ class Test_Ticket_Types extends Anchor_Events_TestCase {
 		$this->assertSame( Ticket_Types::PRIMARY_ID, $this->ticket_types()->primary_id( $event_id ) );
 	}
 
+	/**
+	 * WOO-D57: the `attendee_fields` tier field was authored nowhere (no
+	 * admin UI ever posted it) and read nowhere except by this model's own
+	 * default-substitution — render_checkout_attendee_fields() hard-codes
+	 * name/email/phone regardless of what a tier's attendee_fields held.
+	 * Deleted from the model rather than wired up, since nothing depended on
+	 * its presence.
+	 */
+	public function test_attendee_fields_is_not_part_of_the_tier_shape() {
+		$event_id = $this->make_event( [ 'price' => '10' ] );
+		$implicit = $this->ticket_types()->get( $event_id );
+		$this->assertArrayNotHasKey( 'attendee_fields', $implicit[0] );
+
+		$saved = $this->ticket_types()->save(
+			$event_id,
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1, 'attendee_fields' => [ 'custom' ] ] ]
+		);
+		$this->assertArrayNotHasKey( 'attendee_fields', $saved[0] );
+
+		$read = $this->ticket_types()->get( $event_id );
+		$this->assertArrayNotHasKey( 'attendee_fields', $read[0] );
+	}
+
 	/** save() assigns stable ids that are preserved across a re-save. */
 	public function test_save_assigns_stable_ids_preserved_across_resave() {
 		$event_id = $this->make_event();

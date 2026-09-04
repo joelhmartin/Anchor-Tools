@@ -44,7 +44,7 @@ class Ticket_Types {
      *
      * @param int $event_id
      * @return array<int,array> Each tier: id,label,price(float),quota(int),
-     *   sale_start,sale_end,active(bool),wc_variation_id(int),attendee_fields(array).
+     *   sale_start,sale_end,active(bool),wc_variation_id(int).
      */
     public function get( $event_id ) {
         $event_id = (int) $event_id;
@@ -138,7 +138,6 @@ class Ticket_Types {
                 'sale_end'        => $sale_end,
                 'active'          => $active,
                 'wc_variation_id' => $wc_variation_id,
-                'attendee_fields' => $this->sanitize_attendee_fields( $row['attendee_fields'] ?? null ),
             ];
 
             $clean[] = $tier;
@@ -265,7 +264,6 @@ class Ticket_Types {
             'sale_end'        => '',
             'active'          => true,
             'wc_variation_id' => 0,
-            'attendee_fields' => [ 'name', 'email', 'phone' ],
         ];
     }
 
@@ -296,7 +294,6 @@ class Ticket_Types {
             'sale_end'        => isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '',
             'active'          => ! empty( $row['active'] ),
             'wc_variation_id' => isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0,
-            'attendee_fields' => $this->sanitize_attendee_fields( $row['attendee_fields'] ?? null ),
         ];
     }
 
@@ -311,26 +308,6 @@ class Ticket_Types {
             return (float) \wc_format_decimal( $value );
         }
         return (float) $value;
-    }
-
-    /**
-     * Sanitize the per-tier attendee-field list. Defaults to name/email/phone.
-     *
-     * @param mixed $fields
-     * @return array
-     */
-    private function sanitize_attendee_fields( $fields ) {
-        if ( ! \is_array( $fields ) || empty( $fields ) ) {
-            return [ 'name', 'email', 'phone' ];
-        }
-        $clean = [];
-        foreach ( $fields as $field ) {
-            $field = \sanitize_key( (string) $field );
-            if ( $field !== '' ) {
-                $clean[] = $field;
-            }
-        }
-        return ! empty( $clean ) ? \array_values( \array_unique( $clean ) ) : [ 'name', 'email', 'phone' ];
     }
 
     /**

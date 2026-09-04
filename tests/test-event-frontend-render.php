@@ -372,4 +372,27 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		$this->assertFalse( $this->module()->content_already_rendered_registration( $event_id ) );
 		$this->assertStringContainsString( 'No shortcode here.', $html );
 	}
+
+	/**
+	 * RENDER-D34: [event_gallery slug="typo"] (an unresolvable event) and
+	 * [event_gallery] on a resolved event with zero images used to render
+	 * the identical '' — an author with a typo'd slug had no way to tell it
+	 * apart from a correctly-targeted, genuinely-empty gallery. The unresolved
+	 * case must now say so; the genuinely-empty case still renders ''.
+	 */
+	public function test_gallery_shortcode_reports_unresolvable_event() {
+		$html = $this->module()->shortcode_event_gallery( [ 'slug' => 'no-such-event-slug' ] );
+
+		$this->assertNotSame( '', $html, 'An unresolvable [event_gallery] target must not render identically to a genuinely-empty gallery.' );
+		$this->assertStringContainsString( 'No event specified for gallery', $html );
+	}
+
+	/** Regression: a resolved event with zero gallery images still renders '' (the genuinely-empty case). */
+	public function test_gallery_shortcode_still_renders_empty_string_for_a_resolved_event_with_no_images() {
+		$event_id = $this->make_event();
+
+		$html = $this->module()->shortcode_event_gallery( [ 'id' => $event_id ] );
+
+		$this->assertSame( '', $html );
+	}
 }

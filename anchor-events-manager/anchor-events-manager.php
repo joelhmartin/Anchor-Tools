@@ -6796,7 +6796,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
         }
         if ( ! $event_id ) {
-            return '';
+            // RENDER-D34: this used to return '' — indistinguishable from
+            // render_event_gallery()'s OWN '' for "resolved event, zero
+            // images". A typo'd id/slug then rendered nothing with no signal
+            // an author could use to tell the two cases apart. Mirrors
+            // shortcode_event_registration()'s "No event specified..." notice.
+            return '<div class="anchor-event-gallery-notice">'
+                . esc_html__( 'No event specified for gallery.', 'anchor-schema' )
+                . '</div>';
         }
 
         return $this->render_event_gallery( $event_id, $atts );

@@ -713,6 +713,19 @@ class Registrations {
      * "sold out" never triggers the waitlist — the waitlist stays event-level,
      * spec §7).
      *
+     * KNOWN, DELIBERATELY UNCHANGED (audit REG-D52): the one returned string
+     * mixes two vocabularies — 'open' | 'closed' | 'full' are decisions, while
+     * STATUS_WAITLIST is a seat status meaning "proceed, but the seat you
+     * create is a waitlist seat". Every caller has to know that, which is why
+     * handle_registration() re-derives its seat status from the claim result
+     * rather than trusting this, and why render_registration_form() branches on
+     * it separately. The register's fix — returning {decision, seat_status} —
+     * would change the signature of one of the module's load-bearing
+     * interfaces, and this batch is explicitly not allowed to do that. If it is
+     * ever taken on, the seam is here and the four values are pinned by
+     * Test_Capacity::test_capacity_decision_* — including the waitlist one,
+     * which asserts the seat status by name.
+     *
      * @param int        $event_id
      * @param array      $meta      Event meta (capacity, waitlist, window).
      * @param int        $requested Seats requested.

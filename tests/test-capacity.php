@@ -90,10 +90,16 @@ class Test_Capacity extends Anchor_Events_TestCase {
 		$this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
 		$meta = $this->module()->get_meta( $event_id );
 
-		$this->assertSame(
-			Registrations::STATUS_WAITLIST,
-			$this->registrations()->capacity_decision( $event_id, $meta, 1 )
-		);
+		$decision = $this->registrations()->capacity_decision( $event_id, $meta, 1 );
+		$this->assertSame( Registrations::STATUS_WAITLIST, $decision );
+
+		// REG-D52 — pinned deliberately: the one return value mixes the decision
+		// vocabulary ('open'|'closed'|'full') with a SEAT STATUS. A caller that
+		// reads it as a decision alone books a waitlist seat as confirmed. The
+		// register's fix is a {decision, seat_status} pair, which would change
+		// this signature, so the shape is recorded here instead of changed.
+		$this->assertNotContains( $decision, [ 'open', 'closed', 'full' ] );
+		$this->assertTrue( $this->registrations()->valid_status( $decision ) );
 	}
 
 	/** capacity_decision: a tier quota exhausted (event has room) returns 'full', no waitlist. */

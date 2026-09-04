@@ -24,6 +24,156 @@ Usage:
 
 == Changelog ==
 
+= 3.27.0 (unreleased) =
+
+Events Manager — new event statuses:
+
+* Two new manual-only statuses, alongside Cancelled: **Postponed** and
+  **Moved online**. A postponed event sells nothing — same as cancelled —
+  because the original date is off and no new one is known yet; every
+  seat-selling path (`bookability()`, the manual roster add, and the free
+  registration form) now refuses it the same way, and a direct/stale POST is
+  refused too. A moved-online event stays fully bookable: it still happens,
+  on the same date, just virtually.
+* The JSON-LD for a postponed or moved-online event emits `EventPostponed` /
+  `EventMovedOnline` for `eventStatus`. A postponed (or re-postponed) event
+  also gets a `previousStartDate`, captured once — from the front-end
+  console, the wp-admin metabox, and now a direct REST `PATCH` to the event's
+  status meta too, which previously bypassed the capture entirely.
+
+Events Manager — schema & SEO:
+
+* New filter `anchor_events_schema_node( $node, $event_id )` — runs on every
+  JSON-LD node this module assembles (single events, group children, and
+  both group-parent/multisession header nodes) just before it is returned.
+  Return the (possibly decorated) node array.
+* New filter `anchor_events_emit_canonical( $emit, $seo_plugin_active )` —
+  this module's own fallback `<link rel="canonical">` on a
+  `?anchor_events_month=` calendar URL now stays silent by default whenever
+  Yoast, Rank Math, All in One SEO or SEOPress is detected active, since each
+  already emits/filters its own canonical for the same URL. A site running
+  none of those is unaffected. See EVENTS.md.
+
+Events Manager — shortcodes:
+
+* `[events_list]`'s taxonomy-filter attribute is renamed `event_type` (it was
+  named `type`, which read as the *_anchor_event_type* single/offering/
+  recurring enum but silently ran a tax_query against the unrelated Event
+  Types taxonomy instead). `type=` is kept as a deprecated alias — an
+  existing shortcode keeps working unchanged — and now triggers a
+  `_doing_it_wrong()` notice (visible only under `WP_DEBUG`) pointing at
+  `event_type=`.
+
+Events Manager — admin & console:
+
+* **Closed occurrences** panel on the Events settings tab. A soft-closed
+  group-child date whose seats have since all been cancelled/refunded used
+  to have no terminal state at all — excluded from every listing forever,
+  with no way to remove it. The new panel lists every one and lets you
+  delete it; delete is refused while the occurrence still holds an active
+  (confirmed/pending/waitlist) seat.
+* Recurrence rows can now carry their own `end_date` (via a new `span_days`
+  rule key), `tier_id`, and `label`, the same fields a hand-authored
+  offering row has. There is no admin UI for these yet — set them via REST,
+  a filter, or direct meta — but a value set that way now survives a
+  front-end console re-save of a locked recurring event, and a generated
+  occurrence is no longer forced to sell every one of the parent's ticket
+  tiers regardless of its own date.
+* The `event_series` term a group parent auto-mints (`group-{parent_id}`)
+  is now noindexed; the taxonomy and its archive stay public and functional
+  for a hand-curated series.
+* The registrants metabox's attendee table (name, email, guest count) is
+  now gated behind the same module capability as the Roster screen and the
+  Export button, instead of the looser `edit_post` WordPress applies to the
+  metabox itself.
+* The front-end console's event title and content, and a manual roster
+  add's / the free registration form's attendee name, phone and answers, no
+  longer lose a literal backslash on save — they were being unslashed and
+  then handed to a WordPress write function (`wp_insert_post()`,
+  `update_post_meta()`) that unslashes its input again internally. A value
+  saved before this fix is not recoverable; it round-trips correctly from
+  the next save.
+* The ticket-tiers repeater now ships a hidden `anchor_event_tiers_present`
+  marker (mirroring the existing attendee-questions marker), so a save can
+  tell "every tier row was deliberately removed" from "this form never
+  posted the tiers table at all" — the latter is now a no-op instead of
+  silently clearing an event's tiers.
+
+Events Manager — registration:
+
+* A manual roster add now refuses a **cancelled or postponed** event the
+  same way it already refused a closed registration window — same "Allow
+  over capacity" checkbox to add anyway, logged as `capacity_overfill` with
+  reason `status_cancelled` / `status_postponed`.
+* New filter `anchor_events_auto_append_registration( true, $post_id )` —
+  return `false` to suppress the automatic `[event_registration]` append on
+  save. A theme can also opt out wholesale with
+  `add_theme_support( 'anchor-events-registration' )`, declaring that it
+  renders its own registration UI; either one stops the shortcode being
+  appended, and the shortcode itself now renders at most once per event per
+  request as a backstop against a double copy of the tag.
+
+Events Manager — WooCommerce / checkout:
+
+* Add-to-cart capacity checks are now cart-wide, not per-line: adding more
+  seats for an event already in the cart is compared against what actually
+  remains, on both the plugin's own "Register / Add to cart" AJAX endpoint
+  and WooCommerce's own add-to-cart validation. A line that is over capacity
+  (a stale cart, or a capacity reduction after the add) is now clamped to
+  what remains, or removed, instead of left permanently invalid with only a
+  notice. The AJAX endpoint's quantity field also enforces its published
+  cap (20) server-side; it was previously only an HTML `max` attribute.
+* A ticket tier's sale-window ("Sales open"/"Sales closed") messaging and
+  the checks behind it now compare dates in the site's own timezone instead
+  of mixing a site-time value with a UTC-parsed one — every boundary used to
+  be off by the site's UTC offset.
+
+Events Manager — emails & reminders:
+
+* An order covering more than one event now sends **one confirmation email
+  per enabled event**, each gated and built against that event's own
+  Confirmation switch and template, rather than resolving a single "primary"
+  event for the whole order. A mixed order (confirmation on for event A, off
+  for event B) used to silence B's buyer entirely because A was chosen as
+  primary. The manual "Resend confirmation" order action follows the same
+  per-event rule and now logs one skipped/sent line per event.
+* The retry queue's drain now reads the `Outcome` its sender returns instead
+  of inferring one from the attempt counter, so a deliberate skip (email
+  type switched off, no address, the seat no longer eligible) is retired
+  quietly instead of logging an `email_retry_undeliverable` error.
+* An abandoned reminder (3 failed attempts) is now distinguishable from a
+  reminder simply superseded by a nearer offset; the Upcoming Sends panel
+  reports the former as "Failed after 3 attempts" instead of "Past — not
+  sent".
+* The per-event reminder-override scan is now capped at 500 rows
+  (filterable via `anchor_events_reminder_override_scan_limit`), with a
+  `reminder_scan_truncated` log entry when the cap is hit, instead of
+  running an unbounded query every hour.
+
+Events Manager — front-end assets:
+
+* Baseline CSS for classes that previously had zero rules in `frontend.css`:
+  the single/archive event template containers, the event-series list
+  parts, and the WooCommerce ticket/checkout wrapper and state classes
+  (sold out, waitlist, closed, upcoming, and the cart error/success
+  messages) — layout and spacing only, no colour beyond the existing
+  neutral custom properties, no font-family.
+* The plugin's minified JS source maps now carry the real source filename
+  and full `sourcesContent`, instead of a source named "0" with nothing
+  behind it — the maps were unusable in devtools before this.
+
+Events Manager — breaking change for custom code:
+
+* The `anchor_events_seat_status_changed` action no longer fires when a
+  status "change" is actually a no-op (e.g. clicking Cancel again on an
+  already-cancelled seat). Code that relied on it firing unconditionally on
+  every Cancel click, note included, must now check the seat's prior status
+  itself if it needs that signal.
+* WooCommerce's `send_customer_confirmation()` gained a third parameter,
+  `$event_id` — it now builds and sends one confirmation per event rather
+  than one combined email for the whole order. A subclass or copy of this
+  method must be updated to the new per-event signature.
+
 = 3.26.0 =
 
 Events Manager — access change on WooCommerce sites:

@@ -490,7 +490,21 @@ class WooCommerce {
 
     public function render_variation_fields( $loop, $variation_data, $variation ) {
         $variation_id = (int) $variation->ID;
-        $selected     = (int) \get_post_meta( $variation_id, self::META_EVENT_ID, true );
+
+        // WOO-D10: an auto-managed product's variations are owned by
+        // Product_Sync — render_product_data_panel() already refuses the
+        // manual link UI on the PARENT for exactly this reason ("it would
+        // allow an admin to double-link a managed product"). This is that
+        // same guard's missing twin: without it, every variation of a
+        // managed product still showed an editable "Event Registration"
+        // dropdown, preselected to the event it's already correctly linked
+        // to.
+        $parent_id = (int) \wp_get_post_parent_id( $variation_id );
+        if ( $parent_id > 0 && (int) \get_post_meta( $parent_id, Product_Sync::PRODUCT_EVENT_META, true ) > 0 ) {
+            return;
+        }
+
+        $selected = (int) \get_post_meta( $variation_id, self::META_EVENT_ID, true );
 
         echo '<div class="form-row form-row-full anchor-evt-variation-event">';
         echo '<label>' . \esc_html__( 'Event Registration', 'anchor-schema' ) . '</label>';
@@ -596,6 +610,18 @@ class WooCommerce {
         }
         $variation_id = (int) $variation_id;
         $i            = (int) $i;
+
+        // WOO-D11: an auto-managed product's variation link is owned by
+        // Product_Sync — this write has no managed-product guard, so WC
+        // posting an unrelated/misaligned index for the (unexpectedly
+        // present, see WOO-D10) dropdown could zero the very link meta the
+        // resolver depends on. It self-healed only on the next
+        // woocommerce_update_product pass; refusing the manual write outright
+        // means there is nothing to self-heal from in the first place.
+        $parent_id = (int) \wp_get_post_parent_id( $variation_id );
+        if ( $parent_id > 0 && (int) \get_post_meta( $parent_id, Product_Sync::PRODUCT_EVENT_META, true ) > 0 ) {
+            return;
+        }
 
         $old_event = (int) \get_post_meta( $variation_id, self::META_EVENT_ID, true );
 

@@ -1599,13 +1599,30 @@ class WooCommerce {
      * working the stock cart form. It now clamps the line's quantity to what
      * actually remains (or removes it, at zero) via WC()->cart->set_quantity(),
      * so the cart the buyer sees after the notice is one that can check out.
+     *
+     * finding-1 (bot review, PR #20): each line used to be compared against
+     * the event's FULL remaining capacity independently — two lines of 3
+     * seats against 5 remaining both passed (3 <= 5 twice), leaving 6 seats
+     * in a 5-seat cart, and checkout's aggregate validation then still
+     * rejected the whole cart with no path back to a valid state. This now
+     * tracks a running per-event allowance (and, for a tier with its own
+     * quota, a running per-tier allowance nested under it) that is
+     * decremented as lines are processed in the SAME order
+     * get_event_cart_lines() returns them (cart order), so a later line is
+     * clamped against what an earlier line for the same event/tier already
+     * consumed rather than against the untouched total.
      */
     public function notice_over_capacity_cart_items() {
         if ( ! \function_exists( 'wc_add_notice' ) || ! \function_exists( 'WC' ) || ! WC()->cart ) {
             return;
         }
+
+        $event_allowance = []; // event_id => seats left to hand out to cart lines not yet processed.
+        $tier_allowance  = []; // "event_id|tier_id" => same, nested under a tier's own quota.
+
         foreach ( $this->get_event_cart_lines() as $line ) {
-            $meta = $this->module->get_meta( $line['event_id'] );
+            $event_id = $line['event_id'];
+            $meta     = $this->module->get_meta( $event_id );
             if ( ! empty( $meta['waitlist'] ) ) {
                 continue;
             }
@@ -1613,13 +1630,37 @@ class WooCommerce {
             if ( $capacity <= 0 ) {
                 continue;
             }
-            $remaining = (int) $this->registrations->remaining_capacity( $line['event_id'], $capacity );
-            if ( $line['qty'] > $remaining ) {
-                $clamped = \max( 0, $remaining );
+
+            if ( ! \array_key_exists( $event_id, $event_allowance ) ) {
+                $event_allowance[ $event_id ] = (int) $this->registrations->remaining_capacity( $event_id, $capacity );
+            }
+
+            $tier     = $this->tier_for_cart_line( $line );
+            $tier_key = null;
+            if ( $tier && (int) ( $tier['quota'] ?? 0 ) > 0 ) {
+                $tier_key = $event_id . '|' . $tier['id'];
+                if ( ! \array_key_exists( $tier_key, $tier_allowance ) ) {
+                    $tier_allowance[ $tier_key ] = \max(
+                        0,
+                        (int) $tier['quota'] - $this->registrations->count_reserved_for_tier( $event_id, $tier['id'] )
+                    );
+                }
+            }
+
+            $allowed = $event_allowance[ $event_id ];
+            if ( null !== $tier_key ) {
+                $allowed = \min( $allowed, $tier_allowance[ $tier_key ] );
+            }
+            $allowed = \max( 0, $allowed );
+
+            $consumed = $line['qty'];
+            if ( $line['qty'] > $allowed ) {
+                $clamped  = $allowed;
+                $consumed = $clamped;
                 \wc_add_notice(
                     \sprintf(
                         /* translators: 1: remaining seat count, 2: event title. */
-                        \__( 'Only %1$d seat(s) remain for %2$s. The quantity in your cart has been adjusted.', 'anchor-schema' ),
+                        \__( 'Only %1$d seat(s) remain for %2$s. The quantity in your cart has been adjusted to fit alongside the other tickets for this event already in your cart.', 'anchor-schema' ),
                         $clamped,
                         $line['event_title']
                     ),
@@ -1631,7 +1672,35 @@ class WooCommerce {
                     WC()->cart->remove_cart_item( $line['cart_item_key'] );
                 }
             }
+
+            $event_allowance[ $event_id ] -= $consumed;
+            if ( null !== $tier_key ) {
+                $tier_allowance[ $tier_key ] -= $consumed;
+            }
         }
+    }
+
+    /**
+     * The ticket tier a cart line (as returned by get_event_cart_lines())
+     * represents, or null for a simple product / an unmanaged variation.
+     * ID-based sibling of tier_for_product_object() for callers that only
+     * have the line's ids, not a live WC_Product — same event-id agreement
+     * check (WOO-D3) so a re-pointed variation falls back to the event-level
+     * answer rather than a quota that counts seats under the wrong event.
+     *
+     * @param array $line Row from get_event_cart_lines().
+     * @return array|null Normalized tier row.
+     */
+    private function tier_for_cart_line( array $line ) {
+        if ( (int) $line['variation_id'] <= 0 || ! $this->module->product_sync || ! $this->module->ticket_types ) {
+            return null;
+        }
+        $map = $this->module->product_sync->tier_for_variation( (int) $line['variation_id'] );
+        if ( (string) $map['tier_id'] === '' || (int) $map['event_id'] !== (int) $line['event_id'] ) {
+            return null;
+        }
+        $tier = $this->module->ticket_types->find( (int) $line['event_id'], (string) $map['tier_id'] );
+        return $tier ?: null;
     }
 
     /* ---------------------------------------------------------------------

@@ -117,4 +117,69 @@ class Test_WooCommerce_Cart_Capacity extends Anchor_Events_TestCase {
 
 		$this->assertSame( 0, WC()->cart->get_cart_contents_count() );
 	}
+
+	/**
+	 * finding-1 (bot review, PR #20): two SEPARATE cart lines for the same
+	 * event, each individually within capacity, must be clamped against a
+	 * running allowance — not each compared to the full 5 independently.
+	 * Two lines of 3 against 5 remaining: the first (processed first, cart
+	 * order) keeps all 3, leaving 2 for the second.
+	 */
+	public function test_two_lines_for_the_same_event_are_clamped_against_a_running_allowance() {
+		list( $event_id, $product_id, $vid ) = $this->make_capped_event( 5 );
+
+		// Two distinct cart lines for the SAME variation/event: WC merges
+		// identical line by default, so give the second line a distinct
+		// cart-item signature via cart item data (still resolves to the same
+		// managed event through get_event_cart_lines()).
+		$key1 = WC()->cart->add_to_cart( $product_id, 3, $vid, [], [ 'anchor_test_line' => 'a' ] );
+		$key2 = WC()->cart->add_to_cart( $product_id, 3, $vid, [], [ 'anchor_test_line' => 'b' ] );
+		$this->assertNotFalse( $key1 );
+		$this->assertNotFalse( $key2 );
+		$this->assertSame( 6, WC()->cart->get_cart_contents_count() );
+
+		$this->woocommerce()->notice_over_capacity_cart_items();
+
+		$cart = WC()->cart->get_cart();
+		$this->assertSame( 3, (int) $cart[ $key1 ]['quantity'], 'The first line (cart order) keeps its full 3.' );
+		$this->assertSame( 2, (int) $cart[ $key2 ]['quantity'], 'The second line is clamped to what the first left (5 - 3 = 2).' );
+		$this->assertSame( 5, WC()->cart->get_cart_contents_count() );
+	}
+
+	/**
+	 * finding-1: a per-tier quota is enforced the same way, nested under the
+	 * event total. Two tiers each with their own quota=3, event capacity 10:
+	 * one line of 3 against each tier both fit the event total but the
+	 * SECOND against the SAME tier must be clamped by the tier's own
+	 * remaining quota, not the event's much larger remaining capacity.
+	 */
+	public function test_tier_quota_is_enforced_as_a_running_allowance_nested_under_the_event() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Tiered Capped Event', 'timezone' => 'UTC', 'capacity' => 10, 'waitlist' => false ],
+			[
+				[ 'label' => 'VIP', 'price' => '50', 'active' => 1, 'quota' => 3 ],
+			]
+		);
+		$this->product_sync()->sync_event( $event_id );
+		$tiers      = $this->ticket_types()->get( $event_id );
+		$vip_id     = $tiers[0]['id'];
+		$vid        = (int) $this->product_sync()->variation_for_tier( $event_id, $vip_id );
+		$this->assertGreaterThan( 0, $vid );
+		$product_id = (int) wc_get_product( $vid )->get_parent_id();
+
+		$key1 = WC()->cart->add_to_cart( $product_id, 2, $vid, [], [ 'anchor_test_line' => 'a' ] );
+		$key2 = WC()->cart->add_to_cart( $product_id, 2, $vid, [], [ 'anchor_test_line' => 'b' ] );
+		$this->assertNotFalse( $key1 );
+		$this->assertNotFalse( $key2 );
+
+		$this->woocommerce()->notice_over_capacity_cart_items();
+
+		$cart = WC()->cart->get_cart();
+		$this->assertSame( 2, (int) $cart[ $key1 ]['quantity'], 'The first line (cart order) keeps its full 2.' );
+		$this->assertSame(
+			1,
+			(int) $cart[ $key2 ]['quantity'],
+			'The second line is clamped to the TIER quota remaining (3 - 2 = 1), not the much larger event capacity.'
+		);
+	}
 }

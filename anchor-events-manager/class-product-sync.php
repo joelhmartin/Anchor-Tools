@@ -550,6 +550,18 @@ class Product_Sync {
             }
         }
 
+        // WOO-D36: only the 'wc' registration mode may have a managed
+        // product. An event authored as Free or External can still carry an
+        // active paid tier — a legacy `price` synthesizing the implicit
+        // primary tier, or leftover tier rows from a mode switch — and that
+        // alone used to be enough to publish a live, purchasable product the
+        // organizer never asked for. Occurrences::sync_product() already
+        // applies this exact gate before calling sync_event() for a child
+        // occurrence; this is the direct save_post path's missing twin.
+        if ( $this->module->registration_mode( $event_id ) !== 'wc' ) {
+            $paid_active_map = [];
+        }
+
         // A group parent is a container, not a bookable event — each of its
         // occurrences carries its own product. Treating it as having nothing to
         // sell reuses the demote-to-draft path below, and reverses itself: stop

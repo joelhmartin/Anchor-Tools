@@ -271,4 +271,52 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		$tiers = $this->ticket_types()->get( $event_id );
 		$this->assertSame( 750.0, $tiers[0]['price'] );
 	}
+
+	/**
+	 * WOO-D36: an event explicitly authored as External registration — but
+	 * still carrying a legacy `price` (for display) that synthesizes an
+	 * active-priced implicit tier — must NOT get a managed WooCommerce
+	 * product. Occurrences::sync_product() already gates on registration_mode
+	 * before calling sync_event() for a child occurrence; do_sync_event()
+	 * itself had no such gate on the direct save_post path.
+	 */
+	public function test_external_mode_event_with_a_legacy_price_gets_no_product() {
+		$event_id = $this->make_event( [
+			'title'              => 'External Course',
+			'registration_mode'  => 'external',
+			'external_url'       => 'https://example.test/register',
+			'price'              => '500',
+		] );
+
+		$this->assertSame( 0, $this->product_sync()->sync_event( $event_id ) );
+		$this->assertSame( 0, $this->product_sync()->managed_product_id( $event_id ) );
+	}
+
+	/** Same, for the Free registration mode with an authored paid+active tier. */
+	public function test_free_mode_event_with_a_paid_active_tier_gets_no_product() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Free-mode Course', 'registration_mode' => 'free' ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+
+		$this->assertSame( 0, $this->product_sync()->sync_event( $event_id ) );
+		$this->assertSame( 0, $this->product_sync()->managed_product_id( $event_id ) );
+	}
+
+	/**
+	 * A 'wc' mode event switched to 'external'/'free' must have its existing
+	 * managed product demoted, not left live and purchasable.
+	 */
+	public function test_switching_a_wc_event_to_external_demotes_its_existing_product() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Switching Course' ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$product_id = $this->product_sync()->sync_event( $event_id );
+		$this->assertGreaterThan( 0, $product_id );
+
+		update_post_meta( $event_id, '_anchor_event_registration_mode', 'external' );
+		$this->assertSame( 0, (int) $this->product_sync()->sync_event( $event_id ) );
+		$this->assertSame( 'draft', get_post_status( $product_id ) );
+	}
 }

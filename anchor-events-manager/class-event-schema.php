@@ -787,6 +787,12 @@ class Event_Schema {
      * shape), from the event's registration_open date (midnight, event
      * timezone), or '' when unset.
      *
+     * The wall-clock -> instant step is Module::to_timestamp()'s, not a local
+     * `createFromFormat()` of its own: a second construction is a second place
+     * for the format, the zone and the seconds rule to drift out of step with
+     * the save path — which is exactly how resolve_timezone() came to render
+     * every date in a zone the module never computed in.
+     *
      * @param array $meta
      * @return string
      */
@@ -796,7 +802,11 @@ class Event_Schema {
             return '';
         }
         $tz = $this->resolve_timezone( $meta );
-        $dt = \DateTime::createFromFormat( 'Y-m-d H:i', $raw . ' 00:00', $tz );
-        return $dt ? $dt->format( 'c' ) : '';
+        $ts = $this->module->to_timestamp( $raw, '00:00', $tz );
+        // to_timestamp() answers 0 for both "no date" and "unparseable". Only
+        // exactly the epoch is ambiguous, and a registration_open of
+        // 1970-01-01T00:00Z is not a date anyone sets; a pre-1970 one still
+        // renders, as it did before.
+        return $ts !== 0 ? $this->format_iso( $ts, $tz, false ) : '';
     }
 }

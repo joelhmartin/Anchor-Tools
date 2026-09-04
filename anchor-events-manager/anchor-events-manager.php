@@ -61,7 +61,12 @@ class Module {
      *
      * A constant, not `strtotime('+5 years')` (audit MODEL-D11): the bound goes
      * into the meta_query that keys the listing transient, so a floating value
-     * gave every request a different cache key and the cache never hit.
+     * re-keyed the cache on every request.
+     *
+     * This stabilises the RANGE clause only. `build_visibility_clause()` still
+     * embeds a raw `time()`, and that clause is added whenever `show_past` is
+     * 'no' — the [events_list] DEFAULT — so most listings still churn their key
+     * every second. Filed as NEW-D5; not this fix's scope.
      */
     const RANGE_OPEN_END_TS = 4102444800;
 
@@ -9530,8 +9535,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $this->timezone_object( $this->event_timezone_name( $meta ) );
     }
 
-    /** A DateTimeZone from any stored shape, falling back to UTC rather than throwing mid-render. */
+    /**
+     * A DateTimeZone from any stored shape, falling back to UTC rather than
+     * throwing mid-render. An already-resolved zone passes straight through, so
+     * a caller that holds one (Event_Schema, which needs the same zone to
+     * render with) does not have to round-trip it back to a string.
+     */
     private function timezone_object( $timezone ) {
+        if ( $timezone instanceof \DateTimeZone ) {
+            return $timezone;
+        }
         try {
             return new \DateTimeZone( $this->normalize_timezone( $timezone ) );
         } catch ( \Exception $e ) {
@@ -9547,8 +9560,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * from the current clock (audit MODEL-D13). Without it the value a save
      * writes depends on the second it ran, and Occurrences' "an unchanged
      * desired set produces no meta churn" contract cannot hold.
+     *
+     * PUBLIC because Event_Schema built its own copy of this construction for
+     * an Offer's `validFrom` — a second place where a wall-clock string becomes
+     * an instant is a second place for the format, the zone and the seconds
+     * rule to drift apart.
+     *
+     * @param string                $date     Y-m-d.
+     * @param string                $time     H:i.
+     * @param string|\DateTimeZone  $timezone A stored timezone string ('' = the
+     *                                        site's), or a resolved zone.
+     * @return int Unix timestamp, or 0 when $date is empty or unparseable.
      */
-    private function to_timestamp( $date, $time, $timezone ) {
+    public function to_timestamp( $date, $time, $timezone ) {
         if ( ! $date ) {
             return 0;
         }
@@ -9855,7 +9879,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $start_ts = $start ? $this->to_timestamp( $start, '00:00', '' ) : 0;
         // A FIXED far-future end, not strtotime('+5 years'): the open bound is
         // part of the transient cache key, and a value that moves every second
-        // meant an open-ended range could never hit its own cache.
+        // re-keyed it on every request. (build_visibility_clause() still does
+        // the same with time() on the show_past='no' default — NEW-D5.)
         $end_ts = $end ? $this->to_timestamp( $end, '23:59', '' ) : self::RANGE_OPEN_END_TS;
         return [
             'key' => $this->meta_key( 'start_ts' ),

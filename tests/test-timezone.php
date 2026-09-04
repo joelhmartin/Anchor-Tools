@@ -3,10 +3,13 @@
  * One timezone resolution, one clock (RENDER-D2, MODEL-D20, MODEL-D21,
  * MODEL-D11, MODEL-D12, MODEL-D13, RENDER-D30).
  *
- * Production is the shape these all fire on: `timezone_string` is '' and
+ * Production is the shape these mostly fire on: `timezone_string` is '' and
  * `gmt_offset` is -6, so `wp_timezone_string()` answers '-06:00' — a real zone
  * for arithmetic, but not a name `get_option('timezone_string')` can see.
- * Every test here sets exactly that site configuration.
+ * site_on_a_bare_offset() sets exactly that. Three tests deliberately set a
+ * DIFFERENT site instead, and say why in their own docblocks: the all-day node
+ * needs a POSITIVE offset to fail at all, and the notice needs a named zone and
+ * a default '+00:00' install to prove it stays quiet.
  *
  * @package Anchor\Events\Tests
  */
@@ -76,11 +79,20 @@ class Test_Timezone extends Anchor_Events_TestCase {
 
 	/**
 	 * An all-day node collapses to `Y-m-d` IN THE RENDERED ZONE, so rendering a
-	 * local-midnight instant through UTC on a negative-offset site names the
-	 * day BEFORE the event.
+	 * local-midnight instant through UTC names the wrong DAY, not merely the
+	 * wrong offset.
+	 *
+	 * Deliberately a UTC+9 site, not the -06:00 fixture the rest of this class
+	 * uses: at -06:00 local midnight is 06:00Z on the SAME date, so a UTC
+	 * rendering produces the right string by luck and the test cannot fail. At
+	 * +09:00 local midnight is 15:00Z on the PREVIOUS date, which is the actual
+	 * defect — a UTC+X site advertising every all-day event a day early.
 	 */
 	public function test_all_day_schema_date_is_the_local_date_not_the_utc_one() {
-		$this->site_on_a_bare_offset();
+		update_option( 'timezone_string', '' );
+		update_option( 'gmt_offset', 9 );
+		$this->assertSame( '+09:00', wp_timezone_string(), 'Precondition: a positive-offset site.' );
+
 		$event = $this->make_event(
 			[
 				'title'      => 'All Day Offset',
@@ -89,9 +101,42 @@ class Test_Timezone extends Anchor_Events_TestCase {
 			]
 		);
 
+		$ts = $this->module()->compute_timestamps( $this->module()->get_meta( $event ) );
+		$this->assertSame(
+			'2030-12-04',
+			gmdate( 'Y-m-d', $ts['start'] ),
+			'Precondition: the instant itself falls on the previous date in UTC.'
+		);
+
 		$node = $this->schema()->for_event( $event );
 
 		$this->assertSame( '2030-12-05', $node['startDate'] );
+	}
+
+	/**
+	 * An Offer's `validFrom` is the same wall-clock -> instant question, so it
+	 * goes through the same Module::to_timestamp() rather than a local
+	 * createFromFormat() with its own format string and its own seconds rule.
+	 */
+	public function test_offer_valid_from_carries_the_site_offset() {
+		$this->site_on_a_bare_offset();
+		$event = $this->make_event(
+			[
+				'title'                => 'Opens Later',
+				'start_date'           => '2030-12-11',
+				'start_time'           => '08:00',
+				'registration_enabled' => true,
+				// Already open: a FUTURE registration_open makes the event
+				// unbookable, and an unbookable event publishes no Offer at
+				// all — so there would be no validFrom to inspect.
+				'registration_open'    => '2020-10-01',
+			]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertNotEmpty( $node['offers'] ?? [], 'Precondition: a free Offer is published.' );
+		$this->assertSame( '2020-10-01T00:00:00-06:00', $node['offers'][0]['validFrom'] );
 	}
 
 	/**
@@ -137,10 +182,21 @@ class Test_Timezone extends Anchor_Events_TestCase {
 	 * ------------------------------------------------------------------ */
 
 	/**
-	 * `createFromFormat('Y-m-d H:i', …)` fills the unspecified seconds from the
-	 * current clock, so reconciling an unchanged parent rewrote start_ts and
-	 * end_ts with a new value every second — Occurrences' "no meta churn"
-	 * contract was false by construction.
+	 * A REGRESSION GUARD, not a discriminator — and the audit entry it comes
+	 * from (MODEL-D13) overstates the defect.
+	 *
+	 * The entry says `createFromFormat('Y-m-d H:i', …)` fills the unspecified
+	 * seconds from the current clock, so an unchanged reconcile rewrites
+	 * start_ts every second. Measured on PHP 8.4.4, that is false: PHP zeroes
+	 * time units SMALLER than the smallest one the format names, so `H:i`
+	 * already yields `:00`. (`createFromFormat('Y-m-d', …)` — no time portion
+	 * at all — is the shape that really does inherit the clock.) This test
+	 * therefore passed before the fix as well as after.
+	 *
+	 * It is kept because the `!` makes the guarantee explicit rather than a
+	 * side effect of which fields the format happens to name: if the format
+	 * ever loses its time portion, this fails instead of the reconcile
+	 * idempotency contract silently becoming untrue.
 	 */
 	public function test_compute_timestamps_is_identical_across_two_different_seconds() {
 		$this->site_on_a_bare_offset();

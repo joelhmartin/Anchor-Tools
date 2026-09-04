@@ -8106,6 +8106,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * `before_delete_post` only ever fired on PERMANENT deletion, which left a
      * trashed event rendering a card that 404s for up to an hour (RENDER-D19).
      *
+     * Only transitions that cross `publish` do any work. Every cached read is
+     * publish-scoped — both get_cached_ids() callers query
+     * `post_status => 'publish'`, and the counts()/tier_counts() aggregate is
+     * `WHERE p.post_status = 'publish'` — so a move between two non-public
+     * statuses (the 'new' -> 'draft' of a first save, an auto-draft, one draft
+     * revision to the next, trash -> draft on untrash) cannot change a single
+     * cached value, and bumping the listing generation for it would throw away
+     * every site visitor's warm cache on an author's private edit.
+     *
      * @param string   $new_status
      * @param string   $old_status
      * @param \WP_Post $post
@@ -8114,7 +8123,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( ! $post instanceof \WP_Post || $new_status === $old_status ) {
             return;
         }
-        if ( $new_status === 'auto-draft' || ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) ) {
+        if ( $new_status !== 'publish' && $old_status !== 'publish' ) {
+            return;
+        }
+        if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
             return;
         }
         $this->bust_caches_for_post( $post->ID, $post->post_type );

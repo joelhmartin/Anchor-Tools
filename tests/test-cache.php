@@ -266,6 +266,85 @@ class Test_Cache extends Anchor_Events_TestCase {
 	}
 
 	/* ------------------------------------------------------------------
+	 * Fleet safety — a site that never used events pays nothing.
+	 *
+	 * transition_post_status is a site-wide hook: it fires for every post of
+	 * every type on every install running Anchor-Tools. These pin the property
+	 * that the handler is inert outside the two event post types.
+	 * ------------------------------------------------------------------ */
+
+	/** A page's whole draft -> publish -> trash life leaves the version alone. */
+	public function test_an_unrelated_page_never_bumps_the_cache_version() {
+		$before = (int) get_option( 'anchor_events_cache_ver', 1 );
+
+		$page = wp_insert_post( [ 'post_type' => 'page', 'post_title' => 'Unrelated', 'post_status' => 'draft' ] );
+		$this->assertSame( $before, (int) get_option( 'anchor_events_cache_ver', 1 ), 'Creating a page must not bump the version.' );
+
+		wp_publish_post( $page );
+		$this->assertSame( $before, (int) get_option( 'anchor_events_cache_ver', 1 ), 'Publishing a page must not bump the version.' );
+
+		wp_trash_post( $page );
+		$this->assertSame( $before, (int) get_option( 'anchor_events_cache_ver', 1 ), 'Trashing a page must not bump the version.' );
+
+		wp_untrash_post( $page );
+		wp_delete_post( $page, true );
+		$this->assertSame(
+			$before,
+			(int) get_option( 'anchor_events_cache_ver', 1 ),
+			'Untrashing or deleting a page must not bump the version.'
+		);
+	}
+
+	/** …and mints no capacity transient for its id. */
+	public function test_an_unrelated_post_mints_no_capacity_transient() {
+		$before = (int) get_option( 'anchor_events_cache_ver', 1 );
+
+		$post = wp_insert_post( [ 'post_type' => 'post', 'post_title' => 'Blog post', 'post_status' => 'publish' ] );
+		wp_update_post( [ 'ID' => $post, 'post_status' => 'draft' ] );
+		wp_publish_post( $post );
+		wp_trash_post( $post );
+
+		$this->assertSame( $before, (int) get_option( 'anchor_events_cache_ver', 1 ) );
+		$this->assertFalse( get_transient( 'anchor_evt_caps_' . $post ) );
+		$this->assertFalse( get_transient( 'anchor_evt_tier_caps_' . $post ) );
+	}
+
+	/**
+	 * A brand-new event saved as a DRAFT bumps nothing: it is in no listing
+	 * and no count, so there is nothing cached for it to invalidate.
+	 */
+	public function test_a_new_draft_event_does_not_bump_the_cache_version() {
+		$before = (int) get_option( 'anchor_events_cache_ver', 1 );
+
+		$draft = wp_insert_post(
+			[ 'post_type' => Module::CPT, 'post_title' => 'Draft Event', 'post_status' => 'draft' ]
+		);
+		$this->assertGreaterThan( 0, $draft );
+
+		$this->assertSame(
+			$before,
+			(int) get_option( 'anchor_events_cache_ver', 1 ),
+			'A draft event has never been in a listing — do not throw away every warm cache for it.'
+		);
+	}
+
+	/** …but the moment that draft is published, the listing generation moves. */
+	public function test_publishing_a_draft_event_does_bump_the_cache_version() {
+		$draft = wp_insert_post(
+			[ 'post_type' => Module::CPT, 'post_title' => 'Draft Event', 'post_status' => 'draft' ]
+		);
+
+		$before = (int) get_option( 'anchor_events_cache_ver', 1 );
+		wp_publish_post( $draft );
+
+		$this->assertGreaterThan(
+			$before,
+			(int) get_option( 'anchor_events_cache_ver', 1 ),
+			'Crossing publish is exactly the transition every cached read is scoped to.'
+		);
+	}
+
+	/* ------------------------------------------------------------------
 	 * Helpers.
 	 * ------------------------------------------------------------------ */
 

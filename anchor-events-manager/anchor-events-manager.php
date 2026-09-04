@@ -872,8 +872,12 @@ class Module {
     private function deliver_reminder( array $seat, $event_id, $offset, $start_ts, array $settings ) {
         $result = $this->send_reminder_email( $seat, $event_id, $offset, $settings );
         if ( $result->is_sent() ) {
+            // REG-D29 — this used to also write _anchor_event_attendee_notified.
+            // Nothing ever read it, and its name claimed a general "the attendee
+            // has been notified" fact that only a reminder could set, so a later
+            // reader would have taken it to mean the confirmation went out. The
+            // reminders_sent map below is the record.
             $this->mark_reminder_sent( $seat['id'], $start_ts, $offset, \time() );
-            \update_post_meta( $seat['id'], '_anchor_event_attendee_notified', true );
         }
         return $result;
     }
@@ -2224,15 +2228,6 @@ class Module {
             'type' => 'array',
             'single' => true,
             'show_in_rest' => false,
-            'auth_callback' => $reg_auth_callback,
-        ] );
-
-        // L15: spec-reserved attendee-notified flag (honors the `notify_attendee`
-        // reservation; not yet written, registered so the key is recognized).
-        \register_post_meta( self::REG_CPT, '_anchor_event_attendee_notified', [
-            'type' => 'boolean',
-            'single' => true,
-            'show_in_rest' => true,
             'auth_callback' => $reg_auth_callback,
         ] );
 

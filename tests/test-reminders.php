@@ -151,6 +151,28 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( 0, (int) $markers[7], 'A superseded offset is marked with 0 — recorded, but never reported as sent.' );
 	}
 
+	/**
+	 * REG-D29 — a delivered reminder records itself in the reminders_sent map
+	 * and nowhere else. The old _anchor_event_attendee_notified flag was
+	 * written here and read by nothing, under a name that claimed the
+	 * confirmation had gone out.
+	 */
+	public function test_a_delivered_reminder_writes_no_dead_attendee_notified_flag() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'flagged@example.com' ] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( [ 'flagged@example.com' ], $sent );
+		$this->assertGreaterThan( 0, (int) ( $this->markers( $seat_id, $start_ts )[1] ?? 0 ) );
+		$this->assertSame( [], get_post_meta( $seat_id, '_anchor_event_attendee_notified' ) );
+	}
+
 	public function test_a_second_sweep_an_hour_later_sends_nothing() {
 		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
 

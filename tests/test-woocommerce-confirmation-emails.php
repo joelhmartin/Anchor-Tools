@@ -63,6 +63,33 @@ class Test_WooCommerce_Confirmation_Emails extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * WOO-D44 (fix round 1, minor): flag_review() dedupes by reason and
+	 * no-ops once a reason is already flagged, so calling it inside the
+	 * per-seat loop only ever recorded the FIRST status-less seat's id — a
+	 * second one on the same order was silently dropped from the detail.
+	 * Every status-less seat this pass finds must be accumulated into ONE
+	 * flag_review() call.
+	 */
+	public function test_every_status_less_seat_id_is_accumulated_into_one_flag() {
+		$event_id = $this->make_event();
+		$order    = new WC_Order();
+		$order->save();
+		$order_id = $order->get_id();
+
+		$broken_one = $this->make_seat( $event_id, [ 'order_id' => $order_id ] );
+		$broken_two = $this->make_seat( $event_id, [ 'order_id' => $order_id ] );
+		delete_post_meta( $broken_one, '_anchor_event_reg_status' );
+		delete_post_meta( $broken_two, '_anchor_event_reg_status' );
+
+		$this->collect_order_seats( $order_id );
+
+		$flags = (array) wc_get_order( $order_id )->get_meta( Events_Log::ORDER_REVIEW_META );
+		$this->assertCount( 1, $flags, 'One flag for the order, not one per seat.' );
+		$this->assertStringContainsString( (string) $broken_one, $flags[0]['detail'] );
+		$this->assertStringContainsString( (string) $broken_two, $flags[0]['detail'] );
+	}
+
+	/**
 	 * WOO-D51: the buyer confirmation's "primary event" (whose title/CTA/
 	 * per-event overrides drive the whole email) must be the event with the
 	 * MOST seats, not silently whichever event's seats were iterated first —

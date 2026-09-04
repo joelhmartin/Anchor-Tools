@@ -3750,9 +3750,10 @@ class WooCommerce {
      * @return array<int,array<int,array>> [ event_id => [ {id,name,status,seat_index} ] ].
      */
     private function collect_order_seats( $order_id ) {
-        $order_id = (int) $order_id;
-        $by_event = [];
-        $active   = [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING, Registrations::STATUS_WAITLIST ];
+        $order_id       = (int) $order_id;
+        $by_event       = [];
+        $missing_status = []; // WOO-D44: accumulated, not flagged one-by-one — see below.
+        $active         = [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING, Registrations::STATUS_WAITLIST ];
         foreach ( $this->registrations->get_seats_for_order( $order_id ) as $sid ) {
             $sid    = (int) $sid;
             $status = (string) \get_post_meta( $sid, '_anchor_event_reg_status', true );
@@ -3764,7 +3765,7 @@ class WooCommerce {
                 // consume capacity the same way, via
                 // Registrations::counts()'s matching default). Skip it and
                 // flag the order for review instead of guessing.
-                Events_Log::flag_review( $order_id, 'seat_missing_status', 'seat ' . $sid );
+                $missing_status[] = $sid;
                 continue;
             }
             if ( ! \in_array( $status, $active, true ) ) {
@@ -3777,6 +3778,19 @@ class WooCommerce {
                 'status'     => $status,
                 'seat_index' => (int) \get_post_meta( $sid, '_anchor_event_seat_index', true ),
             ];
+        }
+        if ( ! empty( $missing_status ) ) {
+            // WOO-D44: ONE flag for the whole order, not one call per seat —
+            // flag_review() dedupes by reason and no-ops once a reason is
+            // already present, so calling it inside the loop above only
+            // ever recorded the FIRST status-less seat's id; any others on
+            // the same order were silently lost from the detail. Every seat
+            // this pass found is listed.
+            Events_Log::flag_review(
+                $order_id,
+                'seat_missing_status',
+                'seats ' . \implode( ', ', $missing_status )
+            );
         }
         return $by_event;
     }

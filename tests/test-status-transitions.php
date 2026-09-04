@@ -163,7 +163,7 @@ class Test_Status_Transitions extends Anchor_Events_TestCase {
 
 			$before = $writes;
 			update_post_meta( $seat_id, '_anchor_event_name', 'Jones & <i>Co</i>' );
-			$this->assertLessThanOrEqual( 1, $writes - $before, 'One meta write must cause at most one title write.' );
+			$this->assertSame( 1, $writes - $before, 'One meta write must cause exactly one title write.' );
 
 			$title = (string) get_post_field( 'post_title', $seat_id, 'raw' );
 			$this->assertStringContainsString( 'Jones', $title );

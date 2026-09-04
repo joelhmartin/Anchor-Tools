@@ -2540,8 +2540,14 @@ class WooCommerce {
                         $has_room = ( $unlimited || $remaining >= 1 );
                         if ( ! empty( $revivable ) ) {
                             $seat = \array_shift( $revivable );
-                            // Revival can only go to confirmed/pending (transition
-                            // table forbids cancelled→waitlist); flag overfill if no room.
+                            // Revival can only go to confirmed/pending because
+                            // $active_target is constrained to exactly those two
+                            // upstream (reconcile_order(); anything else
+                            // resolves to null and never reaches this branch) —
+                            // not because the transition table forbids anything.
+                            // cancelled|failed → waitlist IS a legal transition;
+                            // a roster revive on a full waitlisted event uses it.
+                            // Flag overfill if there is no room.
                             if ( $this->registrations->update_status( $seat['id'], $active_target, 'order #' . $order_id . ' revived', 'woocommerce' )->is_sent() ) {
                                 $revived[] = $seat['id'];
                                 if ( $has_room ) {
@@ -3291,11 +3297,21 @@ class WooCommerce {
                     // the building": a switch-off the organizer chose is just
                     // as settled as a send, and stamping it stops the next
                     // reconcile re-deciding it (audit REG-D6). Only the event
-                    // whose switch was actually consulted, though — an order
-                    // carrying a disabled event AND an enabled one must leave
-                    // the enabled one's gate open, or it could never send.
+                    // whose switch was actually consulted is stamped, so the
+                    // rest of the order's gates stay open.
                     // A skip with nothing to confirm settles nothing at all and
                     // is deliberately absent from both branches (audit WOO-D15).
+                    //
+                    // KNOWN LIMITATION — narrowing the stamp does NOT rescue the
+                    // mixed order (confirmation disabled on event A, enabled on
+                    // event B). send_customer_confirmation() re-derives
+                    // $primary_id from collect_order_seats() on every pass and
+                    // always lands on the same first event, so if that primary
+                    // is the disabled one the call returns skipped('disabled')
+                    // forever and B's open gate is never reached. The stamp only
+                    // keeps A from being re-decided; making the confirmation
+                    // resolve its enable switch per event (or send one mail per
+                    // event) is the follow-up that actually fixes it.
                     $sent[ 'customer:' . (int) $primary_id ] = \time();
                 }
                 if ( $result->is_sent() ) {

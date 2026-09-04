@@ -159,6 +159,88 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 	}
 
 	/* ------------------------------------------------------------------
+	 * WOO-D42 — classify_refund() compares integer minor units, not floats.
+	 * ------------------------------------------------------------------ */
+
+	/** classify_refund() via reflection (private on purpose — internal only). */
+	private function classify_refund( $order, $refund_id ) {
+		$method = new ReflectionMethod( get_class( $this->woocommerce() ), 'classify_refund' );
+		$method->setAccessible( true );
+		return $method->invoke( $this->woocommerce(), $order, $refund_id );
+	}
+
+	/**
+	 * The audit's concrete failure: a line total carrying WooCommerce's
+	 * higher internal (sub-cent) precision landed the refund amount 0.0104
+	 * away from the summed line total once represented as a float — a plain
+	 * line refund with no extra amount, which the old `> 0.01` float compare
+	 * misclassified as 'mixed' (and permanently flagged
+	 * `mixed_refund_extra_amount` on an order with nothing to review).
+	 */
+	public function test_a_sub_cent_precision_line_total_is_not_misclassified_as_mixed() {
+		$ctx = $this->paid_event_with_variation();
+
+		$variation = wc_get_product( $ctx['variation_id'] );
+		$item      = new WC_Order_Item_Product();
+		$item->set_product( $variation );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 30 );
+		$item->set_total( 30 );
+		$order = new WC_Order();
+		$order->add_item( $item );
+		$order->set_billing_email( 'buyer@example.test' );
+		$order->calculate_totals( false );
+		$order->save();
+		$order->set_status( 'processing' );
+		$order->save();
+
+		$refund = wc_create_refund( [
+			'order_id'   => $order->get_id(),
+			'amount'     => 23.44,
+			'line_items' => [ $item->get_id() => [ 'qty' => -1, 'refund_total' => 23.4296 ] ],
+		] );
+		$this->assertNotWPError( $refund );
+
+		$this->assertSame(
+			'line',
+			$this->classify_refund( wc_get_order( $order->get_id() ), $refund->get_id() ),
+			'A sub-cent rounding artifact must not read as an unexplained extra amount.'
+		);
+	}
+
+	/** A GENUINE extra amount beyond the line totals is still caught. */
+	public function test_a_real_extra_amount_is_still_classified_as_mixed() {
+		$ctx = $this->paid_event_with_variation();
+
+		$variation = wc_get_product( $ctx['variation_id'] );
+		$item      = new WC_Order_Item_Product();
+		$item->set_product( $variation );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 30 );
+		$item->set_total( 30 );
+		$order = new WC_Order();
+		$order->add_item( $item );
+		$order->set_billing_email( 'buyer@example.test' );
+		$order->calculate_totals( false );
+		$order->save();
+		$order->set_status( 'processing' );
+		$order->save();
+
+		// $10 of real, unexplained extra amount beyond the $20 line refund.
+		$refund = wc_create_refund( [
+			'order_id'   => $order->get_id(),
+			'amount'     => 30.00,
+			'line_items' => [ $item->get_id() => [ 'qty' => -1, 'refund_total' => 20.00 ] ],
+		] );
+		$this->assertNotWPError( $refund );
+
+		$this->assertSame(
+			'mixed',
+			$this->classify_refund( wc_get_order( $order->get_id() ), $refund->get_id() )
+		);
+	}
+
+	/* ------------------------------------------------------------------
 	 * WOO-D58 (quota half) — the order's tier row was removed from the event.
 	 * ------------------------------------------------------------------ */
 

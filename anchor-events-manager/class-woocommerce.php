@@ -4354,8 +4354,24 @@ class WooCommerce {
         $amount = \abs( (float) $refund->get_amount() );
 
         if ( $has_line ) {
-            // Extra unexplained amount beyond the refunded line totals → mixed.
-            return ( $amount - $line_total > 0.01 ) ? 'mixed' : 'line';
+            // WOO-D42: the SAME 1-minor-unit tolerance as before ("an extra
+            // amount has to exceed a cent to count as unexplained"), but each
+            // side is first ROUNDED to the store's actual minor currency unit
+            // and compared as an integer, rather than comparing raw floats
+            // against a fixed 0.01. WooCommerce's internal tax/line-total
+            // arithmetic runs at higher precision than the 2 (or however
+            // many) decimals actual money is rounded to
+            // (wc_get_rounding_precision(), 6 by default, vs
+            // wc_get_price_decimals()); summing several such sub-cent-precise
+            // line totals in floating point can land the RAW difference a
+            // hair past 0.01 by representation error alone, even when the two
+            // amounts agree to the cent once each is rounded to real money.
+            // Rounding first removes that noise; the tolerance is unchanged.
+            $decimals     = \function_exists( 'wc_get_price_decimals' ) ? (int) \wc_get_price_decimals() : 2;
+            $unit         = 10 ** $decimals;
+            $amount_minor = (int) \round( $amount * $unit );
+            $line_minor   = (int) \round( $line_total * $unit );
+            return ( ( $amount_minor - $line_minor ) > 1 ) ? 'mixed' : 'line';
         }
         return 'amount_only';
     }

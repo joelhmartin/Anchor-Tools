@@ -169,6 +169,14 @@ class Module {
     const EMAIL_RETRY_BATCH = 100;
 
     /**
+     * How far ahead the hourly reminder sweep will ever look, in days
+     * (audit REG-D36). The scan window is normally the largest reminder offset
+     * in play; this is the ceiling on that, so one absurd per-event offset
+     * cannot turn an hourly cron into a full-table scan of the calendar.
+     */
+    const REMINDER_HORIZON_DAYS = 366;
+
+    /**
      * Event starts kept in a lifecycle-email marker map (audit MODEL-D16).
      * Keeping the recent ones is what makes "moved away and back again" not
      * re-send; a repeatedly rescheduled event still cannot grow meta for ever.
@@ -685,14 +693,28 @@ class Module {
 
         // Fold in per-event reminder override offsets so events whose largest
         // per-event offset exceeds $max_global are still pulled into the scan.
+        //
+        // REG-D36 — bounded twice over. The query used to be every event that
+        // has EVER set an override, with no date bound, loaded every hour; one
+        // archived course with `reminder_offsets = 365` therefore widened the
+        // main scan below to every event starting in the next year, and the
+        // per-seat query then ran once per due offset per event. An override
+        // only matters while the event it belongs to is still ahead of us, so
+        // the scan asks only about future events — and never looks further
+        // ahead than REMINDER_HORIZON_DAYS whatever an offset claims.
         if ( ! empty( $settings['reminder_enabled'] ) ) {
+            $cap_ts          = $now + ( self::REMINDER_HORIZON_DAYS * DAY_IN_SECONDS );
             $override_events = \get_posts( [
                 'post_type'      => self::CPT,
                 'post_status'    => [ 'publish', 'future', 'private' ],
                 'posts_per_page' => -1,
                 'fields'         => 'ids',
                 'no_found_rows'  => true,
-                'meta_query'     => [ [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ] ],
+                'meta_query'     => [
+                    'relation' => 'AND',
+                    [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ],
+                    [ 'key' => $this->meta_key( 'start_ts' ), 'value' => [ $now, $cap_ts ], 'compare' => 'BETWEEN', 'type' => 'NUMERIC' ],
+                ],
             ] );
             foreach ( $override_events as $oid ) {
                 foreach ( array_map( 'intval', explode( ',', (string) \get_post_meta( $oid, $this->meta_key( 'reminder_offsets' ), true ) ) ) as $d ) {
@@ -701,7 +723,8 @@ class Module {
             }
         }
 
-        $horizon    = $now + ( max( 1, $max_global ) * DAY_IN_SECONDS );
+        $max_global = min( max( 1, $max_global ), self::REMINDER_HORIZON_DAYS );
+        $horizon    = $now + ( $max_global * DAY_IN_SECONDS );
 
         $event_ids = \get_posts( [
             'post_type'      => self::CPT,

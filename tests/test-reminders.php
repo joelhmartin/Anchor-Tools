@@ -173,6 +173,82 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( [], get_post_meta( $seat_id, '_anchor_event_attendee_notified' ) );
 	}
 
+	/* ------------------------------------------------------------------
+	 * REG-D36 — the hourly sweep's scan is bounded
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * The per-event override scan used to be "every event that has ever set
+	 * reminder_offsets", with no date bound, run every hour. One archived
+	 * course with a 365-day offset widened the main scan to the whole next
+	 * year of the calendar.
+	 */
+	public function test_the_override_scan_only_asks_about_events_still_ahead() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$past = $this->future_event( time() - 30 * DAY_IN_SECONDS, 'Archived course' );
+		update_post_meta( $past, '_anchor_event_reminder_offsets', '365' );
+
+		// get_posts() suppresses the posts_* filters, so read the query vars
+		// the sweep actually asks for.
+		$meta_queries = [];
+		$spy          = function ( $q ) use ( &$meta_queries ) {
+			$mq = $q->get( 'meta_query' );
+			if ( is_array( $mq ) ) {
+				$meta_queries[] = $mq;
+			}
+		};
+		add_action( 'pre_get_posts', $spy );
+		try {
+			$this->module()->run_reminder_sweep();
+		} finally {
+			remove_action( 'pre_get_posts', $spy );
+		}
+
+		$keys_of = function ( array $mq ) {
+			$keys = [];
+			array_walk_recursive( $mq, function ( $v, $k ) use ( &$keys ) {
+				if ( 'key' === $k ) {
+					$keys[] = $v;
+				}
+			} );
+			return $keys;
+		};
+
+		$override_scans = 0;
+		foreach ( $meta_queries as $mq ) {
+			$keys = $keys_of( $mq );
+			if ( ! in_array( '_anchor_event_reminder_offsets', $keys, true ) ) {
+				continue;
+			}
+			$override_scans++;
+			$this->assertContains(
+				'_anchor_event_start_ts',
+				$keys,
+				'The override scan must be bounded by the event start, not run over every event that ever had one.'
+			);
+		}
+
+		$this->assertSame( 1, $override_scans, 'The sweep still folds in per-event offsets, exactly once.' );
+	}
+
+	/** No offset, however large, makes the sweep look further ahead than the cap. */
+	public function test_an_absurd_offset_cannot_widen_the_scan_past_the_horizon() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$days     = Module::REMINDER_HORIZON_DAYS + 14;
+		$start_ts = time() + $days * DAY_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts, 'Very distant course' );
+		update_post_meta( $event_id, '_anchor_event_reminder_offsets', (string) ( $days + 20 ) );
+		$this->make_seat( $event_id, [ 'email' => 'distant@example.com' ] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( [], $sent, 'An event beyond the horizon is not scanned at all.' );
+	}
+
 	public function test_a_second_sweep_an_hour_later_sends_nothing() {
 		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
 

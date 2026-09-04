@@ -355,6 +355,19 @@
   margin-bottom:12px;
 }
 
+/* finding-18 (carry-over) — frontend.js's showCalendarError() (RENDER-D25)
+   inserts this aria-live status region after a failed month-navigation
+   fetch, with no rule of its own: an ajax error surfaced with no visual
+   emphasis at all, easy to miss next to the header it sits under. */
+.anchor-event-calendar-status{
+  margin-bottom:12px;
+  padding:8px 12px;
+  border:1px solid var(--anchor-event-border);
+  border-left:3px solid currentColor;
+  border-radius:var(--anchor-event-radius);
+  font-size:13px;
+}
+
 .anchor-event-calendar-title{
   font-weight:700;
   text-align:center;
@@ -1926,6 +1939,18 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
   padding:2px 10px;
 }
 
+/* finding-18 (carry-over) — a fifth ticket-availability state (WOO-D38: the
+   tier's managed variation is gone) rendered with the same "nothing to
+   distinguish it" gap .anchor-event-ticket-closed was called out for above.
+   Structurally the same case as closed (nothing sellable, ever, until an
+   admin fixes the sync) rather than soldout/waitlist (temporary, seat-count
+   states), so it shares that visual family. */
+.anchor-event-ticket-unavailable{
+  border:1px dashed var(--anchor-event-border);
+  border-radius:999px;
+  padding:2px 10px;
+}
+
 .anchor-event-ticket-waitlist{
   border:1px solid currentColor;
   border-radius:999px;
@@ -1987,4 +2012,57 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
   flex-wrap:wrap;
   align-items:center;
   gap:10px;
+}
+
+/* finding-18 (carry-over, Task 36) — the WooCommerce classic-checkout
+   attendee fields (class-woocommerce.php render_checkout_attendee_fields())
+   had no rule at all: the block rendered as an unstyled stack of Woo's own
+   form-row markup, with no visual grouping between one attendee and the
+   next or between one event line and another. Layout only, same neutral
+   tokens as every other block in this file, so a themed checkout can
+   override every rule below freely. */
+.anchor-event-attendees{
+  margin-top:20px;
+  display:grid;
+  gap:20px;
+}
+
+.anchor-event-attendee-line{
+  margin:0;
+  padding:16px;
+  border:1px solid var(--anchor-event-border);
+  border-radius:var(--anchor-event-radius);
+}
+
+.anchor-event-attendee-seat + .anchor-event-attendee-seat{
+  margin-top:16px;
+  padding-top:16px;
+  border-top:1px solid var(--anchor-event-border);
+}
+
+.anchor-event-attendee-heading{
+  margin:0 0 8px;
+  font-weight:600;
+  color:var(--anchor-event-text);
+}
+
+.anchor-event-attendee-check{
+  margin-right:6px;
+}
+
+/* finding-18 continued — three classes in the "Choose a date"/"Other dates"
+   family above (Task 2.4) that render_choose_date_row()/render_sibling_dates()
+   emit but no rule ever covered. */
+.anchor-event-choose-date-date{
+  font-weight:600;
+}
+
+.anchor-event-choose-date-label{
+  margin-left:6px;
+  font-size:13px;
+  color:var(--anchor-event-muted);
+}
+
+.anchor-event-other-dates-list{
+  margin-top:4px;
 }

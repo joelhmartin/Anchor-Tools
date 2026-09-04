@@ -694,70 +694,127 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * RENDER-D27/D28/D29: every class the templates/renderers below actually
-	 * emit must have at least one rule in frontend.css. Before this fix, the
-	 * six single/archive template containers, ten .anchor-event-series__*
-	 * parts, and the WooCommerce ticket/checkout wrapper + state classes had
-	 * NONE — this test parses frontend.css for `.classname` occurrences so a
-	 * future emitter change without a matching rule fails the suite, instead
-	 * of silently shipping unstyled markup again.
+	 * Extract one named function's body (opening `{` through its matching
+	 * closing `}`) from a file's raw source, by brace depth — good enough for
+	 * this codebase's style (no braces inside string literals in these
+	 * emitters' own bodies). Used to scan ONLY the front-end-rendering
+	 * functions inside a file that also carries admin/authoring UI, so that
+	 * UI's own classes (styled by a different stylesheet entirely) never
+	 * show up as false "missing from frontend.css" positives.
 	 *
-	 * List assembled by grepping the actual emitters at HEAD (not just the
-	 * audit's list, which missed .anchor-event-ticket-closed in
-	 * class-woocommerce.php and the .anchor-event-cart-msg--error/--success/
-	 * -list / .anchor-event-cart-links classes emitted by
-	 * assets/event-storefront.js) — see task-36-report.md for the full
-	 * emitted-vs-styled inventory and why each group is included.
+	 * @param string $src
+	 * @param string $function_name
+	 * @return string
 	 */
-	public function test_frontend_css_has_baseline_rules_for_container_series_and_ticket_classes() {
+	private function extract_function_body( $src, $function_name ) {
+		if ( ! preg_match( '/function\s+' . preg_quote( $function_name, '/' ) . '\s*\(/', $src, $m, PREG_OFFSET_CAPTURE ) ) {
+			$this->fail( "Could not find function {$function_name}() — has it been renamed?" );
+		}
+		$open = strpos( $src, '{', $m[0][1] );
+		$depth = 0;
+		$i     = $open;
+		$len   = strlen( $src );
+		for ( ; $i < $len; $i++ ) {
+			if ( $src[ $i ] === '{' ) {
+				$depth++;
+			} elseif ( $src[ $i ] === '}' ) {
+				$depth--;
+				if ( $depth === 0 ) {
+					break;
+				}
+			}
+		}
+		return substr( $src, $open, $i - $open + 1 );
+	}
+
+	/**
+	 * finding-18 (carry-over, Task 36 review) — the previous version of this
+	 * test was a hand-typed inventory, which is exactly how three real
+	 * classes went unstyled for a whole task cycle without failing anything:
+	 * the WooCommerce classic-checkout attendee fields
+	 * (.anchor-event-attendees and its .anchor-event-attendee-* children,
+	 * render_checkout_attendee_fields()) and three "Choose a date"/"Other
+	 * dates" classes (.anchor-event-choose-date-date/-label,
+	 * .anchor-event-other-dates-list) were emitted by real renderers and
+	 * simply never added to the list.
+	 *
+	 * This derives the inventory straight from the emitters instead: every
+	 * `anchor-event(s)?-*` string literal in the actual front-end-only
+	 * source (whole templates/JS files that carry no admin content, plus
+	 * SPECIFIC functions — extract_function_body() above — inside files that
+	 * also carry wp-admin/authoring UI styled by a different sheet
+	 * entirely). A future renderer change that emits a class with no rule
+	 * fails this test on its own; nobody has to remember to update a list.
+	 *
+	 * A short, individually-commented exclusion list covers real classes
+	 * that legitimately need no rule of their own (a BEM-style modifier that
+	 * always rides along with an already-styled base class, or a class
+	 * styled via an ancestor+tag selector rather than its own name) —
+	 * curated, not silently dropped.
+	 */
+	public function test_frontend_css_covers_every_class_the_front_end_renderers_emit() {
 		$css = file_get_contents( ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-events-manager/assets/frontend.css' );
 		$this->assertNotFalse( $css, 'Could not read anchor-events-manager/assets/frontend.css.' );
 		// Strip comments first — a class name mentioned only in a /* ... */
-		// note (as several of the new baseline blocks below do, documenting
-		// why a rule exists) must not satisfy this test in place of a rule.
+		// note (as several baseline blocks do, documenting why a rule
+		// exists) must not satisfy this test in place of a rule.
 		$css = (string) preg_replace( '#/\*.*?\*/#s', '', $css );
 
-		$classes = [
-			// RENDER-D27 — templates/single-event.php + templates/archive-event.php.
-			'anchor-event-single',
-			'anchor-event-hero',
-			'anchor-event-hero-media',
-			'anchor-event-content',
-			'anchor-events-archive',
-			'anchor-events-header',
+		$dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-events-manager/';
 
-			// RENDER-D28 — class-series.php render_archive()/render_session_row()/render_group_row().
-			'anchor-event-series__header',
-			'anchor-event-series__title',
-			'anchor-event-series__desc',
-			'anchor-event-series__list',
-			'anchor-event-series__item',
-			'anchor-event-series__link',
-			'anchor-event-series__date',
-			'anchor-event-series__price',
-			'anchor-event-series__availability',
-			'anchor-event-series__empty',
+		// Whole-file sources: front-end rendering only, nothing admin/authoring.
+		$sources = '';
+		foreach ( [
+			'templates/single-event.php',
+			'templates/archive-event.php',
+			'templates/calendar.php',
+			'class-series.php',
+			'assets/frontend.js',
+			'assets/event-storefront.js',
+		] as $file ) {
+			$contents = file_get_contents( $dir . $file );
+			$this->assertNotFalse( $contents, "Could not read {$file}." );
+			$sources .= "\n" . $contents;
+		}
 
-			// RENDER-D29 — class-woocommerce.php filter_registration_form()/render_ticket_row().
-			'anchor-event-tickets',
-			'anchor-event-ticket-rows',
-			'anchor-event-ticket-price',
-			'anchor-event-ticket-availability',
-			'anchor-event-ticket-soldout',
-			'anchor-event-ticket-waitlist',
-			'anchor-event-ticket-upcoming',
-			'anchor-event-ticket-closed', // Emitted alongside soldout/waitlist/upcoming; missing from the audit's list.
-			'anchor-event-tickets-actions',
-			'anchor-event-cart-msg',
-			'anchor-event-free-registration',
-			'anchor-event-registration-woocommerce',
+		// Function-scoped sources: these two files ALSO carry admin-only UI
+		// (the wp-admin metaboxes, the ticket-tiers authoring repeater) whose
+		// classes belong to a different stylesheet — scanning the whole file
+		// would report a pile of admin classes as "missing" from this one.
+		foreach ( [
+			'class-woocommerce.php'     => [ 'filter_registration_form', 'render_ticket_row', 'render_checkout_attendee_fields' ],
+			'anchor-events-manager.php' => [ 'render_choose_date_list', 'render_sibling_dates', 'render_choose_date_row', 'render_label_row' ],
+		] as $file => $functions ) {
+			$contents = file_get_contents( $dir . $file );
+			$this->assertNotFalse( $contents, "Could not read {$file}." );
+			foreach ( $functions as $function_name ) {
+				$sources .= "\n" . $this->extract_function_body( $contents, $function_name );
+			}
+		}
 
-			// RENDER-D29 continued — assets/event-storefront.js toggles/injects these onto .anchor-event-cart-msg.
-			'anchor-event-cart-msg--error',
-			'anchor-event-cart-msg--success',
-			'anchor-event-cart-msg-list',
-			'anchor-event-cart-links',
+		\preg_match_all( '/anchor-events?-[a-z][a-z0-9_-]*/', $sources, $matches );
+		$classes = \array_unique( $matches[0] );
+		// A `.foo-' . $state . '"'`-style dynamic suffix (e.g.
+		// render_choose_date_row()'s `anchor-event-choose-date-row--`) is a
+		// regex artifact of the concatenation, not a real static class name —
+		// no such literal ever exists in rendered markup on its own.
+		$classes = \array_filter( $classes, function ( $c ) { return \substr( $c, -1 ) !== '-'; } );
+
+		$excluded = [
+			// Always compound with .anchor-event-button, which already
+			// carries the visual rule — a semantic/JS hook, not a class that
+			// needs its own look.
+			'anchor-event-view-cart'  => 'compound modifier of .anchor-event-button',
+			'anchor-event-checkout'   => 'compound modifier of .anchor-event-button',
+			'anchor-event-register'   => 'compound modifier of .anchor-event-button (also the brand-color inline-<style> hook, anchor-events-manager.php ~6839)',
+			// Styled via its ancestor + tag, not its own class — see
+			// `.anchor-event-calendar-list a` above.
+			'anchor-event-calendar-link' => 'styled via .anchor-event-calendar-list a, not its own selector',
+			// A bare structural wrapper — every visual property lives on its
+			// __-prefixed children (.anchor-event-series__*) above.
+			'anchor-event-series' => 'bare wrapper; children carry all layout',
 		];
+		$classes = \array_diff( $classes, \array_keys( $excluded ) );
 
 		$missing = [];
 		foreach ( $classes as $class ) {
@@ -770,6 +827,7 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 				$missing[] = $class;
 			}
 		}
+		\sort( $missing );
 
 		$this->assertSame(
 			[],

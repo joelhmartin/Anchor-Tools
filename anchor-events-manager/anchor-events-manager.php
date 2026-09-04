@@ -72,7 +72,20 @@ class Module {
 
     /** Per-event attendee questions (see get_registration_questions()). */
     const QUESTIONS_META = '_anchor_event_reg_questions';
+    /**
+     * Retired key registry (RENDER-D20). Kept only so the one-time cleanup in
+     * cleanup_legacy_cache_registry() can name the row it deletes; nothing
+     * writes it any more.
+     */
     const CACHE_OPTION = 'anchor_events_cache_keys';
+
+    /**
+     * Monotonic listing-cache generation. Folded into every get_cached_ids()
+     * transient key, so clear_caches() invalidates the whole group with one
+     * option write instead of walking a registry of key names (RENDER-D20).
+     * Orphaned transients from older generations expire on their own hour TTL.
+     */
+    const CACHE_VERSION_OPTION = 'anchor_events_cache_ver';
     const NONCE = 'anchor_event_meta_nonce';
     const REG_NONCE = 'anchor_event_reg_nonce';
 
@@ -277,6 +290,7 @@ class Module {
         \add_action( 'admin_init', [ $this, 'backfill_occurrence_labels' ] );
         // Same shape again: the 'draft' -> 'undated' status rename (MODEL-D19).
         \add_action( 'admin_init', [ $this, 'backfill_status_values' ] );
+        \add_action( 'admin_init', [ $this, 'cleanup_legacy_cache_registry' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
 
         \add_action( 'admin_post_anchor_event_register', [ $this, 'handle_registration' ] );
@@ -298,6 +312,11 @@ class Module {
 
         \add_action( 'update_option_' . self::OPTION_KEY, [ $this, 'handle_settings_update' ], 10, 2 );
         \add_action( 'before_delete_post', [ $this, 'clear_caches_on_delete' ] );
+        // …and its trash/untrash/unpublish twin. before_delete_post fires only
+        // on PERMANENT deletion, so every soft change — the one authors
+        // actually make — left both the listing ids and the capacity counts
+        // cached against data that no longer exists (REG-D18 / RENDER-D19).
+        \add_action( 'transition_post_status', [ $this, 'clear_caches_on_transition' ], 10, 3 );
         // Group-parent trash retirement (Phase 2, Task 2.3 FIX 2). wp_trash_post()
         // fires for every post type on this one generic action — never a
         // CPT-specific save hook — so a group parent's children are never left
@@ -6604,6 +6623,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     public function render_event_card( $post_id, $context ) {
+        // RENDER-D19: never render a card for an id that is not a published
+        // event. The listing feeds this from an hour-long id cache, and
+        // get_the_title()/get_permalink() happily resolve a trashed post — so
+        // without this the list showed a live-looking card whose link 404s.
+        // Cheap: get_post() is served from the post cache the render warms anyway.
+        $post = \get_post( $post_id );
+        if ( ! $post instanceof \WP_Post || $post->post_type !== self::CPT || $post->post_status !== 'publish' ) {
+            return '';
+        }
+
         $meta = $this->get_meta( $post_id );
         $status = $this->get_event_status( $post_id, $meta );
         $classes = [
@@ -8039,37 +8068,110 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $query->set( 'order', 'ASC' );
     }
 
+    /**
+     * Permanent deletion of an event or a seat (`before_delete_post`).
+     *
+     * Both the listing/calendar id cache AND the per-event capacity transients
+     * have to go (REG-D18 / WOO-D47). This used to clear only the former, and
+     * only through a registry that never held the caps keys, so production
+     * ended up with `_transient_anchor_evt_caps_7909` reporting a refunded
+     * seat against zero `anchor_event_reg` posts.
+     *
+     * The seat's `_anchor_event_id` is read HERE, on `before_delete_post`,
+     * because by the time the post is gone so is its meta.
+     *
+     * @param int $post_id Post being deleted.
+     */
     public function clear_caches_on_delete( $post_id ) {
-        $post_type = \get_post_type( $post_id );
-        if ( $post_type === self::CPT || $post_type === self::REG_CPT ) {
-            $this->clear_caches();
-        }
+        $this->bust_caches_for_post( $post_id, \get_post_type( $post_id ) );
     }
 
+    /**
+     * Any status change on an event or a seat (`transition_post_status`).
+     *
+     * Trash, untrash, unpublish and publish all land here, and every one of
+     * them changes what the caches say: a trashed seat drops out of the
+     * counts() aggregate, a trashed event drops out of every listing query.
+     * `before_delete_post` only ever fired on PERMANENT deletion, which left a
+     * trashed event rendering a card that 404s for up to an hour (RENDER-D19).
+     *
+     * @param string   $new_status
+     * @param string   $old_status
+     * @param \WP_Post $post
+     */
+    public function clear_caches_on_transition( $new_status, $old_status, $post ) {
+        if ( ! $post instanceof \WP_Post || $new_status === $old_status ) {
+            return;
+        }
+        if ( $new_status === 'auto-draft' || ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) ) {
+            return;
+        }
+        $this->bust_caches_for_post( $post->ID, $post->post_type );
+    }
+
+    /**
+     * One invalidation path for both hooks above: resolve the affected EVENT
+     * (a seat's parent, or the event itself) and hand it to the one function
+     * that knows the capacity transient key names.
+     *
+     * @param int    $post_id
+     * @param string $post_type
+     */
+    private function bust_caches_for_post( $post_id, $post_type ) {
+        if ( $post_type !== self::CPT && $post_type !== self::REG_CPT ) {
+            return;
+        }
+
+        $event_id = $post_type === self::REG_CPT
+            ? (int) \get_post_meta( $post_id, '_anchor_event_id', true )
+            : (int) $post_id;
+
+        if ( $event_id > 0 && $this->registrations ) {
+            // Busts anchor_evt_caps_{id} + anchor_evt_tier_caps_{id} AND calls
+            // clear_caches() for the listing group.
+            $this->registrations->bust_cache( $event_id );
+            return;
+        }
+
+        $this->clear_caches();
+    }
+
+    /**
+     * Invalidate every cached listing/calendar id list.
+     *
+     * One option write. The generation counter is part of each transient key
+     * (see get_cached_ids()), so nothing has to be enumerated and there is no
+     * registry to race with — the read-then-overwrite on `anchor_events_cache_keys`
+     * could drop a key written by a concurrent request, stranding that
+     * transient past every future clear (RENDER-D20). Superseded transients
+     * are left to expire on their own hour TTL.
+     */
     public function clear_caches() {
-        $keys = \get_option( self::CACHE_OPTION, [] );
-        if ( ! is_array( $keys ) ) {
-            $keys = [];
-        }
-        foreach ( $keys as $key ) {
-            \delete_transient( $key );
-        }
-        \update_option( self::CACHE_OPTION, [] );
+        $version = (int) \get_option( self::CACHE_VERSION_OPTION, 1 );
+        \update_option( self::CACHE_VERSION_OPTION, $version + 1, false );
     }
 
-    private function store_cache_key( $key ) {
-        $keys = \get_option( self::CACHE_OPTION, [] );
-        if ( ! is_array( $keys ) ) {
-            $keys = [];
+    /**
+     * One-time removal of the retired `anchor_events_cache_keys` registry.
+     *
+     * Self-clearing (the row is gone after the first pass) and idempotent, so
+     * it needs no schema-version option. Same admin_init + capability gate as
+     * the back-fills: admin_init is NOT an authenticated hook.
+     */
+    public function cleanup_legacy_cache_registry() {
+        if ( ! \current_user_can( 'edit_posts' ) ) {
+            return;
         }
-        if ( ! in_array( $key, $keys, true ) ) {
-            $keys[] = $key;
-            \update_option( self::CACHE_OPTION, $keys, false );
+        if ( \get_option( self::CACHE_OPTION, null ) !== null ) {
+            \delete_option( self::CACHE_OPTION );
         }
     }
 
     private function get_cached_ids( $args ) {
-        $key = 'anchor_events_' . md5( wp_json_encode( $args ) );
+        // The generation counter makes clear_caches() a single option write —
+        // see its docblock (RENDER-D20).
+        $key = 'anchor_events_' . (int) \get_option( self::CACHE_VERSION_OPTION, 1 )
+            . '_' . md5( wp_json_encode( $args ) );
         $cached = \get_transient( $key );
         if ( $cached !== false ) {
             return $cached;
@@ -8082,7 +8184,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $ids = $query->posts;
 
         \set_transient( $key, $ids, HOUR_IN_SECONDS );
-        $this->store_cache_key( $key );
 
         return $ids;
     }

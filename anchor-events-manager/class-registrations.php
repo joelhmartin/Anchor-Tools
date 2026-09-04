@@ -359,7 +359,11 @@ class Registrations {
      */
     private function counts( $event_id, $fresh = false ) {
         $event_id = (int) $event_id;
-        if ( $event_id <= 0 ) {
+        // WOO-D56: never mint a caps transient for something that is not an
+        // event. The old guard was `> 0`, so any positive integer got a cached
+        // aggregate that could outlive its subject entirely — production held
+        // `_transient_anchor_evt_caps_7980` for a post id absent from wp_posts.
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== Module::CPT ) {
             return [];
         }
         $key = 'anchor_evt_caps_' . $event_id;
@@ -411,7 +415,8 @@ class Registrations {
      */
     private function tier_counts( $event_id, $fresh = false ) {
         $event_id = (int) $event_id;
-        if ( $event_id <= 0 ) {
+        // Same subject check as counts() — see WOO-D56 there.
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== Module::CPT ) {
             return [];
         }
         $key = 'anchor_evt_tier_caps_' . $event_id;
@@ -1270,23 +1275,33 @@ class Registrations {
         ], true );
     }
 
-    /** Invalidate cached counts (event total + per-tier) + the module's list/calendar caches. */
-    private function bust_cache( $event_id ) {
+    /**
+     * Invalidate cached counts (event total + per-tier) + the module's
+     * list/calendar caches for one event.
+     *
+     * PUBLIC because it is the single place that knows the capacity transient
+     * key names, and the post-lifecycle hooks in Module need it (REG-D18 /
+     * WOO-D47): a seat that is trashed, untrashed or deleted outside the data
+     * layer drops straight out of the counts() aggregate with no write for
+     * create_seat()/update_status() to piggyback on, so the cached number
+     * outlived its own rows for the rest of the hour. Module::
+     * clear_caches_on_delete() / clear_caches_on_transition() call this rather
+     * than re-deriving the keys.
+     *
+     * @param int $event_id Event post ID whose aggregates are now wrong.
+     */
+    public function bust_cache( $event_id ) {
         // Capacity correctness: the per-event caps transient MUST be busted on every
         // seat write.
         if ( (int) $event_id > 0 ) {
             \delete_transient( 'anchor_evt_caps_' . (int) $event_id );
             \delete_transient( 'anchor_evt_tier_caps_' . (int) $event_id );
         }
-        // L4: the module list/calendar cache clear used to do a full
-        // get_option + update_option(CACHE_OPTION, []) registry wipe on every seat
-        // write — O(n) option writes plus a race that can drop a concurrent
-        // store_cache_key(). Collapse it to at most once per request; the public
-        // list/calendar markup is rebuilt within the same request regardless.
-        static $list_cleared = false;
-        if ( ! $list_cleared ) {
-            $list_cleared = true;
-            $this->module->clear_caches();
-        }
+        // L4 used to guard this with a per-request static because the module's
+        // list/calendar clear was an O(n) registry wipe. It is now a single
+        // version bump (RENDER-D20), so the guard bought nothing and cost
+        // correctness in any long-running process (WP-CLI import, cron sweep),
+        // where the static made every clear after the first a no-op.
+        $this->module->clear_caches();
     }
 }

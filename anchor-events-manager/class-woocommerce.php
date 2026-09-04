@@ -129,20 +129,14 @@ class WooCommerce {
         \add_filter( 'woocommerce_add_cart_item_data', [ $this, 'snapshot_event_on_add_to_cart' ], 10, 3 );
 
         // Checkout attendee capture (classic shortcode checkout).
-        /**
-         * Where the per-seat attendee fields render on the checkout.
-         *
-         * Before customer details, not after: measured on a live 2-seat order,
-         * "after" put the attendee block ~1,900px below billing, so the buyer
-         * filled nine required address fields before being asked the one thing
-         * the purchase is actually about — who is attending. Filterable for a
-         * site that wants the old placement back.
-         */
-        \add_action(
-            \apply_filters( 'anchor_events_checkout_attendees_hook', 'woocommerce_checkout_before_customer_details' ),
-            [ $this, 'render_checkout_attendee_fields' ],
-            10
-        );
+        //
+        // WOO-D25: the `anchor_events_checkout_attendees_hook` filter used to
+        // be evaluated right here, in the constructor — which runs on
+        // `plugins_loaded` priority 25, BEFORE any theme's functions.php has
+        // loaded. A theme could never filter it: only an mu-plugin or an
+        // earlier-loading plugin could. Deferred to `init` so a theme's own
+        // functions.php (loaded well before init fires) gets a chance too.
+        \add_action( 'init', [ $this, 'register_checkout_attendees_hook' ] );
         \add_action( 'woocommerce_after_checkout_validation', [ $this, 'validate_checkout_attendees' ], 10, 2 );
 
         // A cart of nothing but event tickets has nothing to ship. Late priority
@@ -265,6 +259,26 @@ class WooCommerce {
         // end-of-pass save and mid-checkout while status='pending' — risking a save
         // loop and spurious pending→cancelled sweeps. Status changes are covered by
         // order_status_changed/payment_complete; item edits by saved_order_items.
+    }
+
+    /**
+     * WOO-D25 — register render_checkout_attendee_fields() on the filtered
+     * hook, deferred to `init` so a theme's functions.php (loaded before
+     * init, but AFTER the plugins_loaded:25 bootstrap that used to run this)
+     * gets a real chance to filter `anchor_events_checkout_attendees_hook`.
+     *
+     * Where the per-seat attendee fields render on the checkout: before
+     * customer details, not after. Measured on a live 2-seat order, "after"
+     * put the attendee block ~1,900px below billing, so the buyer filled nine
+     * required address fields before being asked the one thing the purchase
+     * is actually about — who is attending.
+     */
+    public function register_checkout_attendees_hook() {
+        \add_action(
+            \apply_filters( 'anchor_events_checkout_attendees_hook', 'woocommerce_checkout_before_customer_details' ),
+            [ $this, 'render_checkout_attendee_fields' ],
+            10
+        );
     }
 
     /* ---------------------------------------------------------------------

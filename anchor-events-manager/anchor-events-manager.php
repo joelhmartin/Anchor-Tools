@@ -2186,6 +2186,59 @@ class Module {
     }
 
     /**
+     * The group parent's "apply this registration setting to all dates"
+     * action, shared verbatim by the classic metabox and the front-end
+     * manager form (audit MODEL-D40).
+     *
+     * Why an action and not a plain inherited setting: `registration_enabled`
+     * is a PER-OCCURRENCE fact (Occurrences::PER_OCCURRENCE_KEYS) — closing
+     * one date must not close the others, and must not be silently undone by
+     * the next parent save. So the parent's own checkbox governs the PARENT
+     * post only, and every existing date keeps its own value unless an admin
+     * ticks this box on purpose. Before this existed, ticking the parent's
+     * checkbox looked like a group-wide switch, saved without error, and
+     * changed nothing for any date that already existed (production parent
+     * 7258 registration_enabled=1 / child 7528 =0).
+     *
+     * Rendered ONLY on a post that is a group parent with at least one LIVE
+     * date — there is nothing to apply to otherwise, and soft-closed dates are
+     * never written (see Occurrences::apply_registration_to_children()).
+     * Always unchecked: it is a one-shot action, never a stored setting.
+     *
+     * @param int $post_id
+     * @return string Escaped markup, or '' when the action does not apply.
+     */
+    public function render_registration_apply_to_dates( $post_id ) {
+        $post_id = (int) $post_id;
+        if ( $post_id <= 0 || ! $this->occurrences->is_group_parent( $post_id ) ) {
+            return '';
+        }
+
+        $count = count( $this->occurrences->children( $post_id, false ) );
+        if ( $count < 1 ) {
+            return '';
+        }
+
+        $label = sprintf(
+            /* translators: %d: number of live scheduled dates in this offering. */
+            _n(
+                'Apply to the %d scheduled date',
+                'Apply to all %d scheduled dates',
+                $count,
+                'anchor-schema'
+            ),
+            $count
+        );
+
+        return '<div class="anchor-event-field anchor-event-field--check anchor-event-apply-to-dates">'
+            . '<label><input type="checkbox" id="anchor_event_registration_apply_to_dates" name="anchor_event_registration_apply_to_dates" value="1" /> '
+            . esc_html( $label ) . '</label>'
+            . '<p class="description">'
+            . esc_html__( 'Existing dates keep their own setting unless you apply.', 'anchor-schema' )
+            . '</p></div>';
+    }
+
+    /**
      * Renders the Offering Dates repeater (data-when-type="offering") + the
      * Recurring Schedule rule builder (data-when-type="recurring") shared by
      * the classic metabox and, offering-only, the front-end manager form
@@ -2573,6 +2626,11 @@ class Module {
                             <p class="description"><?php echo esc_html__( 'Internal registration is disabled in Events settings. External registration URLs are still available.', 'anchor-schema' ); ?></p>
                         <?php endif; ?>
                     </div>
+                    <?php
+                    // Group parent only: the explicit "apply to all dates" action
+                    // (MODEL-D40). Pre-escaped by the shared renderer.
+                    echo $this->render_registration_apply_to_dates( $post->ID ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+                    ?>
                     <div class="anchor-event-field anchor-event-registration-fields">
                         <label for="anchor_event_capacity"><?php echo esc_html__( 'Maximum capacity', 'anchor-schema' ); ?></label>
                         <input type="number" id="anchor_event_capacity" name="anchor_event_capacity" min="0" value="<?php echo esc_attr( $meta['capacity'] ); ?>" />
@@ -4123,6 +4181,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *      save_event_manager_fields() while a reconcile() for this request
      *      is already in flight.
      *
+     * APPLY-TO-ALL-DATES (audit MODEL-D40): after the structure is settled,
+     * the parent's own `registration_enabled` is written down onto every LIVE
+     * child — but ONLY when the form's explicit action checkbox was ticked.
+     * It runs AFTER reconcile() so it covers dates created or revived by this
+     * same save, and it runs even when a validation guard skipped reconcile()
+     * (the admin's instruction is about the dates that exist, which that guard
+     * deliberately leaves alone). See maybe_apply_registration_to_dates().
+     *
      * @param int    $post_id
      * @param string $type Already-sanitized event type (sanitize_event_type_input()'s 'type').
      */
@@ -4134,6 +4200,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
 
+        $this->persist_group_structure( $post_id, $type );
+
+        // One call site, after every structural branch above (including the
+        // guards' early returns, which live inside persist_group_structure()).
+        $this->maybe_apply_registration_to_dates( $post_id );
+    }
+
+    /**
+     * persist_group_authoring()'s structural half: write the authored
+     * offering_dates / recurrence rule and reconcile the children (or retire
+     * them when the type has changed away). Split out purely so the
+     * apply-to-all-dates step can run once, after every branch, instead of
+     * being repeated before each early return.
+     *
+     * @param int    $post_id
+     * @param string $type
+     */
+    private function persist_group_structure( $post_id, $type ) {
         $was_parent = $this->occurrences->is_group_parent( $post_id );
 
         if ( $type === 'offering' ) {
@@ -4180,6 +4264,32 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $this->run_reconcile( $post_id ); // Empty desired set -> retires every existing child (soft-close seated, trash unseated).
             \update_post_meta( $post_id, $this->meta_key( 'group_role' ), '' ); // reconcile() always stamps 'parent'; not correct once the type has changed away.
         }
+    }
+
+    /**
+     * The parent form's explicit "apply this registration setting to all
+     * dates" action (audit MODEL-D40), shared by both save paths.
+     *
+     * `registration_enabled` is PER-OCCURRENCE, so a plain parent save changes
+     * the PARENT's own flag and every existing date keeps its own value. This
+     * runs only when the admin ticked the action checkbox rendered by
+     * render_registration_apply_to_dates() — the same POST key in both forms —
+     * and then writes the value the admin just saved onto every LIVE child
+     * (Occurrences::apply_registration_to_children(); soft-closed dates are
+     * never touched). A no-op on anything that is not a group parent, so the
+     * key is inert if it ever arrives on a single event's save.
+     *
+     * @param int $post_id
+     */
+    private function maybe_apply_registration_to_dates( $post_id ) {
+        // phpcs:disable WordPress.Security.NonceVerification.Missing -- both callers verify their own nonce before reaching persist_group_authoring().
+        if ( empty( $_POST['anchor_event_registration_apply_to_dates'] ) ) {
+            return;
+        }
+        $enabled = ! empty( $_POST['anchor_event_registration_enabled'] );
+        // phpcs:enable WordPress.Security.NonceVerification.Missing
+
+        $this->occurrences->apply_registration_to_children( $post_id, $enabled );
     }
 
     /**
@@ -5764,6 +5874,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'How many people can come, and what they are asked when they sign up here. If sign-ups happen on another site instead, choose External above.', 'anchor-schema' ); ?></p>
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Registration', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_registration_enabled" name="anchor_event_registration_enabled" value="1" <?php checked( $meta['registration_enabled'] ); ?> /> <?php echo esc_html__( 'Enable registration', 'anchor-schema' ); ?></label></div>
+                    <?php
+                    // Group parent only: the explicit "apply to all dates" action
+                    // (MODEL-D40). Pre-escaped by the shared renderer.
+                    echo $this->render_registration_apply_to_dates( $event_id ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+                    ?>
                     <div class="anchor-event-field anchor-event-registration-fields"><label for="anchor_event_capacity"><?php echo esc_html__( 'Capacity', 'anchor-schema' ); ?></label><input type="number" id="anchor_event_capacity" name="anchor_event_capacity" value="<?php echo esc_attr( $meta['capacity'] ); ?>" min="0" /></div>
                     <div class="anchor-event-field anchor-event-registration-fields anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Waitlist', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_waitlist" name="anchor_event_waitlist" value="1" <?php checked( $meta['waitlist'] ); ?> /> <?php echo esc_html__( 'Enable waitlist', 'anchor-schema' ); ?></label></div>
                     <div class="anchor-event-field anchor-event-registration-fields anchor-event-field--check"><span class="anchor-event-field-heading"><?php echo esc_html__( 'Availability', 'anchor-schema' ); ?></span><label><input type="checkbox" id="anchor_event_sold_out" name="anchor_event_sold_out" value="1" <?php checked( $meta['sold_out'] ); ?> /> <?php echo esc_html__( 'Sold out', 'anchor-schema' ); ?></label></div>

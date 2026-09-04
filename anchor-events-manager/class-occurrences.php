@@ -556,6 +556,44 @@ class Occurrences {
     }
 
     /**
+     * Write one registration_enabled value down onto every LIVE child of a
+     * group parent — the engine half of the parent form's explicit
+     * "apply to all dates" action (audit MODEL-D40).
+     *
+     * This is deliberately NOT a sync. `registration_enabled` is a
+     * PER_OCCURRENCE key: reconcile() never copies it from the parent, so
+     * closing the September date cannot close November and cannot be silently
+     * undone by the next parent save. What was missing was the other half — a
+     * way to say "this applies to the whole offering" ON PURPOSE — and this is
+     * it: one explicit, admin-initiated write, never reached from reconcile().
+     *
+     * SOFT-CLOSED children are excluded (children() with $include_closed
+     * false). registration_enabled=false is one quarter of the soft-closed
+     * quartet soft_close() asserts; re-opening a retired date here would both
+     * contradict that state and put a "Register" CTA on an occurrence the
+     * parent no longer offers.
+     *
+     * @param int  $parent_id
+     * @param bool $enabled
+     * @return int Number of live children written (0 when $parent_id is not a
+     *             group parent, so a plain single event is a safe no-op).
+     */
+    public function apply_registration_to_children( $parent_id, $enabled ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 || ! $this->is_group_parent( $parent_id ) ) {
+            return 0;
+        }
+
+        $enabled  = (bool) $enabled;
+        $children = $this->children( $parent_id, false );
+        foreach ( $children as $child_id ) {
+            \update_post_meta( (int) $child_id, $this->module->meta_key( 'registration_enabled' ), $enabled );
+        }
+
+        return \count( $children );
+    }
+
+    /**
      * Live (or all, incl. soft-closed) child post ids for a group parent.
      * PUBLISHED children only — never trashed, and never one an admin has
      * unpublished (draft/pending/private): those stay occurrences of the
@@ -1361,11 +1399,17 @@ class Occurrences {
      * Revive a previously soft-closed child whose occurrence_key has been
      * re-added to the parent's offering_dates: clear the closed flag and
      * restore auto status, WITHOUT touching its date or seats. Does NOT
-     * force registration_enabled — that's a SHARED field already re-synced
-     * from the parent by sync_child_from_parent() (called first, in
-     * reconcile()'s matched branch), so a parent with registration disabled
-     * stays disabled on the revived child instead of being force-enabled.
-     * No-op if the child isn't currently closed.
+     * force registration_enabled: that key is PER-OCCURRENCE
+     * (PER_OCCURRENCE_KEYS), so nothing — not this method, not
+     * sync_child_from_parent() — re-applies it from the parent, and a revived
+     * date therefore comes back with registration still OFF (soft_close()
+     * turned it off) until it is opened deliberately: on the child itself, or
+     * group-wide via the parent form's explicit "apply to all dates" action
+     * (apply_registration_to_children(), audit MODEL-D40). An earlier version
+     * of this docblock claimed registration_enabled was a SHARED field
+     * re-synced by sync_child_from_parent() — it never was after the key
+     * moved into PER_OCCURRENCE_KEYS. No-op if the child isn't currently
+     * closed.
      *
      * The `occurrence_closed` flag is the ONLY reopening trigger, on purpose.
      * Inferring closure from the status half of the quartet (manual +

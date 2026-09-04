@@ -6648,7 +6648,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     private function locate_template( $file ) {
         $settings = $this->get_settings();
         if ( $settings['template_source'] === 'theme' ) {
-            $theme_template = \locate_template( 'events/' . $file );
+            // RENDER-D35: only ever looked in events/<file>, so a theme
+            // overriding the ROOT-level filename (the same place WordPress's
+            // own template hierarchy would pick it up — single-event.php,
+            // archive-event.php, etc.) was silently ignored in favour of the
+            // plugin's bundled copy. events/<file> is checked first so an
+            // existing theme override there keeps winning if a theme somehow
+            // has both.
+            $theme_template = \locate_template( [ 'events/' . $file, $file ] );
             if ( $theme_template ) {
                 return $theme_template;
             }

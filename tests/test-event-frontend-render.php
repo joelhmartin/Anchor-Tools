@@ -271,4 +271,49 @@ class Test_Event_Frontend_Render extends Anchor_Events_TestCase {
 		$this->assertTrue( wp_style_is( 'anchor-events-frontend', 'enqueued' ) );
 		$this->assertTrue( wp_script_is( 'anchor-events-frontend', 'enqueued' ) );
 	}
+
+	/**
+	 * RENDER-D35: template_include() -> locate_template() only ever looked
+	 * for `events/<file>` in the active theme, so a theme overriding a
+	 * template at its ROOT (the same place WordPress's own template
+	 * hierarchy would find `single-event.php`) was silently ignored and the
+	 * plugin's own bundled template rendered instead.
+	 */
+	public function test_template_include_honours_root_level_theme_override() {
+		$event_id = $this->make_event();
+		$this->go_to( get_permalink( $event_id ) );
+
+		$theme_root = get_stylesheet_directory() . '/single-event.php';
+		$this->assertFileDoesNotExist( $theme_root, 'A stray fixture from another test would invalidate this one.' );
+		file_put_contents( $theme_root, '<?php // RENDER-D35 root-level theme override fixture' );
+
+		try {
+			$result = $this->module()->template_include( '/should-not-be-returned.php' );
+		} finally {
+			unlink( $theme_root );
+		}
+
+		$this->assertSame( $theme_root, $result, 'A root-level theme single-event.php must win over the plugin bundled template.' );
+	}
+
+	/** Regression: the existing events/<file> theme override location still wins over the plugin template. */
+	public function test_template_include_still_honours_events_subdir_theme_override() {
+		$event_id = $this->make_event();
+		$this->go_to( get_permalink( $event_id ) );
+
+		$theme_dir = get_stylesheet_directory() . '/events';
+		if ( ! is_dir( $theme_dir ) ) {
+			mkdir( $theme_dir );
+		}
+		$theme_override = $theme_dir . '/single-event.php';
+		file_put_contents( $theme_override, '<?php // RENDER-D35 events/ subdir theme override fixture' );
+
+		try {
+			$result = $this->module()->template_include( '/should-not-be-returned.php' );
+		} finally {
+			unlink( $theme_override );
+		}
+
+		$this->assertSame( $theme_override, $result );
+	}
 }

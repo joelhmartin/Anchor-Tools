@@ -545,8 +545,14 @@ class Test_Occurrence_Identity extends Anchor_Events_TestCase {
 		$stored = get_post_meta( $event_id, '_anchor_event_offering_dates', true );
 		$this->assertCount( 2, $stored );
 
-		$location = apply_filters( 'redirect_post_location', 'http://example.org/wp-admin/post.php?post=' . $event_id );
-		$this->assertStringNotContainsString( 'offering_duplicate_date', $location );
+		// Read the same queue the positive case above asserts on: the notice
+		// moved off redirect_post_location (MODEL-D14) precisely because two of
+		// the three save paths never redirect, so asserting on the location
+		// would now pass whatever the save did.
+		$this->assertNotContains(
+			'offering_duplicate_date',
+			wp_list_pluck( $this->module()->queued_group_notices( $event_id ), 'code' )
+		);
 
 		$this->assertCount( 2, $this->occurrences()->children( $event_id ) );
 		unset( $_POST );

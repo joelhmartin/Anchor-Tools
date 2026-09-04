@@ -245,6 +245,9 @@ class WooCommerce {
 
         // Needs-review admin notices on Events list / WC Orders / Events settings.
         \add_action( 'admin_notices', [ $this, 'render_needs_review_notice' ] );
+        // WOO-D20 — surface the block-checkout incompatibility BEFORE a buyer
+        // hits it, not after (see EVENTS-WOOCOMMERCE.md).
+        \add_action( 'admin_notices', [ $this, 'render_block_checkout_incompatibility_notice' ] );
         // Per-order metabox buttons: clear review + resend buyer confirmation.
         \add_action( 'admin_post_anchor_events_clear_review', [ $this, 'handle_clear_review' ] );
         \add_action( 'admin_post_anchor_events_resend_confirmation', [ $this, 'handle_resend_confirmation' ] );
@@ -3891,6 +3894,34 @@ class WooCommerce {
             }
         }
         echo '</p></div>';
+    }
+
+    /**
+     * WOO-D20 — event registration requires the classic `[woocommerce_checkout]`
+     * shortcode checkout; guard_block_checkout() fails an order with event
+     * lines closed on the block/Store-API checkout because the classic
+     * attendee-capture hooks never fire there (see EVENTS-WOOCOMMERCE.md).
+     * That is a real, documented limitation — this notice exists so a store
+     * that switches its checkout page to the block discovers the conflict
+     * from the admin, before a real buyer's order is refused.
+     */
+    public function render_block_checkout_incompatibility_notice() {
+        if (
+            ! \function_exists( 'has_block' ) || ! \function_exists( 'wc_get_page_id' )
+            || ! Roster::current_user_can_manage()
+        ) {
+            return;
+        }
+        $screen = \function_exists( 'get_current_screen' ) ? \get_current_screen() : null;
+        if ( ! $screen || ( \strpos( (string) $screen->id, 'wc-orders' ) === false && $screen->id !== 'edit-shop_order' && $screen->id !== 'woocommerce_page_wc-settings' ) ) {
+            return;
+        }
+        if ( ! \has_block( 'woocommerce/checkout', \wc_get_page_id( 'checkout' ) ) ) {
+            return;
+        }
+        echo '<div class="notice notice-error"><p><strong>' . \esc_html__( 'Anchor Events:', 'anchor-schema' ) . '</strong> '
+            . \esc_html__( 'the checkout page uses the WooCommerce Checkout block, which event registration does not support — event orders placed through it will be refused at checkout. Switch the checkout page back to the classic [woocommerce_checkout] shortcode.', 'anchor-schema' )
+            . '</p></div>';
     }
 
     /**

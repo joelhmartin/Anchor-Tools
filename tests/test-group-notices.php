@@ -209,6 +209,65 @@ class Test_Group_Notices extends Anchor_Events_TestCase {
 		$this->assertContains( 'offering_incomplete', $this->queued( $event_id ), 'The hidden metabox iframe render must leave the notice queued.' );
 	}
 
+	/**
+	 * The Event Details metabox renders the queued notice. This is the block
+	 * editor's real channel: Gutenberg re-POSTs the metaboxes to
+	 * post.php?meta-box-loader=1 after its REST save, and that request is both
+	 * where save_meta() queues the notice and where this markup is shown.
+	 */
+	public function test_metabox_render_shows_the_queued_notice() {
+		$event_id = $this->make_offering_parent();
+
+		$_POST = $this->offering_payload( [ 'anchor_event_offering_dates' => [] ] );
+		$this->module()->save_meta( $event_id );
+
+		ob_start();
+		$this->module()->render_meta_box( get_post( $event_id ) );
+		$html = ob_get_clean();
+
+		$this->assertStringContainsString( 'anchor-event-save-notice', $html );
+		$this->assertStringContainsString( 'change the event type away from', $html, 'The queued offering_incomplete copy must be rendered next to the repeater.' );
+	}
+
+	/** A clean save leaves the metabox with no save notice at all. */
+	public function test_metabox_render_is_clean_after_a_good_save() {
+		$event_id = $this->make_offering_parent();
+
+		ob_start();
+		$this->module()->render_meta_box( get_post( $event_id ) );
+		$html = ob_get_clean();
+
+		$this->assertStringNotContainsString( 'anchor-event-save-notice', $html );
+	}
+
+	/** The peek does not rob admin_notices(): the classic editor still gets its one delivery. */
+	public function test_metabox_render_does_not_consume_the_queue() {
+		$event_id = $this->make_offering_parent();
+
+		$_POST = $this->offering_payload( [ 'anchor_event_offering_dates' => [] ] );
+		$this->module()->save_meta( $event_id );
+
+		ob_start();
+		$this->module()->render_meta_box( get_post( $event_id ) );
+		ob_get_clean();
+
+		$this->assertContains( 'offering_incomplete', $this->queued( $event_id ) );
+	}
+
+	/** A bulk-action URL sends post[] — admin_notices() must treat it as no post, not cast an array. */
+	public function test_admin_notices_ignores_a_bulk_action_post_array() {
+		$event_id = $this->make_offering_parent();
+
+		$_POST = $this->offering_payload( [ 'anchor_event_offering_dates' => [] ] );
+		$this->module()->save_meta( $event_id );
+
+		$_GET['post'] = [ $event_id ];
+		ob_start();
+		$this->module()->admin_notices();
+		$this->assertSame( '', ob_get_clean() );
+		$this->assertContains( 'offering_incomplete', $this->queued( $event_id ), 'A list screen must not consume the notice either.' );
+	}
+
 	/** The front-end save's redirect carries the base code AND the queued group codes. */
 	public function test_front_end_redirect_arg_carries_the_queued_codes() {
 		$event_id = $this->make_offering_parent();

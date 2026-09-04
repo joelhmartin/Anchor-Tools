@@ -278,8 +278,9 @@ class Module {
         // that runs after the meta write, so it is the only place the new
         // dates are visible.
         \add_action( 'rest_after_insert_' . self::CPT, [ $this, 'persist_after_rest_write' ], 10, 3 );
-        // …and the block editor has no redirect to hang a notice on, so a REST
-        // WRITE response carries whatever the save queued (audit MODEL-D14).
+        // …and a REST WRITE response carries any notice still queued from the
+        // author's previous metabox save (audit MODEL-D14) — see
+        // attach_notices_to_rest_response() for why it is never this save's.
         \add_filter( 'rest_prepare_' . self::CPT, [ $this, 'attach_notices_to_rest_response' ], 10, 3 );
 
         \add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
@@ -2346,18 +2347,36 @@ class Module {
         $offering_tiers = $post_id ? (array) $this->ticket_types->get( $post_id ) : [];
         ?>
         <?php
-        // Inline validation surfacing (Task 2.3 notice fix): the Gutenberg
-        // block editor saves via REST with NO redirect, so a notice queued by
-        // persist_group_authoring()'s guard has no post-save redirect to ride
-        // in the block editor. Rendering the SAME validation inline here,
-        // driven off the STORED meta, survives a block-editor save because
-        // this metabox regenerates via Gutenberg's metabox iframe on every
-        // save. It complements — it does not replace — the queued notice,
-        // which since MODEL-D14 lives in a per-user/per-post transient that
-        // admin_notices(), the front-end form's redirect and the REST write
-        // response all read (see queue_group_notice()).
+        // Inline validation surfacing (Task 2.3 notice fix): a stored-state
+        // check, not a save outcome — an offering that currently has no dates
+        // at all. Since MODEL-D14 an emptied save KEEPS the stored rows, so
+        // this no longer fires for the case it was written for; the queued
+        // notice below is what tells that author anything happened.
         $offering_invalid = ( $event_type === 'offering' && empty( $offering_dates ) );
+
+        // The queued notices from THIS author's last save of this post
+        // (queue_group_notice()). This render is the one request that provably
+        // runs after the queue is written on every editor: Gutenberg re-POSTs
+        // the metaboxes to post.php?meta-box-loader=1 after its REST save, and
+        // that request IS this markup — it is where save_meta() runs and where
+        // its output is shown. Without it a block-editor author watched the
+        // rows they deleted quietly reappear with no explanation.
+        //
+        // A PEEK, not a consume: on a classic full page load admin_notices()
+        // has already fired (and consumed) before any metabox renders, so the
+        // classic editor still shows exactly one notice at the top and finds
+        // nothing left here. The metabox-loader request — the one where
+        // admin_notices() deliberately bails — is the only one where this peek
+        // has anything to render. The front-end manager form consumes the
+        // queue into its redirect arg long before it renders, so it too finds
+        // nothing here and never doubles up.
+        $queued_notices = $post_id ? $this->queued_group_notices( $post_id ) : [];
         ?>
+        <?php foreach ( $queued_notices as $queued_notice ) : ?>
+            <div class="notice inline anchor-event-save-notice <?php echo esc_attr( $queued_notice['level'] === 'warning' ? 'notice-warning' : 'notice-error' ); ?>">
+                <p><?php echo esc_html( $queued_notice['message'] ); ?></p>
+            </div>
+        <?php endforeach; ?>
         <div class="anchor-event-section anchor-event-conditional" data-step="2" data-when-type="offering">
             <h3><?php echo esc_html__( 'Offering Dates', 'anchor-schema' ); ?></h3>
             <p class="description"><?php echo esc_html__( 'One row per date this event is being offered. Visitors pick the date that suits them, and each date keeps its own seat count, so one filling up does not close the others. Blank rows are skipped.', 'anchor-schema' ); ?></p>
@@ -4802,14 +4821,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * Expose the queued notices on a REST WRITE response for the block editor
-     * (audit MODEL-D14). Gutenberg's metabox iframe posts to post.php with no
-     * redirect and its output is never shown, so the classic notice cannot be
-     * the block editor's only channel: the codes ride the REST save response
-     * as `anchor_event_notices` for a future editor-side plugin to render, and
-     * — because this read does NOT consume the queue — admin_notices() still
-     * prints them on the next real admin page load either way. Write requests
-     * only; a public GET of an event is untouched.
+     * Expose any queued notices on a REST WRITE response (audit MODEL-D14).
+     *
+     * Read the ordering before relying on this: Gutenberg saves over REST
+     * FIRST and only then POSTs the metaboxes to post.php?meta-box-loader=1,
+     * and it is that metabox POST — save_meta() — which queues the notice. So
+     * this response can NEVER carry the notice for the save it is answering;
+     * what it carries is a LEFTOVER from the previous metabox save, if one is
+     * still inside NOTICE_TTL. That makes it a convenience for a future
+     * editor-side consumer, never the delivery mechanism: the block editor is
+     * told by the metabox render itself (render_group_authoring_sections()),
+     * which is the request that provably runs after the queue is written.
+     * The read does NOT consume, so it can never rob that render. Write
+     * requests only; a public GET of an event is untouched.
      *
      * @param \WP_REST_Response $response
      * @param \WP_Post          $post
@@ -4886,7 +4910,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
 
-        $post_id = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        // A bulk-action URL sends post[] — an array is a list screen, not a
+        // post on screen, so there is nothing to key a notice to.
+        $post_id = ( isset( $_GET['post'] ) && ! is_array( $_GET['post'] ) ) ? (int) $_GET['post'] : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
         if ( ! $post_id && isset( $GLOBALS['post'] ) && $GLOBALS['post'] instanceof \WP_Post ) {
             $post_id = (int) $GLOBALS['post']->ID;
         }

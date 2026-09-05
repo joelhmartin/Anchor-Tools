@@ -4301,6 +4301,16 @@ class WooCommerce {
                 $sent = [];
             }
             $any_sent = false;
+            // CodeRabbit finding-4 (PR #20, 2nd round): a gate stamp
+            // ($sent[$gate_key] = time()) is written for BOTH an actual send
+            // AND an event the organizer switched off — but the save below
+            // used to be gated on $any_sent alone, so an order where EVERY
+            // event resolved to 'disabled' stamped every gate in memory and
+            // then discarded all of them, never persisting the array. The
+            // next automatic reconcile pass then saw those gates as never
+            // settled and tried the exact same disabled sends again. Track
+            // gate changes separately and save when either is true.
+            $gates_changed = false;
 
             // finding-1 — resend is per event too: one confirmation per event
             // the order currently has active seats for, each resolved against
@@ -4315,6 +4325,7 @@ class WooCommerce {
                     // Sent, or the organizer switched THIS event's confirmation
                     // off — either way this event is settled (audit REG-D6).
                     $sent[ 'customer:' . $eid ] = \time();
+                    $gates_changed              = true;
                 }
                 if ( $result->is_sent() ) {
                     $any_sent = true;
@@ -4329,7 +4340,7 @@ class WooCommerce {
                 }
             }
 
-            if ( $any_sent ) {
+            if ( $any_sent || $gates_changed ) {
                 $order->update_meta_data( self::EMAILS_SENT_META, $sent );
                 $order->save();
             }

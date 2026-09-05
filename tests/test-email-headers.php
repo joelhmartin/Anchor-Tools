@@ -891,6 +891,68 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		$this->assertSame( [], $this->review_reasons( $order_id ), 'Neither outcome is a defect.' );
 	}
 
+	/**
+	 * CodeRabbit finding-4 (PR #20, 2nd round): the save at the end of
+	 * handle_resend_confirmation() used to be gated on $any_sent alone — an
+	 * order whose events ALL resolve to 'disabled' stamps every gate in
+	 * $sent (settled, same as a real send — audit REG-D6) but never
+	 * actually sends anything, so $any_sent stays false and the save never
+	 * runs. Every gate stamp was silently discarded, and the next automatic
+	 * reconcile pass re-attempted the exact same disabled sends. Both gates
+	 * must persist even though nothing was ever sent.
+	 */
+	public function test_resend_on_an_all_disabled_order_still_persists_the_gate_stamps() {
+		$this->require_wc();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$this->place_order( $order );
+
+		$order_id = $order->get_id();
+		$this->assertSame( 1, $this->count_seats( $a['event_id'], Registrations::STATUS_CONFIRMED ) );
+		$this->assertSame( 1, $this->count_seats( $b['event_id'], Registrations::STATUS_CONFIRMED ) );
+
+		$this->switch_email_off( (int) $a['event_id'], 'confirmation' );
+		$this->switch_email_off( (int) $b['event_id'], 'confirmation' );
+
+		$this->mails = []; // Isolate from WooCommerce's own order-status-change emails.
+
+		$_POST    = [ 'order_id' => $order_id, '_wpnonce' => wp_create_nonce( 'anchor_events_resend_' . $order_id ) ];
+		$_REQUEST = $_POST;
+
+		$this->capture_redirect(
+			function () {
+				$this->woocommerce()->handle_resend_confirmation();
+			}
+		);
+
+		$this->assertCount( 0, $this->mails, 'Precondition: nothing was actually sent — every event is disabled.' );
+
+		$gate = $this->customer_gate( $order_id );
+		$this->assertArrayHasKey(
+			'customer:' . (int) $a['event_id'],
+			$gate,
+			'A disabled event still settles its own gate even when no send in this pass succeeded at all.'
+		);
+		$this->assertArrayHasKey(
+			'customer:' . (int) $b['event_id'],
+			$gate,
+			'A disabled event still settles its own gate even when no send in this pass succeeded at all.'
+		);
+	}
+
 	/** Roster cancel: changed, already-cancelled and rejected each get their own notice. */
 	public function test_roster_cancel_notice_says_which_of_the_three_happened() {
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );

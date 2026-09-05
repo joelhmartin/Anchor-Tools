@@ -610,6 +610,34 @@ class Test_Roster extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * CodeRabbit finding-2 (PR #20, 2nd round): handle_edit() already
+	 * unslashes $_POST — wp_unslash( $_POST['roster_name'] ) — before it
+	 * ever reaches update_contact(), and update_post_meta() unslashes AGAIN
+	 * internally (every WP meta write assumes slashed input). Running
+	 * stripslashes() twice on a literal backslash in the name/phone ate it
+	 * entirely: "Room A\B" was stored as "Room AB". $_POST is set here the
+	 * way a real request actually arrives — wp_slash()'d, the way WordPress's
+	 * own magic-quotes shim leaves it — so handle_edit()'s single wp_unslash()
+	 * is exercised for real, not bypassed by a plain test string.
+	 */
+	public function test_a_literal_backslash_in_the_name_and_phone_survives_the_roster_edit() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Original Name' ] );
+
+		$this->post_edit(
+			$event_id,
+			$seat_id,
+			[
+				'roster_name'  => \wp_slash( 'Room A\\B' ),
+				'roster_phone' => \wp_slash( '555\\1234' ),
+			]
+		);
+
+		$this->assertSame( 'Room A\\B', get_post_meta( $seat_id, '_anchor_event_name', true ) );
+		$this->assertSame( '555\\1234', get_post_meta( $seat_id, '_anchor_event_phone', true ) );
+	}
+
 	/* -----------------------------------------------------------------
 	 * REG-D38 — reviving a seat goes through the capacity decision
 	 * --------------------------------------------------------------- */

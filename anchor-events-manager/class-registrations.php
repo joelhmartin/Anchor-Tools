@@ -497,15 +497,24 @@ class Registrations {
             }
         }
 
+        // CodeRabbit finding-2 (PR #20, 2nd round): Roster::handle_edit() (the
+        // only caller) already unslashes $fields — wp_unslash( $_POST[...] )
+        // — before it ever reaches sanitize_text_field()/sanitize_email() here.
+        // update_post_meta() ALSO unslashes internally (every WP meta write
+        // assumes slashed input), so passing an already-unslashed value
+        // straight through ran stripslashes() twice — "Room A\B" lost its
+        // backslash entirely, stored as "Room AB". wp_slash() right before
+        // the write puts each value back in the slashed domain the meta
+        // functions expect, same contract create_seat() documents above.
         if ( null !== $name ) {
             // The post_title follows the meta through sync_seat_title().
-            \update_post_meta( $seat_id, '_anchor_event_name', $name );
+            \update_post_meta( $seat_id, '_anchor_event_name', \wp_slash( $name ) );
         }
         if ( \array_key_exists( 'email', $fields ) ) {
             \update_post_meta( $seat_id, '_anchor_event_email', \sanitize_email( (string) $fields['email'] ) );
         }
         if ( \array_key_exists( 'phone', $fields ) ) {
-            \update_post_meta( $seat_id, '_anchor_event_phone', \sanitize_text_field( (string) $fields['phone'] ) );
+            \update_post_meta( $seat_id, '_anchor_event_phone', \wp_slash( \sanitize_text_field( (string) $fields['phone'] ) ) );
         }
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );

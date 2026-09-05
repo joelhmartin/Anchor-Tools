@@ -199,6 +199,18 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		return $out;
 	}
 
+	/** The detail string of the first flag on an order matching $reason (''  if none). */
+	private function review_detail( $order_id, $reason ) {
+		$order = wc_get_order( $order_id );
+		$flags = $order->get_meta( Events_Log::ORDER_REVIEW_META );
+		foreach ( is_array( $flags ) ? $flags : [] as $flag ) {
+			if ( is_array( $flag ) && ( $flag['reason'] ?? '' ) === $reason ) {
+				return (string) ( $flag['detail'] ?? '' );
+			}
+		}
+		return '';
+	}
+
 	/** The order sync-log messages, oldest first. */
 	private function sync_log( $order_id ) {
 		$order = wc_get_order( $order_id );
@@ -417,6 +429,49 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 			$this->customer_gate( $order_id ),
 			'A failed send must leave the gate open so a later pass can try again.'
 		);
+	}
+
+	/**
+	 * CodeRabbit finding-5 (PR #20, 2nd round): apply_review_flags() dedupes
+	 * by REASON, not detail. Two events on one order both failing their
+	 * customer confirmation in the SAME pass used to push two
+	 * 'customer_email_failed' flags, the second dropped as a same-reason
+	 * dupe against the first (added moments earlier in the same loop) — and
+	 * even the surviving one's detail was just "order #123", naming no
+	 * event at all. Both failures must be named in the one flag's detail,
+	 * the same way collect_order_seats() accumulates every status-less seat
+	 * rather than losing all but the first.
+	 */
+	public function test_two_failed_confirmations_in_one_pass_name_both_events() {
+		$this->require_wc();
+		$this->set_settings( [ 'wc_notify_customer' => true, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$order_id = $order->get_id();
+
+		$this->fail_mail = true;
+		$this->place_order( $order );
+		$this->fail_mail = false;
+
+		$this->assertSame(
+			1,
+			\count( \array_keys( $this->review_reasons( $order_id ), 'customer_email_failed', true ) ),
+			'Still exactly one flag row for the reason (dedup is correct) — the detail is what must carry both events.'
+		);
+		$detail = $this->review_detail( $order_id, 'customer_email_failed' );
+		$this->assertStringContainsString( (string) $a['event_id'], $detail, "The first event's id must be named in the detail." );
+		$this->assertStringContainsString( (string) $b['event_id'], $detail, "The second event's id must ALSO be named in the detail." );
 	}
 
 	/* ---------------------------------------------------------------------

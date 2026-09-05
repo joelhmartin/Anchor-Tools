@@ -3704,6 +3704,17 @@ class WooCommerce {
         // order edit still gets its own confirmation; partial refunds (no new
         // active seats on an event) never re-spam that event.
         if ( $notify_customer && $has_new_active ) {
+            // CodeRabbit finding-5 (PR #20, 2nd round): apply_review_flags()
+            // dedupes by REASON, not detail — so a single pass with TWO
+            // events whose confirmation both failed only ever kept the
+            // FIRST 'customer_email_failed' flag pushed onto $review_flags
+            // (the second was dropped as a same-reason dupe against the
+            // first, added moments earlier in this same loop), and even that
+            // one's detail was just "order #123", naming no event at all.
+            // Accumulate every failed event id here — same shape as
+            // collect_order_seats()'s $missing_status — and raise ONE flag
+            // after the loop naming all of them.
+            $failed_events = [];
             foreach ( $email_events as $eid => $ev ) {
                 $eid = (int) $eid;
                 if ( empty( $ev['confirmed'] ) && empty( $ev['waitlist'] ) ) {
@@ -3739,13 +3750,19 @@ class WooCommerce {
                         'reason' => $result->reason(),
                     ] );
                 } else {
-                    $review_flags[] = $this->make_flag( 'customer_email_failed', 'order #' . $order_id );
-                    $log_entries[]  = $this->make_log_entry( 'Customer confirmation email FAILED.', [
+                    $failed_events[] = $eid;
+                    $log_entries[]   = $this->make_log_entry( 'Customer confirmation email FAILED.', [
                         'to'     => $order->get_billing_email(),
                         'event'  => $eid,
                         'reason' => $result->reason(),
                     ] );
                 }
+            }
+            if ( ! empty( $failed_events ) ) {
+                $review_flags[] = $this->make_flag(
+                    'customer_email_failed',
+                    'order #' . $order_id . ' — events ' . \implode( ', ', $failed_events )
+                );
             }
         }
 

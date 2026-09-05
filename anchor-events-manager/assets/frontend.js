@@ -189,7 +189,15 @@
     if(!item){ return; }
     lb.img.style.opacity = '0';
     var preload = new Image();
+    // CodeRabbit finding-8 (PR #20, 2nd round): onload/onerror fire
+    // asynchronously — navigating again (navLightbox()) before a preload
+    // resolves left its callback still armed, and it fired later against
+    // whatever item had since become current, blanking or corrupting a
+    // newer image with a stale one's src/caption. Bail out of both
+    // callbacks once lb.index no longer points at the item THIS preload
+    // was for.
     preload.onload = function(){
+      if(lb.items[lb.index] !== item){ return; }
       lb.img.src = item.src;
       lb.img.alt = item.caption || '';
       lb.img.style.opacity = '1';
@@ -198,6 +206,7 @@
     // lightbox open with an invisible image forever (opacity stayed 0 —
     // only onload restored it) and no way to tell "loading" from "broken".
     preload.onerror = function(){
+      if(lb.items[lb.index] !== item){ return; }
       lb.img.removeAttribute('src');
       lb.img.alt = '';
       lb.img.style.opacity = '1';

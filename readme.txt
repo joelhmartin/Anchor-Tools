@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.26.0
+Stable tag: 3.27.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -24,7 +24,7 @@ Usage:
 
 == Changelog ==
 
-= 3.27.0 (unreleased) =
+= 3.27.0 =
 
 Events Manager — new event statuses:
 

@@ -627,4 +627,35 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 			"Event B's quota of 1 must not be applied to event A's seats."
 		);
 	}
+
+	/**
+	 * CodeRabbit finding-6 (PR #20, 2nd round): render_ticket_row()'s
+	 * blank-label fallback was a second, hand-typed literal ("Ticket") that
+	 * drifted from \Anchor\Events\Ticket_Types::default_label()
+	 * ("Registration") — the one place the app defines what a nameless tier
+	 * is called. A blank-labeled tier's storefront row must use the SAME
+	 * word every other blank-label surface (Product_Sync's synced variation
+	 * name, per test-product-sync.php) already uses.
+	 */
+	public function test_storefront_row_uses_the_shared_default_label_for_a_blank_tier_label() {
+		// Ticket_Types::save() (via make_ticketed_event()/make_event()) would
+		// itself substitute a real label for a blank one at write time — the
+		// raw row is written directly here (same technique as
+		// test-product-sync.php's sibling test) so a genuinely blank label
+		// survives to reach render_ticket_row() itself.
+		$event = $this->make_event( [ 'title' => 'Blank Label Event' ] );
+		update_post_meta(
+			$event,
+			\Anchor\Events\Ticket_Types::META_KEY,
+			[ [ 'id' => 'blank1', 'label' => '', 'price' => '25', 'quota' => 0, 'sale_start' => '', 'sale_end' => '', 'active' => true, 'wc_variation_id' => 0 ] ]
+		);
+		$this->product_sync()->sync_event( $event );
+		$tiers = $this->ticket_types()->get( $event );
+		$this->assertSame( '', $tiers[0]['label'], 'Sanity: the tier really is stored with a blank label.' );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( \Anchor\Events\Ticket_Types::default_label(), $html );
+		$this->assertStringNotContainsString( 'Ticket<', $html, 'Must not fall back to a second, drifted literal.' );
+	}
 }

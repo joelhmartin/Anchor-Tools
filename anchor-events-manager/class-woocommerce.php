@@ -995,7 +995,12 @@ class WooCommerce {
      */
     private function render_ticket_row( $event_id, array $tier, $state, $only_tier = false ) {
         $tier_id = (string) $tier['id'];
-        $label   = ( $tier['label'] !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
+        // CodeRabbit finding-6 (PR #20, 2nd round): the blank-label fallback
+        // must be the SAME word Ticket_Types::default_label() is the single
+        // source of truth for ("Registration") — a second, hand-typed
+        // literal here ("Ticket") drifted from it and showed a shopper a
+        // different word than the rest of the app uses for the same case.
+        $label   = ( $tier['label'] !== '' ) ? (string) $tier['label'] : Ticket_Types::default_label();
         $price   = (float) $tier['price'];
 
         $price_html = \function_exists( 'wc_price' )
@@ -1274,7 +1279,10 @@ class WooCommerce {
 
         foreach ( $requested as $tier_id => $qty ) {
             $tier  = $this->module->ticket_types->find( $event_id, $tier_id );
-            $label = ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
+            // CodeRabbit finding-6 (PR #20, 2nd round) — same fallback word
+            // as render_ticket_row(): Ticket_Types::default_label(), not a
+            // second hand-typed literal.
+            $label = ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) ? (string) $tier['label'] : Ticket_Types::default_label();
 
             if ( ! $tier || empty( $tier['active'] ) || (float) $tier['price'] <= 0 ) {
                 /* translators: %s: ticket tier label. */

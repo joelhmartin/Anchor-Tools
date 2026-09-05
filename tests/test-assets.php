@@ -116,6 +116,17 @@ class Test_Assets extends Anchor_Events_TestCase {
 		$woocommerce = $this->woocommerce();
 		$this->assertNotNull( $woocommerce, 'WooCommerce class did not instantiate.' );
 
+		// CodeRabbit finding-3 (PR #20, 2nd round): require_wc() only checks
+		// that the WooCommerce CLASS is active — WC()->cart is null until a
+		// cart is actually loaded, which WC only does on a front-end request.
+		// Load it explicitly the way WC's own AJAX endpoints (and
+		// test-add-to-cart-ajax.php) do, or WC()->cart->empty_cart() below
+		// dereferences null.
+		if ( \function_exists( 'wc_load_cart' ) ) {
+			\wc_load_cart();
+		}
+		$this->assertNotNull( WC()->cart, 'The cart must be loaded before this test can use it.' );
+
 		$event_id = $this->make_event(
 			[ 'title' => 'Asset Version Event', 'timezone' => 'UTC' ],
 			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
@@ -157,6 +168,13 @@ class Test_Assets extends Anchor_Events_TestCase {
 		$this->require_wc();
 		wp_dequeue_script( 'anchor-event-checkout-attendees' );
 		wp_deregister_script( 'anchor-event-checkout-attendees' );
+
+		// CodeRabbit finding-3 (PR #20, 2nd round): see the sibling test above
+		// — require_wc() does not guarantee WC()->cart exists.
+		if ( \function_exists( 'wc_load_cart' ) ) {
+			\wc_load_cart();
+		}
+		$this->assertNotNull( WC()->cart, 'The cart must be loaded before this test can use it.' );
 		WC()->cart->empty_cart();
 
 		add_filter( 'woocommerce_is_checkout', '__return_true' );

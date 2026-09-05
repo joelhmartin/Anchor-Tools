@@ -1284,7 +1284,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 }
 .anchor-event-steps__item.is-current,
 .anchor-event-steps__item.is-done{ opacity:1; }
-.anchor-event-steps__item.is-current{ border-color:currentColor; }
+.anchor-event-steps__item.is-current{ border-color:currentcolor; }
 .anchor-event-steps__n{
   flex:0 0 auto;
   width:22px;
@@ -1294,7 +1294,7 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   align-items:center;
   justify-content:center;
   font-size:12px;
-  border:1px solid currentColor;
+  border:1px solid currentcolor;
 }
 .anchor-event-steps__label{ display:flex; flex-direction:column; gap:2px; }
 .anchor-event-steps__title{ font-size:14px; font-weight:600; }
@@ -1905,7 +1905,7 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
    were visually indistinguishable. Reuses .anchor-event-ticket-row's flex
    pattern for the other wrapper classes; the state pills below are told
    apart by border style/fill only — no colour beyond the existing neutral
-   greys and currentColor. */
+   greys and currentcolor. */
 .anchor-event-tickets{
   display:grid;
   gap:16px;
@@ -1973,7 +1973,7 @@ body.anchor-event-email-modal-open{ overflow:hidden; }
 
 /* Visible error/success state for the add-to-cart response
    (event-storefront.js toggles these two modifiers on .anchor-event-cart-msg
-   after the ajax round-trip). Told apart by a currentColor accent bar, not
+   after the ajax round-trip). Told apart by a currentcolor accent bar, not
    colour, per the same neutral-only constraint as the ticket states above. */
 .anchor-event-cart-msg--error{
   border:1px solid var(--anchor-event-border);

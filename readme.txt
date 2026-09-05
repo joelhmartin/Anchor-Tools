@@ -123,6 +123,9 @@ Events Manager — WooCommerce / checkout:
   what remains, or removed, instead of left permanently invalid with only a
   notice. The AJAX endpoint's quantity field also enforces its published
   cap (20) server-side; it was previously only an HTML `max` attribute.
+  When one event has several lines in the cart (two ticket tiers, say),
+  the remaining seats are allocated across those lines in cart order rather
+  than each line being compared to the full remainder.
 * A ticket tier's sale-window ("Sales open"/"Sales closed") messaging and
   the checks behind it now compare dates in the site's own timezone instead
   of mixing a site-time value with a UTC-parsed one — every boundary used to
@@ -149,6 +152,8 @@ Events Manager — emails & reminders:
   (filterable via `anchor_events_reminder_override_scan_limit`), with a
   `reminder_scan_truncated` log entry when the cap is hit, instead of
   running an unbounded query every hour.
+  The largest override is found by its own one-row query, so an event
+  outside the capped page can no longer be missed.
 * A **postponed** event no longer sends or retries reminders for its seats.
   The hourly sweep's "date is off" guard and the queued-retry eligibility
   guard both checked `cancelled` only, so a postponed event with confirmed

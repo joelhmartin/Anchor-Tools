@@ -28,6 +28,26 @@ class Ticket_Types {
     /** Stable id of the synthesized implicit tier when no list exists. */
     const PRIMARY_ID = 'primary';
 
+    /**
+     * finding-19 (carry-over) — the ONE fallback label for a tier/ticket with
+     * no label of its own. Before this, save() defaulted a blank row to
+     * "Registration" while Product_Sync::do_sync_event() independently
+     * defaulted the SAME blank label to "Ticket" for the managed WooCommerce
+     * variation — two literals that had to agree and did not, so a paid
+     * tier's unlabeled row and its own synced variation disagreed about what
+     * to call it. Ticket_Types is documented as the source of truth for tier
+     * label/price/availability regardless of whether Woo is active, so
+     * Product_Sync (which SYNCS FROM this model) defers to this default
+     * rather than keeping a second one. A static method, not a bare string
+     * constant, so the translatable literal stays inside one `__()` call
+     * i18n tooling can still discover.
+     *
+     * @return string
+     */
+    public static function default_label() {
+        return \__( 'Registration', 'anchor-schema' );
+    }
+
     /** @var Module */
     private $module;
 
@@ -44,7 +64,7 @@ class Ticket_Types {
      *
      * @param int $event_id
      * @return array<int,array> Each tier: id,label,price(float),quota(int),
-     *   sale_start,sale_end,active(bool),wc_variation_id(int),attendee_fields(array).
+     *   sale_start,sale_end,active(bool),wc_variation_id(int).
      */
     public function get( $event_id ) {
         $event_id = (int) $event_id;
@@ -90,13 +110,32 @@ class Ticket_Types {
                 continue;
             }
 
-            $label      = isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '';
-            $price_raw  = isset( $row['price'] ) ? (string) $row['price'] : '';
-            $sale_start = isset( $row['sale_start'] ) ? $this->sanitize_date( (string) $row['sale_start'] ) : '';
-            $sale_end   = isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '';
+            $label           = isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '';
+            $price_raw       = isset( $row['price'] ) ? (string) $row['price'] : '';
+            $sale_start      = isset( $row['sale_start'] ) ? $this->sanitize_date( (string) $row['sale_start'] ) : '';
+            $sale_end        = isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '';
+            $quota           = isset( $row['quota'] ) ? \max( 0, (int) $row['quota'] ) : 0;
+            $active          = ! empty( $row['active'] );
+            $wc_variation_id = isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0;
 
-            // Drop fully-empty rows (no label, no price, no dates).
-            if ( $label === '' && $price_raw === '' && $sale_start === '' && $sale_end === '' ) {
+            // WOO-D29: a reversed sale window (sale_end before sale_start)
+            // made the tier permanently unsellable — is_on_sale() is false for
+            // every timestamp — while the storefront still advertised it as
+            // "opening" on sale_start. Swap rather than reject: both values
+            // were deliberately entered, just in the wrong boxes.
+            if ( $sale_start !== '' && $sale_end !== '' && $sale_start > $sale_end ) {
+                [ $sale_start, $sale_end ] = [ $sale_end, $sale_start ];
+            }
+
+            // WOO-D28: a row can carry real, save-worthy data (a quota, an
+            // active flag, a synced wc_variation_id) with no label/price/dates
+            // at all — an admin who sets a quota but forgets the label used to
+            // have the whole row vanish silently. Only a row with NONE of
+            // these fields set is truly empty.
+            if (
+                $label === '' && $price_raw === '' && $sale_start === '' && $sale_end === ''
+                && $quota === 0 && ! $active && $wc_variation_id === 0
+            ) {
                 continue;
             }
 
@@ -112,14 +151,13 @@ class Ticket_Types {
 
             $tier = [
                 'id'              => $id,
-                'label'          => $label !== '' ? $label : \__( 'Registration', 'anchor-schema' ),
+                'label'          => $label !== '' ? $label : self::default_label(),
                 'price'           => $this->to_price( $price_raw ),
-                'quota'           => isset( $row['quota'] ) ? \max( 0, (int) $row['quota'] ) : 0,
+                'quota'           => $quota,
                 'sale_start'      => $sale_start,
                 'sale_end'        => $sale_end,
-                'active'          => ! empty( $row['active'] ),
-                'wc_variation_id' => isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0,
-                'attendee_fields' => $this->sanitize_attendee_fields( $row['attendee_fields'] ?? null ),
+                'active'          => $active,
+                'wc_variation_id' => $wc_variation_id,
             ];
 
             $clean[] = $tier;
@@ -170,27 +208,42 @@ class Ticket_Types {
      * @return bool
      */
     public function is_on_sale( array $tier, $now = 0 ) {
-        $now = (int) $now;
-        if ( $now <= 0 ) {
-            $now = (int) \current_time( 'timestamp' );
-        }
+        return $this->sale_state( $tier, $now ) === 'open';
+    }
+
+    /**
+     * The reason a tier is or isn't on sale right now (audit WOO-D4/WOO-D5).
+     *
+     * Compares Y-m-d strings — the way Registrations::capacity_decision()
+     * compares its own registration-window dates — rather than parsing
+     * `strtotime($date.' 00:00:00')` against `current_time('timestamp')`. Those
+     * two are NOT the same clock: current_time('timestamp') is time() shifted
+     * by the site's gmt_offset, while strtotime() parses in PHP's default
+     * timezone (UTC, forced by WordPress) — so every boundary used to be off by
+     * the site's UTC offset, opening or closing a window early. Comparing two
+     * Y-m-d strings sidesteps the mismatch entirely: both sides are read in the
+     * same site-local "what day is it" the admin used when they typed the date.
+     *
+     * @param array  $tier
+     * @param int    $now Optional Unix timestamp override (tests only); its
+     *                    Y-m-d in the site's timezone is what gets compared.
+     * @return string 'before' (sale not open yet), 'after' (window closed), or
+     *                'open' (no window, or inside it).
+     */
+    public function sale_state( array $tier, $now = 0 ) {
+        $now   = (int) $now;
+        $today = $now > 0 ? \wp_date( 'Y-m-d', $now ) : \current_time( 'Y-m-d' );
 
         $start = isset( $tier['sale_start'] ) ? (string) $tier['sale_start'] : '';
         $end   = isset( $tier['sale_end'] ) ? (string) $tier['sale_end'] : '';
 
-        if ( $start !== '' ) {
-            $start_ts = \strtotime( $start . ' 00:00:00' );
-            if ( $start_ts !== false && $now < $start_ts ) {
-                return false;
-            }
+        if ( $start !== '' && $today < $start ) {
+            return 'before';
         }
-        if ( $end !== '' ) {
-            $end_ts = \strtotime( $end . ' 23:59:59' );
-            if ( $end_ts !== false && $now > $end_ts ) {
-                return false;
-            }
+        if ( $end !== '' && $today > $end ) {
+            return 'after';
         }
-        return true;
+        return 'open';
     }
 
     /**
@@ -224,14 +277,13 @@ class Ticket_Types {
 
         return [
             'id'              => self::PRIMARY_ID,
-            'label'           => \__( 'Registration', 'anchor-schema' ),
+            'label'           => self::default_label(),
             'price'           => $price,
             'quota'           => 0,
             'sale_start'      => '',
             'sale_end'        => '',
             'active'          => true,
             'wc_variation_id' => 0,
-            'attendee_fields' => [ 'name', 'email', 'phone' ],
         ];
     }
 
@@ -246,6 +298,15 @@ class Ticket_Types {
         if ( $id === '' ) {
             $id = self::PRIMARY_ID;
         }
+        // NOTE (WOO-D40): normalize() deliberately does NOT substitute the
+        // "Registration" default for a blank label the way save() does — a
+        // blank label on a row that EXISTS is a real, visible authoring gap
+        // (Roster::tier_label() reads it to distinguish "blank label" from
+        // "the row is gone entirely", falling back to the raw tier id only
+        // for the former). WOO-D40 is fixed at the write side instead: see
+        // Product_Sync::write_back_variation_ids(), which used to round-trip
+        // through save() (applying its label default) merely to update a
+        // cached wc_variation_id.
         return [
             'id'              => $id,
             'label'           => isset( $row['label'] ) ? \sanitize_text_field( (string) $row['label'] ) : '',
@@ -255,7 +316,6 @@ class Ticket_Types {
             'sale_end'        => isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '',
             'active'          => ! empty( $row['active'] ),
             'wc_variation_id' => isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0,
-            'attendee_fields' => $this->sanitize_attendee_fields( $row['attendee_fields'] ?? null ),
         ];
     }
 
@@ -270,26 +330,6 @@ class Ticket_Types {
             return (float) \wc_format_decimal( $value );
         }
         return (float) $value;
-    }
-
-    /**
-     * Sanitize the per-tier attendee-field list. Defaults to name/email/phone.
-     *
-     * @param mixed $fields
-     * @return array
-     */
-    private function sanitize_attendee_fields( $fields ) {
-        if ( ! \is_array( $fields ) || empty( $fields ) ) {
-            return [ 'name', 'email', 'phone' ];
-        }
-        $clean = [];
-        foreach ( $fields as $field ) {
-            $field = \sanitize_key( (string) $field );
-            if ( $field !== '' ) {
-                $clean[] = $field;
-            }
-        }
-        return ! empty( $clean ) ? \array_values( \array_unique( $clean ) ) : [ 'name', 'email', 'phone' ];
     }
 
     /**

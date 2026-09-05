@@ -270,6 +270,72 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * WOO-D4: a tier whose sale window has ALREADY ENDED must read "Sales
+	 * closed", never "Sales open <date>" — the old message came from checking
+	 * only "is sale_start non-empty", which can't tell a closed window from
+	 * one that hasn't opened.
+	 */
+	public function test_storefront_row_says_closed_not_open_for_an_ended_sale_window() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [], [
+			[
+				'label'      => 'Early bird',
+				'price'      => '25',
+				'active'     => 1,
+				'sale_start' => '2026-01-01',
+				'sale_end'   => '2026-02-01',
+			],
+		] );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Sales closed', $html );
+		$this->assertStringNotContainsString( 'Sales open', $html );
+	}
+
+	/**
+	 * WOO-D38: a tier whose managed variation was deleted must not render a
+	 * quantity box that the AJAX endpoint would then refuse — it renders
+	 * "Unavailable" instead.
+	 */
+	public function test_storefront_row_is_unavailable_when_its_variation_is_gone() {
+		list( $event, $tiers ) = $this->make_ticketed_event();
+		$vid = (int) $this->product_sync()->variation_for_tier( $event, $tiers[0]['id'] );
+		$this->assertGreaterThan( 0, $vid );
+		wc_get_product( $vid )->delete( true );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Unavailable', $html );
+		$this->assertStringNotContainsString( 'anchor-event-ticket-qty', $html );
+		$this->assertStringNotContainsString(
+			'data-add-to-cart',
+			$html,
+			'The only tier has no variation to sell — no button that would only fail.'
+		);
+	}
+
+	/**
+	 * WOO-D39 (already closed, pinned here): when every tier is outside its
+	 * sale window (or sold out with no waitlist) the "Register / Add to cart"
+	 * button is omitted, not rendered to fail with "Please choose at least
+	 * one ticket."
+	 */
+	public function test_no_add_to_cart_button_when_no_tier_is_sellable() {
+		list( $event ) = $this->make_ticketed_event( [], [
+			[
+				'label'      => 'Early bird',
+				'price'      => '25',
+				'active'     => 1,
+				'sale_start' => gmdate( 'Y-m-d', time() + 30 * DAY_IN_SECONDS ),
+			],
+		] );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringNotContainsString( 'data-add-to-cart', $html );
+	}
+
 	/* ------------------------------------------------------------------
 	 * RENDER-D32 / MODEL-D42 — the picker and the series archive.
 	 * ------------------------------------------------------------------ */
@@ -362,6 +428,50 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 
 		$this->assertStringContainsString( 'Registration closed', $html );
 		$this->assertStringNotContainsString( 'data-add-to-cart', $html );
+	}
+
+	/**
+	 * finding-16 (carry-over, Task 34 review ruling) — a postponed course
+	 * sells nothing: the original date is off and no new one is known yet.
+	 * Before this, bookability() never consulted 'postponed' and a postponed
+	 * event with open seats still resolved 'open', so it stayed purchasable
+	 * while its own JSON-LD said EventPostponed.
+	 */
+	public function test_postponed_event_is_not_purchasable() {
+		list( $event, $tiers ) = $this->make_ticketed_event();
+		update_post_meta( $event, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event, '_anchor_event_status', 'postponed' );
+
+		$this->assertFalse(
+			$this->woocommerce()->filter_is_purchasable( true, $this->variation( $event, $tiers[0] ) )
+		);
+	}
+
+	/** ...and its storefront row says so instead of offering a quantity box. */
+	public function test_storefront_row_is_closed_for_a_postponed_event() {
+		list( $event ) = $this->make_ticketed_event();
+		update_post_meta( $event, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event, '_anchor_event_status', 'postponed' );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'Registration closed', $html );
+		$this->assertStringNotContainsString( 'data-add-to-cart', $html );
+	}
+
+	/**
+	 * The ruling's other half: 'moved_online' stays bookable — same date,
+	 * still happens, just virtually. Only 'postponed' is excluded from
+	 * bookability()'s status short-circuit.
+	 */
+	public function test_moved_online_event_stays_purchasable() {
+		list( $event, $tiers ) = $this->make_ticketed_event();
+		update_post_meta( $event, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event, '_anchor_event_status', 'moved_online' );
+
+		$this->assertTrue(
+			$this->woocommerce()->filter_is_purchasable( true, $this->variation( $event, $tiers[0] ) )
+		);
 	}
 
 	/* ------------------------------------------------------------------
@@ -516,5 +626,36 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 			$this->woocommerce()->filter_is_purchasable( true, $variation ),
 			"Event B's quota of 1 must not be applied to event A's seats."
 		);
+	}
+
+	/**
+	 * CodeRabbit finding-6 (PR #20, 2nd round): render_ticket_row()'s
+	 * blank-label fallback was a second, hand-typed literal ("Ticket") that
+	 * drifted from \Anchor\Events\Ticket_Types::default_label()
+	 * ("Registration") — the one place the app defines what a nameless tier
+	 * is called. A blank-labeled tier's storefront row must use the SAME
+	 * word every other blank-label surface (Product_Sync's synced variation
+	 * name, per test-product-sync.php) already uses.
+	 */
+	public function test_storefront_row_uses_the_shared_default_label_for_a_blank_tier_label() {
+		// Ticket_Types::save() (via make_ticketed_event()/make_event()) would
+		// itself substitute a real label for a blank one at write time — the
+		// raw row is written directly here (same technique as
+		// test-product-sync.php's sibling test) so a genuinely blank label
+		// survives to reach render_ticket_row() itself.
+		$event = $this->make_event( [ 'title' => 'Blank Label Event' ] );
+		update_post_meta(
+			$event,
+			\Anchor\Events\Ticket_Types::META_KEY,
+			[ [ 'id' => 'blank1', 'label' => '', 'price' => '25', 'quota' => 0, 'sale_start' => '', 'sale_end' => '', 'active' => true, 'wc_variation_id' => 0 ] ]
+		);
+		$this->product_sync()->sync_event( $event );
+		$tiers = $this->ticket_types()->get( $event );
+		$this->assertSame( '', $tiers[0]['label'], 'Sanity: the tier really is stored with a blank label.' );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( \Anchor\Events\Ticket_Types::default_label(), $html );
+		$this->assertStringNotContainsString( 'Ticket<', $html, 'Must not fall back to a second, drifted literal.' );
 	}
 }

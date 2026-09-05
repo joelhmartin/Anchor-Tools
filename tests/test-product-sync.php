@@ -86,6 +86,11 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		$this->assertSame( $ga['id'], (string) $ga_var->get_meta( Product_Sync::VARIATION_TIER_META ) );
 		$this->assertSame( $vip['id'], (string) $vip_var->get_meta( Product_Sync::VARIATION_TIER_META ) );
 
+		// WOO-D8: the write-only `_anchor_evt_tier_active` meta is gone —
+		// post_status ('publish' here) is the single source of truth.
+		$this->assertSame( '', $ga_var->get_meta( '_anchor_evt_tier_active' ) );
+		$this->assertSame( 'publish', $ga_var->get_status() );
+
 		// Reverse lookup resolves the variation back to its event + tier.
 		$resolved = $this->product_sync()->tier_for_variation( $ga_vid );
 		$this->assertSame( $event_id, $resolved['event_id'] );
@@ -141,6 +146,60 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		$this->assertNull( get_post( $vip_vid ), 'The removed no-sales tier variation should be hard-deleted.' );
 	}
 
+	/**
+	 * WOO-D12: a hand-added variation with NO tier-id meta is an orphan the
+	 * sync used to never see again (never in $specs, never deleted, never
+	 * reconciled) — it stays published and sellable under the managed
+	 * product forever. A sync must now deactivate it.
+	 */
+	public function test_sync_deactivates_a_hand_added_variation_with_no_tier_meta() {
+		list( $event_id, $ga ) = $this->make_two_tier_event();
+		$product_id = $this->product_sync()->sync_event( $event_id );
+
+		$orphan = new WC_Product_Variation();
+		$orphan->set_parent_id( $product_id );
+		$orphan->set_regular_price( '999' );
+		$orphan_id = $orphan->save();
+		$this->assertSame( 'publish', get_post_status( $orphan_id ) );
+
+		$this->product_sync()->sync_event( $event_id );
+
+		$this->assertSame(
+			'private',
+			get_post_status( $orphan_id ),
+			'A variation with no tier-id meta must be swept (deactivated), not left published and invisible to future syncs.'
+		);
+	}
+
+	/**
+	 * WOO-D12: a SECOND variation sharing an already-indexed tier id (a
+	 * failed half-sync, or a manual duplicate) is otherwise invisible to the
+	 * sync forever — kept alive, sellable, with its own stale price.
+	 */
+	public function test_sync_deactivates_a_duplicate_variation_for_the_same_tier_id() {
+		list( $event_id, $ga ) = $this->make_two_tier_event();
+		$product_id = $this->product_sync()->sync_event( $event_id );
+		$real_vid   = (int) $this->product_sync()->variation_for_tier( $event_id, $ga['id'] );
+		$this->assertGreaterThan( 0, $real_vid );
+
+		$duplicate = new WC_Product_Variation();
+		$duplicate->set_parent_id( $product_id );
+		$duplicate->set_regular_price( '999' );
+		$duplicate->update_meta_data( Product_Sync::VARIATION_TIER_META, $ga['id'] );
+		$duplicate_id = $duplicate->save();
+		$this->assertSame( 'publish', get_post_status( $duplicate_id ) );
+
+		$this->product_sync()->sync_event( $event_id );
+
+		$this->assertSame(
+			'private',
+			get_post_status( $duplicate_id ),
+			'A duplicate variation for an already-claimed tier id must be swept, not left published forever.'
+		);
+		// The original, already-indexed variation is untouched.
+		$this->assertSame( 'publish', get_post_status( $real_vid ) );
+	}
+
 	/** Trashing the event demotes the managed product to draft (never deleted). */
 	public function test_trash_event_drafts_product() {
 		list( $event_id ) = $this->make_two_tier_event();
@@ -180,5 +239,135 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 		);
 		$this->assertSame( 0, $this->product_sync()->sync_event( $event_id ) );
 		$this->assertSame( 0, $this->product_sync()->managed_product_id( $event_id ) );
+	}
+
+	/**
+	 * WOO-D6: an event with NO authored tier list — only a legacy `price`
+	 * meta — syncs a product from the synthesized implicit-primary tier, but
+	 * must NOT materialize `_anchor_event_ticket_types` in the process. Once
+	 * that meta exists, Ticket_Types::get() stops re-reading `price` on every
+	 * load, so editing the event's price field would silently do nothing.
+	 */
+	public function test_sync_does_not_materialize_ticket_types_meta_for_a_legacy_priced_event() {
+		$event_id = $this->make_event( [ 'title' => 'Legacy Priced', 'price' => '500' ] );
+
+		$product_id = $this->product_sync()->sync_event( $event_id );
+
+		$this->assertGreaterThan( 0, $product_id );
+		$this->assertSame(
+			'',
+			get_post_meta( $event_id, Anchor\Events\Ticket_Types::META_KEY, true ),
+			'The implicit primary tier must not become real stored tier meta.'
+		);
+
+		// The variation is still discoverable via variation_for_tier()'s
+		// fallback scan, so nothing that reads it is broken by the skip.
+		$vid = (int) $this->product_sync()->variation_for_tier( $event_id, Anchor\Events\Ticket_Types::PRIMARY_ID );
+		$this->assertGreaterThan( 0, $vid );
+
+		// Changing the legacy price still takes effect — proof the price
+		// field was not shadowed by a frozen stored tier row.
+		update_post_meta( $event_id, '_anchor_event_price', '750' );
+		$tiers = $this->ticket_types()->get( $event_id );
+		$this->assertSame( 750.0, $tiers[0]['price'] );
+	}
+
+	/**
+	 * WOO-D36: an event explicitly authored as External registration — but
+	 * still carrying a legacy `price` (for display) that synthesizes an
+	 * active-priced implicit tier — must NOT get a managed WooCommerce
+	 * product. Occurrences::sync_product() already gates on registration_mode
+	 * before calling sync_event() for a child occurrence; do_sync_event()
+	 * itself had no such gate on the direct save_post path.
+	 */
+	public function test_external_mode_event_with_a_legacy_price_gets_no_product() {
+		$event_id = $this->make_event( [
+			'title'              => 'External Course',
+			'registration_mode'  => 'external',
+			'external_url'       => 'https://example.test/register',
+			'price'              => '500',
+		] );
+
+		$this->assertSame( 0, $this->product_sync()->sync_event( $event_id ) );
+		$this->assertSame( 0, $this->product_sync()->managed_product_id( $event_id ) );
+	}
+
+	/** Same, for the Free registration mode with an authored paid+active tier. */
+	public function test_free_mode_event_with_a_paid_active_tier_gets_no_product() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Free-mode Course', 'registration_mode' => 'free' ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+
+		$this->assertSame( 0, $this->product_sync()->sync_event( $event_id ) );
+		$this->assertSame( 0, $this->product_sync()->managed_product_id( $event_id ) );
+	}
+
+	/**
+	 * A 'wc' mode event switched to 'external'/'free' must have its existing
+	 * managed product demoted, not left live and purchasable.
+	 */
+	public function test_switching_a_wc_event_to_external_demotes_its_existing_product() {
+		$event_id = $this->make_event(
+			[ 'title' => 'Switching Course' ],
+			[ [ 'label' => 'General', 'price' => '10', 'active' => 1 ] ]
+		);
+		$product_id = $this->product_sync()->sync_event( $event_id );
+		$this->assertGreaterThan( 0, $product_id );
+
+		update_post_meta( $event_id, '_anchor_event_registration_mode', 'external' );
+		$this->assertSame( 0, (int) $this->product_sync()->sync_event( $event_id ) );
+		$this->assertSame( 'draft', get_post_status( $product_id ) );
+	}
+
+	/**
+	 * WOO-D40: write_back_variation_ids() persists the wc_variation_id DIRECTLY
+	 * rather than through Ticket_Types::save() — save() is the authoring
+	 * sanitizer and substitutes "Registration" for a blank label, which used
+	 * to rename a blank-labeled tier the first time any sync changed its
+	 * variation id.
+	 */
+	public function test_sync_does_not_rename_a_blank_labeled_tier_to_registration() {
+		$event_id = $this->make_event();
+		update_post_meta(
+			$event_id,
+			Anchor\Events\Ticket_Types::META_KEY,
+			[ [ 'id' => 'blank1', 'label' => '', 'price' => '10', 'quota' => 0, 'sale_start' => '', 'sale_end' => '', 'active' => true, 'wc_variation_id' => 0 ] ]
+		);
+
+		$product_id = $this->product_sync()->sync_event( $event_id );
+		$this->assertGreaterThan( 0, $product_id );
+
+		$stored = $this->ticket_types()->find( $event_id, 'blank1' );
+		$this->assertSame( '', $stored['label'], 'The write-back must not silently apply save()\'s label default.' );
+		$this->assertGreaterThan( 0, $stored['wc_variation_id'], 'The variation id must still be persisted.' );
+	}
+
+	/**
+	 * finding-19 (carry-over) — do_sync_event() used to default a blank tier
+	 * label to "Ticket" for the variation's own display/attribute text,
+	 * while Ticket_Types::save()/implicit_primary() defaulted the SAME blank
+	 * label to "Registration". Both now defer to the one
+	 * Ticket_Types::default_label(), so a blank-labeled tier and its synced
+	 * variation agree on what to call it.
+	 */
+	public function test_blank_labeled_tier_variation_uses_the_shared_default_label() {
+		$event_id = $this->make_event();
+		update_post_meta(
+			$event_id,
+			Anchor\Events\Ticket_Types::META_KEY,
+			[ [ 'id' => 'blank1', 'label' => '', 'price' => '10', 'quota' => 0, 'sale_start' => '', 'sale_end' => '', 'active' => true, 'wc_variation_id' => 0 ] ]
+		);
+
+		$this->product_sync()->sync_event( $event_id );
+		$vid = $this->product_sync()->variation_for_tier( $event_id, 'blank1' );
+		$this->assertGreaterThan( 0, $vid );
+
+		$variation = wc_get_product( $vid );
+		$this->assertSame(
+			\Anchor\Events\Ticket_Types::default_label(),
+			(string) $variation->get_description(),
+			'The synced variation must use the SAME default label Ticket_Types itself falls back to.'
+		);
 	}
 }

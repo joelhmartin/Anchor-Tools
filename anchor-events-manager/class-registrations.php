@@ -294,10 +294,18 @@ class Registrations {
         $actor  = (string) ( $args['actor'] ?? 'system' );
         $note   = (string) ( $args['note'] ?? '' );
 
+        // finding-10 — $name above is already unslashed-and-sanitized (every
+        // caller's contract: Module::handle_registration(), Roster::handle_add(),
+        // the WooCommerce attendee capture), and wp_insert_post() unslashes its
+        // postarr AGAIN internally (same mechanism as update_post_meta() below) —
+        // so passing it straight through ate a literal backslash (`Room A\B`
+        // stored as `Room AB`). wp_slash() puts it back in the slashed domain
+        // right before the call, same contract Module::persist_event_authoring()
+        // documents for event meta.
         $seat_id = \wp_insert_post( [
             'post_type'   => Module::REG_CPT,
             'post_status' => 'publish',
-            'post_title'  => $name !== '' ? $name : \__( '(attendee)', 'anchor-schema' ),
+            'post_title'  => \wp_slash( $name !== '' ? $name : \__( '(attendee)', 'anchor-schema' ) ),
         ], true );
 
         if ( \is_wp_error( $seat_id ) || ! $seat_id ) {
@@ -328,7 +336,13 @@ class Registrations {
                 [ 'status' => $status, 'time' => \time(), 'note' => $note, 'actor' => $actor ],
             ],
         ];
-        foreach ( $meta as $key => $value ) {
+        // finding-10 — same contract as above: these values are already
+        // unslashed-and-sanitized, and update_post_meta() unslashes AGAIN, so
+        // a literal backslash in the name/phone/reg_fields answers was eaten
+        // silently. wp_slash() maps over arrays (reg_fields) and leaves
+        // non-strings (the int fields) alone, so it is safe to apply to the
+        // whole row in one call.
+        foreach ( \wp_slash( $meta ) as $key => $value ) {
             \update_post_meta( $seat_id, $key, $value );
         }
 
@@ -347,6 +361,13 @@ class Registrations {
      * not a seat, an unknown status, or a transition the table forbids. Never
      * fatal.
      *
+     * finding-8: the `anchor_events_seat_status_changed` action fires ONLY on
+     * an actual transition ($from !== $to) — a same-status note-only call
+     * (the roster's Cancel action clicked again on an already-cancelled row,
+     * say) never fires it, so a listener cannot be told a change happened
+     * when the tri-state above already says `skipped`.
+     *
+
      * @param int    $seat_id Seat post ID.
      * @param string $to      Target status.
      * @param string $note    History note.
@@ -422,7 +443,15 @@ class Registrations {
 
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );
-        \do_action( 'anchor_events_seat_status_changed', $seat_id, $from, $to, (string) $actor );
+        // finding-8 — a same-status call with a note (the roster's Cancel
+        // button clicked again on an already-cancelled row, say) reaches this
+        // far to record the note, but $changed is false: nothing about the
+        // seat actually moved. Firing the action anyway told every listener
+        // (reminders, roster digests, third-party integrations) a transition
+        // happened when it did not.
+        if ( $changed ) {
+            \do_action( 'anchor_events_seat_status_changed', $seat_id, $from, $to, (string) $actor );
+        }
 
         // The roster's Cancel action passes a note, so a click on an
         // already-cancelled row reaches this far: the note is recorded, the
@@ -468,15 +497,24 @@ class Registrations {
             }
         }
 
+        // CodeRabbit finding-2 (PR #20, 2nd round): Roster::handle_edit() (the
+        // only caller) already unslashes $fields — wp_unslash( $_POST[...] )
+        // — before it ever reaches sanitize_text_field()/sanitize_email() here.
+        // update_post_meta() ALSO unslashes internally (every WP meta write
+        // assumes slashed input), so passing an already-unslashed value
+        // straight through ran stripslashes() twice — "Room A\B" lost its
+        // backslash entirely, stored as "Room AB". wp_slash() right before
+        // the write puts each value back in the slashed domain the meta
+        // functions expect, same contract create_seat() documents above.
         if ( null !== $name ) {
             // The post_title follows the meta through sync_seat_title().
-            \update_post_meta( $seat_id, '_anchor_event_name', $name );
+            \update_post_meta( $seat_id, '_anchor_event_name', \wp_slash( $name ) );
         }
         if ( \array_key_exists( 'email', $fields ) ) {
             \update_post_meta( $seat_id, '_anchor_event_email', \sanitize_email( (string) $fields['email'] ) );
         }
         if ( \array_key_exists( 'phone', $fields ) ) {
-            \update_post_meta( $seat_id, '_anchor_event_phone', \sanitize_text_field( (string) $fields['phone'] ) );
+            \update_post_meta( $seat_id, '_anchor_event_phone', \wp_slash( \sanitize_text_field( (string) $fields['phone'] ) ) );
         }
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         $this->bust_cache( $event_id );

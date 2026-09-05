@@ -17,6 +17,33 @@
     });
   }
 
+  // RENDER-D25: fetchCalendar() used to treat every non-success response (and
+  // every network error) as a silent no-op — no message, no console signal.
+  // Ajax_calendar()'s check_ajax_referer() dies with body "-1" on a stale
+  // nonce (e.g. a page served from an edge cache past the nonce lifetime),
+  // which r.json() happily parses as a valid JSON number, so !res.success is
+  // true and clicking the month arrows did nothing at all, forever, with no
+  // indication why. showCalendarError() surfaces that instead, in an
+  // aria-live region so it reaches assistive tech too.
+  function showCalendarError(cal, message){
+    var status = cal.querySelector('.anchor-event-calendar-status');
+    if(!status){
+      status = document.createElement('div');
+      status.className = 'anchor-event-calendar-status';
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-live', 'polite');
+      var header = cal.querySelector('.anchor-event-calendar-header');
+      if(header && header.parentNode){
+        header.parentNode.insertBefore(status, header.nextSibling);
+      } else {
+        cal.insertBefore(status, cal.firstChild);
+      }
+    }
+    status.textContent = message;
+  }
+
+  var CALENDAR_ERROR_MESSAGE = 'Could not load this month. Please try again.';
+
   function fetchCalendar(cal, month, showPast){
     if(!window.ANCHOR_EVENTS_AJAX || !ANCHOR_EVENTS_AJAX.ajaxUrl){ return; }
     var form = new FormData();
@@ -31,7 +58,10 @@
       .then(function(r){ return r.json(); })
       .then(function(res){
         cal.classList.remove('is-loading');
-        if(!res || !res.success || !res.data || !res.data.html){ return; }
+        if(!res || !res.success || !res.data || !res.data.html){
+          showCalendarError(cal, CALENDAR_ERROR_MESSAGE);
+          return;
+        }
         var tmp = document.createElement('div');
         tmp.innerHTML = res.data.html;
         var newCal = tmp.querySelector('.anchor-event-calendar');
@@ -40,7 +70,10 @@
           initCalendars();
         }
       })
-      .catch(function(){ cal.classList.remove('is-loading'); });
+      .catch(function(){
+        cal.classList.remove('is-loading');
+        showCalendarError(cal, CALENDAR_ERROR_MESSAGE);
+      });
   }
 
   function initGalleries(){
@@ -74,7 +107,18 @@
     });
   }
 
-  document.addEventListener('DOMContentLoaded', function(){
+  // RENDER-D42: a bare DOMContentLoaded listener never fires if this script
+  // is loaded after DOM parsing has already finished — a defer/async
+  // attribute added by an optimisation plugin, a "defer JS" caching-layer
+  // setting, or a dynamic re-injection — leaving the calendar, gallery and
+  // lightbox permanently inert with no error. Same guard email-modal.js
+  // already uses.
+  function ready(fn){
+    if(document.readyState !== 'loading'){ fn(); }
+    else { document.addEventListener('DOMContentLoaded', fn); }
+  }
+
+  ready(function(){
     initCalendars();
     initGalleries();
     initLightbox();
@@ -145,10 +189,29 @@
     if(!item){ return; }
     lb.img.style.opacity = '0';
     var preload = new Image();
+    // CodeRabbit finding-8 (PR #20, 2nd round): onload/onerror fire
+    // asynchronously — navigating again (navLightbox()) before a preload
+    // resolves left its callback still armed, and it fired later against
+    // whatever item had since become current, blanking or corrupting a
+    // newer image with a stale one's src/caption. Bail out of both
+    // callbacks once lb.index no longer points at the item THIS preload
+    // was for.
     preload.onload = function(){
+      if(lb.items[lb.index] !== item){ return; }
       lb.img.src = item.src;
       lb.img.alt = item.caption || '';
       lb.img.style.opacity = '1';
+    };
+    // RENDER-D26: with no onerror, a missing/blocked attachment left the
+    // lightbox open with an invisible image forever (opacity stayed 0 —
+    // only onload restored it) and no way to tell "loading" from "broken".
+    preload.onerror = function(){
+      if(lb.items[lb.index] !== item){ return; }
+      lb.img.removeAttribute('src');
+      lb.img.alt = '';
+      lb.img.style.opacity = '1';
+      lb.caption.textContent = 'This image could not be loaded.';
+      lb.caption.style.display = '';
     };
     preload.src = item.src;
     lb.caption.textContent = item.caption || '';

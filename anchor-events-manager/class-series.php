@@ -25,12 +25,29 @@ class Series {
     /** Taxonomy slug registered on the event CPT. */
     const TAXONOMY = 'event_series';
 
+    /**
+     * Term meta key flagging a term Occurrences::assign_series() minted on
+     * its own, rather than one an admin created by hand (audit MODEL-D36).
+     *
+     * A group parent's "group-{parent_id}" term is created with no opt-out,
+     * so a site with several offering/recurrence parents silently gets one
+     * public, indexable archive URL per parent that nobody asked for. The
+     * taxonomy stays public — this IS a real, tested feature (spec §3.3/§6)
+     * for a genuinely curated series — but a term this flag marks gets a
+     * `noindex` robots directive on its own archive (noindex_auto_series()),
+     * so the auto-minted ones stop accumulating in search results while
+     * still resolving correctly for anyone (or anything, like [events_list])
+     * that already links to or queries them.
+     */
+    const AUTO_TERM_META_KEY = '_anchor_series_auto';
+
     /** @var Module */
     private $module;
 
     public function __construct( Module $module ) {
         $this->module = $module;
         \add_action( 'init', [ $this, 'register_taxonomy' ] );
+        \add_filter( 'wp_robots', [ $this, 'noindex_auto_series' ] );
     }
 
     /**
@@ -58,6 +75,31 @@ class Series {
             'show_admin_column' => true,
             'rewrite'           => [ 'slug' => 'series' ],
         ] );
+    }
+
+    /**
+     * Add a `noindex` robots directive when the current archive is an
+     * auto-minted event_series term (MODEL-D36).
+     *
+     * `wp_robots` (WP 5.7+) rather than echoing a `<meta name="robots">` tag
+     * directly: it composes with whatever else — an SEO plugin included —
+     * also filters the same array, instead of risking a second, conflicting
+     * robots tag on the page.
+     *
+     * @param array $robots
+     * @return array
+     */
+    public function noindex_auto_series( $robots ) {
+        if ( ! \is_tax( self::TAXONOMY ) ) {
+            return $robots;
+        }
+
+        $term = \get_queried_object();
+        if ( $term instanceof \WP_Term && \get_term_meta( $term->term_id, self::AUTO_TERM_META_KEY, true ) ) {
+            $robots['noindex'] = true;
+        }
+
+        return $robots;
     }
 
     /**

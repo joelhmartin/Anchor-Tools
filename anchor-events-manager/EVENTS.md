@@ -38,8 +38,11 @@ covers every meeting. `Module::get_sessions( $event_id )` returns the normalized
 
 ### Pick-one offerings (`offering`)
 A visitor registers for ONE of several dates. The parent event post holds an explicit
-list of desired dates (`_anchor_event_offering_dates` meta: `{date, start_time,
-end_time, label, capacity}` rows, authored via the "Offering Dates" repeater). Saving
+list of desired dates (`_anchor_event_offering_dates` meta: `{date, end_date,
+start_time, end_time, label, capacity, tier_id}` rows, authored via the "Offering
+Dates" repeater — `end_date` lets one row span more than a day, and `tier_id`
+optionally links the date to one of the event's ticket tiers instead of selling every
+tier on it). Saving
 the parent triggers `Occurrences::reconcile()`, which generates one full child `event`
 post per date — each with its own capacity, seats, roster, and (if the parent's
 registration mode is `wc`) its own managed WooCommerce product/variations. The parent
@@ -80,11 +83,14 @@ downstream is identical.
   child at creation. Reconciling an unchanged desired set produces no new posts, no
   closures, and no meta churn.
 - **Field split on every reconcile**:
-  - *Per-occurrence* (owned by the child): `start_date`/`end_date` (frozen once set —
-    the date identity) and `status`/`status_mode` (frozen). `start_time`, `end_time`,
-    and `capacity` are the row's *editable* fields and ARE re-applied parent-row-wins
-    on every reconcile, with `start_ts`/`end_ts` recomputed. Seats/roster and the
-    managed WooCommerce product are implicitly per-occurrence and never copied.
+  - *Per-occurrence* (owned by the child): `start_date` (frozen once set — the date
+    identity) and `status`/`status_mode` (frozen). `start_time`, `end_time`,
+    `end_date`, and `capacity` are the row's *editable* fields and ARE re-applied
+    parent-row-wins on every reconcile, with `start_ts`/`end_ts` recomputed. The END
+    date is deliberately **not** part of the occurrence's identity — only the START
+    date is — so a one-day occurrence that becomes two days updates in place instead
+    of minting a new occurrence. Seats/roster and the managed WooCommerce product are
+    implicitly per-occurrence and never copied.
   - *Shared* (copied from parent → child at creation AND re-synced on every reconcile
     of a still-live child): an **explicit allow-list**, not "everything else" —
     `Occurrences::INHERITED_KEYS` (location fields, `timezone`, `all_day`, the
@@ -225,6 +231,17 @@ key for an answer whose question has been deleted.
   "Other dates" list of a child's live siblings plus a link back to the parent's
   choose-a-date page. A directly-visited soft-closed child shows a
   "no longer available" notice instead of a booking form, alongside this sibling list.
+- **`[event_registration]` auto-append**: saving an event with registration
+  enabled appends `[event_registration]` to its content once, unless it's
+  already there (`Module::maybe_append_registration_shortcode()`). A theme
+  that renders its own registration UI for the event content declares
+  `add_theme_support( 'anchor-events-registration' )` to suppress the
+  auto-append entirely (NEW-D6); the `anchor_events_auto_append_registration`
+  filter (`$should_append, $post_id`, default `true`) is the escape hatch for
+  anything that can't add theme support. The shortcode itself also renders at
+  most once per event per request — a second invocation for the same event
+  anywhere on the page (theme template part, widget, a stray second copy of
+  the tag) renders nothing rather than a duplicate picker/form.
 - **Series archive grouping**: `Anchor\Events\Series` registers the public
   `event_series` taxonomy (rewrite slug `series`) and renders its archive
   (`render_archive()`). Because a group parent shares its series term with every one
@@ -245,8 +262,8 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 | `registration_mode` | string | `wc` \| `free` \| `external` |
 | `sessions` | array | Multi-session rows: `{date, start_time, end_time, label}` |
 | `labels` | array | Event-level badge rows: `{key, label, value}` — see "Event Labels" below |
-| `offering_dates` | array | Pick-one rows: `{date, start_time, end_time, label, capacity}` |
-| `recurrence` | array | Recurring rule: `{freq, interval, count?, until?, weekdays?, start_time, end_time, capacity}` |
+| `offering_dates` | array | Pick-one rows: `{date, end_date, start_time, end_time, label, capacity, tier_id}` |
+| `recurrence` | array | Recurring rule: `{freq, interval, count?, until?, weekdays?, start_time, end_time, capacity, label?, span_days?, tier_id?}` — the last three (audit MODEL-D35) have no admin UI input yet; `span_days` becomes each generated row's `end_date` |
 | `group_role` | string | `parent` \| `child` \| `` — engine-owned |
 | `group_id` | int | Child → parent post ID — engine-owned |
 | `occurrence_key` | string | Child's date identity, matches its source row — engine-owned |
@@ -360,11 +377,35 @@ coerced, and emitting it would produce *invalid* structured data. A valid
 - A **group parent** (or an `offering`/`recurring` type pre-reconcile) renders one
   node whose `subEvent` array is `for_event()` of every LIVE child — so a scraper
   reading only the parent's page still sees every upcoming date. The parent's own
-  `startDate`/`endDate` are taken from the earliest live child. Zero live children →
-  `[]` (nothing advertised).
+  `startDate` is taken from the earliest live child, and `endDate` from the LATEST
+  end among only the children that actually produced a `subEvent` node — a live
+  child with no usable start date is skipped for both (RENDER-D6). Zero live
+  children → `[]` (nothing advertised).
 - A **`multisession`** event renders one node spanning its earliest session start to
   its latest session end, with one minimal `Event` stub per session in `subEvent`.
-- Anything else (**`single`**) renders one plain node.
+- Anything else (**`single`**) renders one plain node. A **group child** additionally
+  carries `superEvent` (`{@type, name, url}` of its live parent).
+
+**Status** (`eventStatus`) comes from `Module::get_event_status()` and maps
+`cancelled` → `EventCancelled`, `postponed` → `EventPostponed`, `moved_online` →
+`EventMovedOnline`, anything else → `EventScheduled`. `postponed`/`moved_online`
+are manual-only status choices (`get_status_options()`), same as `cancelled` —
+nothing computes them. Either one adds `previousStartDate` to the node when
+`_anchor_event_previous_start` is set; that meta is written once, by the shared
+save path (`Module::persist_event_authoring()` → `maybe_persist_previous_start()`),
+the moment an event's status transitions INTO postponed/moved_online, or its start
+date changes again while already in one of those states.
+
+**Capacity**: when `capacity` (the "Maximum capacity" field) is > 0, the node
+carries `maximumAttendeeCapacity` (that value) and `remainingAttendeeCapacity`
+(`Registrations::remaining_capacity()` — the same capacity authority
+`choose_date_availability_hint()` reads). Capacity 0 means unlimited and neither
+key is published, same convention as `availability`.
+
+**isAccessibleForFree**: `true` whenever registration_mode is `free` AND a live
+free Offer was actually emitted (i.e. `offers` is non-empty) — omitted, like
+`offers` itself, for a finished/closed/registration-off-with-nothing-to-sell
+event.
 
 **Offers**, keyed off `registration_mode( $event_id )`:
 - `wc`: one `Offer` per active ticket tier, priced from the tier.
@@ -406,8 +447,11 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 | `anchor_events_emit_event_schema` | `$should_emit, $event_id` | Suppress/force JSON-LD emission for an event. |
 | `anchor_events_should_send_reminder` | `true, $seat, $offset` | Per-recipient reminder-email suppression. |
 | `anchor_events_query_args` | `$query_args, $atts` | Adjust the `WP_Query` args behind event listing shortcodes. |
+| `anchor_events_auto_append_registration` | `true, $post_id` | Return `false` to suppress the automatic `[event_registration]` append on save (NEW-D6) — checked independently of, and after, the `add_theme_support( 'anchor-events-registration' )` theme opt-out (either one suppresses it). |
 | `anchor_events_event_classes` | `$classes, $post_id, $context` | Extra CSS classes on a rendered event card/row. |
 | `anchor_events_registration_form` | `'', $post_id, $meta` | Override seam — return non-empty HTML to replace the registration form entirely (used by the WooCommerce integration for the ticketed buy UI). |
 | `anchor_events_registration_email_html` | `$html, $ctx` | Final filter on any built registration/lifecycle email HTML. |
 | `anchor_events_default_email_template` | `$html, $type` | The shipped default body for one email type (`confirmation` \| `reminder` \| `cancellation` \| `roster`) — the fallback behind "Reset to default". Override one type without touching the other three. |
 | `anchor_events_capability` | `$cap, $wc_active` | The single capability every roster / export / resend / console surface resolves. Default: `manage_woocommerce` on a WooCommerce site, else `edit_others_posts`. A non-string or empty return is ignored. |
+| `anchor_events_schema_node` | `$node, $event_id` | RENDER-D10. Fires at the end of `Event_Schema::assemble_node()`, so it runs on EVERY node it builds — single events, group children, and both the multisession/group-parent header nodes — before `subEvent` is attached to a parent. Return the (possibly decorated) node array. Used by the DEKA theme (`deka-structured-data.php`) to add `performer` from linked speakers, tie `organizer` to a site `@id`, and fall back an `image`; that snippet also recurses over `$node['subEvent']` itself, which is what still reaches a multisession event's per-session stubs (those are built as raw arrays, not through `assemble_node()`, so this filter never sees them directly). |
+| `anchor_events_emit_canonical` | `$emit, $seo_plugin_active` | RENDER-D21. Whether `output_canonical_url()` — a fallback for a `?anchor_events_month=` calendar URL — should print its own `<link rel="canonical">`. Default: `! $seo_plugin_active`, i.e. `false` (stay silent) whenever Yoast, Rank Math, All in One SEO or SEOPress is detected active, since each of those already emits/filters its own canonical for the same URL; `true` otherwise. Return `true` to force this module's tag even alongside a detected SEO plugin, or `false` to always suppress it. |

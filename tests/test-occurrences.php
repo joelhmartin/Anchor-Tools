@@ -356,6 +356,94 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 		return $parent_id;
 	}
 
+	/**
+	 * MODEL-D35 — a generated recurrence row must not be structurally poorer
+	 * than a hand-authored offering row: span_days becomes a real end_date,
+	 * tier_id and label are copied onto every row (a single rule generates
+	 * the whole series, so unlike an offering row, every generated row shares
+	 * ONE tier link and ONE label).
+	 */
+	public function test_expand_recurrence_applies_span_days_tier_id_and_label_to_every_row() {
+		$rule = [
+			'freq'      => 'weekly',
+			'interval'  => 1,
+			'count'     => 2,
+			'span_days' => 2,
+			'tier_id'   => 'general',
+			'label'     => 'Weekend Intensive',
+		];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' ); // a Monday.
+
+		$this->assertSame( [ '2027-03-01', '2027-03-08' ], \array_column( $rows, 'date' ) );
+		foreach ( $rows as $row ) {
+			// span_days=2: the occurrence runs date -> date+2.
+			$this->assertSame( \date( 'Y-m-d', \strtotime( $row['date'] ) + 2 * DAY_IN_SECONDS ), $row['end_date'] );
+			$this->assertSame( 'general', $row['tier_id'] );
+			$this->assertSame( 'Weekend Intensive', $row['label'] );
+		}
+	}
+
+	/**
+	 * CodeRabbit finding-7 (PR #20, 2nd round): `$ts + $span_days *
+	 * DAY_IN_SECONDS` is fixed-length (86400s/day) arithmetic. A span that
+	 * fully contains a DST fall-back (the "gained" hour lands the day AFTER
+	 * the transition, not on it) undershoots the next local midnight by
+	 * exactly that gained hour once reformatted in the site's own
+	 * timezone — landing a calendar day EARLY. 2027-11-07 02:00 America/
+	 * Chicago falls back to 01:00 the same morning; a span from 2027-11-06
+	 * to +2 days must land on 2027-11-08, not 2027-11-07.
+	 *
+	 * PHP's own default timezone is UTC in this test run (as it always is
+	 * under WordPress), so the OLD `\date()` call — which reads back in
+	 * PHP's DEFAULT timezone, not the SITE's — never actually saw this
+	 * bug under normal operation; it only surfaces once the arithmetic is
+	 * done in a REAL DST-observing zone, which is exactly what a site
+	 * configured for America/Chicago (the ordinary case this code exists
+	 * for) needs. Setting PHP's runtime default to America/Chicago for
+	 * this one test reproduces that: it makes the fixed-seconds defect
+	 * concretely observable, and proves the fix is anchored to the SITE's
+	 * configured zone (event_timezone()) rather than incidentally correct
+	 * only when the runtime default happens to match it.
+	 */
+	public function test_expand_recurrence_span_days_end_date_survives_a_dst_fall_back() {
+		update_option( 'timezone_string', 'America/Chicago' );
+		$previous_tz = \date_default_timezone_get();
+		\date_default_timezone_set( 'America/Chicago' );
+
+		try {
+			$rule = [
+				'freq'      => 'weekly',
+				'interval'  => 1,
+				'count'     => 1,
+				'span_days' => 2,
+			];
+			$rows = $this->occurrences()->expand_recurrence( $rule, '2027-11-06' ); // a Saturday.
+		} finally {
+			\date_default_timezone_set( $previous_tz );
+			delete_option( 'timezone_string' );
+		}
+
+		$this->assertSame( '2027-11-06', $rows[0]['date'] );
+		$this->assertSame(
+			'2027-11-08',
+			$rows[0]['end_date'],
+			'A 2-day span starting 2027-11-06 must end 2027-11-08 — the DST fall-back on 2027-11-07 must not shift it a day early.'
+		);
+	}
+
+	/** span_days=0 (the default) means single-day — same convention offering rows use: empty end_date. */
+	public function test_expand_recurrence_omits_end_date_when_span_days_is_zero() {
+		$rule = [ 'freq' => 'weekly', 'interval' => 1, 'count' => 2 ];
+
+		$rows = $this->occurrences()->expand_recurrence( $rule, '2027-03-01' );
+
+		foreach ( $rows as $row ) {
+			$this->assertSame( '', $row['end_date'] );
+			$this->assertSame( '', $row['tier_id'] );
+		}
+	}
+
 	public function test_expand_weekly_interval_1_count_4_yields_consecutive_mondays() {
 		$rule = [
 			'freq'     => 'weekly',
@@ -632,5 +720,185 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 
 		$this->assertSame( 'trash', get_post_status( $child_a ) );
 		$this->assertNotSame( 'trash', get_post_status( $child_b ), 'A child is never itself a group parent, so trashing it must not retire its sibling.' );
+	}
+
+	/* ------------------------------------------------------------------
+	 * 9. MODEL-D34 — closed_children() / delete_closed_occurrence(): a
+	 *    reachable terminal state for a soft-closed, now-seatless child.
+	 * ------------------------------------------------------------------ */
+
+	/** A soft-closed child (seats since removed) is found; a live one is not. */
+	public function test_closed_children_finds_soft_closed_occurrences_across_parents() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated );
+
+		// Drop the seated date -> soft-close (roster preserved).
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( $this->occurrences()->is_closed( $seated ) );
+
+		$closed = $this->occurrences()->closed_children();
+
+		$this->assertContains( $seated, $closed );
+		// The still-live sibling must not appear.
+		$live_sibling = $this->occurrences()->children( $parent_id );
+		foreach ( $live_sibling as $id ) {
+			$this->assertNotContains( $id, $closed );
+		}
+	}
+
+	/** A plain (never-grouped) event carries no occurrence_closed row and is never listed. */
+	public function test_closed_children_excludes_ordinary_events() {
+		$this->make_event();
+		$this->assertSame( [], $this->occurrences()->closed_children() );
+	}
+
+	/**
+	 * MODEL-D34 fix round 1 — delete_closed_occurrence() REFUSES a closed
+	 * occurrence that still holds an ACTIVE seat (confirmed, here). The
+	 * whole reason retire_child() preserved this post instead of trashing it
+	 * is a roster somebody still has to see/email/refund; deleting it out
+	 * from under that roster is exactly the "surprise-trashing" it was
+	 * written to avoid, just one click later.
+	 */
+	public function test_delete_closed_occurrence_refuses_when_active_seats_remain() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated ); // confirmed by default — an ACTIVE seat.
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( $this->occurrences()->is_closed( $seated ) );
+
+		$result = $this->module()->delete_closed_occurrence( $seated );
+
+		$this->assertFalse( $result['deleted'] );
+		$this->assertSame( 1, $result['active_seats'] );
+		$this->assertNotSame( 'trash', get_post_status( $seated ), 'A closed occurrence with an active seat must not be trashed.' );
+	}
+
+	/**
+	 * Pending and waitlist seats block deletion exactly like confirmed —
+	 * ACTIVE means Registrations::RESERVING_STATUSES + WAITLIST_STATUSES,
+	 * not just `confirmed`.
+	 */
+	public function test_delete_closed_occurrence_refuses_when_only_a_waitlist_seat_remains() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated, [ 'status' => \Anchor\Events\Registrations::STATUS_WAITLIST ] );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$result = $this->module()->delete_closed_occurrence( $seated );
+
+		$this->assertFalse( $result['deleted'] );
+		$this->assertSame( 1, $result['active_seats'] );
+	}
+
+	/**
+	 * Zero active seats — none at all — permits deletion. A cancelled/
+	 * refunded/failed seat is history, not a live roster, so it must not
+	 * count toward the refusal either.
+	 */
+	public function test_delete_closed_occurrence_permits_deletion_with_zero_active_seats() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated, [ 'status' => \Anchor\Events\Registrations::STATUS_CANCELLED ] );
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( $this->occurrences()->is_closed( $seated ) );
+
+		$result = $this->module()->delete_closed_occurrence( $seated );
+
+		$this->assertTrue( $result['deleted'] );
+		$this->assertSame( 0, $result['active_seats'] );
+		$this->assertSame( 'trash', get_post_status( $seated ) );
+	}
+
+	/**
+	 * The object check: delete_closed_occurrence() refuses an event that is
+	 * not currently closed — this is not a generic "delete any event" path.
+	 */
+	public function test_delete_closed_occurrence_refuses_a_live_event() {
+		$event_id = $this->make_event();
+
+		$result = $this->module()->delete_closed_occurrence( $event_id );
+
+		$this->assertFalse( $result['deleted'] );
+		$this->assertSame( 0, $result['active_seats'] );
+		$this->assertNotSame( 'trash', get_post_status( $event_id ) );
+	}
+
+	/** And refuses a non-event post id / a post that doesn't exist. */
+	public function test_delete_closed_occurrence_refuses_a_non_event_id() {
+		$page_id = self::factory()->post->create( [ 'post_type' => 'page' ] );
+
+		$this->assertFalse( $this->module()->delete_closed_occurrence( $page_id )['deleted'] );
+		$this->assertFalse( $this->module()->delete_closed_occurrence( 0 )['deleted'] );
+		$this->assertFalse( $this->module()->delete_closed_occurrence( PHP_INT_MAX )['deleted'] );
+	}
+
+	/**
+	 * handle_delete_closed_occurrence() is the real admin-post entry point;
+	 * order is nonce -> capability -> object (delete_closed_occurrence()'s
+	 * own is_closed() check). wp_die() is intercepted by WP's test suite as
+	 * WPDieException instead of terminating the process, so — like
+	 * handle_event_manager_save()'s nonce test — both gates ARE directly
+	 * testable even though the success path's exit() is not.
+	 */
+	public function test_handle_delete_closed_occurrence_dies_on_invalid_nonce() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST    = [ 'event_id' => 1, '_wpnonce' => 'invalid-nonce' ];
+		// CodeRabbit finding-11 (PR #20, 2nd round): check_admin_referer()
+		// reads $_REQUEST, not $_POST — a manually assigned $_POST in a test
+		// does not also populate $_REQUEST, so without this the nonce check
+		// could be seeing a stale/empty $_REQUEST['_wpnonce'] regardless of
+		// what $_POST actually holds. Harmless here either way (the nonce is
+		// deliberately invalid) but kept consistent with the capability test
+		// below, where it matters.
+		$_REQUEST = $_POST;
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_delete_closed_occurrence();
+	}
+
+	/** A valid nonce is not enough — the module capability gate still applies. */
+	public function test_handle_delete_closed_occurrence_dies_when_user_lacks_capability() {
+		$parent_id = $this->make_parent( $this->two_rows() );
+		$live      = $this->occurrences()->reconcile( $parent_id );
+		$seated    = $live[0];
+		$this->make_seat( $seated );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [ $this->two_rows()[1] ] );
+		$this->occurrences()->reconcile( $parent_id );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$_POST = [
+			'event_id' => $seated,
+			'_wpnonce' => wp_create_nonce( 'anchor_events_delete_closed_occurrence_' . $seated ),
+		];
+		// CodeRabbit finding-11 (PR #20, 2nd round): check_admin_referer()
+		// reads $_REQUEST['_wpnonce'], not $_POST. Without also setting
+		// $_REQUEST here, the nonce check itself fails FIRST — the test
+		// still gets a WPDieException and still passes, but for the wrong
+		// reason, never actually reaching (or proving) the capability gate
+		// it claims to test. Setting $_REQUEST lets the nonce pass, and
+		// asserting the die MESSAGE (not just the exception class) is what
+		// actually distinguishes "refused by capability" from "refused by
+		// nonce" — both throw the identical WPDieException class.
+		$_REQUEST = $_POST;
+
+		try {
+			$this->module()->handle_delete_closed_occurrence();
+			$this->fail( 'handle_delete_closed_occurrence() did not die for a user lacking the capability.' );
+		} catch ( WPDieException $e ) {
+			$this->assertSame( 'You are not allowed to do this.', $e->getMessage() );
+		}
 	}
 }

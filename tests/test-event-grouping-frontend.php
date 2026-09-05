@@ -257,6 +257,92 @@ class Test_Event_Grouping_Frontend extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'No sessions found in this series.', $html );
 	}
 
+	/**
+	 * MODEL-D36 — Occurrences::assign_series() mints a "group-{parent_id}"
+	 * term for every group parent with no opt-out, giving each one a public,
+	 * indexable archive URL nobody asked for. The taxonomy stays public (this
+	 * archive is a real, tested feature for a genuinely curated series), but
+	 * an AUTO-MINTED term is flagged with term meta and noindexed via the
+	 * wp_robots filter — proven here by exercising it directly, not just
+	 * asserting the meta row exists, since the meta alone doesn't prove the
+	 * archive request would actually carry the directive.
+	 */
+	public function test_auto_minted_series_term_is_flagged_and_noindexed() {
+		[ $parent_id ] = $this->make_offering( $this->three_rows() );
+
+		$terms = wp_get_object_terms( $parent_id, Series::TAXONOMY );
+		$this->assertNotEmpty( $terms );
+		$term_id = (int) $terms[0]->term_id;
+
+		$this->assertSame( 1, (int) get_term_meta( $term_id, \Anchor\Events\Series::AUTO_TERM_META_KEY, true ), 'An auto-minted term must carry the flag.' );
+
+		$this->go_to_series_archive( $parent_id );
+		$robots = $this->module()->series->noindex_auto_series( [] );
+		$this->assertTrue( $robots['noindex'] ?? false, 'The auto-minted series archive must be noindexed.' );
+
+		// The archive itself still renders normally — noindexing is not the
+		// same as de-registering or de-queryable-ing the taxonomy.
+		$this->assertTrue( is_tax( Series::TAXONOMY ) );
+		$this->assertNotSame( '', $this->module()->series->render_archive() );
+	}
+
+	/**
+	 * finding-4 (bot review, PR #20): AUTO_TERM_META_KEY used to be stamped
+	 * only on the branch that MINTS a brand-new "group-{parent_id}" term.
+	 * A term that already exists under that exact deterministic slug —
+	 * created before AUTO_TERM_META_KEY existed, or missing the flag some
+	 * other way — was resolved by assign_series() every reconcile without
+	 * ever getting stamped, so it stayed indexable forever.
+	 */
+	public function test_pre_existing_unstamped_group_term_gets_stamped_on_reconcile() {
+		$parent_id = $this->make_event( [ 'title' => 'Workshop', 'venue' => 'Main Hall', 'timezone' => 'UTC' ] );
+
+		$slug   = 'group-' . $parent_id;
+		$result = \wp_insert_term( 'Workshop', Series::TAXONOMY, [ 'slug' => $slug ] );
+		$this->assertIsArray( $result, 'Sanity: the pre-existing term must be created.' );
+		$term_id = (int) $result['term_id'];
+		$this->assertSame(
+			'',
+			\get_term_meta( $term_id, Series::AUTO_TERM_META_KEY, true ),
+			'Sanity: the pre-existing term starts unstamped.'
+		);
+
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $this->three_rows() );
+		$this->occurrences()->reconcile( $parent_id );
+
+		$this->assertSame(
+			1,
+			(int) \get_term_meta( $term_id, Series::AUTO_TERM_META_KEY, true ),
+			'A pre-existing term resolved through the group-{id} slug pattern must be stamped, idempotently.'
+		);
+	}
+
+	/**
+	 * finding-4: a term under a slug assign_series() never looks up (a
+	 * genuinely hand-created series, or any other unrelated term) must never
+	 * be touched by a reconcile pass for a completely different parent.
+	 */
+	public function test_custom_slug_term_is_never_stamped_by_reconcile() {
+		$custom = \wp_insert_term( 'Hand curated series', Series::TAXONOMY, [ 'slug' => 'hand-curated-series' ] );
+		$this->assertIsArray( $custom );
+		$term_id = (int) $custom['term_id'];
+
+		$this->make_offering( $this->three_rows() );
+
+		$this->assertSame(
+			'',
+			\get_term_meta( $term_id, Series::AUTO_TERM_META_KEY, true ),
+			'A manually created term under a different slug must never be stamped.'
+		);
+	}
+
+	/** A term the filter has no reason to touch (not the series archive at all) passes through unchanged. */
+	public function test_noindex_auto_series_is_a_no_op_off_the_series_archive() {
+		$this->go_to( home_url( '/' ) );
+		$robots = [ 'index' => true ];
+		$this->assertSame( $robots, $this->module()->series->noindex_auto_series( $robots ) );
+	}
+
 	/* ------------------------------------------------------------------
 	 * D. Review-round fixes: FIX 1 (occurrence label on date rows), FIX 2
 	 * (guard the sibling "See all dates" link against a trashed parent),

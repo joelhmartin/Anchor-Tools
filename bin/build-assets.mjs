@@ -103,8 +103,18 @@ async function main() {
         const out = csso(src).css;
         await writeFile(minAbs, out, 'utf8');
       } else {
-        const out = await terser(src, {
-          sourceMap: { filename: minRel.split('/').pop(), url: `${minRel.split('/').pop()}.map` },
+        // Pass the source keyed by its real filename (not a bare string) so
+        // the emitted map's `sources` entry names the actual file instead of
+        // a meaningless array index ("0"), and set `includeSources` so the
+        // map embeds `sourcesContent` — otherwise the map is mappings that
+        // resolve to nothing once the plugin source isn't shipped alongside it.
+        const srcName = rel.split('/').pop();
+        const out = await terser({ [srcName]: src }, {
+          sourceMap: {
+            filename: minRel.split('/').pop(),
+            url: `${minRel.split('/').pop()}.map`,
+            includeSources: true,
+          },
           format: { comments: false },
         });
         if (out.error) throw out.error;

@@ -95,6 +95,24 @@ class Module {
     const STATUS_SCHEMA_VERSION = 1;
 
     /**
+     * Version of the `_anchor_event_registration_mode` back-compat back-fill.
+     *
+     * Same shape as STATUS_SCHEMA_VERSION: the site-wide option
+     * `anchor_events_regmode_version` records the version the migration has
+     * finished, and there is no per-event stamp because the selection
+     * predicate (registration_mode meta NOT EXISTS) is self-clearing — every
+     * row the pass writes removes itself from the window.
+     *
+     * Supersedes the pre-versioning boolean `anchor_events_regmode_migrated`
+     * flag (audit MODEL-D41), which this back-fill deletes once the versioned
+     * option is set.
+     *
+     * 1 — original back-fill: derive registration_mode from legacy signals
+     *     and, for external events, copy registration_url -> external_url.
+     */
+    const REGMODE_SCHEMA_VERSION = 1;
+
+    /**
      * Statuses whose old spelling still exists in the wild, mapped to the
      * current one. Read through normalize_status(); rewritten on disk by
      * backfill_status_values().
@@ -169,12 +187,36 @@ class Module {
     const EMAIL_RETRY_BATCH = 100;
 
     /**
+     * finding-14 — a reminder marker's value distinguishes THREE things, not
+     * two: a real send timestamp (>0), superseded by a nearer due offset (0,
+     * REG-D3 — never attempted, so "past" is the honest state), and abandoned
+     * after MAX_EMAIL_ATTEMPTS failed deliveries (this sentinel). Before this
+     * existed, queue_email_retry() wrote the SAME 0 a supersession does, so
+     * compute_email_schedule()/the Upcoming Sends panel reported a mailer
+     * that failed three times in a row identically to an offset that was
+     * simply never due — "past — not sent", not the delivery failure it
+     * actually was.
+     */
+    const REMINDER_ABANDONED_MARKER = -1;
+
+    /**
      * How far ahead the hourly reminder sweep will ever look, in days
      * (audit REG-D36). The scan window is normally the largest reminder offset
      * in play; this is the ceiling on that, so one absurd per-event offset
      * cannot turn an hourly cron into a full-table scan of the calendar.
      */
     const REMINDER_HORIZON_DAYS = 366;
+
+    /**
+     * finding-7 — ceiling on the per-event reminder-override scan inside
+     * run_reminder_sweep() (the query that widens $max_global for events with
+     * their OWN reminder_offsets, bounded to the next REMINDER_HORIZON_DAYS
+     * days). That query already carried no_found_rows but posts_per_page=>-1,
+     * so a site with an unusually large number of events carrying an override
+     * inside the window still ran an unbounded query every hour. Filterable
+     * via `anchor_events_reminder_override_scan_limit` for tests.
+     */
+    const REMINDER_OVERRIDE_SCAN_LIMIT = 500;
 
     /**
      * Event starts kept in a lifecycle-email marker map (audit MODEL-D16).
@@ -185,6 +227,41 @@ class Module {
 
     private static $instance = null;
     private $assets_enqueued = false;
+
+    /**
+     * finding-17 — get_meta( $post_id ) as it stood BEFORE a REST write,
+     * captured on the `rest_insert_{$post_type}` hook (fires before the REST
+     * meta fields are persisted) and consumed on `rest_after_insert_` (fires
+     * after) so persist_after_rest_write() can call
+     * maybe_persist_previous_start() with genuine old/new meta, same as the
+     * two authoring save paths. Keyed by post id, not a single scalar, so a
+     * batch REST request touching more than one event in the same process
+     * (unlikely today, but cheap to make safe) can't cross-contaminate.
+     *
+     * @var array<int,array>
+     */
+    private $rest_old_meta_before_write = [];
+
+    /**
+     * RENDER-D33: the event id shortcode_event_registration() rendered
+     * registration UI for during THIS request, or null. render_single_event_body()
+     * resets this to null, runs the post's content through the 'the_content'
+     * filter exactly once (which is what actually executes the shortcode,
+     * wherever it came from — stored post_content or injected by another
+     * filter/builder), and checks this afterward instead of grepping the raw
+     * stored content string for the shortcode tag.
+     */
+    private $registration_shortcode_rendered_for = null;
+
+    /**
+     * NEW-D6 (plugin half): event ids [event_registration] has already
+     * rendered the picker/form for THIS request, so a second invocation for
+     * the SAME event — from a theme template part, a widget, a builder, or a
+     * second copy of the shortcode anywhere on the page — renders nothing
+     * instead of a duplicate. Grows only for the life of one request; a
+     * fresh request starts with an empty list.
+     */
+    private $registration_shortcode_rendered_ids = [];
 
     /**
      * True only while a preview is rendering. Makes build_registration_email_html()
@@ -365,6 +442,11 @@ class Module {
         // controller saves meta. rest_after_insert_{$post_type} is the hook
         // that runs after the meta write, so it is the only place the new
         // dates are visible.
+        // finding-17 — fires BEFORE the REST controller writes the request's
+        // meta fields (WP_REST_Posts_Controller calls this, THEN
+        // $this->meta->update_value(), THEN rest_after_insert_), so this is
+        // the only REST-lifecycle hook where the OLD meta is still visible.
+        \add_action( 'rest_insert_' . self::CPT, [ $this, 'capture_meta_before_rest_write' ], 10, 3 );
         \add_action( 'rest_after_insert_' . self::CPT, [ $this, 'persist_after_rest_write' ], 10, 3 );
         // …and a REST WRITE response carries any notice still queued from the
         // author's previous metabox save (audit MODEL-D14) — see
@@ -406,6 +488,10 @@ class Module {
         \add_action( 'admin_init', [ $this, 'backfill_occurrence_labels' ] );
         // Same shape again: the 'draft' -> 'undated' status rename (MODEL-D19).
         \add_action( 'admin_init', [ $this, 'backfill_status_values' ] );
+        // Same shape again: derive registration_mode for pre-upgrade events
+        // (MODEL-D41). Was on `init` (every front-end pageload); now batched
+        // and versioned like the back-fills above.
+        \add_action( 'admin_init', [ $this, 'backfill_registration_mode' ] );
         \add_action( 'admin_init', [ $this, 'cleanup_legacy_cache_registry' ] );
         \add_action( 'admin_notices', [ $this, 'admin_notices' ] );
         \add_action( 'admin_notices', [ $this, 'maybe_render_timezone_notice' ] );
@@ -497,6 +583,11 @@ class Module {
         // here (not the WC class) because the error log exists on all sites.
         \add_action( 'admin_post_anchor_events_clear_error_log', [ $this, 'handle_clear_error_log' ] );
 
+        // MODEL-D34: delete a closed occurrence from the "Closed occurrences"
+        // admin panel — the one reachable terminal state for a soft-closed
+        // child once its seats are gone.
+        \add_action( 'admin_post_anchor_events_delete_closed_occurrence', [ $this, 'handle_delete_closed_occurrence' ] );
+
         // L14: GDPR personal-data exporter + eraser for attendee PII stored on seats.
         \add_filter( 'wp_privacy_personal_data_exporters', [ $this, 'register_privacy_exporter' ] );
         \add_filter( 'wp_privacy_personal_data_erasers', [ $this, 'register_privacy_eraser' ] );
@@ -577,6 +668,26 @@ class Module {
     }
 
     /**
+     * finding-17 — snapshot get_meta() BEFORE the REST controller writes this
+     * request's meta fields (fires on `rest_insert_{$post_type}`, which WP
+     * core calls before `$this->meta->update_value()` — see
+     * class-wp-rest-posts-controller.php). persist_after_rest_write() (on
+     * `rest_after_insert_`, which fires AFTER that write) consumes this to
+     * call maybe_persist_previous_start() with genuine old/new meta, exactly
+     * like the other two save paths.
+     *
+     * @param \WP_Post         $post
+     * @param \WP_REST_Request $request  Unused; part of the hook signature.
+     * @param bool             $creating Unused; part of the hook signature.
+     */
+    public function capture_meta_before_rest_write( $post, $request = null, $creating = false ) {
+        if ( ! $post instanceof \WP_Post || $post->post_type !== self::CPT ) {
+            return;
+        }
+        $this->rest_old_meta_before_write[ (int) $post->ID ] = $this->get_meta( $post->ID );
+    }
+
+    /**
      * Recompute the derived rows after a REST write to an event (audit REST-D1).
      *
      * `start_date`, `end_date`, `start_time`, `end_time`, `all_day` and
@@ -594,6 +705,17 @@ class Module {
      * because in auto mode the dates own the status — a client that wants to
      * set it by hand has to switch the event to manual mode first.
      *
+     * finding-17 — `_anchor_event_status` is ALSO in REST_PUBLIC_META
+     * (show_in_rest, gated only by edit_post), and WordPress's generic
+     * registered-meta REST handling writes it straight via update_post_meta()
+     * — bypassing persist_event_authoring() and its maybe_persist_previous_start()
+     * call entirely. A REST PATCH straight to postponed/moved_online never
+     * captured the date being moved away from, so Event_Schema published
+     * EventPostponed/EventMovedOnline with no previousStartDate. This calls
+     * the SAME capture function the metabox and console saves use, fed by
+     * capture_meta_before_rest_write()'s snapshot — one function, three
+     * entry points, never a second copy of its rules.
+     *
      * @param \WP_Post         $post
      * @param \WP_REST_Request $request  Unused; part of the hook signature.
      * @param bool             $creating Unused; part of the hook signature.
@@ -603,7 +725,11 @@ class Module {
             return;
         }
 
-        $meta = $this->get_meta( $post->ID );
+        $meta     = $this->get_meta( $post->ID );
+        $old_meta = $this->rest_old_meta_before_write[ (int) $post->ID ] ?? [];
+        unset( $this->rest_old_meta_before_write[ (int) $post->ID ] );
+        $this->maybe_persist_previous_start( $post->ID, $old_meta, $meta );
+
         if ( ! empty( $meta['start_date'] ) ) {
             $this->persist_timestamps( $post->ID, $meta );
         }
@@ -721,19 +847,62 @@ class Module {
         // the scan asks only about future events — and never looks further
         // ahead than REMINDER_HORIZON_DAYS whatever an offset claims.
         if ( ! empty( $settings['reminder_enabled'] ) ) {
-            $cap_ts          = $now + ( self::REMINDER_HORIZON_DAYS * DAY_IN_SECONDS );
+            $cap_ts      = $now + ( self::REMINDER_HORIZON_DAYS * DAY_IN_SECONDS );
+            $override_meta_query = [
+                'relation' => 'AND',
+                [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ],
+                [ 'key' => $this->meta_key( 'start_ts' ), 'value' => [ $now, $cap_ts ], 'compare' => 'BETWEEN', 'type' => 'NUMERIC' ],
+            ];
+
+            // finding-2 (bot review, PR #20) — the capped, UNORDERED page below
+            // can omit the very event whose override carries the largest
+            // offset (it only has to be one of the events NOT returned in the
+            // first $scan_limit rows), and $max_global sets the horizon the
+            // main scan below relies on — under-widening it silently drops
+            // that event's reminder entirely rather than merely scanning it
+            // late. sanitize_offset_csv() always rsort()s before storing, so
+            // the FIRST number in an event's CSV is always that event's own
+            // max; ordering by the meta field DESC and taking one row
+            // therefore finds the TRUE global max in one small, indexed
+            // query, independent of $scan_limit.
+            $max_row = \get_posts( [
+                'post_type'      => self::CPT,
+                'post_status'    => [ 'publish', 'future', 'private' ],
+                'posts_per_page' => 1,
+                'fields'         => 'ids',
+                'no_found_rows'  => true,
+                'meta_key'       => $this->meta_key( 'reminder_offsets' ), // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- required for orderby=meta_value_num below.
+                'orderby'        => 'meta_value_num',
+                'order'          => 'DESC',
+                'meta_query'     => $override_meta_query,
+            ] );
+            if ( ! empty( $max_row ) ) {
+                foreach ( array_map( 'intval', explode( ',', (string) \get_post_meta( (int) $max_row[0], $this->meta_key( 'reminder_offsets' ), true ) ) ) as $d ) {
+                    $max_global = max( $max_global, $d );
+                }
+            }
+
+            // The capped page stays for the per-event pass below (folding in
+            // any smaller overrides the true-max row above didn't carry) and
+            // for the truncation log an operator can act on; it is no longer
+            // the only source $max_global depends on for correctness.
+            $scan_limit   = (int) \apply_filters( 'anchor_events_reminder_override_scan_limit', self::REMINDER_OVERRIDE_SCAN_LIMIT );
+            $scan_limit   = $scan_limit > 0 ? $scan_limit : self::REMINDER_OVERRIDE_SCAN_LIMIT;
             $override_events = \get_posts( [
                 'post_type'      => self::CPT,
                 'post_status'    => [ 'publish', 'future', 'private' ],
-                'posts_per_page' => -1,
+                'posts_per_page' => $scan_limit,
                 'fields'         => 'ids',
                 'no_found_rows'  => true,
-                'meta_query'     => [
-                    'relation' => 'AND',
-                    [ 'key' => $this->meta_key( 'reminder_offsets' ), 'value' => '', 'compare' => '!=' ],
-                    [ 'key' => $this->meta_key( 'start_ts' ), 'value' => [ $now, $cap_ts ], 'compare' => 'BETWEEN', 'type' => 'NUMERIC' ],
-                ],
+                'meta_query'     => $override_meta_query,
             ] );
+            // finding-7 — a full page means the scan may have missed events past
+            // the ceiling; logged once per sweep (not once per event) so an
+            // operator can raise the limit instead of a silently truncated scan
+            // under-widening $max_global.
+            if ( \count( $override_events ) >= $scan_limit ) {
+                Events_Log::error( 'reminder_scan_truncated', [ 'limit' => $scan_limit ] );
+            }
             foreach ( $override_events as $oid ) {
                 foreach ( array_map( 'intval', explode( ',', (string) \get_post_meta( $oid, $this->meta_key( 'reminder_offsets' ), true ) ) ) as $d ) {
                     $max_global = max( $max_global, $d );
@@ -769,8 +938,14 @@ class Module {
             // Never remind attendees about a date that is off (audit MODEL-D17).
             // A soft-closed occurrence keeps its future start_ts and its roster,
             // so it matched the window and mailed "…is coming up" for a date
-            // that had been cancelled.
-            if ( 'cancelled' === $this->get_event_status( $event_id, $meta )
+            // that had been cancelled — and the same was true of `postponed`
+            // until this guard was widened to status_is_closed(): the status
+            // list bookability() and the registration guards already agreed
+            // on. `moved_online` deliberately stays out of that set, so it
+            // keeps sending. Nothing is marked here either way — the
+            // `continue` just skips this sweep, so an offset that has not
+            // fired yet is still due once the event is un-closed.
+            if ( $this->status_is_closed( $this->get_event_status( $event_id, $meta ) )
                 || $this->occurrences->is_closed( $event_id ) ) {
                 continue;
             }
@@ -986,7 +1161,10 @@ class Module {
      * @param int $seat_id
      * @param int $start_ts
      * @param int $offset
-     * @param int $sent_at  Send time, or 0 for "superseded by a nearer offset".
+     * @param int $sent_at  Send time; 0 for "superseded by a nearer offset"
+     *                      (REG-D3); self::REMINDER_ABANDONED_MARKER for
+     *                      "gave up after MAX_EMAIL_ATTEMPTS failed sends"
+     *                      (finding-14).
      */
     private function mark_reminder_sent( $seat_id, $start_ts, $offset, $sent_at ) {
         $raw = \get_post_meta( $seat_id, Registrations::META_REMINDERS_SENT, true );
@@ -1096,9 +1274,12 @@ class Module {
             // exists, so an unmarked offset would be picked up by the very same
             // sweep's reminder pass, sent, and re-queued at one attempt — a
             // permanently failing mailer would cycle for ever and fill the
-            // capped error log. Marking it superseded (0) ends it for good.
+            // capped error log. finding-14 — this used to mark it superseded
+            // (0), which compute_email_schedule() cannot tell apart from a
+            // real supersession (REG-D3); the dedicated sentinel lets the
+            // Upcoming Sends panel report a delivery failure as one.
             if ( 'reminder' === $type && (int) ( $job['start_ts'] ?? 0 ) > 0 && (int) ( $job['offset'] ?? 0 ) > 0 ) {
-                $this->mark_reminder_sent( $seat_id, (int) $job['start_ts'], (int) $job['offset'], 0 );
+                $this->mark_reminder_sent( $seat_id, (int) $job['start_ts'], (int) $job['offset'], self::REMINDER_ABANDONED_MARKER );
             }
 
             Events_Log::error( 'email_retry_abandoned', [
@@ -1169,38 +1350,48 @@ class Module {
             // success clears the job and a mail failure re-queues it with one
             // more attempt spent.
             if ( 'cancellation' === $job['type'] ) {
-                $this->send_cancellation_email( $seat_id );
+                $result = $this->send_cancellation_email( $seat_id );
             } elseif ( 'reminder' === $job['type'] ) {
-                $this->retry_reminder( (int) $seat_id, $job, $now );
+                $result = $this->retry_reminder( (int) $seat_id, $job, $now );
             } else {
                 $this->clear_email_retry( $seat_id );
                 continue;
             }
 
-            // A job whose attempt count did not move is one the sender never
-            // got as far as mailing: the email type is switched off, the seat
-            // has no address, the record is gone. An hourly retry cannot
-            // change any of those, so retire it rather than let it sit in the
-            // queue being re-read for ever.
-            $after = \get_post_meta( $seat_id, Registrations::META_EMAIL_RETRY, true );
-            if ( \is_array( $after ) && (int) ( $after['attempts'] ?? 0 ) === (int) ( $job['attempts'] ?? 0 ) ) {
+            // finding-12 — this used to INFER what happened by comparing the
+            // job's attempt counter before/after this call, and logged
+            // EVERY unchanged counter as `email_retry_undeliverable` — an
+            // error-level entry for a switched-off email type, a blank
+            // address, or an already-gone seat, none of which is a defect
+            // (see send_reminder_email()'s own 'disabled' comment). The
+            // sender's own Outcome already says exactly which case this is:
+            // `skipped` retires the job quietly (an hourly retry cannot
+            // change any of those reasons, so it must not sit in the queue
+            // being re-read for ever, but it earns no error log); `failed`
+            // needs nothing further here — the sender already bumped the
+            // attempt count AND logged its own failure
+            // (email_send_returned_false via send_html_email()); `sent`
+            // already cleared the job.
+            if ( $result->is_skipped() ) {
                 $this->clear_email_retry( $seat_id, (string) $job['type'] );
-                Events_Log::error( 'email_retry_undeliverable', [
-                    'seat' => (int) $seat_id,
-                    'type' => (string) $job['type'],
-                ] );
             }
         }
     }
 
     /**
      * One queued reminder retry. Abandons the job (without sending) when the
-     * reminder no longer applies — the event has started, been cancelled, or
-     * been rescheduled away from the date the job was queued for.
+     * reminder no longer applies — the event has started, been closed
+     * (cancelled or postponed, per status_is_closed()), or been rescheduled
+     * away from the date the job was queued for.
+     *
+     * finding-12: returns an Outcome (like every other sender) so
+     * drain_email_retry_queue() can retire an undeliverable job from what
+     * actually happened, not from an attempt-counter proxy.
      *
      * @param int   $seat_id
      * @param array $job
      * @param int   $now
+     * @return Outcome sent | skipped (seat_no_longer_eligible, event_no_longer_applies) | failed.
      */
     private function retry_reminder( $seat_id, array $job, $now ) {
         $seat     = $this->registrations->get_seat( $seat_id );
@@ -1208,18 +1399,18 @@ class Module {
         $offset   = (int) ( $job['offset'] ?? 0 );
         if ( ! $seat || $seat['status'] !== Registrations::STATUS_CONFIRMED || $event_id <= 0 || $offset <= 0 ) {
             $this->clear_email_retry( $seat_id, 'reminder' );
-            return;
+            return Outcome::skipped( 'seat_no_longer_eligible' );
         }
         $meta     = $this->get_meta( $event_id );
         $start_ts = (int) ( $meta['start_ts'] ?? 0 );
         if ( $start_ts <= $now
             || $start_ts !== (int) ( $job['start_ts'] ?? 0 )
-            || 'cancelled' === $this->get_event_status( $event_id, $meta )
+            || $this->status_is_closed( $this->get_event_status( $event_id, $meta ) )
             || $this->occurrences->is_closed( $event_id ) ) {
             $this->clear_email_retry( $seat_id, 'reminder' );
-            return;
+            return Outcome::skipped( 'event_no_longer_applies' );
         }
-        $this->deliver_reminder( $seat, $event_id, $offset, $start_ts, $this->get_settings() );
+        return $this->deliver_reminder( $seat, $event_id, $offset, $start_ts, $this->get_settings() );
     }
 
     /**
@@ -1277,7 +1468,10 @@ class Module {
             'type'          => 'reminder',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event (and the same email domain) from collapsing into one
+        // deduped error row; see send_html_email()'s docblock.
+        $sent = $this->send_html_email( (string) $seat['email'], $subject, $html, [], $event_id, [ 'seat' => (int) ( $seat['id'] ?? 0 ) ] );
 
         // Retry bookkeeping lives at the point of the actual send (audit
         // REG-D5) so the pre-flight bails above — reminders off for this
@@ -1421,7 +1615,7 @@ class Module {
      *       'recipient'    => string,     // human-readable recipient description
      *       'sent_count'   => int,        // reminders: seats w/ the offset marker; roster: 0|1
      *       'total_count'  => int,        // reminders: confirmed seats; roster: 1
-     *       'state'        => 'sent'|'partial'|'scheduled'|'past',
+     *       'state'        => 'sent'|'partial'|'scheduled'|'past'|'failed',
      *     ],
      *     ...
      *   ],
@@ -1484,16 +1678,23 @@ class Module {
             $total = \count( $seats['items'] );
 
             foreach ( $this->effective_offsets( $event_id, $settings, $meta ) as $offset ) {
-                $scheduled_ts = $start_ts - ( $offset * DAY_IN_SECONDS );
-                $sent_count   = 0;
+                $scheduled_ts    = $start_ts - ( $offset * DAY_IN_SECONDS );
+                $sent_count      = 0;
+                $abandoned_count = 0;
                 foreach ( $seats['items'] as $seat ) {
                     // Markers are read, never migrated, here — this method is
                     // documented as having no side effects. A 0 marker means
                     // the offset was superseded by a nearer reminder (REG-D3)
                     // and was never actually sent, so it must not be counted:
-                    // the row then reports 'past', which is the truth.
+                    // the row then reports 'past', which is the truth. The
+                    // dedicated abandoned sentinel (finding-14) is a THIRD,
+                    // distinct case — a real delivery failure, not a no-op —
+                    // counted separately so the row can say so.
                     $sent_map = $this->reminder_markers( $seat['id'], $start_ts );
-                    if ( ! empty( $sent_map[ $offset ] ) ) {
+                    $marker   = $sent_map[ $offset ] ?? null;
+                    if ( null !== $marker && (int) $marker === self::REMINDER_ABANDONED_MARKER ) {
+                        $abandoned_count++;
+                    } elseif ( ! empty( $marker ) ) {
                         $sent_count++;
                     }
                 }
@@ -1508,7 +1709,7 @@ class Module {
                     ),
                     'sent_count'   => $sent_count,
                     'total_count'  => $total,
-                    'state'        => $this->schedule_row_state( $scheduled_ts, $now, $sent_count, $total ),
+                    'state'        => $this->schedule_row_state( $scheduled_ts, $now, $sent_count, $total, $abandoned_count ),
                 ];
             }
         }
@@ -1546,6 +1747,9 @@ class Module {
      * - 'partial'   : some, but not all, confirmed seats have it — honestly
      *                 surfaces mixed state instead of collapsing it into
      *                 either "sent" or "scheduled".
+     * - 'failed'    : (finding-14) nothing sent, but at least one confirmed
+     *                 seat's retry was abandoned after MAX_EMAIL_ATTEMPTS —
+     *                 a real delivery failure, not merely unsent yet.
      * - 'scheduled' : none sent yet, send window still in the future.
      * - 'past'      : none sent yet, send window already passed (e.g.
      *                 reminders were enabled after the window elapsed).
@@ -1554,14 +1758,18 @@ class Module {
      * @param int $now
      * @param int $sent_count
      * @param int $total_count
+     * @param int $abandoned_count
      * @return string
      */
-    private function schedule_row_state( $scheduled_ts, $now, $sent_count, $total_count ) {
+    private function schedule_row_state( $scheduled_ts, $now, $sent_count, $total_count, $abandoned_count = 0 ) {
         if ( $total_count > 0 && $sent_count === $total_count ) {
             return 'sent';
         }
         if ( $sent_count > 0 ) {
             return 'partial';
+        }
+        if ( $abandoned_count > 0 ) {
+            return 'failed';
         }
         return $now < $scheduled_ts ? 'scheduled' : 'past';
     }
@@ -1590,9 +1798,17 @@ class Module {
      * Send an HTML email and log any failure (bug #5). Centralizes the two
      * registration wp_mail calls; the full email refactor lands in Phase 6.
      *
+     * @param array $identity finding-13: extra Events_Log identity keys — 'seat'
+     *              or 'order' — so two different recipients within the SAME
+     *              event do not collapse into one deduped error row. Needed
+     *              because `to` (the only other per-recipient context key) is
+     *              PII and gets masked to `***@domain` by Events_Log::redact()
+     *              BEFORE the identity is computed (see error_identity()), so
+     *              two attendees on the same email domain were previously
+     *              indistinguishable to the dedupe window.
      * @return bool True on success.
      */
-    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0 ) {
+    public function send_html_email( $to, $subject, $html, $headers = [], $event_id = 0, array $identity = [] ) {
         if ( empty( $headers ) ) {
             // Apply the sender identity: the event's own where it sets one,
             // the site-wide setting otherwise (From / Reply-To / Cc / Bcc).
@@ -1625,11 +1841,11 @@ class Module {
             // reason when there is one. wp_mail() can answer false without ever
             // firing wp_mail_failed (a pre_wp_mail short-circuit, say), which is
             // why this side is the one that logs.
-            $context = [
+            $context = \array_merge( [
                 'event'   => (int) $event_id,
                 'to'      => $to,
                 'subject' => $subject,
-            ];
+            ], $identity );
             if ( \is_array( $this->last_mail_error ) ) {
                 $context['message'] = $this->last_mail_error['message'];
                 $context['data']    = $this->last_mail_error['data'];
@@ -1975,10 +2191,46 @@ class Module {
     }
 
     /**
+     * Whether an SEO plugin is expected to own the canonical tag for this
+     * request, so output_canonical_url() (a fallback, per its own docblock)
+     * should stay silent.
+     *
+     * RENDER-D21: the docblock always claimed this was a fallback, but
+     * nothing enforced it — output_canonical_url() echoed unconditionally,
+     * so a Yoast site (Yoast filters the SAME URL via filter_yoast_canonical()
+     * on `wpseo_canonical`) got two `<link rel="canonical">` tags on any
+     * `?anchor_events_month=` URL.
+     *
+     * @return bool True when this module should print its own canonical tag.
+     */
+    private function should_emit_canonical() {
+        $seo_plugin_active = \class_exists( 'WPSEO_Frontend' )
+            || \defined( 'RANK_MATH_VERSION' )
+            || \defined( 'AIOSEO_VERSION' )
+            || \defined( 'SEOPRESS_VERSION' );
+
+        /**
+         * Filter whether this module should print its own fallback
+         * <link rel="canonical"> tag for a calendar-month URL. Defaults to
+         * false when Yoast, Rank Math, All in One SEO or SEOPress is
+         * detected active (each already emits/filters its own canonical),
+         * true otherwise.
+         *
+         * @param bool $emit              Whether to emit our own canonical tag.
+         * @param bool $seo_plugin_active Whether a known SEO plugin was detected active.
+         */
+        return (bool) \apply_filters( 'anchor_events_emit_canonical', ! $seo_plugin_active, $seo_plugin_active );
+    }
+
+    /**
      * Output canonical URL in wp_head for pages with calendar month parameter.
      * This serves as a fallback if no SEO plugin outputs a canonical tag.
      */
     public function output_canonical_url() {
+        if ( ! $this->should_emit_canonical() ) {
+            return;
+        }
+
         $canonical = $this->get_canonical_url();
         if ( ! $canonical ) {
             return;
@@ -2209,9 +2461,11 @@ class Module {
     }
 
     public function register_meta() {
-        // One-time back-compat migration (Task 1.1+1.2): derives registration_mode
-        // for events that predate the key. Flag-guarded, safe on every init.
-        $this->migrate_registration_mode();
+        // The registration_mode back-compat back-fill used to run here, on
+        // every init including the front end (MODEL-D41: an unbounded
+        // posts_per_page=>-1 query on every page load until the flag write
+        // succeeded). It is now backfill_registration_mode(), hooked on
+        // admin_init below alongside the module's other versioned back-fills.
 
         // Protected (underscore-prefixed) meta keys require an explicit auth_callback
         // for REST writes, otherwise Gutenberg's meta save path fails with
@@ -2701,6 +2955,7 @@ class Module {
         \ob_start();
         ?>
         <div class="anchor-event-tickets anchor-event-conditional" id="anchor-event-tickets" data-when-mode="wc">
+            <input type="hidden" name="anchor_event_tiers_present" value="1" />
             <p class="description">
                 <?php echo esc_html__( 'Define one or more ticket tiers for this event. Each tier has its own price and optional per-tier quota and sale window. Leave the table empty to use the single "Price" field above as the default registration tier.', 'anchor-schema' ); ?>
             </p>
@@ -2988,6 +3243,13 @@ class Module {
             'start_time' => '',
             'end_time' => '',
             'capacity' => '',
+            // MODEL-D35 — no input posts these yet (no admin UI exists for
+            // them), but they round-trip through the front-end console's
+            // hidden fields below like every other rule key, so a stored
+            // value (set via REST or a filter) survives a front-end re-save.
+            'label' => '',
+            'span_days' => '',
+            'tier_id' => '',
         ] );
     }
 
@@ -3213,7 +3475,7 @@ class Module {
             // interactive builder) so saving this form again does not
             // overwrite it with a blank/incomplete rule — sanitize_recurrence_rule()
             // reads these back into the exact same shape it was stored in.
-            foreach ( [ 'freq', 'interval', 'start_time', 'end_time', 'capacity', 'count', 'until' ] as $rk ) :
+            foreach ( [ 'freq', 'interval', 'start_time', 'end_time', 'capacity', 'count', 'until', 'label', 'span_days', 'tier_id' ] as $rk ) :
             ?>
                 <input type="hidden" name="anchor_event_recurrence[<?php echo esc_attr( $rk ); ?>]" value="<?php echo esc_attr( $recurrence[ $rk ] ); ?>" />
             <?php endforeach; ?>
@@ -3656,7 +3918,18 @@ class Module {
             <?php endif; ?>
         </p>
         <div class="anchor-event-registrants">
-            <?php if ( empty( $registrations ) ) : ?>
+            <?php
+            // finding-5 — the metabox itself only requires edit_post (WordPress'
+            // own add_meta_box() gate), which on a WooCommerce store is looser
+            // than the roster/export/console's manage_woocommerce gate. The
+            // buttons above were already gated on Roster::current_user_can_manage();
+            // the attendee table itself — name/email/guests PII — was not, so an
+            // Editor denied the roster could still read every attendee's contact
+            // details straight off this metabox.
+            ?>
+            <?php if ( ! Roster::current_user_can_manage() ) : ?>
+                <p class="description"><?php echo esc_html__( 'The attendee roster is available in the Events console.', 'anchor-schema' ); ?></p>
+            <?php elseif ( empty( $registrations ) ) : ?>
                 <p class="description"><?php echo esc_html__( 'No registrations yet.', 'anchor-schema' ); ?></p>
             <?php else : ?>
                 <table class="widefat">
@@ -4351,6 +4624,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'sent'      => __( 'Sent', 'anchor-schema' ),
             'scheduled' => __( 'Scheduled', 'anchor-schema' ),
             'past'      => __( 'Past — not sent', 'anchor-schema' ),
+            // finding-14 — a 'failed' row means at least one confirmed seat's
+            // retry was abandoned after MAX_EMAIL_ATTEMPTS, not merely that
+            // the window passed unattempted (that is still 'past').
+            'failed'    => \sprintf(
+                /* translators: %d: number of delivery attempts made before giving up. */
+                __( 'Failed after %d attempts', 'anchor-schema' ),
+                self::MAX_EMAIL_ATTEMPTS
+            ),
         ];
         $date_format = \get_option( 'date_format' ) . ' ' . \get_option( 'time_format' );
 
@@ -4834,6 +5115,94 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         \wp_send_json_success( [ 'html' => $html ] );
     }
 
+    /**
+     * finding-11 (carry-over) — the ~28-key authoring allow-list BOTH
+     * save_meta() (wp-admin metabox) and save_event_manager_fields()
+     * (front-end console) built independently: same field names, same
+     * sanitizers, same start_date handling. Two copies of a rule that has to
+     * agree to be correct is exactly the drift MODEL-D24/REG-D49's
+     * persist_event_authoring() consolidation already fixed for the SAVE
+     * tail — this does the same for the sanitize-and-build half that runs
+     * before it.
+     *
+     * Values are read straight off $src (still in the slashed domain — see
+     * persist_event_authoring()'s docblock on the wp_slash contract) and fed
+     * to sanitize_text_field()/(int)/esc_url_raw(), none of which unslash,
+     * so nothing here needs a matching wp_slash(); the caller's own
+     * update_post_meta() loop does the one correct unslash.
+     *
+     * Deliberately does NOT compute status_mode/status/start_ts/end_ts:
+     * save_meta() also queues a missing_start_date authoring notice the
+     * console's own pre-validation (handle_event_manager_save() redirects
+     * with 'missing' before the post even exists) makes moot there, so that
+     * step stays with each caller.
+     *
+     * @param array       $src                       Raw input ($_POST-shaped, still slashed).
+     * @param string      $current_registration_mode Fallback for an invalid/missing
+     *                                                posted registration_mode — see
+     *                                                sanitize_event_type_input().
+     * @param string|null $start_date                Precomputed start_date the
+     *                                                caller already sanitized from
+     *                                                this SAME $src key (the console
+     *                                                validates it before the post
+     *                                                exists, so passes it in rather
+     *                                                than re-deriving it); null
+     *                                                re-derives it here from $src,
+     *                                                matching the metabox's own
+     *                                                behavior.
+     * @return array The sanitized authoring input, ready for the caller's own
+     *               update_post_meta() loop.
+     */
+    private function event_authoring_input( array $src, $current_registration_mode, $start_date = null ) {
+        $input = [
+            'start_date' => $start_date !== null ? $start_date : $this->sanitize_date( $src['anchor_event_start_date'] ?? '' ),
+            'end_date' => $this->sanitize_date( $src['anchor_event_end_date'] ?? '' ),
+            'start_time' => $this->sanitize_time( $src['anchor_event_start_time'] ?? '' ),
+            'end_time' => $this->sanitize_time( $src['anchor_event_end_time'] ?? '' ),
+            'timezone' => sanitize_text_field( $src['anchor_event_timezone'] ?? '' ),
+            'all_day' => ! empty( $src['anchor_event_all_day'] ),
+            'venue' => sanitize_text_field( $src['anchor_event_venue'] ?? '' ),
+            'address_street' => sanitize_text_field( $src['anchor_event_address_street'] ?? '' ),
+            'address_city' => sanitize_text_field( $src['anchor_event_address_city'] ?? '' ),
+            'address_state' => sanitize_text_field( $src['anchor_event_address_state'] ?? '' ),
+            'address_zip' => sanitize_text_field( $src['anchor_event_address_zip'] ?? '' ),
+            'address_country' => sanitize_text_field( $src['anchor_event_address_country'] ?? '' ),
+            'virtual' => ! empty( $src['anchor_event_virtual'] ),
+            'virtual_url' => esc_url_raw( $src['anchor_event_virtual_url'] ?? '' ),
+            'registration_enabled' => ! empty( $src['anchor_event_registration_enabled'] ),
+            'capacity' => (int) ( $src['anchor_event_capacity'] ?? 0 ),
+            'registration_open' => $this->sanitize_date( $src['anchor_event_registration_open'] ?? '' ),
+            'registration_close' => $this->sanitize_date( $src['anchor_event_registration_close'] ?? '' ),
+            'waitlist' => ! empty( $src['anchor_event_waitlist'] ),
+            'sold_out' => ! empty( $src['anchor_event_sold_out'] ),
+            // Task BC: `registration_type`/`registration_url` are intentionally
+            // NOT in this allow-list — neither surface renders those legacy
+            // fields (superseded by registration_mode/external_url below),
+            // and the caller writes every key present here via
+            // update_post_meta() regardless of whether $src carries it. Had
+            // they stayed listed, their absence would sanitize to
+            // 'internal'/'' and silently BLANK an old external event's real
+            // link on its next re-save. Leaving them out means this path
+            // never touches those two legacy keys at all — old events keep
+            // whatever they already have, and external_url()/get_meta()
+            // still read them as a fallback.
+            'price' => sanitize_text_field( $src['anchor_event_price'] ?? '' ),
+            'hide_from_archive' => ! empty( $src['anchor_event_hide_from_archive'] ),
+            'featured' => ! empty( $src['anchor_event_featured'] ),
+            'priority' => (int) ( $src['anchor_event_priority'] ?? 0 ),
+            'gallery' => $this->sanitize_gallery_ids( $src['anchor_event_gallery'] ?? '' ),
+            'reminder_offsets' => $this->sanitize_offset_csv( $src['anchor_event_reminder_offsets'] ?? '' ),
+            'labels' => $this->labels_input( $src ),
+        ];
+
+        // Event-type / registration-mode authoring UI (Task 1.3+1.4).
+        // Occurrence only — offering/recurring get a placeholder note in both
+        // forms; no seats/capacity/tiers/product logic here. The one helper
+        // both surfaces already shared, folded in here so the two save paths
+        // can never drift on how these six keys are sanitized.
+        return array_merge( $input, $this->sanitize_event_type_input( $src, $current_registration_mode ) );
+    }
+
     public function save_meta( $post_id ) {
         if ( ! isset( $_POST[ self::NONCE ] ) || ! \wp_verify_nonce( \sanitize_text_field( \wp_unslash( $_POST[ self::NONCE ] ) ), self::NONCE ) ) {
             return;
@@ -4845,59 +5214,24 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
 
+        // RENDER-D9: captured before ANYTHING below writes meta, so
+        // maybe_persist_previous_start() (called from persist_event_authoring())
+        // can still see the status/start_date this event is transitioning
+        // FROM — by the time that call happens the update_post_meta() loop a
+        // few lines down has already overwritten both with the new values.
+        $old_meta = $this->get_meta( $post_id );
+
         // Resolved BEFORE the save loop below so an invalid/missing posted
         // registration_mode falls back to whatever the event currently
         // resolves to (explicit stored value, or the legacy-signal
         // derivation), not a hardcoded default.
         $current_registration_mode = $this->registration_mode( $post_id );
 
-        $input = [
-            'start_date' => $this->sanitize_date( $_POST['anchor_event_start_date'] ?? '' ),
-            'end_date' => $this->sanitize_date( $_POST['anchor_event_end_date'] ?? '' ),
-            'start_time' => $this->sanitize_time( $_POST['anchor_event_start_time'] ?? '' ),
-            'end_time' => $this->sanitize_time( $_POST['anchor_event_end_time'] ?? '' ),
-            'timezone' => sanitize_text_field( $_POST['anchor_event_timezone'] ?? '' ),
-            'all_day' => ! empty( $_POST['anchor_event_all_day'] ),
-            'venue' => sanitize_text_field( $_POST['anchor_event_venue'] ?? '' ),
-            'address_street' => sanitize_text_field( $_POST['anchor_event_address_street'] ?? '' ),
-            'address_city' => sanitize_text_field( $_POST['anchor_event_address_city'] ?? '' ),
-            'address_state' => sanitize_text_field( $_POST['anchor_event_address_state'] ?? '' ),
-            'address_zip' => sanitize_text_field( $_POST['anchor_event_address_zip'] ?? '' ),
-            'address_country' => sanitize_text_field( $_POST['anchor_event_address_country'] ?? '' ),
-            'virtual' => ! empty( $_POST['anchor_event_virtual'] ),
-            'virtual_url' => esc_url_raw( $_POST['anchor_event_virtual_url'] ?? '' ),
-            'registration_enabled' => ! empty( $_POST['anchor_event_registration_enabled'] ),
-            'capacity' => (int) ( $_POST['anchor_event_capacity'] ?? 0 ),
-            'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
-            'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
-            'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
-            'sold_out' => ! empty( $_POST['anchor_event_sold_out'] ),
-            // Task BC: `registration_type`/`registration_url` are intentionally
-            // NOT in this allow-list — the metabox no longer renders those
-            // legacy fields (superseded by registration_mode/external_url
-            // below), and this save loop writes every key present here via
-            // update_post_meta() regardless of whether $_POST carries it. Had
-            // they stayed listed, their absence from $_POST would sanitize to
-            // 'internal'/'' and silently BLANK an old external event's real
-            // link on its next re-save. Leaving them out of $input means this
-            // save path never touches those two legacy keys at all — old
-            // events keep whatever they already have, and external_url()/
-            // get_meta() still read them as a fallback (see those methods).
-            'price' => sanitize_text_field( $_POST['anchor_event_price'] ?? '' ),
-            'hide_from_archive' => ! empty( $_POST['anchor_event_hide_from_archive'] ),
-            'featured' => ! empty( $_POST['anchor_event_featured'] ),
-            'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
-            'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
-            'reminder_offsets' => $this->sanitize_offset_csv( $_POST['anchor_event_reminder_offsets'] ?? '' ),
-            'labels' => $this->labels_input( $_POST ),
-        ];
-
-        // Event-type / registration-mode authoring UI (Task 1.3+1.4, front-end
-        // parity in Task 1.5). Occurrence only — offering/recurring get a
-        // placeholder note in both forms; no seats/capacity/tiers/product logic
-        // here. Shared with handle_event_manager_save() so the two save paths
-        // can never drift on how these six keys are sanitized.
-        $input = array_merge( $input, $this->sanitize_event_type_input( $_POST, $current_registration_mode ) );
+        // finding-11 (carry-over) — the ~28-key allow-list is now the ONE
+        // shared builder both this metabox save and the front-end console's
+        // save_event_manager_fields() call; see event_authoring_input()'s
+        // docblock.
+        $input = $this->event_authoring_input( $_POST, $current_registration_mode );
 
         if ( ! $input['start_date'] ) {
             $this->queue_group_notice( 'missing_start_date', $post_id );
@@ -4938,7 +5272,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // function (MODEL-D24 / REG-D49). Before Task 28 this metabox path ran
         // a shorter list than the front-end console did, so five whole
         // families of field were silently dropped on every wp-admin save.
-        $this->persist_event_authoring( $post_id, $_POST, $input );
+        $this->persist_event_authoring( $post_id, $_POST, $input, $old_meta );
     }
 
     /**
@@ -4992,21 +5326,49 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * nonce + capability before calling save_event_manager_fields()); this
      * method assumes that has already happened.
      *
-     * @param int   $post_id Event post ID, already inserted/updated.
-     * @param array $src     Raw input array ($_POST-shaped, still slashed).
-     * @param array $input   The sanitized meta the caller just wrote — read for
-     *                       the auto-append shortcode decision and the event
-     *                       `type` that drives group authoring.
+     * @param int   $post_id  Event post ID, already inserted/updated.
+     * @param array $src      Raw input array ($_POST-shaped, still slashed).
+     * @param array $input    The sanitized meta the caller just wrote — read
+     *                        for the auto-append shortcode decision and the
+     *                        event `type` that drives group authoring.
+     * @param array $old_meta get_meta( $post_id ) as it stood BEFORE the
+     *                        caller's own update_post_meta() loop overwrote it
+     *                        with $input — the only way to know what an event
+     *                        is transitioning FROM (RENDER-D9's
+     *                        `_anchor_event_previous_start`). Defaults to []
+     *                        (read as "no prior state") for the sake of any
+     *                        future caller that genuinely has none, e.g. a
+     *                        brand-new post.
      */
-    private function persist_event_authoring( $post_id, array $src, array $input ) {
+    private function persist_event_authoring( $post_id, array $src, array $input, array $old_meta = [] ) {
+        // RENDER-D9: capture the start being postponed/moved-online AWAY FROM,
+        // before any other sub-saver runs. Must happen first — nothing below
+        // reads or writes `previous_start`, but keeping this at the top means
+        // it is never accidentally fed an $input a later sub-saver has
+        // mutated.
+        $this->maybe_persist_previous_start( $post_id, $old_meta, $input );
+
         // Ticket tiers (spec §3.2). The Ticket_Types model sanitizes the rows,
         // assigns stable ids, drops empty rows, and persists. An empty table
         // clears the meta so the legacy single `price` field stays the
         // implicit-primary fallback.
-        $ticket_rows = isset( $src['anchor_event_tickets'] ) && is_array( $src['anchor_event_tickets'] )
-            ? \wp_unslash( $src['anchor_event_tickets'] )
-            : [];
-        $this->ticket_types->save( $post_id, $ticket_rows );
+        //
+        // finding-9 — mirrors save_registration_questions()'s marker guard:
+        // "the table was on screen and is now empty" and "this form never
+        // rendered the table at all" post the SAME thing, no
+        // anchor_event_tickets rows. Ticket_Types::save() cannot tell those
+        // apart on its own (an empty array means "clear the tiers" to it), so
+        // the caller must not call it at all for a save whose form never
+        // rendered the repeater. render_ticket_types_fields() (both surfaces
+        // share it) ships a hidden anchor_event_tiers_present marker; rows
+        // without the marker are still honoured, so an older cached form (or
+        // a direct call) keeps working.
+        if ( isset( $src['anchor_event_tickets'] ) || ! empty( $src['anchor_event_tiers_present'] ) ) {
+            $ticket_rows = isset( $src['anchor_event_tickets'] ) && is_array( $src['anchor_event_tickets'] )
+                ? \wp_unslash( $src['anchor_event_tickets'] )
+                : [];
+            $this->ticket_types->save( $post_id, $ticket_rows );
+        }
 
         $this->maybe_append_registration_shortcode( $post_id, $input );
 
@@ -5038,6 +5400,59 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $this->persist_group_authoring( $post_id, $input['type'], $src );
 
         $this->clear_caches();
+    }
+
+    /**
+     * The ONE writer of `_anchor_event_previous_start` (RENDER-D9) — called
+     * from persist_event_authoring() (both authoring save surfaces) and, since
+     * finding-17, from persist_after_rest_write() (a REST PATCH straight to
+     * `_anchor_event_status`, which bypasses persist_event_authoring()
+     * entirely since it is REST-writable on its own via REST_PUBLIC_META).
+     *
+     * Writes the event's start date as it stood BEFORE this save when either:
+     *   - the status is transitioning INTO postponed/moved_online (from
+     *     anything else, including a fresh event with no prior status), or
+     *   - the status is ALREADY postponed/moved_online and the start date is
+     *     changing again — each further push updates the stored "previous"
+     *     start to the one it is moving away from, not the original snapshot
+     *     from the first postponement.
+     *
+     * Deliberately does NOT write on a no-op re-save (same status, same
+     * date): overwriting the true previous start with the CURRENT start on
+     * every subsequent save of an already-postponed event would erase the one
+     * fact Event_Schema's `previousStartDate` exists to publish.
+     *
+     * Only ever writes — never clears. An event that leaves postponed/
+     * moved_online for good (back to auto, or cancelled) keeps its last
+     * previous_start row; Event_Schema only ever reads it while the CURRENT
+     * status is postponed/moved_online, so a stale row after that is inert.
+     *
+     * @param int   $post_id
+     * @param array $old_meta get_meta( $post_id ) taken BEFORE this save's
+     *                        update_post_meta() loop overwrote it — see
+     *                        persist_event_authoring()'s docblock.
+     * @param array $input    The just-sanitized meta this save is about to
+     *                        (or has just) persisted.
+     */
+    private function maybe_persist_previous_start( $post_id, array $old_meta, array $input ) {
+        $tracked = [ 'postponed', 'moved_online' ];
+
+        $old_status = (string) ( $old_meta['status'] ?? '' );
+        $new_status = (string) ( $input['status'] ?? '' );
+        $old_start  = \trim( (string) ( $old_meta['start_date'] ?? '' ) );
+        $new_start  = \trim( (string) ( $input['start_date'] ?? '' ) );
+
+        if ( ! \in_array( $new_status, $tracked, true ) || $old_start === '' ) {
+            return;
+        }
+
+        $was_tracked = \in_array( $old_status, $tracked, true );
+        $entering_status = ! $was_tracked;
+        $date_changed_while_tracked = $was_tracked && $old_start !== $new_start;
+
+        if ( $entering_status || $date_changed_while_tracked ) {
+            \update_post_meta( $post_id, $this->meta_key( 'previous_start' ), $old_start );
+        }
     }
 
     /**
@@ -5289,6 +5704,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 continue;
             }
             $key = (string) ( $row['key'] ?? 'custom' );
+            // MODEL-D44: sanitize_labels_rows() clamps an unknown key to
+            // 'custom' at write time, but a key can leave the vocabulary
+            // AFTER a row was saved — a site removing 'level' via the
+            // anchor_events_labels_vocabulary filter leaves stored
+            // {key:'level', value:'Advanced'} rows in place. Re-apply the
+            // same clamp here so every reader (get_labels(), get_label(),
+            // render_labels_badges() — all of which call this method) sees a
+            // key that is always either a live vocabulary entry or 'custom',
+            // never a stale one whose caption can only resolve to ''.
+            if ( ! isset( $vocabulary[ $key ] ) ) {
+                $key = 'custom';
+            }
             $rows[] = [
                 'key'     => $key,
                 'label'   => (string) ( $row['label'] ?? '' ),
@@ -5795,10 +6222,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * date; `weekdays` only for freq=weekly and only when at least one valid
      * 0..6 value was checked — omitting all three when unset/invalid (rather
      * than writing 0/''/[]) is what lets persist_group_authoring()'s
-     * has_terminator check with a plain empty()/isset() read cleanly.
+     * has_terminator check with a plain empty()/isset() read cleanly. `label`/
+     * `span_days`/`tier_id` follow the same optional-key convention (MODEL-D35
+     * — no admin UI posts these yet, but the rule/builder now carry them so a
+     * generated occurrence is no longer structurally poorer than a
+     * hand-authored offering row; see expand_recurrence()'s docblock).
      *
      * @param mixed $raw Raw anchor_event_recurrence[] map from $_POST (NOT yet unslashed).
-     * @return array{freq:string,interval:int,start_time:string,end_time:string,capacity:int,count?:int,until?:string,weekdays?:array<int,int>}
+     * @return array{freq:string,interval:int,start_time:string,end_time:string,capacity:int,count?:int,until?:string,weekdays?:array<int,int>,label?:string,span_days?:int,tier_id?:string}
      */
     private function sanitize_recurrence_rule( $raw ) {
         $raw = is_array( $raw ) ? \wp_unslash( $raw ) : [];
@@ -5822,6 +6253,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $until = $this->sanitize_date( $raw['until'] ?? '' );
         if ( $until !== '' ) {
             $rule['until'] = $until;
+        }
+
+        $label = \sanitize_text_field( $raw['label'] ?? '' );
+        if ( $label !== '' ) {
+            $rule['label'] = $label;
+        }
+
+        $span_days = \max( 0, (int) ( $raw['span_days'] ?? 0 ) );
+        if ( $span_days > 0 ) {
+            $rule['span_days'] = $span_days;
+        }
+
+        $tier_id = \sanitize_key( (string) ( $raw['tier_id'] ?? '' ) );
+        if ( $tier_id !== '' ) {
+            $rule['tier_id'] = $tier_id;
         }
 
         if ( $freq === 'weekly' && isset( $raw['weekdays'] ) && is_array( $raw['weekdays'] ) ) {
@@ -6099,8 +6545,25 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $ids;
     }
 
+    /**
+     * Append `[event_registration]` to a newly-registration-enabled event's
+     * content — unless the active theme owns rendering the registration UI
+     * itself. NEW-D6 (plugin half): a theme that renders its own picker/form
+     * for the event content would otherwise get it a second time from this
+     * auto-appended shortcode. A theme opts out with
+     * `add_theme_support( 'anchor-events-registration' )`; anything that
+     * cannot add theme support (a must-use plugin, a child theme functions
+     * file) can use the `anchor_events_auto_append_registration` filter
+     * instead. Documented in EVENTS.md.
+     */
     private function maybe_append_registration_shortcode( $post_id, $input ) {
         if ( empty( $input['registration_enabled'] ) ) {
+            return;
+        }
+        if ( \current_theme_supports( 'anchor-events-registration' ) ) {
+            return;
+        }
+        if ( ! \apply_filters( 'anchor_events_auto_append_registration', true, $post_id ) ) {
             return;
         }
         $post = \get_post( $post_id );
@@ -6340,7 +6803,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( \is_admin() ) {
             return;
         }
-        if ( \is_singular( self::CPT ) || \is_post_type_archive( self::CPT ) ) {
+        // RENDER-D18: a series archive (templates/taxonomy-event_series.php)
+        // was missing from this gate, so frontend.css/.js were enqueued only
+        // from inside that template — after wp_head — and WordPress prints
+        // them via print_late_styles()/print_late_scripts() at wp_footer
+        // instead, leaving the archive unstyled until the footer parses.
+        if ( \is_singular( self::CPT ) || \is_post_type_archive( self::CPT ) || \is_tax( Series::TAXONOMY ) ) {
             $this->enqueue_frontend_assets();
         }
     }
@@ -6535,7 +7003,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     private function locate_template( $file ) {
         $settings = $this->get_settings();
         if ( $settings['template_source'] === 'theme' ) {
-            $theme_template = \locate_template( 'events/' . $file );
+            // RENDER-D35: only ever looked in events/<file>, so a theme
+            // overriding the ROOT-level filename (the same place WordPress's
+            // own template hierarchy would pick it up — single-event.php,
+            // archive-event.php, etc.) was silently ignored in favour of the
+            // plugin's bundled copy. events/<file> is checked first so an
+            // existing theme override there keeps winning if a theme somehow
+            // has both.
+            $theme_template = \locate_template( [ 'events/' . $file, $file ] );
             if ( $theme_template ) {
                 return $theme_template;
             }
@@ -6547,6 +7022,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $atts = shortcode_atts( [
             'category' => '',
             'tag' => '',
+            // MODEL-D30: `type` was ambiguous — [events_list type="offering"]
+            // reads as "the pick-one offerings" but silently ran a tax_query
+            // against the event_type TAXONOMY, an entirely different
+            // vocabulary from the `_anchor_event_type` meta enum
+            // (single|offering|recurring) the admin "Event Type" metabox
+            // select and the event_type() resolver use — and returned
+            // nothing for a term that does not exist. `event_type` is the
+            // explicit name for the taxonomy filter; `type` is kept as a
+            // deprecated alias below so an existing
+            // [events_list type="..."] shortcode keeps working.
+            'event_type' => '',
             'type' => '',
             'status' => '',
             'start_date' => '',
@@ -6556,6 +7042,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'limit' => 10,
             'show_past' => 'no',
         ], $atts );
+
+        // Deprecated alias: only takes effect when `event_type` itself was
+        // not also given (which wins on conflict, since it is the one this
+        // attribute is actually named after). MODEL-D30 fix round 1:
+        // _doing_it_wrong() only surfaces under WP_DEBUG, same as every other
+        // WP core deprecation notice — this is a developer nudge, not a
+        // front-end-visible warning.
+        if ( $atts['type'] !== '' ) {
+            \_doing_it_wrong( __METHOD__, 'Use event_type= instead of type=.', '3.27.0' );
+            if ( $atts['event_type'] === '' ) {
+                $atts['event_type'] = $atts['type'];
+            }
+        }
 
         return $this->render_events_list( $atts, 'shortcode' );
     }
@@ -6613,6 +7112,38 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 . '</div>';
         }
 
+        // NEW-D6 (plugin half) — render once per event per request. A theme
+        // that also renders its own registration UI for this event (or a
+        // second copy of the shortcode anywhere on the page) must not get a
+        // duplicate picker/form; the first render wins.
+        //
+        // finding-3 (bot review, PR #20) — this early return used to leave
+        // $registration_shortcode_rendered_for untouched. render_single_event_
+        // body() resets that marker to null immediately before running
+        // the_content — so when the shortcode had already rendered earlier in
+        // the request (a widget, a header block), THIS run saw the guard
+        // above and bailed, but the marker stayed null and
+        // content_already_rendered_registration() then told the single-event
+        // template nothing had rendered, so it called render_registration_form()
+        // anyway: exactly the duplicate this guard exists to prevent. The
+        // marker must be set on the early-return path too, same as the real
+        // render below — first render wins, and the template has to see it.
+        if ( \in_array( $event_id, $this->registration_shortcode_rendered_ids, true ) ) {
+            $this->registration_shortcode_rendered_for = $event_id;
+            return '';
+        }
+        $this->registration_shortcode_rendered_ids[] = $event_id;
+
+        // RENDER-D33: mark THIS event as "the registration shortcode already
+        // rendered for it" the moment we resolve a real target, regardless of
+        // which branch below actually runs — render_single_event_body() and
+        // content_already_rendered_registration() read this to decide whether
+        // the single-event template still needs to render its own notice/
+        // form, instead of grepping the post's raw stored content for the
+        // shortcode tag (which misses a shortcode injected at render time by
+        // a builder or another 'the_content' filter).
+        $this->registration_shortcode_rendered_for = $event_id;
+
         $this->enqueue_frontend_assets();
 
         $output = '';
@@ -6655,7 +7186,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
         }
         if ( ! $event_id ) {
-            return '';
+            // RENDER-D34: this used to return '' — indistinguishable from
+            // render_event_gallery()'s OWN '' for "resolved event, zero
+            // images". A typo'd id/slug then rendered nothing with no signal
+            // an author could use to tell the two cases apart. Mirrors
+            // shortcode_event_registration()'s "No event specified..." notice.
+            return '<div class="anchor-event-gallery-notice">'
+                . esc_html__( 'No event specified for gallery.', 'anchor-schema' )
+                . '</div>';
         }
 
         return $this->render_event_gallery( $event_id, $atts );
@@ -6738,10 +7276,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'post_status' => [ 'publish', 'draft', 'future', 'private' ],
             'posts_per_page' => max( 1, min( 200, (int) $atts['limit'] ) ),
             'meta_query' => $meta_query,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
             'order' => strtoupper( $atts['order'] ) === 'DESC' ? 'DESC' : 'ASC',
-        ];
+        ] + $this->resolve_list_orderby( $atts['orderby'] ); // RENDER-D23: `orderby` used to be declared and never read.
         $events = \get_posts( $args );
 
         if ( empty( $events ) ) {
@@ -8066,10 +8602,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $post_status = 'pending';
         }
 
+        // finding-10 — wp_insert_post()/wp_update_post() unslash their postarr
+        // internally (same contract as update_post_meta(), documented on
+        // persist_event_authoring()); $title/$content above are already
+        // unslashed-and-sanitized, so passing them straight through here means
+        // a SECOND unslash at the write and a title like `Room A\B` is stored
+        // as `Room AB`. wp_slash() puts them back in the slashed domain right
+        // before the call, exactly like every meta write already does.
         $postarr = [
             'post_type' => self::CPT,
-            'post_title' => $title,
-            'post_content' => $content,
+            'post_title' => \wp_slash( $title ),
+            'post_content' => \wp_slash( $content ),
             'post_status' => $post_status,
         ];
         if ( $is_edit ) {
@@ -8129,45 +8672,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * without exposing an unguarded direct meta-write on the public API.
      */
     protected function save_event_manager_fields( $saved_id, $start_date, $current_registration_mode ) {
-        $input = [
-            'start_date' => $start_date,
-            'end_date' => $this->sanitize_date( $_POST['anchor_event_end_date'] ?? '' ),
-            'start_time' => $this->sanitize_time( $_POST['anchor_event_start_time'] ?? '' ),
-            'end_time' => $this->sanitize_time( $_POST['anchor_event_end_time'] ?? '' ),
-            'timezone' => sanitize_text_field( $_POST['anchor_event_timezone'] ?? '' ),
-            'all_day' => ! empty( $_POST['anchor_event_all_day'] ),
-            'venue' => sanitize_text_field( $_POST['anchor_event_venue'] ?? '' ),
-            'address_street' => sanitize_text_field( $_POST['anchor_event_address_street'] ?? '' ),
-            'address_city' => sanitize_text_field( $_POST['anchor_event_address_city'] ?? '' ),
-            'address_state' => sanitize_text_field( $_POST['anchor_event_address_state'] ?? '' ),
-            'address_zip' => sanitize_text_field( $_POST['anchor_event_address_zip'] ?? '' ),
-            'address_country' => sanitize_text_field( $_POST['anchor_event_address_country'] ?? '' ),
-            'virtual' => ! empty( $_POST['anchor_event_virtual'] ),
-            'virtual_url' => esc_url_raw( $_POST['anchor_event_virtual_url'] ?? '' ),
-            'registration_enabled' => ! empty( $_POST['anchor_event_registration_enabled'] ),
-            'capacity' => (int) ( $_POST['anchor_event_capacity'] ?? 0 ),
-            'registration_open' => $this->sanitize_date( $_POST['anchor_event_registration_open'] ?? '' ),
-            'registration_close' => $this->sanitize_date( $_POST['anchor_event_registration_close'] ?? '' ),
-            'waitlist' => ! empty( $_POST['anchor_event_waitlist'] ),
-            'sold_out' => ! empty( $_POST['anchor_event_sold_out'] ),
-            // Task BC: see save_meta()'s matching comment — `registration_type`/
-            // `registration_url` are deliberately absent from this front-end
-            // form's $input too, for the identical reason (the legacy fields
-            // no longer render here either; leaving them listed would blank
-            // an old external event's real link on its next re-save).
-            'price' => sanitize_text_field( $_POST['anchor_event_price'] ?? '' ),
-            'hide_from_archive' => ! empty( $_POST['anchor_event_hide_from_archive'] ),
-            'featured' => ! empty( $_POST['anchor_event_featured'] ),
-            'priority' => (int) ( $_POST['anchor_event_priority'] ?? 0 ),
-            'labels' => $this->labels_input( $_POST ),
-            'gallery' => $this->sanitize_gallery_ids( $_POST['anchor_event_gallery'] ?? '' ),
-            'reminder_offsets' => $this->sanitize_offset_csv( $_POST['anchor_event_reminder_offsets'] ?? '' ),
-        ];
+        // RENDER-D9: same capture as save_meta() — taken before ANYTHING below
+        // writes meta, so maybe_persist_previous_start() can still see what
+        // this event is transitioning FROM. Safe on a brand-new $saved_id too:
+        // get_meta() just returns its all-defaults row ('status' => 'upcoming'),
+        // which can never itself be postponed/moved_online.
+        $old_meta = $this->get_meta( $saved_id );
 
-        // Event-type / registration-mode authoring UI (Task 1.3 metabox parity,
-        // Task 1.5). Same six keys, same sanitize_event_type_input() helper as
-        // save_meta() — see that method's docblock.
-        $input = array_merge( $input, $this->sanitize_event_type_input( $_POST, $current_registration_mode ) );
+        // finding-11 (carry-over) — the ~28-key allow-list is now the ONE
+        // shared builder both this console save and the wp-admin metabox's
+        // save_meta() call; see event_authoring_input()'s docblock. $start_date
+        // is passed through (already sanitized from this same $_POST key by
+        // handle_event_manager_save(), before the post itself existed).
+        $input = $this->event_authoring_input( $_POST, $current_registration_mode, $start_date );
 
         $status_raw = sanitize_text_field( $_POST['anchor_event_status'] ?? 'auto' );
         if ( $status_raw === 'auto' ) {
@@ -8210,7 +8727,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // cache flush are the SAME shared tail the wp-admin metabox runs
         // (Task 28, MODEL-D24 / REG-D49) — one function, called from both, so
         // the two surfaces cannot drift on which fields a save persists.
-        $this->persist_event_authoring( $saved_id, $_POST, $input ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
+        $this->persist_event_authoring( $saved_id, $_POST, $input, $old_meta ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- the manager nonce is verified by the caller.
 
         return $input;
     }
@@ -8243,6 +8760,122 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         \wp_safe_redirect( \add_query_arg( 'event_manager_notice', 'deleted', $redirect ) );
         exit;
+    }
+
+    /**
+     * Trash a currently soft-closed occurrence — the terminal state MODEL-D34
+     * gives one that would otherwise stay published forever once its seats
+     * are gone (see Occurrences::closed_children()'s docblock). The object
+     * check IS "is this actually a closed occurrence": trashing an ordinary
+     * event belongs to the existing admin Posts screen / handle_event_manager_delete(),
+     * not to this panel.
+     *
+     * Review-round fix (MODEL-D34 fix round 1): refuses when the occurrence
+     * still holds an ACTIVE seat — confirmed, pending, or waitlist
+     * (Registrations::RESERVING_STATUSES + WAITLIST_STATUSES). A soft-closed
+     * occurrence's whole reason for being preserved rather than trashed is a
+     * roster somebody still has to see/email/refund; trashing it out from
+     * under that roster is the "surprise-trashing" retire_child() was written
+     * to avoid, just one click later. Cancelled/refunded/failed seats and the
+     * read-only legacy attended/no_show statuses do NOT block deletion — they
+     * are history, not a live roster. Reuses get_event_summary() (already a
+     * single counts() aggregate) rather than a new query.
+     *
+     * Pure logic — no nonce/capability/redirect/exit — so it is directly
+     * unit-testable; handle_delete_closed_occurrence() below is the real
+     * admin-post entry point (mirrors handle_event_manager_delete()).
+     *
+     * @param int $event_id
+     * @return array{deleted:bool,active_seats:int} `active_seats` is the
+     *         reason when `deleted` is false and the object check passed
+     *         (0 when refused for any other reason: not an event, or not
+     *         currently closed).
+     */
+    public function delete_closed_occurrence( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
+            return [ 'deleted' => false, 'active_seats' => 0 ];
+        }
+        if ( ! $this->occurrences->is_closed( $event_id ) ) {
+            return [ 'deleted' => false, 'active_seats' => 0 ];
+        }
+
+        $summary = $this->registrations->get_event_summary( $event_id );
+        $active  = (int) $summary['confirmed'] + (int) $summary['pending'] + (int) $summary['waitlist'];
+        if ( $active > 0 ) {
+            return [ 'deleted' => false, 'active_seats' => $active ];
+        }
+
+        \wp_trash_post( $event_id );
+        $this->clear_caches();
+
+        return [ 'deleted' => true, 'active_seats' => 0 ];
+    }
+
+    /**
+     * admin-post entry point for the "Closed occurrences" panel's Delete
+     * button (MODEL-D34). Same order as handle_event_manager_delete(): nonce,
+     * then the module capability, then the object check (inside
+     * delete_closed_occurrence()) — never `delete_post` alone, which would
+     * let any author who can delete the post trash it without holding the
+     * capability the panel itself is gated on.
+     */
+    public function handle_delete_closed_occurrence() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) $_POST['event_id'] : 0;
+        $redirect = \wp_get_referer();
+        if ( ! $redirect ) {
+            $redirect = \admin_url();
+        }
+
+        \check_admin_referer( 'anchor_events_delete_closed_occurrence_' . $event_id );
+
+        if ( ! Roster::current_user_can_manage() ) {
+            \wp_die( \esc_html__( 'You are not allowed to do this.', 'anchor-schema' ) );
+        }
+
+        $result   = $this->delete_closed_occurrence( $event_id );
+        $redirect = \add_query_arg( 'anchor_events_closed_deleted', $result['deleted'] ? '1' : '0', $redirect );
+        if ( ! $result['deleted'] && $result['active_seats'] > 0 ) {
+            $redirect = \add_query_arg( 'anchor_events_closed_active_seats', $result['active_seats'], $redirect );
+        }
+
+        \wp_safe_redirect( $redirect );
+        exit;
+    }
+
+    /**
+     * Turn a shortcode's `orderby` attribute into the orderby/meta_key pair a
+     * WP_Query args array needs — the one place render_events_list() and
+     * shortcode_event_registrants_list() decide this, instead of each having
+     * its own copy that can silently drift out of agreement.
+     *
+     * 'date'/'start' (the vocabulary these shortcodes document) and 'title'
+     * get their historical mapping; 'priority' maps to a meta key only when
+     * $priority_meta names one (only [featured_events]/[events_list] support
+     * it — RENDER-D23's registrants list never did and still doesn't).
+     * Anything else is passed straight through to WP_Query's OWN `orderby`
+     * vocabulary ('modified', 'rand', 'menu_order', ...) rather than being
+     * silently swallowed into start-date order (RENDER-D24).
+     *
+     * @param string      $orderby       Raw attribute value.
+     * @param string|null $priority_meta Unprefixed meta key name to special-case
+     *                                   for 'priority' (see meta_key()), or null.
+     * @return array{orderby: string, meta_key?: string} Merge into a WP_Query args array.
+     */
+    private function resolve_list_orderby( $orderby, $priority_meta = null ) {
+        $orderby = strtolower( (string) $orderby );
+
+        if ( $orderby === 'title' ) {
+            return [ 'orderby' => 'title' ];
+        }
+        if ( $priority_meta !== null && $orderby === 'priority' ) {
+            return [ 'orderby' => 'meta_value_num', 'meta_key' => $this->meta_key( $priority_meta ) ];
+        }
+        if ( $orderby === 'date' || $orderby === 'start' || $orderby === '' ) {
+            return [ 'orderby' => 'meta_value_num', 'meta_key' => $this->meta_key( 'start_ts' ) ];
+        }
+
+        return [ 'orderby' => $orderby ];
     }
 
     public function render_events_list( $atts, $context ) {
@@ -8294,15 +8927,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 'terms' => array_map( 'sanitize_title', explode( ',', $atts['tag'] ) ),
             ];
         }
-        if ( ! empty( $atts['type'] ) ) {
+        // MODEL-D30: the attribute is `event_type` — `type` was ambiguous
+        // (it silently meant this taxonomy, not the unrelated
+        // `_anchor_event_type` meta enum single|offering|recurring the admin
+        // "Event Type" metabox select and event_type() resolve). The
+        // deprecated-alias fallback lives in shortcode_events_list(), the
+        // only caller that ever sets either key, so this stays the one place
+        // that reads the resolved value.
+        if ( ! empty( $atts['event_type'] ) ) {
             $tax_query[] = [
                 'taxonomy' => 'event_type',
                 'field' => 'slug',
-                'terms' => array_map( 'sanitize_title', explode( ',', $atts['type'] ) ),
+                'terms' => array_map( 'sanitize_title', explode( ',', $atts['event_type'] ) ),
             ];
         }
 
-        $orderby = strtolower( $atts['orderby'] );
         $order = strtoupper( $atts['order'] ) === 'DESC' ? 'DESC' : 'ASC';
 
         $limit = (int) $atts['limit'];
@@ -8314,20 +8953,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'post_type' => self::CPT,
             'post_status' => 'publish',
             'posts_per_page' => $limit,
-            'orderby' => 'meta_value_num',
-            'meta_key' => $this->meta_key( 'start_ts' ),
             'order' => $order,
             'meta_query' => $meta_query,
             'tax_query' => $tax_query,
-        ];
-
-        if ( $orderby === 'title' ) {
-            $query_args['orderby'] = 'title';
-            unset( $query_args['meta_key'] );
-        } elseif ( $orderby === 'priority' ) {
-            $query_args['meta_key'] = $this->meta_key( 'priority' );
-            $query_args['orderby'] = 'meta_value_num';
-        }
+        ] + $this->resolve_list_orderby( $atts['orderby'], 'priority' );
 
         $query_args = \apply_filters( 'anchor_events_query_args', $query_args, $atts );
         $ids = $this->get_cached_ids( $query_args );
@@ -8413,13 +9042,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         $output = '<ul class="anchor-event-labels">';
         foreach ( $labels as $row ) {
-            $output .= '<li class="anchor-event-label anchor-event-label-' . esc_attr( $row['key'] ) . '"'
-                . ' data-label-key="' . esc_attr( $row['key'] ) . '"'
-                . ' data-caption="' . esc_attr( $row['caption'] ) . '">'
-                . esc_html( $row['value'] )
-                . '</li>';
+            $output .= $this->render_label_row( $row, 'badge' );
         }
         $output .= '</ul>';
+
+        return $output;
+    }
+
+    /**
+     * One label row, rendered for either the card ("badge") or the
+     * single-event page ("detail"). RENDER-D39: these used to be two
+     * independently-maintained renderers with different element shapes — the
+     * badge exposed its caption ONLY as a data attribute, the detail row
+     * ONLY as visible text — so a theme selector on .anchor-event-label-<key>
+     * inherited a different internal structure depending on which view it
+     * was in, and adding a third view would have meant a third shape. Both
+     * variants now carry the same data-label-key/data-caption attributes;
+     * only the wrapping element (an <li> inside the badge <ul>, a <div>
+     * inside the detail view's CSS grid — each required by its own parent)
+     * and whether the caption ALSO shows as visible text differ.
+     *
+     * @param array  $row     One row from get_labels(): key, label, value, caption.
+     * @param string $variant 'badge' or 'detail'.
+     * @return string
+     */
+    private function render_label_row( array $row, $variant ) {
+        $is_detail = ( $variant === 'detail' );
+        $tag       = $is_detail ? 'div' : 'li';
+        $key       = (string) $row['key'];
+        $caption   = (string) $row['caption'];
+
+        $class = 'anchor-event-label anchor-event-label--' . ( $is_detail ? 'detail' : 'badge' )
+            . ' anchor-event-label-' . esc_attr( $key );
+
+        $output = '<' . $tag . ' class="' . $class . '"'
+            . ' data-label-key="' . esc_attr( $key ) . '"'
+            . ' data-caption="' . esc_attr( $caption ) . '">';
+        if ( $is_detail && $caption !== '' ) {
+            $output .= '<strong>' . esc_html( $caption ) . ': </strong>';
+        }
+        $output .= esc_html( $row['value'] );
+        $output .= '</' . $tag . '>';
 
         return $output;
     }
@@ -8499,6 +9162,59 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return $this->registrations->user_has_active_seat( $post_id, (int) $user->ID, (string) $user->user_email );
     }
 
+    /**
+     * The `.anchor-event-content` inner HTML for templates/single-event.php:
+     * the registration notice (unless the post's own content already renders
+     * one via [event_registration]), the sessions/detail block, the gallery,
+     * and finally the post's rendered content itself — computed together so
+     * the guard against double-rendering the registration notice can be based
+     * on whether the content ACTUALLY produced it this request, not on
+     * whether the raw stored post_content string happens to contain the
+     * shortcode tag (RENDER-D33).
+     *
+     * Renders the post's content exactly once via the 'the_content' filter
+     * (which is also what runs do_shortcode()) and reuses that single pass —
+     * calling the_content()/apply_filters('the_content',...) a second time
+     * would re-execute [event_registration] and reintroduce the very
+     * duplicate this method exists to prevent.
+     *
+     * content_already_rendered_registration( $post_id ) reflects the SAME
+     * pass afterward, for the template's separate render_registration_form()
+     * call below the content block.
+     *
+     * @param int $post_id
+     * @return string
+     */
+    public function render_single_event_body( $post_id ) {
+        $this->registration_shortcode_rendered_for = null;
+
+        $rendered_content = \apply_filters( 'the_content', \get_the_content( null, false, $post_id ) );
+
+        $output = '';
+        if ( $this->registration_shortcode_rendered_for !== $post_id ) {
+            $output .= $this->render_registration_notice();
+        }
+        $output .= $this->render_single_content( $post_id );
+        $output .= $this->render_event_gallery( $post_id );
+        $output .= $rendered_content;
+
+        return $output;
+    }
+
+    /**
+     * Whether the most recent render_single_event_body( $post_id ) call
+     * already rendered the [event_registration] shortcode's own registration
+     * UI for this event — used by templates/single-event.php to skip its own
+     * render_registration_form() call when the content already produced one
+     * (RENDER-D33).
+     *
+     * @param int $post_id
+     * @return bool
+     */
+    public function content_already_rendered_registration( $post_id ) {
+        return $this->registration_shortcode_rendered_for === (int) $post_id;
+    }
+
     public function render_single_content( $post_id ) {
         $meta = $this->get_meta( $post_id );
         $status = $this->get_event_status( $post_id, $meta );
@@ -8520,12 +9236,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         // Labels read as "Duration: 2 Day Course" here — the single page has the
         // room for a caption, unlike the card, where the value alone is the badge.
+        // Shares render_label_row() with the card's badges (RENDER-D39).
         foreach ( $this->get_labels( $post_id ) as $label_row ) {
-            $caption = $label_row['caption'] !== '' ? $label_row['caption'] . ': ' : '';
-            $output .= '<div class="anchor-event-label-detail anchor-event-label-' . esc_attr( $label_row['key'] ) . '">'
-                . '<strong>' . esc_html( $caption ) . '</strong>'
-                . esc_html( $label_row['value'] )
-                . '</div>';
+            $output .= $this->render_label_row( $label_row, 'detail' );
         }
         $output .= '<div><strong>' . esc_html__( 'Status', 'anchor-schema' ) . ':</strong> ' . esc_html( ucfirst( $status ) ) . '</div>';
         $output .= '</div>';
@@ -9203,13 +9916,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // and the locked claim below.
         $tier = $this->ticket_types->find( $event_id, $tier_id );
 
-        // A hand-cancelled course takes no seats (THEME-D25). The form has not
-        // rendered for one since bookability() started answering 'closed' for
-        // it, but REG_NONCE is a bare action nonce, so a POST can still arrive
-        // from a stale page — the same reasoning as the external-mode guard
-        // above. Not folded into the decision below because that one carries
-        // the party size and the tier; this is a property of the event.
-        if ( $this->get_event_status( $event_id, $meta ) === 'cancelled' ) {
+        // A hand-cancelled or postponed course takes no seats (THEME-D25 /
+        // finding-16). The form has not rendered for one since bookability()
+        // started answering 'closed' for either status, but REG_NONCE is a
+        // bare action nonce, so a POST can still arrive from a stale page —
+        // the same reasoning as the external-mode guard above. Not folded
+        // into the decision below because that one carries the party size
+        // and the tier; this is a property of the event. status_is_closed()
+        // is the one place this rule is spelled out — see its docblock.
+        if ( $this->status_is_closed( $this->get_event_status( $event_id, $meta ) ) ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
             exit;
         }
@@ -9257,7 +9972,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // is promised. Both used to be assumed.
         $is_waitlist = ( $waitlisted && ! $created );
         $reg_status  = $is_waitlist ? Registrations::STATUS_WAITLIST : Registrations::STATUS_CONFIRMED;
-        $emailed     = $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests );
+        // finding-13 — the seat id is for Events_Log identity only: two
+        // different attendees registering for the same event must not
+        // collapse into one deduped mail-failure row.
+        $seat_id     = (int) ( $is_waitlist ? ( $result['waitlisted'][0] ?? 0 ) : ( $result['created'][0] ?? 0 ) );
+        $emailed     = $this->send_registration_emails( $event_id, $name, $email, $reg_status, $guests, $seat_id );
 
         $url = $this->with_message( $redirect, $is_waitlist ? 'registration_waitlisted' : 'registration_success' );
         if ( $emailed->is_sent() ) {
@@ -9729,10 +10448,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         //               and the stored value has to survive the save untouched.
         $defaults = $this->default_settings();
         $stored   = $this->get_settings();
+        // finding-4 — the coalesced fallback must be read on BOTH sides of the
+        // ternary. `$input['x'] ?? 'default'` only guards the in_array() check;
+        // reading `$input['x']` again in the true branch warns on a genuinely
+        // missing key (the coalesce made the check pass on its OWN fallback,
+        // not on a key that exists).
+        $timezone_mode   = $input['timezone_mode'] ?? 'site';
+        $template_source = $input['template_source'] ?? 'theme';
         $output = [
-            'timezone_mode' => in_array( $input['timezone_mode'] ?? 'site', [ 'site', 'event' ], true ) ? $input['timezone_mode'] : 'site',
+            'timezone_mode' => in_array( $timezone_mode, [ 'site', 'event' ], true ) ? $timezone_mode : 'site',
             'archive_hide_past' => ! empty( $input['archive_hide_past'] ),
-            'template_source' => in_array( $input['template_source'] ?? 'theme', [ 'theme', 'plugin' ], true ) ? $input['template_source'] : 'theme',
+            'template_source' => in_array( $template_source, [ 'theme', 'plugin' ], true ) ? $template_source : 'theme',
             'registration_internal' => ! empty( $input['registration_internal'] ),
             'admin_email' => sanitize_email( $input['admin_email'] ?? '' ),
             'notify_admin' => ! empty( $input['notify_admin'] ),
@@ -9823,7 +10549,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     public function render_tab_content() {
         echo '<p>' . \esc_html__( 'Display events with these shortcodes:', 'anchor-schema' ) . '</p>';
         echo '<ul style="margin-left:18px;list-style:disc;">';
-        echo '<li><code>[events_list]</code> ' . \esc_html__( 'List events. Attributes: category, tag, type, status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
+        echo '<li><code>[events_list]</code> ' . \esc_html__( 'List events. Attributes: category, tag, event_type (event_type taxonomy term slug — "type" also works, as a deprecated alias), status, limit, orderby (date|title|priority), order (ASC|DESC), show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[featured_events]</code> ' . \esc_html__( 'Show featured events. Attributes: limit, orderby (priority|date), order (ASC|DESC).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_calendar]</code> ' . \esc_html__( 'Monthly calendar. Attributes: month=YYYY-MM, view=month|list, show_past (yes|no).', 'anchor-schema' ) . '</li>';
         echo '<li><code>[event_registration]</code> ' . \esc_html__( 'Registration form for an event. Attributes: id=POST_ID, slug=event-slug, show_title (yes|no), show_notice (yes|no). Auto-appended to an event\'s content when you enable registration, so it survives page builders like Divi.', 'anchor-schema' ) . '</li>';
@@ -9839,6 +10565,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         echo '</form>';
 
         $this->render_error_log_panel();
+        $this->render_closed_occurrences_panel();
     }
 
     /**
@@ -9950,6 +10677,79 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             echo '<td><code>' . \esc_html( $code ) . '</code></td>';
             echo '<td>' . \esc_html( $tally ) . '</td>';
             echo '<td style="word-break:break-word;">' . \esc_html( (string) $ctx_str ) . '</td>';
+            echo '</tr>';
+        }
+        echo '</tbody></table>';
+    }
+
+    /**
+     * "Closed occurrences" panel for the Events settings tab (MODEL-D34).
+     *
+     * Lists every occurrence Occurrences::closed_children() finds — a
+     * soft-closed group child left published with nowhere else surfacing it
+     * once its seats are gone — with a per-row Delete action. Same
+     * capability gate as the error log panel above it.
+     */
+    private function render_closed_occurrences_panel() {
+        if ( ! Roster::current_user_can_manage() ) {
+            return;
+        }
+
+        echo '<hr style="margin:24px 0;" />';
+        echo '<h2>' . \esc_html__( 'Closed occurrences', 'anchor-schema' ) . '</h2>';
+        echo '<p class="description">' . \esc_html__( 'Dates soft-closed by removing them from a group parent (their roster is preserved). They stay published indefinitely unless deleted here.', 'anchor-schema' ) . '</p>';
+
+        if ( isset( $_GET['anchor_events_closed_deleted'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            if ( $_GET['anchor_events_closed_deleted'] === '1' ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                echo '<div class="notice notice-success inline"><p>' . \esc_html__( 'Occurrence deleted.', 'anchor-schema' ) . '</p></div>';
+            } elseif ( isset( $_GET['anchor_events_closed_active_seats'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                $active = (int) $_GET['anchor_events_closed_active_seats']; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+                echo '<div class="notice notice-error inline"><p>' . \esc_html( \sprintf(
+                    /* translators: %d: number of active (confirmed/pending/waitlist) seats still registered. */
+                    \_n( 'Cannot delete — %d active seat still registered.', 'Cannot delete — %d active seats still registered.', $active, 'anchor-schema' ),
+                    $active
+                ) ) . '</p></div>';
+            } else {
+                echo '<div class="notice notice-error inline"><p>' . \esc_html__( 'That occurrence could not be deleted — it may no longer be closed.', 'anchor-schema' ) . '</p></div>';
+            }
+        }
+
+        $ids = $this->occurrences->closed_children();
+        if ( empty( $ids ) ) {
+            echo '<p>' . \esc_html__( 'No closed occurrences.', 'anchor-schema' ) . '</p>';
+            return;
+        }
+
+        echo '<table class="widefat striped" style="max-width:960px;">';
+        echo '<thead><tr>';
+        echo '<th>' . \esc_html__( 'Occurrence', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Date', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Seats', 'anchor-schema' ) . '</th>';
+        echo '<th>' . \esc_html__( 'Action', 'anchor-schema' ) . '</th>';
+        echo '</tr></thead><tbody>';
+
+        foreach ( $ids as $event_id ) {
+            $event_id   = (int) $event_id;
+            $meta       = $this->get_meta( $event_id );
+            $seats      = $this->registrations->query_seats( [ 'event_id' => $event_id, 'status' => 'all', 'per_page' => 1 ] );
+            $seat_total = (int) ( $seats['total'] ?? 0 );
+            $edit_link  = \get_edit_post_link( $event_id, 'raw' );
+
+            echo '<tr>';
+            echo '<td>' . ( $edit_link
+                ? '<a href="' . \esc_url( $edit_link ) . '">' . \esc_html( \get_the_title( $event_id ) ) . '</a>'
+                : \esc_html( \get_the_title( $event_id ) )
+            ) . '</td>';
+            echo '<td>' . \esc_html( (string) ( $meta['start_date'] ?? '' ) ) . '</td>';
+            echo '<td>' . \esc_html( (string) $seat_total ) . '</td>';
+            echo '<td>';
+            echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="display:inline;" onsubmit="return confirm(' . \wp_json_encode( \__( 'Delete this closed occurrence? This cannot be undone from here.', 'anchor-schema' ) ) . ');">';
+            echo '<input type="hidden" name="action" value="anchor_events_delete_closed_occurrence" />';
+            echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
+            \wp_nonce_field( 'anchor_events_delete_closed_occurrence_' . $event_id );
+            \submit_button( \__( 'Delete', 'anchor-schema' ), 'delete', 'submit', false );
+            echo '</form>';
+            echo '</td>';
             echo '</tr>';
         }
         echo '</tbody></table>';
@@ -10186,7 +10986,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // pre-filled "External URL" field) through the single external_url()
         // accessor so they all resolve the same way. See that method's
         // docblock for why this is belt-and-suspenders with the
-        // registration_url -> external_url copy in migrate_registration_mode().
+        // registration_url -> external_url copy in backfill_registration_mode().
         $defaults['external_url'] = $this->external_url( $post_id );
 
         return $defaults;
@@ -10218,7 +11018,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * The event's registration mode. An explicit stored value wins; otherwise
      * it's derived from legacy signals for back-compat with pre-existing events
-     * (mirrors the logic in migrate_registration_mode()).
+     * (mirrors the logic in backfill_registration_mode()).
      *
      * @param int $event_id
      * @return string One of wc|free|external.
@@ -10242,7 +11042,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * the legacy `_anchor_event_registration_url` meta. This is the live-read
      * half of the BC fix: a pre-upgrade external event only ever wrote the
      * legacy key, and this fallback means its link resolves correctly even on
-     * a site where the one-time migrate_registration_mode() migration below
+     * a site where the one-time backfill_registration_mode() migration below
      * has NOT run yet (first page load after upgrade). The migration's own
      * registration_url -> external_url copy is the belt-and-suspenders half,
      * for any OTHER code that might read `_anchor_event_external_url` meta
@@ -10260,9 +11060,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * The start date (Y-m-d) an event was postponed/moved-online FROM
+     * (RENDER-D9), for Event_Schema's `previousStartDate` — or '' when none is
+     * stored. Not a `get_meta_defaults()` key: a plain, never-touched event
+     * must never gain a `_anchor_event_previous_start` row (fleet-wide, this
+     * plugin ships to sites that have never used postponed/moved_online at
+     * all), so this reads the raw meta directly rather than through
+     * get_meta()'s default-filling loop.
+     *
+     * The ONE writer is maybe_persist_previous_start(), called from
+     * persist_event_authoring() — see that method's docblock. Public for the
+     * same reason external_url()/get_event_status() are: Event_Schema is a
+     * separate class and must ask rather than re-implement.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function previous_start_date( $event_id ) {
+        return (string) \get_post_meta( (int) $event_id, $this->meta_key( 'previous_start' ), true );
+    }
+
+    /**
      * Derive a registration mode for an event that has no explicit stored
      * value, from legacy registration-type/url meta and ticket-tier/product
-     * signals. Shared by registration_mode() and migrate_registration_mode().
+     * signals. Shared by registration_mode() and backfill_registration_mode().
      *
      * @param int $event_id
      * @return string One of wc|free|external.
@@ -10329,9 +11150,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
-     * One-time back-compat migration: derives and persists registration_mode
-     * for events that predate the key. Idempotent — guarded by an option flag,
-     * so it's safe to call on every request.
+     * One-time back-compat back-fill: derives and persists registration_mode
+     * for events that predate the key.
      *
      * Task BC extension: for an event this derives as `external`, also copies
      * the legacy `registration_url` into the new `external_url` key (only
@@ -10339,25 +11159,47 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * external-URL BC fix (see external_url()'s docblock for the live-read
      * fallback half). The legacy `registration_url`/`registration_type` meta
      * is intentionally left in place, never cleared — other code (and this
-     * migration itself, if ever re-run) still reads it.
+     * back-fill itself, if ever re-run) still reads it.
+     *
+     * MODEL-D41: this used to run unconditionally from register_meta() on
+     * `init` — an unbounded posts_per_page=>-1 WP_Query on every single page
+     * load, front end included, until the site's very first migrated request
+     * managed to write the option. It is now shaped like the module's other
+     * versioned admin_init back-fills (backfill_timestamps(),
+     * backfill_status_values()): capability-gated, batched at 200, and keyed
+     * off `anchor_events_regmode_version` rather than the boolean
+     * `anchor_events_regmode_migrated` flag it deletes once that version is
+     * recorded — no per-event stamp needed, because the NOT-EXISTS selection
+     * predicate is self-clearing (every row this writes leaves the window).
+     *
+     * admin_init is NOT an authenticated hook — admin-post.php fires it before
+     * validating the auth cookie, and this module registers
+     * admin_post_nopriv_anchor_event_register and ..._manager_login — so the
+     * capability check is what keeps this from running inline on a
+     * logged-out visitor's POST.
      */
-    public function migrate_registration_mode() {
-        if ( \get_option( 'anchor_events_regmode_migrated' ) ) {
+    public function backfill_registration_mode() {
+        if ( ! \current_user_can( 'edit_posts' ) ) {
+            return;
+        }
+        if ( (int) \get_option( 'anchor_events_regmode_version' ) >= self::REGMODE_SCHEMA_VERSION ) {
             return;
         }
 
-        $query = new \WP_Query( [
+        $batch = 200;
+        $ids = \get_posts( [
             'post_type' => self::CPT,
             'post_status' => 'any',
+            'posts_per_page' => $batch,
             'fields' => 'ids',
-            'posts_per_page' => -1,
             'no_found_rows' => true,
+            'suppress_filters' => true,
             'meta_query' => [
                 [ 'key' => $this->meta_key( 'registration_mode' ), 'compare' => 'NOT EXISTS' ],
             ],
         ] );
 
-        foreach ( $query->posts as $event_id ) {
+        foreach ( $ids as $event_id ) {
             $mode = $this->derive_registration_mode( $event_id );
             \update_post_meta( $event_id, $this->meta_key( 'registration_mode' ), $mode );
 
@@ -10372,7 +11214,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             }
         }
 
-        \update_option( 'anchor_events_regmode_migrated', true, false );
+        if ( ! empty( $ids ) ) {
+            $this->clear_caches();
+        }
+
+        // A short batch means nothing is left to process — every event the
+        // query returns is stamped (it now has a registration_mode row, which
+        // is what the predicate matches on), so the window always moves and
+        // this condition is always eventually reached.
+        if ( count( $ids ) < $batch ) {
+            \update_option( 'anchor_events_regmode_version', self::REGMODE_SCHEMA_VERSION, false );
+            // Superseded by the versioned option; leaving it would only invite
+            // a future reader to treat it as authoritative again.
+            \delete_option( 'anchor_events_regmode_migrated' );
+        }
     }
 
     /**
@@ -10819,6 +11674,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Its replacement, 'undated', is not offered either — it is computed, and
      * an author who wants an event hidden has post_status for that.
      *
+     * `postponed` and `moved_online` (RENDER-D9) are manual-only exactly like
+     * `cancelled`: nothing computes them, an author sets them, and
+     * Event_Schema::event_status_url() maps them to EventPostponed /
+     * EventMovedOnline. Before this the vocabulary had no member for either
+     * state, so a postponed or moved-online course had no honest status to be
+     * pinned to and republished as a plain "Upcoming"/EventScheduled with a
+     * silently changed date.
+     *
      * @return array<string,string> value => label.
      */
     private function get_status_options() {
@@ -10827,6 +11690,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'ongoing' => __( 'Ongoing', 'anchor-schema' ),
             'past' => __( 'Past', 'anchor-schema' ),
             'cancelled' => __( 'Cancelled', 'anchor-schema' ),
+            'postponed' => __( 'Postponed', 'anchor-schema' ),
+            'moved_online' => __( 'Moved online', 'anchor-schema' ),
         ];
     }
 
@@ -11262,27 +12127,81 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return '<div class="anchor-events-empty">' . esc_html__( 'Calendar template not found.', 'anchor-schema' ) . '</div>';
     }
 
-    private function format_date_time( $meta, $include_range = false ) {
+    /**
+     * The structured facts behind an event's date/time display — the single
+     * source format_date_time() (and any future caller that wants the parts
+     * instead of one pre-joined string) builds on, rather than each
+     * re-deriving its own reading of the raw meta (RENDER-D37).
+     *
+     * Unlike the old format_date_time(), the time-of-day parts are run
+     * through the site's `time_format` option via date_i18n() — the raw
+     * "14:00" meta text used to print next to a localised date verbatim,
+     * unlocalised and inconsistent with every other time WordPress shows.
+     *
+     * @param array $meta get_meta() result: start_date/start_time/end_date/end_time/all_day.
+     * @return array{start_date:string,start_time:string,end_date:string,end_time:string,all_day:bool}
+     *               end_date is '' when the event doesn't span multiple days
+     *               (no end_date, or the same date as start_date).
+     */
+    public function event_date_parts( $meta ) {
+        $all_day = ! empty( $meta['all_day'] );
+        $parts = [
+            'start_date' => '',
+            'start_time' => '',
+            'end_date' => '',
+            'end_time' => '',
+            'all_day' => $all_day,
+        ];
+
         if ( ! $meta['start_date'] ) {
+            return $parts;
+        }
+
+        $time_format = \get_option( 'time_format' );
+        $format_time = function ( $raw ) use ( $time_format ) {
+            if ( $raw === '' ) {
+                return '';
+            }
+            $timestamp = \strtotime( $raw );
+            return $timestamp ? date_i18n( $time_format, $timestamp ) : '';
+        };
+
+        $parts['start_date'] = date_i18n( 'M j, Y', strtotime( $meta['start_date'] ) );
+        $parts['start_time'] = $all_day ? '' : $format_time( $meta['start_time'] );
+
+        if ( ! empty( $meta['end_date'] ) && $meta['end_date'] !== $meta['start_date'] ) {
+            $parts['end_date'] = date_i18n( 'M j, Y', strtotime( $meta['end_date'] ) );
+        }
+        $parts['end_time'] = $all_day ? '' : $format_time( $meta['end_time'] );
+
+        return $parts;
+    }
+
+    /**
+     * Thin formatter over event_date_parts() — see that method for the
+     * actual date/time logic. Kept as the join-into-one-string shape every
+     * existing caller (render_column, the registrants list, the manager
+     * item, the event card, single content, the choose-date row,
+     * occurrence_label) already expects.
+     */
+    private function format_date_time( $meta, $include_range = false ) {
+        $parts = $this->event_date_parts( $meta );
+        if ( $parts['start_date'] === '' ) {
             return '';
         }
-        $start = $meta['start_date'];
-        $start_time = $meta['all_day'] ? '' : $meta['start_time'];
-        $end_date = $meta['end_date'];
-        $end_time = $meta['all_day'] ? '' : $meta['end_time'];
 
-        $output = date_i18n( 'M j, Y', strtotime( $start ) );
-        if ( $start_time ) {
-            $output .= ' ' . $start_time;
+        $output = $parts['start_date'];
+        if ( $parts['start_time'] !== '' ) {
+            $output .= ' ' . $parts['start_time'];
         }
         if ( $include_range ) {
-            if ( $end_date && $end_date !== $start ) {
-                $output .= ' - ' . date_i18n( 'M j, Y', strtotime( $end_date ) );
-                if ( $end_time ) {
-                    $output .= ' ' . $end_time;
+            if ( $parts['end_date'] !== '' ) {
+                $output .= ' - ' . $parts['end_date'];
+                if ( $parts['end_time'] !== '' ) {
+                    $output .= ' ' . $parts['end_time'];
                 }
-            } elseif ( $end_time ) {
-                $output .= ' - ' . $end_time;
+            } elseif ( $parts['end_time'] !== '' ) {
+                $output .= ' - ' . $parts['end_time'];
             }
         }
         return $output;
@@ -11328,6 +12247,26 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // save contexts (save_meta / handle_event_manager_save / transition_post_status)
         // and the daily anchor_events_status_sweep cron.
         return $this->calculate_status( $meta );
+    }
+
+    /**
+     * Does a `get_event_status()` value mean "sells nothing" (THEME-D25 /
+     * finding-16)?
+     *
+     * The ONE place `cancelled` and `postponed` are named together as the
+     * closed set. bookability() and the two status guards that pre-empt it —
+     * Roster::handle_add()'s manual-add refusal and handle_registration()'s
+     * stale-POST guard — all call this rather than each spelling out its own
+     * status list, which is exactly how postponed slipped through both guards
+     * after it was added to bookability() alone. `moved_online` is
+     * deliberately NOT in this set: the event still happens, on the same
+     * date, just virtually, so it stays bookable (see bookability()).
+     *
+     * @param string $status A get_event_status() return value.
+     * @return bool
+     */
+    public function status_is_closed( $status ) {
+        return $status === 'cancelled' || $status === 'postponed';
     }
 
     /**
@@ -11489,6 +12428,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                it still has a date somebody can take (parent_bookability()),
      *   closed    — a soft-closed occurrence, still reachable by direct URL,
      *   cancelled — the author's own word, via get_event_status(),
+     *   postponed — likewise the author's own word (finding-16): the original
+     *   date is off and no new one is known yet, so nothing sells until the
+     *   event is rescheduled or cancelled outright. 'moved_online' is NOT
+     *   included here — same date, still happens, still bookable,
      *   then the seat-layer capacity authority (open|waitlist|full|closed),
      *   which owns the sold_out flag, the registration window, the past-event
      *   check, the event total and the per-tier quota,
@@ -11533,7 +12476,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // say (THEME-D25). Read through the accessor, not the raw row: auto
         // mode owns that row and never computes 'cancelled', so only a
         // hand-pinned (or soft-closed) event reaches this.
-        if ( $this->get_event_status( $event_id, $meta ) === 'cancelled' ) {
+        //
+        // finding-16 (Task 34 review ruling) — 'postponed' sells nothing
+        // either: the ORIGINAL date is off, and nobody knows the new one yet
+        // (that is what distinguishes it from a reschedule, which just moves
+        // start_ts and stays bookable normally). Before this, a postponed
+        // event with open seats still resolved 'open'/'waitlist' here, so its
+        // JSON-LD said EventPostponed while offering InStock at the old date
+        // — see Event_Schema's postponed/cancelled handling this now agrees
+        // with. 'moved_online' is deliberately NOT included: the event still
+        // happens, on the SAME date, just virtually — it stays bookable.
+        $status = $this->get_event_status( $event_id, $meta );
+        if ( $this->status_is_closed( $status ) ) {
             return 'closed';
         }
 
@@ -12190,17 +13144,21 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * with real data" showed copy a free registration never sent (REG-D1/D45).
      */
     /**
+     * @param int $seat_id finding-13: the seat this registration minted, for
+     *            Events_Log identity only (never business logic here) — see
+     *            send_html_email()'s docblock. 0 when the caller has none
+     *            (kept optional so no existing call site is forced to change).
      * @return Outcome The ATTENDEE email: sent | skipped (notifications_off,
      *                 disabled, no_address) | failed (wp_mail).
      */
-    public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0 ) {
-        $this->send_registration_admin_notice( $event_id, $name, $email, $status, $guests );
+    public function send_registration_emails( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0 ) {
+        $this->send_registration_admin_notice( $event_id, $name, $email, $status, $guests, $seat_id );
 
         // The ATTENDEE half is what the return value describes: the caller needs
         // to know whether it may promise "check your email" (REG-D24). The
         // organizer copy above is a different recipient with a different switch
         // and is deliberately not folded into this answer.
-        return $this->send_confirmation_email( $event_id, $name, $email, $status, $guests );
+        return $this->send_confirmation_email( $event_id, $name, $email, $status, $guests, $seat_id );
     }
 
     /**
@@ -12215,7 +13173,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * @return void The organizer copy is never what a caller reports to a user.
      */
-    private function send_registration_admin_notice( $event_id, $name, $email, $status, $guests = 0 ) {
+    private function send_registration_admin_notice( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0 ) {
         $settings = $this->get_settings();
         if ( empty( $settings['notify_admin'] ) ) {
             return;
@@ -12235,10 +13193,14 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // Plain-text email, but still carry the configured sender identity.
         $sent = \wp_mail( $admin_email, $subject, $message, $this->email_headers() );
         if ( ! $sent ) {
+            // finding-13 — the seat identity distinguishes two failed notices
+            // about two different registrations on the same event even though
+            // this recipient (the fixed admin address) never varies.
             Events_Log::error( 'email_send_returned_false', [
                 'event'   => (int) $event_id,
                 'to'      => $admin_email,
                 'subject' => $subject,
+                'seat'    => (int) $seat_id,
             ] );
         }
     }
@@ -12252,10 +13214,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * the seat moves off the waitlist reports a registration that did not
      * happen. One builder, two entry points — the pair, and the attendee alone.
      *
+     * @param int $seat_id finding-13: Events_Log identity only — see
+     *            send_html_email()'s docblock. 0 when the caller has none.
      * @return Outcome sent | skipped (notifications_off, disabled, no_address)
      *                 | failed (wp_mail).
      */
-    public function send_confirmation_email( $event_id, $name, $email, $status, $guests = 0 ) {
+    public function send_confirmation_email( $event_id, $name, $email, $status, $guests = 0, $seat_id = 0 ) {
         $settings   = $this->get_settings();
         $event_link = \get_permalink( $event_id );
         $guests     = max( 0, (int) $guests );
@@ -12309,7 +13273,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'cta_url'       => $event_link,
             'type'          => 'confirmation',
         ] );
-        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id ), 'wp_mail' );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event from collapsing into one deduped error row.
+        return Outcome::from_bool( $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => (int) $seat_id ] ), 'wp_mail' );
     }
 
     // -------------------------------------------------------------------------
@@ -12380,7 +13346,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                     (string) ( $seat['name'] ?? '' ),
                     (string) ( $seat['email'] ?? '' ),
                     Registrations::STATUS_CONFIRMED,
-                    (int) ( $seat['guests'] ?? 0 )
+                    (int) ( $seat['guests'] ?? 0 ),
+                    (int) $seat_id
                 );
                 continue;
             }
@@ -12481,7 +13448,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'type'          => 'cancellation',
         ];
         $html = $this->build_registration_email_html( $ctx );
-        $sent = $this->send_html_email( $email, $subject, $html, [], $event_id );
+        // finding-13 — the seat identity keeps two different attendees on the
+        // same event from collapsing into one deduped error row.
+        $sent = $this->send_html_email( $email, $subject, $html, [], $event_id, [ 'seat' => $seat_id ] );
         if ( $sent ) {
             // WHEN it was emailed, not merely THAT it was: the value is what
             // survives a later un-cancel/re-cancel cycle being distinguishable

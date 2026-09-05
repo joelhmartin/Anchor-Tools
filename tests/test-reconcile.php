@@ -7,6 +7,7 @@
  * @package Anchor\Events\Tests
  */
 
+use Anchor\Events\Events_Log;
 use Anchor\Events\Registrations;
 
 /**
@@ -156,6 +157,133 @@ class Test_Reconcile extends Anchor_Events_TestCase {
 		$this->woocommerce()->on_order_refunded( $order_id, $refund->get_id() );
 		$this->assertSame( 1, $this->count_seats( $ctx['event_id'], Registrations::STATUS_REFUNDED ) );
 		$this->assertSame( 1, $this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ) );
+	}
+
+	/* ------------------------------------------------------------------
+	 * WOO-D42 — classify_refund() compares integer minor units, not floats.
+	 * ------------------------------------------------------------------ */
+
+	/** classify_refund() via reflection (private on purpose — internal only). */
+	private function classify_refund( $order, $refund_id ) {
+		$method = new ReflectionMethod( get_class( $this->woocommerce() ), 'classify_refund' );
+		$method->setAccessible( true );
+		return $method->invoke( $this->woocommerce(), $order, $refund_id );
+	}
+
+	/**
+	 * The audit's concrete failure: a line total carrying WooCommerce's
+	 * higher internal (sub-cent) precision landed the refund amount 0.0104
+	 * away from the summed line total once represented as a float — a plain
+	 * line refund with no extra amount, which the old `> 0.01` float compare
+	 * misclassified as 'mixed' (and permanently flagged
+	 * `mixed_refund_extra_amount` on an order with nothing to review).
+	 */
+	public function test_a_sub_cent_precision_line_total_is_not_misclassified_as_mixed() {
+		$ctx = $this->paid_event_with_variation();
+
+		$variation = wc_get_product( $ctx['variation_id'] );
+		$item      = new WC_Order_Item_Product();
+		$item->set_product( $variation );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 30 );
+		$item->set_total( 30 );
+		$order = new WC_Order();
+		$order->add_item( $item );
+		$order->set_billing_email( 'buyer@example.test' );
+		$order->calculate_totals( false );
+		$order->save();
+		$order->set_status( 'processing' );
+		$order->save();
+
+		$refund = wc_create_refund( [
+			'order_id'   => $order->get_id(),
+			'amount'     => 23.44,
+			'line_items' => [ $item->get_id() => [ 'qty' => -1, 'refund_total' => 23.4296 ] ],
+		] );
+		$this->assertNotWPError( $refund );
+
+		$this->assertSame(
+			'line',
+			$this->classify_refund( wc_get_order( $order->get_id() ), $refund->get_id() ),
+			'A sub-cent rounding artifact must not read as an unexplained extra amount.'
+		);
+	}
+
+	/** A GENUINE extra amount beyond the line totals is still caught. */
+	public function test_a_real_extra_amount_is_still_classified_as_mixed() {
+		$ctx = $this->paid_event_with_variation();
+
+		$variation = wc_get_product( $ctx['variation_id'] );
+		$item      = new WC_Order_Item_Product();
+		$item->set_product( $variation );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 30 );
+		$item->set_total( 30 );
+		$order = new WC_Order();
+		$order->add_item( $item );
+		$order->set_billing_email( 'buyer@example.test' );
+		$order->calculate_totals( false );
+		$order->save();
+		$order->set_status( 'processing' );
+		$order->save();
+
+		// $10 of real, unexplained extra amount beyond the $20 line refund.
+		$refund = wc_create_refund( [
+			'order_id'   => $order->get_id(),
+			'amount'     => 30.00,
+			'line_items' => [ $item->get_id() => [ 'qty' => -1, 'refund_total' => 20.00 ] ],
+		] );
+		$this->assertNotWPError( $refund );
+
+		$this->assertSame(
+			'mixed',
+			$this->classify_refund( wc_get_order( $order->get_id() ), $refund->get_id() )
+		);
+	}
+
+	/* ------------------------------------------------------------------
+	 * WOO-D43 — an unrecognized order status is a no-op with ONE record.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * A deposit/partial-payment plugin's own custom order status. Before
+	 * WOO-D43, map_order_status_to_seat()'s SEAT_TARGET_UNKNOWN sentinel made
+	 * reconcile_order() return with NO log entry and NO needs-review flag —
+	 * a paid order could sit with zero seats and zero visible signal
+	 * anywhere. It must now be recorded exactly once, not once per pass.
+	 */
+	public function test_unrecognized_order_status_is_flagged_once_not_silently() {
+		add_filter( 'wc_order_statuses', function ( $statuses ) {
+			$statuses['wc-partially-paid'] = 'Partially paid';
+			return $statuses;
+		} );
+
+		$ctx      = $this->paid_event_with_variation();
+		$res      = $this->make_order( $ctx['variation_id'], 1, 'partially-paid' );
+		$order_id = $res['order']->get_id();
+		$this->assertSame( 'partially-paid', wc_get_order( $order_id )->get_status(), 'Precondition: the custom status stuck.' );
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'first pass' );
+
+		$this->assertSame(
+			0,
+			$this->count_seats( $ctx['event_id'], Registrations::STATUS_CONFIRMED ),
+			'An unrecognized status must not fabricate seats.'
+		);
+
+		$order = wc_get_order( $order_id );
+		$flags = (array) $order->get_meta( Events_Log::ORDER_REVIEW_META );
+		$this->assertCount( 1, $flags );
+		$this->assertSame( 'unknown_order_status', $flags[0]['reason'] );
+
+		$log = (array) $order->get_meta( Events_Log::ORDER_LOG_META );
+		$this->assertCount( 1, $log, 'Exactly one sync-log entry for the first unknown-status pass.' );
+
+		// Re-firing must not spam a second log entry or a second flag.
+		$this->woocommerce()->reconcile_order( wc_get_order( $order_id ), 'second pass' );
+		$order = wc_get_order( $order_id );
+		$this->assertCount( 1, (array) $order->get_meta( Events_Log::ORDER_REVIEW_META ) );
+		$this->assertCount( 1, (array) $order->get_meta( Events_Log::ORDER_LOG_META ) );
 	}
 
 	/* ------------------------------------------------------------------

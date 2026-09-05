@@ -19,7 +19,7 @@
  * Every fixture below is built with Anchor_Events_TestCase::make_event(),
  * passing ONLY legacy keys (plus make_event()'s own registration_enabled/
  * capacity/waitlist defaults, which are themselves legacy-model fields) and
- * NEVER calling migrate_registration_mode() unless a test is specifically
+ * NEVER calling backfill_registration_mode() unless a test is specifically
  * exercising the migration — so most of these tests hit the resolvers'
  * live-read (un-migrated) code path, exactly like a real pre-upgrade site's
  * very first page load after the plugin update.
@@ -34,7 +34,7 @@
  * would have gone unnoticed until a customer complained a "Register" button
  * had vanished. The fix is Module::external_url() (a live-read fallback to
  * the legacy key, wired into get_meta()) plus a matching mapping in
- * migrate_registration_mode() — see those methods' docblocks.
+ * backfill_registration_mode() — see those methods' docblocks.
  *
  * @package Anchor\Events\Tests
  */
@@ -180,6 +180,7 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	 * ------------------------------------------------------------------ */
 
 	public function test_migration_backfills_registration_mode_and_maps_external_url_for_a_batch_of_old_events() {
+		delete_option( 'anchor_events_regmode_version' );
 		delete_option( 'anchor_events_regmode_migrated' );
 
 		$free_id = $this->make_event( [ 'registration_type' => 'internal' ] );
@@ -197,12 +198,12 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 			$this->assertSame( '', get_post_meta( $id, '_anchor_event_registration_mode', true ) );
 		}
 
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame( 'free', get_post_meta( $free_id, '_anchor_event_registration_mode', true ) );
 		$this->assertSame( 'external', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 		$this->assertSame( 'wc', get_post_meta( $wc_id, '_anchor_event_registration_mode', true ) );
-		$this->assertTrue( (bool) get_option( 'anchor_events_regmode_migrated' ) );
+		$this->assertTrue( (int) get_option( 'anchor_events_regmode_version' ) >= 1 );
 
 		// The Task BC mapping: registration_url -> external_url, ONLY for the
 		// external event, and the legacy key is left in place (not cleared).
@@ -219,7 +220,7 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 		// a migrated value and confirm a second run doesn't revisit that post.
 		update_post_meta( $external_id, '_anchor_event_registration_mode', 'free' );
 		update_post_meta( $external_id, '_anchor_event_external_url', 'https://ext.example/hand-edited' );
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame( 'free', get_post_meta( $external_id, '_anchor_event_registration_mode', true ), 'Idempotent: already-migrated posts must not be revisited.' );
 		$this->assertSame( 'https://ext.example/hand-edited', get_post_meta( $external_id, '_anchor_event_external_url', true ), 'Idempotent: already-migrated posts must not be revisited.' );
@@ -233,6 +234,7 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	 * survives untouched.
 	 */
 	public function test_migration_external_url_mapping_never_overwrites_an_existing_value() {
+		delete_option( 'anchor_events_regmode_version' );
 		delete_option( 'anchor_events_regmode_migrated' );
 
 		$event_id = $this->make_event( [
@@ -244,7 +246,7 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 		// before the migration query would otherwise pick it up.
 		update_post_meta( $event_id, '_anchor_event_external_url', 'https://ext.example/already-explicit' );
 
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame(
 			'https://ext.example/already-explicit',
@@ -259,14 +261,13 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	 * ------------------------------------------------------------------ */
 
 	/**
-	 * These fixtures are created fresh in THIS test and migrate_registration_mode()
+	 * These fixtures are created fresh in THIS test and backfill_registration_mode()
 	 * is never called on them — proving the live-read fallback (not the
 	 * migration) is what makes an un-migrated site work correctly on its very
-	 * first page load after upgrade. (The site-wide 'anchor_events_regmode_migrated'
-	 * option may already be true from the module's own init-time call in
-	 * bootstrap — that's irrelevant here, since a no-op run over an empty DB
-	 * cannot have touched posts that didn't exist yet; each assertion below
-	 * confirms THIS event's own registration_mode meta is still unset.)
+	 * first page load after upgrade. (MODEL-D41 moved the back-fill off `init`
+	 * onto `admin_init`, so — unlike before — nothing in the WP test bootstrap
+	 * runs it automatically; each assertion below confirms THIS event's own
+	 * registration_mode meta is still unset.)
 	 */
 	public function test_resolvers_work_correctly_before_migration_has_touched_these_events() {
 		$free_id = $this->make_event( [ 'registration_type' => 'internal' ] );
@@ -577,6 +578,75 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * finding-11 (carry-over) — save_meta() (wp-admin metabox) and
+	 * save_event_manager_fields() (front-end console) used to build the same
+	 * ~28-key authoring allow-list independently: two copies of a rule that
+	 * has to agree to be correct. Both now call the ONE shared
+	 * event_authoring_input(), so the same POST must sanitize to
+	 * byte-identical meta on both surfaces.
+	 */
+	public function test_both_save_surfaces_produce_the_same_sanitized_meta_for_the_same_post() {
+		$metabox_event = $this->make_event();
+		$console_event = $this->make_event();
+
+		$payload = [
+			'anchor_event_start_date' => '2026-09-01',
+			'anchor_event_end_date' => '2026-09-02',
+			'anchor_event_start_time' => '09:00',
+			'anchor_event_end_time' => '10:30',
+			'anchor_event_timezone' => 'America/Chicago',
+			'anchor_event_all_day' => '1',
+			'anchor_event_venue' => 'Anchor HQ',
+			'anchor_event_address_street' => '123 Main St',
+			'anchor_event_address_city' => 'Austin',
+			'anchor_event_address_state' => 'TX',
+			'anchor_event_address_zip' => '78701',
+			'anchor_event_address_country' => 'US',
+			'anchor_event_virtual' => '1',
+			'anchor_event_virtual_url' => 'https://example.test/live',
+			'anchor_event_registration_enabled' => '1',
+			'anchor_event_capacity' => '25',
+			'anchor_event_registration_open' => '2026-08-01',
+			'anchor_event_registration_close' => '2026-08-31',
+			'anchor_event_waitlist' => '1',
+			'anchor_event_sold_out' => '',
+			'anchor_event_price' => '$25',
+			'anchor_event_hide_from_archive' => '',
+			'anchor_event_featured' => '1',
+			'anchor_event_priority' => '5',
+			'anchor_event_gallery' => '',
+			'anchor_event_reminder_offsets' => '7,1',
+			'anchor_event_type' => 'single',
+			'anchor_event_registration_mode' => 'free',
+		];
+
+		// wp-admin metabox.
+		$_POST = array_merge( [ Module::NONCE => wp_create_nonce( Module::NONCE ) ], $payload );
+		$this->module()->save_meta( $metabox_event );
+
+		// Front-end console. save_via_console() always passes '2026-09-01' as
+		// the precomputed $start_date, matching the payload above.
+		$_POST = $payload;
+		$this->save_via_console( $console_event );
+
+		$keys = [
+			'start_date', 'end_date', 'start_time', 'end_time', 'timezone', 'all_day', 'venue',
+			'address_street', 'address_city', 'address_state', 'address_zip', 'address_country',
+			'virtual', 'virtual_url', 'registration_enabled', 'capacity', 'registration_open',
+			'registration_close', 'waitlist', 'sold_out', 'price', 'hide_from_archive', 'featured',
+			'priority', 'gallery', 'reminder_offsets', 'type', 'registration_mode',
+		];
+
+		foreach ( $keys as $key ) {
+			$this->assertSame(
+				get_post_meta( $metabox_event, '_anchor_event_' . $key, true ),
+				get_post_meta( $console_event, '_anchor_event_' . $key, true ),
+				"Key '{$key}' must be sanitized identically on both save surfaces."
+			);
+		}
+	}
+
+	/**
 	 * Group authoring is part of the shared tail, so it must read the $src it
 	 * was handed — not $_POST behind its caller's back. Both real callers
 	 * still pass $_POST, so this is invisible in production today; it is what
@@ -676,6 +746,63 @@ class Test_Backward_Compat extends Anchor_Events_TestCase {
 
 		$this->assertSame( [], $this->module()->get_registration_questions( $event_id ) );
 		$this->assertSame( '', get_post_meta( $event_id, Module::QUESTIONS_META, true ) );
+	}
+
+	/**
+	 * finding-9 — Ticket_Types::save() cannot tell "the table was on screen
+	 * and is now empty" from "this form never posted the table at all"; both
+	 * arrive as no anchor_event_tickets rows. Mirrors the questions marker: a
+	 * save carrying neither the marker nor any ticket rows must not wipe
+	 * tiers authored elsewhere.
+	 */
+	public function test_a_save_without_the_tiers_marker_leaves_console_authored_tiers_untouched() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			'anchor_event_tiers_present' => '1',
+			'anchor_event_tickets' => [
+				[ 'label' => 'General Admission', 'price' => '25', 'active' => '1' ],
+			],
+		];
+		$this->save_via_console( $event_id );
+		$this->assertSame( 'General Admission', $this->ticket_types()->get( $event_id )[0]['label'] );
+
+		// A save that posts neither the marker nor any ticket rows.
+		$_POST = [
+			Module::NONCE => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-01',
+		];
+		$this->module()->save_meta( $event_id );
+
+		$saved = $this->ticket_types()->get( $event_id );
+		$this->assertSame(
+			'General Admission',
+			$saved[0]['label'],
+			'A save whose form never posted the ticket table must not be read as "no tiers".'
+		);
+	}
+
+	/** ...and the console can still clear every tier: it posts the marker even when every row has been removed. */
+	public function test_console_save_can_still_clear_every_ticket_tier() {
+		$event_id = $this->make_event();
+
+		$_POST = [
+			'anchor_event_tiers_present' => '1',
+			'anchor_event_tickets' => [
+				[ 'label' => 'General Admission', 'price' => '25', 'active' => '1' ],
+			],
+		];
+		$this->save_via_console( $event_id );
+		$this->assertNotEmpty( get_post_meta( $event_id, \Anchor\Events\Ticket_Types::META_KEY, true ) );
+
+		$_POST = [ 'anchor_event_tiers_present' => '1' ]; // repeater rendered, every row removed.
+		$this->save_via_console( $event_id );
+
+		$this->assertSame(
+			'',
+			get_post_meta( $event_id, \Anchor\Events\Ticket_Types::META_KEY, true ),
+			'The console must still be able to clear every tier when it posts the marker.'
+		);
 	}
 
 	/**

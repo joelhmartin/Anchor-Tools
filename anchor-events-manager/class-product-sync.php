@@ -37,9 +37,6 @@ class Product_Sync {
     /** Variation meta: the stable tier id this variation maps to. */
     const VARIATION_TIER_META = '_anchor_evt_tier_id';
 
-    /** Variation meta: '1' active / '0' deactivated (kept for history). */
-    const VARIATION_ACTIVE_META = '_anchor_evt_tier_active';
-
     /** Custom product attribute name used to vary the managed product. */
     const ATTRIBUTE_NAME = 'Ticket';
 
@@ -394,11 +391,11 @@ class Product_Sync {
      * `wc_variation_id` for each of them.
      *
      * So the demote does all three, in the vocabulary the rest of the module
-     * already uses for a retired variation — `private` + VARIATION_ACTIVE_META
-     * '0', exactly what write_variation()'s deactivate branch writes:
+     * already uses for a retired variation — `private`, exactly what
+     * write_variation()'s deactivate branch sets:
      *
      *  1. product      → draft
-     *  2. variations   → private + inactive
+     *  2. variations   → private
      *  3. tier rows    → wc_variation_id 0
      *
      * (3) clears the CACHE, not the author's tier rows — the alternative
@@ -449,16 +446,8 @@ class Product_Sync {
                     if ( ! $variation ) {
                         continue;
                     }
-                    $dirty = false;
                     if ( $variation->get_status() !== 'private' ) {
                         $variation->set_status( 'private' );
-                        $dirty = true;
-                    }
-                    if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '0' ) {
-                        $variation->update_meta_data( self::VARIATION_ACTIVE_META, '0' );
-                        $dirty = true;
-                    }
-                    if ( $dirty ) {
                         $variation->save();
                     }
                 }
@@ -561,6 +550,18 @@ class Product_Sync {
             }
         }
 
+        // WOO-D36: only the 'wc' registration mode may have a managed
+        // product. An event authored as Free or External can still carry an
+        // active paid tier — a legacy `price` synthesizing the implicit
+        // primary tier, or leftover tier rows from a mode switch — and that
+        // alone used to be enough to publish a live, purchasable product the
+        // organizer never asked for. Occurrences::sync_product() already
+        // applies this exact gate before calling sync_event() for a child
+        // occurrence; this is the direct save_post path's missing twin.
+        if ( $this->module->registration_mode( $event_id ) !== 'wc' ) {
+            $paid_active_map = [];
+        }
+
         // A group parent is a container, not a bookable event — each of its
         // occurrences carries its own product. Treating it as having nothing to
         // sell reuses the demote-to-draft path below, and reverses itself: stop
@@ -598,22 +599,49 @@ class Product_Sync {
             }
 
             // Index existing variations by tier id (all statuses).
-            $existing = []; // tier_id => WC_Product_Variation
-            foreach ( $this->variation_ids_for_product( $product_id ) as $vid ) {
+            $mutated      = false; // tracks whether any variation was created/changed/deleted
+            $existing     = []; // tier_id => WC_Product_Variation
+            $existing_ids = $this->variation_ids_for_product( $product_id );
+            foreach ( $existing_ids as $vid ) {
                 $variation = \wc_get_product( $vid );
                 if ( ! $variation ) {
                     continue;
                 }
                 $tier_id = (string) $variation->get_meta( self::VARIATION_TIER_META );
-                if ( $tier_id !== '' ) {
+                if ( $tier_id !== '' && ! isset( $existing[ $tier_id ] ) ) {
                     $existing[ $tier_id ] = $variation;
+                }
+            }
+
+            // WOO-D12: a variation with BLANK tier-id meta (hand-added), or a
+            // second variation sharing a tier id already indexed above (a
+            // failed half-sync, or a manual duplicate), is never added to
+            // $existing — the indexing loop keeps only the first match per
+            // tier id. Left alone, that orphan is never added to $specs,
+            // never deleted, and never reconciled again: it stays published
+            // under the managed product, sellable, with its stale price and
+            // link meta, invisible to every future sync. Deactivate it now
+            // (never delete — we cannot know here whether an order
+            // references it) the same way a retired tier's variation is.
+            $accounted_for = [];
+            foreach ( $existing as $variation ) {
+                $accounted_for[ $variation->get_id() ] = true;
+            }
+            foreach ( $existing_ids as $vid ) {
+                if ( isset( $accounted_for[ $vid ] ) ) {
+                    continue;
+                }
+                $orphan = \wc_get_product( $vid );
+                if ( $orphan && $orphan->get_status() !== 'private' ) {
+                    $orphan->set_status( 'private' );
+                    $orphan->save();
+                    $mutated = true;
                 }
             }
 
             // Plan the resulting variation set + delete removed-with-no-seats.
             $specs    = []; // ordered list of variation specs to write
             $used_opt = [];
-            $mutated  = false; // tracks whether any variation was created/changed/deleted
 
             // 1) Paid+active tiers (preserve $all_tiers order).
             foreach ( $all_tiers as $tier ) {
@@ -621,7 +649,12 @@ class Product_Sync {
                 if ( ! isset( $paid_active_map[ $tier_id ] ) ) {
                     continue;
                 }
-                $label  = $tier['label'] !== '' ? $tier['label'] : \__( 'Ticket', 'anchor-schema' );
+                // finding-19 (carry-over) — defers to Ticket_Types::default_label()
+                // rather than its own literal: the tier's own unlabeled row
+                // and the WooCommerce variation synced from it must agree on
+                // what to call it (Ticket_Types is the source of truth for
+                // tier label regardless of whether Woo is active).
+                $label  = $tier['label'] !== '' ? $tier['label'] : Ticket_Types::default_label();
                 $option = $this->unique_option( $label, $used_opt );
                 $specs[] = [
                     'tier_id'   => $tier_id,
@@ -836,18 +869,20 @@ class Product_Sync {
                 $variation->set_status( 'publish' );
                 $dirty = true;
             }
-            if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '1' ) {
-                $variation->update_meta_data( self::VARIATION_ACTIVE_META, '1' );
-                $dirty = true;
-            }
         } else {
-            // Deactivate: private + active flag '0'. Price/label left as-is.
+            // Deactivate: private. Price/label left as-is.
+            //
+            // WOO-D8: this used to also write `_anchor_evt_tier_active`
+            // ('1'/'0') alongside the status — a fact the variation's own
+            // post_status already carries. Every real consumer
+            // (products_for_event(), variation_for_tier(),
+            // is_live_variation()) already keys off post_status or the
+            // tier-id meta; the active flag had zero readers, so a row where
+            // the two disagreed could never be detected. Removed rather than
+            // kept in sync with a second reader, since post_status already IS
+            // the single source of truth here.
             if ( $variation->get_status() !== 'private' ) {
                 $variation->set_status( 'private' );
-                $dirty = true;
-            }
-            if ( (string) $variation->get_meta( self::VARIATION_ACTIVE_META ) !== '0' ) {
-                $variation->update_meta_data( self::VARIATION_ACTIVE_META, '0' );
                 $dirty = true;
             }
         }
@@ -868,6 +903,22 @@ class Product_Sync {
      * @param array $tier_variation_map tier_id => variation_id
      */
     private function write_back_variation_ids( $event_id, array $all_tiers, array $tier_variation_map ) {
+        // WOO-D6: an event with NO authored tier list gets $all_tiers from
+        // Ticket_Types::get()'s synthesized implicit-primary fallback, not
+        // real stored meta. Writing a wc_variation_id back through
+        // Ticket_Types::save() for that synthesized row materializes
+        // `_anchor_event_ticket_types` for the first time — and from then on
+        // get() stops re-reading the legacy `price` meta, so editing the
+        // event's "Price label" field silently stops doing anything. The
+        // variation is still discoverable without this: variation_for_tier()
+        // falls back to scanning the product's variations by tier-id meta
+        // when the cached id doesn't validate, so nothing is lost by skipping
+        // the write-back here.
+        $stored = \get_post_meta( $event_id, Ticket_Types::META_KEY, true );
+        if ( ! \is_array( $stored ) || empty( $stored ) ) {
+            return;
+        }
+
         $changed = false;
         $rows    = [];
         foreach ( $all_tiers as $tier ) {
@@ -883,7 +934,19 @@ class Product_Sync {
         }
 
         if ( $changed ) {
-            $this->ticket_types->save( $event_id, $rows );
+            // WOO-D40: write the meta DIRECTLY rather than through
+            // Ticket_Types::save() — save() is the authoring sanitizer (it
+            // substitutes the "Registration" default for a blank label,
+            // mints ids, drops empty rows...), all correct when an admin
+            // submits the tickets form, but wrong here: this write only
+            // wants to persist a cached wc_variation_id onto rows that
+            // already went through get()'s normalize(). Routing it through
+            // save() anyway silently renamed a blank-labeled tier to
+            // "Registration" — on the storefront, the variation description
+            // and the checkout heading — the first time any sync changed a
+            // variation id. $rows is already the normalized shape save()
+            // itself persists, so this writes the identical structure.
+            \update_post_meta( $event_id, Ticket_Types::META_KEY, \wp_slash( $rows ) );
         }
     }
 
@@ -925,7 +988,9 @@ class Product_Sync {
     private function unique_option( $base, array &$used ) {
         $base = \trim( (string) $base );
         if ( $base === '' ) {
-            $base = \__( 'Ticket', 'anchor-schema' );
+            // finding-19 — same shared default as the tier label itself; see
+            // the call site above.
+            $base = Ticket_Types::default_label();
         }
         $option = $base;
         $n      = 2;

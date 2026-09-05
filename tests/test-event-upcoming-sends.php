@@ -150,6 +150,68 @@ class Test_Event_Upcoming_Sends extends Anchor_Events_TestCase {
 		$this->assertSame( 0, $row['sent_count'] );
 	}
 
+	/**
+	 * finding-14 — an abandoned retry (queue_email_retry() gives up after
+	 * MAX_EMAIL_ATTEMPTS and writes REMINDER_ABANDONED_MARKER, not the same
+	 * 0 a legitimate supersession writes) must report as a delivery failure,
+	 * not the generic "past — not sent" a never-attempted offset gets.
+	 */
+	public function test_reminder_row_shows_failed_state_when_a_seats_retry_was_abandoned() {
+		$this->configure_settings( [
+			'reminder_enabled' => true,
+			'reminder_offsets' => '3',
+		] );
+
+		$start_ts = time() + ( 1 * DAY_IN_SECONDS );
+		$event_id = $this->make_event( [ 'start_ts' => $start_ts ] );
+		$seat_id  = $this->make_seat( $event_id );
+		update_post_meta( $seat_id, '_anchor_event_reminders_sent', [ 3 => Module::REMINDER_ABANDONED_MARKER ] );
+
+		$schedule = $this->module()->compute_email_schedule( $event_id );
+		$row      = $schedule['rows'][0];
+
+		$this->assertSame( 'failed', $row['state'] );
+		$this->assertSame( 0, $row['sent_count'], 'An abandoned retry is not a send.' );
+	}
+
+	/** A plain supersession (0) — never attempted, no failure — still reports 'past', not 'failed'. */
+	public function test_reminder_row_still_shows_past_for_a_plain_supersession() {
+		$this->configure_settings( [
+			'reminder_enabled' => true,
+			'reminder_offsets' => '3',
+		] );
+
+		$start_ts = time() + ( 1 * DAY_IN_SECONDS );
+		$event_id = $this->make_event( [ 'start_ts' => $start_ts ] );
+		$seat_id  = $this->make_seat( $event_id );
+		update_post_meta( $seat_id, '_anchor_event_reminders_sent', [ 3 => 0 ] );
+
+		$schedule = $this->module()->compute_email_schedule( $event_id );
+		$row      = $schedule['rows'][0];
+
+		$this->assertSame( 'past', $row['state'] );
+	}
+
+	/** The Upcoming Sends metabox itself renders the abandoned-retry copy, not a bare "Past — not sent". */
+	public function test_upcoming_sends_metabox_renders_failed_after_n_attempts() {
+		$this->configure_settings( [
+			'reminder_enabled' => true,
+			'reminder_offsets' => '3',
+		] );
+
+		$start_ts = time() + ( 1 * DAY_IN_SECONDS );
+		$event_id = $this->make_event( [ 'start_ts' => $start_ts ] );
+		$seat_id  = $this->make_seat( $event_id );
+		update_post_meta( $seat_id, '_anchor_event_reminders_sent', [ 3 => Module::REMINDER_ABANDONED_MARKER ] );
+
+		ob_start();
+		$this->module()->render_upcoming_sends_metabox( get_post( $event_id ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringContainsString( 'Failed after 3 attempts', $html );
+		$this->assertStringNotContainsString( 'Past — not sent', $html );
+	}
+
 	public function test_per_event_reminder_offsets_override_wins_over_global() {
 		$this->configure_settings( [
 			'reminder_enabled' => true,

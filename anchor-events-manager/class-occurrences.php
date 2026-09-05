@@ -16,12 +16,15 @@
  * Field split (see class docblock sections below):
  *   - PER-OCCURRENCE meta ("owned" by the child once created): start_date,
  *     end_date, start_time, end_time, start_ts, end_ts, capacity,
- *     status_mode, status. Of these, only start_date/end_date (the date
- *     IDENTITY, via occurrence_key) and status/status_mode are frozen once
- *     set — start_time/end_time/capacity are the row's EDITABLE fields and
- *     ARE re-applied (parent-row-wins) on every reconcile of a still-desired
- *     date, with start_ts/end_ts recomputed accordingly (see
- *     apply_occurrence_editable_fields()). Also implicitly per-occurrence:
+ *     status_mode, status. Of these, only start_date (the date IDENTITY, via
+ *     occurrence_key) and status/status_mode are frozen once set —
+ *     start_time/end_time/capacity/end_date are the row's EDITABLE fields
+ *     and ARE re-applied (parent-row-wins) on every reconcile of a
+ *     still-desired date, with start_ts/end_ts recomputed accordingly (audit
+ *     MODEL-D25: this paragraph used to list end_date alongside start_date as
+ *     frozen identity, which apply_occurrence_editable_fields() has never
+ *     done — the END date is not identity, only the START date is; see that
+ *     method's docblock). Also implicitly per-occurrence:
  *     seats/roster (REG_CPT rows keyed by
  *     event id) and the managed WooCommerce product
  *     (`_anchor_event_managed_product`) — both are per-post already and are
@@ -671,6 +674,42 @@ class Occurrences {
     }
 
     /**
+     * Every currently soft-closed occurrence in the system, oldest post ID
+     * first — feeds the admin "Closed occurrences" panel (MODEL-D34).
+     *
+     * retire_child() deliberately never trashes a child that is ALREADY
+     * closed (it re-asserts soft_close() instead, to avoid surprise-trashing
+     * a preserved roster) — so once a soft-closed child's seats are later
+     * cancelled/refunded to zero, nothing in reconcile() ever removes it.
+     * The post stays published, excluded from every public listing
+     * (build_hide_clause()) and from children()/siblings(), with no
+     * reachable terminal state. This is that state: cross-parent (unlike
+     * children(), which is scoped to one group), so an admin can find and
+     * remove one regardless of which parent it belongs to.
+     *
+     * @param int $limit
+     * @return int[] Child post ids.
+     */
+    public function closed_children( $limit = 200 ) {
+        return \get_posts( [
+            'post_type'      => Module::CPT,
+            'post_status'    => 'publish',
+            'posts_per_page' => (int) $limit,
+            'fields'         => 'ids',
+            'no_found_rows'  => true,
+            'orderby'        => 'ID',
+            'order'          => 'ASC',
+            'meta_query'     => [
+                [
+                    'key'     => $this->module->meta_key( 'occurrence_closed' ),
+                    'value'   => '1',
+                    'compare' => '=',
+                ],
+            ],
+        ] );
+    }
+
+    /**
      * Sibling child ids (same group, excluding $child_id itself).
      *
      * @param int  $child_id
@@ -932,8 +971,23 @@ class Occurrences {
      *               given, every listed weekday within each active week is
      *               included (chronological order); when omitted, only
      *               $anchor_date's own weekday is used.
-     *   start_time/end_time/capacity : copied onto every generated row as-is
-     *               (same normalization as get_offering_dates()'s rows).
+     *   start_time/end_time/capacity/label : copied onto every generated row
+     *               as-is (same normalization as get_offering_dates()'s rows).
+     *   span_days : optional int >= 0 (default 0). Each generated row's
+     *               `end_date` is `date + span_days` when > 0, else '' — the
+     *               same "empty means single-day" convention offering rows
+     *               use (audit MODEL-D35: before this, a generated row had no
+     *               end_date at all, so apply_occurrence_editable_fields()
+     *               could never give a recurring occurrence a multi-day span).
+     *   tier_id   : optional ticket-tier id, copied onto every generated row
+     *               as-is. One rule generates the whole series, so — unlike
+     *               an offering row, which can link a DIFFERENT tier per
+     *               date — every occurrence this rule produces links the
+     *               SAME tier (or none, the default: every tier). Without
+     *               this, sync_ticket_types() falls back to copying every
+     *               tier onto every generated occurrence — the exact
+     *               December-occurrence-sells-an-October-ticket bug the
+     *               tier_id link exists to prevent for offerings.
      *
      * Monthly semantics: same day-of-month as $anchor_date, every `interval`
      * months. SHORT-MONTH HANDLING (documented choice): when the target month
@@ -953,7 +1007,7 @@ class Occurrences {
      * @param array  $rule        Recurrence rule (see above).
      * @param string $anchor_date The first occurrence date (Y-m-d) — normally
      *                            the parent's start_date.
-     * @return array<int,array{date:string,start_time:string,end_time:string,label:string,capacity:int}>
+     * @return array<int,array{date:string,end_date:string,start_time:string,end_time:string,label:string,capacity:int,tier_id:string}>
      *         Ordered ascending, deduped by date.
      */
     public function expand_recurrence( array $rule, $anchor_date ) {
@@ -991,16 +1045,38 @@ class Occurrences {
         $end_time   = $this->normalize_time( (string) ( $rule['end_time'] ?? '' ) );
         $label      = \sanitize_text_field( (string) ( $rule['label'] ?? '' ) );
         $capacity   = \max( 0, (int) ( $rule['capacity'] ?? 0 ) );
+        $span_days  = \max( 0, (int) ( $rule['span_days'] ?? 0 ) );
+        $tier_id    = \sanitize_key( (string) ( $rule['tier_id'] ?? '' ) );
 
         $rows = [];
         $seen = [];
         foreach ( $date_timestamps as $ts ) {
-            $row = [
-                'date'       => \date( 'Y-m-d', $ts ),
+            $date_str = \date( 'Y-m-d', $ts );
+            $row      = [
+                'date'       => $date_str,
+                // Empty means single-day — the same convention offering rows
+                // use (sanitize_offering_dates_rows()/get_offering_dates()).
+                //
+                // CodeRabbit finding-7 (PR #20, 2nd round): `$ts +
+                // $span_days * DAY_IN_SECONDS` is fixed-length (86400s/day)
+                // arithmetic — a span that crosses a DST fall-back (the
+                // local day gains an hour) landed a day EARLY on the
+                // calendar the site's own clocks show. Calendar-day
+                // arithmetic in the site's timezone (construct the anchor
+                // date at local midnight, then modify() by whole days) is
+                // DST-safe: PHP's DateTime day intervals advance the
+                // calendar date and preserve wall-clock time, they don't
+                // add a fixed number of seconds.
+                'end_date'   => $span_days > 0
+                    ? ( new \DateTimeImmutable( $date_str, $this->module->event_timezone( [] ) ) )
+                        ->modify( '+' . $span_days . ' days' )
+                        ->format( 'Y-m-d' )
+                    : '',
                 'start_time' => $start_time,
                 'end_time'   => $end_time,
                 'label'      => $label,
                 'capacity'   => $capacity,
+                'tier_id'    => $tier_id,
             ];
             // Keyed the same way offering rows are (occurrence_key()); every
             // generated row shares one start time, so this is the date dedupe
@@ -1794,6 +1870,21 @@ class Occurrences {
                 \wp_update_term( $term_id, Series::TAXONOMY, [ 'name' => $name ] );
             }
         }
+
+        // MODEL-D36: flag this term as auto-minted (never a hand-created
+        // series) so Series::noindex_auto_series() can noindex its archive
+        // without touching a genuinely curated series term.
+        //
+        // finding-4 (bot review, PR #20): stamped unconditionally here, not
+        // only on the newly-created branch above — a term resolved through
+        // get_term_by( 'slug', 'group-{parent_id}', ... ) is by construction
+        // one this method itself mints, so a pre-upgrade term created before
+        // AUTO_TERM_META_KEY existed (or one that lost its meta some other
+        // way) gets stamped the next time it's resolved instead of staying
+        // indexable forever. update_term_meta() is idempotent, and this can
+        // never reach a manually created term under a different slug — the
+        // lookup above only ever matches this exact deterministic pattern.
+        \update_term_meta( $term_id, Series::AUTO_TERM_META_KEY, 1 );
 
         \wp_set_object_terms( $parent_id, [ $term_id ], Series::TAXONOMY, false );
         foreach ( $live_child_ids as $child_id ) {

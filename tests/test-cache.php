@@ -344,6 +344,45 @@ class Test_Cache extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * finding-3 (carry-over; already closed by RENDER-D20 —
+	 * get_cached_ids() keys on anchor_events_cache_ver + the query args, not
+	 * time()/a per-minute bucket; see test_clear_caches_bumps_the_version_and_the_next_lookup_misses()
+	 * above). Two calls with identical args in the same version must hit the
+	 * cache rather than re-run the WP_Query.
+	 */
+	public function test_two_calls_in_the_same_version_hit_the_cache_not_a_second_query() {
+		$args = [
+			'post_type'      => Module::CPT,
+			'post_status'    => 'publish',
+			'posts_per_page' => 5,
+		];
+
+		// CodeRabbit finding-10 (PR #20, 2nd round): the key is deterministic
+		// from $args + the current cache version — a prior test in this same
+		// suite run using this exact $args (and never bumping the version in
+		// between) can leave the transient already populated, so THIS test's
+		// "first" call is itself a cache hit and never proves the first call
+		// was a genuine miss. Delete it before the first lookup so the
+		// assertion below is about THIS test's two calls, not test order.
+		delete_transient( $this->cached_ids_key( $args ) );
+
+		$queries = 0;
+		$count   = static function ( $query ) use ( &$queries ) {
+			$queries++;
+		};
+		add_action( 'pre_get_posts', $count );
+		try {
+			$first  = $this->call_get_cached_ids( $args );
+			$second = $this->call_get_cached_ids( $args );
+		} finally {
+			remove_action( 'pre_get_posts', $count );
+		}
+
+		$this->assertSame( $first, $second, 'A cache hit must return the same ids.' );
+		$this->assertSame( 1, $queries, 'The second call in the same request/version must hit the cache, not run a second query.' );
+	}
+
 	/* ------------------------------------------------------------------
 	 * Helpers.
 	 * ------------------------------------------------------------------ */

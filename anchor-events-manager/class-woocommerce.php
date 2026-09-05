@@ -57,6 +57,18 @@ class WooCommerce {
     /** Short-lived cache of the needs-review order presence/count (finding L10). */
     const NEEDS_REVIEW_TRANSIENT = 'anchor_events_needs_review';
 
+    /**
+     * WOO-D31 — sane upper bound for the uncapped `posts_per_page => -1`
+     * product/variation link queries. products_for_event() ran two such
+     * queries with no cap (front-end, on every legacy-link render and every
+     * mirror rebuild); product_link_event_ids() a third. A store with
+     * thousands of variations turned every save of any linked product, and
+     * every render of an event page in the legacy-link mode, into an
+     * uncapped meta scan. No real site links anywhere near this many
+     * products/variations to one event or one product.
+     */
+    const LINK_QUERY_CAP = 500;
+
     /** @var Module */
     private $module;
 
@@ -92,13 +104,32 @@ class WooCommerce {
         \add_action( 'woocommerce_update_product', [ $this, 'on_product_saved' ], 20, 1 );
         \add_action( 'woocommerce_new_product', [ $this, 'on_product_saved' ], 20, 1 );
 
+        // WOO-D30 — a VARIATION saved on its own (Product_Sync writing a
+        // price/status change, or an admin editing one variation) fires
+        // woocommerce_{update,new}_product_variation, not the two hooks
+        // above — those only fire when the PARENT product itself is saved,
+        // which a variation-only pass does not always do. Without this, the
+        // denormalized `_anchor_event_linked_products` mirror
+        // (event_is_linked()) could go stale while products_for_event()'s
+        // live query already disagreed with it. rebuild_event_mirror() is
+        // idempotent, so overlapping with the parent-save rebuild above is
+        // harmless.
+        \add_action( 'woocommerce_update_product_variation', [ $this, 'on_variation_saved' ], 20, 1 );
+        \add_action( 'woocommerce_new_product_variation', [ $this, 'on_variation_saved' ], 20, 1 );
+
         // Mirror lifecycle — product / variation trash + delete. Capture the
         // linked event ids while the post meta still exists, then rebuild after.
         \add_action( 'wp_trash_post', [ $this, 'capture_linked_events' ] );
         \add_action( 'trashed_post', [ $this, 'rebuild_deferred' ] );
         \add_action( 'before_delete_post', [ $this, 'capture_linked_events' ] );
         \add_action( 'deleted_post', [ $this, 'rebuild_deferred' ] );
-        \add_action( 'woocommerce_delete_product_variation', [ $this, 'capture_linked_events' ] );
+        // WOO-D9: `woocommerce_delete_product_variation` used to be hooked to
+        // capture_linked_events() here too, but that action fires AFTER
+        // wp_delete_post() has already removed the post — get_post_type()
+        // returns false by the time the handler runs, so it was a no-op
+        // dressed up as coverage. The before_delete_post/deleted_post pair
+        // above already covers a variation delete (it fires for every post
+        // type, variations included) and does the real work.
 
         /* -----------------------------------------------------------------
          * Phase 2 — form swap + checkout capture + seat creation
@@ -114,21 +145,23 @@ class WooCommerce {
         \add_filter( 'woocommerce_add_to_cart_validation', [ $this, 'validate_add_to_cart' ], 10, 4 );
         \add_action( 'woocommerce_check_cart_items', [ $this, 'notice_over_capacity_cart_items' ] );
 
+        // WOO-D18 — snapshot the event id onto the CART item at add-to-cart
+        // time. Without this, get_event_cart_lines() re-derives the event
+        // live on every read; removing the product's link (or trashing the
+        // event) while the cart is still open makes the line stop being an
+        // event line mid-cart — no attendee fields, no capacity check, and a
+        // paid order reconciles as a complete no-op with nothing recorded.
+        \add_filter( 'woocommerce_add_cart_item_data', [ $this, 'snapshot_event_on_add_to_cart' ], 10, 3 );
+
         // Checkout attendee capture (classic shortcode checkout).
-        /**
-         * Where the per-seat attendee fields render on the checkout.
-         *
-         * Before customer details, not after: measured on a live 2-seat order,
-         * "after" put the attendee block ~1,900px below billing, so the buyer
-         * filled nine required address fields before being asked the one thing
-         * the purchase is actually about — who is attending. Filterable for a
-         * site that wants the old placement back.
-         */
-        \add_action(
-            \apply_filters( 'anchor_events_checkout_attendees_hook', 'woocommerce_checkout_before_customer_details' ),
-            [ $this, 'render_checkout_attendee_fields' ],
-            10
-        );
+        //
+        // WOO-D25: the `anchor_events_checkout_attendees_hook` filter used to
+        // be evaluated right here, in the constructor — which runs on
+        // `plugins_loaded` priority 25, BEFORE any theme's functions.php has
+        // loaded. A theme could never filter it: only an mu-plugin or an
+        // earlier-loading plugin could. Deferred to `init` so a theme's own
+        // functions.php (loaded well before init fires) gets a chance too.
+        \add_action( 'init', [ $this, 'register_checkout_attendees_hook' ] );
         \add_action( 'woocommerce_after_checkout_validation', [ $this, 'validate_checkout_attendees' ], 10, 2 );
 
         // A cart of nothing but event tickets has nothing to ship. Late priority
@@ -231,6 +264,9 @@ class WooCommerce {
 
         // Needs-review admin notices on Events list / WC Orders / Events settings.
         \add_action( 'admin_notices', [ $this, 'render_needs_review_notice' ] );
+        // WOO-D20 — surface the block-checkout incompatibility BEFORE a buyer
+        // hits it, not after (see EVENTS-WOOCOMMERCE.md).
+        \add_action( 'admin_notices', [ $this, 'render_block_checkout_incompatibility_notice' ] );
         // Per-order metabox buttons: clear review + resend buyer confirmation.
         \add_action( 'admin_post_anchor_events_clear_review', [ $this, 'handle_clear_review' ] );
         \add_action( 'admin_post_anchor_events_resend_confirmation', [ $this, 'handle_resend_confirmation' ] );
@@ -248,6 +284,26 @@ class WooCommerce {
         // end-of-pass save and mid-checkout while status='pending' — risking a save
         // loop and spurious pending→cancelled sweeps. Status changes are covered by
         // order_status_changed/payment_complete; item edits by saved_order_items.
+    }
+
+    /**
+     * WOO-D25 — register render_checkout_attendee_fields() on the filtered
+     * hook, deferred to `init` so a theme's functions.php (loaded before
+     * init, but AFTER the plugins_loaded:25 bootstrap that used to run this)
+     * gets a real chance to filter `anchor_events_checkout_attendees_hook`.
+     *
+     * Where the per-seat attendee fields render on the checkout: before
+     * customer details, not after. Measured on a live 2-seat order, "after"
+     * put the attendee block ~1,900px below billing, so the buyer filled nine
+     * required address fields before being asked the one thing the purchase
+     * is actually about — who is attending.
+     */
+    public function register_checkout_attendees_hook() {
+        \add_action(
+            \apply_filters( 'anchor_events_checkout_attendees_hook', 'woocommerce_checkout_before_customer_details' ),
+            [ $this, 'render_checkout_attendee_fields' ],
+            10
+        );
     }
 
     /* ---------------------------------------------------------------------
@@ -330,7 +386,7 @@ class WooCommerce {
         $products = \get_posts( [
             'post_type'      => 'product',
             'post_status'    => 'publish',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::LINK_QUERY_CAP,
             'fields'         => 'ids',
             'no_found_rows'  => true,
             'meta_query'     => [
@@ -347,7 +403,7 @@ class WooCommerce {
         $variations = \get_posts( [
             'post_type'      => 'product_variation',
             'post_status'    => 'publish',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::LINK_QUERY_CAP,
             'fields'         => 'ids',
             'no_found_rows'  => true,
             'meta_query'     => [
@@ -476,7 +532,21 @@ class WooCommerce {
 
     public function render_variation_fields( $loop, $variation_data, $variation ) {
         $variation_id = (int) $variation->ID;
-        $selected     = (int) \get_post_meta( $variation_id, self::META_EVENT_ID, true );
+
+        // WOO-D10: an auto-managed product's variations are owned by
+        // Product_Sync — render_product_data_panel() already refuses the
+        // manual link UI on the PARENT for exactly this reason ("it would
+        // allow an admin to double-link a managed product"). This is that
+        // same guard's missing twin: without it, every variation of a
+        // managed product still showed an editable "Event Registration"
+        // dropdown, preselected to the event it's already correctly linked
+        // to.
+        $parent_id = (int) \wp_get_post_parent_id( $variation_id );
+        if ( $parent_id > 0 && (int) \get_post_meta( $parent_id, Product_Sync::PRODUCT_EVENT_META, true ) > 0 ) {
+            return;
+        }
+
+        $selected = (int) \get_post_meta( $variation_id, self::META_EVENT_ID, true );
 
         echo '<div class="form-row form-row-full anchor-evt-variation-event">';
         echo '<label>' . \esc_html__( 'Event Registration', 'anchor-schema' ) . '</label>';
@@ -513,10 +583,18 @@ class WooCommerce {
      * @return array<int,string> event id => title (published events).
      */
     private function event_options() {
+        // WOO-D32: memoized per request AND capped. This is called once for
+        // the simple-product event select PLUS once per VARIATION row on the
+        // product editor — a variable product with 40 variations used to run
+        // 41 full, uncapped event queries on one admin page load.
+        static $cache = null;
+        if ( $cache !== null ) {
+            return $cache;
+        }
         $events = \get_posts( [
             'post_type'      => Module::CPT,
             'post_status'    => 'publish',
-            'posts_per_page' => -1,
+            'posts_per_page' => self::LINK_QUERY_CAP,
             'orderby'        => 'title',
             'order'          => 'ASC',
             'no_found_rows'  => true,
@@ -525,7 +603,8 @@ class WooCommerce {
         foreach ( $events as $event ) {
             $out[ (int) $event->ID ] = $event->post_title;
         }
-        return $out;
+        $cache = $out;
+        return $cache;
     }
 
     /* ---------------------------------------------------------------------
@@ -583,6 +662,18 @@ class WooCommerce {
         $variation_id = (int) $variation_id;
         $i            = (int) $i;
 
+        // WOO-D11: an auto-managed product's variation link is owned by
+        // Product_Sync — this write has no managed-product guard, so WC
+        // posting an unrelated/misaligned index for the (unexpectedly
+        // present, see WOO-D10) dropdown could zero the very link meta the
+        // resolver depends on. It self-healed only on the next
+        // woocommerce_update_product pass; refusing the manual write outright
+        // means there is nothing to self-heal from in the first place.
+        $parent_id = (int) \wp_get_post_parent_id( $variation_id );
+        if ( $parent_id > 0 && (int) \get_post_meta( $parent_id, Product_Sync::PRODUCT_EVENT_META, true ) > 0 ) {
+            return;
+        }
+
         $old_event = (int) \get_post_meta( $variation_id, self::META_EVENT_ID, true );
 
         $posted = isset( $_POST[ self::META_EVENT_ID ][ $i ] ) ? (int) \wp_unslash( $_POST[ self::META_EVENT_ID ][ $i ] ) : 0;
@@ -629,6 +720,24 @@ class WooCommerce {
             $this->rebuild_event_mirror( $eid );
         }
         unset( $this->deferred[ $product_id ] );
+    }
+
+    /**
+     * WOO-D30 — rebuild the mirror for a variation save that never touches
+     * its parent product. Hooks: woocommerce_update_product_variation /
+     * woocommerce_new_product_variation( int $variation_id ).
+     *
+     * @param int $variation_id
+     */
+    public function on_variation_saved( $variation_id ) {
+        $variation_id = (int) $variation_id;
+        $parent_id    = (int) \wp_get_post_parent_id( $variation_id );
+        if ( $parent_id <= 0 ) {
+            return;
+        }
+        foreach ( $this->product_link_event_ids( $parent_id ) as $eid ) {
+            $this->rebuild_event_mirror( $eid );
+        }
     }
 
     /**
@@ -692,7 +801,7 @@ class WooCommerce {
             'post_type'      => 'product_variation',
             'post_status'    => [ 'publish', 'private', 'draft' ],
             'post_parent'    => $product_id,
-            'posts_per_page' => -1,
+            'posts_per_page' => self::LINK_QUERY_CAP,
             'fields'         => 'ids',
             'no_found_rows'  => true,
         ] );
@@ -822,7 +931,13 @@ class WooCommerce {
         $any_sellable = false;
         foreach ( $paid_active as $tier ) {
             $state = $this->module->bookability( $event_id, $tier );
-            if ( $this->module->is_bookable( $state ) && $this->module->ticket_types->is_on_sale( $tier ) ) {
+            // WOO-D38: a tier with no LIVE managed variation (deleted, or never
+            // synced) can never actually be added to the cart, so it must not
+            // count toward "something here is sellable" either — otherwise the
+            // button renders and every click fails at the AJAX endpoint.
+            $has_variation = ! $this->module->product_sync
+                || (int) $this->module->product_sync->variation_for_tier( $event_id, (string) $tier['id'] ) > 0;
+            if ( $has_variation && $this->module->is_bookable( $state ) && $this->module->ticket_types->is_on_sale( $tier ) ) {
                 $any_sellable = true;
             }
             $rows .= $this->render_ticket_row( $event_id, $tier, $state, count( $paid_active ) === 1 );
@@ -880,7 +995,12 @@ class WooCommerce {
      */
     private function render_ticket_row( $event_id, array $tier, $state, $only_tier = false ) {
         $tier_id = (string) $tier['id'];
-        $label   = ( $tier['label'] !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
+        // CodeRabbit finding-6 (PR #20, 2nd round): the blank-label fallback
+        // must be the SAME word Ticket_Types::default_label() is the single
+        // source of truth for ("Registration") — a second, hand-typed
+        // literal here ("Ticket") drifted from it and showed a shopper a
+        // different word than the rest of the app uses for the same case.
+        $label   = ( $tier['label'] !== '' ) ? (string) $tier['label'] : Ticket_Types::default_label();
         $price   = (float) $tier['price'];
 
         $price_html = \function_exists( 'wc_price' )
@@ -891,12 +1011,36 @@ class WooCommerce {
         $row .= '<span class="anchor-event-ticket-label">' . \esc_html( $label ) . '</span>';
         $row .= '<span class="anchor-event-ticket-price">' . $price_html . '</span>';
 
+        // WOO-D38: a tier whose managed variation is gone (deleted, or never
+        // synced) still offered a quantity box here — the AJAX endpoint then
+        // answered "Ticket is not available." Ask the SAME resolver the cart
+        // uses, before any other state check.
+        if (
+            $this->module->product_sync
+            && (int) $this->module->product_sync->variation_for_tier( $event_id, $tier_id ) <= 0
+        ) {
+            $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-unavailable" aria-disabled="true">'
+                . \esc_html__( 'Unavailable', 'anchor-schema' ) . '</span>';
+            $row .= '</div>';
+            return $row;
+        }
+
         // Outside the sale window → message only, no quantity input.
-        if ( ! $this->module->ticket_types->is_on_sale( $tier ) ) {
+        //
+        // WOO-D4: sale_state() distinguishes "hasn't opened yet" from "already
+        // closed" — is_on_sale() alone can't, so a tier whose window had ENDED
+        // used to render "Sales open <sale_start>", advertising a future
+        // opening for a window that was already over.
+        $sale_state = $this->module->ticket_types->sale_state( $tier );
+        if ( $sale_state !== 'open' ) {
             $start = (string) ( $tier['sale_start'] ?? '' );
-            $msg   = ( $start !== '' )
-                ? \sprintf( /* translators: %s: sale-start date. */ \__( 'Sales open %s', 'anchor-schema' ), $start )
-                : \__( 'Not on sale', 'anchor-schema' );
+            if ( 'before' === $sale_state && $start !== '' ) {
+                $msg = \sprintf( /* translators: %s: sale-start date. */ \__( 'Sales open %s', 'anchor-schema' ), $start );
+            } elseif ( 'after' === $sale_state ) {
+                $msg = \__( 'Sales closed', 'anchor-schema' );
+            } else {
+                $msg = \__( 'Not on sale', 'anchor-schema' );
+            }
             $row .= '<span class="anchor-event-ticket-availability anchor-event-ticket-upcoming">' . \esc_html( $msg ) . '</span>';
             $row .= '</div>';
             return $row;
@@ -1075,7 +1219,11 @@ class WooCommerce {
         $requested = [];
         foreach ( $raw as $tid => $qty ) {
             $tid = \sanitize_key( (string) $tid );
-            $qty = \max( 0, (int) $qty );
+            // WOO-D22: QTY_CAP was only ever an HTML `max` attribute — a direct
+            // POST to this nonce-verified endpoint had no server-side upper
+            // bound at all, so tiers[abc]=9999 against an unlimited-capacity
+            // event (every DEKA event has capacity 0) put 9999 seats in the cart.
+            $qty = \min( self::QTY_CAP, \max( 0, (int) $qty ) );
             if ( $tid !== '' && $qty > 0 ) {
                 $requested[ $tid ] = ( $requested[ $tid ] ?? 0 ) + $qty;
             }
@@ -1113,9 +1261,28 @@ class WooCommerce {
         $added    = 0;
         $messages = [];
 
+        // WOO-D26: cart-wide capacity. ajax_add_to_cart() calls
+        // WC_Cart::add_to_cart() directly, which never fires the
+        // woocommerce_add_to_cart_validation filter validate_add_to_cart()
+        // is hooked to — WC_Form_Handler / the native WC AJAX action / a
+        // cart-session reorder are the only callers that apply it. Without
+        // this, the plugin's OWN "Register / Add to cart" button had no
+        // cart-wide gate at all: capacity_decision() below only asks about
+        // real, already-CONFIRMED/reserved seats, so two successive adds
+        // that individually fit within remaining capacity could together
+        // overfill it, each one reporting success. Tracked locally and
+        // incremented as tiers are added within this SAME request, so a
+        // multi-tier submission can't overfill the event either.
+        $capacity_cap    = (int) ( $meta['capacity'] ?? 0 );
+        $waitlist_on     = ! empty( $meta['waitlist'] );
+        $already_in_cart = ( ! $waitlist_on && $capacity_cap > 0 ) ? $this->event_qty_already_in_cart( $event_id ) : 0;
+
         foreach ( $requested as $tier_id => $qty ) {
             $tier  = $this->module->ticket_types->find( $event_id, $tier_id );
-            $label = ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) ? (string) $tier['label'] : \__( 'Ticket', 'anchor-schema' );
+            // CodeRabbit finding-6 (PR #20, 2nd round) — same fallback word
+            // as render_ticket_row(): Ticket_Types::default_label(), not a
+            // second hand-typed literal.
+            $label = ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) ? (string) $tier['label'] : Ticket_Types::default_label();
 
             if ( ! $tier || empty( $tier['active'] ) || (float) $tier['price'] <= 0 ) {
                 /* translators: %s: ticket tier label. */
@@ -1135,6 +1302,20 @@ class WooCommerce {
                 continue;
             }
 
+            if ( ! $waitlist_on && $capacity_cap > 0 ) {
+                $remaining              = (int) $this->registrations->remaining_capacity( $event_id, $capacity_cap );
+                $available_for_this_add = \max( 0, $remaining - $already_in_cart );
+                if ( $qty > $available_for_this_add ) {
+                    /* translators: 1: remaining seat count, 2: ticket tier label. */
+                    $messages[] = \sprintf(
+                        \__( 'Only %1$d seat(s) remain for %2$s (some are already in your cart).', 'anchor-schema' ),
+                        $available_for_this_add,
+                        $label
+                    );
+                    continue;
+                }
+            }
+
             // Server-side capacity validation (single authority, spec §7). The
             // event-level gate above cannot answer this one: it is per tier AND
             // per requested quantity ("2 seats left, 3 asked for" is full).
@@ -1147,7 +1328,8 @@ class WooCommerce {
             // 'open' or 'waitlist' → add (waitlist seats are resolved at creation).
             $key = WC()->cart->add_to_cart( $parent_product_id, $qty, $variation_id, [], [] );
             if ( $key ) {
-                $added += $qty;
+                $added           += $qty;
+                $already_in_cart += $qty;
                 if ( Registrations::STATUS_WAITLIST === $decision ) {
                     /* translators: 1: quantity, 2: ticket tier label. */
                     $messages[] = \sprintf( \__( 'Added %1$d × %2$s to the waitlist.', 'anchor-schema' ), $qty, $label );
@@ -1365,12 +1547,24 @@ class WooCommerce {
             return $passed;
         }
         $remaining = (int) $this->registrations->remaining_capacity( $event_id, $capacity );
-        if ( $remaining < (int) $quantity && \function_exists( 'wc_add_notice' ) ) {
+
+        // WOO-D26: count what THIS event already holds elsewhere in the cart —
+        // otherwise "3 <= 5, passes" on an empty cart, then "3 <= 5, passes"
+        // again on a second add, leaves 6 seats in a 5-seat cart while every
+        // individual add-to-cart request reported success. This gate is
+        // advisory (cart validation, no lock); reconcile under the per-event
+        // lock at payment time remains the authority that cannot be raced.
+        // event_qty_already_in_cart() is shared with ajax_add_to_cart() — the
+        // native WC add-to-cart path and the plugin's own AJAX endpoint must
+        // agree on one cart-wide capacity sum, not two that can drift.
+        $remaining_after_cart = \max( 0, $remaining - $this->event_qty_already_in_cart( $event_id ) );
+
+        if ( $remaining_after_cart < (int) $quantity && \function_exists( 'wc_add_notice' ) ) {
             \wc_add_notice(
                 \sprintf(
                     /* translators: 1: remaining seat count, 2: event title. */
                     \__( 'Sorry, only %1$d seat(s) remain for %2$s.', 'anchor-schema' ),
-                    $remaining,
+                    $remaining_after_cart,
                     \get_the_title( $event_id )
                 ),
                 'error'
@@ -1381,15 +1575,62 @@ class WooCommerce {
     }
 
     /**
+     * WOO-D26 — how many seats of $event_id (any tier, any cart line) are
+     * ALREADY sitting in the cart. Shared by validate_add_to_cart() (the
+     * native WC add-to-cart path — a direct product-page or legacy-link
+     * purchase) and ajax_add_to_cart() (the plugin's own "Register / Add to
+     * cart" endpoint, which calls WC_Cart::add_to_cart() directly and so
+     * never fires the woocommerce_add_to_cart_validation filter
+     * validate_add_to_cart() is hooked to) — ONE cart-wide capacity sum, not
+     * two independent ones that can silently drift apart.
+     *
+     * @param int $event_id
+     * @return int
+     */
+    private function event_qty_already_in_cart( $event_id ) {
+        $event_id = (int) $event_id;
+        $qty      = 0;
+        foreach ( $this->get_event_cart_lines() as $line ) {
+            if ( (int) $line['event_id'] === $event_id ) {
+                $qty += (int) $line['qty'];
+            }
+        }
+        return $qty;
+    }
+
+    /**
      * Clearer messaging when a cart contains more event seats than remain
      * (covers WC silently dropping a now-unpurchasable product — finding #16).
+     *
+     * WOO-D27: this used to only ADD the notice — the over-capacity line
+     * itself had no path back to a valid state except the shopper manually
+     * working the stock cart form. It now clamps the line's quantity to what
+     * actually remains (or removes it, at zero) via WC()->cart->set_quantity(),
+     * so the cart the buyer sees after the notice is one that can check out.
+     *
+     * finding-1 (bot review, PR #20): each line used to be compared against
+     * the event's FULL remaining capacity independently — two lines of 3
+     * seats against 5 remaining both passed (3 <= 5 twice), leaving 6 seats
+     * in a 5-seat cart, and checkout's aggregate validation then still
+     * rejected the whole cart with no path back to a valid state. This now
+     * tracks a running per-event allowance (and, for a tier with its own
+     * quota, a running per-tier allowance nested under it) that is
+     * decremented as lines are processed in the SAME order
+     * get_event_cart_lines() returns them (cart order), so a later line is
+     * clamped against what an earlier line for the same event/tier already
+     * consumed rather than against the untouched total.
      */
     public function notice_over_capacity_cart_items() {
-        if ( ! \function_exists( 'wc_add_notice' ) ) {
+        if ( ! \function_exists( 'wc_add_notice' ) || ! \function_exists( 'WC' ) || ! WC()->cart ) {
             return;
         }
+
+        $event_allowance = []; // event_id => seats left to hand out to cart lines not yet processed.
+        $tier_allowance  = []; // "event_id|tier_id" => same, nested under a tier's own quota.
+
         foreach ( $this->get_event_cart_lines() as $line ) {
-            $meta = $this->module->get_meta( $line['event_id'] );
+            $event_id = $line['event_id'];
+            $meta     = $this->module->get_meta( $event_id );
             if ( ! empty( $meta['waitlist'] ) ) {
                 continue;
             }
@@ -1397,19 +1638,77 @@ class WooCommerce {
             if ( $capacity <= 0 ) {
                 continue;
             }
-            $remaining = (int) $this->registrations->remaining_capacity( $line['event_id'], $capacity );
-            if ( $line['qty'] > $remaining ) {
+
+            if ( ! \array_key_exists( $event_id, $event_allowance ) ) {
+                $event_allowance[ $event_id ] = (int) $this->registrations->remaining_capacity( $event_id, $capacity );
+            }
+
+            $tier     = $this->tier_for_cart_line( $line );
+            $tier_key = null;
+            if ( $tier && (int) ( $tier['quota'] ?? 0 ) > 0 ) {
+                $tier_key = $event_id . '|' . $tier['id'];
+                if ( ! \array_key_exists( $tier_key, $tier_allowance ) ) {
+                    $tier_allowance[ $tier_key ] = \max(
+                        0,
+                        (int) $tier['quota'] - $this->registrations->count_reserved_for_tier( $event_id, $tier['id'] )
+                    );
+                }
+            }
+
+            $allowed = $event_allowance[ $event_id ];
+            if ( null !== $tier_key ) {
+                $allowed = \min( $allowed, $tier_allowance[ $tier_key ] );
+            }
+            $allowed = \max( 0, $allowed );
+
+            $consumed = $line['qty'];
+            if ( $line['qty'] > $allowed ) {
+                $clamped  = $allowed;
+                $consumed = $clamped;
                 \wc_add_notice(
                     \sprintf(
                         /* translators: 1: remaining seat count, 2: event title. */
-                        \__( 'Only %1$d seat(s) remain for %2$s. Please adjust the quantity.', 'anchor-schema' ),
-                        $remaining,
+                        \__( 'Only %1$d seat(s) remain for %2$s. The quantity in your cart has been adjusted to fit alongside the other tickets for this event already in your cart.', 'anchor-schema' ),
+                        $clamped,
                         $line['event_title']
                     ),
                     'error'
                 );
+                if ( $clamped > 0 ) {
+                    WC()->cart->set_quantity( $line['cart_item_key'], $clamped, true );
+                } else {
+                    WC()->cart->remove_cart_item( $line['cart_item_key'] );
+                }
+            }
+
+            $event_allowance[ $event_id ] -= $consumed;
+            if ( null !== $tier_key ) {
+                $tier_allowance[ $tier_key ] -= $consumed;
             }
         }
+    }
+
+    /**
+     * The ticket tier a cart line (as returned by get_event_cart_lines())
+     * represents, or null for a simple product / an unmanaged variation.
+     * ID-based sibling of tier_for_product_object() for callers that only
+     * have the line's ids, not a live WC_Product — same event-id agreement
+     * check (WOO-D3) so a re-pointed variation falls back to the event-level
+     * answer rather than a quota that counts seats under the wrong event.
+     *
+     * @param array $line Row from get_event_cart_lines().
+     * @return array|null Normalized tier row.
+     */
+    private function tier_for_cart_line( array $line ) {
+        if ( (int) $line['variation_id'] <= 0 || ! $this->module->product_sync || ! $this->module->ticket_types ) {
+            return null;
+        }
+        $map = $this->module->product_sync->tier_for_variation( (int) $line['variation_id'] );
+        if ( (string) $map['tier_id'] === '' || (int) $map['event_id'] !== (int) $line['event_id'] ) {
+            return null;
+        }
+        $tier = $this->module->ticket_types->find( (int) $line['event_id'], (string) $map['tier_id'] );
+        return $tier ?: null;
     }
 
     /* ---------------------------------------------------------------------
@@ -1417,8 +1716,39 @@ class WooCommerce {
      * ------------------------------------------------------------------- */
 
     /**
-     * Cart lines that register for an event, keyed by cart_item_key. Uses the
-     * resolver (master toggle respected via event_for_line).
+     * WOO-D18 — snapshot the resolved event id onto the cart item at
+     * add-to-cart time, the way persist_attendees_to_line_item() already
+     * snapshots it onto the ORDER line at checkout. Runs for every add-to-cart
+     * on the store, not just this plugin's own AJAX endpoint, so a purchase
+     * through the legacy product-link escape hatch (or a direct add-to-cart
+     * form on a managed variation) is covered too.
+     *
+     * Hook: woocommerce_add_cart_item_data( array $cart_item_data,
+     *       int $product_id, int $variation_id ).
+     *
+     * @param array $cart_item_data
+     * @param int   $product_id
+     * @param int   $variation_id
+     * @return array
+     */
+    public function snapshot_event_on_add_to_cart( $cart_item_data, $product_id, $variation_id ) {
+        $cart_item_data = \is_array( $cart_item_data ) ? $cart_item_data : [];
+        $event_id       = $this->event_for_line( (int) $product_id, (int) $variation_id );
+        if ( $event_id > 0 ) {
+            $cart_item_data['anchor_event_id'] = $event_id;
+        }
+        return $cart_item_data;
+    }
+
+    /**
+     * Cart lines that register for an event, keyed by cart_item_key.
+     *
+     * WOO-D18: prefers the snapshot taken at add-to-cart time
+     * (snapshot_event_on_add_to_cart()) over the live resolver — an admin
+     * unticking the product's link, re-pointing it, or trashing the event
+     * while the cart is still open must not silently turn the line into a
+     * non-event line (no attendee fields, no capacity check, and a paid order
+     * whose reconcile then skips it with no trace at all).
      *
      * @return array<string,array{cart_item_key:string,product_id:int,variation_id:int,event_id:int,event_title:string,qty:int}>
      */
@@ -1430,7 +1760,10 @@ class WooCommerce {
         foreach ( WC()->cart->get_cart() as $cart_item_key => $item ) {
             $product_id   = (int) ( $item['product_id'] ?? 0 );
             $variation_id = (int) ( $item['variation_id'] ?? 0 );
-            $event_id     = $this->event_for_line( $product_id, $variation_id );
+            $event_id     = isset( $item['anchor_event_id'] ) ? $this->validate_event_id( (int) $item['anchor_event_id'] ) : 0;
+            if ( $event_id <= 0 ) {
+                $event_id = $this->event_for_line( $product_id, $variation_id );
+            }
             if ( $event_id <= 0 ) {
                 continue;
             }
@@ -1760,8 +2093,41 @@ class WooCommerce {
         }
         $product_id   = (int) $item->get_product_id();
         $variation_id = (int) $item->get_variation_id();
-        $event_id     = $this->event_for_line( $product_id, $variation_id );
+        // WOO-D18: prefer the snapshot taken at add-to-cart time — $values is
+        // the cart item array, which carries it when the line was added
+        // through an add-to-cart path (snapshot_event_on_add_to_cart()). The
+        // live resolver is the fallback for a line added before this snapshot
+        // existed, or added programmatically with no cart item data at all.
+        $snapshot_event_id = ( \is_array( $values ) && isset( $values['anchor_event_id'] ) ) ? (int) $values['anchor_event_id'] : 0;
+        $event_id          = $snapshot_event_id > 0 ? $this->validate_event_id( $snapshot_event_id ) : 0;
         if ( $event_id <= 0 ) {
+            $event_id = $this->event_for_line( $product_id, $variation_id );
+        }
+        if ( $event_id <= 0 ) {
+            // WOO-D18: a snapshot existed — this line WAS an event line at
+            // add-to-cart time — but no longer resolves (the event was
+            // trashed/deleted between add-to-cart and checkout), and the
+            // live product/variation link doesn't rescue it either. Silently
+            // treating this as "not an event line" loses the seat with zero
+            // trace: order_has_event_lines() sees nothing here, so
+            // reconcile_order() never even reaches this order. A line with
+            // NO snapshot at all is left alone — that is legitimately a
+            // non-event line, not a defect.
+            if ( $snapshot_event_id > 0 && $order instanceof \WC_Order ) {
+                $order_id = (int) $order->get_id();
+                if ( $order_id > 0 ) {
+                    Events_Log::flag_review(
+                        $order_id,
+                        'event_line_unresolved',
+                        \sprintf( 'cart item %s, event %d', $cart_item_key, $snapshot_event_id )
+                    );
+                }
+                Events_Log::error( 'event_line_unresolved', [
+                    'order' => $order_id,
+                    'item'  => (string) $cart_item_key,
+                    'event' => $snapshot_event_id,
+                ] );
+            }
             return;
         }
 
@@ -1806,9 +2172,15 @@ class WooCommerce {
         }
         // Link snapshot — survives later un-linking; used by reconcile to resolve
         // the event without re-querying live product meta.
+        //
+        // WOO-D7: `_anchor_product_id` / `_anchor_variation_id` used to be
+        // written here too, "for when the link is gone" — but the order ITEM
+        // already carries its own product/variation id via WC_Order_Item_
+        // Product::get_product_id()/get_variation_id() regardless of any
+        // later re-link, so those two keys had zero readers anywhere in the
+        // plugin or theme. Only the event id needs a snapshot, because THAT is
+        // the fact a re-link/un-link can actually change out from under the line.
         $item->update_meta_data( '_anchor_event_id', $event_id );
-        $item->update_meta_data( '_anchor_product_id', $product_id );
-        $item->update_meta_data( '_anchor_variation_id', $variation_id );
     }
 
     /**
@@ -1872,6 +2244,14 @@ class WooCommerce {
     /** Enqueue the minimal checkout-attendees JS on the checkout page only. */
     public function enqueue_checkout_assets() {
         if ( ! \function_exists( 'is_checkout' ) || ! \is_checkout() ) {
+            return;
+        }
+        // WOO-D45: an unconditional extra request on the highest-value page on
+        // the site — a laser-accessory-only order (no event line at all) used
+        // to load this too. It was a harmless no-op (the script early-returns
+        // on a missing #anchor-event-attendees), but a no-op is still a
+        // request every checkout view paid for regardless of its cart.
+        if ( empty( $this->get_event_cart_lines() ) ) {
             return;
         }
         \wp_enqueue_script(
@@ -1966,6 +2346,30 @@ class WooCommerce {
     }
 
     /**
+     * WOO-D43 — record the FIRST time an order lands in an unrecognized
+     * status, once, so a paid order stuck under a gateway-specific status
+     * (deposits, subscriptions, fulfillment, partial-payment, …) is not a
+     * complete no-op with no trace anywhere. Deduped by
+     * Events_Log::flag_review()'s own by-reason dedupe (and a matching check
+     * here so the sync log doesn't get one entry per reconcile pass either).
+     *
+     * @param \WC_Order $order
+     * @param string    $order_status
+     */
+    private function flag_unknown_order_status_once( \WC_Order $order, $order_status ) {
+        $flags = $order->get_meta( Events_Log::ORDER_REVIEW_META );
+        $flags = \is_array( $flags ) ? $flags : [];
+        foreach ( $flags as $flag ) {
+            if ( isset( $flag['reason'] ) && $flag['reason'] === 'unknown_order_status' ) {
+                return; // Already recorded for this order.
+            }
+        }
+        $order_id = (int) $order->get_id();
+        Events_Log::order( $order_id, 'Unrecognized order status — seats left untouched.', [ 'status' => (string) $order_status ] );
+        Events_Log::flag_review( $order_id, 'unknown_order_status', 'status: ' . (string) $order_status );
+    }
+
+    /**
      * The single seat-mutation entry point: declarative & idempotent for ALL order
      * statuses, manual edits, and refunds. Computes the desired seat set per line
      * from the order's current state and converges existing seats toward it.
@@ -2019,11 +2423,20 @@ class WooCommerce {
             $target        = $this->map_order_status_to_seat( $order_status );
 
             // M6 — unknown/custom status: leave every seat exactly as-is (do NOT
-            // sweep, do NOT force expected=0). A true no-op for converged passes:
-            // do NOT append a sync-log entry and do NOT save (writing a log entry
-            // every pass would mark the order dirty and save even though nothing
-            // changed). Just release the in-flight guard via the outer finally.
+            // sweep, do NOT force expected=0). A true no-op for CONVERGED passes:
+            // do NOT append a sync-log entry and do NOT save on every re-fire
+            // (that would mark the order dirty and save even though nothing
+            // changed).
+            //
+            // WOO-D43: but the FIRST time an order lands in an unrecognized
+            // status (a deposit/partial-payment plugin's own custom status,
+            // say) it deserves exactly one record — otherwise a paid order can
+            // sit with zero seats and zero visible signal anywhere: not on the
+            // order, not on the event, not in an admin notice. Gated by a flag
+            // already on the order so this fires once per order, not once per
+            // reconcile pass.
             if ( $target === self::SEAT_TARGET_UNKNOWN ) {
+                $this->flag_unknown_order_status_once( $order, $order_status );
                 return;
             }
 
@@ -3288,21 +3701,39 @@ class WooCommerce {
             }
         }
 
-        // Customer confirmation — gated PER EVENT (L6) so a second event line added
-        // by a later order edit still gets a confirmation, while partial refunds
-        // (no new active seats) never re-spam. The email itself lists all current
-        // active seats; we mark every event covered this pass as confirmed.
+        // Customer confirmation — resolved and gated PER EVENT (finding-1/L6):
+        // each event's own confirmation switch and template decide whether
+        // THAT event's buyer email sends, so an order mixing a disabled event
+        // (A) and an enabled event (B) still confirms B. One confirmation
+        // email is sent per enabled event with newly-active seats — never one
+        // combined email whose single on/off check could starve every event
+        // after the first disabled one — each built from that event's own
+        // seats and per-event overrides. A second event line added by a later
+        // order edit still gets its own confirmation; partial refunds (no new
+        // active seats on an event) never re-spam that event.
         if ( $notify_customer && $has_new_active ) {
-            $uncovered = false;
+            // CodeRabbit finding-5 (PR #20, 2nd round): apply_review_flags()
+            // dedupes by REASON, not detail — so a single pass with TWO
+            // events whose confirmation both failed only ever kept the
+            // FIRST 'customer_email_failed' flag pushed onto $review_flags
+            // (the second was dropped as a same-reason dupe against the
+            // first, added moments earlier in this same loop), and even that
+            // one's detail was just "order #123", naming no event at all.
+            // Accumulate every failed event id here — same shape as
+            // collect_order_seats()'s $missing_status — and raise ONE flag
+            // after the loop naming all of them.
+            $failed_events = [];
             foreach ( $email_events as $eid => $ev ) {
-                if ( ( ! empty( $ev['confirmed'] ) || ! empty( $ev['waitlist'] ) ) && empty( $sent[ 'customer:' . (int) $eid ] ) ) {
-                    $uncovered = true;
-                    break;
+                $eid = (int) $eid;
+                if ( empty( $ev['confirmed'] ) && empty( $ev['waitlist'] ) ) {
+                    continue; // No new active seats on this event this pass.
                 }
-            }
-            if ( $uncovered ) {
-                $primary_id = 0;
-                $result     = $this->send_customer_confirmation( $order, $settings, $primary_id );
+                $gate_key = 'customer:' . $eid;
+                if ( ! empty( $sent[ $gate_key ] ) ) {
+                    continue; // Already covered.
+                }
+
+                $result = $this->send_customer_confirmation( $order, $settings, $eid, $review_flags );
                 // WOO-D33 — only a real attempt re-decides customer_email_failed.
                 // A skip (disabled, nothing to confirm) and a pass that never gets
                 // here at all both leave a previous failure standing: the buyer
@@ -3310,51 +3741,36 @@ class WooCommerce {
                 if ( ! $result->is_skipped() ) {
                     $evaluated['customer_email'] = true;
                 }
-                if ( $result->is_sent() ) {
-                    // The email lists every active seat on the order, so every
-                    // event it covered is covered for good.
-                    $now = \time();
-                    foreach ( $email_events as $eid => $ev ) {
-                        if ( ! empty( $ev['confirmed'] ) || ! empty( $ev['waitlist'] ) ) {
-                            $sent[ 'customer:' . (int) $eid ] = $now;
-                        }
-                    }
-                } elseif ( $result->is_skipped() && 'disabled' === $result->reason() && $primary_id > 0 ) {
-                    // The gate records "this event is settled", not "mail left
-                    // the building": a switch-off the organizer chose is just
-                    // as settled as a send, and stamping it stops the next
-                    // reconcile re-deciding it (audit REG-D6). Only the event
-                    // whose switch was actually consulted is stamped, so the
-                    // rest of the order's gates stay open.
-                    // A skip with nothing to confirm settles nothing at all and
-                    // is deliberately absent from both branches (audit WOO-D15).
-                    //
-                    // KNOWN LIMITATION — narrowing the stamp does NOT rescue the
-                    // mixed order (confirmation disabled on event A, enabled on
-                    // event B). send_customer_confirmation() re-derives
-                    // $primary_id from collect_order_seats() on every pass and
-                    // always lands on the same first event, so if that primary
-                    // is the disabled one the call returns skipped('disabled')
-                    // forever and B's open gate is never reached. The stamp only
-                    // keeps A from being re-decided; making the confirmation
-                    // resolve its enable switch per event (or send one mail per
-                    // event) is the follow-up that actually fixes it.
-                    $sent[ 'customer:' . (int) $primary_id ] = \time();
+                if ( $result->is_sent() || ( $result->is_skipped() && 'disabled' === $result->reason() ) ) {
+                    // Sent, or the organizer switched THIS event's confirmation
+                    // off — either way this event is settled, not failed, and
+                    // stamping it stops the next reconcile re-deciding it
+                    // (audit REG-D6). A skip with nothing to confirm settles
+                    // nothing at all and is deliberately absent here (WOO-D15).
+                    $sent[ $gate_key ] = \time();
                 }
                 if ( $result->is_sent() ) {
-                    $log_entries[] = $this->make_log_entry( 'Customer confirmation email sent.', [ 'to' => $order->get_billing_email() ] );
+                    $log_entries[] = $this->make_log_entry( 'Customer confirmation email sent.', [ 'to' => $order->get_billing_email(), 'event' => $eid ] );
                 } elseif ( $result->is_skipped() ) {
                     $log_entries[] = $this->make_log_entry( 'Customer confirmation email skipped.', [
                         'to'     => $order->get_billing_email(),
+                        'event'  => $eid,
                         'reason' => $result->reason(),
                     ] );
                 } else {
-                    $review_flags[] = $this->make_flag( 'customer_email_failed', 'order #' . $order_id );
-                    $log_entries[]  = $this->make_log_entry( 'Customer confirmation email FAILED.', [
+                    $failed_events[] = $eid;
+                    $log_entries[]   = $this->make_log_entry( 'Customer confirmation email FAILED.', [
                         'to'     => $order->get_billing_email(),
+                        'event'  => $eid,
                         'reason' => $result->reason(),
                     ] );
                 }
+            }
+            if ( ! empty( $failed_events ) ) {
+                $review_flags[] = $this->make_flag(
+                    'customer_email_failed',
+                    'order #' . $order_id . ' — events ' . \implode( ', ', $failed_events )
+                );
             }
         }
 
@@ -3366,7 +3782,7 @@ class WooCommerce {
             $gate_key    = 'organizer:' . $event_id;
 
             if ( $notify_organizer && $has_confirm && empty( $sent[ $gate_key ] ) ) {
-                $notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed' );
+                $notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed', $review_flags );
                 if ( $notice->is_sent() || ( $notice->is_skipped() && 'disabled' === $notice->reason() ) ) {
                     // Same rule as the buyer confirmation: a type the organizer
                     // switched off is settled, not failed. This gate is already
@@ -3385,7 +3801,7 @@ class WooCommerce {
             // Seats-released organizer notice (cancelled/refunded). Not gated by
             // emails_sent: idempotent because reconcile only releases seats once.
             if ( $notify_organizer && $has_release ) {
-                $released_notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released' );
+                $released_notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released', $review_flags );
                 if ( $released_notice->is_sent() ) {
                     $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice sent.', [ 'event' => $event_id, 'released' => (int) $ev['released'] ] );
                 } elseif ( $released_notice->is_skipped() ) {
@@ -3410,17 +3826,41 @@ class WooCommerce {
      * by event id. Reads SEAT post meta (REG_CPT posts — not the order), so it is
      * HPOS-safe; no order postmeta is touched.
      *
-     * @param int $order_id
+     * CodeRabbit finding-1 (PR #20, 2nd round) — $review_flags, when passed, is
+     * the SAME by-ref array the batched reconcile_order()/dispatch_emails() pass
+     * accumulates and later merges into $save_order via apply_review_flags()
+     * in one $save_order->save() at the end of the pass. Calling
+     * Events_Log::flag_review() directly from inside that pass loads and saves
+     * a SEPARATE \WC_Order instance mid-pass — whichever save lands last wins,
+     * so apply_review_flags() persisting the $save_order snapshot taken before
+     * this flag existed could silently discard it. Callers outside the batched
+     * pass (e.g. handle_resend_confirmation()) omit $review_flags and get the
+     * old immediate flag_review() behaviour, which is correct there: nothing
+     * else is accumulating a save for that order.
+     *
+     * @param int        $order_id
+     * @param array|null $review_flags (by ref) When given, append here instead
+     *                                  of flagging the order directly.
      * @return array<int,array<int,array>> [ event_id => [ {id,name,status,seat_index} ] ].
      */
-    private function collect_order_seats( $order_id ) {
-        $by_event = [];
-        $active   = [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING, Registrations::STATUS_WAITLIST ];
-        foreach ( $this->registrations->get_seats_for_order( (int) $order_id ) as $sid ) {
+    private function collect_order_seats( $order_id, ?array &$review_flags = null ) {
+        $order_id       = (int) $order_id;
+        $by_event       = [];
+        $missing_status = []; // WOO-D44: accumulated, not flagged one-by-one — see below.
+        $active         = [ Registrations::STATUS_CONFIRMED, Registrations::STATUS_PENDING, Registrations::STATUS_WAITLIST ];
+        foreach ( $this->registrations->get_seats_for_order( $order_id ) as $sid ) {
             $sid    = (int) $sid;
             $status = (string) \get_post_meta( $sid, '_anchor_event_reg_status', true );
             if ( $status === '' ) {
-                $status = Registrations::STATUS_CONFIRMED;
+                // WOO-D44: a seat whose status meta was lost is NOT a
+                // confirmed attendee by default — that default is a guess
+                // presented as fact, and it used to list the seat as active
+                // in the buyer confirmation and the organizer notice (and
+                // consume capacity the same way, via
+                // Registrations::counts()'s matching default). Skip it and
+                // flag the order for review instead of guessing.
+                $missing_status[] = $sid;
+                continue;
             }
             if ( ! \in_array( $status, $active, true ) ) {
                 continue;
@@ -3433,13 +3873,40 @@ class WooCommerce {
                 'seat_index' => (int) \get_post_meta( $sid, '_anchor_event_seat_index', true ),
             ];
         }
+        if ( ! empty( $missing_status ) ) {
+            // WOO-D44: ONE flag for the whole order, not one call per seat —
+            // flag_review() dedupes by reason and no-ops once a reason is
+            // already present, so calling it inside the loop above only
+            // ever recorded the FIRST status-less seat's id; any others on
+            // the same order were silently lost from the detail. Every seat
+            // this pass found is listed.
+            if ( null !== $review_flags ) {
+                $review_flags[] = $this->make_flag( 'seat_missing_status', 'seats ' . \implode( ', ', $missing_status ) );
+            } else {
+                Events_Log::flag_review(
+                    $order_id,
+                    'seat_missing_status',
+                    'seats ' . \implode( ', ', $missing_status )
+                );
+            }
+        }
         return $by_event;
     }
 
     /**
-     * Build + send the one-per-order buyer confirmation listing all current active
-     * seats across every event line. Also used by the manual "Resend
-     * confirmation" button.
+     * Build + send the buyer confirmation for ONE event's active seats on this
+     * order. Also used by the manual "Resend confirmation" button, which loops
+     * this over every event the order currently has active seats for
+     * (finding-1) — see handle_resend_confirmation().
+     *
+     * finding-1 (carry-over from WOO-D51/dispatch_emails()): this used to build
+     * ONE combined email spanning every event on the order, picking a single
+     * "primary" event (most seats) to resolve the on/off switch and the
+     * template/overrides for the whole thing. An order mixing a disabled event
+     * first and an enabled event second then never confirmed the enabled one —
+     * the single switch check always resolved to the same primary. Each event
+     * now gets its own confirmation, resolved and gated against ITS OWN switch
+     * and overrides, so a disabled event can never starve an enabled one.
      *
      * Answers the tri-state (audit WOO-D14/WOO-D15/REG-D6/REG-D41). It used to
      * answer `true` when there was nothing to confirm and `false` when the
@@ -3447,74 +3914,64 @@ class WooCommerce {
      * makes the real confirmation unsendable, and a deliberate setting flagged
      * the order for review on every reconcile for ever.
      *
-     * @param \WC_Order $order
-     * @param array     $settings   Module settings.
-     * @param int       $primary_id (out) The event whose on/off switch and copy
-     *                              this email was resolved from — 0 when the
-     *                              method bailed before that was known. The
-     *                              caller may only stamp the gate for THIS
-     *                              event on a `disabled` skip: the order can
-     *                              carry a second event whose confirmation is
-     *                              still switched on.
+     * @param \WC_Order  $order
+     * @param array      $settings     Module settings.
+     * @param int        $event_id     The event this confirmation is scoped to.
+     * @param array|null $review_flags (by ref) Forwarded to collect_order_seats() —
+     *                                 see its docblock (CodeRabbit finding-1).
      * @return Outcome sent | skipped (nothing_to_send, disabled) | failed.
      */
-    private function send_customer_confirmation( \WC_Order $order, array $settings, &$primary_id = 0 ) {
+    private function send_customer_confirmation( \WC_Order $order, array $settings, $event_id = 0, ?array &$review_flags = null ) {
         $to = (string) $order->get_billing_email();
         if ( $to === '' ) {
             return Outcome::failed( 'no_address' );
         }
+        $event_id = (int) $event_id;
         $order_id = (int) $order->get_id();
         $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
-        $by_event = $this->collect_order_seats( $order_id );
+        $by_event = $this->collect_order_seats( $order_id, $review_flags );
+        $seats    = $by_event[ $event_id ] ?? [];
 
-        $seat_list    = [];
-        $detail_rows  = [];
-        $any_waitlist = false;
-        $total_seats  = 0;
-        $primary_id   = 0; // out-param: reset for this call, filled in below.
-        foreach ( $by_event as $event_id => $seats ) {
-            $event_id = (int) $event_id;
-            if ( $primary_id === 0 ) {
-                $primary_id = $event_id;
-            }
-            $count         = \count( $seats );
-            $detail_rows[] = [
-                'label' => \get_the_title( $event_id ),
-                'value' => \sprintf( \_n( '%d seat', '%d seats', $count, 'anchor-schema' ), $count ),
-            ];
-            foreach ( $seats as $s ) {
-                $label = $s['name'] !== '' ? $s['name'] : \__( 'Guest', 'anchor-schema' );
-                if ( $s['status'] === Registrations::STATUS_WAITLIST ) {
-                    $any_waitlist = true;
-                    $label       .= ' — ' . \__( 'waitlisted', 'anchor-schema' );
-                }
-                $seat_list[] = \sprintf( '%s (%s)', $label, \get_the_title( $event_id ) );
-                $total_seats++;
-            }
-        }
-        if ( $total_seats === 0 ) {
-            // Nothing active to confirm. NOT a send: the gate must stay open so
-            // a later pass that does see seats still mails the buyer.
+        if ( empty( $seats ) ) {
+            // Nothing active to confirm for THIS event. NOT a send: the gate
+            // must stay open so a later pass that does see seats still mails
+            // the buyer.
             return Outcome::skipped( 'nothing_to_send' );
         }
+
+        // The event can switch its confirmation email off.
+        if ( ! $this->module->is_email_enabled( $event_id, 'confirmation' ) ) {
+            return Outcome::skipped( 'disabled' );
+        }
+
+        $seat_list    = [];
+        $any_waitlist = false;
+        foreach ( $seats as $s ) {
+            $label = $s['name'] !== '' ? $s['name'] : \__( 'Guest', 'anchor-schema' );
+            if ( $s['status'] === Registrations::STATUS_WAITLIST ) {
+                $any_waitlist = true;
+                $label       .= ' — ' . \__( 'waitlisted', 'anchor-schema' );
+            }
+            $seat_list[] = $label;
+        }
+        $total_seats = \count( $seats );
+        $detail_rows = [ [
+            'label' => \get_the_title( $event_id ),
+            'value' => \sprintf( \_n( '%d seat', '%d seats', $total_seats, 'anchor-schema' ), $total_seats ),
+        ] ];
 
         $tokens = [
             'site_name'    => \get_bloginfo( 'name' ),
             'buyer_name'   => $buyer,
             'order_number' => $order->get_order_number(),
             'seat_count'   => $total_seats,
-            'event_title'  => $primary_id ? \get_the_title( $primary_id ) : '',
+            'event_title'  => \get_the_title( $event_id ),
         ];
 
-        // The event can switch its confirmation email off. Checked here, where
-        // the order's primary event is finally known.
-        if ( $primary_id && ! $this->module->is_email_enabled( $primary_id, 'confirmation' ) ) {
-            return Outcome::skipped( 'disabled' );
-        }
         // Per-event overrides win; otherwise the site setting, otherwise the shipped default.
         $subject = $this->module->expand_email_tokens(
             $this->module->get_email_field(
-                $primary_id,
+                $event_id,
                 'confirmation',
                 'subject',
                 // REG-D58 — the store's own subject when it has one, otherwise
@@ -3528,7 +3985,7 @@ class WooCommerce {
         );
         $intro = $this->module->expand_email_tokens(
             $this->module->get_email_field(
-                $primary_id,
+                $event_id,
                 'confirmation',
                 'intro',
                 $settings['wc_customer_intro'] !== '' ? $settings['wc_customer_intro'] : \__( 'Thank you for your order. Your registration is confirmed — the details are below.', 'anchor-schema' )
@@ -3537,7 +3994,7 @@ class WooCommerce {
         );
 
         $ctx = [
-            'event_id'      => $primary_id,
+            'event_id'      => $event_id,
             'name'          => $buyer,
             'status'        => $any_waitlist ? Registrations::STATUS_WAITLIST : Registrations::STATUS_CONFIRMED,
             'intro_message' => $intro,
@@ -3545,12 +4002,14 @@ class WooCommerce {
             'detail_rows'   => $detail_rows,
             'seat_list'     => $seat_list,
             'cta_label'     => \__( 'View event details', 'anchor-schema' ),
-            'cta_url'       => $primary_id ? \get_permalink( $primary_id ) : \home_url(),
+            'cta_url'       => \get_permalink( $event_id ),
             'type'          => 'confirmation',
         ];
         $html = $this->module->build_registration_email_html( $ctx );
+        // finding-13 — the order identity keeps two different buyers on the
+        // same event from collapsing into one deduped mail-failure row.
         return Outcome::from_bool(
-            $this->module->send_html_email( $to, $subject, $html, [], $primary_id ),
+            $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => $order_id ] ),
             'wp_mail'
         );
     }
@@ -3560,14 +4019,18 @@ class WooCommerce {
      * seats) or 'released' (seats cancelled/refunded). Recipient resolves
      * per-event organizer email → global setting → admin_email.
      *
-     * @param \WC_Order $order
-     * @param array     $settings
-     * @param int       $event_id
-     * @param array     $ev       [confirmed,waitlist,released] tally for this event.
-     * @param string    $kind     'confirmed'|'released'.
+     * @param \WC_Order  $order
+     * @param array      $settings
+     * @param int        $event_id
+     * @param array      $ev           [confirmed,waitlist,released] tally for this event.
+     * @param string     $kind         'confirmed'|'released'.
+     * @param array|null $review_flags (by ref) Forwarded to collect_order_seats() —
+     *                                 see its docblock (CodeRabbit finding-1). Only
+     *                                 ever called from dispatch_emails()'s batched
+     *                                 pass, so always pass its $review_flags through.
      * @return Outcome sent | skipped (disabled) | failed (no_address, wp_mail).
      */
-    private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind ) {
+    private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind, ?array &$review_flags = null ) {
         $event_id = (int) $event_id;
         // The event can switch this email type off. Checked before anything is
         // built, so a disabled type resolves no template and never fires the
@@ -3635,7 +4098,7 @@ class WooCommerce {
 
         // Per-event seat list from current active seats.
         $seat_list = [];
-        $by_event  = $this->collect_order_seats( (int) $order->get_id() );
+        $by_event  = $this->collect_order_seats( (int) $order->get_id(), $review_flags );
         if ( isset( $by_event[ $event_id ] ) ) {
             foreach ( $by_event[ $event_id ] as $s ) {
                 $label = $s['name'] !== '' ? $s['name'] : \__( 'Guest', 'anchor-schema' );
@@ -3669,7 +4132,9 @@ class WooCommerce {
             'type'          => $ctx_type,
         ];
         $html = $this->module->build_registration_email_html( $ctx );
-        return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id ), 'wp_mail' );
+        // finding-13 — the order identity keeps two different orders' notices
+        // on the same event from collapsing into one deduped mail-failure row.
+        return Outcome::from_bool( $this->module->send_html_email( $to, $subject, $html, [], $event_id, [ 'order' => (int) $order->get_id() ] ), 'wp_mail' );
     }
 
     /**
@@ -3730,6 +4195,13 @@ class WooCommerce {
             $ids = \wc_get_orders( [
                 'limit'      => $cap + 1,
                 'return'     => 'ids',
+                // WOO-D54: with no `status` argument, wc_get_orders() inherits
+                // WooCommerce's default status set — which excludes `trash`. A
+                // flagged order that is later trashed dropped out of this scan
+                // while keeping its flag, so the cached count silently
+                // under-reported and the only remaining way to find it was the
+                // per-order metabox, which an admin would have to know to open.
+                'status'     => \array_merge( \array_keys( \wc_get_order_statuses() ), [ 'trash' ] ),
                 'meta_query' => [
                     [
                         'key'     => Events_Log::ORDER_REVIEW_META,
@@ -3774,6 +4246,34 @@ class WooCommerce {
     }
 
     /**
+     * WOO-D20 — event registration requires the classic `[woocommerce_checkout]`
+     * shortcode checkout; guard_block_checkout() fails an order with event
+     * lines closed on the block/Store-API checkout because the classic
+     * attendee-capture hooks never fire there (see EVENTS-WOOCOMMERCE.md).
+     * That is a real, documented limitation — this notice exists so a store
+     * that switches its checkout page to the block discovers the conflict
+     * from the admin, before a real buyer's order is refused.
+     */
+    public function render_block_checkout_incompatibility_notice() {
+        if (
+            ! \function_exists( 'has_block' ) || ! \function_exists( 'wc_get_page_id' )
+            || ! Roster::current_user_can_manage()
+        ) {
+            return;
+        }
+        $screen = \function_exists( 'get_current_screen' ) ? \get_current_screen() : null;
+        if ( ! $screen || ( \strpos( (string) $screen->id, 'wc-orders' ) === false && $screen->id !== 'edit-shop_order' && $screen->id !== 'woocommerce_page_wc-settings' ) ) {
+            return;
+        }
+        if ( ! \has_block( 'woocommerce/checkout', \wc_get_page_id( 'checkout' ) ) ) {
+            return;
+        }
+        echo '<div class="notice notice-error"><p><strong>' . \esc_html__( 'Anchor Events:', 'anchor-schema' ) . '</strong> '
+            . \esc_html__( 'the checkout page uses the WooCommerce Checkout block, which event registration does not support — event orders placed through it will be refused at checkout. Switch the checkout page back to the classic [woocommerce_checkout] shortcode.', 'anchor-schema' )
+            . '</p></div>';
+    }
+
+    /**
      * admin-post: clear all needs-review flags from an order ("Mark reviewed").
      * Per-order nonce, then Module::events_capability() (WOO-D41).
      */
@@ -3810,33 +4310,64 @@ class WooCommerce {
         $order = \wc_get_order( $order_id );
         if ( $order ) {
             $settings = $this->module->get_settings();
-            $result   = $this->send_customer_confirmation( $order, $settings );
+            $by_event = $this->collect_order_seats( $order_id );
+
+            if ( empty( $by_event ) ) {
+                // A fully-refunded order has nothing to confirm at all. Neither
+                // a send nor a defect — the log must not claim a send never
+                // made (audit REG-D41).
+                Events_Log::order( $order_id, 'Customer confirmation re-send skipped.', [ 'reason' => 'nothing_to_send' ] );
+                $this->redirect_back();
+                return;
+            }
 
             $sent = $order->get_meta( self::EMAILS_SENT_META );
             if ( ! \is_array( $sent ) ) {
                 $sent = [];
             }
-            if ( $result->is_sent() ) {
-                // finding-5 — dispatch_emails() gates the buyer confirmation PER
-                // EVENT (emails_sent['customer:'.$event_id]); the legacy 'customer'
-                // key is no longer consulted. Mark every event the order currently
-                // has active seats for so a later reconcile won't auto-send another
-                // confirmation for an already-covered event.
-                $now = \time();
-                foreach ( $this->collect_order_seats( $order_id ) as $eid => $seats ) {
-                    $sent[ 'customer:' . (int) $eid ] = $now;
+            $any_sent = false;
+            // CodeRabbit finding-4 (PR #20, 2nd round): a gate stamp
+            // ($sent[$gate_key] = time()) is written for BOTH an actual send
+            // AND an event the organizer switched off — but the save below
+            // used to be gated on $any_sent alone, so an order where EVERY
+            // event resolved to 'disabled' stamped every gate in memory and
+            // then discarded all of them, never persisting the array. The
+            // next automatic reconcile pass then saw those gates as never
+            // settled and tried the exact same disabled sends again. Track
+            // gate changes separately and save when either is true.
+            $gates_changed = false;
+
+            // finding-1 — resend is per event too: one confirmation per event
+            // the order currently has active seats for, each resolved against
+            // ITS OWN enable switch and overrides, same as the reconcile pass
+            // (dispatch_emails()). A resend is explicit operator intent, so it
+            // is not gated by the existing emails_sent['customer:{id}'] value —
+            // it re-sends every event with active seats regardless.
+            foreach ( $by_event as $eid => $seats ) {
+                $eid    = (int) $eid;
+                $result = $this->send_customer_confirmation( $order, $settings, $eid );
+                if ( $result->is_sent() || ( $result->is_skipped() && 'disabled' === $result->reason() ) ) {
+                    // Sent, or the organizer switched THIS event's confirmation
+                    // off — either way this event is settled (audit REG-D6).
+                    $sent[ 'customer:' . $eid ] = \time();
+                    $gates_changed              = true;
                 }
+                if ( $result->is_sent() ) {
+                    $any_sent = true;
+                    Events_Log::order( $order_id, 'Customer confirmation re-sent (manual).', [ 'event' => $eid ] );
+                } elseif ( $result->is_skipped() ) {
+                    // An event can have the email switched off, or (rare, since
+                    // $by_event only lists events with active seats) have
+                    // nothing left to confirm. Neither is a defect.
+                    Events_Log::order( $order_id, 'Customer confirmation re-send skipped.', [ 'event' => $eid, 'reason' => $result->reason() ] );
+                } else {
+                    Events_Log::flag_review( $order_id, 'customer_email_failed', 'manual resend (event ' . $eid . ')' );
+                }
+            }
+
+            if ( $any_sent || $gates_changed ) {
                 $order->update_meta_data( self::EMAILS_SENT_META, $sent );
                 $order->save();
-                Events_Log::order( $order_id, 'Customer confirmation re-sent (manual).' );
-            } elseif ( $result->is_skipped() ) {
-                // A fully-refunded order has nothing to confirm, and an event
-                // can have the email switched off. Neither is a send and
-                // neither is a defect — the log used to assert a send that
-                // never happened (audit REG-D41).
-                Events_Log::order( $order_id, 'Customer confirmation re-send skipped.', [ 'reason' => $result->reason() ] );
-            } else {
-                Events_Log::flag_review( $order_id, 'customer_email_failed', 'manual resend' );
             }
         }
         $this->redirect_back();
@@ -4106,8 +4637,24 @@ class WooCommerce {
         $amount = \abs( (float) $refund->get_amount() );
 
         if ( $has_line ) {
-            // Extra unexplained amount beyond the refunded line totals → mixed.
-            return ( $amount - $line_total > 0.01 ) ? 'mixed' : 'line';
+            // WOO-D42: the SAME 1-minor-unit tolerance as before ("an extra
+            // amount has to exceed a cent to count as unexplained"), but each
+            // side is first ROUNDED to the store's actual minor currency unit
+            // and compared as an integer, rather than comparing raw floats
+            // against a fixed 0.01. WooCommerce's internal tax/line-total
+            // arithmetic runs at higher precision than the 2 (or however
+            // many) decimals actual money is rounded to
+            // (wc_get_rounding_precision(), 6 by default, vs
+            // wc_get_price_decimals()); summing several such sub-cent-precise
+            // line totals in floating point can land the RAW difference a
+            // hair past 0.01 by representation error alone, even when the two
+            // amounts agree to the cent once each is rounded to real money.
+            // Rounding first removes that noise; the tolerance is unchanged.
+            $decimals     = \function_exists( 'wc_get_price_decimals' ) ? (int) \wc_get_price_decimals() : 2;
+            $unit         = 10 ** $decimals;
+            $amount_minor = (int) \round( $amount * $unit );
+            $line_minor   = (int) \round( $line_total * $unit );
+            return ( ( $amount_minor - $line_minor ) > 1 ) ? 'mixed' : 'line';
         }
         return 'amount_only';
     }

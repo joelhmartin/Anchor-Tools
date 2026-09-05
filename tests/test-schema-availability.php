@@ -14,11 +14,18 @@
  */
 
 use Anchor\Events\Event_Schema;
+use Anchor\Events\Module;
 
 /**
  * @group schema
  */
 class Test_Schema_Availability extends Anchor_Events_TestCase {
+
+	public function tear_down() {
+		unset( $_POST );
+		remove_all_filters( 'anchor_events_schema_node' );
+		parent::tear_down();
+	}
 
 	/** @return Event_Schema */
 	protected function schema() {
@@ -420,5 +427,433 @@ class Test_Schema_Availability extends Anchor_Events_TestCase {
 
 		$this->assertArrayNotHasKey( 'offers', $node, 'A container never carries an Offer of its own, whatever its state.' );
 		$this->assertSame( 'https://schema.org/SoldOut', $node['subEvent'][0]['offers'][0]['availability'] );
+	}
+
+	/* ------------------------------------------------------------------
+	 * RENDER-D6 — the group-parent end-of-span must only ever come from a
+	 * child that actually produced a subEvent node.
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * A live-but-undated child (still returned by Occurrences::children(),
+	 * but for_event() on it returns [] for lack of a usable start_ts) must
+	 * not be able to push the parent's endDate out to a date that appears
+	 * nowhere in subEvent[]. Mirrors the production shape on page 7258.
+	 */
+	public function test_group_parent_end_date_ignores_a_child_with_no_usable_node() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2026-09-12', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'A', 'capacity' => 0 ],
+			[ 'date' => '2026-11-07', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'B', 'capacity' => 0 ],
+		] );
+		$children = $this->module()->occurrences->children( $parent );
+		$this->assertCount( 2, $children );
+		$b = (int) $children[1];
+
+		// Blank B's OWN start date only (end_date/end_time are untouched, just
+		// like a single-day occurrence row really would leave them) so
+		// for_event( $b ) returns [] while $b remains published/non-closed and
+		// still shows up in occurrences->children().
+		update_post_meta( $b, '_anchor_event_start_date', '' );
+		update_post_meta( $b, '_anchor_event_start_ts', 0 );
+		$this->assertSame( [], $this->schema()->for_event( $b ), 'Precondition: the undated child produces no node of its own.' );
+
+		$node = $this->schema()->for_event( $parent );
+
+		$this->assertCount( 1, $node['subEvent'], 'Only the child that actually produced a node is advertised.' );
+		$this->assertStringStartsWith( '2026-09-12T18:00', $node['endDate'], 'endDate must never come from a child with no corresponding subEvent.' );
+	}
+
+	/* ------------------------------------------------------------------
+	 * RENDER-D9 — postponed / moved_online statuses + previousStartDate.
+	 * ------------------------------------------------------------------ */
+
+	public function test_status_options_include_postponed_and_moved_online() {
+		$method = new ReflectionMethod( $this->module(), 'get_status_options' );
+		$method->setAccessible( true );
+		$options = $method->invoke( $this->module() );
+
+		$this->assertArrayHasKey( 'postponed', $options );
+		$this->assertArrayHasKey( 'moved_online', $options );
+	}
+
+	public function test_postponed_status_maps_to_event_postponed() {
+		$event = $this->make_event( [
+			'status_mode' => 'manual',
+			'status'      => 'postponed',
+			'start_date'  => '2030-01-01',
+			'timezone'    => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventPostponed', $node['eventStatus'] );
+	}
+
+	public function test_moved_online_status_maps_to_event_moved_online() {
+		$event = $this->make_event( [
+			'status_mode' => 'manual',
+			'status'      => 'moved_online',
+			'start_date'  => '2030-01-01',
+			'timezone'    => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventMovedOnline', $node['eventStatus'] );
+	}
+
+	/**
+	 * finding-16 (carry-over, Task 34 review ruling) — a postponed event with
+	 * OPEN SEATS must not publish InStock at the old date: bookability() now
+	 * resolves 'closed' for a postponed event (same short-circuit cancelled
+	 * already had), so the Offer is omitted entirely in the same node that
+	 * says EventPostponed — never the InStock-while-postponed mismatch the
+	 * audit found.
+	 */
+	public function test_postponed_event_with_open_seats_emits_no_offer_not_instock() {
+		$event = $this->make_event(
+			[
+				'registration_enabled' => true,
+				'registration_mode'    => 'wc',
+				'status_mode'          => 'manual',
+				'status'               => 'postponed',
+				'start_date'           => '2030-01-01',
+				'timezone'             => 'UTC',
+			],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventPostponed', $node['eventStatus'] );
+		$this->assertArrayNotHasKey( 'offers', $node, 'A postponed course has nothing to advertise at the old date.' );
+	}
+
+	/** The ruling's other half: 'moved_online' stays bookable, so its Offer is unaffected. */
+	public function test_moved_online_event_with_open_seats_still_emits_instock() {
+		$event = $this->make_event(
+			[
+				'registration_enabled' => true,
+				'registration_mode'    => 'wc',
+				'status_mode'          => 'manual',
+				'status'               => 'moved_online',
+				'start_date'           => '2030-01-01',
+				'timezone'             => 'UTC',
+			],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 'https://schema.org/EventMovedOnline', $node['eventStatus'] );
+		$this->assertArrayHasKey( 'offers', $node );
+		$this->assertSame( 'https://schema.org/InStock', $node['offers'][0]['availability'] );
+	}
+
+	/** Precondition guard: an ordinary scheduled event never gets a stray previousStartDate. */
+	public function test_scheduled_event_has_no_previous_start_date() {
+		$event = $this->make_event( [
+			'start_date' => '2030-01-01',
+			'timezone'   => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertArrayNotHasKey( 'previousStartDate', $node );
+	}
+
+	/** A stored previous-start meta reaches the node when the event is postponed. */
+	public function test_previous_start_date_reaches_the_node_when_postponed() {
+		$event = $this->make_event( [
+			'status_mode' => 'manual',
+			'status'      => 'postponed',
+			'start_date'  => '2030-01-01',
+			'timezone'    => 'UTC',
+		] );
+		update_post_meta( $event, '_anchor_event_previous_start', '2029-11-01' );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( '2029-11-01', $node['previousStartDate'] );
+	}
+
+	/** ...and when the event is moved online, the same stored value applies. */
+	public function test_previous_start_date_reaches_the_node_when_moved_online() {
+		$event = $this->make_event( [
+			'status_mode' => 'manual',
+			'status'      => 'moved_online',
+			'start_date'  => '2030-01-01',
+			'timezone'    => 'UTC',
+		] );
+		update_post_meta( $event, '_anchor_event_previous_start', '2029-11-01' );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( '2029-11-01', $node['previousStartDate'] );
+	}
+
+	/**
+	 * The shared save path (persist_event_authoring(), via save_meta()) is the
+	 * ONE writer of `_anchor_event_previous_start` — capturing the prior start
+	 * the moment status transitions INTO postponed.
+	 */
+	public function test_previous_start_captured_when_event_becomes_postponed() {
+		$event = $this->make_event( [
+			'start_date' => '2026-08-01',
+			'timezone'   => 'UTC',
+		] );
+		$admin = self::factory()->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $admin );
+
+		$_POST = [
+			Module::NONCE             => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-15',
+			'anchor_event_timezone'   => 'UTC',
+			'anchor_event_status'     => 'postponed',
+		];
+		$this->module()->save_meta( $event );
+
+		$this->assertSame( '2026-08-01', get_post_meta( $event, '_anchor_event_previous_start', true ) );
+
+		$node = $this->schema()->for_event( $event );
+		$this->assertSame( 'https://schema.org/EventPostponed', $node['eventStatus'] );
+		$this->assertSame( '2026-08-01', $node['previousStartDate'] );
+	}
+
+	/** A further date change while STILL postponed updates the stored prior start. */
+	public function test_previous_start_updates_when_postponed_date_changes_again() {
+		$event = $this->make_event( [
+			'start_date'  => '2026-08-01',
+			'status_mode' => 'manual',
+			'status'      => 'postponed',
+			'timezone'    => 'UTC',
+		] );
+		update_post_meta( $event, '_anchor_event_previous_start', '2026-07-01' );
+
+		$admin = self::factory()->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $admin );
+		$_POST = [
+			Module::NONCE             => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-15',
+			'anchor_event_timezone'   => 'UTC',
+			'anchor_event_status'     => 'postponed',
+		];
+		$this->module()->save_meta( $event );
+
+		$this->assertSame(
+			'2026-08-01',
+			get_post_meta( $event, '_anchor_event_previous_start', true ),
+			'The start just before THIS save becomes the new previous start, not the older snapshot.'
+		);
+	}
+
+	/** A no-op re-save (same status, same date) must not clobber the true previous start. */
+	public function test_previous_start_is_not_overwritten_by_a_no_op_resave() {
+		$event = $this->make_event( [
+			'start_date'  => '2026-09-15',
+			'status_mode' => 'manual',
+			'status'      => 'postponed',
+			'timezone'    => 'UTC',
+		] );
+		update_post_meta( $event, '_anchor_event_previous_start', '2026-08-01' );
+
+		$admin = self::factory()->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $admin );
+		$_POST = [
+			Module::NONCE             => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date' => '2026-09-15',
+			'anchor_event_timezone'   => 'UTC',
+			'anchor_event_status'     => 'postponed',
+		];
+		$this->module()->save_meta( $event );
+
+		$this->assertSame(
+			'2026-08-01',
+			get_post_meta( $event, '_anchor_event_previous_start', true ),
+			'A no-op resave must not clobber the true previous start with the current one.'
+		);
+	}
+
+	/* ------------------------------------------------------------------
+	 * RENDER-D10 — the anchor_events_schema_node filter.
+	 * ------------------------------------------------------------------ */
+
+	public function test_assemble_node_runs_through_anchor_events_schema_node_filter() {
+		$event = $this->make_event( [ 'start_date' => '2030-01-01', 'timezone' => 'UTC' ] );
+
+		$captured_id = null;
+		add_filter( 'anchor_events_schema_node', function ( $node, $event_id ) use ( &$captured_id ) {
+			$captured_id           = $event_id;
+			$node['performer']     = [ '@type' => 'Person', 'name' => 'Injected' ];
+			return $node;
+		}, 10, 2 );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( $event, $captured_id );
+		$this->assertSame( 'Injected', $node['performer']['name'] );
+	}
+
+	/** Every live child of an offering parent is filtered individually, not just the container. */
+	public function test_filter_runs_for_every_child_node_of_a_group_parent() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0 ],
+		] );
+
+		$seen = [];
+		add_filter( 'anchor_events_schema_node', function ( $node, $event_id ) use ( &$seen ) {
+			$seen[] = $event_id;
+			return $node;
+		}, 10, 2 );
+
+		$this->schema()->for_event( $parent );
+
+		$children = $this->module()->occurrences->children( $parent );
+		$this->assertContains( $parent, $seen );
+		$this->assertContains( (int) $children[0], $seen );
+	}
+
+	/* ------------------------------------------------------------------
+	 * RENDER-D38 — superEvent, capacity pair, isAccessibleForFree.
+	 * ------------------------------------------------------------------ */
+
+	public function test_group_child_node_carries_super_event() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 0 ],
+		] );
+		$children = $this->module()->occurrences->children( $parent );
+		$child_id = (int) $children[0];
+
+		$node = $this->schema()->for_event( $child_id );
+
+		$this->assertArrayHasKey( 'superEvent', $node );
+		$this->assertSame( 'Event', $node['superEvent']['@type'] );
+		$this->assertSame( get_permalink( $parent ), $node['superEvent']['url'] );
+	}
+
+	/** A plain single event (never a group child) carries no superEvent at all. */
+	public function test_single_event_has_no_super_event() {
+		$event = $this->make_event( [ 'start_date' => '2030-01-01', 'timezone' => 'UTC' ] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertArrayNotHasKey( 'superEvent', $node );
+	}
+
+	public function test_capacity_pair_reflects_authored_max_and_remaining() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'registration_mode'    => 'free',
+			'capacity'             => 10,
+			'start_date'           => '2030-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$this->make_seat( $event );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertSame( 10, $node['maximumAttendeeCapacity'] );
+		$this->assertSame( 9, $node['remainingAttendeeCapacity'] );
+	}
+
+	/** Capacity 0 means unlimited — no false claim, same convention as choose_date_availability_hint(). */
+	public function test_capacity_pair_omitted_when_unlimited() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'registration_mode'    => 'free',
+			'capacity'             => 0,
+			'start_date'           => '2030-01-01',
+			'timezone'             => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertArrayNotHasKey( 'maximumAttendeeCapacity', $node );
+		$this->assertArrayNotHasKey( 'remainingAttendeeCapacity', $node );
+	}
+
+	/**
+	 * finding-5 (bot review, PR #20): a group PARENT is a container, never a
+	 * registration target (audit REG-D2) — it carries no seats of its own,
+	 * so remaining_capacity() against the PARENT's own capacity meta always
+	 * reports that capacity fully available, wrongly claiming full
+	 * availability for an event whose children may be sold out. Both fields
+	 * must be omitted on the parent node even when the parent post carries
+	 * its own (unused) capacity meta.
+	 */
+	public function test_capacity_pair_omitted_on_group_parent_node() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 5 ],
+		] );
+		update_post_meta( $parent, '_anchor_event_capacity', 10 );
+
+		$node = $this->schema()->for_event( $parent );
+
+		$this->assertArrayNotHasKey( 'maximumAttendeeCapacity', $node );
+		$this->assertArrayNotHasKey( 'remainingAttendeeCapacity', $node );
+	}
+
+	/** The child keeps its own real capacity pair — only the parent node is suppressed. */
+	public function test_capacity_pair_still_present_on_group_child_node() {
+		$parent = $this->make_offering_parent( [
+			[ 'date' => '2030-10-23', 'start_time' => '08:00', 'end_time' => '18:00', 'label' => 'October', 'capacity' => 5 ],
+		] );
+		$children = $this->module()->occurrences->children( $parent );
+		$child_id = (int) $children[0];
+		$this->make_seat( $child_id );
+
+		$node = $this->schema()->for_event( $child_id );
+
+		$this->assertSame( 5, $node['maximumAttendeeCapacity'] );
+		$this->assertSame( 4, $node['remainingAttendeeCapacity'] );
+	}
+
+	public function test_is_accessible_for_free_true_on_free_offer() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'registration_mode'    => 'free',
+			'start_date'           => '2030-01-01',
+			'timezone'             => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertTrue( $node['isAccessibleForFree'] );
+	}
+
+	/** wc-mode (ticketed) events make no free-admission claim. */
+	public function test_is_accessible_for_free_absent_for_wc_events() {
+		$event = $this->make_event(
+			[
+				'registration_enabled' => true,
+				'registration_mode'    => 'wc',
+				'start_date'           => '2030-01-01',
+				'timezone'             => 'UTC',
+			],
+			[ [ 'label' => 'General', 'price' => '25', 'active' => 1 ] ]
+		);
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertArrayNotHasKey( 'isAccessibleForFree', $node );
+	}
+
+	/** No Offer at all (finished event) must not carry an isAccessibleForFree claim either. */
+	public function test_is_accessible_for_free_absent_when_offer_omitted() {
+		$event = $this->make_event( [
+			'registration_enabled' => true,
+			'registration_mode'    => 'free',
+			'start_date'           => '2020-01-01',
+			'end_date'             => '2020-01-01',
+			'timezone'             => 'UTC',
+		] );
+		$ts = $this->module()->compute_timestamps( $this->module()->get_meta( $event ) );
+		update_post_meta( $event, '_anchor_event_start_ts', $ts['start'] );
+		update_post_meta( $event, '_anchor_event_end_ts', $ts['end'] );
+
+		$node = $this->schema()->for_event( $event );
+
+		$this->assertArrayNotHasKey( 'isAccessibleForFree', $node );
+		$this->assertArrayNotHasKey( 'offers', $node );
 	}
 }

@@ -229,7 +229,101 @@ class Test_Reminders extends Anchor_Events_TestCase {
 			);
 		}
 
-		$this->assertSame( 1, $override_scans, 'The sweep still folds in per-event offsets, exactly once.' );
+		// finding-2 (bot review, PR #20): the sweep now runs TWO bounded
+		// override scans — a `posts_per_page => 1` query ordered by the
+		// offset meta DESC that finds the TRUE largest override regardless
+		// of scan-limit page size, plus the original capped page (per-event
+		// pass + truncation log). Both stay bounded by start_ts; neither
+		// scans every event that ever set an override.
+		$this->assertSame( 2, $override_scans, 'The sweep runs the true-max scan and the capped per-event scan, both bounded.' );
+	}
+
+	/**
+	 * finding-2 (bot review, PR #20): the capped, unordered per-event page
+	 * can miss the event holding the single largest override offset when
+	 * that event isn't among the first $scan_limit rows returned — and
+	 * $max_global (derived from that page) sets the horizon for the main
+	 * scan, so the missed event's own reminder was silently dropped, not
+	 * merely scanned late. With the cap filtered down to 2 and three
+	 * in-window events whose largest offset belongs to the LAST one
+	 * (so a naive capped-and-unordered read is likely to miss it), the
+	 * scan must still widen far enough to reach it and send its reminder.
+	 */
+	public function test_the_true_max_override_is_found_even_past_a_capped_page() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$first  = $this->future_event( time() + 5 * DAY_IN_SECONDS, 'Override A' );
+		$second = $this->future_event( time() + 6 * DAY_IN_SECONDS, 'Override B' );
+		// The largest offset (40 days) belongs to the event that starts
+		// FURTHEST out — well past reminder_offsets' global max of 7 — and is
+		// the third/last override row.
+		$third  = $this->future_event( time() + 40 * DAY_IN_SECONDS, 'Override C' );
+		update_post_meta( $first, '_anchor_event_reminder_offsets', '2' );
+		update_post_meta( $second, '_anchor_event_reminder_offsets', '3' );
+		update_post_meta( $third, '_anchor_event_reminder_offsets', '40' );
+
+		$seat_id = $this->make_seat( $third, [ 'email' => 'farout@example.com' ] );
+
+		$cap = static function () {
+			return 2; // Smaller than the three matching override events above.
+		};
+		add_filter( 'anchor_events_reminder_override_scan_limit', $cap );
+		$sent = [];
+		$this->capture_mail( $sent );
+		try {
+			$this->module()->run_reminder_sweep();
+		} finally {
+			remove_filter( 'anchor_events_reminder_override_scan_limit', $cap );
+		}
+
+		$this->assertContains(
+			'farout@example.com',
+			$sent,
+			'The event 40 days out — past the capped page and past the global max offset of 7 — must still be reached and reminded.'
+		);
+	}
+
+	/**
+	 * finding-7 — the override scan (above) carried no_found_rows but no row
+	 * ceiling, so a site with a very large number of in-window overrides ran
+	 * a fully unbounded query every hour. A hit ceiling must be logged once
+	 * per sweep, not once per event, via the reminder_scan_truncated code.
+	 */
+	public function test_a_hit_scan_ceiling_is_logged_once_per_sweep() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$first  = $this->future_event( time() + 5 * DAY_IN_SECONDS, 'Override A' );
+		$second = $this->future_event( time() + 6 * DAY_IN_SECONDS, 'Override B' );
+		update_post_meta( $first, '_anchor_event_reminder_offsets', '3' );
+		update_post_meta( $second, '_anchor_event_reminder_offsets', '3' );
+
+		$cap = static function () {
+			return 1; // Smaller than the two matching events above.
+		};
+		add_filter( 'anchor_events_reminder_override_scan_limit', $cap );
+		try {
+			$this->module()->run_reminder_sweep();
+		} finally {
+			remove_filter( 'anchor_events_reminder_override_scan_limit', $cap );
+		}
+
+		$log   = get_option( Events_Log::ERROR_OPTION, [] );
+		$codes = is_array( $log ) ? array_column( $log, 'code' ) : [];
+		$this->assertSame( 1, count( array_keys( $codes, 'reminder_scan_truncated', true ) ), 'Exactly one truncation entry per sweep.' );
+	}
+
+	/** A scan that never hits the ceiling logs nothing. */
+	public function test_a_scan_under_the_ceiling_logs_no_truncation() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '7,1', 'organizer_roster_email' => false ] );
+
+		$event_id = $this->future_event( time() + 5 * DAY_IN_SECONDS, 'Override A' );
+		update_post_meta( $event_id, '_anchor_event_reminder_offsets', '3' );
+
+		$this->module()->run_reminder_sweep();
+
+		$log   = get_option( Events_Log::ERROR_OPTION, [] );
+		$codes = is_array( $log ) ? array_column( $log, 'code' ) : [];
+		$this->assertNotContains( 'reminder_scan_truncated', $codes );
 	}
 
 	/**
@@ -528,6 +622,15 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $this->log_count( 'email_retry_abandoned' ), 'Giving up must leave a trace an operator can find.' );
 	}
 
+	/**
+	 * finding-12 (carry-over) — a job no retry can ever satisfy (a switch
+	 * flipped off since it was queued) must still be retired so it does not
+	 * sit in the queue being re-read for ever, but retiring a SKIP is not a
+	 * defect: this used to be inferred from the attempt counter not moving
+	 * and logged as `email_retry_undeliverable`, an error-level entry for a
+	 * deliberate site setting. drain_email_retry_queue() now consumes the
+	 * sender's own Outcome instead, so the retirement is silent.
+	 */
 	public function test_a_retry_no_send_can_ever_satisfy_is_retired_not_left_in_the_queue() {
 		$this->configure( [ 'notify_cancellation' => true, 'reminder_enabled' => false, 'organizer_roster_email' => false ] );
 
@@ -546,7 +649,11 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->module()->run_reminder_sweep();
 
 		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ), 'A job no send can satisfy must leave the queue.' );
-		$this->assertSame( 1, $this->log_count( 'email_retry_undeliverable' ) );
+		$this->assertSame(
+			0,
+			$this->log_count( 'email_retry_undeliverable' ),
+			'A deliberate site setting is a skip, not a defect — retiring it must not raise an error-level log.'
+		);
 	}
 
 	/**
@@ -585,7 +692,15 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( 3, $attempts, 'After giving up, the sweep is silent about this offset for ever.' );
 
 		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ) );
-		$this->assertSame( 0, (int) ( $this->markers( $seat_id, $start_ts )[1] ?? -1 ), 'The abandoned offset is marked superseded, not left open.' );
+		// finding-14 — abandoned after MAX_EMAIL_ATTEMPTS is its OWN sentinel
+		// now, distinct from a plain supersession's 0, so the Upcoming Sends
+		// panel can tell the two apart; either way the offset is marked
+		// (not left open) so the sweep never re-attempts it.
+		$this->assertSame(
+			Module::REMINDER_ABANDONED_MARKER,
+			(int) ( $this->markers( $seat_id, $start_ts )[1] ?? 1 ),
+			'The abandoned offset is marked with the abandoned sentinel, not left open.'
+		);
 		$this->assertSame( 1, $this->log_count( 'email_retry_abandoned' ), 'One abandon entry — not one per hour for ever.' );
 	}
 
@@ -734,5 +849,124 @@ class Test_Reminders extends Anchor_Events_TestCase {
 		$this->assertSame( [ 'blip@example.com' ], $sent, 'The drain sends it once — not once from the drain and once from the sweep.' );
 		$this->assertGreaterThan( 0, (int) ( $this->markers( $seat_id, $start_ts )[1] ?? 0 ) );
 		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ) );
+	}
+
+	/**
+	 * finding-12 (carry-over) — a queued reminder retry that no longer
+	 * applies (the event moved off the date the job was queued for) is a
+	 * retry_reminder() skip, retired without an error-level log — same rule
+	 * as the cancellation side above.
+	 */
+	public function test_a_reminder_retry_rescheduled_away_is_retired_without_an_error_log() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 20 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'moved@example.com' ] );
+
+		$fail = $this->fail_mail();
+		$this->module()->run_reminder_sweep(); // queues the retry job.
+		remove_filter( 'pre_wp_mail', $fail, 10 );
+		$this->assertIsArray( get_post_meta( $seat_id, '_anchor_event_email_retry', true ) );
+
+		// The event moves to a different start before the retry comes due —
+		// the queued job's start_ts no longer matches.
+		$this->reschedule( $event_id, $start_ts + 30 * DAY_IN_SECONDS );
+		$this->make_retry_due( $seat_id );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( '', get_post_meta( $seat_id, '_anchor_event_email_retry', true ), 'A retry the reschedule invalidated must not sit in the queue.' );
+		$this->assertSame(
+			0,
+			$this->log_count( 'email_retry_undeliverable' ),
+			'The event moving on is not a mailer defect — retiring the stale job must not raise an error-level log.'
+		);
+	}
+
+	/* ------------------------------------------------------------------
+	 * MODEL-D17 (widened) — `postponed` is as closed as `cancelled`
+	 *
+	 * The sweep's date-is-off guard and the queued-retry eligibility guard
+	 * both checked `'cancelled' === get_event_status()` only, so a postponed
+	 * event with confirmed seats kept sending/retrying "…is coming up" for a
+	 * date that was off. Both now call status_is_closed(), the same
+	 * cancelled|postponed set bookability() and the registration guards
+	 * already agreed on; `moved_online` stays out of that set on purpose.
+	 * ------------------------------------------------------------------ */
+
+	/** Force an event's manual status, the way the admin "Event Status" field would. */
+	private function set_manual_status( $event_id, $status ) {
+		update_post_meta( $event_id, '_anchor_event_status_mode', 'manual' );
+		update_post_meta( $event_id, '_anchor_event_status', $status );
+	}
+
+	public function test_a_postponed_event_sends_no_reminders() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$this->set_manual_status( $event_id, 'postponed' );
+		$seat_id = $this->make_seat( $event_id, [ 'email' => 'postponed@example.com' ] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( [], $sent, 'A postponed event must not remind attendees about a date that is off.' );
+		$this->assertSame(
+			[],
+			$this->markers( $seat_id, $start_ts ),
+			'The guard is a bare continue, same as the cancelled path — it writes no offset marker while closed.'
+		);
+	}
+
+	/**
+	 * Nothing is marked while an event is closed, so the 1-day offset that
+	 * never fired is still due the moment the event stops being postponed.
+	 */
+	public function test_un_postponing_an_event_resumes_reminders_on_the_next_sweep() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$this->set_manual_status( $event_id, 'postponed' );
+		$seat_id = $this->make_seat( $event_id, [ 'email' => 'resumed@example.com' ] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+		$this->assertSame( [], $sent, 'Still postponed on the first sweep — nothing goes out.' );
+
+		// Un-postpone: back to auto status, which computes 'upcoming' for a
+		// future start_date, same as clearing the manual override in the admin.
+		update_post_meta( $event_id, '_anchor_event_status_mode', 'auto' );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame(
+			[ 'resumed@example.com' ],
+			$sent,
+			'Un-postponing must let the still-unfired 1-day offset send on the next sweep.'
+		);
+		$this->assertGreaterThan( 0, (int) ( $this->markers( $seat_id, $start_ts )[1] ?? 0 ) );
+	}
+
+	/**
+	 * The control: `moved_online` is deliberately NOT in status_is_closed()
+	 * — the event still happens, on the same date, just virtually — so it
+	 * must keep sending, unlike cancelled/postponed above.
+	 */
+	public function test_a_moved_online_event_still_sends_reminders() {
+		$this->configure( [ 'reminder_enabled' => true, 'reminder_offsets' => '1', 'organizer_roster_email' => false ] );
+
+		$start_ts = time() + 12 * HOUR_IN_SECONDS;
+		$event_id = $this->future_event( $start_ts );
+		$this->set_manual_status( $event_id, 'moved_online' );
+		$this->make_seat( $event_id, [ 'email' => 'online@example.com' ] );
+
+		$sent = [];
+		$this->capture_mail( $sent );
+		$this->module()->run_reminder_sweep();
+
+		$this->assertSame( [ 'online@example.com' ], $sent, 'moved_online is not a closed status — reminders keep going out.' );
 	}
 }

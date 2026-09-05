@@ -32,6 +32,28 @@ event of a Pick-one-offerings or Recurring-schedule parent (each gets its own ma
   idempotent order-sync engine. Refunds/cancellations release the tier's quota and the event total.
 - **Free tiers** show a lightweight inline form and register immediately — no cart, no WooCommerce.
 
+### Checkout requirement: the classic `[woocommerce_checkout]` shortcode ONLY (WOO-D20)
+
+**Event registration requires the classic (shortcode) checkout page. The WooCommerce Checkout BLOCK is
+not supported**, and an order that reaches it with an event line in the cart is refused rather than
+silently mis-registered:
+
+- The per-seat attendee fields render on `woocommerce_checkout_before_customer_details` and are
+  validated on `woocommerce_after_checkout_validation` — neither hook fires for the block/Store-API
+  checkout flow.
+- `guard_block_checkout()` fails closed on that path instead: it throws a Store-API `RouteException`
+  ("Event registrations cannot be completed through the block checkout") when the WooCommerce version
+  exposes one, or (older WooCommerce with no exception class available) leaves an `attendees_missing`
+  needs-review flag on the resulting order so the seat-less order is at least visible.
+- An admin notice (`render_block_checkout_incompatibility_notice()`) surfaces on the WooCommerce Orders
+  and Settings screens whenever the store's checkout page actually contains the Checkout block, so this
+  is discovered before a real buyer hits it — not after.
+
+Migrating the checkout page to the block, or a theme/plugin that swaps it in, will break event
+registration until the page is switched back to the `[woocommerce_checkout]` shortcode. Attendee-capture
+support for the Store API/block checkout is a real feature gap, not a bug in the guard above — it is not
+implemented.
+
 ## Capacity & waitlist
 
 - Two levels, one authority (the plugin's seat layer, under a per-event lock): the **event total** plus

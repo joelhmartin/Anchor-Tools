@@ -199,6 +199,18 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		return $out;
 	}
 
+	/** The detail string of the first flag on an order matching $reason (''  if none). */
+	private function review_detail( $order_id, $reason ) {
+		$order = wc_get_order( $order_id );
+		$flags = $order->get_meta( Events_Log::ORDER_REVIEW_META );
+		foreach ( is_array( $flags ) ? $flags : [] as $flag ) {
+			if ( is_array( $flag ) && ( $flag['reason'] ?? '' ) === $reason ) {
+				return (string) ( $flag['detail'] ?? '' );
+			}
+		}
+		return '';
+	}
+
 	/** The order sync-log messages, oldest first. */
 	private function sync_log( $order_id ) {
 		$order = wc_get_order( $order_id );
@@ -419,6 +431,49 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * CodeRabbit finding-5 (PR #20, 2nd round): apply_review_flags() dedupes
+	 * by REASON, not detail. Two events on one order both failing their
+	 * customer confirmation in the SAME pass used to push two
+	 * 'customer_email_failed' flags, the second dropped as a same-reason
+	 * dupe against the first (added moments earlier in the same loop) — and
+	 * even the surviving one's detail was just "order #123", naming no
+	 * event at all. Both failures must be named in the one flag's detail,
+	 * the same way collect_order_seats() accumulates every status-less seat
+	 * rather than losing all but the first.
+	 */
+	public function test_two_failed_confirmations_in_one_pass_name_both_events() {
+		$this->require_wc();
+		$this->set_settings( [ 'wc_notify_customer' => true, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$order_id = $order->get_id();
+
+		$this->fail_mail = true;
+		$this->place_order( $order );
+		$this->fail_mail = false;
+
+		$this->assertSame(
+			1,
+			\count( \array_keys( $this->review_reasons( $order_id ), 'customer_email_failed', true ) ),
+			'Still exactly one flag row for the reason (dedup is correct) — the detail is what must carry both events.'
+		);
+		$detail = $this->review_detail( $order_id, 'customer_email_failed' );
+		$this->assertStringContainsString( (string) $a['event_id'], $detail, "The first event's id must be named in the detail." );
+		$this->assertStringContainsString( (string) $b['event_id'], $detail, "The second event's id must ALSO be named in the detail." );
+	}
+
 	/* ---------------------------------------------------------------------
 	 * REG-D37 — a same-status write is a no-op, not a change
 	 * ------------------------------------------------------------------- */
@@ -460,6 +515,38 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		$illegal = $reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED );
 		$this->assertTrue( $illegal->is_failed(), 'A forbidden transition is a rejection, not a no-op.' );
 		$this->assertSame( 'illegal_transition', $illegal->reason() );
+	}
+
+	/**
+	 * finding-8 — anchor_events_seat_status_changed must fire on a real
+	 * transition and NEVER on a same-status call, note or no note. The
+	 * roster's Cancel action passes a note on every click, so a click on an
+	 * already-cancelled row reaches update_status() with $from === $to.
+	 */
+	public function test_seat_status_changed_action_fires_only_on_a_real_transition() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [ 'status' => Registrations::STATUS_CONFIRMED ] );
+		$reg      = $this->registrations();
+
+		$fired = [];
+		$spy   = function ( $sid, $from, $to, $actor ) use ( &$fired ) {
+			$fired[] = [ $sid, $from, $to, $actor ];
+		};
+		add_action( 'anchor_events_seat_status_changed', $spy, 10, 4 );
+
+		try {
+			$reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED );
+			$this->assertSame( [], $fired, 'A same-status no-note call must never fire the action.' );
+
+			$reg->update_status( $seat_id, Registrations::STATUS_CONFIRMED, 'roster cancel' );
+			$this->assertSame( [], $fired, 'A same-status note-only call must never fire the action either.' );
+
+			$reg->update_status( $seat_id, Registrations::STATUS_CANCELLED );
+			$this->assertCount( 1, $fired, 'A real transition must fire the action exactly once.' );
+			$this->assertSame( [ $seat_id, Registrations::STATUS_CONFIRMED, Registrations::STATUS_CANCELLED, 'system' ], $fired[0] );
+		} finally {
+			remove_action( 'anchor_events_seat_status_changed', $spy, 10 );
+		}
 	}
 
 	/* ---------------------------------------------------------------------
@@ -607,11 +694,19 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 	}
 
 	/* ---------------------------------------------------------------------
-	 * Fix round 1 — the disabled stamp follows the switch that was consulted
+	 * finding-1 (carry-over) — each event resolves its OWN confirmation
+	 * switch, so a disabled event never starves an enabled one
 	 * ------------------------------------------------------------------- */
 
-	/** Disabled event A must not gate enabled event B on the same order. */
-	public function test_a_mixed_order_leaves_the_enabled_events_gate_open() {
+	/**
+	 * A mixed order (confirmation disabled on event A, enabled on event B)
+	 * used to never confirm B: the sender resolved a single "primary" event
+	 * for the whole order and, once that primary was the disabled one,
+	 * returned skipped('disabled') forever — B's open gate was never reached.
+	 * Each event must now resolve its own switch: A settles as a deliberate
+	 * skip, B actually sends.
+	 */
+	public function test_disabled_event_a_still_confirms_enabled_event_b() {
 		$this->require_wc();
 		// Place the order with every notification off, so the seats exist before
 		// anything is decided about emails.
@@ -635,25 +730,26 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 		$this->assertSame( 1, $this->count_seats( $a['event_id'], Registrations::STATUS_CONFIRMED ) );
 		$this->assertSame( 1, $this->count_seats( $b['event_id'], Registrations::STATUS_CONFIRMED ) );
 
-		// The confirmation resolves its copy and its switch from ONE event; find
-		// out which, and switch that one off.
+		// A is disabled, B stays enabled — A is seen FIRST in $email_events so
+		// the old bug (a single primary resolved once) would have starved B.
 		$by_event = $this->invoke_wc( 'collect_order_seats', [ $order_id ] );
 		$ids      = array_map( 'intval', array_keys( $by_event ) );
 		$this->assertCount( 2, $ids );
-		$primary = $ids[0];
-		$other   = $ids[1];
-		$this->switch_email_off( $primary, 'confirmation' );
+		$disabled = $ids[0];
+		$enabled  = $ids[1];
+		$this->switch_email_off( $disabled, 'confirmation' );
 
 		$this->set_settings( [ 'wc_notify_customer' => true, 'wc_notify_organizer' => false ] );
 		$fresh = wc_get_order( $order_id );
 		$fresh->update_meta_data( '_anchor_event_emails_sent', [] );
 		$fresh->save();
+		$this->mails = []; // Isolate from WooCommerce's own order-status-change emails.
 
 		$log   = [];
 		$flags = [];
 		$args  = [
 			$fresh,
-			[ $primary => [ 'confirmed' => 1 ], $other => [ 'confirmed' => 1 ] ],
+			[ $disabled => [ 'confirmed' => 1 ], $enabled => [ 'confirmed' => 1 ] ],
 			&$log,
 			&$flags,
 		];
@@ -661,13 +757,70 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 
 		$sent = $fresh->get_meta( '_anchor_event_emails_sent' );
 		$sent = is_array( $sent ) ? $sent : [];
-		$this->assertArrayHasKey( 'customer:' . $primary, $sent, 'The event whose switch was read is settled.' );
-		$this->assertArrayNotHasKey(
-			'customer:' . $other,
+		$this->assertArrayHasKey( 'customer:' . $disabled, $sent, 'The switched-off event is settled, not re-decided forever.' );
+		$this->assertArrayHasKey(
+			'customer:' . $enabled,
 			$sent,
-			'The other event never had its switch consulted — gating it would make its confirmation unsendable for ever.'
+			'finding-1: the enabled event must confirm even though the disabled event is seen first.'
 		);
 		$this->assertSame( [], $flags );
+		$this->assertCount(
+			1,
+			$this->mails,
+			'B\'s buyer confirmation must actually be sent, not just gated (organizer notices are off in this test).'
+		);
+	}
+
+	/** Two enabled events on the same order both get their own confirmation. */
+	public function test_two_enabled_events_are_both_confirmed() {
+		$this->require_wc();
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$this->place_order( $order );
+
+		$order_id = $order->get_id();
+		$by_event = $this->invoke_wc( 'collect_order_seats', [ $order_id ] );
+		$ids      = array_map( 'intval', array_keys( $by_event ) );
+		$this->assertCount( 2, $ids );
+
+		$this->set_settings( [ 'wc_notify_customer' => true, 'wc_notify_organizer' => false ] );
+		$fresh = wc_get_order( $order_id );
+		$fresh->update_meta_data( '_anchor_event_emails_sent', [] );
+		$fresh->save();
+		$this->mails = []; // Isolate from WooCommerce's own order-status-change emails.
+
+		$log   = [];
+		$flags = [];
+		$args  = [
+			$fresh,
+			[ $ids[0] => [ 'confirmed' => 1 ], $ids[1] => [ 'confirmed' => 1 ] ],
+			&$log,
+			&$flags,
+		];
+		$this->invoke_wc( 'dispatch_emails', $args );
+
+		$sent = $fresh->get_meta( '_anchor_event_emails_sent' );
+		$sent = is_array( $sent ) ? $sent : [];
+		$this->assertArrayHasKey( 'customer:' . $ids[0], $sent, 'Both events must be covered.' );
+		$this->assertArrayHasKey( 'customer:' . $ids[1], $sent, 'Both events must be covered.' );
+		$this->assertSame( [], $flags );
+		$this->assertCount(
+			2,
+			$this->mails,
+			'Each enabled event gets its own confirmation email (organizer notices are off in this test).'
+		);
 	}
 
 	/* ---------------------------------------------------------------------
@@ -728,6 +881,131 @@ class Test_Email_Headers extends Anchor_Events_TestCase {
 			'A fully refunded order has nothing to confirm — the log must not claim a send.'
 		);
 		$this->assertSame( [], $this->review_reasons( $order_id ), 'Nothing went wrong, so nothing needs review.' );
+	}
+
+	/**
+	 * "Resend confirmation" on a mixed order (one event's confirmation
+	 * switched off, one left on) must resend only the enabled event,
+	 * while still settling and logging BOTH — the manual resend path
+	 * follows the same per-event rule dispatch_emails() does (finding-1),
+	 * so it needed its own direct coverage of handle_resend_confirmation()
+	 * rather than only the reconcile-path tests above.
+	 */
+	public function test_resend_on_a_mixed_order_sends_only_the_enabled_events_confirmation() {
+		$this->require_wc();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$this->place_order( $order );
+
+		$order_id = $order->get_id();
+		$this->assertSame( 1, $this->count_seats( $a['event_id'], Registrations::STATUS_CONFIRMED ) );
+		$this->assertSame( 1, $this->count_seats( $b['event_id'], Registrations::STATUS_CONFIRMED ) );
+
+		$disabled = (int) $a['event_id'];
+		$enabled  = (int) $b['event_id'];
+		$this->switch_email_off( $disabled, 'confirmation' );
+
+		$this->mails = []; // Isolate from WooCommerce's own order-status-change emails.
+
+		$_POST    = [ 'order_id' => $order_id, '_wpnonce' => wp_create_nonce( 'anchor_events_resend_' . $order_id ) ];
+		$_REQUEST = $_POST;
+
+		$this->capture_redirect(
+			function () {
+				$this->woocommerce()->handle_resend_confirmation();
+			}
+		);
+
+		$this->assertTrue(
+			$this->log_contains( $order_id, 'Customer confirmation re-send skipped.' ),
+			'The disabled event must log a skip.'
+		);
+		$this->assertTrue(
+			$this->log_contains( $order_id, 'Customer confirmation re-sent (manual).' ),
+			'The enabled event must log a send.'
+		);
+
+		$gate = $this->customer_gate( $order_id );
+		$this->assertArrayHasKey( 'customer:' . $disabled, $gate, 'The disabled event still settles its own gate.' );
+		$this->assertArrayHasKey( 'customer:' . $enabled, $gate, 'The enabled event stamps its own gate.' );
+
+		$this->assertCount( 1, $this->mails, 'Only the enabled event actually sends a confirmation.' );
+		$this->assertSame( [], $this->review_reasons( $order_id ), 'Neither outcome is a defect.' );
+	}
+
+	/**
+	 * CodeRabbit finding-4 (PR #20, 2nd round): the save at the end of
+	 * handle_resend_confirmation() used to be gated on $any_sent alone — an
+	 * order whose events ALL resolve to 'disabled' stamps every gate in
+	 * $sent (settled, same as a real send — audit REG-D6) but never
+	 * actually sends anything, so $any_sent stays false and the save never
+	 * runs. Every gate stamp was silently discarded, and the next automatic
+	 * reconcile pass re-attempted the exact same disabled sends. Both gates
+	 * must persist even though nothing was ever sent.
+	 */
+	public function test_resend_on_an_all_disabled_order_still_persists_the_gate_stamps() {
+		$this->require_wc();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => false ] );
+		$a     = $this->paid_event();
+		$b     = $this->paid_event();
+		$order = $this->make_order( $a['variation_id'] );
+
+		$item = new WC_Order_Item_Product();
+		$item->set_product( wc_get_product( $b['variation_id'] ) );
+		$item->set_quantity( 1 );
+		$item->set_subtotal( 10 );
+		$item->set_total( 10 );
+		$item->add_meta_data( '_anchor_attendees', [ 1 => [ 'name' => 'B Attendee', 'email' => 'b@example.test' ] ], true );
+		$order->add_item( $item );
+		$order->calculate_totals( false );
+		$order->save();
+		$this->place_order( $order );
+
+		$order_id = $order->get_id();
+		$this->assertSame( 1, $this->count_seats( $a['event_id'], Registrations::STATUS_CONFIRMED ) );
+		$this->assertSame( 1, $this->count_seats( $b['event_id'], Registrations::STATUS_CONFIRMED ) );
+
+		$this->switch_email_off( (int) $a['event_id'], 'confirmation' );
+		$this->switch_email_off( (int) $b['event_id'], 'confirmation' );
+
+		$this->mails = []; // Isolate from WooCommerce's own order-status-change emails.
+
+		$_POST    = [ 'order_id' => $order_id, '_wpnonce' => wp_create_nonce( 'anchor_events_resend_' . $order_id ) ];
+		$_REQUEST = $_POST;
+
+		$this->capture_redirect(
+			function () {
+				$this->woocommerce()->handle_resend_confirmation();
+			}
+		);
+
+		$this->assertCount( 0, $this->mails, 'Precondition: nothing was actually sent — every event is disabled.' );
+
+		$gate = $this->customer_gate( $order_id );
+		$this->assertArrayHasKey(
+			'customer:' . (int) $a['event_id'],
+			$gate,
+			'A disabled event still settles its own gate even when no send in this pass succeeded at all.'
+		);
+		$this->assertArrayHasKey(
+			'customer:' . (int) $b['event_id'],
+			$gate,
+			'A disabled event still settles its own gate even when no send in this pass succeeded at all.'
+		);
 	}
 
 	/** Roster cancel: changed, already-cancelled and rejected each get their own notice. */

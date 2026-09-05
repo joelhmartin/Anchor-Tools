@@ -199,4 +199,61 @@ class Test_Add_To_Cart_Ajax extends WP_Ajax_UnitTestCase {
 		$this->assertSame( 2, (int) $decoded['data']['added'] );
 		$this->assertSame( 2, WC()->cart->get_cart_contents_count() );
 	}
+
+	/**
+	 * WOO-D22: QTY_CAP (20) used to be enforced ONLY by the HTML input's `max`
+	 * attribute. A direct POST past it on an unlimited-capacity event (every
+	 * DEKA event has capacity 0, so capacity_decision() alone never refuses)
+	 * must still be clamped server-side.
+	 */
+	public function test_posted_quantity_is_capped_server_side() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [ 'capacity' => 0 ] );
+
+		$decoded = $this->post( $event, [ $tiers[0]['id'] => 9999 ] );
+
+		$this->assertTrue( $decoded['success'], 'Response: ' . wp_json_encode( $decoded ) );
+		$this->assertSame(
+			\Anchor\Events\WooCommerce::QTY_CAP,
+			(int) $decoded['data']['added'],
+			'The posted quantity must be clamped to QTY_CAP, not honored verbatim.'
+		);
+		$this->assertSame( \Anchor\Events\WooCommerce::QTY_CAP, WC()->cart->get_cart_contents_count() );
+	}
+
+	/**
+	 * WOO-D26 (fix round 1, Important): ajax_add_to_cart() calls
+	 * WC()->cart->add_to_cart() directly, which never fires the
+	 * woocommerce_add_to_cart_validation filter validate_add_to_cart() is
+	 * hooked to (only WC_Form_Handler / the native WC AJAX action / a
+	 * cart-session reorder apply it) — so the cart-wide capacity sum never
+	 * ran on the plugin's own "Register / Add to cart" button. Two
+	 * successive adds through the REAL endpoint that together exceed
+	 * capacity must have the second refused.
+	 */
+	public function test_a_second_ajax_add_that_would_overfill_the_cart_is_refused() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [ 'capacity' => 5, 'waitlist' => false ] );
+
+		$first = $this->post( $event, [ $tiers[0]['id'] => 3 ] );
+		$this->assertTrue( $first['success'], 'Response: ' . wp_json_encode( $first ) );
+		$this->assertSame( 3, WC()->cart->get_cart_contents_count() );
+
+		$second = $this->post( $event, [ $tiers[0]['id'] => 3 ] );
+		$this->assertFalse( $second['success'], 'Response: ' . wp_json_encode( $second ) );
+		$this->assertStringContainsString( '2', $this->messages( $second ), 'The refusal must say how many seats actually remain (2).' );
+		$this->assertSame(
+			3,
+			WC()->cart->get_cart_contents_count(),
+			'The cart must stay at its pre-refusal count, not grow past capacity.'
+		);
+	}
+
+	/** A single-seat add on an unlimited-capacity (capacity 0) event still succeeds. */
+	public function test_single_seat_add_on_an_unlimited_capacity_event_still_succeeds() {
+		list( $event, $tiers ) = $this->make_ticketed_event( [ 'capacity' => 0 ] );
+
+		$decoded = $this->post( $event, [ $tiers[0]['id'] => 1 ] );
+
+		$this->assertTrue( $decoded['success'], 'Response: ' . wp_json_encode( $decoded ) );
+		$this->assertSame( 1, WC()->cart->get_cart_contents_count() );
+	}
 }

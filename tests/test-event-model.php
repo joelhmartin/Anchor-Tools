@@ -122,6 +122,33 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertArrayNotHasKey( 'notify_attendee', $this->module()->sanitize_settings( [] ) );
 	}
 
+	/**
+	 * finding-4 — `in_array( $input['x'] ?? 'default', [...], true ) ?
+	 * $input['x'] : 'default'` guards the CHECK with the coalesced value but
+	 * re-reads the raw `$input['x']` in the true branch: on a genuinely
+	 * missing key the check passes on its own fallback, then the true branch
+	 * warns on the same missing key. Both `timezone_mode` and
+	 * `template_source` must resolve to their default with no PHP warning
+	 * when the key is absent from $input entirely (not merely empty).
+	 */
+	public function test_sanitize_settings_with_a_missing_key_warns_never_and_defaults_correctly() {
+		$warnings = [];
+		set_error_handler( static function ( $errno, $errstr ) use ( &$warnings ) {
+			$warnings[] = $errstr;
+			return true;
+		}, E_WARNING | E_NOTICE | E_DEPRECATED );
+
+		try {
+			$saved = $this->module()->sanitize_settings( [] );
+		} finally {
+			restore_error_handler();
+		}
+
+		$this->assertSame( [], $warnings, 'A missing settings key must never raise a PHP warning/notice.' );
+		$this->assertSame( 'site', $saved['timezone_mode'] );
+		$this->assertSame( 'theme', $saved['template_source'] );
+	}
+
 	/** event_type() falls back to 'single' when no type meta is stored. */
 	public function test_event_type_defaults_to_single() {
 		$event_id = $this->make_event();
@@ -239,8 +266,15 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		);
 	}
 
-	/** The one-time migration derives registration_mode for legacy events and is idempotent. */
+	/**
+	 * The one-time back-fill derives registration_mode for legacy events and
+	 * is idempotent. backfill_registration_mode() is capability-gated
+	 * (MODEL-D41: it now runs on admin_init, which fires unauthenticated on
+	 * admin-post.php), so this needs a user who could edit events by hand.
+	 */
 	public function test_migration_derives_registration_mode_for_legacy_events_and_is_idempotent() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		delete_option( 'anchor_events_regmode_version' );
 		delete_option( 'anchor_events_regmode_migrated' );
 
 		$external_id = $this->make_event( [ 'registration_type' => 'external' ] );
@@ -253,15 +287,15 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertSame( '', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 		$this->assertSame( '', get_post_meta( $wc_id, '_anchor_event_registration_mode', true ) );
 
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame( 'external', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 		$this->assertSame( 'wc', get_post_meta( $wc_id, '_anchor_event_registration_mode', true ) );
-		$this->assertTrue( (bool) get_option( 'anchor_events_regmode_migrated' ) );
+		$this->assertTrue( (int) get_option( 'anchor_events_regmode_version' ) >= 1 );
 
 		// Idempotency: hand-edit a migrated value, re-run, and confirm it's left untouched.
 		update_post_meta( $external_id, '_anchor_event_registration_mode', 'free' );
-		$this->module()->migrate_registration_mode();
+		$this->module()->backfill_registration_mode();
 
 		$this->assertSame( 'free', get_post_meta( $external_id, '_anchor_event_registration_mode', true ) );
 	}

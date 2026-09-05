@@ -224,6 +224,75 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertContains( 'capacity_overfill', $this->error_codes() );
 	}
 
+	/**
+	 * finding-6 — capacity_decision() never consults the event's status, so a
+	 * hand-cancelled event with room left decided 'open' and a manual add
+	 * went straight through with nobody ticking "Allow over capacity".
+	 */
+	public function test_manual_add_to_a_cancelled_event_is_refused_as_closed() {
+		$event_id = $this->make_event( [ 'status_mode' => 'manual', 'status' => 'cancelled' ] );
+
+		$location = $this->post_add( $event_id );
+
+		$this->assertSame( 'closed', $this->code_of( $location ) );
+		$this->assertSame( 0, $this->count_seats( $event_id ), 'A cancelled event took a manual seat.' );
+	}
+
+	/** The override checkbox still forces the add through, logged distinctly from a plain capacity overfill. */
+	public function test_the_override_checkbox_forces_an_add_to_a_cancelled_event_and_records_status_cancelled() {
+		$event_id = $this->make_event( [ 'status_mode' => 'manual', 'status' => 'cancelled' ] );
+
+		$location = $this->post_add( $event_id, [ 'roster_allow_over' => '1' ] );
+
+		$this->assertSame( '', $this->code_of( $location ), 'The override add must not refuse.' );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+
+		$log = get_option( Events_Log::ERROR_OPTION, [] );
+		$overfill = null;
+		foreach ( (array) $log as $row ) {
+			if ( ( $row['code'] ?? '' ) === 'capacity_overfill' ) {
+				$overfill = $row;
+			}
+		}
+		$this->assertNotNull( $overfill, 'The override must still be recorded.' );
+		$this->assertSame( 'status_cancelled', $overfill['context']['from'] ?? null );
+	}
+
+	/**
+	 * finding-16 — a postponed event is closed by the same rule as a
+	 * cancelled one (Module::status_is_closed()); this guard used to check
+	 * only `=== 'cancelled'` and let a postponed event's manual add through
+	 * unopposed.
+	 */
+	public function test_manual_add_to_a_postponed_event_is_refused_as_closed() {
+		$event_id = $this->make_event( [ 'status_mode' => 'manual', 'status' => 'postponed' ] );
+
+		$location = $this->post_add( $event_id );
+
+		$this->assertSame( 'closed', $this->code_of( $location ) );
+		$this->assertSame( 0, $this->count_seats( $event_id ), 'A postponed event took a manual seat.' );
+	}
+
+	/** The override checkbox still forces the add through, logged distinctly from a plain capacity overfill. */
+	public function test_the_override_checkbox_forces_an_add_to_a_postponed_event_and_records_status_postponed() {
+		$event_id = $this->make_event( [ 'status_mode' => 'manual', 'status' => 'postponed' ] );
+
+		$location = $this->post_add( $event_id, [ 'roster_allow_over' => '1' ] );
+
+		$this->assertSame( '', $this->code_of( $location ), 'The override add must not refuse.' );
+		$this->assertSame( 1, $this->count_seats( $event_id, Registrations::STATUS_CONFIRMED ) );
+
+		$log = get_option( Events_Log::ERROR_OPTION, [] );
+		$overfill = null;
+		foreach ( (array) $log as $row ) {
+			if ( ( $row['code'] ?? '' ) === 'capacity_overfill' ) {
+				$overfill = $row;
+			}
+		}
+		$this->assertNotNull( $overfill, 'The override must still be recorded.' );
+		$this->assertSame( 'status_postponed', $overfill['context']['from'] ?? null );
+	}
+
 	public function test_a_full_event_with_a_waitlist_still_waitlists_a_manual_add() {
 		$event_id = $this->make_event(
 			[
@@ -539,6 +608,34 @@ class Test_Roster extends Anchor_Events_TestCase {
 			get_post_meta( $seat_id, '_anchor_event_email', true ),
 			'A refused edit must not half-save the other fields.'
 		);
+	}
+
+	/**
+	 * CodeRabbit finding-2 (PR #20, 2nd round): handle_edit() already
+	 * unslashes $_POST — wp_unslash( $_POST['roster_name'] ) — before it
+	 * ever reaches update_contact(), and update_post_meta() unslashes AGAIN
+	 * internally (every WP meta write assumes slashed input). Running
+	 * stripslashes() twice on a literal backslash in the name/phone ate it
+	 * entirely: "Room A\B" was stored as "Room AB". $_POST is set here the
+	 * way a real request actually arrives — wp_slash()'d, the way WordPress's
+	 * own magic-quotes shim leaves it — so handle_edit()'s single wp_unslash()
+	 * is exercised for real, not bypassed by a plain test string.
+	 */
+	public function test_a_literal_backslash_in_the_name_and_phone_survives_the_roster_edit() {
+		$event_id = $this->make_event();
+		$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Original Name' ] );
+
+		$this->post_edit(
+			$event_id,
+			$seat_id,
+			[
+				'roster_name'  => \wp_slash( 'Room A\\B' ),
+				'roster_phone' => \wp_slash( '555\\1234' ),
+			]
+		);
+
+		$this->assertSame( 'Room A\\B', get_post_meta( $seat_id, '_anchor_event_name', true ) );
+		$this->assertSame( '555\\1234', get_post_meta( $seat_id, '_anchor_event_phone', true ) );
 	}
 
 	/* -----------------------------------------------------------------

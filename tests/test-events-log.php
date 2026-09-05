@@ -259,6 +259,78 @@ class Test_Events_Log extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * CodeRabbit finding-1 (PR #20, 2nd round): collect_order_seats() used to
+	 * flag a status-less seat by loading and saving a SEPARATE \WC_Order
+	 * instance directly (Events_Log::flag_review()) from inside
+	 * dispatch_emails() — a second, independent load/save racing the batched
+	 * pass's own single end-of-pass $save_order->save(). Whichever flag
+	 * reaches the database last wins; the other is silently dropped even
+	 * though both were genuinely raised the same pass. Both must survive.
+	 *
+	 * Three events on ONE order exercise this: A's seat (confirmed and
+	 * already emailed in an earlier pass) is corrupted afterwards; B is a
+	 * brand-new well-formed line whose customer confirmation is what
+	 * actually calls collect_order_seats() THIS pass (A's gate is already
+	 * stamped, so only B's confirmation is new); C is a brand-new line with
+	 * no attendee data, raising the unrelated attendees_missing flag through
+	 * the ordinary batched $review_flags path in the very same pass.
+	 */
+	public function test_seat_missing_status_flag_survives_the_batched_reconcile_pass() {
+		$this->require_wc();
+
+		$ctx_a = $this->paid_event_with_variation();
+		$res_a = $this->make_order( $ctx_a['variation_id'], 1 );
+		$this->woocommerce()->reconcile_order( wc_get_order( $res_a['order_id'] ), 'placed' );
+		$this->assertSame( 1, $this->count_seats( $ctx_a['event_id'], Registrations::STATUS_CONFIRMED ) );
+
+		$broken_seats = $this->registrations()->get_seats_for_order( $res_a['order_id'] );
+		$this->assertNotEmpty( $broken_seats );
+		delete_post_meta( (int) $broken_seats[0], '_anchor_event_reg_status' );
+
+		$ctx_b = $this->paid_event_with_variation();
+		$ctx_c = $this->paid_event_with_variation();
+
+		$order = wc_get_order( $res_a['order_id'] );
+
+		$item_b = new WC_Order_Item_Product();
+		$item_b->set_product( wc_get_product( $ctx_b['variation_id'] ) );
+		$item_b->set_quantity( 1 );
+		$item_b->set_subtotal( 10 );
+		$item_b->set_total( 10 );
+		$item_b->add_meta_data( '_anchor_attendees', $this->attendee_rows( 1 ), true );
+		$order->add_item( $item_b );
+
+		$item_c = new WC_Order_Item_Product();
+		$item_c->set_product( wc_get_product( $ctx_c['variation_id'] ) );
+		$item_c->set_quantity( 1 );
+		$item_c->set_subtotal( 10 );
+		$item_c->set_total( 10 );
+		// Deliberately no _anchor_attendees meta — raises attendees_missing
+		// through the normal batched $review_flags path (unaffected by this
+		// bug on its own), giving apply_review_flags() a genuine reason to
+		// persist a changed array in the SAME pass collect_order_seats()
+		// flags the corrupted seat on event A.
+		$order->add_item( $item_c );
+
+		$order->calculate_totals( false );
+		$order->save();
+
+		$this->woocommerce()->reconcile_order( wc_get_order( $res_a['order_id'] ), 'resync' );
+
+		$reasons = $this->review_reasons( $res_a['order_id'] );
+		$this->assertContains(
+			'attendees_missing',
+			$reasons,
+			'A flag genuinely raised this pass through the normal batched path must survive it.'
+		);
+		$this->assertContains(
+			'seat_missing_status',
+			$reasons,
+			'The status-less seat flag must ALSO survive the same batched pass — not lost to a second, independent order load/save racing the single end-of-pass save.'
+		);
+	}
+
 	/** A pass that never evaluated the condition leaves the flag where it is. */
 	public function test_a_flag_is_not_cleared_by_a_pass_that_could_not_check_it() {
 		$this->require_wc();

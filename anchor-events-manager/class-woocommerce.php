@@ -3714,7 +3714,7 @@ class WooCommerce {
                     continue; // Already covered.
                 }
 
-                $result = $this->send_customer_confirmation( $order, $settings, $eid );
+                $result = $this->send_customer_confirmation( $order, $settings, $eid, $review_flags );
                 // WOO-D33 — only a real attempt re-decides customer_email_failed.
                 // A skip (disabled, nothing to confirm) and a pass that never gets
                 // here at all both leave a previous failure standing: the buyer
@@ -3757,7 +3757,7 @@ class WooCommerce {
             $gate_key    = 'organizer:' . $event_id;
 
             if ( $notify_organizer && $has_confirm && empty( $sent[ $gate_key ] ) ) {
-                $notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed' );
+                $notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'confirmed', $review_flags );
                 if ( $notice->is_sent() || ( $notice->is_skipped() && 'disabled' === $notice->reason() ) ) {
                     // Same rule as the buyer confirmation: a type the organizer
                     // switched off is settled, not failed. This gate is already
@@ -3776,7 +3776,7 @@ class WooCommerce {
             // Seats-released organizer notice (cancelled/refunded). Not gated by
             // emails_sent: idempotent because reconcile only releases seats once.
             if ( $notify_organizer && $has_release ) {
-                $released_notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released' );
+                $released_notice = $this->send_organizer_notice( $order, $settings, $event_id, $ev, 'released', $review_flags );
                 if ( $released_notice->is_sent() ) {
                     $log_entries[] = $this->make_log_entry( 'Organizer seats-released notice sent.', [ 'event' => $event_id, 'released' => (int) $ev['released'] ] );
                 } elseif ( $released_notice->is_skipped() ) {
@@ -3801,10 +3801,24 @@ class WooCommerce {
      * by event id. Reads SEAT post meta (REG_CPT posts — not the order), so it is
      * HPOS-safe; no order postmeta is touched.
      *
-     * @param int $order_id
+     * CodeRabbit finding-1 (PR #20, 2nd round) — $review_flags, when passed, is
+     * the SAME by-ref array the batched reconcile_order()/dispatch_emails() pass
+     * accumulates and later merges into $save_order via apply_review_flags()
+     * in one $save_order->save() at the end of the pass. Calling
+     * Events_Log::flag_review() directly from inside that pass loads and saves
+     * a SEPARATE \WC_Order instance mid-pass — whichever save lands last wins,
+     * so apply_review_flags() persisting the $save_order snapshot taken before
+     * this flag existed could silently discard it. Callers outside the batched
+     * pass (e.g. handle_resend_confirmation()) omit $review_flags and get the
+     * old immediate flag_review() behaviour, which is correct there: nothing
+     * else is accumulating a save for that order.
+     *
+     * @param int        $order_id
+     * @param array|null $review_flags (by ref) When given, append here instead
+     *                                  of flagging the order directly.
      * @return array<int,array<int,array>> [ event_id => [ {id,name,status,seat_index} ] ].
      */
-    private function collect_order_seats( $order_id ) {
+    private function collect_order_seats( $order_id, ?array &$review_flags = null ) {
         $order_id       = (int) $order_id;
         $by_event       = [];
         $missing_status = []; // WOO-D44: accumulated, not flagged one-by-one — see below.
@@ -3841,11 +3855,15 @@ class WooCommerce {
             // ever recorded the FIRST status-less seat's id; any others on
             // the same order were silently lost from the detail. Every seat
             // this pass found is listed.
-            Events_Log::flag_review(
-                $order_id,
-                'seat_missing_status',
-                'seats ' . \implode( ', ', $missing_status )
-            );
+            if ( null !== $review_flags ) {
+                $review_flags[] = $this->make_flag( 'seat_missing_status', 'seats ' . \implode( ', ', $missing_status ) );
+            } else {
+                Events_Log::flag_review(
+                    $order_id,
+                    'seat_missing_status',
+                    'seats ' . \implode( ', ', $missing_status )
+                );
+            }
         }
         return $by_event;
     }
@@ -3871,12 +3889,14 @@ class WooCommerce {
      * makes the real confirmation unsendable, and a deliberate setting flagged
      * the order for review on every reconcile for ever.
      *
-     * @param \WC_Order $order
-     * @param array     $settings Module settings.
-     * @param int       $event_id The event this confirmation is scoped to.
+     * @param \WC_Order  $order
+     * @param array      $settings     Module settings.
+     * @param int        $event_id     The event this confirmation is scoped to.
+     * @param array|null $review_flags (by ref) Forwarded to collect_order_seats() —
+     *                                 see its docblock (CodeRabbit finding-1).
      * @return Outcome sent | skipped (nothing_to_send, disabled) | failed.
      */
-    private function send_customer_confirmation( \WC_Order $order, array $settings, $event_id = 0 ) {
+    private function send_customer_confirmation( \WC_Order $order, array $settings, $event_id = 0, ?array &$review_flags = null ) {
         $to = (string) $order->get_billing_email();
         if ( $to === '' ) {
             return Outcome::failed( 'no_address' );
@@ -3884,7 +3904,7 @@ class WooCommerce {
         $event_id = (int) $event_id;
         $order_id = (int) $order->get_id();
         $buyer    = \trim( (string) $order->get_formatted_billing_full_name() );
-        $by_event = $this->collect_order_seats( $order_id );
+        $by_event = $this->collect_order_seats( $order_id, $review_flags );
         $seats    = $by_event[ $event_id ] ?? [];
 
         if ( empty( $seats ) ) {
@@ -3974,14 +3994,18 @@ class WooCommerce {
      * seats) or 'released' (seats cancelled/refunded). Recipient resolves
      * per-event organizer email → global setting → admin_email.
      *
-     * @param \WC_Order $order
-     * @param array     $settings
-     * @param int       $event_id
-     * @param array     $ev       [confirmed,waitlist,released] tally for this event.
-     * @param string    $kind     'confirmed'|'released'.
+     * @param \WC_Order  $order
+     * @param array      $settings
+     * @param int        $event_id
+     * @param array      $ev           [confirmed,waitlist,released] tally for this event.
+     * @param string     $kind         'confirmed'|'released'.
+     * @param array|null $review_flags (by ref) Forwarded to collect_order_seats() —
+     *                                 see its docblock (CodeRabbit finding-1). Only
+     *                                 ever called from dispatch_emails()'s batched
+     *                                 pass, so always pass its $review_flags through.
      * @return Outcome sent | skipped (disabled) | failed (no_address, wp_mail).
      */
-    private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind ) {
+    private function send_organizer_notice( \WC_Order $order, array $settings, $event_id, array $ev, $kind, ?array &$review_flags = null ) {
         $event_id = (int) $event_id;
         // The event can switch this email type off. Checked before anything is
         // built, so a disabled type resolves no template and never fires the
@@ -4049,7 +4073,7 @@ class WooCommerce {
 
         // Per-event seat list from current active seats.
         $seat_list = [];
-        $by_event  = $this->collect_order_seats( (int) $order->get_id() );
+        $by_event  = $this->collect_order_seats( (int) $order->get_id(), $review_flags );
         if ( isset( $by_event[ $event_id ] ) ) {
             foreach ( $by_event[ $event_id ] as $s ) {
                 $label = $s['name'] !== '' ? $s['name'] : \__( 'Guest', 'anchor-schema' );

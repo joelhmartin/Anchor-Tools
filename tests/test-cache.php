@@ -358,6 +358,15 @@ class Test_Cache extends Anchor_Events_TestCase {
 			'posts_per_page' => 5,
 		];
 
+		// CodeRabbit finding-10 (PR #20, 2nd round): the key is deterministic
+		// from $args + the current cache version — a prior test in this same
+		// suite run using this exact $args (and never bumping the version in
+		// between) can leave the transient already populated, so THIS test's
+		// "first" call is itself a cache hit and never proves the first call
+		// was a genuine miss. Delete it before the first lookup so the
+		// assertion below is about THIS test's two calls, not test order.
+		delete_transient( $this->cached_ids_key( $args ) );
+
 		$queries = 0;
 		$count   = static function ( $query ) use ( &$queries ) {
 			$queries++;

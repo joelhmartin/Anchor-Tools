@@ -855,7 +855,15 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 	 */
 	public function test_handle_delete_closed_occurrence_dies_on_invalid_nonce() {
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
-		$_POST = [ 'event_id' => 1, '_wpnonce' => 'invalid-nonce' ];
+		$_POST    = [ 'event_id' => 1, '_wpnonce' => 'invalid-nonce' ];
+		// CodeRabbit finding-11 (PR #20, 2nd round): check_admin_referer()
+		// reads $_REQUEST, not $_POST — a manually assigned $_POST in a test
+		// does not also populate $_REQUEST, so without this the nonce check
+		// could be seeing a stale/empty $_REQUEST['_wpnonce'] regardless of
+		// what $_POST actually holds. Harmless here either way (the nonce is
+		// deliberately invalid) but kept consistent with the capability test
+		// below, where it matters.
+		$_REQUEST = $_POST;
 
 		$this->expectException( WPDieException::class );
 		$this->module()->handle_delete_closed_occurrence();
@@ -875,8 +883,22 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 			'event_id' => $seated,
 			'_wpnonce' => wp_create_nonce( 'anchor_events_delete_closed_occurrence_' . $seated ),
 		];
+		// CodeRabbit finding-11 (PR #20, 2nd round): check_admin_referer()
+		// reads $_REQUEST['_wpnonce'], not $_POST. Without also setting
+		// $_REQUEST here, the nonce check itself fails FIRST — the test
+		// still gets a WPDieException and still passes, but for the wrong
+		// reason, never actually reaching (or proving) the capability gate
+		// it claims to test. Setting $_REQUEST lets the nonce pass, and
+		// asserting the die MESSAGE (not just the exception class) is what
+		// actually distinguishes "refused by capability" from "refused by
+		// nonce" — both throw the identical WPDieException class.
+		$_REQUEST = $_POST;
 
-		$this->expectException( WPDieException::class );
-		$this->module()->handle_delete_closed_occurrence();
+		try {
+			$this->module()->handle_delete_closed_occurrence();
+			$this->fail( 'handle_delete_closed_occurrence() did not die for a user lacking the capability.' );
+		} catch ( WPDieException $e ) {
+			$this->assertSame( 'You are not allowed to do this.', $e->getMessage() );
+		}
 	}
 }

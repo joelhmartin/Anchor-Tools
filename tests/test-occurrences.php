@@ -384,6 +384,54 @@ class Test_Occurrences extends Anchor_Events_TestCase {
 		}
 	}
 
+	/**
+	 * CodeRabbit finding-7 (PR #20, 2nd round): `$ts + $span_days *
+	 * DAY_IN_SECONDS` is fixed-length (86400s/day) arithmetic. A span that
+	 * fully contains a DST fall-back (the "gained" hour lands the day AFTER
+	 * the transition, not on it) undershoots the next local midnight by
+	 * exactly that gained hour once reformatted in the site's own
+	 * timezone — landing a calendar day EARLY. 2027-11-07 02:00 America/
+	 * Chicago falls back to 01:00 the same morning; a span from 2027-11-06
+	 * to +2 days must land on 2027-11-08, not 2027-11-07.
+	 *
+	 * PHP's own default timezone is UTC in this test run (as it always is
+	 * under WordPress), so the OLD `\date()` call — which reads back in
+	 * PHP's DEFAULT timezone, not the SITE's — never actually saw this
+	 * bug under normal operation; it only surfaces once the arithmetic is
+	 * done in a REAL DST-observing zone, which is exactly what a site
+	 * configured for America/Chicago (the ordinary case this code exists
+	 * for) needs. Setting PHP's runtime default to America/Chicago for
+	 * this one test reproduces that: it makes the fixed-seconds defect
+	 * concretely observable, and proves the fix is anchored to the SITE's
+	 * configured zone (event_timezone()) rather than incidentally correct
+	 * only when the runtime default happens to match it.
+	 */
+	public function test_expand_recurrence_span_days_end_date_survives_a_dst_fall_back() {
+		update_option( 'timezone_string', 'America/Chicago' );
+		$previous_tz = \date_default_timezone_get();
+		\date_default_timezone_set( 'America/Chicago' );
+
+		try {
+			$rule = [
+				'freq'      => 'weekly',
+				'interval'  => 1,
+				'count'     => 1,
+				'span_days' => 2,
+			];
+			$rows = $this->occurrences()->expand_recurrence( $rule, '2027-11-06' ); // a Saturday.
+		} finally {
+			\date_default_timezone_set( $previous_tz );
+			delete_option( 'timezone_string' );
+		}
+
+		$this->assertSame( '2027-11-06', $rows[0]['date'] );
+		$this->assertSame(
+			'2027-11-08',
+			$rows[0]['end_date'],
+			'A 2-day span starting 2027-11-06 must end 2027-11-08 — the DST fall-back on 2027-11-07 must not shift it a day early.'
+		);
+	}
+
 	/** span_days=0 (the default) means single-day — same convention offering rows use: empty end_date. */
 	public function test_expand_recurrence_omits_end_date_when_span_days_is_zero() {
 		$rule = [ 'freq' => 'weekly', 'interval' => 1, 'count' => 2 ];

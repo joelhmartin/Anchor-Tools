@@ -1051,11 +1051,27 @@ class Occurrences {
         $rows = [];
         $seen = [];
         foreach ( $date_timestamps as $ts ) {
-            $row = [
-                'date'       => \date( 'Y-m-d', $ts ),
+            $date_str = \date( 'Y-m-d', $ts );
+            $row      = [
+                'date'       => $date_str,
                 // Empty means single-day — the same convention offering rows
                 // use (sanitize_offering_dates_rows()/get_offering_dates()).
-                'end_date'   => $span_days > 0 ? \date( 'Y-m-d', $ts + $span_days * \DAY_IN_SECONDS ) : '',
+                //
+                // CodeRabbit finding-7 (PR #20, 2nd round): `$ts +
+                // $span_days * DAY_IN_SECONDS` is fixed-length (86400s/day)
+                // arithmetic — a span that crosses a DST fall-back (the
+                // local day gains an hour) landed a day EARLY on the
+                // calendar the site's own clocks show. Calendar-day
+                // arithmetic in the site's timezone (construct the anchor
+                // date at local midnight, then modify() by whole days) is
+                // DST-safe: PHP's DateTime day intervals advance the
+                // calendar date and preserve wall-clock time, they don't
+                // add a fixed number of seconds.
+                'end_date'   => $span_days > 0
+                    ? ( new \DateTimeImmutable( $date_str, $this->module->event_timezone( [] ) ) )
+                        ->modify( '+' . $span_days . ' days' )
+                        ->format( 'Y-m-d' )
+                    : '',
                 'start_time' => $start_time,
                 'end_time'   => $end_time,
                 'label'      => $label,

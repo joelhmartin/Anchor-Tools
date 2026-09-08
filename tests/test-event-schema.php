@@ -629,4 +629,24 @@ class Test_Event_Schema extends Anchor_Events_TestCase {
 
 		$this->assertSame( home_url( '/' ), $node['organizer']['url'] );
 	}
+
+	/**
+	 * PR #23 review fix 2: the Place-name address fallback (item 2) bypassed
+	 * plain_text(), so an address part carrying an entity reached
+	 * `location.name` — and `location.address.*` — encoded. Every address
+	 * meta value is now decoded at the point place_node() reads it.
+	 */
+	public function test_place_address_fields_and_fallback_name_decode_entities() {
+		$event_id = $this->make_event( [
+			'start_date'     => '2027-03-01',
+			'timezone'       => 'UTC',
+			'address_street' => 'Main &amp; First',
+			'address_city'   => 'Springfield',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( 'Main & First, Springfield', $node['location']['name'] );
+		$this->assertSame( 'Main & First', $node['location']['address']['streetAddress'] );
+	}
 }

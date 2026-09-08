@@ -670,6 +670,16 @@ class Event_Schema {
      * nor any address part to fall back to — an empty/missing name is more
      * honest than a fabricated one.
      *
+     * PR #23 review fix: each address part is decoded through plain_text()
+     * at the point it's read from meta, not just when address_as_text()
+     * joins them into the fallback `name` — before this, an address field
+     * containing an entity (e.g. `venue`-less street "Main &amp; First")
+     * reached `location.address.streetAddress` itself un-decoded, even
+     * though the venue-based `name` path already went through plain_text().
+     * Decoding once here, at the source, keeps `name` and every
+     * `address.*` sub-field consistent instead of fixing only whichever one
+     * happened to be reported.
+     *
      * @param int   $event_id
      * @param array $meta
      * @return array
@@ -685,7 +695,7 @@ class Event_Schema {
 
         $address = [];
         foreach ( $field_map as $schema_key => $meta_key ) {
-            $val = \trim( (string) ( $meta[ $meta_key ] ?? '' ) );
+            $val = $this->plain_text( \trim( (string) ( $meta[ $meta_key ] ?? '' ) ) );
             if ( $val !== '' ) {
                 $address[ $schema_key ] = $val;
             }

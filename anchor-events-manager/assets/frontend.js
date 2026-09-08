@@ -118,10 +118,46 @@
     else { document.addEventListener('DOMContentLoaded', fn); }
   }
 
+  // Task 42 — the group-parent roster's per-date tabs. Every panel renders
+  // visible in the markup (the no-JS baseline: all dates stacked, each under
+  // its own heading); this is the only thing that collapses them into tabs,
+  // by toggling `hidden` — no library, no page navigation.
+  function initRosterTabs(){
+    document.querySelectorAll('.anchor-roster-fe-tablist').forEach(function(tablist){
+      if(tablist.dataset.anchorRosterTabsBound){ return; }
+      tablist.dataset.anchorRosterTabsBound = '1';
+
+      var tabs = Array.prototype.slice.call(tablist.querySelectorAll('[role="tab"]'));
+      if(!tabs.length){ return; }
+
+      function activate(tab){
+        tabs.forEach(function(t){
+          var isActive = t === tab;
+          t.setAttribute('aria-selected', isActive ? 'true' : 'false');
+          t.classList.toggle('is-active', isActive);
+          t.tabIndex = isActive ? 0 : -1;
+          var panel = document.getElementById(t.getAttribute('aria-controls'));
+          if(panel){ panel.hidden = !isActive; }
+        });
+      }
+
+      tabs.forEach(function(tab){
+        tab.addEventListener('click', function(){ activate(tab); });
+      });
+
+      var initial = null;
+      for(var i = 0; i < tabs.length; i++){
+        if(tabs[i].getAttribute('aria-selected') === 'true'){ initial = tabs[i]; break; }
+      }
+      activate(initial || tabs[0]);
+    });
+  }
+
   ready(function(){
     initCalendars();
     initGalleries();
     initLightbox();
+    initRosterTabs();
   });
 
   // Lightbox

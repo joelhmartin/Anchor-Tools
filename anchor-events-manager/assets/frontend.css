@@ -1258,6 +1258,71 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 }
 
 /* -------------------------------------------------------------------------
+ * Group-parent roster tabs (Task 42 — one tab per child date). Baseline
+ * only: buttons + sections, no library. Progressive enhancement — every
+ * panel renders visible/stacked here; frontend.js hides all but the active
+ * one once it runs, so a no-JS reader still gets the full attendee list for
+ * every date, each under its own heading.
+ * ------------------------------------------------------------------------- */
+.anchor-roster-fe-tablist{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin:0 0 20px;
+  padding:0 0 4px;
+  border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
+}
+.anchor-roster-fe-tab{
+  font:inherit;
+  font-size:14px;
+  cursor:pointer;
+  background:none;
+  border:1px solid var(--anchor-event-border,#e2e4e8);
+  border-radius:8px 8px 0 0;
+  padding:8px 14px;
+  color:var(--anchor-event-muted,#6b7280);
+}
+.anchor-roster-fe-tab.is-active{
+  color:var(--anchor-event-text,#111827);
+  border-color:var(--anchor-event-accent,#0f766e);
+  border-bottom-color:transparent;
+  background:#fff;
+}
+.anchor-roster-fe-badge{
+  display:inline-block;
+  margin-left:6px;
+  padding:1px 7px;
+  border-radius:10px;
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+  color:#fff;
+  background:#646970;
+}
+.anchor-roster-fe-badge--cancelled{
+  background:#b32d2e;
+}
+.anchor-roster-fe-badge--closed{
+  background:#646970;
+}
+.anchor-roster-fe-badge--past{
+  background:#8a5a1e;
+}
+.anchor-roster-fe-panel-title{
+  margin:0 0 12px;
+}
+.anchor-roster-fe-panel + .anchor-roster-fe-panel{
+  margin-top:32px;
+  padding-top:32px;
+  border-top:1px solid var(--anchor-event-border,#e2e4e8);
+}
+.anchor-roster-fe-all-dates{
+  margin-top:24px;
+  padding-top:20px;
+  border-top:1px solid var(--anchor-event-border,#e2e4e8);
+}
+
+/* -------------------------------------------------------------------------
  * Manager form wizard ([event_manager steps="yes"]). Baseline only — a theme
  * can restyle every piece; without JS none of the is-wizard rules apply and the
  * form renders as one page.

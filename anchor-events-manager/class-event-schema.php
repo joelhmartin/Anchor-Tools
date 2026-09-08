@@ -765,11 +765,19 @@ class Event_Schema {
      * (`<p>…</p><p>…</p>`, `<br>`) used to collapse straight into
      * run-together text with no separating space at all — evidence event
      * 7531 rendered `"5290 E Arapahoe RdCentennial, CO
-     * 801228:00 AM – 4:00 PM8 CE Credits …"`. strip_shortcodes() removes
-     * the shortcode itself; turning `<br>` and every closing block tag into
-     * a single space BEFORE wp_strip_all_tags() runs keeps the words that
-     * markup used to separate from fusing together once the tags
-     * themselves are gone.
+     * 801228:00 AM – 4:00 PM8 CE Credits …"`. clean_html_text() removes the
+     * shortcode itself and turns `<br>`/closing block tags into a single
+     * space BEFORE any tag-stripping runs, so the words that markup used to
+     * separate don't fuse together once the tags themselves are gone.
+     *
+     * PR #23 review fix: the content fallback used to run
+     * `wp_strip_all_tags()` on the RAW post_content before this cleanup ever
+     * saw it, so `<p>First</p><p>Second</p>` had already collapsed to
+     * "FirstSecond" by the time the block-tag pass ran (it had nothing left
+     * to replace) and wp_trim_words() then counted the wrong text. Both the
+     * excerpt and the content fallback now go through the exact same
+     * clean_html_text() pipeline before either is used — one ordering for
+     * both sources.
      *
      * @param int $event_id
      * @return string
@@ -780,20 +788,33 @@ class Event_Schema {
             return '';
         }
 
-        $excerpt = (string) $post->post_excerpt;
-        if ( \trim( $excerpt ) === '' ) {
-            $excerpt = \wp_trim_words( \wp_strip_all_tags( (string) $post->post_content ), 55, '…' );
+        $excerpt = $this->clean_html_text( (string) $post->post_excerpt );
+        if ( $excerpt === '' ) {
+            $excerpt = \wp_trim_words( $this->clean_html_text( (string) $post->post_content ), 55, '…' );
         }
 
-        $excerpt = \strip_shortcodes( $excerpt );
-        $excerpt = \preg_replace(
+        return $excerpt;
+    }
+
+    /**
+     * strip_shortcodes() + `<br>`/closing-block-tag -> space + plain_text()
+     * + whitespace collapse, applied to a RAW HTML string (post_excerpt or
+     * post_content) before any of it is tag-stripped — see description()'s
+     * docblock for why the ordering matters.
+     *
+     * @param string $html
+     * @return string
+     */
+    private function clean_html_text( $html ) {
+        $html = \strip_shortcodes( (string) $html );
+        $html = \preg_replace(
             '#<br\s*/?>|</(?:p|li|h[1-6]|div|tr|td|blockquote)>#i',
             ' ',
-            $excerpt
+            $html
         );
-        $excerpt = $this->plain_text( $excerpt );
+        $html = $this->plain_text( $html );
 
-        return \trim( \preg_replace( '/\s+/', ' ', $excerpt ) );
+        return \trim( \preg_replace( '/\s+/', ' ', $html ) );
     }
 
     /**

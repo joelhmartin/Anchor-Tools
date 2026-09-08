@@ -631,6 +631,29 @@ class Test_Event_Schema extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * PR #23 review fix 1: the post_content fallback (no excerpt set) used
+	 * to be tag-stripped BEFORE the shortcode/block-separator pass ran, so
+	 * `<p>First</p><p>Second</p>` had already collapsed to "FirstSecond" —
+	 * nothing left for the block-tag pass to replace. Both the excerpt and
+	 * the content fallback now share the same clean_html_text() pipeline.
+	 */
+	public function test_description_from_content_keeps_space_between_paragraphs() {
+		$event_id = $this->make_event( [
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+		wp_update_post( [
+			'ID'           => $event_id,
+			'post_excerpt' => '',
+			'post_content' => '<p>First</p><p>Second</p>',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( 'First Second', $node['description'] );
+	}
+
+	/**
 	 * PR #23 review fix 2: the Place-name address fallback (item 2) bypassed
 	 * plain_text(), so an address part carrying an entity reached
 	 * `location.name` — and `location.address.*` — encoded. Every address

@@ -118,6 +118,14 @@
     else { document.addEventListener('DOMContentLoaded', fn); }
   }
 
+  // Task 42's group-parent roster tabs used to be collapsed/switched by a
+  // small initRosterTabs() here (toggling `hidden`, then a full APG
+  // roving-tabindex keydown handler once review found the keyboard trap that
+  // left). CodeRabbit review: every tab is now a real `<a href="...
+  // &occurrence=<child>">` — switching tabs is a full page load rendered
+  // server-side (Roster::render_frontend_group()), so there is nothing left
+  // for JS to do here; the no-JS and JS experiences are now the same thing.
+
   ready(function(){
     initCalendars();
     initGalleries();

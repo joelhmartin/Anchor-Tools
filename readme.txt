@@ -24,6 +24,17 @@ Usage:
 
 == Changelog ==
 
+= 3.28.0 (unreleased) =
+
+* Events Manager — the front-end attendee console for a multi-date event
+  (an offering/recurring group parent, including a draft/pending/private
+  date that still holds seats) is now tabbed one date per child, real links
+  switching between them; the active date's panel shows the same
+  summary/add-form/Registered-list a single event's roster has always shown,
+  every other tab a lighter summary+add-form view, so a parent with many
+  dates never renders more than one seat table per page load. A page-level
+  "All dates" export covers every date in one CSV with a leading Date column.
+
 = 3.27.0 =
 
 Events Manager — new event statuses:

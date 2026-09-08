@@ -9739,12 +9739,16 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * and the slicing branch is gone. Occurrences::child_title() still bakes
      * the label into the title — for display only.
      *
+     * Public since Task 42: Roster::render_frontend_group() labels each
+     * child's tab with exactly this string — the one source the brief calls
+     * for, rather than a second copy of the meta-then-date fallback.
+     *
      * @param int   $event_id
      * @param array $meta get_meta( $event_id ) — passed in to avoid a
-     *                     redundant lookup by the (only) caller.
+     *                     redundant lookup by the caller.
      * @return string
      */
-    private function occurrence_label( $event_id, array $meta ) {
+    public function occurrence_label( $event_id, array $meta ) {
         $meta_label = \get_post_meta( (int) $event_id, $this->meta_key( 'label' ), true );
         if ( \is_string( $meta_label ) && $meta_label !== '' ) {
             return $meta_label;

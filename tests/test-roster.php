@@ -1276,4 +1276,337 @@ class Test_Roster extends Anchor_Events_TestCase {
 		);
 		return $event_id;
 	}
+
+	/* -----------------------------------------------------------------
+	 * Task 42 — the console tabs a group parent's roster by child date.
+	 * --------------------------------------------------------------- */
+
+	/** @return \Anchor\Events\Occurrences */
+	private function occurrences() {
+		return $this->module()->occurrences;
+	}
+
+	/**
+	 * Create + reconcile a group-parent offering with the given dates. Same
+	 * builder shape as Test_Event_Grouping_Frontend::make_offering() — this
+	 * is the documented way to stand up a group parent + children in this
+	 * suite (task-42-brief.md).
+	 *
+	 * @param array $rows Offering-dates rows (date/start_time/end_time/label/capacity).
+	 * @param array $meta Additional parent meta overrides.
+	 * @return array{0:int,1:int[]} [ parent_id, live_child_ids (date-ascending) ]
+	 */
+	private function make_offering( array $rows, array $meta = [] ) {
+		$parent_id = $this->make_event( array_merge( [
+			'title'    => 'Workshop',
+			'venue'    => 'Main Hall',
+			'timezone' => 'UTC',
+		], $meta ) );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', $rows );
+		$live = $this->occurrences()->reconcile( $parent_id );
+		return [ $parent_id, $live ];
+	}
+
+	private function two_rows() {
+		return [
+			[ 'date' => '2027-05-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Session A', 'capacity' => 5 ],
+			[ 'date' => '2027-05-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Session B', 'capacity' => 5 ],
+		];
+	}
+
+	public function test_group_parent_roster_renders_a_tab_per_child_labelled_by_date() {
+		[ $parent_id ] = $this->make_offering( $this->two_rows() );
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		$this->assertStringContainsString( 'role="tablist"', $html );
+		$this->assertStringContainsString( 'role="tab"', $html );
+		$this->assertStringContainsString( 'role="tabpanel"', $html );
+		$this->assertStringContainsString( 'Session A', $html );
+		$this->assertStringContainsString( 'Session B', $html );
+	}
+
+	public function test_group_parent_roster_hides_the_parents_own_summary_and_add_form() {
+		[ $parent_id ] = $this->make_offering( $this->two_rows() );
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		// The container itself gets no add-attendee form and no summary:
+		// nothing can be added to it (Roster::handle_add()'s
+		// is_group_parent() refusal) and it never has seats of its own.
+		// Each CHILD does get an add form (asserted elsewhere) — assert the
+		// PARENT's own id specifically never appears as a form's event_id.
+		$this->assertStringNotContainsString( 'name="event_id" value="' . $parent_id . '"', $html );
+	}
+
+	public function test_group_parent_roster_each_panels_add_form_posts_to_its_own_child_with_its_own_nonce() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		$this->assertStringContainsString( 'name="event_id" value="' . $a . '"', $html );
+		$this->assertStringContainsString( 'name="event_id" value="' . $b . '"', $html );
+		$this->assertStringContainsString( wp_create_nonce( 'anchor_roster_add_' . $a ), $html );
+		$this->assertStringContainsString( wp_create_nonce( 'anchor_roster_add_' . $b ), $html );
+	}
+
+	/**
+	 * CodeRabbit review (Task 42) — the seat table (and, with it, the
+	 * per-event export links) is bounded to the ACTIVE occurrence only, not
+	 * rendered for every child on one page load. The active tab gets them;
+	 * deep-linking `?occurrence=` to a different child moves them there.
+	 */
+	public function test_only_the_active_panel_offers_its_own_per_event_export_links() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+
+		// A is active by default (first child, date order).
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'action=anchor_event_export', $html );
+		$this->assertStringContainsString( 'event_id=' . $a, $html );
+
+		// Deep-link to B — B is now the active panel and gets its own links.
+		$_GET['occurrence'] = (string) $b;
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'event_id=' . $b, $html );
+	}
+
+	/**
+	 * CodeRabbit review — rendering every child's full seat table
+	 * (query_seats() at per_page=500, once per child) on one page load does
+	 * not scale to a recurring parent with many occurrences. Only the ACTIVE
+	 * occurrence's Registered list actually lists its attendee; every other
+	 * tab's panel gets the lighter summary+add-form view with a "Show
+	 * attendees" link instead.
+	 */
+	public function test_only_the_active_panels_registered_list_shows_its_attendee() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+		$this->make_seat( $a, [ 'name' => 'Attendee A' ] );
+		$this->make_seat( $b, [ 'name' => 'Attendee B' ] );
+
+		// A is active by default.
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'Attendee A', $html );
+		$this->assertStringNotContainsString( 'Attendee B', $html );
+		$this->assertStringContainsString( 'Show attendees', $html );
+
+		// Deep-link to B — B's Registered list now shows, A's does not.
+		$_GET['occurrence'] = (string) $b;
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'Attendee B', $html );
+		$this->assertStringNotContainsString( 'Attendee A', $html );
+	}
+
+	/** CodeRabbit review — tabs are real links, not JS-only buttons. */
+	public function test_tabs_are_real_links_carrying_the_occurrence_arg() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		$this->assertStringContainsString( '<a role="tab"', $html );
+		// Submit buttons ("Add attendee", "Save seat") are legitimately
+		// <button> elements on this page — only role="tab" must never be
+		// one of them.
+		$this->assertDoesNotMatchRegularExpression( '/<button[^>]*role="tab"/', $html, 'Tabs must be real links (CodeRabbit review), not a JS-only button.' );
+		$this->assertStringContainsString( 'occurrence=' . $a, $html );
+		$this->assertStringContainsString( 'occurrence=' . $b, $html );
+	}
+
+	/** CodeRabbit review — `?occurrence=` alone (no JS) selects the tab. */
+	public function test_deep_link_occurrence_arg_selects_the_active_tab() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+
+		$_GET['occurrence'] = (string) $b;
+		$html               = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		$this->assertMatchesRegularExpression(
+			'/id="anchor-roster-tab-' . $b . '"[^>]*aria-selected="true"/',
+			$html,
+			'?occurrence=<b> must select B\'s tab.'
+		);
+		$this->assertMatchesRegularExpression(
+			'/id="anchor-roster-tab-' . $a . '"[^>]*aria-selected="false"/',
+			$html,
+			'A must no longer be selected once B is deep-linked.'
+		);
+	}
+
+	public function test_a_closed_child_still_gets_a_tab_marked_closed() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+		$this->make_seat( $a ); // seated, so dropping it below soft-closes rather than trashes.
+
+		// Drop A from the offering -> soft-close (Occurrences::is_closed()).
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', array_slice( $this->two_rows(), 1 ) );
+		$this->occurrences()->reconcile( $parent_id );
+		$this->assertTrue( $this->occurrences()->is_closed( $a ), 'Fixture check: A must actually be soft-closed.' );
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		// Still on the page (its seat exists) — children($parent,true) includes it.
+		$this->assertStringContainsString( 'Session A', $html );
+		$this->assertStringContainsString( 'anchor-roster-fe-badge--closed', $html );
+	}
+
+	public function test_single_event_roster_renders_no_tablist() {
+		$event_id = $this->make_event();
+
+		$html = $this->module()->roster->render_frontend( $event_id, home_url( '/console/' ) );
+
+		$this->assertStringNotContainsString( 'role="tablist"', $html );
+	}
+
+	public function test_multisession_series_roster_renders_no_tablist() {
+		$event_id = $this->make_event( [ 'type' => 'multisession' ] );
+
+		$html = $this->module()->roster->render_frontend( $event_id, home_url( '/console/' ) );
+
+		$this->assertSame( 'multisession', $this->module()->event_type( $event_id ) );
+		$this->assertStringNotContainsString( 'role="tablist"', $html );
+	}
+
+	public function test_redirect_after_add_on_a_group_child_returns_to_that_childs_tab() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ , $b ] = $live;
+
+		$_POST = [
+			'event_id'      => $b,
+			'roster_name'   => 'Jane Doe',
+			'roster_email'  => 'jane@example.org',
+			'roster_guests' => 0,
+			'roster_return' => rawurlencode( add_query_arg( [ 'event_action' => 'roster', 'event_id' => $parent_id, 'occurrence' => $b ], home_url( '/console/' ) ) ),
+			'_wpnonce'      => wp_create_nonce( 'anchor_roster_add_' . $b ),
+		];
+		$_REQUEST = $_POST;
+
+		try {
+			$this->module()->roster->handle_add();
+			$this->fail( 'handle_add() did not redirect.' );
+		} catch ( Anchor_Roster_Redirect_Signal $e ) {
+			$location = $e->getMessage();
+		}
+
+		$q = [];
+		parse_str( (string) wp_parse_url( html_entity_decode( $location ), PHP_URL_QUERY ), $q );
+
+		$this->assertSame( (string) $parent_id, (string) ( $q['event_id'] ?? '' ), 'The top-level page must stay the PARENT so the tabbed roster renders.' );
+		$this->assertSame( (string) $b, (string) ( $q['occurrence'] ?? '' ), 'The occurrence arg must name the child that was actually posted to.' );
+	}
+
+	/**
+	 * Codex round — redirect() used to remap a child action to the parent
+	 * UNCONDITIONALLY whenever $event_id was a group child, which bounced a
+	 * manager who opened the child's OWN Attendees page directly (a direct
+	 * link from the events list — no tabs, no `occurrence=`) over to the
+	 * parent's tabbed page the instant they acted on a seat.
+	 */
+	public function test_redirect_after_add_from_a_childs_own_attendees_page_stays_on_that_page() {
+		[ , $live ] = $this->make_offering( $this->two_rows() );
+		[ , $b ] = $live;
+
+		// The child's OWN single-event console URL — no `occurrence=`, and
+		// `event_id` names the CHILD, not the parent.
+		$child_own_url = add_query_arg( [ 'event_action' => 'roster', 'event_id' => $b ], home_url( '/console/' ) );
+
+		$_POST = [
+			'event_id'      => $b,
+			'roster_name'   => 'Jane Doe',
+			'roster_email'  => 'jane@example.org',
+			'roster_guests' => 0,
+			'roster_return' => rawurlencode( $child_own_url ),
+			'_wpnonce'      => wp_create_nonce( 'anchor_roster_add_' . $b ),
+		];
+		$_REQUEST = $_POST;
+
+		try {
+			$this->module()->roster->handle_add();
+			$this->fail( 'handle_add() did not redirect.' );
+		} catch ( Anchor_Roster_Redirect_Signal $e ) {
+			$location = $e->getMessage();
+		}
+
+		$q = [];
+		parse_str( (string) wp_parse_url( html_entity_decode( $location ), PHP_URL_QUERY ), $q );
+
+		$this->assertSame( (string) $b, (string) ( $q['event_id'] ?? '' ), 'A direct child-page action must stay on the CHILD page, not bounce to the parent tabs.' );
+		$this->assertArrayNotHasKey( 'occurrence', $q, 'The child\'s own page has no tabs, so no occurrence arg belongs on its return URL.' );
+	}
+
+	/**
+	 * Codex round — Occurrences::children($parent, true) is PUBLISH-only, so
+	 * a child an admin unpublished (draft/pending/private) but which still
+	 * holds a seat was invisible to both the tabs and the all-dates export.
+	 */
+	public function test_a_draft_child_with_a_seat_still_gets_a_tab_and_appears_in_the_all_dates_export() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+		$this->make_seat( $a, [ 'name' => 'Attendee A' ] );
+
+		wp_update_post( [ 'ID' => $a, 'post_status' => 'draft' ] );
+		$this->assertSame( 'draft', get_post_status( $a ), 'Fixture check: A must actually be a draft.' );
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'Session A', $html );
+		$this->assertStringContainsString( 'anchor-roster-fe-badge--draft', $html );
+
+		$method = new ReflectionMethod( $this->module()->roster, 'export_table_all_dates' );
+		$method->setAccessible( true );
+		$table = $method->invoke( $this->module()->roster, $parent_id, 'all' );
+
+		$this->assertCount( 1, $table['rows'] );
+		$this->assertSame( 'Session A', $table['rows'][0][0] );
+	}
+
+	/**
+	 * Codex round — every panel's add/edit form controls shared the same
+	 * bare ids (`roster_name`, `roster_field_*`, ...) across every child, so
+	 * a duplicate `id` meant a later tab's `<label for>` resolved back to
+	 * the FIRST panel's inputs.
+	 */
+	public function test_group_parent_roster_panels_have_no_duplicate_control_ids() {
+		[ $parent_id ] = $this->make_offering( $this->two_rows() );
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		preg_match_all( '/\sid="([^"]+)"/', $html, $m );
+		$this->assertNotEmpty( $m[1], 'Fixture check: the page must actually render elements with ids.' );
+
+		$counts = array_count_values( $m[1] );
+		$dupes  = array_keys( array_filter( $counts, function ( $c ) { return $c > 1; } ) );
+		$this->assertSame( [], $dupes, 'Duplicate id= attributes: ' . implode( ', ', $dupes ) );
+	}
+
+	public function test_all_dates_export_has_a_date_column_and_rows_from_both_children_in_date_order() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+		$this->make_seat( $a, [ 'name' => 'Attendee A' ] );
+		$this->make_seat( $b, [ 'name' => 'Attendee B' ] );
+
+		$method = new ReflectionMethod( $this->module()->roster, 'export_table_all_dates' );
+		$method->setAccessible( true );
+		$table = $method->invoke( $this->module()->roster, $parent_id, 'all' );
+
+		$this->assertSame( 'Date', $table['header'][0] );
+		$this->assertCount( 2, $table['rows'] );
+		$this->assertSame( 'Session A', $table['rows'][0][0] );
+		$this->assertSame( 'Session B', $table['rows'][1][0] );
+	}
+
+	public function test_all_dates_export_confirmed_only_scope_filters_out_other_statuses() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+		$this->make_seat( $a, [ 'name' => 'Confirmed A', 'status' => Registrations::STATUS_CONFIRMED ] );
+		$this->make_seat( $b, [ 'name' => 'Waitlisted B', 'status' => Registrations::STATUS_WAITLIST ] );
+
+		$method = new ReflectionMethod( $this->module()->roster, 'export_table_all_dates' );
+		$method->setAccessible( true );
+		$table = $method->invoke( $this->module()->roster, $parent_id, 'active' );
+
+		$this->assertCount( 1, $table['rows'] );
+		$this->assertSame( 'Session A', $table['rows'][0][0] );
+	}
 }

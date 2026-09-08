@@ -935,13 +935,29 @@ class Roster {
      *   invalid — the submission itself is unusable (no name, an unusable email,
      *             a required question left blank). Nothing to override.
      *
+     * Task 42 — $event_id here is whatever the acted-on FORM posted, which
+     * for a seat on a group child is the CHILD's id. When the action was
+     * taken from a TAB of the parent's console (the return URL already names
+     * the parent as `event_id`, or already carries `occurrence=`), the
+     * redirect is pinned to `event_id=<parent>&occurrence=<child>` — plain
+     * `event_id=<child>` would silently swap the tabbed parent page for the
+     * child's own single-event roster right after an action that was
+     * supposed to return to a tab of it. But when the action was taken from
+     * the CHILD's OWN Attendees page instead (e.g. a direct link from the
+     * events list — no tabs, no `occurrence=` in sight), the redirect stays
+     * on that child's own page: nothing about where the manager came from
+     * asked to be bounced to the parent (review finding — this used to remap
+     * unconditionally whenever $event_id was a group child, regardless of
+     * which page the action was actually taken from).
+     *
      * @param int    $event_id
      * @param string $type    'success' | 'error'.
      * @param string $message Human notice.
      * @param string $code    Machine refusal code, '' for success.
      */
     private function redirect( $event_id, $type, $message, $code = '' ) {
-        $args = [
+        $event_id = (int) $event_id;
+        $args     = [
             'roster_msg'  => \rawurlencode( $message ),
             'roster_type' => ( $type === 'error' ? 'error' : 'success' ),
         ];
@@ -959,17 +975,57 @@ class Roster {
             $return = (string) \wp_validate_redirect( $return, '' );
         }
 
+        // Task 42 — resolve the top-level page id (page_id) and, when the
+        // acted-on event is a group child, the tab to land on (occurrence).
+        //
+        // Review finding — this used to remap UNCONDITIONALLY whenever
+        // $event_id was a group child, which bounced a manager who opened a
+        // CHILD's own Attendees page directly (e.g. a direct link from the
+        // events list — render_frontend_single(), no tabs, `?event_id=
+        // <child>` and no `occurrence=`) over to the parent's tabbed page the
+        // instant they added/edited/cancelled a seat, even though nothing
+        // about where they came from asked for that. The remap is only
+        // correct when the return URL ITSELF already says "this was a tab of
+        // the parent" — it already names the parent as `event_id`, or it
+        // already carries an `occurrence=` tab param — never merely because
+        // the acted-on event happens to be a child.
+        $page_id    = $event_id;
+        $occurrence = 0;
+        if ( $return !== '' && $this->module->occurrences && $this->module->occurrences->is_group_child( $event_id ) ) {
+            $parent = $this->module->occurrences->parent_of( $event_id );
+            if ( $parent > 0 ) {
+                $return_args = [];
+                \wp_parse_str( (string) \wp_parse_url( $return, PHP_URL_QUERY ), $return_args );
+                $return_names_parent = ( isset( $return_args['event_id'] ) && (int) $return_args['event_id'] === $parent )
+                    || isset( $return_args['occurrence'] );
+                if ( $return_names_parent ) {
+                    $page_id    = $parent;
+                    $occurrence = $event_id;
+                }
+            }
+        }
+
         if ( $return !== '' ) {
             // Pin the view back to this event's roster. A return URL that lost its
             // event_id (or pointed at the console's list) would otherwise drop the
             // user on a roster with nothing selected right after they acted on one.
             $args = \array_merge( $args, [
                 'event_action' => 'roster',
-                'event_id'     => (int) $event_id,
+                'event_id'     => $page_id,
             ] );
-            $url = \add_query_arg( $args, \remove_query_arg( [ 'roster_msg', 'roster_type', 'roster_code', 'seat_id' ], $return ) );
+            $remove = [ 'roster_msg', 'roster_type', 'roster_code', 'seat_id' ];
+            if ( $occurrence > 0 ) {
+                $args['occurrence'] = $occurrence;
+            } else {
+                // A single-event action never carries a tab — drop a stale
+                // one rather than let it point at a page that has none.
+                $remove[] = 'occurrence';
+            }
+            $url = \add_query_arg( $args, \remove_query_arg( $remove, $return ) );
         } else {
-            $url = $this->roster_url( (int) $event_id, $args );
+            // The wp-admin roster screen has no tabs (out of scope for Task
+            // 42) — it always addresses the acted-on event directly.
+            $url = $this->roster_url( $event_id, $args );
         }
 
         // Kept from when roster_url() ended in wp_nonce_url(), which HTML-escapes
@@ -1034,16 +1090,31 @@ class Roster {
         }
         $scope = ( isset( $_GET['scope'] ) && \wp_unslash( $_GET['scope'] ) === 'active' ) ? 'active' : 'all';
 
-        $data       = $this->registrations->get_export_rows( $event_id, $scope );
-        $field_keys = $data['field_keys'];
+        // Task 42 — the page-level "All dates" export on a group parent's
+        // console. Same nonce -> capability -> is_exportable_event(parent)
+        // gate as every other export; `occurrences=all` only takes effect
+        // when the id it was validated against is actually a group parent,
+        // so the arg is inert (falls through to the ordinary single-event
+        // export below, exactly as it always has) on every other event.
+        $all_dates = isset( $_GET['occurrences'] ) && \wp_unslash( $_GET['occurrences'] ) === 'all';
+        if ( $all_dates && $this->module->occurrences && $this->module->occurrences->is_group_parent( $event_id ) ) {
+            $table = $this->export_table_all_dates( $event_id, $scope );
+            $this->stream_csv( 'event-roster-' . $event_id . '-all-dates-' . $scope . '-' . \gmdate( 'Ymd' ) . '.csv', $table );
+        }
 
-        \nocache_headers();
-        header( 'Content-Type: text/csv; charset=utf-8' );
-        header( 'Content-Disposition: attachment; filename="event-roster-' . $event_id . '-' . $scope . '-' . \gmdate( 'Ymd' ) . '.csv"' );
+        $table = $this->export_table( $event_id, $scope );
+        $this->stream_csv( 'event-roster-' . $event_id . '-' . $scope . '-' . \gmdate( 'Ymd' ) . '.csv', $table );
+    }
 
-        $out = fopen( 'php://output', 'w' );
-
-        $base_cols = [
+    /**
+     * The base (non-question) CSV columns, shared by a single event's export
+     * and the Task 42 all-dates export (which prepends its own leading Date
+     * column to this same list).
+     *
+     * @return string[]
+     */
+    private function export_columns() {
+        return [
             \__( 'Seat ID', 'anchor-schema' ),
             \__( 'Event', 'anchor-schema' ),
             \__( 'Attendee Name', 'anchor-schema' ),
@@ -1067,37 +1138,153 @@ class Roster {
             \__( 'Order Item ID', 'anchor-schema' ),
             \__( 'Seat Index', 'anchor-schema' ),
         ];
+    }
+
+    /**
+     * One get_export_rows() row, as the CSV cell array export_columns()
+     * describes plus one cell per key in $field_keys (in that order) — the
+     * one place a row becomes a CSV line, shared by export_table() and
+     * export_table_all_dates() so the two can never describe a row
+     * differently.
+     *
+     * @param int   $event_id   The event this row's tier id belongs to (a
+     *                          group child in the all-dates case).
+     * @param array $row        One row from Registrations::get_export_rows().
+     * @param array $field_keys Question keys, in header order.
+     * @return array
+     */
+    private function export_row_cells( $event_id, array $row, array $field_keys ) {
+        // Tier label: get_export_rows() rows don't carry the tier id, so resolve
+        // it from the seat meta (falls back to Primary for legacy seats).
+        $tier_label = $this->tier_label(
+            $event_id,
+            (string) \get_post_meta( (int) $row['seat_id'], '_anchor_event_ticket_type_id', true )
+        );
+
+        $cells = [
+            $row['seat_id'], $row['event'], $row['name'], $row['email'], $row['phone'],
+            $row['status'], $row['source'], $tier_label, $row['guests'], $row['party_size'], $row['reg_date'],
+            $row['order_number'], $row['order_id'], $row['order_status'], $row['order_date'],
+            $row['customer_id'], $row['customer_email'], $row['product'], $row['product_id'],
+            $row['variation_id'], $row['order_item_id'], $row['seat_index'],
+        ];
+        foreach ( $field_keys as $k ) {
+            $cells[] = isset( $row['fields'][ $k ] ) ? $row['fields'][ $k ] : '';
+        }
+        return $cells;
+    }
+
+    /**
+     * Header + data rows for one event's CSV export (spec §10.4).
+     *
+     * @param int    $event_id
+     * @param string $scope 'all' | 'active'.
+     * @return array{header:string[],rows:array<int,array>}
+     */
+    private function export_table( $event_id, $scope ) {
+        $event_id = (int) $event_id;
+        $data     = $this->registrations->get_export_rows( $event_id, $scope );
+
         // The answer columns are keyed by question id; the heading is resolved
         // from the event's current questions, falling back to the stored key for
         // a question that has since been deleted (REG-D10).
         $question_headings = [];
-        foreach ( $field_keys as $k ) {
+        foreach ( $data['field_keys'] as $k ) {
             $question_headings[] = $this->question_label( $event_id, $k );
         }
-        $header = \array_merge( $base_cols, $question_headings );
-        fputcsv( $out, \array_map( [ $this, 'csv_safe' ], $header ) );
 
+        $rows = [];
         foreach ( $data['rows'] as $row ) {
-            // Tier label: get_export_rows() rows don't carry the tier id, so resolve
-            // it from the seat meta (falls back to Primary for legacy seats).
-            $tier_label = $this->tier_label(
-                $event_id,
-                (string) \get_post_meta( (int) $row['seat_id'], '_anchor_event_ticket_type_id', true )
-            );
-
-            $cells = [
-                $row['seat_id'], $row['event'], $row['name'], $row['email'], $row['phone'],
-                $row['status'], $row['source'], $tier_label, $row['guests'], $row['party_size'], $row['reg_date'],
-                $row['order_number'], $row['order_id'], $row['order_status'], $row['order_date'],
-                $row['customer_id'], $row['customer_email'], $row['product'], $row['product_id'],
-                $row['variation_id'], $row['order_item_id'], $row['seat_index'],
-            ];
-            foreach ( $field_keys as $k ) {
-                $cells[] = isset( $row['fields'][ $k ] ) ? $row['fields'][ $k ] : '';
-            }
-            fputcsv( $out, \array_map( [ $this, 'csv_safe' ], $cells ) );
+            $rows[] = $this->export_row_cells( $event_id, $row, $data['field_keys'] );
         }
 
+        return [
+            'header' => \array_merge( $this->export_columns(), $question_headings ),
+            'rows'   => $rows,
+        ];
+    }
+
+    /**
+     * Header + data rows for the "All dates" export on a group parent
+     * (Task 42): one leading Date column carrying each child's own
+     * occurrence label, the base columns unchanged, question columns
+     * unioned across every child (the FIRST child a key is seen on resolves
+     * its heading label — an authoring gap, not a correctness one, since a
+     * deleted-question fallback already exists per-child), rows grouped by
+     * child in date order (Occurrences::children($parent, true) — closed/
+     * cancelled children included, their seats still exist) and, within a
+     * child, in get_export_rows()'s own order.
+     *
+     * One get_export_rows() call per child, one row-cell builder
+     * (export_row_cells()) — never a second export implementation.
+     *
+     * Task 42 review — children_any_status(), not children($parent, true):
+     * the latter is publish-only, so a child an admin unpublished
+     * (draft/pending/private) but which still holds seats would silently
+     * vanish from this export.
+     *
+     * @param int    $parent_id
+     * @param string $scope 'all' | 'active'.
+     * @return array{header:string[],rows:array<int,array>}
+     */
+    private function export_table_all_dates( $parent_id, $scope ) {
+        $parent_id = (int) $parent_id;
+        $children  = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
+
+        $field_owner = []; // question key => the child id whose label resolves the heading.
+        $per_child   = [];
+        foreach ( $children as $child_id ) {
+            $child_id                = (int) $child_id;
+            $data                    = $this->registrations->get_export_rows( $child_id, $scope );
+            $per_child[ $child_id ]  = $data;
+            foreach ( $data['field_keys'] as $k ) {
+                if ( ! isset( $field_owner[ $k ] ) ) {
+                    $field_owner[ $k ] = $child_id;
+                }
+            }
+        }
+
+        $field_keys        = \array_keys( $field_owner );
+        $question_headings = [];
+        foreach ( $field_keys as $k ) {
+            $question_headings[] = $this->question_label( $field_owner[ $k ], $k );
+        }
+        $header = \array_merge( [ \__( 'Date', 'anchor-schema' ) ], $this->export_columns(), $question_headings );
+
+        $rows = [];
+        foreach ( $children as $child_id ) {
+            $child_id = (int) $child_id;
+            $label    = $this->module->occurrence_label( $child_id, $this->module->get_meta( $child_id ) );
+            foreach ( $per_child[ $child_id ]['rows'] as $row ) {
+                $cells = $this->export_row_cells( $child_id, $row, $field_keys );
+                \array_unshift( $cells, $label );
+                $rows[] = $cells;
+            }
+        }
+
+        return [ 'header' => $header, 'rows' => $rows ];
+    }
+
+    /**
+     * The one CSV writer (spec §10.4 / Task 42): headers, formula-injection
+     * hardened cells (csv_safe()), then exit. Both export_table() and
+     * export_table_all_dates() build the same {header,rows} shape and hand
+     * it here — this is the only place that opens `php://output`.
+     *
+     * @param string $filename
+     * @param array{header:string[],rows:array<int,array>} $table
+     * @return void Exits.
+     */
+    private function stream_csv( $filename, array $table ) {
+        \nocache_headers();
+        header( 'Content-Type: text/csv; charset=utf-8' );
+        header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+
+        $out = fopen( 'php://output', 'w' );
+        fputcsv( $out, \array_map( [ $this, 'csv_safe' ], $table['header'] ) );
+        foreach ( $table['rows'] as $cells ) {
+            fputcsv( $out, \array_map( [ $this, 'csv_safe' ], $cells ) );
+        }
         fclose( $out );
         exit;
     }
@@ -1271,6 +1458,14 @@ class Roster {
      * export reuses anchor_event_export. Only the markup differs — WP_List_Table
      * is an admin-only class, so the seat table is rendered directly here.
      *
+     * Task 42 — a group parent (offering/recurring) is a container: it has no
+     * seats of its own and Roster::handle_add() already refuses to add one to
+     * it, so its console page is not "one roster" but a tab per child date,
+     * dispatched to render_frontend_group() below. Everything else (a single
+     * event, a multisession series — one registration covers every session,
+     * so one roster — or a group CHILD visited directly) is is_group_parent()
+     * = false and keeps exactly today's single-roster page.
+     *
      * @param int    $event_id
      * @param string $return_url Front-end page to come back to after an action.
      * @return string
@@ -1284,10 +1479,373 @@ class Roster {
             return '<p>' . \esc_html__( 'Event not found.', 'anchor-schema' ) . '</p>';
         }
 
+        if ( $this->module->occurrences && $this->module->occurrences->is_group_parent( $event_id ) ) {
+            return $this->render_frontend_group( $event_id, $return_url );
+        }
+
+        return $this->render_frontend_single( $event_id, $return_url );
+    }
+
+    /**
+     * The console page for one bookable event id — a single event, a
+     * multisession series, or a group child visited directly. This is the
+     * exact markup render_frontend() always produced; kept as its own method
+     * (Task 42) so it wraps render_roster_panel() the same way
+     * render_frontend_group() wraps one per child, instead of the page-level
+     * chrome (title/back-link/notice) being duplicated between the two.
+     *
+     * @param int    $event_id
+     * @param string $return_url
+     * @return string
+     */
+    private function render_frontend_single( $event_id, $return_url ) {
+        $event_id   = (int) $event_id;
         $return_url = $return_url ?: \home_url();
-        $list_url   = \remove_query_arg( [ 'event_action', 'event_id', 'seat_id', 'roster_msg', 'roster_type' ], $return_url );
+        $list_url   = \remove_query_arg( [ 'event_action', 'event_id', 'seat_id', 'roster_msg', 'roster_type', 'occurrence' ], $return_url );
         $self_url   = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $event_id ], $list_url );
+
+        \ob_start();
+        ?>
+        <div class="anchor-roster-fe">
+
+            <div class="anchor-event-manager-toolbar">
+                <h2><?php echo \esc_html( \get_the_title( $event_id ) ); ?> — <?php \esc_html_e( 'Attendees', 'anchor-schema' ); ?></h2>
+                <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $list_url ); ?>"><?php \esc_html_e( 'Back to list', 'anchor-schema' ); ?></a>
+            </div>
+
+            <?php echo $this->frontend_notice(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+
+            <?php echo $this->render_roster_panel( $event_id, $self_url, true ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * The tabbed console page for a group PARENT (Task 42): one tab per
+     * child occurrence — INCLUDING one an admin unpublished (draft/pending/
+     * private) or soft-closed, since its seats still exist and still need
+     * managing (Occurrences::children_any_status(); see that method's
+     * docblock — children($parent, true) is publish-only and review found a
+     * draft/pending/private child with seats silently invisible here), plus
+     * a page-level "All dates" export.
+     *
+     * Every tab is a real `<a href="...&occurrence=<child>">` (CodeRabbit
+     * review) — switching tabs is a full page load, which is what keeps the
+     * URL always naming the selected date and needs no JS at all. Only the
+     * ACTIVE occurrence gets the full roster panel (render_roster_panel() —
+     * same summary, same add/edit form posting to the CHILD id, same
+     * Registered list, same per-event export links, a single event's
+     * console has always shown); every other tab gets the light
+     * render_roster_panel_summary() instead, so a recurring parent with
+     * upwards of a hundred children never renders more than one seat table
+     * per page load.
+     *
+     * The parent itself never gets an add-form or a summary: it has no seats
+     * of its own (Roster::handle_add()'s is_group_parent() refusal), so
+     * there is nothing to show for the container beyond the title and the
+     * tabs.
+     *
+     * @param int    $parent_id
+     * @param string $return_url
+     * @return string
+     */
+    private function render_frontend_group( $parent_id, $return_url ) {
+        $parent_id  = (int) $parent_id;
+        $return_url = $return_url ?: \home_url();
+        $list_url   = \remove_query_arg( [ 'event_action', 'event_id', 'seat_id', 'roster_msg', 'roster_type', 'occurrence' ], $return_url );
+        $page_url   = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $parent_id ], $list_url );
+
+        $children = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
+
+        // ?seat_id= is a single global query var; scope its "not found"
+        // notice to the page level (once) rather than to every panel — every
+        // OTHER child would otherwise also claim the seat is missing, since
+        // it does not belong to them either (REG-D48 still decides ownership
+        // per child inside render_roster_panel(), this only decides who gets
+        // to print the warning).
         $seat_id    = isset( $_GET['seat_id'] ) ? (int) \wp_unslash( $_GET['seat_id'] ) : 0;
+        $seat_owner = 0;
+        if ( $seat_id > 0 ) {
+            foreach ( $children as $cid ) {
+                if ( self::seat_belongs_to_event( $seat_id, $cid ) ) {
+                    $seat_owner = (int) $cid;
+                    break;
+                }
+            }
+        }
+
+        $requested = isset( $_GET['occurrence'] ) ? (int) \wp_unslash( $_GET['occurrence'] ) : 0;
+        if ( $seat_owner > 0 ) {
+            // The seat's own tab always wins, so the edit form it opened is
+            // the one a reader actually sees.
+            $active = $seat_owner;
+        } elseif ( \in_array( $requested, $children, true ) ) {
+            $active = $requested;
+        } else {
+            $active = isset( $children[0] ) ? (int) $children[0] : 0;
+        }
+
+        \ob_start();
+        ?>
+        <div class="anchor-roster-fe anchor-roster-fe-group">
+
+            <div class="anchor-event-manager-toolbar">
+                <h2><?php echo \esc_html( \get_the_title( $parent_id ) ); ?> — <?php \esc_html_e( 'Attendees', 'anchor-schema' ); ?></h2>
+                <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $list_url ); ?>"><?php \esc_html_e( 'Back to list', 'anchor-schema' ); ?></a>
+            </div>
+
+            <?php echo $this->frontend_notice(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+
+            <?php if ( $seat_id > 0 && 0 === $seat_owner ) : ?>
+                <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'Seat not found.', 'anchor-schema' ); ?></p>
+            <?php endif; ?>
+
+            <?php if ( empty( $children ) ) : ?>
+                <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'No dates currently scheduled.', 'anchor-schema' ); ?></p>
+            <?php else : ?>
+                <div class="anchor-roster-fe-tabs">
+                    <div class="anchor-roster-fe-tablist" role="tablist">
+                        <?php foreach ( $children as $child_id ) :
+                            $child_id  = (int) $child_id;
+                            $is_active = $child_id === $active;
+                            $label     = $this->module->occurrence_label( $child_id, $this->module->get_meta( $child_id ) );
+                            $badge     = $this->child_badge( $child_id );
+                            $tab_id    = 'anchor-roster-tab-' . $child_id;
+                            $panel_id  = 'anchor-roster-panel-' . $child_id;
+                            // CodeRabbit review — a real link, not a JS-only
+                            // button: switching tabs is a full page load that
+                            // re-renders with `?occurrence=<child>`, which is
+                            // also what keeps the URL always naming the
+                            // selected date, with or without JS.
+                            $tab_url   = \add_query_arg( 'occurrence', $child_id, $page_url );
+                        ?>
+                            <a role="tab"
+                                id="<?php echo \esc_attr( $tab_id ); ?>"
+                                href="<?php echo \esc_url( $tab_url ); ?>"
+                                aria-controls="<?php echo \esc_attr( $panel_id ); ?>"
+                                aria-selected="<?php echo $is_active ? 'true' : 'false'; ?>"
+                                class="anchor-roster-fe-tab<?php echo $is_active ? ' is-active' : ''; ?>"
+                            ><?php echo \esc_html( $label ); ?><?php if ( '' !== $badge ) : ?> <span class="anchor-roster-fe-badge anchor-roster-fe-badge--<?php echo \esc_attr( $badge ); ?>"><?php echo \esc_html( $this->child_badge_label( $badge ) ); ?></span><?php endif; ?></a>
+                        <?php endforeach; ?>
+                    </div>
+
+                    <?php foreach ( $children as $child_id ) :
+                        $child_id       = (int) $child_id;
+                        $is_active      = $child_id === $active;
+                        $label          = $this->module->occurrence_label( $child_id, $this->module->get_meta( $child_id ) );
+                        $tab_id         = 'anchor-roster-tab-' . $child_id;
+                        $panel_id       = 'anchor-roster-panel-' . $child_id;
+                        // Each panel's own self_url carries `occurrence=` so
+                        // the add/edit/cancel actions posted from it return
+                        // to THIS tab (Roster::redirect() reads it back via
+                        // Occurrences::parent_of()).
+                        $child_self_url = \add_query_arg( 'occurrence', $child_id, $page_url );
+                    ?>
+                        <section id="<?php echo \esc_attr( $panel_id ); ?>" role="tabpanel" aria-labelledby="<?php echo \esc_attr( $tab_id ); ?>" class="anchor-roster-fe-panel">
+                            <h3 class="anchor-roster-fe-panel-title"><?php echo \esc_html( $label ); ?></h3>
+                            <?php // CodeRabbit review — the seat table (query_seats() at
+                            // per_page=500) is bounded to the ACTIVE occurrence only; a
+                            // recurring parent can have upwards of a hundred children, and
+                            // rendering all of their seat tables on one page load does not
+                            // scale. Every other panel gets the light summary+add-form view. ?>
+                            <?php if ( $is_active ) : ?>
+                                <?php echo $this->render_roster_panel( $child_id, $child_self_url, false ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+                            <?php else : ?>
+                                <?php echo $this->render_roster_panel_summary( $child_id, $child_self_url ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+                            <?php endif; ?>
+                        </section>
+                    <?php endforeach; ?>
+                </div>
+
+                <div class="anchor-event-section anchor-roster-fe-all-dates">
+                    <h3><?php \esc_html_e( 'All dates', 'anchor-schema' ); ?></h3>
+                    <p class="anchor-roster-fe-tools">
+                        <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'all' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV — all dates (all statuses)', 'anchor-schema' ); ?></a>
+                        <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'active' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV — all dates (confirmed only)', 'anchor-schema' ); ?></a>
+                    </p>
+                </div>
+            <?php endif; ?>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * Badge for a group child's tab: 'draft' | 'pending' | 'private' |
+     * 'closed' | 'cancelled' | 'past' | ''.
+     *
+     * The post_status check runs FIRST (Task 42 review — since
+     * render_frontend_group() now reaches every child via
+     * children_any_status(), one of these tabs can be an unpublished child):
+     * whether the post is even public is the more fundamental fact, and an
+     * unpublished child can otherwise ALSO read as any of the states below
+     * (a draft child is never `is_past()`-excluded, for instance) — the
+     * operator needs to know it's a draft/pending/private post before
+     * anything about its date.
+     *
+     * is_closed() has to be checked BEFORE the status: Occurrences::soft_close()
+     * (dropping a date from the parent's offering) reuses the plain
+     * `cancelled` status vocabulary — status_mode=manual, status=cancelled —
+     * plus its own `occurrence_closed` flag, so every soft-closed child
+     * already reads get_event_status() === 'cancelled' too. Checking status
+     * first would report EVERY soft-closed date as merely "cancelled" and
+     * the 'closed' badge would never fire for the case the brief actually
+     * asks for. is_closed() is the engine's own, more specific signal for
+     * "this date was pulled from the offering" and wins; a plain 'cancelled'
+     * is left for a child individually marked cancelled by its own author
+     * (still on offer, never soft-closed).
+     *
+     * @param int $child_id
+     * @return string
+     */
+    private function child_badge( $child_id ) {
+        $post_status = (string) \get_post_status( $child_id );
+        if ( \in_array( $post_status, [ 'draft', 'pending', 'private' ], true ) ) {
+            return $post_status;
+        }
+        if ( $this->module->occurrences && $this->module->occurrences->is_closed( $child_id ) ) {
+            return 'closed';
+        }
+        if ( $this->module->get_event_status( $child_id ) === 'cancelled' ) {
+            return 'cancelled';
+        }
+        if ( $this->module->occurrences && $this->module->occurrences->is_past( $child_id ) ) {
+            return 'past';
+        }
+        return '';
+    }
+
+    /** Human label for child_badge()'s machine value. */
+    private function child_badge_label( $badge ) {
+        switch ( $badge ) {
+            case 'draft':
+                return \__( 'Draft', 'anchor-schema' );
+            case 'pending':
+                return \__( 'Pending', 'anchor-schema' );
+            case 'private':
+                return \__( 'Private', 'anchor-schema' );
+            case 'cancelled':
+                return \__( 'Cancelled', 'anchor-schema' );
+            case 'closed':
+                return \__( 'Closed', 'anchor-schema' );
+            case 'past':
+                return \__( 'Past', 'anchor-schema' );
+            default:
+                return '';
+        }
+    }
+
+    /**
+     * The summary cards (confirmed/pending/waitlist/cancelled/capacity/seats
+     * left) plus the overbooked warning — the one piece render_roster_panel()
+     * (the ACTIVE panel) and render_roster_panel_summary() (every INACTIVE
+     * panel on a group parent's console) both need, so a summary line can
+     * never read differently depending on which of the two renders it.
+     *
+     * @param array $summary Registrations::get_event_summary() result.
+     * @return string
+     */
+    private function render_summary_cards( array $summary ) {
+        \ob_start();
+        ?>
+        <ul class="anchor-roster-fe-summary">
+            <li><span><?php echo (int) $summary['confirmed']; ?></span><?php \esc_html_e( 'Confirmed', 'anchor-schema' ); ?></li>
+            <li><span><?php echo (int) $summary['pending']; ?></span><?php \esc_html_e( 'Pending', 'anchor-schema' ); ?></li>
+            <li><span><?php echo (int) $summary['waitlist']; ?></span><?php \esc_html_e( 'Waitlist', 'anchor-schema' ); ?></li>
+            <li><span><?php echo (int) $summary['cancelled']; ?></span><?php \esc_html_e( 'Cancelled', 'anchor-schema' ); ?></li>
+            <li><span><?php echo $summary['capacity'] > 0 ? (int) $summary['capacity'] : '&infin;'; ?></span><?php \esc_html_e( 'Capacity', 'anchor-schema' ); ?></li>
+            <li><span><?php echo $summary['remaining'] < 0 ? '&infin;' : (int) $summary['remaining']; ?></span><?php \esc_html_e( 'Seats left', 'anchor-schema' ); ?></li>
+        </ul>
+
+        <?php if ( ! empty( $summary['is_overbooked'] ) ) : ?>
+            <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'This event is overbooked — reserved seats exceed capacity.', 'anchor-schema' ); ?></p>
+        <?php endif; ?>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * The lightweight panel for a NON-active tab on a group parent's console
+     * (CodeRabbit review, Task 42): summary cards + the add-attendee form —
+     * so a seat can be added to any date without switching tabs first, its
+     * `roster_return` already carrying THIS child's own `occurrence=`, so
+     * the redirect lands back on this exact tab (now active, and now showing
+     * the seat just added via the full panel below) — plus a "Show
+     * attendees" link to this child's own occurrence URL.
+     *
+     * Rendering every child's full seat table on one page load
+     * (query_seats() at per_page=500, once per child, inside
+     * render_roster_panel()) does not scale to a recurring parent with
+     * upwards of a hundred occurrences. This is what keeps that bounded to
+     * the ONE occurrence actually being viewed — every other tab gets this
+     * instead, which costs one get_event_summary() call and nothing else.
+     *
+     * No seat-editing here: an edit link only ever exists on the seat table
+     * of the panel that is ALREADY active (render_frontend_group() forces a
+     * seat's own child to be $active whenever `?seat_id=` names one of its
+     * seats), so a non-active panel never needs to resolve `?seat_id=` at
+     * all.
+     *
+     * @param int    $event_id
+     * @param string $self_url This child's own console URL (carries
+     *                         `&occurrence=<id>`) — the add form's
+     *                         `roster_return` and the "Show attendees" link.
+     * @return string
+     */
+    private function render_roster_panel_summary( $event_id, $self_url ) {
+        $event_id = (int) $event_id;
+        $summary  = $this->registrations->get_event_summary( $event_id );
+
+        \ob_start();
+        ?>
+        <?php echo $this->render_summary_cards( $summary ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+
+        <?php echo $this->frontend_add_form( $event_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+
+        <p class="anchor-roster-fe-tools">
+            <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $self_url ); ?>"><?php \esc_html_e( 'Show attendees', 'anchor-schema' ); ?></a>
+        </p>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * The full attendee panel for ONE bookable event id: summary, the
+     * edit-or-add form, the Registered list, and the export tools.
+     *
+     * Task 42 — this is the exact body render_frontend() used to render
+     * inline for a single event. Pulled out so render_frontend_group() can
+     * render one per group child (the ACTIVE tab panel — see
+     * render_roster_panel_summary() for every other tab, added on
+     * CodeRabbit review to keep the seat table bounded to one occurrence)
+     * without a second copy of the summary/form/list markup — the review
+     * note on this task is explicit that a second copy is a rejection, not
+     * a nitpick.
+     *
+     * @param int    $event_id
+     * @param string $self_url                 This event's own console URL —
+     *                                          used as the add/edit forms'
+     *                                          `roster_return` and as the
+     *                                          edit-seat/cancel link base.
+     *                                          For a group child this already
+     *                                          carries `&occurrence=<id>`.
+     * @param bool   $announce_missing_seat     Whether to print "Seat not
+     *                                          found." here when `?seat_id=`
+     *                                          does not belong to this event.
+     *                                          True for the single-event page
+     *                                          (unchanged behaviour); false
+     *                                          from render_frontend_group(),
+     *                                          which prints that notice once
+     *                                          at the page level instead —
+     *                                          otherwise every non-owning
+     *                                          tab would also claim the seat
+     *                                          is missing.
+     * @return string
+     */
+    private function render_roster_panel( $event_id, $self_url, $announce_missing_seat = true ) {
+        $event_id = (int) $event_id;
+        $seat_id  = isset( $_GET['seat_id'] ) ? (int) \wp_unslash( $_GET['seat_id'] ) : 0;
 
         $questions = $this->module_questions( $event_id );
         $summary   = $this->registrations->get_event_summary( $event_id );
@@ -1301,111 +1859,125 @@ class Roster {
 
         \ob_start();
         ?>
-        <div class="anchor-roster-fe">
+        <?php echo $this->render_summary_cards( $summary ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
 
-            <div class="anchor-event-manager-toolbar">
-                <h2><?php echo \esc_html( \get_the_title( $event_id ) ); ?> — <?php \esc_html_e( 'Attendees', 'anchor-schema' ); ?></h2>
-                <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $list_url ); ?>"><?php \esc_html_e( 'Back to list', 'anchor-schema' ); ?></a>
-            </div>
-
-            <?php echo $this->frontend_notice(); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
-
-            <ul class="anchor-roster-fe-summary">
-                <li><span><?php echo (int) $summary['confirmed']; ?></span><?php \esc_html_e( 'Confirmed', 'anchor-schema' ); ?></li>
-                <li><span><?php echo (int) $summary['pending']; ?></span><?php \esc_html_e( 'Pending', 'anchor-schema' ); ?></li>
-                <li><span><?php echo (int) $summary['waitlist']; ?></span><?php \esc_html_e( 'Waitlist', 'anchor-schema' ); ?></li>
-                <li><span><?php echo (int) $summary['cancelled']; ?></span><?php \esc_html_e( 'Cancelled', 'anchor-schema' ); ?></li>
-                <li><span><?php echo $summary['capacity'] > 0 ? (int) $summary['capacity'] : '&infin;'; ?></span><?php \esc_html_e( 'Capacity', 'anchor-schema' ); ?></li>
-                <li><span><?php echo $summary['remaining'] < 0 ? '&infin;' : (int) $summary['remaining']; ?></span><?php \esc_html_e( 'Seats left', 'anchor-schema' ); ?></li>
-            </ul>
-
-            <?php if ( ! empty( $summary['is_overbooked'] ) ) : ?>
-                <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'This event is overbooked — reserved seats exceed capacity.', 'anchor-schema' ); ?></p>
+        <?php // REG-D48 — ?seat_id= only opens a seat that belongs to THIS event. ?>
+        <?php if ( $seat_id > 0 && self::seat_belongs_to_event( $seat_id, $event_id ) ) : ?>
+            <?php echo $this->frontend_edit_form( $event_id, $seat_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+        <?php else : ?>
+            <?php if ( $seat_id > 0 && $announce_missing_seat ) : ?>
+                <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'Seat not found.', 'anchor-schema' ); ?></p>
             <?php endif; ?>
+            <?php echo $this->frontend_add_form( $event_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+        <?php endif; ?>
 
-            <?php // REG-D48 — ?seat_id= only opens a seat that belongs to THIS event. ?>
-            <?php if ( $seat_id > 0 && self::seat_belongs_to_event( $seat_id, $event_id ) ) : ?>
-                <?php echo $this->frontend_edit_form( $event_id, $seat_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+        <div class="anchor-event-section">
+            <h3><?php \esc_html_e( 'Registered', 'anchor-schema' ); ?></h3>
+            <?php if ( empty( $seats['items'] ) ) : ?>
+                <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'Nobody is registered yet.', 'anchor-schema' ); ?></p>
             <?php else : ?>
-                <?php if ( $seat_id > 0 ) : ?>
-                    <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'Seat not found.', 'anchor-schema' ); ?></p>
-                <?php endif; ?>
-                <?php echo $this->frontend_add_form( $event_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+            <div class="anchor-roster-fe-tablewrap">
+                <table class="anchor-roster-fe-table">
+                    <thead>
+                        <tr>
+                            <th scope="col"><?php \esc_html_e( 'Attendee', 'anchor-schema' ); ?></th>
+                            <th scope="col"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></th>
+                            <th scope="col"><?php \esc_html_e( 'Ticket', 'anchor-schema' ); ?></th>
+                            <th scope="col"><?php \esc_html_e( 'Party', 'anchor-schema' ); ?></th>
+                            <?php foreach ( $questions as $q ) : ?>
+                                <th scope="col"><?php echo \esc_html( $q['label'] ); ?></th>
+                            <?php endforeach; ?>
+                            <th scope="col"><?php \esc_html_e( 'Source', 'anchor-schema' ); ?></th>
+                            <th scope="col"><?php \esc_html_e( 'Added', 'anchor-schema' ); ?></th>
+                            <th scope="col"><?php \esc_html_e( 'Actions', 'anchor-schema' ); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ( $seats['items'] as $seat ) :
+                        $edit_link   = \add_query_arg( 'seat_id', (int) $seat['id'], $self_url );
+                        $cancel_link = \add_query_arg( 'roster_return', \rawurlencode( $self_url ), $this->cancel_url( $event_id, $seat['id'] ) );
+                        $is_cancelled = \in_array( $seat['status'], [ Registrations::STATUS_CANCELLED, Registrations::STATUS_REFUNDED, Registrations::STATUS_FAILED ], true );
+                    ?>
+                        <tr>
+                            <td>
+                                <strong><?php echo \esc_html( $seat['name'] ); ?></strong>
+                                <?php if ( $seat['email'] !== '' ) : ?>
+                                    <span class="anchor-roster-fe-sub"><a href="mailto:<?php echo \esc_attr( $seat['email'] ); ?>"><?php echo \esc_html( $seat['email'] ); ?></a></span>
+                                <?php endif; ?>
+                                <?php if ( $seat['phone'] !== '' ) : ?>
+                                    <span class="anchor-roster-fe-sub"><?php echo \esc_html( $seat['phone'] ); ?></span>
+                                <?php endif; ?>
+                            </td>
+                            <td><span class="anchor-roster-fe-pill" style="background:<?php echo \esc_attr( $this->status_color( $seat['status'] ) ); ?>"><?php echo \esc_html( $this->status_label( $seat['status'] ) ); ?></span></td>
+                            <td><?php echo \esc_html( $this->tier_label( $event_id, $seat['ticket_type_id'] ) ); ?></td>
+                            <td><?php echo (int) ( 1 + (int) $seat['guests'] ); ?></td>
+                            <?php $answers = isset( $seat['reg_fields'] ) && \is_array( $seat['reg_fields'] ) ? $seat['reg_fields'] : []; ?>
+                            <?php foreach ( $questions as $q ) : ?>
+                                <td><?php echo \esc_html( (string) ( $answers[ $q['key'] ] ?? '' ) ); ?></td>
+                            <?php endforeach; ?>
+                            <td>
+                                <?php echo \esc_html( $seat['source'] ); ?>
+                                <?php if ( (int) $seat['order_id'] > 0 ) :
+                                    $olink = $this->order_link( (int) $seat['order_id'] ); ?>
+                                    <span class="anchor-roster-fe-sub"><?php if ( $olink ) : ?><a href="<?php echo \esc_url( $olink ); ?>">#<?php echo (int) $seat['order_id']; ?></a><?php else : ?>#<?php echo (int) $seat['order_id']; ?><?php endif; ?></span>
+                                <?php endif; ?>
+                            </td>
+                            <td><?php echo \esc_html( $seat['date'] ); ?></td>
+                            <td class="anchor-roster-fe-actions">
+                                <a href="<?php echo \esc_url( $edit_link ); ?>"><?php \esc_html_e( 'Edit', 'anchor-schema' ); ?></a>
+                                <?php if ( ! $is_cancelled ) : ?>
+                                    <a class="anchor-roster-fe-danger" href="<?php echo \esc_url( $cancel_link ); ?>" data-confirm="<?php \esc_attr_e( 'Cancel this seat?', 'anchor-schema' ); ?>"><?php \esc_html_e( 'Cancel', 'anchor-schema' ); ?></a>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
             <?php endif; ?>
 
-            <div class="anchor-event-section">
-                <h3><?php \esc_html_e( 'Registered', 'anchor-schema' ); ?></h3>
-                <?php if ( empty( $seats['items'] ) ) : ?>
-                    <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'Nobody is registered yet.', 'anchor-schema' ); ?></p>
-                <?php else : ?>
-                <div class="anchor-roster-fe-tablewrap">
-                    <table class="anchor-roster-fe-table">
-                        <thead>
-                            <tr>
-                                <th scope="col"><?php \esc_html_e( 'Attendee', 'anchor-schema' ); ?></th>
-                                <th scope="col"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></th>
-                                <th scope="col"><?php \esc_html_e( 'Ticket', 'anchor-schema' ); ?></th>
-                                <th scope="col"><?php \esc_html_e( 'Party', 'anchor-schema' ); ?></th>
-                                <?php foreach ( $questions as $q ) : ?>
-                                    <th scope="col"><?php echo \esc_html( $q['label'] ); ?></th>
-                                <?php endforeach; ?>
-                                <th scope="col"><?php \esc_html_e( 'Source', 'anchor-schema' ); ?></th>
-                                <th scope="col"><?php \esc_html_e( 'Added', 'anchor-schema' ); ?></th>
-                                <th scope="col"><?php \esc_html_e( 'Actions', 'anchor-schema' ); ?></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        <?php foreach ( $seats['items'] as $seat ) :
-                            $edit_link   = \add_query_arg( 'seat_id', (int) $seat['id'], $self_url );
-                            $cancel_link = \add_query_arg( 'roster_return', \rawurlencode( $self_url ), $this->cancel_url( $event_id, $seat['id'] ) );
-                            $is_cancelled = \in_array( $seat['status'], [ Registrations::STATUS_CANCELLED, Registrations::STATUS_REFUNDED, Registrations::STATUS_FAILED ], true );
-                        ?>
-                            <tr>
-                                <td>
-                                    <strong><?php echo \esc_html( $seat['name'] ); ?></strong>
-                                    <?php if ( $seat['email'] !== '' ) : ?>
-                                        <span class="anchor-roster-fe-sub"><a href="mailto:<?php echo \esc_attr( $seat['email'] ); ?>"><?php echo \esc_html( $seat['email'] ); ?></a></span>
-                                    <?php endif; ?>
-                                    <?php if ( $seat['phone'] !== '' ) : ?>
-                                        <span class="anchor-roster-fe-sub"><?php echo \esc_html( $seat['phone'] ); ?></span>
-                                    <?php endif; ?>
-                                </td>
-                                <td><span class="anchor-roster-fe-pill" style="background:<?php echo \esc_attr( $this->status_color( $seat['status'] ) ); ?>"><?php echo \esc_html( $this->status_label( $seat['status'] ) ); ?></span></td>
-                                <td><?php echo \esc_html( $this->tier_label( $event_id, $seat['ticket_type_id'] ) ); ?></td>
-                                <td><?php echo (int) ( 1 + (int) $seat['guests'] ); ?></td>
-                                <?php $answers = isset( $seat['reg_fields'] ) && \is_array( $seat['reg_fields'] ) ? $seat['reg_fields'] : []; ?>
-                                <?php foreach ( $questions as $q ) : ?>
-                                    <td><?php echo \esc_html( (string) ( $answers[ $q['key'] ] ?? '' ) ); ?></td>
-                                <?php endforeach; ?>
-                                <td>
-                                    <?php echo \esc_html( $seat['source'] ); ?>
-                                    <?php if ( (int) $seat['order_id'] > 0 ) :
-                                        $olink = $this->order_link( (int) $seat['order_id'] ); ?>
-                                        <span class="anchor-roster-fe-sub"><?php if ( $olink ) : ?><a href="<?php echo \esc_url( $olink ); ?>">#<?php echo (int) $seat['order_id']; ?></a><?php else : ?>#<?php echo (int) $seat['order_id']; ?><?php endif; ?></span>
-                                    <?php endif; ?>
-                                </td>
-                                <td><?php echo \esc_html( $seat['date'] ); ?></td>
-                                <td class="anchor-roster-fe-actions">
-                                    <a href="<?php echo \esc_url( $edit_link ); ?>"><?php \esc_html_e( 'Edit', 'anchor-schema' ); ?></a>
-                                    <?php if ( ! $is_cancelled ) : ?>
-                                        <a class="anchor-roster-fe-danger" href="<?php echo \esc_url( $cancel_link ); ?>" data-confirm="<?php \esc_attr_e( 'Cancel this seat?', 'anchor-schema' ); ?>"><?php \esc_html_e( 'Cancel', 'anchor-schema' ); ?></a>
-                                    <?php endif; ?>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-                <?php endif; ?>
-
-                <p class="anchor-roster-fe-tools">
-                    <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $event_id, 'scope' => 'all' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV', 'anchor-schema' ); ?></a>
-                    <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $event_id, 'scope' => 'active' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV (confirmed only)', 'anchor-schema' ); ?></a>
-                </p>
-            </div>
+            <p class="anchor-roster-fe-tools">
+                <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $event_id, 'scope' => 'all' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV', 'anchor-schema' ); ?></a>
+                <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $event_id, 'scope' => 'active' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV (confirmed only)', 'anchor-schema' ); ?></a>
+            </p>
         </div>
         <?php
         return (string) \ob_get_clean();
+    }
+
+    /**
+     * A form-control base name, suffixed with an event id so the same base
+     * (`roster_name`, `roster_field_practice_name`, ...) is unique across
+     * every panel render_frontend_group() renders (Task 42 review finding —
+     * a duplicate `id` resolves `<label for>` to whichever element the
+     * browser matches FIRST in the whole document, so a later tab's labels
+     * silently pointed at the FIRST panel's inputs). One helper, used by
+     * both frontend_add_form() and frontend_edit_form(), so the id a label's
+     * `for` names and the id its control actually carries can never drift.
+     *
+     * @param string $base     e.g. 'roster_name', 'roster_field_practice_name'.
+     * @param int    $event_id
+     * @return string
+     */
+    private function field_id( $base, $event_id ) {
+        return $base . '-' . (int) $event_id;
+    }
+
+    /**
+     * A nonce field for a console form, with a unique `id` (Task 42 review —
+     * `wp_nonce_field()`'s default markup carries `id="_wpnonce"`, and every
+     * panel's form calling it produced a document-wide duplicate id even
+     * after field_id() covered every OTHER control; `name="_wpnonce"` stays
+     * exactly what it always was, since check_admin_referer() reads that
+     * field by name, not by id). Echoes, matching wp_nonce_field()'s default.
+     *
+     * @param string $action
+     * @param int    $event_id
+     */
+    private function nonce_field_with_unique_id( $action, $event_id ) {
+        echo '<input type="hidden" id="' . \esc_attr( $this->field_id( '_wpnonce', $event_id ) ) . '" name="_wpnonce" value="'
+            . \esc_attr( \wp_create_nonce( $action ) ) . '" />';
+        echo \wp_referer_field( false ); // phpcs:ignore WordPress.Security.EscapeOutput -- core-escaped.
     }
 
     /** Manual "add attendee" form for the front-end console. */
@@ -1423,29 +1995,29 @@ class Roster {
                 <input type="hidden" name="action" value="anchor_roster_add" />
                 <input type="hidden" name="event_id" value="<?php echo \esc_attr( (string) $event_id ); ?>" />
                 <input type="hidden" name="roster_return" value="<?php echo \esc_url( $self_url ); ?>" />
-                <?php \wp_nonce_field( 'anchor_roster_add_' . $event_id ); ?>
+                <?php $this->nonce_field_with_unique_id( 'anchor_roster_add_' . $event_id, $event_id ); ?>
 
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
-                        <label for="roster_name"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?> *</label>
-                        <input type="text" id="roster_name" name="roster_name" required />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_name', $event_id ) ); ?>"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?> *</label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'roster_name', $event_id ) ); ?>" name="roster_name" required />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_email"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
-                        <input type="email" id="roster_email" name="roster_email" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_email', $event_id ) ); ?>"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
+                        <input type="email" id="<?php echo \esc_attr( $this->field_id( 'roster_email', $event_id ) ); ?>" name="roster_email" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_phone"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
-                        <input type="text" id="roster_phone" name="roster_phone" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_phone', $event_id ) ); ?>"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'roster_phone', $event_id ) ); ?>" name="roster_phone" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_guests"><?php \esc_html_e( 'Additional guests', 'anchor-schema' ); ?></label>
-                        <input type="number" id="roster_guests" name="roster_guests" value="0" min="0" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_guests', $event_id ) ); ?>"><?php \esc_html_e( 'Additional guests', 'anchor-schema' ); ?></label>
+                        <input type="number" id="<?php echo \esc_attr( $this->field_id( 'roster_guests', $event_id ) ); ?>" name="roster_guests" value="0" min="0" />
                     </div>
                     <?php if ( ! empty( $tiers ) ) : ?>
                     <div class="anchor-event-field">
-                        <label for="roster_ticket_type"><?php \esc_html_e( 'Ticket type', 'anchor-schema' ); ?></label>
-                        <select id="roster_ticket_type" name="roster_ticket_type">
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_ticket_type', $event_id ) ); ?>"><?php \esc_html_e( 'Ticket type', 'anchor-schema' ); ?></label>
+                        <select id="<?php echo \esc_attr( $this->field_id( 'roster_ticket_type', $event_id ) ); ?>" name="roster_ticket_type">
                             <?php foreach ( $tiers as $tier_id => $label ) : ?>
                                 <option value="<?php echo \esc_attr( $tier_id ); ?>"><?php echo \esc_html( $label ); ?></option>
                             <?php endforeach; ?>
@@ -1453,13 +2025,15 @@ class Roster {
                     </div>
                     <?php endif; ?>
                     <?php // REG-D39 — the same questions the public form asks. ?>
-                    <?php foreach ( $this->module_questions( $event_id ) as $q ) : ?>
+                    <?php foreach ( $this->module_questions( $event_id ) as $q ) :
+                        $field_id = $this->field_id( 'roster_field_' . $q['key'], $event_id );
+                    ?>
                     <div class="anchor-event-field">
-                        <label for="<?php echo \esc_attr( 'roster_field_' . $q['key'] ); ?>"><?php echo \esc_html( $q['label'] ); ?><?php echo empty( $q['required'] ) ? '' : ' *'; ?></label>
+                        <label for="<?php echo \esc_attr( $field_id ); ?>"><?php echo \esc_html( $q['label'] ); ?><?php echo empty( $q['required'] ) ? '' : ' *'; ?></label>
                         <?php
                         echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
                             'name' => 'roster_field[' . $q['key'] . ']',
-                            'id'   => 'roster_field_' . $q['key'],
+                            'id'   => $field_id,
                         ] );
                         ?>
                     </div>
@@ -1541,24 +2115,24 @@ class Roster {
                 <input type="hidden" name="event_id" value="<?php echo \esc_attr( (string) $event_id ); ?>" />
                 <input type="hidden" name="seat_id" value="<?php echo \esc_attr( (string) $seat_id ); ?>" />
                 <input type="hidden" name="roster_return" value="<?php echo \esc_url( $self_url ); ?>" />
-                <?php \wp_nonce_field( 'anchor_roster_edit_' . $event_id ); ?>
+                <?php $this->nonce_field_with_unique_id( 'anchor_roster_edit_' . $event_id, $event_id ); ?>
 
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
-                        <label for="roster_name"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?></label>
-                        <input type="text" id="roster_name" name="roster_name" value="<?php echo \esc_attr( $name ); ?>" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_name', $event_id ) ); ?>"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?></label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'roster_name', $event_id ) ); ?>" name="roster_name" value="<?php echo \esc_attr( $name ); ?>" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_email"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
-                        <input type="email" id="roster_email" name="roster_email" value="<?php echo \esc_attr( $email ); ?>" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_email', $event_id ) ); ?>"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
+                        <input type="email" id="<?php echo \esc_attr( $this->field_id( 'roster_email', $event_id ) ); ?>" name="roster_email" value="<?php echo \esc_attr( $email ); ?>" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_phone"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
-                        <input type="text" id="roster_phone" name="roster_phone" value="<?php echo \esc_attr( $phone ); ?>" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_phone', $event_id ) ); ?>"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'roster_phone', $event_id ) ); ?>" name="roster_phone" value="<?php echo \esc_attr( $phone ); ?>" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_status"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></label>
-                        <select id="roster_status" name="roster_status">
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_status', $event_id ) ); ?>"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></label>
+                        <select id="<?php echo \esc_attr( $this->field_id( 'roster_status', $event_id ) ); ?>" name="roster_status">
                             <?php foreach ( $this->status_options_for( $status ) as $val => $label ) : ?>
                                 <option value="<?php echo \esc_attr( $val ); ?>" <?php \selected( $status, $val ); ?>><?php echo \esc_html( $label ); ?></option>
                             <?php endforeach; ?>

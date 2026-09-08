@@ -674,6 +674,44 @@ class Occurrences {
     }
 
     /**
+     * Every non-trashed child of a group parent, REGARDLESS of post status —
+     * a staff-facing view, unlike children() (Task 42 review finding).
+     *
+     * children() deliberately excludes a child an admin unpublished
+     * (draft/pending/private): correct for the public "what's offered" set,
+     * but a child a seat still points at does not stop needing an operator —
+     * hiding a draft/pending/private child (which retains its own roster)
+     * from the attendee console's tabs, and from the "all dates" export,
+     * would make its seats unreachable and unexportable through this screen
+     * for as long as it stayed unpublished. This reuses the same status-
+     * agnostic existing_children_map() children() is built on and applies
+     * only the trash exclusion — no publish check, no soft-close exclusion
+     * (closed children have always belonged in the staff view; see
+     * Roster::render_frontend_group()).
+     *
+     * @param int $parent_id
+     * @return int[] Child post ids, date-ascending, one per occurrence_key.
+     */
+    public function children_any_status( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        if ( $parent_id <= 0 ) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ( $this->existing_children_map( $parent_id ) as $group ) {
+            // One occurrence per key: the canonical child, same as children().
+            $ids[] = (int) $group[0];
+        }
+
+        \usort( $ids, function ( $a, $b ) {
+            return $this->start_ts( $a ) <=> $this->start_ts( $b );
+        } );
+
+        return $ids;
+    }
+
+    /**
      * Every currently soft-closed occurrence in the system, oldest post ID
      * first — feeds the admin "Closed occurrences" panel (MODEL-D34).
      *

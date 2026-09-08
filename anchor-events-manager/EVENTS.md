@@ -249,6 +249,20 @@ key for an answer whose question has been deleted.
   parent, rendered as a "choose a date" summary with a date-range and an "N dates
   available" count) rather than listing every child date separately; soft-closed
   children are dropped from the archive entirely.
+- **Attendee console tabs on a group parent**: `Roster::render_frontend()`
+  tabs a group parent's `[event_manager]` "Attendees" page one tab per child
+  occurrence (`render_frontend_group()`). Every tab is a real
+  `<a role="tab" href="...&occurrence=<child>">` — switching tabs is a
+  server-rendered page load, not a JS toggle, so the tablist/aria-selected/
+  tabpanel markup and the keyboard behaviour are just the browser's ordinary
+  link navigation (Tab moves focus between links, Enter/click follows one) —
+  there is no custom keyboard handler to keep in sync. Only the ACTIVE
+  occurrence's panel gets the full summary/add-form/Registered-list a single
+  event's console shows (`render_roster_panel()`, one `query_seats()` call);
+  every other tab's panel gets the lighter `render_roster_panel_summary()`
+  (summary cards + add form + a "Show attendees" link to its own occurrence
+  URL) so a recurring parent with upwards of a hundred children never
+  renders more than one seat table per page load.
 
 ---
 

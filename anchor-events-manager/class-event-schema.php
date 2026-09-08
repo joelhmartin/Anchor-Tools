@@ -236,7 +236,7 @@ class Event_Schema {
         if ( $parent_id > 0 ) {
             $node['superEvent'] = [
                 '@type' => 'Event',
-                'name'  => (string) \get_the_title( $parent_id ),
+                'name'  => $this->plain_text( (string) \get_the_title( $parent_id ) ),
                 'url'   => (string) \get_permalink( $parent_id ),
             ];
         }
@@ -268,11 +268,13 @@ class Event_Schema {
         $all_day = ! empty( $meta['all_day'] );
         $loc     = $this->location_fields( $event_id, $meta );
         $url     = (string) \get_permalink( $event_id );
-        $title   = (string) \get_the_title( $event_id );
+        $title   = $this->plain_text( (string) \get_the_title( $event_id ) );
 
-        $session_nodes = [];
-        $min_start     = null;
-        $max_end       = null;
+        $session_nodes        = [];
+        $min_start            = null;
+        $max_end              = null;
+        $min_start_has_time   = true;
+        $max_end_has_time     = true;
 
         foreach ( $sessions as $session ) {
             $session_meta                = $meta;
@@ -288,18 +290,24 @@ class Event_Schema {
             $start_ts = (int) $s_ts['start'];
             $end_ts   = (int) $s_ts['end'];
 
+            // Item 3: a session row with no time of its own renders as
+            // date-only, same rule as the event-level fix below.
+            $session_date_only = $all_day || \trim( (string) $session['start_time'] ) === '';
+
             if ( $min_start === null || $start_ts < $min_start ) {
-                $min_start = $start_ts;
+                $min_start          = $start_ts;
+                $min_start_has_time = ! $session_date_only;
             }
             if ( $max_end === null || $end_ts > $max_end ) {
-                $max_end = $end_ts;
+                $max_end          = $end_ts;
+                $max_end_has_time = ! $session_date_only;
             }
 
             $session_nodes[] = [
                 '@type'     => 'Event',
-                'name'      => $session['label'] !== '' ? $session['label'] : $title,
-                'startDate' => $this->format_iso( $start_ts, $tz, $all_day ),
-                'endDate'   => $this->format_iso( $end_ts, $tz, $all_day ),
+                'name'      => $session['label'] !== '' ? $this->plain_text( (string) $session['label'] ) : $title,
+                'startDate' => $this->format_iso( $start_ts, $tz, $session_date_only ),
+                'endDate'   => $this->format_iso( $end_ts, $tz, $session_date_only ),
                 'location'  => $loc['location'],
                 'url'       => $url,
             ];
@@ -309,7 +317,13 @@ class Event_Schema {
             return $this->build_single_node( $event_id );
         }
 
-        $node              = $this->assemble_node( $event_id, $meta, $min_start, $max_end );
+        // The container's own span is date-only whenever either the
+        // earliest-starting or latest-ending session it was built from has
+        // no time of its own — mixing a bare date with a wall-clock time in
+        // the same startDate/endDate pair would be worse than picking one.
+        $container_date_only = $all_day || ! $min_start_has_time || ! $max_end_has_time;
+
+        $node              = $this->assemble_node( $event_id, $meta, $min_start, $max_end, $container_date_only );
         $node['subEvent']  = $session_nodes;
         return $node;
     }
@@ -332,6 +346,7 @@ class Event_Schema {
         $child_nodes   = [];
         $earliest_meta = null;
         $end_ts        = null;
+        $end_meta      = null;
 
         // A container runs from its first occurrence to the END of its LAST
         // one. Taking both ends off the earliest child described a group as
@@ -361,7 +376,8 @@ class Event_Schema {
                 $earliest_meta = $child_meta;
             }
             if ( $end_ts === null || (int) $child_ts['end'] > $end_ts ) {
-                $end_ts = (int) $child_ts['end'];
+                $end_ts   = (int) $child_ts['end'];
+                $end_meta = $child_meta;
             }
         }
 
@@ -375,7 +391,17 @@ class Event_Schema {
         }
 
         $parent_meta = $this->module->get_meta( $event_id );
-        $node        = $this->assemble_node( $event_id, $parent_meta, (int) $ts['start'], (int) $end_ts );
+
+        // Item 3: the parent's own startDate/endDate are timestamps off the
+        // earliest/latest-ending CHILD (see the docblock above), so whether
+        // to render them date-only must ask those children's own start_time
+        // — not the parent's, which is normally empty/unused (dates live on
+        // the children) and would otherwise force every group parent to
+        // date-only regardless of what its children actually have.
+        $date_only = \trim( (string) ( $earliest_meta['start_time'] ?? '' ) ) === ''
+            || \trim( (string) ( $end_meta['start_time'] ?? '' ) ) === '';
+
+        $node = $this->assemble_node( $event_id, $parent_meta, (int) $ts['start'], (int) $end_ts, $date_only );
 
         // RENDER-D7: a container is never itself bookable
         // (render_registration_form() refuses to give a parent a form), so it
@@ -398,23 +424,47 @@ class Event_Schema {
      * group child, multisession parent, group parent) given already-resolved
      * start/end timestamps.
      *
-     * @param int   $event_id
-     * @param array $meta
-     * @param int   $start_ts
-     * @param int   $end_ts
+     * @param int        $event_id
+     * @param array      $meta
+     * @param int        $start_ts
+     * @param int        $end_ts
+     * @param bool|null  $date_only Whether $start_ts/$end_ts have no real
+     *                              time component of their own — null (the
+     *                              default) derives it from $meta's own
+     *                              start_time, which is correct whenever
+     *                              $meta is the same record $start_ts/$end_ts
+     *                              were computed from (the single-node case).
+     *                              The multisession and group-parent builders
+     *                              compute $start_ts/$end_ts from a session
+     *                              or a child, not from $meta itself, so they
+     *                              pass an explicit true/false instead of
+     *                              relying on this fallback.
      * @return array
      */
-    private function assemble_node( $event_id, array $meta, $start_ts, $end_ts ) {
+    private function assemble_node( $event_id, array $meta, $start_ts, $end_ts, $date_only = null ) {
         $tz      = $this->resolve_timezone( $meta );
         $all_day = ! empty( $meta['all_day'] );
         $loc     = $this->location_fields( $event_id, $meta );
         $status  = (string) $this->module->get_event_status( $event_id, $meta );
 
+        // RENDER-D40 (Task 43, item 3): an empty start_time with `all_day`
+        // unset used to still compute a midnight timestamp
+        // (Module::calculate_timestamps() defaults a blank start_time to
+        // '00:00' for status/ordering purposes) and render it as a full
+        // datetime — "startDate":"2026-10-17T06:00:00+00:00" for an event
+        // whose admin never set a time at all. Treated as date-only instead,
+        // same as the existing $all_day branch: format_iso() already
+        // collapses to Y-m-d whenever this is true.
+        if ( $date_only === null ) {
+            $date_only = \trim( (string) ( $meta['start_time'] ?? '' ) ) === '';
+        }
+        $date_only = $all_day || $date_only;
+
         $node = [
             '@type'               => 'Event',
-            'name'                => (string) \get_the_title( $event_id ),
-            'startDate'           => $this->format_iso( $start_ts, $tz, $all_day ),
-            'endDate'             => $this->format_iso( $end_ts, $tz, $all_day ),
+            'name'                => $this->plain_text( (string) \get_the_title( $event_id ) ),
+            'startDate'           => $this->format_iso( $start_ts, $tz, $date_only ),
+            'endDate'             => $this->format_iso( $end_ts, $tz, $date_only ),
             'eventStatus'         => $this->event_status_url( $status ),
             'eventAttendanceMode' => $loc['mode'],
             'location'            => $loc['location'],
@@ -423,6 +473,7 @@ class Event_Schema {
             'organizer'           => [
                 '@type' => 'Organization',
                 'name'  => (string) \get_bloginfo( 'name' ),
+                'url'   => \home_url( '/' ),
             ],
         ];
 
@@ -609,14 +660,31 @@ class Event_Schema {
      * A schema.org/Place node from the location meta fields available.
      * `address` is only added when at least one address field is set.
      *
+     * Item 2 (Task 43): `name` used to fall back to the event's own title
+     * when no venue was set — on a venue-less event that produced
+     * `"location":{"name":"Nd:YAG Basics, Perio, & Hygiene – Oct 17,
+     * 2026", ...}`, a nonsensical "place" name identical to the event
+     * itself. It now falls back to the address, comma-joined from whatever
+     * parts exist ("Centennial, CO" / "5290 E Arapahoe Rd, Centennial, CO
+     * 80122"), and `name` is omitted entirely when there is neither a venue
+     * nor any address part to fall back to — an empty/missing name is more
+     * honest than a fabricated one.
+     *
+     * PR #23 review fix: each address part is decoded through plain_text()
+     * at the point it's read from meta, not just when address_as_text()
+     * joins them into the fallback `name` — before this, an address field
+     * containing an entity (e.g. `venue`-less street "Main &amp; First")
+     * reached `location.address.streetAddress` itself un-decoded, even
+     * though the venue-based `name` path already went through plain_text().
+     * Decoding once here, at the source, keeps `name` and every
+     * `address.*` sub-field consistent instead of fixing only whichever one
+     * happened to be reported.
+     *
      * @param int   $event_id
      * @param array $meta
      * @return array
      */
     private function place_node( $event_id, array $meta ) {
-        $name  = ! empty( $meta['venue'] ) ? (string) $meta['venue'] : (string) \get_the_title( $event_id );
-        $place = [ '@type' => 'Place', 'name' => $name ];
-
         $field_map = [
             'streetAddress'   => 'address_street',
             'addressLocality' => 'address_city',
@@ -627,10 +695,18 @@ class Event_Schema {
 
         $address = [];
         foreach ( $field_map as $schema_key => $meta_key ) {
-            $val = \trim( (string) ( $meta[ $meta_key ] ?? '' ) );
+            $val = $this->plain_text( \trim( (string) ( $meta[ $meta_key ] ?? '' ) ) );
             if ( $val !== '' ) {
                 $address[ $schema_key ] = $val;
             }
+        }
+
+        $place = [ '@type' => 'Place' ];
+
+        $venue = \trim( (string) ( $meta['venue'] ?? '' ) );
+        $name  = $venue !== '' ? $this->plain_text( $venue ) : $this->address_as_text( $address );
+        if ( $name !== '' ) {
+            $place['name'] = $name;
         }
 
         if ( ! empty( $address ) ) {
@@ -642,13 +718,66 @@ class Event_Schema {
     }
 
     /**
+     * A single "street, city, region postal" line from the schema-keyed
+     * address parts place_node() already assembled (only the parts that are
+     * actually set), for the venue-less Place-name fallback (item 2). The
+     * region and postal code are joined by a space rather than a comma
+     * (standard mailing-address form: "CO 80122", not "CO, 80122"); every
+     * other part is comma-joined. addressCountry is only used when nothing
+     * else is available, so a US-only site with no country meta doesn't
+     * grow a "United States" suffix on every fallback name.
+     *
+     * @param array $address Schema-keyed parts (streetAddress, addressLocality, …).
+     * @return string
+     */
+    private function address_as_text( array $address ) {
+        $region_postal = \trim(
+            \trim( (string) ( $address['addressRegion'] ?? '' ) ) . ' ' . \trim( (string) ( $address['postalCode'] ?? '' ) )
+        );
+
+        $parts = [];
+        if ( ! empty( $address['streetAddress'] ) ) {
+            $parts[] = $address['streetAddress'];
+        }
+        if ( ! empty( $address['addressLocality'] ) ) {
+            $parts[] = $address['addressLocality'];
+        }
+        if ( $region_postal !== '' ) {
+            $parts[] = $region_postal;
+        }
+
+        if ( empty( $parts ) && ! empty( $address['addressCountry'] ) ) {
+            $parts[] = $address['addressCountry'];
+        }
+
+        return \implode( ', ', $parts );
+    }
+
+    /**
      * Plain-text description: the post excerpt when set, else the first ~55
      * words of the content, HTML stripped either way. Reads the raw post
      * fields directly (not get_the_excerpt()/the_content filters) so this
      * works correctly outside The Loop and never picks up
-     * theme/plugin-added "read more" markup. HTML entities (e.g. `&amp;`,
-     * `&#8217;`) left behind by wp_strip_all_tags() are decoded so the
-     * JSON-LD value is clean text, not markup source.
+     * theme/plugin-added "read more" markup.
+     *
+     * Item 4 (Task 43): a shortcode left in an excerpt used to render as its
+     * raw `[bracket_tag]` source, and adjacent block-level markup
+     * (`<p>…</p><p>…</p>`, `<br>`) used to collapse straight into
+     * run-together text with no separating space at all — evidence event
+     * 7531 rendered `"5290 E Arapahoe RdCentennial, CO
+     * 801228:00 AM – 4:00 PM8 CE Credits …"`. clean_html_text() removes the
+     * shortcode itself and turns `<br>`/closing block tags into a single
+     * space BEFORE any tag-stripping runs, so the words that markup used to
+     * separate don't fuse together once the tags themselves are gone.
+     *
+     * PR #23 review fix: the content fallback used to run
+     * `wp_strip_all_tags()` on the RAW post_content before this cleanup ever
+     * saw it, so `<p>First</p><p>Second</p>` had already collapsed to
+     * "FirstSecond" by the time the block-tag pass ran (it had nothing left
+     * to replace) and wp_trim_words() then counted the wrong text. Both the
+     * excerpt and the content fallback now go through the exact same
+     * clean_html_text() pipeline before either is used — one ordering for
+     * both sources.
      *
      * @param int $event_id
      * @return string
@@ -659,13 +788,55 @@ class Event_Schema {
             return '';
         }
 
-        $excerpt = (string) $post->post_excerpt;
-        if ( \trim( $excerpt ) === '' ) {
-            $excerpt = \wp_trim_words( \wp_strip_all_tags( (string) $post->post_content ), 55, '…' );
+        $excerpt = $this->clean_html_text( (string) $post->post_excerpt );
+        if ( $excerpt === '' ) {
+            $excerpt = \wp_trim_words( $this->clean_html_text( (string) $post->post_content ), 55, '…' );
         }
 
-        $excerpt = \trim( \wp_strip_all_tags( $excerpt ) );
-        return \html_entity_decode( $excerpt, \ENT_QUOTES, 'UTF-8' );
+        return $excerpt;
+    }
+
+    /**
+     * strip_shortcodes() + `<br>`/closing-block-tag -> space + plain_text()
+     * + whitespace collapse, applied to a RAW HTML string (post_excerpt or
+     * post_content) before any of it is tag-stripped — see description()'s
+     * docblock for why the ordering matters.
+     *
+     * @param string $html
+     * @return string
+     */
+    private function clean_html_text( $html ) {
+        $html = \strip_shortcodes( (string) $html );
+        $html = \preg_replace(
+            '#<br\s*/?>|</(?:p|li|h[1-6]|div|tr|td|blockquote)>#i',
+            ' ',
+            $html
+        );
+        $html = $this->plain_text( $html );
+
+        return \trim( \preg_replace( '/\s+/', ' ', $html ) );
+    }
+
+    /**
+     * Decode a raw title/venue/description-ish string down to clean, plain
+     * text: strip any markup (wp_strip_all_tags(), which also drops a
+     * `<script>…</script>` block's content, not just its tags) and decode
+     * the HTML entities WordPress itself leaves behind (`&amp;`, `&#8211;`
+     * — the block editor auto-converts a typed "&" into `&#038;` at save
+     * time, so get_the_title() returns the entity literally, unencoded by
+     * anything downstream; without this it leaked straight into the JSON-LD
+     * as visible entity text — evidence event 7531's `"name":"Nd:YAG
+     * Basics, Perio, &#038; Hygiene &#8211; Oct 17, 2026"`).
+     *
+     * The one decode helper (item 1, Task 43) shared by `name` (single node,
+     * group-parent's/group-child's superEvent name, multisession session
+     * labels), the Place `name` fallback, and description().
+     *
+     * @param string $s
+     * @return string
+     */
+    private function plain_text( $s ) {
+        return \html_entity_decode( \wp_strip_all_tags( (string) $s ), \ENT_QUOTES | \ENT_HTML5, 'UTF-8' );
     }
 
     /**

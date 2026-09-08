@@ -446,4 +446,230 @@ class Test_Event_Schema extends Anchor_Events_TestCase {
 		$this->assertSame( get_permalink( $child_id ), $node['url'] );
 		$this->assert_iso8601_with_tz( $node['startDate'] );
 	}
+
+	/* ------------------------------------------------------------------
+	 * 6. Task 43 — JSON-LD polish (name/place decoding, date-only
+	 *    start_time, description cleanup, organizer url)
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * Item 1: `name` is decoded the same way description() is (wp_strip_all_tags
+	 * + html_entity_decode) so a title carrying literal entities (as WordPress
+	 * stores them, e.g. from the block editor's own "&" -> "&#038;"
+	 * auto-conversion) doesn't leak raw entity text into the JSON-LD.
+	 */
+	public function test_event_name_decodes_html_entities_in_title() {
+		$event_id = $this->make_event( [
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+		wp_update_post( [
+			'ID'         => $event_id,
+			'post_title' => 'Nd:YAG Basics, Perio, &#038; Hygiene &#8211; Oct 17, 2026',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( 'Nd:YAG Basics, Perio, & Hygiene ' . "\u{2013}" . ' Oct 17, 2026', $node['name'] );
+	}
+
+	/**
+	 * Item 2: no venue set -> the Place `name` falls back to the address,
+	 * comma-joined from whatever parts exist ("Centennial, CO" — evidence
+	 * event 7531).
+	 */
+	public function test_place_name_falls_back_to_city_state_when_no_venue() {
+		$event_id = $this->make_event( [
+			'start_date'    => '2027-03-01',
+			'timezone'      => 'UTC',
+			'venue'         => '',
+			'address_city'  => 'Centennial',
+			'address_state' => 'CO',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( 'Centennial, CO', $node['location']['name'] );
+	}
+
+	/**
+	 * Item 2: same fallback with a full address (evidence event 7531's
+	 * mailing address).
+	 */
+	public function test_place_name_falls_back_to_full_address_when_no_venue() {
+		$event_id = $this->make_event( [
+			'start_date'      => '2027-03-01',
+			'timezone'        => 'UTC',
+			'address_street'  => '5290 E Arapahoe Rd',
+			'address_city'    => 'Centennial',
+			'address_state'   => 'CO',
+			'address_zip'     => '80122',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( '5290 E Arapahoe Rd, Centennial, CO 80122', $node['location']['name'] );
+	}
+
+	/**
+	 * Item 2: no venue AND no address part at all -> `name` is omitted
+	 * entirely from the Place node rather than falling back to the event
+	 * title.
+	 */
+	public function test_place_name_omitted_when_no_venue_and_no_address() {
+		$event_id = $this->make_event( [
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertArrayNotHasKey( 'name', $node['location'] );
+	}
+
+	/**
+	 * Item 3: an empty start_time with `all_day` unset used to still render
+	 * a full midnight datetime — treat it as date-only instead, exactly like
+	 * the existing all_day branch (evidence event 7531).
+	 */
+	public function test_missing_start_time_renders_date_only_dates() {
+		$event_id = $this->make_event( [
+			'start_date' => '2026-10-17',
+			'end_date'   => '2026-10-17',
+			'start_time' => '',
+			'end_time'   => '',
+			'timezone'   => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( '2026-10-17', $node['startDate'] );
+		$this->assertSame( '2026-10-17', $node['endDate'] );
+	}
+
+	/**
+	 * Item 3: a start_time IS present -> full datetimes are kept (not
+	 * regressed to date-only).
+	 */
+	public function test_present_start_time_still_renders_full_datetime() {
+		$event_id = $this->make_event( [
+			'start_date' => '2026-10-17',
+			'start_time' => '08:00',
+			'end_time'   => '16:00',
+			'timezone'   => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assert_iso8601_with_tz( $node['startDate'] );
+		$this->assertStringStartsWith( '2026-10-17T08:00', $node['startDate'] );
+	}
+
+	/**
+	 * Item 3: same date-only treatment for a multisession session row with
+	 * no time of its own.
+	 */
+	public function test_multisession_session_without_time_is_date_only() {
+		$event_id = $this->make_event( [
+			'title'      => 'Bootcamp',
+			'type'       => 'multisession',
+			'start_date' => '2027-04-01',
+			'timezone'   => 'UTC',
+		] );
+		update_post_meta( $event_id, '_anchor_event_sessions', [
+			[ 'date' => '2027-04-01', 'start_time' => '', 'end_time' => '', 'label' => 'Day 1' ],
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( '2027-04-01', $node['subEvent'][0]['startDate'] );
+		$this->assertSame( '2027-04-01', $node['subEvent'][0]['endDate'] );
+	}
+
+	/**
+	 * Item 4: description() runs strip_shortcodes(), turns <br> variants and
+	 * closing block tags into a single space (so adjacent block text doesn't
+	 * run together), then strips remaining tags, decodes entities, and
+	 * collapses whitespace — evidence event 7531's rendered description.
+	 */
+	public function test_description_strips_shortcodes_breaks_and_block_tags() {
+		add_shortcode( 'anchor_test_evidence_shortcode', function () {
+			return '';
+		} );
+
+		$event_id = $this->make_event( [
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+		wp_update_post( [
+			'ID'           => $event_id,
+			'post_excerpt' => '<p>5290 E Arapahoe Rd</p><p>Centennial, CO 80122</p><br>8:00 AM &#8211; 4:00 PM<br />[anchor_test_evidence_shortcode]8 CE Credits</p>',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		remove_shortcode( 'anchor_test_evidence_shortcode' );
+
+		$this->assertSame(
+			'5290 E Arapahoe Rd Centennial, CO 80122 8:00 AM ' . "\u{2013}" . ' 4:00 PM 8 CE Credits',
+			$node['description']
+		);
+	}
+
+	/**
+	 * Item 5: the Organizer node carries a `url` pointing at the site root.
+	 */
+	public function test_organizer_node_includes_home_url() {
+		$event_id = $this->make_event( [
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( home_url( '/' ), $node['organizer']['url'] );
+	}
+
+	/**
+	 * PR #23 review fix 1: the post_content fallback (no excerpt set) used
+	 * to be tag-stripped BEFORE the shortcode/block-separator pass ran, so
+	 * `<p>First</p><p>Second</p>` had already collapsed to "FirstSecond" —
+	 * nothing left for the block-tag pass to replace. Both the excerpt and
+	 * the content fallback now share the same clean_html_text() pipeline.
+	 */
+	public function test_description_from_content_keeps_space_between_paragraphs() {
+		$event_id = $this->make_event( [
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+		wp_update_post( [
+			'ID'           => $event_id,
+			'post_excerpt' => '',
+			'post_content' => '<p>First</p><p>Second</p>',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( 'First Second', $node['description'] );
+	}
+
+	/**
+	 * PR #23 review fix 2: the Place-name address fallback (item 2) bypassed
+	 * plain_text(), so an address part carrying an entity reached
+	 * `location.name` — and `location.address.*` — encoded. Every address
+	 * meta value is now decoded at the point place_node() reads it.
+	 */
+	public function test_place_address_fields_and_fallback_name_decode_entities() {
+		$event_id = $this->make_event( [
+			'start_date'     => '2027-03-01',
+			'timezone'       => 'UTC',
+			'address_street' => 'Main &amp; First',
+			'address_city'   => 'Springfield',
+		] );
+
+		$node = $this->schema()->for_event( $event_id );
+
+		$this->assertSame( 'Main & First, Springfield', $node['location']['name'] );
+		$this->assertSame( 'Main & First', $node['location']['address']['streetAddress'] );
+	}
 }

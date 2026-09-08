@@ -24,6 +24,15 @@ Usage:
 
 == Changelog ==
 
+= 3.28.2 (unreleased) =
+
+* Fix: the Attendees page for a multi-date event rendered EVERY date's panel
+  stacked on the page, not just the one whose tab was selected — the active
+  date's full roster, every other date's summary + add form + "Show
+  attendees" link, all in date order regardless of which tab was clicked.
+  Only the active date's panel renders now; every other tab contributes a
+  tab link and nothing else.
+
 = 3.28.1 =
 
 * Attendees page for multi-date events: the all-dates export links sit on the tab bar next to the date tabs; the separate "All dates" card is gone.
@@ -34,10 +43,9 @@ Usage:
   (an offering/recurring group parent, including a draft/pending/private
   date that still holds seats) is now tabbed one date per child, real links
   switching between them; the active date's panel shows the same
-  summary/add-form/Registered-list a single event's roster has always shown,
-  every other tab a lighter summary+add-form view, so a parent with many
-  dates never renders more than one seat table per page load. A page-level
-  "All dates" export covers every date in one CSV with a leading Date column.
+  summary/add-form/Registered-list a single event's roster has always shown.
+  A page-level "All dates" export covers every date in one CSV with a
+  leading Date column.
 
 = 3.27.0 =
 

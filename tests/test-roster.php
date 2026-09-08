@@ -1339,16 +1339,28 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'name="event_id" value="' . $parent_id . '"', $html );
 	}
 
+	/**
+	 * Only the ACTIVE panel renders at all (site-owner-reported bug: every
+	 * child's panel used to stack on the page regardless of which tab was
+	 * clicked), so only its add form appears — deep-linking to the other
+	 * child moves the form there instead.
+	 */
 	public function test_group_parent_roster_each_panels_add_form_posts_to_its_own_child_with_its_own_nonce() {
 		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
 		[ $a, $b ] = $live;
 
+		// A is active by default (first child, date order).
 		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
-
 		$this->assertStringContainsString( 'name="event_id" value="' . $a . '"', $html );
-		$this->assertStringContainsString( 'name="event_id" value="' . $b . '"', $html );
 		$this->assertStringContainsString( wp_create_nonce( 'anchor_roster_add_' . $a ), $html );
+		$this->assertStringNotContainsString( 'name="event_id" value="' . $b . '"', $html );
+
+		// Deep-link to B — B's form now renders, A's no longer does.
+		$_GET['occurrence'] = (string) $b;
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'name="event_id" value="' . $b . '"', $html );
 		$this->assertStringContainsString( wp_create_nonce( 'anchor_roster_add_' . $b ), $html );
+		$this->assertStringNotContainsString( 'name="event_id" value="' . $a . '"', $html );
 	}
 
 	/**
@@ -1373,12 +1385,15 @@ class Test_Roster extends Anchor_Events_TestCase {
 	}
 
 	/**
-	 * CodeRabbit review — rendering every child's full seat table
-	 * (query_seats() at per_page=500, once per child) on one page load does
-	 * not scale to a recurring parent with many occurrences. Only the ACTIVE
-	 * occurrence's Registered list actually lists its attendee; every other
-	 * tab's panel gets the lighter summary+add-form view with a "Show
-	 * attendees" link instead.
+	 * Bug fix (site-owner-reported, screenshot-confirmed): render_frontend_group()
+	 * used to render a `<section role="tabpanel">` for EVERY child — the
+	 * active one with the full roster, the others with a summary + add form
+	 * + "Show attendees" link — stacked in date order with none hidden, so
+	 * whichever tab was selected the page began with every date's panel.
+	 * Only one panel renders now, and it is the active one: the ACTIVE
+	 * occurrence's Registered list lists its attendee, and no other child
+	 * contributes a panel (summary, add form, or "Show attendees" link) at
+	 * all.
 	 */
 	public function test_only_the_active_panels_registered_list_shows_its_attendee() {
 		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
@@ -1390,13 +1405,15 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
 		$this->assertStringContainsString( 'Attendee A', $html );
 		$this->assertStringNotContainsString( 'Attendee B', $html );
-		$this->assertStringContainsString( 'Show attendees', $html );
+		$this->assertStringNotContainsString( 'Show attendees', $html, 'Inactive children must contribute a tab link and nothing else — no summary, no add form, no "Show attendees" link.' );
+		$this->assertSame( 1, substr_count( $html, 'role="tabpanel"' ), 'Only one panel — the active one — may render.' );
 
 		// Deep-link to B — B's Registered list now shows, A's does not.
 		$_GET['occurrence'] = (string) $b;
 		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
 		$this->assertStringContainsString( 'Attendee B', $html );
 		$this->assertStringNotContainsString( 'Attendee A', $html );
+		$this->assertSame( 1, substr_count( $html, 'role="tabpanel"' ), 'Only one panel — the active one — may render.' );
 	}
 
 	/** CodeRabbit review — tabs are real links, not JS-only buttons. */
@@ -1415,7 +1432,12 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( 'occurrence=' . $b, $html );
 	}
 
-	/** CodeRabbit review — `?occurrence=` alone (no JS) selects the tab. */
+	/**
+	 * CodeRabbit review — `?occurrence=` alone (no JS) selects the tab. Also
+	 * covers the site-owner-reported bug fix: deep-linking to B must render
+	 * ONLY B's panel — B's title is the only `anchor-roster-fe-panel-title`
+	 * on the page, not stacked alongside A's.
+	 */
 	public function test_deep_link_occurrence_arg_selects_the_active_tab() {
 		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
 		[ $a, $b ] = $live;
@@ -1433,6 +1455,10 @@ class Test_Roster extends Anchor_Events_TestCase {
 			$html,
 			'A must no longer be selected once B is deep-linked.'
 		);
+
+		preg_match_all( '/<h3 class="anchor-roster-fe-panel-title">([^<]*)<\/h3>/', $html, $titles );
+		$this->assertCount( 1, $titles[1], 'Only one panel — B\'s — may render once B is deep-linked.' );
+		$this->assertSame( 'Session B', $titles[1][0] );
 	}
 
 	public function test_a_closed_child_still_gets_a_tab_marked_closed() {

@@ -24,6 +24,10 @@ Usage:
 
 == Changelog ==
 
+= 3.29.0 (unreleased) =
+
+* Event JSON-LD polish: `name`/Place `name`/`description` decode HTML entities and strip markup consistently; a venue-less Place falls back to its address instead of the event's own title; an empty start_time (with `all_day` unset) renders `startDate`/`endDate` as date-only instead of a fabricated midnight; the Organizer node carries a `url`.
+
 = 3.28.1 =
 
 * Attendees page for multi-date events: the all-dates export links sit on the tab bar next to the date tabs; the separate "All dates" card is gone.

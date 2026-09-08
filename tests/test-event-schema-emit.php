@@ -286,30 +286,41 @@ class Test_Event_Schema_Emit extends Anchor_Events_TestCase {
 
 	public function test_script_breakout_in_title_does_not_escape_the_script_tag() {
 		$breakout = '</script><script>alert(1)</script>';
-		$title    = 'Evil ' . $breakout;
 
-		// The vulnerable title comes straight from get_the_title() with no
-		// escaping, so the realistic attacker is any user capable of
-		// setting it verbatim — i.e. anyone with unfiltered_html, which is
-		// administrators by default on a single-site install. Without an
-		// unfiltered_html-capable current user, wp_insert_post()/wp_update_post()
-		// run post_title/post_excerpt through wp_kses and strip the <script>
-		// tags before they ever reach the database, masking the bug.
+		// As of the events-audit JSON-LD polish (Task 43, item 1), `name`
+		// is decoded through plain_text() — get_the_title() ->
+		// wp_strip_all_tags() -> html_entity_decode() — so a literal
+		// <script> injected into the title is stripped before it ever
+		// reaches the JSON; that's asserted below as defense-in-depth, but
+		// it means the title can no longer be the vector that drives this
+		// test red/green. external_url is raw admin-set meta that
+		// Event_Schema::build_external_offer() still embeds unescaped
+		// (untouched by this task, by design — see its class docblock), so
+		// it is the vector that still proves JSON slash-escaping alone —
+		// not sanitization — is what defuses a breakout that DOES reach
+		// the JSON body.
+		//
+		// unfiltered_html (administrators by default on a single-site
+		// install) is still needed for the title half of this test: without
+		// it, wp_insert_post()/wp_update_post() run post_title through
+		// wp_kses and strip the <script> tags before they ever reach the
+		// database, masking that part of the assertion.
 		$admin_id = self::factory()->user->create( [ 'role' => 'administrator' ] );
 		wp_set_current_user( $admin_id );
 
 		$event_id = $this->make_event( [
-			'title'      => $title,
-			'start_date' => '2027-03-01',
-			'timezone'   => 'UTC',
+			'title'             => 'Evil ' . $breakout,
+			'start_date'        => '2027-03-01',
+			'timezone'          => 'UTC',
+			'registration_mode' => 'external',
+			'external_url'      => 'https://example.com/register ' . $breakout,
 		] );
 
 		// For good measure: same payload via the description path
-		// (post_excerpt). description() runs values through
-		// wp_strip_all_tags() before they ever reach the JSON, so this
-		// documents that the description path is independently safe — it
-		// is NOT expected to drive this test red/green on its own; the
-		// title (raw get_the_title(), no escaping) is the actual vector.
+		// (post_excerpt). description() already ran (and still runs) every
+		// value through wp_strip_all_tags() before it ever reaches the
+		// JSON, so this documents that path is independently safe too — it
+		// is NOT expected to drive this test red/green on its own.
 		wp_update_post( [
 			'ID'           => $event_id,
 			'post_excerpt' => 'Summary ' . $breakout,
@@ -331,9 +342,6 @@ class Test_Event_Schema_Emit extends Anchor_Events_TestCase {
 			'A raw "</script>" leaked into the JSON-LD body — this is a stored-XSS <script> tag breakout.'
 		);
 
-		// The escaping is transparent to JSON parsers: still valid JSON,
-		// and the decoded name is byte-for-byte the original, un-mangled
-		// title (proving we escaped for the HTML host, not the data).
 		$this->assertSame(
 			1,
 			\preg_match( '#<script type="application/ld\+json">(.*)</script>#s', $html, $m ),
@@ -341,7 +349,18 @@ class Test_Event_Schema_Emit extends Anchor_Events_TestCase {
 		);
 		$data = json_decode( $m[1], true );
 		$this->assertSame( JSON_ERROR_NONE, json_last_error(), 'Emitted JSON must decode without error: ' . json_last_error_msg() );
-		$this->assertSame( $title, $data['name'] );
+
+		// name: stripped of the injected markup (defense in depth, item 1) —
+		// no trace of the breakout survives.
+		$this->assertSame( 'Evil', $data['name'] );
+		$this->assertStringNotContainsString( '<script', $data['name'] );
+
+		// offers[0].url: still raw, byte-for-byte the original un-mangled
+		// value — proving THIS field is defused by JSON escaping alone, not
+		// sanitization (the escaping is transparent to JSON parsers: still
+		// valid JSON, and the decoded value is byte-for-byte the original).
+		$this->assertArrayHasKey( 'offers', $data );
+		$this->assertSame( 'https://example.com/register ' . $breakout, $data['offers'][0]['url'] );
 
 		// Confirm the actual fix mechanism: forward slashes are escaped,
 		// so the dangerous sequence survives only as the harmless `<\/script>`.

@@ -249,6 +249,16 @@ key for an answer whose question has been deleted.
   parent, rendered as a "choose a date" summary with a date-range and an "N dates
   available" count) rather than listing every child date separately; soft-closed
   children are dropped from the archive entirely.
+- **Attendee console tabs on a group parent**: `Roster::render_frontend()`
+  tabs a group parent's `[event_manager]` "Attendees" page one tab per child
+  occurrence (`render_frontend_group()`), each panel the same
+  summary/add-form/Registered-list a single event's console shows
+  (`render_roster_panel()`), scoped to that child. `assets/frontend.js`'s
+  `initRosterTabs()` implements the full APG roving-tabindex keyboard pattern
+  on the tablist — ArrowLeft/ArrowRight (and Up/Down) move and activate the
+  previous/next tab (wrapping), Home/End jump to the first/last tab — with
+  `hidden`/`aria-selected`/`tabIndex` all driven by the one `activate(tab)`
+  path click uses too.
 
 ---
 

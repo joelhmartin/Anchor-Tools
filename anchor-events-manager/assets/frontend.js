@@ -130,7 +130,11 @@
       var tabs = Array.prototype.slice.call(tablist.querySelectorAll('[role="tab"]'));
       if(!tabs.length){ return; }
 
-      function activate(tab){
+      // One path for both click and keyboard activation, so `hidden` /
+      // aria-selected / tabIndex can never describe the two differently.
+      // `focus` is true only for keyboard moves — a click already carries
+      // focus with it.
+      function activate(tab, focus){
         tabs.forEach(function(t){
           var isActive = t === tab;
           t.setAttribute('aria-selected', isActive ? 'true' : 'false');
@@ -139,10 +143,40 @@
           var panel = document.getElementById(t.getAttribute('aria-controls'));
           if(panel){ panel.hidden = !isActive; }
         });
+        if(focus){ tab.focus(); }
       }
 
-      tabs.forEach(function(tab){
+      tabs.forEach(function(tab, index){
         tab.addEventListener('click', function(){ activate(tab); });
+
+        // APG roving-tabindex, automatic activation: with tabIndex=-1 on
+        // every inactive tab (above), Tab alone can never reach them — the
+        // arrow keys are what move focus AND select, exactly like clicking.
+        // ArrowRight/Down -> next, ArrowLeft/Up -> previous (both wrap),
+        // Home/End -> first/last.
+        tab.addEventListener('keydown', function(e){
+          var next = null;
+          switch(e.key){
+            case 'ArrowRight':
+            case 'ArrowDown':
+              next = tabs[(index + 1) % tabs.length];
+              break;
+            case 'ArrowLeft':
+            case 'ArrowUp':
+              next = tabs[(index - 1 + tabs.length) % tabs.length];
+              break;
+            case 'Home':
+              next = tabs[0];
+              break;
+            case 'End':
+              next = tabs[tabs.length - 1];
+              break;
+            default:
+              return;
+          }
+          e.preventDefault();
+          activate(next, true);
+        });
       });
 
       var initial = null;

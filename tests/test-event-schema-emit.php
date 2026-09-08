@@ -367,6 +367,56 @@ class Test_Event_Schema_Emit extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( '<\/script>', $html );
 	}
 
+	/**
+	 * plain_text() (item 1, Task 43) runs wp_strip_all_tags() BEFORE
+	 * html_entity_decode() — an ENTITY-ENCODED "<script>" (e.g.
+	 * "&lt;script&gt;") is not a raw tag yet when the strip step runs, so it
+	 * survives untouched, and only becomes literal "<script>" TEXT once
+	 * decode runs afterward. That ordering could in principle reopen the
+	 * breakout the tag-stripping in the test above closes for a raw
+	 * "<script>" title — this proves it doesn't: the decoded name's literal
+	 * "</script>" still reaches the JSON body only in its JSON-escaped
+	 * `<\/script>` form, same defense as the always-raw external_url vector.
+	 */
+	public function test_entity_encoded_breakout_in_title_decodes_but_stays_json_escaped() {
+		$encoded_breakout = '&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;';
+		$decoded_breakout = '</script><script>alert(1)</script>';
+
+		$event_id = $this->make_event( [
+			'title'      => 'Evil ' . $encoded_breakout,
+			'start_date' => '2027-03-01',
+			'timezone'   => 'UTC',
+		] );
+
+		$html = $this->module()->render_event_schema( $event_id );
+		$this->assertNotSame( '', $html );
+
+		$this->assertSame(
+			1,
+			\preg_match( '#<script type="application/ld\+json">(.*)</script>#s', $html, $m ),
+			'Expected exactly one ld+json script tag to be extractable.'
+		);
+
+		// The literal "</script>" substring must not appear ANYWHERE inside
+		// the ld+json script body — only the JSON-escaped `<\/script>` form
+		// is safe there.
+		$this->assertStringNotContainsString(
+			'</script>',
+			$m[1],
+			'A raw "</script>" appeared inside the ld+json body — the entity-decoded breakout was not escaped.'
+		);
+
+		$data = json_decode( $m[1], true );
+		$this->assertSame( JSON_ERROR_NONE, json_last_error(), 'Emitted JSON must decode without error: ' . json_last_error_msg() );
+
+		// name: the entities DID decode to a literal breakout string...
+		$this->assertSame( 'Evil ' . $decoded_breakout, $data['name'] );
+
+		// ...but it only ever reached the ld+json body as the harmless,
+		// JSON-slash-escaped `<\/script>` — the defence that matters here.
+		$this->assertStringContainsString( '<\/script>', $m[1] );
+	}
+
 	public function test_output_event_schema_is_silent_off_single_event_views() {
 		$event_id = $this->make_event( [
 			'start_date' => '2027-03-01',

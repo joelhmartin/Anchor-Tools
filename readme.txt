@@ -24,6 +24,14 @@ Usage:
 
 == Changelog ==
 
+= 3.28.0 (unreleased) =
+
+* Events Manager — the front-end attendee console for a multi-date event
+  (an offering/recurring group parent) is now tabbed one date per child,
+  each panel the same summary/add-form/Registered-list a single event's
+  roster has always shown, scoped to that date; a page-level "All dates"
+  export covers every date in one CSV with a leading Date column.
+
 = 3.27.0 =
 
 Events Manager — new event statuses:

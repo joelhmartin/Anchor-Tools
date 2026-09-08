@@ -1527,11 +1527,19 @@ class Roster {
      * private) or soft-closed, since its seats still exist and still need
      * managing (Occurrences::children_any_status(); see that method's
      * docblock — children($parent, true) is publish-only and review found a
-     * draft/pending/private child with seats silently invisible here), each
-     * panel an identical roster panel to a single event's console
-     * (render_roster_panel(), scoped to that child's id — same summary, same
-     * add/edit form posting to the CHILD id, same Registered list, same
-     * per-event export links), plus a page-level "All dates" export.
+     * draft/pending/private child with seats silently invisible here), plus
+     * a page-level "All dates" export.
+     *
+     * Every tab is a real `<a href="...&occurrence=<child>">` (CodeRabbit
+     * review) — switching tabs is a full page load, which is what keeps the
+     * URL always naming the selected date and needs no JS at all. Only the
+     * ACTIVE occurrence gets the full roster panel (render_roster_panel() —
+     * same summary, same add/edit form posting to the CHILD id, same
+     * Registered list, same per-event export links, a single event's
+     * console has always shown); every other tab gets the light
+     * render_roster_panel_summary() instead, so a recurring parent with
+     * upwards of a hundred children never renders more than one seat table
+     * per page load.
      *
      * The parent itself never gets an add-form or a summary: it has no seats
      * of its own (Roster::handle_add()'s is_group_parent() refusal), so
@@ -1605,13 +1613,20 @@ class Roster {
                             $badge     = $this->child_badge( $child_id );
                             $tab_id    = 'anchor-roster-tab-' . $child_id;
                             $panel_id  = 'anchor-roster-panel-' . $child_id;
+                            // CodeRabbit review — a real link, not a JS-only
+                            // button: switching tabs is a full page load that
+                            // re-renders with `?occurrence=<child>`, which is
+                            // also what keeps the URL always naming the
+                            // selected date, with or without JS.
+                            $tab_url   = \add_query_arg( 'occurrence', $child_id, $page_url );
                         ?>
-                            <button type="button" role="tab"
+                            <a role="tab"
                                 id="<?php echo \esc_attr( $tab_id ); ?>"
+                                href="<?php echo \esc_url( $tab_url ); ?>"
                                 aria-controls="<?php echo \esc_attr( $panel_id ); ?>"
                                 aria-selected="<?php echo $is_active ? 'true' : 'false'; ?>"
                                 class="anchor-roster-fe-tab<?php echo $is_active ? ' is-active' : ''; ?>"
-                            ><?php echo \esc_html( $label ); ?><?php if ( '' !== $badge ) : ?> <span class="anchor-roster-fe-badge anchor-roster-fe-badge--<?php echo \esc_attr( $badge ); ?>"><?php echo \esc_html( $this->child_badge_label( $badge ) ); ?></span><?php endif; ?></button>
+                            ><?php echo \esc_html( $label ); ?><?php if ( '' !== $badge ) : ?> <span class="anchor-roster-fe-badge anchor-roster-fe-badge--<?php echo \esc_attr( $badge ); ?>"><?php echo \esc_html( $this->child_badge_label( $badge ) ); ?></span><?php endif; ?></a>
                         <?php endforeach; ?>
                     </div>
 
@@ -1627,9 +1642,18 @@ class Roster {
                         // Occurrences::parent_of()).
                         $child_self_url = \add_query_arg( 'occurrence', $child_id, $page_url );
                     ?>
-                        <section id="<?php echo \esc_attr( $panel_id ); ?>" role="tabpanel" aria-labelledby="<?php echo \esc_attr( $tab_id ); ?>" class="anchor-roster-fe-panel"<?php echo $is_active ? ' data-anchor-roster-active="1"' : ''; ?>>
+                        <section id="<?php echo \esc_attr( $panel_id ); ?>" role="tabpanel" aria-labelledby="<?php echo \esc_attr( $tab_id ); ?>" class="anchor-roster-fe-panel">
                             <h3 class="anchor-roster-fe-panel-title"><?php echo \esc_html( $label ); ?></h3>
-                            <?php echo $this->render_roster_panel( $child_id, $child_self_url, false ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+                            <?php // CodeRabbit review — the seat table (query_seats() at
+                            // per_page=500) is bounded to the ACTIVE occurrence only; a
+                            // recurring parent can have upwards of a hundred children, and
+                            // rendering all of their seat tables on one page load does not
+                            // scale. Every other panel gets the light summary+add-form view. ?>
+                            <?php if ( $is_active ) : ?>
+                                <?php echo $this->render_roster_panel( $child_id, $child_self_url, false ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+                            <?php else : ?>
+                                <?php echo $this->render_roster_panel_summary( $child_id, $child_self_url ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+                            <?php endif; ?>
                         </section>
                     <?php endforeach; ?>
                 </div>
@@ -1713,14 +1737,91 @@ class Roster {
     }
 
     /**
+     * The summary cards (confirmed/pending/waitlist/cancelled/capacity/seats
+     * left) plus the overbooked warning — the one piece render_roster_panel()
+     * (the ACTIVE panel) and render_roster_panel_summary() (every INACTIVE
+     * panel on a group parent's console) both need, so a summary line can
+     * never read differently depending on which of the two renders it.
+     *
+     * @param array $summary Registrations::get_event_summary() result.
+     * @return string
+     */
+    private function render_summary_cards( array $summary ) {
+        \ob_start();
+        ?>
+        <ul class="anchor-roster-fe-summary">
+            <li><span><?php echo (int) $summary['confirmed']; ?></span><?php \esc_html_e( 'Confirmed', 'anchor-schema' ); ?></li>
+            <li><span><?php echo (int) $summary['pending']; ?></span><?php \esc_html_e( 'Pending', 'anchor-schema' ); ?></li>
+            <li><span><?php echo (int) $summary['waitlist']; ?></span><?php \esc_html_e( 'Waitlist', 'anchor-schema' ); ?></li>
+            <li><span><?php echo (int) $summary['cancelled']; ?></span><?php \esc_html_e( 'Cancelled', 'anchor-schema' ); ?></li>
+            <li><span><?php echo $summary['capacity'] > 0 ? (int) $summary['capacity'] : '&infin;'; ?></span><?php \esc_html_e( 'Capacity', 'anchor-schema' ); ?></li>
+            <li><span><?php echo $summary['remaining'] < 0 ? '&infin;' : (int) $summary['remaining']; ?></span><?php \esc_html_e( 'Seats left', 'anchor-schema' ); ?></li>
+        </ul>
+
+        <?php if ( ! empty( $summary['is_overbooked'] ) ) : ?>
+            <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'This event is overbooked — reserved seats exceed capacity.', 'anchor-schema' ); ?></p>
+        <?php endif; ?>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * The lightweight panel for a NON-active tab on a group parent's console
+     * (CodeRabbit review, Task 42): summary cards + the add-attendee form —
+     * so a seat can be added to any date without switching tabs first, its
+     * `roster_return` already carrying THIS child's own `occurrence=`, so
+     * the redirect lands back on this exact tab (now active, and now showing
+     * the seat just added via the full panel below) — plus a "Show
+     * attendees" link to this child's own occurrence URL.
+     *
+     * Rendering every child's full seat table on one page load
+     * (query_seats() at per_page=500, once per child, inside
+     * render_roster_panel()) does not scale to a recurring parent with
+     * upwards of a hundred occurrences. This is what keeps that bounded to
+     * the ONE occurrence actually being viewed — every other tab gets this
+     * instead, which costs one get_event_summary() call and nothing else.
+     *
+     * No seat-editing here: an edit link only ever exists on the seat table
+     * of the panel that is ALREADY active (render_frontend_group() forces a
+     * seat's own child to be $active whenever `?seat_id=` names one of its
+     * seats), so a non-active panel never needs to resolve `?seat_id=` at
+     * all.
+     *
+     * @param int    $event_id
+     * @param string $self_url This child's own console URL (carries
+     *                         `&occurrence=<id>`) — the add form's
+     *                         `roster_return` and the "Show attendees" link.
+     * @return string
+     */
+    private function render_roster_panel_summary( $event_id, $self_url ) {
+        $event_id = (int) $event_id;
+        $summary  = $this->registrations->get_event_summary( $event_id );
+
+        \ob_start();
+        ?>
+        <?php echo $this->render_summary_cards( $summary ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
+
+        <?php echo $this->frontend_add_form( $event_id, $self_url ); // phpcs:ignore WordPress.Security.EscapeOutput ?>
+
+        <p class="anchor-roster-fe-tools">
+            <a class="anchor-event-button-secondary" href="<?php echo \esc_url( $self_url ); ?>"><?php \esc_html_e( 'Show attendees', 'anchor-schema' ); ?></a>
+        </p>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
      * The full attendee panel for ONE bookable event id: summary, the
      * edit-or-add form, the Registered list, and the export tools.
      *
      * Task 42 — this is the exact body render_frontend() used to render
      * inline for a single event. Pulled out so render_frontend_group() can
-     * render one per group child (a tab panel) without a second copy of the
-     * summary/form/list markup — the review note on this task is explicit
-     * that a second copy is a rejection, not a nitpick.
+     * render one per group child (the ACTIVE tab panel — see
+     * render_roster_panel_summary() for every other tab, added on
+     * CodeRabbit review to keep the seat table bounded to one occurrence)
+     * without a second copy of the summary/form/list markup — the review
+     * note on this task is explicit that a second copy is a rejection, not
+     * a nitpick.
      *
      * @param int    $event_id
      * @param string $self_url                 This event's own console URL —
@@ -1758,18 +1859,7 @@ class Roster {
 
         \ob_start();
         ?>
-        <ul class="anchor-roster-fe-summary">
-            <li><span><?php echo (int) $summary['confirmed']; ?></span><?php \esc_html_e( 'Confirmed', 'anchor-schema' ); ?></li>
-            <li><span><?php echo (int) $summary['pending']; ?></span><?php \esc_html_e( 'Pending', 'anchor-schema' ); ?></li>
-            <li><span><?php echo (int) $summary['waitlist']; ?></span><?php \esc_html_e( 'Waitlist', 'anchor-schema' ); ?></li>
-            <li><span><?php echo (int) $summary['cancelled']; ?></span><?php \esc_html_e( 'Cancelled', 'anchor-schema' ); ?></li>
-            <li><span><?php echo $summary['capacity'] > 0 ? (int) $summary['capacity'] : '&infin;'; ?></span><?php \esc_html_e( 'Capacity', 'anchor-schema' ); ?></li>
-            <li><span><?php echo $summary['remaining'] < 0 ? '&infin;' : (int) $summary['remaining']; ?></span><?php \esc_html_e( 'Seats left', 'anchor-schema' ); ?></li>
-        </ul>
-
-        <?php if ( ! empty( $summary['is_overbooked'] ) ) : ?>
-            <p class="anchor-roster-fe-warn"><?php \esc_html_e( 'This event is overbooked — reserved seats exceed capacity.', 'anchor-schema' ); ?></p>
-        <?php endif; ?>
+        <?php echo $this->render_summary_cards( $summary ); // phpcs:ignore WordPress.Security.EscapeOutput -- escaped inside. ?>
 
         <?php // REG-D48 — ?seat_id= only opens a seat that belongs to THIS event. ?>
         <?php if ( $seat_id > 0 && self::seat_belongs_to_event( $seat_id, $event_id ) ) : ?>

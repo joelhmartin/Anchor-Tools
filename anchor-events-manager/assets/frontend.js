@@ -118,80 +118,18 @@
     else { document.addEventListener('DOMContentLoaded', fn); }
   }
 
-  // Task 42 — the group-parent roster's per-date tabs. Every panel renders
-  // visible in the markup (the no-JS baseline: all dates stacked, each under
-  // its own heading); this is the only thing that collapses them into tabs,
-  // by toggling `hidden` — no library, no page navigation.
-  function initRosterTabs(){
-    document.querySelectorAll('.anchor-roster-fe-tablist').forEach(function(tablist){
-      if(tablist.dataset.anchorRosterTabsBound){ return; }
-      tablist.dataset.anchorRosterTabsBound = '1';
-
-      var tabs = Array.prototype.slice.call(tablist.querySelectorAll('[role="tab"]'));
-      if(!tabs.length){ return; }
-
-      // One path for both click and keyboard activation, so `hidden` /
-      // aria-selected / tabIndex can never describe the two differently.
-      // `focus` is true only for keyboard moves — a click already carries
-      // focus with it.
-      function activate(tab, focus){
-        tabs.forEach(function(t){
-          var isActive = t === tab;
-          t.setAttribute('aria-selected', isActive ? 'true' : 'false');
-          t.classList.toggle('is-active', isActive);
-          t.tabIndex = isActive ? 0 : -1;
-          var panel = document.getElementById(t.getAttribute('aria-controls'));
-          if(panel){ panel.hidden = !isActive; }
-        });
-        if(focus){ tab.focus(); }
-      }
-
-      tabs.forEach(function(tab, index){
-        tab.addEventListener('click', function(){ activate(tab); });
-
-        // APG roving-tabindex, automatic activation: with tabIndex=-1 on
-        // every inactive tab (above), Tab alone can never reach them — the
-        // arrow keys are what move focus AND select, exactly like clicking.
-        // ArrowRight/Down -> next, ArrowLeft/Up -> previous (both wrap),
-        // Home/End -> first/last.
-        tab.addEventListener('keydown', function(e){
-          var next = null;
-          switch(e.key){
-            case 'ArrowRight':
-            case 'ArrowDown':
-              next = tabs[(index + 1) % tabs.length];
-              break;
-            case 'ArrowLeft':
-            case 'ArrowUp':
-              next = tabs[(index - 1 + tabs.length) % tabs.length];
-              break;
-            case 'Home':
-              next = tabs[0];
-              break;
-            case 'End':
-              next = tabs[tabs.length - 1];
-              break;
-            default:
-              return;
-          }
-          e.preventDefault();
-          activate(next, true);
-        });
-      });
-
-      var initial = null;
-      for(var i = 0; i < tabs.length; i++){
-        if(tabs[i].getAttribute('aria-selected') === 'true'){ initial = tabs[i]; break; }
-      }
-      activate(initial || tabs[0]);
-    });
-  }
+  // Task 42's group-parent roster tabs used to be collapsed/switched by a
+  // small initRosterTabs() here (toggling `hidden`, then a full APG
+  // roving-tabindex keydown handler once review found the keyboard trap that
+  // left). CodeRabbit review: every tab is now a real `<a href="...
+  // &occurrence=<child>">` — switching tabs is a full page load rendered
+  // server-side (Roster::render_frontend_group()), so there is nothing left
+  // for JS to do here; the no-JS and JS experiences are now the same thing.
 
   ready(function(){
     initCalendars();
     initGalleries();
     initLightbox();
-    initRosterTabs();
   });
 
   // Lightbox

@@ -1273,8 +1273,10 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
   border-bottom:1px solid var(--anchor-event-border,#e2e4e8);
 }
 .anchor-roster-fe-tab{
+  display:inline-block;
   font:inherit;
   font-size:14px;
+  text-decoration:none;
   cursor:pointer;
   background:none;
   border:1px solid var(--anchor-event-border,#e2e4e8);

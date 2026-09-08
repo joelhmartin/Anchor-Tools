@@ -1351,15 +1351,88 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( wp_create_nonce( 'anchor_roster_add_' . $b ), $html );
 	}
 
-	public function test_group_parent_roster_each_panel_offers_its_own_per_event_export_links() {
+	/**
+	 * CodeRabbit review (Task 42) — the seat table (and, with it, the
+	 * per-event export links) is bounded to the ACTIVE occurrence only, not
+	 * rendered for every child on one page load. The active tab gets them;
+	 * deep-linking `?occurrence=` to a different child moves them there.
+	 */
+	public function test_only_the_active_panel_offers_its_own_per_event_export_links() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+
+		// A is active by default (first child, date order).
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'action=anchor_event_export', $html );
+		$this->assertStringContainsString( 'event_id=' . $a, $html );
+
+		// Deep-link to B — B is now the active panel and gets its own links.
+		$_GET['occurrence'] = (string) $b;
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'event_id=' . $b, $html );
+	}
+
+	/**
+	 * CodeRabbit review — rendering every child's full seat table
+	 * (query_seats() at per_page=500, once per child) on one page load does
+	 * not scale to a recurring parent with many occurrences. Only the ACTIVE
+	 * occurrence's Registered list actually lists its attendee; every other
+	 * tab's panel gets the lighter summary+add-form view with a "Show
+	 * attendees" link instead.
+	 */
+	public function test_only_the_active_panels_registered_list_shows_its_attendee() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+		$this->make_seat( $a, [ 'name' => 'Attendee A' ] );
+		$this->make_seat( $b, [ 'name' => 'Attendee B' ] );
+
+		// A is active by default.
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'Attendee A', $html );
+		$this->assertStringNotContainsString( 'Attendee B', $html );
+		$this->assertStringContainsString( 'Show attendees', $html );
+
+		// Deep-link to B — B's Registered list now shows, A's does not.
+		$_GET['occurrence'] = (string) $b;
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'Attendee B', $html );
+		$this->assertStringNotContainsString( 'Attendee A', $html );
+	}
+
+	/** CodeRabbit review — tabs are real links, not JS-only buttons. */
+	public function test_tabs_are_real_links_carrying_the_occurrence_arg() {
 		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
 		[ $a, $b ] = $live;
 
 		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
 
-		$this->assertStringContainsString( 'event_id=' . $a, $html );
-		$this->assertStringContainsString( 'event_id=' . $b, $html );
-		$this->assertStringContainsString( 'action=anchor_event_export', $html );
+		$this->assertStringContainsString( '<a role="tab"', $html );
+		// Submit buttons ("Add attendee", "Save seat") are legitimately
+		// <button> elements on this page — only role="tab" must never be
+		// one of them.
+		$this->assertDoesNotMatchRegularExpression( '/<button[^>]*role="tab"/', $html, 'Tabs must be real links (CodeRabbit review), not a JS-only button.' );
+		$this->assertStringContainsString( 'occurrence=' . $a, $html );
+		$this->assertStringContainsString( 'occurrence=' . $b, $html );
+	}
+
+	/** CodeRabbit review — `?occurrence=` alone (no JS) selects the tab. */
+	public function test_deep_link_occurrence_arg_selects_the_active_tab() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+
+		$_GET['occurrence'] = (string) $b;
+		$html               = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		$this->assertMatchesRegularExpression(
+			'/id="anchor-roster-tab-' . $b . '"[^>]*aria-selected="true"/',
+			$html,
+			'?occurrence=<b> must select B\'s tab.'
+		);
+		$this->assertMatchesRegularExpression(
+			'/id="anchor-roster-tab-' . $a . '"[^>]*aria-selected="false"/',
+			$html,
+			'A must no longer be selected once B is deep-linked.'
+		);
 	}
 
 	public function test_a_closed_child_still_gets_a_tab_marked_closed() {

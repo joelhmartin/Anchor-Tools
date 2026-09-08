@@ -1463,6 +1463,31 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertArrayNotHasKey( 'occurrence', $q, 'The child\'s own page has no tabs, so no occurrence arg belongs on its return URL.' );
 	}
 
+	/**
+	 * Codex round — Occurrences::children($parent, true) is PUBLISH-only, so
+	 * a child an admin unpublished (draft/pending/private) but which still
+	 * holds a seat was invisible to both the tabs and the all-dates export.
+	 */
+	public function test_a_draft_child_with_a_seat_still_gets_a_tab_and_appears_in_the_all_dates_export() {
+		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
+		[ $a, $b ] = $live;
+		$this->make_seat( $a, [ 'name' => 'Attendee A' ] );
+
+		wp_update_post( [ 'ID' => $a, 'post_status' => 'draft' ] );
+		$this->assertSame( 'draft', get_post_status( $a ), 'Fixture check: A must actually be a draft.' );
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+		$this->assertStringContainsString( 'Session A', $html );
+		$this->assertStringContainsString( 'anchor-roster-fe-badge--draft', $html );
+
+		$method = new ReflectionMethod( $this->module()->roster, 'export_table_all_dates' );
+		$method->setAccessible( true );
+		$table = $method->invoke( $this->module()->roster, $parent_id, 'all' );
+
+		$this->assertCount( 1, $table['rows'] );
+		$this->assertSame( 'Session A', $table['rows'][0][0] );
+	}
+
 	public function test_all_dates_export_has_a_date_column_and_rows_from_both_children_in_date_order() {
 		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
 		[ $a, $b ] = $live;

@@ -1308,6 +1308,13 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
 .anchor-roster-fe-badge--past{
   background:#8a5a1e;
 }
+.anchor-roster-fe-badge--draft,
+.anchor-roster-fe-badge--private{
+  background:#646970;
+}
+.anchor-roster-fe-badge--pending{
+  background:#bf8700;
+}
 .anchor-roster-fe-panel-title{
   margin:0 0 12px;
 }

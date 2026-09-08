@@ -1218,13 +1218,18 @@ class Roster {
      * One get_export_rows() call per child, one row-cell builder
      * (export_row_cells()) — never a second export implementation.
      *
+     * Task 42 review — children_any_status(), not children($parent, true):
+     * the latter is publish-only, so a child an admin unpublished
+     * (draft/pending/private) but which still holds seats would silently
+     * vanish from this export.
+     *
      * @param int    $parent_id
      * @param string $scope 'all' | 'active'.
      * @return array{header:string[],rows:array<int,array>}
      */
     private function export_table_all_dates( $parent_id, $scope ) {
         $parent_id = (int) $parent_id;
-        $children  = $this->module->occurrences ? $this->module->occurrences->children( $parent_id, true ) : [];
+        $children  = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
 
         $field_owner = []; // question key => the child id whose label resolves the heading.
         $per_child   = [];
@@ -1518,9 +1523,12 @@ class Roster {
 
     /**
      * The tabbed console page for a group PARENT (Task 42): one tab per
-     * child occurrence (live or closed — Occurrences::children($parent,
-     * true), the seats on a closed date still exist and still need managing),
-     * each panel an identical roster panel to a single event's console
+     * child occurrence — INCLUDING one an admin unpublished (draft/pending/
+     * private) or soft-closed, since its seats still exist and still need
+     * managing (Occurrences::children_any_status(); see that method's
+     * docblock — children($parent, true) is publish-only and review found a
+     * draft/pending/private child with seats silently invisible here), each
+     * panel an identical roster panel to a single event's console
      * (render_roster_panel(), scoped to that child's id — same summary, same
      * add/edit form posting to the CHILD id, same Registered list, same
      * per-event export links), plus a page-level "All dates" export.
@@ -1540,7 +1548,7 @@ class Roster {
         $list_url   = \remove_query_arg( [ 'event_action', 'event_id', 'seat_id', 'roster_msg', 'roster_type', 'occurrence' ], $return_url );
         $page_url   = \add_query_arg( [ 'event_action' => 'roster', 'event_id' => $parent_id ], $list_url );
 
-        $children = $this->module->occurrences ? $this->module->occurrences->children( $parent_id, true ) : [];
+        $children = $this->module->occurrences ? $this->module->occurrences->children_any_status( $parent_id ) : [];
 
         // ?seat_id= is a single global query var; scope its "not found"
         // notice to the page level (once) rather than to every panel — every
@@ -1640,7 +1648,17 @@ class Roster {
     }
 
     /**
-     * Badge for a group child's tab: 'closed' | 'cancelled' | 'past' | ''.
+     * Badge for a group child's tab: 'draft' | 'pending' | 'private' |
+     * 'closed' | 'cancelled' | 'past' | ''.
+     *
+     * The post_status check runs FIRST (Task 42 review — since
+     * render_frontend_group() now reaches every child via
+     * children_any_status(), one of these tabs can be an unpublished child):
+     * whether the post is even public is the more fundamental fact, and an
+     * unpublished child can otherwise ALSO read as any of the states below
+     * (a draft child is never `is_past()`-excluded, for instance) — the
+     * operator needs to know it's a draft/pending/private post before
+     * anything about its date.
      *
      * is_closed() has to be checked BEFORE the status: Occurrences::soft_close()
      * (dropping a date from the parent's offering) reuses the plain
@@ -1658,6 +1676,10 @@ class Roster {
      * @return string
      */
     private function child_badge( $child_id ) {
+        $post_status = (string) \get_post_status( $child_id );
+        if ( \in_array( $post_status, [ 'draft', 'pending', 'private' ], true ) ) {
+            return $post_status;
+        }
         if ( $this->module->occurrences && $this->module->occurrences->is_closed( $child_id ) ) {
             return 'closed';
         }
@@ -1673,6 +1695,12 @@ class Roster {
     /** Human label for child_badge()'s machine value. */
     private function child_badge_label( $badge ) {
         switch ( $badge ) {
+            case 'draft':
+                return \__( 'Draft', 'anchor-schema' );
+            case 'pending':
+                return \__( 'Pending', 'anchor-schema' );
+            case 'private':
+                return \__( 'Private', 'anchor-schema' );
             case 'cancelled':
                 return \__( 'Cancelled', 'anchor-schema' );
             case 'closed':

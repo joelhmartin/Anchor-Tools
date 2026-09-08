@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.27.0
+Stable tag: 3.28.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -24,7 +24,7 @@ Usage:
 
 == Changelog ==
 
-= 3.28.0 (unreleased) =
+= 3.28.0 =
 
 * Events Manager — the front-end attendee console for a multi-date event
   (an offering/recurring group parent, including a draft/pending/private

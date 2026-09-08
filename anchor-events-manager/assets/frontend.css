@@ -1264,6 +1264,8 @@ body.anchor-event-lightbox-open{ overflow:hidden; }
  * one once it runs, so a no-JS reader still gets the full attendee list for
  * every date, each under its own heading.
  * ------------------------------------------------------------------------- */
+.anchor-roster-fe-tabbar{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;}
+.anchor-roster-fe-tabbar .anchor-roster-fe-tools{margin:0 0 8px;}
 .anchor-roster-fe-tablist{
   display:flex;
   flex-wrap:wrap;

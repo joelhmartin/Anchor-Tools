@@ -1424,6 +1424,45 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertSame( (string) $b, (string) ( $q['occurrence'] ?? '' ), 'The occurrence arg must name the child that was actually posted to.' );
 	}
 
+	/**
+	 * Codex round — redirect() used to remap a child action to the parent
+	 * UNCONDITIONALLY whenever $event_id was a group child, which bounced a
+	 * manager who opened the child's OWN Attendees page directly (a direct
+	 * link from the events list — no tabs, no `occurrence=`) over to the
+	 * parent's tabbed page the instant they acted on a seat.
+	 */
+	public function test_redirect_after_add_from_a_childs_own_attendees_page_stays_on_that_page() {
+		[ , $live ] = $this->make_offering( $this->two_rows() );
+		[ , $b ] = $live;
+
+		// The child's OWN single-event console URL — no `occurrence=`, and
+		// `event_id` names the CHILD, not the parent.
+		$child_own_url = add_query_arg( [ 'event_action' => 'roster', 'event_id' => $b ], home_url( '/console/' ) );
+
+		$_POST = [
+			'event_id'      => $b,
+			'roster_name'   => 'Jane Doe',
+			'roster_email'  => 'jane@example.org',
+			'roster_guests' => 0,
+			'roster_return' => rawurlencode( $child_own_url ),
+			'_wpnonce'      => wp_create_nonce( 'anchor_roster_add_' . $b ),
+		];
+		$_REQUEST = $_POST;
+
+		try {
+			$this->module()->roster->handle_add();
+			$this->fail( 'handle_add() did not redirect.' );
+		} catch ( Anchor_Roster_Redirect_Signal $e ) {
+			$location = $e->getMessage();
+		}
+
+		$q = [];
+		parse_str( (string) wp_parse_url( html_entity_decode( $location ), PHP_URL_QUERY ), $q );
+
+		$this->assertSame( (string) $b, (string) ( $q['event_id'] ?? '' ), 'A direct child-page action must stay on the CHILD page, not bounce to the parent tabs.' );
+		$this->assertArrayNotHasKey( 'occurrence', $q, 'The child\'s own page has no tabs, so no occurrence arg belongs on its return URL.' );
+	}
+
 	public function test_all_dates_export_has_a_date_column_and_rows_from_both_children_in_date_order() {
 		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
 		[ $a, $b ] = $live;

@@ -936,13 +936,19 @@ class Roster {
      *             a required question left blank). Nothing to override.
      *
      * Task 42 — $event_id here is whatever the acted-on FORM posted, which
-     * for a seat on a group child is the CHILD's id. The console's top-level
-     * page identifies itself by the PARENT's id (that is what decides tabs
-     * vs. a single roster in render_frontend()), so a child action has to
-     * come back as `event_id=<parent>&occurrence=<child>` rather than
-     * `event_id=<child>` — the latter would silently swap the tabbed parent
-     * page for the child's own single-event roster right after the action
-     * that was supposed to return to a tab of it.
+     * for a seat on a group child is the CHILD's id. When the action was
+     * taken from a TAB of the parent's console (the return URL already names
+     * the parent as `event_id`, or already carries `occurrence=`), the
+     * redirect is pinned to `event_id=<parent>&occurrence=<child>` — plain
+     * `event_id=<child>` would silently swap the tabbed parent page for the
+     * child's own single-event roster right after an action that was
+     * supposed to return to a tab of it. But when the action was taken from
+     * the CHILD's OWN Attendees page instead (e.g. a direct link from the
+     * events list — no tabs, no `occurrence=` in sight), the redirect stays
+     * on that child's own page: nothing about where the manager came from
+     * asked to be bounced to the parent (review finding — this used to remap
+     * unconditionally whenever $event_id was a group child, regardless of
+     * which page the action was actually taken from).
      *
      * @param int    $event_id
      * @param string $type    'success' | 'error'.
@@ -971,13 +977,31 @@ class Roster {
 
         // Task 42 — resolve the top-level page id (page_id) and, when the
         // acted-on event is a group child, the tab to land on (occurrence).
+        //
+        // Review finding — this used to remap UNCONDITIONALLY whenever
+        // $event_id was a group child, which bounced a manager who opened a
+        // CHILD's own Attendees page directly (e.g. a direct link from the
+        // events list — render_frontend_single(), no tabs, `?event_id=
+        // <child>` and no `occurrence=`) over to the parent's tabbed page the
+        // instant they added/edited/cancelled a seat, even though nothing
+        // about where they came from asked for that. The remap is only
+        // correct when the return URL ITSELF already says "this was a tab of
+        // the parent" — it already names the parent as `event_id`, or it
+        // already carries an `occurrence=` tab param — never merely because
+        // the acted-on event happens to be a child.
         $page_id    = $event_id;
         $occurrence = 0;
-        if ( $this->module->occurrences && $this->module->occurrences->is_group_child( $event_id ) ) {
+        if ( $return !== '' && $this->module->occurrences && $this->module->occurrences->is_group_child( $event_id ) ) {
             $parent = $this->module->occurrences->parent_of( $event_id );
             if ( $parent > 0 ) {
-                $page_id    = $parent;
-                $occurrence = $event_id;
+                $return_args = [];
+                \wp_parse_str( (string) \wp_parse_url( $return, PHP_URL_QUERY ), $return_args );
+                $return_names_parent = ( isset( $return_args['event_id'] ) && (int) $return_args['event_id'] === $parent )
+                    || isset( $return_args['occurrence'] );
+                if ( $return_names_parent ) {
+                    $page_id    = $parent;
+                    $occurrence = $event_id;
+                }
             }
         }
 

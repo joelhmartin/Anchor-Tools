@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.28.1
+Stable tag: 3.28.2
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -24,7 +24,7 @@ Usage:
 
 == Changelog ==
 
-= 3.28.2 (unreleased) =
+= 3.28.2 =
 
 * Fix: the Attendees page for a multi-date event rendered EVERY date's panel
   stacked on the page, not just the one whose tab was selected — the active

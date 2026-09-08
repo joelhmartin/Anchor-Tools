@@ -1605,6 +1605,7 @@ class Roster {
                 <p class="anchor-roster-fe-empty"><?php \esc_html_e( 'No dates currently scheduled.', 'anchor-schema' ); ?></p>
             <?php else : ?>
                 <div class="anchor-roster-fe-tabs">
+                    <div class="anchor-roster-fe-tabbar">
                     <div class="anchor-roster-fe-tablist" role="tablist">
                         <?php foreach ( $children as $child_id ) :
                             $child_id  = (int) $child_id;
@@ -1629,6 +1630,11 @@ class Roster {
                             ><?php echo \esc_html( $label ); ?><?php if ( '' !== $badge ) : ?> <span class="anchor-roster-fe-badge anchor-roster-fe-badge--<?php echo \esc_attr( $badge ); ?>"><?php echo \esc_html( $this->child_badge_label( $badge ) ); ?></span><?php endif; ?></a>
                         <?php endforeach; ?>
                     </div>
+                    <p class="anchor-roster-fe-tools anchor-roster-fe-all-dates">
+                        <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'all' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export all dates', 'anchor-schema' ); ?></a>
+                        <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'active' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export all dates (confirmed only)', 'anchor-schema' ); ?></a>
+                    </p>
+                    </div><!-- .anchor-roster-fe-tabbar -->
 
                     <?php foreach ( $children as $child_id ) :
                         $child_id       = (int) $child_id;
@@ -1658,13 +1664,6 @@ class Roster {
                     <?php endforeach; ?>
                 </div>
 
-                <div class="anchor-event-section anchor-roster-fe-all-dates">
-                    <h3><?php \esc_html_e( 'All dates', 'anchor-schema' ); ?></h3>
-                    <p class="anchor-roster-fe-tools">
-                        <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'all' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV — all dates (all statuses)', 'anchor-schema' ); ?></a>
-                        <a class="anchor-event-button-secondary" href="<?php echo \esc_url( \wp_nonce_url( \add_query_arg( [ 'action' => 'anchor_event_export', 'event_id' => $parent_id, 'occurrences' => 'all', 'scope' => 'active' ], \admin_url( 'admin-post.php' ) ), 'anchor_event_export' ) ); ?>"><?php \esc_html_e( 'Export CSV — all dates (confirmed only)', 'anchor-schema' ); ?></a>
-                    </p>
-                </div>
             <?php endif; ?>
         </div>
         <?php

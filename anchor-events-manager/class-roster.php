@@ -1855,6 +1855,41 @@ class Roster {
         return (string) \ob_get_clean();
     }
 
+    /**
+     * A form-control base name, suffixed with an event id so the same base
+     * (`roster_name`, `roster_field_practice_name`, ...) is unique across
+     * every panel render_frontend_group() renders (Task 42 review finding —
+     * a duplicate `id` resolves `<label for>` to whichever element the
+     * browser matches FIRST in the whole document, so a later tab's labels
+     * silently pointed at the FIRST panel's inputs). One helper, used by
+     * both frontend_add_form() and frontend_edit_form(), so the id a label's
+     * `for` names and the id its control actually carries can never drift.
+     *
+     * @param string $base     e.g. 'roster_name', 'roster_field_practice_name'.
+     * @param int    $event_id
+     * @return string
+     */
+    private function field_id( $base, $event_id ) {
+        return $base . '-' . (int) $event_id;
+    }
+
+    /**
+     * A nonce field for a console form, with a unique `id` (Task 42 review —
+     * `wp_nonce_field()`'s default markup carries `id="_wpnonce"`, and every
+     * panel's form calling it produced a document-wide duplicate id even
+     * after field_id() covered every OTHER control; `name="_wpnonce"` stays
+     * exactly what it always was, since check_admin_referer() reads that
+     * field by name, not by id). Echoes, matching wp_nonce_field()'s default.
+     *
+     * @param string $action
+     * @param int    $event_id
+     */
+    private function nonce_field_with_unique_id( $action, $event_id ) {
+        echo '<input type="hidden" id="' . \esc_attr( $this->field_id( '_wpnonce', $event_id ) ) . '" name="_wpnonce" value="'
+            . \esc_attr( \wp_create_nonce( $action ) ) . '" />';
+        echo \wp_referer_field( false ); // phpcs:ignore WordPress.Security.EscapeOutput -- core-escaped.
+    }
+
     /** Manual "add attendee" form for the front-end console. */
     private function frontend_add_form( $event_id, $self_url ) {
         $event_id = (int) $event_id;
@@ -1870,29 +1905,29 @@ class Roster {
                 <input type="hidden" name="action" value="anchor_roster_add" />
                 <input type="hidden" name="event_id" value="<?php echo \esc_attr( (string) $event_id ); ?>" />
                 <input type="hidden" name="roster_return" value="<?php echo \esc_url( $self_url ); ?>" />
-                <?php \wp_nonce_field( 'anchor_roster_add_' . $event_id ); ?>
+                <?php $this->nonce_field_with_unique_id( 'anchor_roster_add_' . $event_id, $event_id ); ?>
 
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
-                        <label for="roster_name"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?> *</label>
-                        <input type="text" id="roster_name" name="roster_name" required />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_name', $event_id ) ); ?>"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?> *</label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'roster_name', $event_id ) ); ?>" name="roster_name" required />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_email"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
-                        <input type="email" id="roster_email" name="roster_email" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_email', $event_id ) ); ?>"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
+                        <input type="email" id="<?php echo \esc_attr( $this->field_id( 'roster_email', $event_id ) ); ?>" name="roster_email" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_phone"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
-                        <input type="text" id="roster_phone" name="roster_phone" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_phone', $event_id ) ); ?>"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'roster_phone', $event_id ) ); ?>" name="roster_phone" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_guests"><?php \esc_html_e( 'Additional guests', 'anchor-schema' ); ?></label>
-                        <input type="number" id="roster_guests" name="roster_guests" value="0" min="0" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_guests', $event_id ) ); ?>"><?php \esc_html_e( 'Additional guests', 'anchor-schema' ); ?></label>
+                        <input type="number" id="<?php echo \esc_attr( $this->field_id( 'roster_guests', $event_id ) ); ?>" name="roster_guests" value="0" min="0" />
                     </div>
                     <?php if ( ! empty( $tiers ) ) : ?>
                     <div class="anchor-event-field">
-                        <label for="roster_ticket_type"><?php \esc_html_e( 'Ticket type', 'anchor-schema' ); ?></label>
-                        <select id="roster_ticket_type" name="roster_ticket_type">
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_ticket_type', $event_id ) ); ?>"><?php \esc_html_e( 'Ticket type', 'anchor-schema' ); ?></label>
+                        <select id="<?php echo \esc_attr( $this->field_id( 'roster_ticket_type', $event_id ) ); ?>" name="roster_ticket_type">
                             <?php foreach ( $tiers as $tier_id => $label ) : ?>
                                 <option value="<?php echo \esc_attr( $tier_id ); ?>"><?php echo \esc_html( $label ); ?></option>
                             <?php endforeach; ?>
@@ -1900,13 +1935,15 @@ class Roster {
                     </div>
                     <?php endif; ?>
                     <?php // REG-D39 — the same questions the public form asks. ?>
-                    <?php foreach ( $this->module_questions( $event_id ) as $q ) : ?>
+                    <?php foreach ( $this->module_questions( $event_id ) as $q ) :
+                        $field_id = $this->field_id( 'roster_field_' . $q['key'], $event_id );
+                    ?>
                     <div class="anchor-event-field">
-                        <label for="<?php echo \esc_attr( 'roster_field_' . $q['key'] ); ?>"><?php echo \esc_html( $q['label'] ); ?><?php echo empty( $q['required'] ) ? '' : ' *'; ?></label>
+                        <label for="<?php echo \esc_attr( $field_id ); ?>"><?php echo \esc_html( $q['label'] ); ?><?php echo empty( $q['required'] ) ? '' : ' *'; ?></label>
                         <?php
                         echo $this->module->render_registration_question_control( $q, [ // phpcs:ignore WordPress.Security.EscapeOutput -- the renderer escapes.
                             'name' => 'roster_field[' . $q['key'] . ']',
-                            'id'   => 'roster_field_' . $q['key'],
+                            'id'   => $field_id,
                         ] );
                         ?>
                     </div>
@@ -1988,24 +2025,24 @@ class Roster {
                 <input type="hidden" name="event_id" value="<?php echo \esc_attr( (string) $event_id ); ?>" />
                 <input type="hidden" name="seat_id" value="<?php echo \esc_attr( (string) $seat_id ); ?>" />
                 <input type="hidden" name="roster_return" value="<?php echo \esc_url( $self_url ); ?>" />
-                <?php \wp_nonce_field( 'anchor_roster_edit_' . $event_id ); ?>
+                <?php $this->nonce_field_with_unique_id( 'anchor_roster_edit_' . $event_id, $event_id ); ?>
 
                 <div class="anchor-event-grid">
                     <div class="anchor-event-field">
-                        <label for="roster_name"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?></label>
-                        <input type="text" id="roster_name" name="roster_name" value="<?php echo \esc_attr( $name ); ?>" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_name', $event_id ) ); ?>"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?></label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'roster_name', $event_id ) ); ?>" name="roster_name" value="<?php echo \esc_attr( $name ); ?>" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_email"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
-                        <input type="email" id="roster_email" name="roster_email" value="<?php echo \esc_attr( $email ); ?>" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_email', $event_id ) ); ?>"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?></label>
+                        <input type="email" id="<?php echo \esc_attr( $this->field_id( 'roster_email', $event_id ) ); ?>" name="roster_email" value="<?php echo \esc_attr( $email ); ?>" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_phone"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
-                        <input type="text" id="roster_phone" name="roster_phone" value="<?php echo \esc_attr( $phone ); ?>" />
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_phone', $event_id ) ); ?>"><?php \esc_html_e( 'Phone', 'anchor-schema' ); ?></label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'roster_phone', $event_id ) ); ?>" name="roster_phone" value="<?php echo \esc_attr( $phone ); ?>" />
                     </div>
                     <div class="anchor-event-field">
-                        <label for="roster_status"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></label>
-                        <select id="roster_status" name="roster_status">
+                        <label for="<?php echo \esc_attr( $this->field_id( 'roster_status', $event_id ) ); ?>"><?php \esc_html_e( 'Status', 'anchor-schema' ); ?></label>
+                        <select id="<?php echo \esc_attr( $this->field_id( 'roster_status', $event_id ) ); ?>" name="roster_status">
                             <?php foreach ( $this->status_options_for( $status ) as $val => $label ) : ?>
                                 <option value="<?php echo \esc_attr( $val ); ?>" <?php \selected( $status, $val ); ?>><?php echo \esc_html( $label ); ?></option>
                             <?php endforeach; ?>

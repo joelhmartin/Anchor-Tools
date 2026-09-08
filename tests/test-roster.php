@@ -1488,6 +1488,25 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertSame( 'Session A', $table['rows'][0][0] );
 	}
 
+	/**
+	 * Codex round — every panel's add/edit form controls shared the same
+	 * bare ids (`roster_name`, `roster_field_*`, ...) across every child, so
+	 * a duplicate `id` meant a later tab's `<label for>` resolved back to
+	 * the FIRST panel's inputs.
+	 */
+	public function test_group_parent_roster_panels_have_no_duplicate_control_ids() {
+		[ $parent_id ] = $this->make_offering( $this->two_rows() );
+
+		$html = $this->module()->roster->render_frontend( $parent_id, home_url( '/console/' ) );
+
+		preg_match_all( '/\sid="([^"]+)"/', $html, $m );
+		$this->assertNotEmpty( $m[1], 'Fixture check: the page must actually render elements with ids.' );
+
+		$counts = array_count_values( $m[1] );
+		$dupes  = array_keys( array_filter( $counts, function ( $c ) { return $c > 1; } ) );
+		$this->assertSame( [], $dupes, 'Duplicate id= attributes: ' . implode( ', ', $dupes ) );
+	}
+
 	public function test_all_dates_export_has_a_date_column_and_rows_from_both_children_in_date_order() {
 		[ $parent_id, $live ] = $this->make_offering( $this->two_rows() );
 		[ $a, $b ] = $live;

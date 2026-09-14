@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.28.2
+Stable tag: 3.29.0
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -24,7 +24,7 @@ Usage:
 
 == Changelog ==
 
-= Unreleased =
+= 3.29.0 =
 
 * New: `[event_registration id="N" dates="inline"]` renders every live date of a
   multi-date event as its own bookable block — price, quantity and add-to-cart —

@@ -7091,6 +7091,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'slug' => '',
             'show_title' => 'no',
             'show_notice' => 'yes',
+            'dates' => 'list',
         ], $atts );
 
         $event_id = (int) $atts['id'];
@@ -7152,9 +7153,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         if ( $this->occurrences->is_group_parent( $event_id ) ) {
             // A container is never bookable itself (render_registration_form()
-            // returns '' for it); the picker over its live dates is what a
-            // landing page that names the parent actually wants.
-            $output .= $this->render_choose_date_list( $event_id );
+            // returns '' for it), so the parent renders its children instead.
+            // Two shapes, because a landing page and a date index want
+            // different things:
+            //   dates="list"   (default) — a picker linking out to each date's
+            //                  own page. Unchanged behaviour.
+            //   dates="inline" — each live date's OWN booking UI, stacked, so
+            //                  a landing page that already sells the course
+            //                  can take the order without sending the visitor
+            //                  to a second page to do it.
+            $output .= ( $atts['dates'] === 'inline' )
+                ? $this->render_inline_date_forms( $event_id )
+                : $this->render_choose_date_list( $event_id );
             return $output;
         }
         if ( $atts['show_notice'] === 'yes' ) {
@@ -9624,6 +9634,73 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output .= '</section>';
 
         return $output;
+    }
+
+    /**
+     * Inline booking UI for every live date of a group parent —
+     * `[event_registration id="N" dates="inline"]`.
+     *
+     * The picker (render_choose_date_list()) answers "which dates exist" by
+     * linking out to each occurrence's own page. That is the wrong shape for a
+     * landing page that has already done the selling: the visitor has decided,
+     * and sending them to a second page to find the quantity box loses them.
+     * This renders each live child's OWN registration UI instead, stacked, so
+     * every date is bookable where the visitor already is.
+     *
+     * Each child keeps its own complete block — WooCommerce storefront or the
+     * free form, whichever that child resolves to — because every seat,
+     * capacity and sale-window decision is per-occurrence. The storefront JS
+     * scopes to the nearest `.anchor-event-tickets` and posts that block's own
+     * `data-event`, so N blocks on one page stay independent with no JS change.
+     *
+     * A child that renders nothing at all (registration switched off, and
+     * neither full nor closed) is skipped rather than given an empty heading.
+     * If that leaves nothing to show, the picker renders instead — a visitor
+     * still gets the dates and a way through to them.
+     *
+     * @param int $parent_id
+     * @return string
+     */
+    public function render_inline_date_forms( $parent_id ) {
+        $parent_id = (int) $parent_id;
+        $children  = $this->occurrences->order_by_bookability(
+            $this->occurrences->children( $parent_id, false )
+        );
+
+        if ( empty( $children ) ) {
+            return $this->render_choose_date_list( $parent_id );
+        }
+
+        $blocks = '';
+        foreach ( $children as $child_id ) {
+            $child_id = (int) $child_id;
+            $form     = $this->render_registration_form( $child_id );
+            if ( $form === '' ) {
+                continue;
+            }
+
+            $meta  = $this->get_meta( $child_id );
+            $label = $this->occurrence_label( $child_id, $meta );
+            $when  = $this->format_date_time( $meta, true );
+
+            $blocks .= '<div class="anchor-event-inline-date" data-event="' . esc_attr( $child_id ) . '">';
+            $blocks .= '<div class="anchor-event-inline-date-head">';
+            $blocks .= '<h3 class="anchor-event-inline-date-title">'
+                . '<a href="' . esc_url( \get_permalink( $child_id ) ) . '">' . esc_html( $label ) . '</a>'
+                . '</h3>';
+            if ( $when !== '' ) {
+                $blocks .= '<p class="anchor-event-inline-date-when">' . esc_html( $when ) . '</p>';
+            }
+            $blocks .= '</div>';
+            $blocks .= $form;
+            $blocks .= '</div>';
+        }
+
+        if ( $blocks === '' ) {
+            return $this->render_choose_date_list( $parent_id );
+        }
+
+        return '<section class="anchor-event-inline-dates">' . $blocks . '</section>';
     }
 
     /**

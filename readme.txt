@@ -24,6 +24,15 @@ Usage:
 
 == Changelog ==
 
+= Unreleased =
+
+* New: `[event_registration id="N" dates="inline"]` renders every live date of a
+  multi-date event as its own bookable block — price, quantity and add-to-cart —
+  instead of a picker linking out to each date's page. A landing page that has
+  already sold the course can now take the order where the visitor is, rather
+  than sending them to a second page to find the quantity box. The default
+  (`dates="list"`) is unchanged, so no existing parent page shifts behaviour.
+
 = 3.28.2 =
 
 * Fix: the Attendees page for a multi-date event rendered EVERY date's panel

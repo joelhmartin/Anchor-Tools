@@ -61,6 +61,31 @@
         }
     }
 
+    // Quantity stepper. The number input stays the single source of truth — the
+    // buttons only nudge it — so the add-to-cart handler below is unaffected and
+    // the field still works alone if this never binds. min/max come off the input
+    // itself, which is where the seat layer already wrote the remaining-seat cap.
+    $(document).on('click', '.anchor-event-qty-btn', function (e) {
+        e.preventDefault();
+
+        var $input = $(this).closest('.anchor-event-qty').find('.anchor-event-ticket-qty').first();
+        if (!$input.length) {
+            return;
+        }
+
+        var step = parseInt($(this).data('qty-step'), 10) || 0;
+        var min = parseInt($input.attr('min'), 10);
+        var max = parseInt($input.attr('max'), 10);
+        var next = (parseInt($input.val(), 10) || 0) + step;
+
+        if (!isNaN(min)) { next = Math.max(min, next); }
+        if (!isNaN(max)) { next = Math.min(max, next); }
+
+        if (next !== (parseInt($input.val(), 10) || 0)) {
+            $input.val(next).trigger('change');
+        }
+    });
+
     $(document).on('click', '[data-add-to-cart]', function (e) {
         e.preventDefault();
 

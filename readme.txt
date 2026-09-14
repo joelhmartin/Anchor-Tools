@@ -24,6 +24,16 @@ Usage:
 
 == Changelog ==
 
+= Unreleased =
+
+* The ticket row's quantity field is now a −/+ stepper instead of a bare number
+  box. The input itself is unchanged — same class, same `data-tier`, same
+  min/max from the seat layer — so the buttons are a progressive enhancement
+  over it and the field still works alone if the script never binds. The
+  buttons are `aria-hidden` and out of the tab order on purpose: the input is
+  already labelled and keyboard-operable, so exposing two more controls for one
+  value would only add noise for assistive tech.
+
 = 3.29.0 =
 
 * New: `[event_registration id="N" dates="inline"]` renders every live date of a

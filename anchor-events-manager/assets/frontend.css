@@ -197,6 +197,55 @@
   font-size:15px;
 }
 
+/* Quantity stepper around the ticket-row number input. The input keeps its own
+   width/box; the buttons sit either side of it inside one pill. */
+.anchor-event-qty{
+  display:inline-flex;
+  align-items:center;
+  border:1px solid var(--anchor-event-border);
+  border-radius:999px;
+  background:#fff;
+  overflow:hidden;
+  width:-moz-fit-content;
+  width:fit-content;
+}
+
+.anchor-event-qty-btn{
+  width:30px;
+  height:30px;
+  flex:none;
+  border:0;
+  background:none;
+  cursor:pointer;
+  color:var(--anchor-event-text);
+  font-size:16px;
+  line-height:1;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  transition:background .15s ease;
+}
+
+.anchor-event-qty-btn:hover{ background:rgba(0,0,0,.06); }
+
+/* Inside the pill the field is a bare number: no second border, and none of the
+   native spinners, which would duplicate the buttons either side of it. */
+.anchor-event-qty .anchor-event-ticket-qty{
+  width:44px;
+  border:0;
+  background:none;
+  text-align:center;
+  padding:0;
+  -moz-appearance:textfield;
+  appearance:textfield;
+}
+
+.anchor-event-qty .anchor-event-ticket-qty::-webkit-outer-spin-button,
+.anchor-event-qty .anchor-event-ticket-qty::-webkit-inner-spin-button{
+  -webkit-appearance:none;
+  margin:0;
+}
+
 /* Inline date booking (group parent, dates="inline"): each live occurrence's
    own registration UI stacked, so a landing page can take the order without
    sending the visitor to the occurrence's page for the quantity box. Each

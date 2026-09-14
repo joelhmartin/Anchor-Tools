@@ -1076,9 +1076,21 @@ class WooCommerce {
             $max       = \max( 1, \min( $remaining, self::QTY_CAP ) );
         }
 
+        // The input keeps its class, data-tier and min/max/step untouched — the
+        // add-to-cart handler reads .anchor-event-ticket-qty directly, and the
+        // buttons are a progressive enhancement over it, not a replacement. With
+        // JS off (or the stepper script blocked) the number field still works on
+        // its own, which is why the value lives there and not in the buttons.
+        // The buttons are aria-hidden and out of the tab order on purpose: the
+        // input is already labelled and operable by keyboard, so exposing two
+        // more controls for the same value only adds noise for AT users.
+        $row .= '<div class="anchor-event-qty">';
+        $row .= '<button type="button" class="anchor-event-qty-btn" data-qty-step="-1" tabindex="-1" aria-hidden="true">&minus;</button>';
         $row .= '<input type="number" class="anchor-event-ticket-qty" min="0" max="' . \esc_attr( $max ) . '"'
             . ' step="1" value="' . ( $only_tier ? '1' : '0' ) . '" data-tier="' . \esc_attr( $tier_id ) . '"'
             . ' aria-label="' . \esc_attr( \sprintf( /* translators: %s: ticket tier label. */ \__( 'Quantity for %s', 'anchor-schema' ), $label ) ) . '" />';
+        $row .= '<button type="button" class="anchor-event-qty-btn" data-qty-step="1" tabindex="-1" aria-hidden="true">+</button>';
+        $row .= '</div>';
         $row .= '</div>';
         return $row;
     }

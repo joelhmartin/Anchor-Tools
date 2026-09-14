@@ -658,4 +658,35 @@ class Test_Storefront_Bookability extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( \Anchor\Events\Ticket_Types::default_label(), $html );
 		$this->assertStringNotContainsString( 'Ticket<', $html, 'Must not fall back to a second, drifted literal.' );
 	}
+
+	/**
+	 * A sellable row wraps its quantity field in the stepper, and the input
+	 * keeps the class, data-tier and min/max the add-to-cart handler and the
+	 * seat layer both rely on — the buttons are decoration over it, not a
+	 * replacement for it.
+	 */
+	public function test_sellable_row_wraps_quantity_in_a_stepper() {
+		list( $event ) = $this->make_ticketed_event();
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringContainsString( 'anchor-event-qty', $html );
+		$this->assertSame( 1, substr_count( $html, 'data-qty-step="-1"' ) );
+		$this->assertSame( 1, substr_count( $html, 'data-qty-step="1"' ) );
+		$this->assertSame( 1, substr_count( $html, 'anchor-event-ticket-qty' ) );
+		$this->assertMatchesRegularExpression( '/<input type="number" class="anchor-event-ticket-qty" min="0" max="\d+"/', $html );
+	}
+
+	/**
+	 * No quantity field, no stepper. A row that cannot be bought renders its
+	 * reason instead, and must not grow a pair of buttons around nothing.
+	 */
+	public function test_unsellable_row_renders_no_stepper() {
+		list( $event ) = $this->make_ticketed_event( [ 'capacity' => 0, 'sold_out' => true ] );
+
+		$html = $this->woocommerce()->filter_registration_form( '', $event, $this->module()->get_meta( $event ) );
+
+		$this->assertStringNotContainsString( 'anchor-event-ticket-qty', $html );
+		$this->assertStringNotContainsString( 'anchor-event-qty-btn', $html );
+	}
 }

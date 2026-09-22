@@ -3,7 +3,7 @@ Contributors: anchorcorps
 Tags: schema, json-ld, openai, faq, localbusiness
 Requires at least: 5.8
 Tested up to: 6.7
-Stable tag: 3.30.0
+Stable tag: 3.30.1
 License: GPLv2 or later
 
 Generate, upload, validate, edit, and serve JSON-LD schema with AI or your own files. Includes debug logging to Kinsta error log.
@@ -23,6 +23,20 @@ Usage:
 3. Use [events_list] or [event_calendar] in pages or posts.
 
 == Changelog ==
+
+= 3.30.1 =
+
+* The organizer email (site default and the per-event override) now takes a
+  comma-separated list, split by the same helper that handles Cc/Bcc, so the
+  "New event registration", "Seats released" and roster digest notices can go
+  to more than one inbox. The settings field is a text input with a list
+  placeholder instead of a single-address email input. One address still works
+  exactly as before.
+* Fixed the Tickets / Pricing table on the front-end events manager collapsing
+  every tier row into a stack of block cells. The storefront ticket line and the
+  editor's tier `<tr>` share the class `anchor-event-ticket-row`, and the
+  storefront's `display:flex` rule was unscoped; it is now scoped to the
+  storefront wrapper (`.anchor-event-ticket-rows`). wp-admin was unaffected.
 
 = 3.30.0 =
 

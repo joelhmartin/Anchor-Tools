@@ -374,6 +374,38 @@ class Test_Email_Senders extends Anchor_Events_TestCase {
 		$this->assertNotEmpty( $this->mails_matching( 'New event registration' ), 'The organizer notice should still send.' );
 	}
 
+	/** The organizer address may be a comma-separated list; the notice is addressed to all of it. */
+	public function test_organizer_notice_goes_to_every_address_in_a_list() {
+		$this->require_wc();
+		$this->set_settings( [ 'wc_notify_customer' => false, 'wc_notify_organizer' => true, 'organizer_email' => 'one@example.org, two@example.org' ] );
+		$ctx = $this->paid_event();
+		$res = $this->make_order( $ctx['variation_id'] );
+
+		$this->reset_capture();
+		$this->place_order( $res['order'] );
+
+		$mails = $this->mails_matching( 'New event registration' );
+		$this->assertCount( 1, $mails, 'One notice, addressed to the whole list — not one per address.' );
+		$this->assertSame( 'one@example.org, two@example.org', $mails[0]['to'] );
+	}
+
+	/** resolve_organizer_email() keeps every valid entry of a list and drops the rest. */
+	public function test_resolve_organizer_email_accepts_a_list_and_drops_junk() {
+		$this->set_settings( [ 'organizer_email' => 'one@example.org, not-an-address, two@example.org' ] );
+		$event_id = $this->make_event( [ 'title' => 'List Test' ] );
+
+		$this->assertSame( 'one@example.org, two@example.org', $this->module()->resolve_organizer_email( $event_id ) );
+	}
+
+	/** A per-event organizer list overrides the site default, list for list. */
+	public function test_per_event_organizer_list_overrides_the_default() {
+		$this->set_settings( [ 'organizer_email' => 'default@example.org' ] );
+		$event_id = $this->make_event( [ 'title' => 'Override Test' ] );
+		update_post_meta( $event_id, '_anchor_event_organizer_email', 'a@example.org, b@example.org' );
+
+		$this->assertSame( 'a@example.org, b@example.org', $this->module()->resolve_organizer_email( $event_id ) );
+	}
+
 	/** Cancellation switched off: the "seats released" organizer notice never renders. */
 	public function test_released_organizer_notice_skipped_when_cancellation_disabled() {
 		$this->require_wc();

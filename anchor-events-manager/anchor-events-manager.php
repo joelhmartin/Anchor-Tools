@@ -10464,8 +10464,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         \add_settings_field( 'organizer_email', __( 'Default organizer email', 'anchor-schema' ), function() {
             $opts = $this->get_settings();
             ?>
-            <input type="email" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[organizer_email]" value="<?php echo esc_attr( $opts['organizer_email'] ); ?>" class="regular-text" />
-            <p class="description"><?php echo esc_html__( 'Fallback recipient for organizer notices. A per-event organizer email overrides this; if both are blank, the site admin email is used.', 'anchor-schema' ); ?></p>
+            <input type="text" name="<?php echo esc_attr( self::OPTION_KEY ); ?>[organizer_email]" value="<?php echo esc_attr( $opts['organizer_email'] ); ?>" class="regular-text" placeholder="one@example.com, two@example.com" />
+            <p class="description"><?php echo esc_html__( 'Fallback recipient(s) for organizer notices, comma-separated. A per-event organizer email overrides this; if both are blank, the site admin email is used.', 'anchor-schema' ); ?></p>
             <?php
         }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
 
@@ -10562,7 +10562,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // subsection actually renders (class_exists). Otherwise preserve the stored
         // values so a non-WC save doesn't clobber them.
         // organizer_email is now an always-shown lifecycle field (free + paid sites).
-        $output['organizer_email'] = sanitize_email( $input['organizer_email'] ?? '' );
+        // A comma-separated list, split by the same helper as email_cc/email_bcc.
+        $output['organizer_email'] = \implode( ', ', $this->email_address_list( $input['organizer_email'] ?? '' ) );
 
         if ( \class_exists( 'WooCommerce' ) ) {
             $output['wc_notify_customer']   = ! empty( $input['wc_notify_customer'] );
@@ -13616,9 +13617,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     public function resolve_organizer_email( $event_id, $settings = null ) {
         $settings = is_array( $settings ) ? $settings : $this->get_settings();
         $meta  = $this->get_meta( (int) $event_id );
-        $email = ! empty( $meta['organizer_email'] ) ? \sanitize_email( (string) $meta['organizer_email'] ) : '';
+        // Each level may be a comma-separated list (same splitter as Cc/Bcc);
+        // the joined string is what wp_mail() accepts as a multi-recipient "to".
+        $email = ! empty( $meta['organizer_email'] ) ? \implode( ', ', $this->email_address_list( (string) $meta['organizer_email'] ) ) : '';
         if ( $email === '' && ! empty( $settings['organizer_email'] ) ) {
-            $email = \sanitize_email( (string) $settings['organizer_email'] );
+            $email = \implode( ', ', $this->email_address_list( (string) $settings['organizer_email'] ) );
         }
         if ( $email === '' ) {
             $email = \sanitize_email( (string) \get_option( 'admin_email' ) );

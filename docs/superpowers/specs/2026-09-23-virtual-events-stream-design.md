@@ -76,7 +76,7 @@ A tier never says `hybrid`: a hybrid **event** with one price simply has an `in_
 
 ### 3.4 Offering / recurring children
 
-Children are full events, so they inherit every §3.1 key through `Occurrences::INHERITED_KEYS`, and a child may override `stream_embed` on its own metabox exactly as a session row does. Tiers already copy per the 2026-09-03 `tier_id` rule.
+Children are full events, so they inherit every §3.1 key through `Occurrences::INHERITED_KEYS`, symmetrically: every date shares the offering's stream, and the parent re-asserts it on each reconcile. A per-date stream override for children is deferred (execution ruling 2026-09-23): dates never overlap, so an offering whose dates use different streams repoints the parent's stream between them. If that proves insufficient, the follow-up is a child-owned `stream_embed_override` key (never copied, preferred by `resolved_sessions()`). Tiers already copy per the 2026-09-03 `tier_id` rule.
 
 ### 3.5 Seats and users
 

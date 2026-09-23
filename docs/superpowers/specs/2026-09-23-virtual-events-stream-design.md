@@ -30,7 +30,7 @@ Replays are **out of scope**. The owner reuses one stream across days and hands 
 | 5 | Two products or one? | **One event, one product, tiers carry modality.** | A tier answers "what am I paying for", a child post answers "which occurrence". A livestream seat is a price, not an occurrence. (Occurrence-model memory, 2026-09-03.) |
 | 6 | Entitlement | **A role per event**, `anchor_event_{id}`, granted/revoked from seat status, plus manual grant/revoke. | One door for paid, comped, imported, and late-added attendees; drops straight into the file manager's role policy and the webinars module's role gate. |
 | 7 | Where does courses live? | New module in Anchor-Tools (see companion spec), talking to events **only through roles, actions, filters and a read API** defined in §7. | In-process access, one loader, one test harness; no install-order guessing. |
-| 8a | Regular events | **Inert by default.** `access_role_enabled=false` unless a stream is saved or the author ticks it; then and only then do accounts, roles, the room and `{room_link}` exist for that event. | Owner's instruction 2026-09-23: none of this may apply to plain events and their attendees by accident. |
+| 8a | Regular events | **Role by default, room only with a stream.** `access_role_enabled=true` for every plugin-registered event: confirmed attendees get an account and the event role whether or not the event streams. Turning it off per event is a real checkbox that stops future grants; existing holders are only removed by Delete role. The room, `{room_link}` and stream access exist only when a stream embed resolves. | Owner, 2026-09-23 (second ruling, superseding "inert by default"): "even regular event attendees should get a role — a clear way to organize everyone; event materials get assigned by role." What must never leak to plain events is *stream access*, not the role. |
 | 8 | Approach | **A: build inside the events module.** Not B (webinars-as-room: Vimeo-ID/VOD only, would need a second reconcile engine) nor C (standalone module importing half of events). | |
 
 ## 3. Data model
@@ -44,7 +44,7 @@ All keys use the existing `_anchor_event_` prefix via `Module::meta_key()`, are 
 | `stream_embed` | array `{provider, src, raw}` | `[]` | Output of `Embed::normalize()` (§5.4). Never raw HTML. Inherited to occurrence children (`INHERITED_KEYS`). |
 | `stream_default_modality` | `in_person\|virtual\|hybrid` | `in_person` | Seed for new session rows and new tiers. Inherited. |
 | `in_person_includes_stream` | bool | `true` | The owner's toggle. Inherited. |
-| `access_role_enabled` | bool | `false` | **The master switch for everything in §4.** Off: the event mints no role, creates no accounts, has no room, and behaves exactly as before this spec. On: confirmed attendees get an account and the event role. Auto-set to `true` when a non-empty `stream_embed` is saved or any session/tier is `virtual`/`hybrid`; an author may also turn it on by hand for an in-person event whose recordings or handouts are gated by role in the file manager. Inherited. |
+| `access_role_enabled` | bool | **`true`** | **The master switch for everything in §4.** On (the default, owner decision 2026-09-23: every attendee of every plugin-registered event gets the role, in person or not, because event materials are assigned by role): confirmed attendees get an account and the event role. Off: the event mints no role, creates no accounts, has no room, and behaves exactly as before this spec. A real checkbox: un-ticking it stops *future* grants for that event and never strips existing holders (that is the Delete role action). A save whose form did not carry the field leaves the stored value alone. It is forced back to `true` on any save that stores a non-empty `stream_embed` or a `virtual`/`hybrid` session or tier, because a stream is useless without the role. Inherited. |
 | `stream_open_before_minutes` | int | `15` | Room switches countdown → player this many minutes before a session's start. Inherited. |
 | `stream_close_after_minutes` | int | `30` | Room keeps the player this long after a session's `end_ts`. Inherited. |
 | `required_roles` | string[] role slugs | `[]` | Prerequisites (§4.6). Inherited. |
@@ -88,7 +88,7 @@ User meta `_anchor_event_grants` (array `{event_id: {source: 'seat'|'manual', at
 
 New class `Anchor\Events\Entitlements` (`class-entitlements.php`), constructed by `Module` like `Registrations`/`Roster`, exposed as `$module->entitlements`. One responsibility: who holds access to an event and why.
 
-**Nothing in this section runs for an event whose `access_role_enabled` is false.** `Entitlements::enabled( $event_id )` = `Module::stream_capable( $event_id ) && access_role_enabled`, and every entry point below (`grant_for_seat()`, `ensure_user()`, the seat hooks, `can_access_stream()`, `room_url()`, the `{room_link}` token, the roster Access column, the Basics role panel) checks it first and returns its pre-spec answer when it is off. This is the guarantee that a plain in-person event and its attendees are untouched: no account is created, no role is minted, no room resolves, no email gains a link. The only way an event opts in is saving a stream (auto) or ticking the switch (manual).
+**Nothing in this section runs for an event whose `access_role_enabled` is false.** `Entitlements::enabled( $event_id )` = `Module::stream_capable( $event_id ) && access_role_enabled`, and every entry point below (`grant_for_seat()`, `ensure_user()`, the seat hooks, `can_access_stream()`, `room_url()`, the `{room_link}` token, the roster Access column, the Basics role panel) checks it first and returns its pre-spec answer when it is off. **The default is on** (§3.1): a plain in-person event grants the role and creates accounts like any other, because the owner assigns event materials by role. What stays gated on a stream is the *room*: `room_url()`, `{room_link}` and `can_access_stream()` additionally require a resolvable stream embed, so a plain event's attendees hold the role but see no room and no join link. External-registration events and group parents are never enabled (no seats, no room).
 
 ### 4.1 Role minting
 
@@ -119,7 +119,9 @@ Grant = `WP_User::add_role()` (additive; customer/subscriber untouched) + `_anch
 
 Called from the confirmed transition, from `Roster::handle_add()` (comped seats), and from the WooCommerce attendee capture, so every path resolves a user.
 
-### 4.4 Manual grant and revoke
+### 4.4 Manual grant, revoke, and backfill
+
+**Backfill.** The Basics role panel (§7) has **"Grant role to current attendees"**: runs `grant_for_seat()` over every confirmed seat on the event, creating accounts as needed, and reports how many were granted. This is how an event that was already selling when this shipped, or one whose switch was off for a while, is brought in line. Idempotent.
 
 Roster gains per-row **Grant access / Revoke access** and a header **Add person by email** (name + email; creates the account if needed; grants with `source=manual`; no seat, no capacity impact, not on exports unless the "include manual access" export scope is chosen). Manual grants survive seat cancellations. Revoking a manual grant on a user who still holds a confirmed seat leaves the role (the seat still entitles them) and says so.
 
@@ -220,17 +222,17 @@ Email: a new scalar `{room_link}` (per recipient, tokenised; **resolves to `''` 
 - **Event Details metabox → Location section** gains a **Livestream** group: embed textarea with provider help text, default modality, the toggle, open-before / close-after minutes, and a read-only room URL with "Open room". Shown when `registration_mode ≠ external`.
 - **Sessions repeater**: modality select + "Stream override" text input per row (collapsed until "Use a different stream for this session" is ticked).
 - **Ticket tiers repeater**: modality select per tier.
-- **Access section** (new, under Registration): the **"Give confirmed attendees an account and the event role"** switch (`access_role_enabled`, with help text naming the room and the file manager as what it unlocks; shown checked-and-locked when a stream is saved), then the required roles picker + any/all.
+- **Access section** (new, under Registration): the **"Give confirmed attendees an account and the event role"** checkbox (`access_role_enabled`, default checked; help text names the room and the file manager as what it unlocks and says un-ticking never removes existing holders; rendered with a hidden `0` so a rendered form always carries the field; shown checked-and-locked when a stream is saved), then the required roles picker + any/all.
 - **Front-end console** (manager.js / manager-wizard.js) gets the same fields through the existing `anchor_events_manager_form_fields` filter so the DEKA team's authoring path has parity.
 - **Roster tab**: "Access" column (role held: yes / manual / no), Grant/Revoke row actions, "Add person by email" in the header, export scope "confirmed + manual access".
-- **Basics tab**: "Event role" panel — slug, display name, holder count, Delete role.
+- **Basics tab**: "Event role" panel — slug, display name, holder count, **Grant role to current attendees** (backfill, §4.4), Delete role.
 - **Events list**: a "Live" column with room state (`countdown in 3d`, `LIVE`, `ended`) and room link.
 
 ## 8. Testing
 
 PHPUnit (`Anchor_Events_TestCase` helpers `make_event`, `make_seat`):
 
-- **Inertness**: a `free`/`wc` event with `access_role_enabled=false` — confirm a seat, cancel it, render its confirmation email, request `/live/`, open the roster: no user created, no role in `wp_roles()`, `room_url()` is `''`, `{room_link}` is `''`, Access column absent. Saving a `stream_embed` flips the switch; saving a `virtual` tier or session flips it; clearing them does not flip it back (an author who turned it on keeps it).
+- **Switch semantics**: (a) default is `true` — a fresh `free`/`wc` event with nothing else set grants the role and creates an account on a confirmed seat, and its `room_url()` is still `''` and `{room_link}` still `''` because no stream resolves; (b) with the switch explicitly `false` — confirm a seat, cancel it, render its confirmation email, request `/live/`, open the roster: no user created, no role in `wp_roles()`, Access column absent; (c) un-ticking after grants leaves existing holders in place and stops the next grant; (d) a save without the field keeps the stored value; (e) saving a `stream_embed`, a `virtual` tier or a `virtual`/`hybrid` session forces it back to `true`; (f) the backfill action grants every confirmed seat exactly once.
 - `Entitlements`: confirm → role + grant record; cancel → revoke; cancel with a second confirmed seat → keep; cancel with manual grant → keep; manual revoke with live seat → keep and warn; role renames with title; role survives event trash; `ensure_user()` four branches; no WP new-user mail.
 - `can_access_stream()` truth table across tier modality × toggle × session modality × manual × staff × logged-out.
 - `Stream_State` table: every state, boundary instants, multi-day gap, single event as implicit session, timezone edge (session crossing midnight in event TZ).

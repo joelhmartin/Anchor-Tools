@@ -2297,13 +2297,31 @@ class Test_Courses_Course_Editor extends Anchor_Courses_TestCase {
 		$this->assertSame( '2026-12-31', get_post_meta( $course, '_anchor_course_available_until', true ) );
 	}
 
+	/** Built-in and WooCommerce roles can never be saved as auto-enrol or prerequisite roles. */
+	public function test_built_in_roles_are_dropped_from_role_lists() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		add_role( 'anchor_event_12', 'Event: Test', [] );
+		$course = $this->make_course();
+
+		$this->post_course_settings( $course, [
+			'access_type'       => 'roles',
+			'auto_enroll_roles' => [ 'customer', 'subscriber', 'administrator', 'anchor_event_12' ],
+			'prerequisites'     => [ 'shop_manager', 'anchor_event_12' ],
+		] );
+
+		$this->assertSame( [ 'anchor_event_12' ], get_post_meta( $course, '_anchor_course_auto_enroll_roles', true ), 'customer/subscriber/administrator must be dropped, not just hidden.' );
+		$this->assertSame( [ 'anchor_event_12' ], get_post_meta( $course, '_anchor_course_prerequisites', true ) );
+		$this->assertArrayNotHasKey( 'customer', \Anchor\Courses\Admin\CourseEditor::role_choices( 'auto_enroll_roles' ) );
+		remove_role( 'anchor_event_12' );
+	}
+
 	public function test_invalid_enum_values_fall_back_to_the_default() {
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
 		$course = $this->make_course();
 
 		$this->post_course_settings( $course, [ 'access_type' => 'hacked', 'progression_mode' => 'nope', 'completion_mode' => 'x' ] );
 
-		$this->assertSame( 'open', get_post_meta( $course, '_anchor_course_access_type', true ) );
+		$this->assertSame( 'closed', get_post_meta( $course, '_anchor_course_access_type', true ) );
 		$this->assertSame( 'sequential', get_post_meta( $course, '_anchor_course_progression_mode', true ) );
 		$this->assertSame( 'all_required_items', get_post_meta( $course, '_anchor_course_completion_mode', true ) );
 	}

@@ -4,7 +4,7 @@
 
 **Goal:** Ship `anchor-courses`, a WordPress LMS module inside the Anchor Tools plugin covering courses -> modules -> lessons -> quizzes, enrolment, progress, server-graded quizzes, idempotent course completion, CE credits, HTML certificates, a REST + PHP integration surface, and adapters for the events module and WooCommerce.
 
-**Architecture:** A thin `\Anchor\Courses\Module` bootstrap (registered in `anchor_tools_get_available_modules()`) wires PSR-4 classes under `anchor-courses/src/`. Content lives in three CPTs plus a JSON curriculum on the course; all learner history lives in five custom tables created by a versioned `Migrations` class. Business logic lives in six services behind thin public PHP functions and a REST namespace; every template, shortcode and admin screen calls a service and never touches SQL. Integrations (`Events`, `WooCommerce`, `Analytics`) are guarded listeners that the core never depends on.
+**Architecture:** A thin `\Anchor\Courses\Module` bootstrap (registered in `anchor_tools_get_available_modules()`) wires PSR-4 classes under `anchor-courses/src/`. Content lives in three CPTs plus a JSON curriculum on the course; all learner history lives in five custom tables created by a versioned `Migrations` class. Business logic lives in six services behind thin public PHP functions and a REST namespace; every template, shortcode and admin screen calls a service and never touches SQL. **Enrolment is a WordPress role:** each course mints `anchor_course_{id}`, and a `Support\Roles` listener on core `add_user_role` / `set_user_role` / `remove_user_role` turns holding it into a row in the enrollments table - so a purchase, an admin, WP-CLI or any other plugin all enrol through the same one door. Integrations (`Events`, `WooCommerce`, `Analytics`) are guarded listeners that the core never depends on.
 
 **Tech Stack:** PHP 8.1 (`declare(strict_types=1)` in `src/`), WordPress 6.6+, MySQL 8, jQuery + `jquery-ui-sortable` (no React, no bundling), PHPUnit 9 against the WP test library, plain PHPUnit 9 for pure-logic units, Playwright on `@wordpress/env`.
 
@@ -24,9 +24,9 @@ Read this before Task 1. Each entry is something the brief or the design spec as
 
 **D4 - `Events_Log::info()` does not exist.** The events spec section 4.2 calls it; the real class exposes only `error()` (`class-events-log.php:89`), `order()` (:231), `flag_review()` (:264), `clear_review()` (:298). **Courses calls no `Events_Log` method.** Logging goes through `Support\Log::write()`, a guarded wrapper over `Anchor_Schema_Logger::log( $event, $context )` (`includes/class-anchor-schema-logger.php:9`).
 
-**D5 - `\Anchor\Events\Module::get_sessions()` today returns a different shape than the events spec promises.** `anchor-events-manager/anchor-events-manager.php:11209-11235` returns rows of `{date, start_time, end_time, label}` only - no `start_ts`, `end_ts`, `modality` or `stream_embed`. Those are added by the parallel events plan. **The live-session renderer (Task 35) must read defensively** and fall back to `date`/`start_time` when `start_ts` is absent.
+**D5 - `\Anchor\Events\Module::get_sessions()` today returns a different shape than the events spec promises.** `anchor-events-manager/anchor-events-manager.php:11209-11235` returns rows of `{date, start_time, end_time, label}` only - no `start_ts`, `end_ts`, `modality` or `stream_embed`. Those are added by the parallel events plan. **The live-session renderer (Task 36) must read defensively** and fall back to `date`/`start_time` when `start_ts` is absent.
 
-**D6 - Nothing named `Stream_State`, `Entitlements`, `room_url()`, `anchor_events_access_granted`, `anchor_events_access_revoked` or `anchor_events_can_access_stream` exists in the repo yet.** `grep -rn` over `anchor-events-manager/` returns zero hits for all of them. Every courses reference to them is guarded with `class_exists` / `method_exists` / `has_action`, and every affected test skips when the symbol is absent (`markTestSkipped`).
+**D6 - Nothing named `Stream_State`, `Entitlements`, `room_url()` or `anchor_events_can_access_stream` exists in the repo yet.** `grep -rn` over `anchor-events-manager/` returns zero hits for all of them. Every courses reference to them is guarded with `class_exists` / `method_exists` / `has_action`, and every affected test skips when the symbol is absent (`markTestSkipped`). Note that courses does **not** listen to `anchor_events_access_granted` / `_revoked` at all: an event grants `anchor_event_{id}`, which is a *prerequisite* role, never an access role, so nothing in courses reacts to it (design spec 7: event-attendance -> course auto-enrolment is out of scope).
 
 **D7 - Brief section 29's plugin tree does not apply.** There is one `composer.json`, one `package.json`, one `readme.txt` at the repo root. `anchor-courses/` gets no `composer.json`, `package.json`, `readme.txt`, or `src/Plugin.php`; the layout is exactly design spec section 2.
 
@@ -36,15 +36,19 @@ Read this before Task 1. Each entry is something the brief or the design spec as
 
 **D10 - Brief section 10's method names are camelCase; this repo is snake_case.** Every class in `includes/` and every module uses snake_case methods. **We use snake_case** and map the brief's names: `getCourseProgress`->`get_course_progress`, `getCompletedItems`->`get_completed_items`, `isItemAvailable`->`is_item_available`, `completeLesson`->`complete_lesson`, `recalculateCourse`->`recalculate_course`. The *public API functions* (brief section 15) keep their exact published names.
 
-**D11 - "Certificate page in Phase 1" means the release feature set, not implementation Phase 1.** Design spec section 1 row "Certificates" says "Phase 1 = HTML certificate page", but brief section 32 titles the release feature set "Required Phase 1 Features" while brief section 34's *implementation* Phase 4 is where certificates are built. **Decision: the HTML certificate page is built in implementation Phase 4 (Task 27).** PDF ("Phase 4b") is out of scope for this plan.
+**D11 - "Certificate page in Phase 1" means the release feature set, not implementation Phase 1.** Design spec section 1 row "Certificates" says "Phase 1 = HTML certificate page", but brief section 32 titles the release feature set "Required Phase 1 Features" while brief section 34's *implementation* Phase 4 is where certificates are built. **Decision: the HTML certificate page is built in implementation Phase 4 (Task 30).** PDF ("Phase 4b") is out of scope for this plan.
 
-**D12 - Quiz REST cannot wait for Phase 5.** Brief section 34 puts REST in Phase 5, but Phase 3's acceptance criterion "quiz cannot expose correct answers before submission" requires a live read surface in Phase 3. **Decision:** `Rest\Routes` + `Rest\QuizController` ship in Phase 3 (Task 23); `CoursesController`, `MeController` and `AdminController` ship in Phase 5 (Tasks 30-31).
+**D12 - Quiz REST cannot wait for Phase 5.** Brief section 34 puts REST in Phase 5, but Phase 3's acceptance criterion "quiz cannot expose correct answers before submission" requires a live read surface in Phase 3. **Decision:** `Rest\Routes` + `Rest\QuizController` ship in Phase 3 (Task 26); `CoursesController`, `MeController` and `AdminController` ship in Phase 5 (Tasks 33-34).
 
 **D13 - Brief section 7 omits uniqueness constraints that brief section 26 requires.** Only enrollments (7.1) and progress (7.2) carry one. **We add:** `UNIQUE KEY user_quiz_attempt (user_id, quiz_id, attempt_number)` on quiz_attempts; `UNIQUE KEY user_course (user_id, course_id)` on ce_credits; `UNIQUE KEY user_course (user_id, course_id)` and `UNIQUE KEY certificate_number (certificate_number)` on certificates. Consequence: one CE award and one certificate per (user, course) - renewal courses (brief section 40) will need a migration, documented in `COURSES.md`.
 
 **D14 - Certificate numbering needs two writes.** Design spec section 4 requires `AC-{YYYY}-{8-digit AUTO_INCREMENT id}`, but the number column is `NOT NULL UNIQUE`, so the id is unknown at insert time. **We insert with a collision-proof placeholder `PENDING-{uniqid}` then `UPDATE` the row to the real number**, inside the same request, and the service re-reads the row before returning.
 
-**Unresolved (decided, flagged):** (a) the events module's `Module::instance()` returns `null` when events is disabled (`anchor-events-manager.php:2103-2105` returns `self::$instance`), so every call site null-checks; (b) `bin/e2e-seed.sh:81` pins `DESIRED_MODULES_JSON` to an exact string comparison - Task 29 must edit that literal, not append; (c) the repo root contains stray files `false,`, `true,`, `test`, `test2` - leave them alone.
+**D15 - WordPress's role hooks carry no reason, and enrolment rows need one.** `WP_User::add_role()` fires `do_action( 'add_user_role', $user_id, $role )` and `WP_User::set_role()` fires `do_action( 'set_user_role', $user_id, $role, $old_roles )` - two arguments and three, none of which says *why* the role was added. The enrollments table wants `source` + `source_id` (brief 7.1, 18), so the listener has to learn them from somewhere. **We do:** `Support\Roles` keeps a private static `$context` (`['source' => string, 'source_id' => string]`). `grant_access()` sets it, calls `add_role()`, and clears it in a `finally` - so the listener, which runs *inside* that `add_role()` call, reads the real reason. A role added by anything else (the wp-admin user screen, WP-CLI, another plugin) finds the context empty and the listener falls back to `source = 'role'`, `source_id = ''`. One static, one writer, always cleared: no request-lifetime state, and no way for a stale value to attach itself to the next grant. Tested both ways in Task 20 (`test_a_plain_add_user_role_enrols_with_the_role_source`).
+
+**D16 - The course edit screen has metaboxes, not tabs.** Design spec 3.1 and 4 call the admin surface a "Learners tab", mirroring the events console, which really does have tabs. `anchor_course` is an ordinary post type screen. **We do:** the Learners tab is the `Learners` metabox on the course edit screen (`Admin\LearnerReports`, Task 21), which is where the plan already put learner reporting. Task 21 creates it with the add/revoke controls; Task 31 extends the *same* class with the credits, certificate and best-quiz columns once Phase 4 has something to put in them. There is no second learners screen.
+
+**Unresolved (decided, flagged):** (a) the events module's `Module::instance()` returns `null` when events is disabled (`anchor-events-manager.php:2103-2105` returns `self::$instance`), so every call site null-checks; (b) `bin/e2e-seed.sh:81` pins `DESIRED_MODULES_JSON` to an exact string comparison - Task 32 must edit that literal, not append; (c) the repo root contains stray files `false,`, `true,`, `test`, `test2` - leave them alone.
 
 ---
 
@@ -73,7 +77,7 @@ Every task's requirements implicitly include this section.
   vendor/bin/phpunit --filter <TestClass>
   ```
 - **Unit run command:** `vendor/bin/phpunit -c phpunit-unit.xml.dist --filter <TestClass>`
-- **Version:** `anchor-tools.php:5` reads `Version: 3.30.1`. The parallel events work ships `3.31.0`. Task 40 bumps the header to **`3.32.0`**.
+- **Version:** `anchor-tools.php:5` reads `Version: 3.30.1`. The parallel events work ships `3.31.0`. Task 41 bumps the header to **`3.32.0`**.
 - **Never delete learner data on deactivation** (brief rule 9). Only the guarded uninstall branch may drop tables.
 
 ## File Structure
@@ -87,7 +91,8 @@ Every task's requirements implicitly include this section.
 | `src/Support/Clock.php` | `now()` / `timestamp()`, filterable for tests. |
 | `src/Support/Log.php` | Guarded `Anchor_Schema_Logger` wrapper. |
 | `src/Support/Capabilities.php` | The eight caps, `sync()`, `cap()`, `current_user_can()`. |
-| `src/Support/Roles.php` | `anchor_course_{id}` completion roles + prerequisite resolution. |
+| `src/Support/Roles.php` | The two per-course roles (`anchor_course_{id}` access, `anchor_course_{id}_completed` completion), minting, grant/revoke, the core role listener, prerequisite resolution. |
+| `src/Support/Accounts.php` | `ensure_user( string $name, string $email ): int` - find-or-create a learner account without a new-user email. |
 | `src/Support/Grading.php` | Pure grading maths (no WordPress). |
 | `src/Database/Migrations.php` | Versioned schema, `table()`, `maybe_migrate()`. |
 | `src/Database/{Enrollment,Progress,QuizAttempt,Credit,Certificate}Repository.php` | One per table. All SQL lives here. |
@@ -96,7 +101,7 @@ Every task's requirements implicitly include this section.
 | `src/Services/{Enrollment,Progress,Quiz,Completion,Credit,Certificate}Service.php` | Business logic + every `do_action`/`apply_filters`. |
 | `src/Rest/Routes.php`, `src/Rest/{Quiz,Courses,Me,Admin}Controller.php` | REST surface. |
 | `src/Admin/{CourseEditor,LessonEditor,QuizEditor,LearnerReports,EnrollmentManager}.php` | Admin screens. |
-| `src/Frontend/{Shortcodes,Templates,Assets}.php` | Shortcodes, template resolution, enqueues. |
+| `src/Frontend/{Shortcodes,Templates,Assets,Access}.php` | Shortcodes, template resolution, enqueues, and the one answer to "how does this visitor get access?". |
 | `src/Integrations/{Events,WooCommerce,Analytics}.php` | Guarded adapters. |
 | `templates/{course,lesson,quiz,dashboard,certificate}.php` | Theme-overridable markup. |
 | `assets/*.js`, `assets/*.css` | jQuery IIFEs + stylesheets. |
@@ -322,7 +327,7 @@ class Module {
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-// Functions are added by Tasks 14, 17 and 24.
+// Functions are added by Tasks 14, 17 and 27.
 ```
 
 `anchor-courses/src/Support/Uuid.php`:
@@ -417,7 +422,7 @@ final class Log {
 }
 ```
 
-`anchor-courses/COURSES.md` (skeleton; Task 40 fills it):
+`anchor-courses/COURSES.md` (skeleton; Task 41 fills it):
 
 ```markdown
 # Anchor Courses
@@ -426,19 +431,22 @@ Module key `courses`, class `\Anchor\Courses\Module`, namespace `Anchor\Courses`
 (PSR-4 root `anchor-courses/src/`).
 
 ## Public PHP API
-_(filled in by Tasks 14, 17, 24)_
+_(filled in by Tasks 14, 17, 27)_
 
 ## Actions
-_(filled in by Tasks 14-26)_
+_(filled in by Tasks 14-29)_
 
 ## Filters
-_(filled in by Tasks 14-34)_
+_(filled in by Tasks 14-40)_
+
+## Roles
+_(filled in by Tasks 19-21)_
 
 ## REST routes
-_(filled in by Tasks 23, 30, 31)_
+_(filled in by Tasks 26, 33, 34)_
 
 ## Shortcodes
-_(filled in by Tasks 18 and 27)_
+_(filled in by Tasks 18 and 30)_
 
 ## Database tables
 _(filled in by Task 2)_
@@ -1444,7 +1452,7 @@ git commit -m "feat(courses): guarded uninstall branch that keeps learner data b
 
 **Interfaces:**
 - Produces:
-  - `Content\CoursePostType::CPT = 'anchor_course'`, `::META_PREFIX = '_anchor_course_'`, `::META_KEYS`, `::ACCESS_TYPES = ['open','closed','roles']`, `::PROGRESSION_MODES = ['free','sequential']`, `::COMPLETION_MODES = ['all_required_items','minimum_percentage','manual']`, `::register(): void`, `::meta_key( string $key ): string`
+  - `Content\CoursePostType::CPT = 'anchor_course'`, `::META_PREFIX = '_anchor_course_'`, `::META_KEYS` (no access-type key - see below), `::PROGRESSION_MODES = ['free','sequential']`, `::COMPLETION_MODES = ['all_required_items','minimum_percentage','manual']`, `::register(): void`, `::meta_key( string $key ): string`
   - `Content\LessonPostType::CPT = 'anchor_lesson'`, `::META_PREFIX = '_anchor_lesson_'`, `::COMPLETION_MODES = ['manual','view','quiz_pass']`, `::TYPES = ['content','live_session']`, `::register(): void`, `::meta_key()`
   - `Content\QuizPostType::CPT = 'anchor_quiz'`, `::META_PREFIX = '_anchor_quiz_'`, `::register(): void`, `::meta_key()`
   - Test helpers `make_course( array $meta = [], string $title = 'Test Course' ): int`, `make_lesson( array $meta = [], string $title = 'Test Lesson' ): int`, `make_quiz( array $meta = [], string $title = 'Test Quiz' ): int`
@@ -1594,13 +1602,18 @@ final class CoursePostType {
 	/** Authored settings, all stored under META_PREFIX. Order is the metabox order. */
 	public const META_KEYS = [
 		'duration', 'difficulty', 'instructor', 'ce_credits', 'ce_type', 'ce_provider_name',
-		'ce_provider_number', 'ce_expires_days', 'access_type', 'auto_enroll_roles',
+		'ce_provider_number', 'ce_expires_days',
 		'prerequisites', 'completion_mode', 'completion_percentage', 'progression_mode',
 		'certificate_enabled', 'certificate_template', 'expiration_days',
 		'available_from', 'available_until', 'curriculum',
 	];
 
-	public const ACCESS_TYPES      = [ 'open', 'closed', 'roles' ];
+	/**
+	 * There is deliberately NO access-type key (design spec 1, row
+	 * "Course access type"). A course has exactly one access rule: hold
+	 * `anchor_course_{id}` or you are not enrolled. Nothing to configure,
+	 * nothing to get wrong, and no second answer to the same question.
+	 */
 	public const PROGRESSION_MODES = [ 'free', 'sequential' ];
 	public const COMPLETION_MODES  = [ 'all_required_items', 'minimum_percentage', 'manual' ];
 
@@ -2229,13 +2242,16 @@ git commit -m "feat(courses): curriculum model with stable module UUIDs"
 - Test: `tests/test-courses-course-editor.php`
 
 **Interfaces:**
-- Consumes: `CoursePostType::meta_key()`, `CoursePostType::ACCESS_TYPES/PROGRESSION_MODES/COMPLETION_MODES`, `Capabilities::cap( 'edit_courses' )`.
+- Consumes: `CoursePostType::meta_key()`, `CoursePostType::PROGRESSION_MODES/COMPLETION_MODES`, `Capabilities::cap( 'edit_courses' )`.
 - Produces:
   - `Admin\CourseEditor::NONCE = 'anchor_courses_course_nonce'`
   - `Admin\CourseEditor::defaults(): array` - design spec section 4 defaults
   - `Admin\CourseEditor::setting( int $course_id, string $key ): mixed`
   - `Admin\CourseEditor::sanitize_value( string $key, $value ): mixed`
+  - `Admin\CourseEditor::prerequisite_role_choices(): array` - **the only role picker in the module**: completion roles (`anchor_course_*_completed`) and event roles (`anchor_event_*`), nothing else
   - `Admin\CourseEditor::add_metaboxes(): void`, `render_settings( \WP_Post $post ): void`, `save( int $post_id ): void`, `assets( string $hook ): void`
+
+**There is no access-type field and no auto-enrol picker** (design spec 1, 3.1). The Access section of the metabox carries the availability window, the expiry and the prerequisites; who may enrol is answered by the access role, which Task 19 adds to this same screen as a panel. Prerequisites are the one place a role is chosen, and the list is restricted by *shape*, not by an exclusion list: a slug is offerable only if it matches `anchor_course_{digits}_completed` or `anchor_event_{digits}`. Built-in and WooCommerce roles are not "excluded", they simply never match - which is the point, because `set_user_role` fires on every new account, so `customer` or `subscriber` as a prerequisite would gate on nothing.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2266,12 +2282,14 @@ class Test_Courses_Course_Editor extends Anchor_Courses_TestCase {
 		$d = CourseEditor::defaults();
 		$this->assertSame( 'sequential', $d['progression_mode'] );
 		$this->assertSame( 'all_required_items', $d['completion_mode'] );
-		$this->assertSame( 'closed', $d['access_type'], 'A new course is closed: nobody self-enrols until an author opens it (leak review 2026-09-23).' );
 		$this->assertSame( 100, $d['completion_percentage'] );
+		$this->assertArrayNotHasKey( 'access_type', $d, 'There is no access type: holding anchor_course_{id} IS enrolment (design spec 3.1).' );
+		$this->assertArrayNotHasKey( 'auto_enroll_roles', $d, 'There is no auto-enrol picker.' );
 	}
 
 	public function test_save_persists_every_brief_meta_key() {
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		add_role( 'anchor_course_9_completed', 'Completed: Prereq', [] );
 		$course = $this->make_course();
 
 		$this->post_course_settings(
@@ -2280,8 +2298,7 @@ class Test_Courses_Course_Editor extends Anchor_Courses_TestCase {
 				'duration' => '3 hours', 'difficulty' => 'intermediate', 'instructor' => 'Dr Vega',
 				'ce_credits' => '2.5', 'ce_type' => 'Dental CE', 'ce_provider_name' => 'DEKA Academy',
 				'ce_provider_number' => 'AGD-1234', 'ce_expires_days' => '730',
-				'access_type' => 'roles', 'auto_enroll_roles' => [ 'anchor_event_12' ],
-				'prerequisites' => [ 'anchor_course_9' ], 'completion_mode' => 'minimum_percentage',
+				'prerequisites' => [ 'anchor_course_9_completed' ], 'completion_mode' => 'minimum_percentage',
 				'completion_percentage' => '80', 'progression_mode' => 'free',
 				'certificate_enabled' => '1', 'certificate_template' => 'default',
 				'expiration_days' => '365', 'available_from' => '2026-01-01', 'available_until' => '2026-12-31',
@@ -2290,38 +2307,61 @@ class Test_Courses_Course_Editor extends Anchor_Courses_TestCase {
 
 		$this->assertSame( '3 hours', get_post_meta( $course, '_anchor_course_duration', true ) );
 		$this->assertSame( 2.5, (float) get_post_meta( $course, '_anchor_course_ce_credits', true ) );
-		$this->assertSame( 'roles', get_post_meta( $course, '_anchor_course_access_type', true ) );
-		$this->assertSame( [ 'anchor_event_12' ], get_post_meta( $course, '_anchor_course_auto_enroll_roles', true ) );
-		$this->assertSame( [ 'anchor_course_9' ], get_post_meta( $course, '_anchor_course_prerequisites', true ) );
+		$this->assertSame( [ 'anchor_course_9_completed' ], get_post_meta( $course, '_anchor_course_prerequisites', true ) );
 		$this->assertSame( 80, (int) get_post_meta( $course, '_anchor_course_completion_percentage', true ) );
 		$this->assertSame( '2026-12-31', get_post_meta( $course, '_anchor_course_available_until', true ) );
+
+		remove_role( 'anchor_course_9_completed' );
 	}
 
-	/** Built-in and WooCommerce roles can never be saved as auto-enrol or prerequisite roles. */
-	public function test_built_in_roles_are_dropped_from_role_lists() {
+	/**
+	 * Prerequisites accept completion roles and event roles, and nothing else.
+	 *
+	 * Not an exclusion list - a shape test. `customer`, `subscriber` and a
+	 * course's own ACCESS role (`anchor_course_{id}`, no `_completed`) all fail
+	 * it, the first two because set_user_role fires on every new account, the
+	 * third because "you must already be enrolled" is not a prerequisite.
+	 */
+	public function test_prerequisites_accept_only_completion_and_event_roles() {
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
 		add_role( 'anchor_event_12', 'Event: Test', [] );
+		add_role( 'anchor_course_77_completed', 'Completed: Other', [] );
+		add_role( 'anchor_course_77', 'Course: Other', [] );
 		$course = $this->make_course();
 
 		$this->post_course_settings( $course, [
-			'access_type'       => 'roles',
-			'auto_enroll_roles' => [ 'customer', 'subscriber', 'administrator', 'anchor_event_12' ],
-			'prerequisites'     => [ 'shop_manager', 'anchor_event_12' ],
+			'prerequisites' => [
+				'customer', 'subscriber', 'administrator', 'shop_manager',
+				'anchor_course_77',            // an ACCESS role: not a prerequisite.
+				'anchor_event_12',
+				'anchor_course_77_completed',
+			],
 		] );
 
-		$this->assertSame( [ 'anchor_event_12' ], get_post_meta( $course, '_anchor_course_auto_enroll_roles', true ), 'customer/subscriber/administrator must be dropped, not just hidden.' );
-		$this->assertSame( [ 'anchor_event_12' ], get_post_meta( $course, '_anchor_course_prerequisites', true ) );
-		$this->assertArrayNotHasKey( 'customer', \Anchor\Courses\Admin\CourseEditor::role_choices( 'auto_enroll_roles' ) );
+		$this->assertSame(
+			[ 'anchor_event_12', 'anchor_course_77_completed' ],
+			get_post_meta( $course, '_anchor_course_prerequisites', true ),
+			'A crafted POST must be dropped at the sanitiser, not merely hidden in the UI.'
+		);
+
+		$choices = CourseEditor::prerequisite_role_choices();
+		$this->assertArrayHasKey( 'anchor_event_12', $choices );
+		$this->assertArrayHasKey( 'anchor_course_77_completed', $choices );
+		$this->assertArrayNotHasKey( 'customer', $choices );
+		$this->assertArrayNotHasKey( 'subscriber', $choices );
+		$this->assertArrayNotHasKey( 'anchor_course_77', $choices );
+
 		remove_role( 'anchor_event_12' );
+		remove_role( 'anchor_course_77_completed' );
+		remove_role( 'anchor_course_77' );
 	}
 
 	public function test_invalid_enum_values_fall_back_to_the_default() {
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
 		$course = $this->make_course();
 
-		$this->post_course_settings( $course, [ 'access_type' => 'hacked', 'progression_mode' => 'nope', 'completion_mode' => 'x' ] );
+		$this->post_course_settings( $course, [ 'progression_mode' => 'nope', 'completion_mode' => 'x' ] );
 
-		$this->assertSame( 'closed', get_post_meta( $course, '_anchor_course_access_type', true ) );
 		$this->assertSame( 'sequential', get_post_meta( $course, '_anchor_course_progression_mode', true ) );
 		$this->assertSame( 'all_required_items', get_post_meta( $course, '_anchor_course_completion_mode', true ) );
 	}
@@ -2403,7 +2443,7 @@ final class CourseEditor {
 			'duration' => '', 'difficulty' => '', 'instructor' => '',
 			'ce_credits' => 0.0, 'ce_type' => '', 'ce_provider_name' => '', 'ce_provider_number' => '',
 			'ce_expires_days' => 0,
-			'access_type' => 'closed', 'auto_enroll_roles' => [], 'prerequisites' => [],
+			'prerequisites' => [],
 			'completion_mode' => 'all_required_items', 'completion_percentage' => 100,
 			'progression_mode' => 'sequential',
 			'certificate_enabled' => 1, 'certificate_template' => 'default',
@@ -2464,18 +2504,11 @@ final class CourseEditor {
 		$this->text_field( $id, 'instructor', \__( 'Instructor', 'anchor-schema' ) );
 
 		echo '<h4>' . \esc_html__( 'Access', 'anchor-schema' ) . '</h4>';
-		$this->select_field(
-			$id,
-			'access_type',
-			\__( 'Who may enrol', 'anchor-schema' ),
-			[
-				'open'   => \__( 'Open - any signed-in user may enrol', 'anchor-schema' ),
-				'closed' => \__( 'Closed - enrolment by admin, API or integration only', 'anchor-schema' ),
-				'roles'  => \__( 'Roles - holders of the roles below are enrolled automatically', 'anchor-schema' ),
-			]
-		);
-		$this->role_picker( $id, 'auto_enroll_roles', \__( 'Auto-enrol roles', 'anchor-schema' ) );
-		$this->role_picker( $id, 'prerequisites', \__( 'Prerequisite roles (completed courses / attended events)', 'anchor-schema' ) );
+		echo '<p class="description">' . \esc_html__(
+			'Access is the course role, shown in the Course Role panel. Add someone on the Learners tab, or sell a product mapped to this course.',
+			'anchor-schema'
+		) . '</p>';
+		$this->prerequisite_picker( $id );
 		$this->text_field( $id, 'available_from', \__( 'Available from (YYYY-MM-DD)', 'anchor-schema' ) );
 		$this->text_field( $id, 'available_until', \__( 'Available until (YYYY-MM-DD)', 'anchor-schema' ) );
 		$this->text_field( $id, 'expiration_days', \__( 'Enrolment expires after (days, 0 = never)', 'anchor-schema' ) );
@@ -2546,58 +2579,85 @@ final class CourseEditor {
 		echo '</select></p>';
 	}
 
-	/** Multi-select of every role, so event and course membership roles are pickable. */
-	private function role_picker( int $course_id, string $key, string $label ): void {
-		$selected = \array_map( 'strval', (array) self::setting( $course_id, $key ) );
+	/**
+	 * The module's ONE role picker, and it picks prerequisites only.
+	 *
+	 * There is no auto-enrol picker and no access-type select: access is the
+	 * course's own role (design spec 3.1). This list answers a different
+	 * question - "what must they already have finished?" - so it offers only
+	 * things that can be finished.
+	 */
+	private function prerequisite_picker( int $course_id ): void {
+		$selected = \array_map( 'strval', (array) self::setting( $course_id, 'prerequisites' ) );
+		$choices  = self::prerequisite_role_choices();
 
 		\printf(
-			'<p class="anchor-courses-field"><label for="ac-%1$s"><strong>%2$s</strong></label><br />'
-			. '<select multiple size="6" id="ac-%1$s" name="anchor_course[%1$s][]" class="anchor-courses-roles">',
-			\esc_attr( $key ),
-			\esc_html( $label )
+			'<p class="anchor-courses-field"><label for="ac-prerequisites"><strong>%s</strong></label><br />',
+			\esc_html__( 'Prerequisites (completed courses / attended events)', 'anchor-schema' )
 		);
-		foreach ( self::role_choices( $key ) as $slug => $role ) {
+
+		if ( [] === $choices ) {
+			echo \esc_html__( 'No completed-course or event roles exist yet.', 'anchor-schema' ) . '</p>';
+			return;
+		}
+
+		echo '<select multiple size="6" id="ac-prerequisites" name="anchor_course[prerequisites][]" class="anchor-courses-roles">';
+		foreach ( $choices as $slug => $role ) {
 			\printf(
 				'<option value="%s"%s>%s</option>',
 				\esc_attr( (string) $slug ),
 				\in_array( (string) $slug, $selected, true ) ? ' selected="selected"' : '',
-				\esc_html( \translate_user_role( (string) ( $role['name'] ?? $slug ) ) )
+				\esc_html( (string) ( $role['name'] ?? $slug ) )
 			);
 		}
 		echo '</select></p>';
 	}
 
 	/**
-	 * Roles WordPress and WooCommerce ship with. Never offered for auto-enrol
-	 * or prerequisites: `set_user_role` fires on every new account, so listing
-	 * `customer` would enrol every shopper and `subscriber` every registrant
-	 * (design spec §3.1). A site that really wants one back adds it through
-	 * the `anchor_courses_auto_enroll_role_choices` filter.
+	 * Slug shapes that may be a prerequisite.
+	 *
+	 * A course's COMPLETION role, or an event's role. Deliberately not an
+	 * exclusion list: `customer`, `subscriber` and anything else a plugin
+	 * invents simply never match, and neither does a course's ACCESS role
+	 * (`anchor_course_{id}` with no `_completed`), because "must already be
+	 * enrolled" is not a prerequisite - it is a circular one.
 	 */
-	public const EXCLUDED_ROLES = [
-		'administrator', 'editor', 'author', 'contributor', 'subscriber',
-		'customer', 'shop_manager',
+	private const PREREQUISITE_PATTERNS = [
+		'/^anchor_course_\d+_completed$/',
+		'/^anchor_event_\d+$/',
 	];
 
+	/** @return bool Whether this slug may be stored as a prerequisite. */
+	public static function is_prerequisite_slug( string $slug ): bool {
+		foreach ( self::PREREQUISITE_PATTERNS as $pattern ) {
+			if ( 1 === \preg_match( $pattern, $slug ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/**
-	 * The roles a picker may offer and a save may store: event roles, course
-	 * roles, and roles an admin created by hand.
+	 * The roles the prerequisites picker may offer and a save may store.
 	 *
 	 * @return array<string,array> slug => role definition
 	 */
-	public static function role_choices( string $key ): array {
+	public static function prerequisite_role_choices(): array {
 		$choices = [];
 		foreach ( \wp_roles()->roles as $slug => $role ) {
-			if ( \in_array( (string) $slug, self::EXCLUDED_ROLES, true ) ) {
-				continue;
+			if ( self::is_prerequisite_slug( (string) $slug ) ) {
+				$choices[ (string) $slug ] = $role;
 			}
-			$choices[ (string) $slug ] = $role;
 		}
 		/**
-		 * @param array  $choices slug => role definition
-		 * @param string $key     'auto_enroll_roles' or 'prerequisites'
+		 * Filter the prerequisite roles offered on the course editor.
+		 *
+		 * Anything added here is also accepted by the sanitiser, so a site can
+		 * widen the list deliberately - but never by accident.
+		 *
+		 * @param array<string,array> $choices slug => role definition
 		 */
-		return (array) \apply_filters( 'anchor_courses_auto_enroll_role_choices', $choices, $key );
+		return (array) \apply_filters( 'anchor_courses_prerequisite_role_choices', $choices );
 	}
 
 	public function save( int $post_id ): void {
@@ -2634,10 +2694,6 @@ final class CourseEditor {
 		$defaults = self::defaults();
 
 		switch ( $key ) {
-			case 'access_type':
-				$v = \sanitize_key( (string) $value );
-				return \in_array( $v, CoursePostType::ACCESS_TYPES, true ) ? $v : $defaults['access_type'];
-
 			case 'progression_mode':
 				$v = \sanitize_key( (string) $value );
 				return \in_array( $v, CoursePostType::PROGRESSION_MODES, true ) ? $v : $defaults['progression_mode'];
@@ -2646,11 +2702,11 @@ final class CourseEditor {
 				$v = \sanitize_key( (string) $value );
 				return \in_array( $v, CoursePostType::COMPLETION_MODES, true ) ? $v : $defaults['completion_mode'];
 
-			case 'auto_enroll_roles':
 			case 'prerequisites':
 				// Only roles the picker could have offered. A crafted POST naming
-				// `customer` is dropped here, not just hidden in the UI.
-				$allowed = \array_keys( self::role_choices( $key ) );
+				// `customer` - or this course's own access role - is dropped
+				// here, not just hidden in the UI.
+				$allowed = \array_keys( self::prerequisite_role_choices() );
 				return \array_values( \array_filter(
 					\array_map( 'sanitize_key', (array) $value ),
 					static fn( string $slug ): bool => '' !== $slug && \in_array( $slug, $allowed, true )
@@ -2727,7 +2783,7 @@ Expected: PASS (7 tests).
 ```bash
 git add anchor-courses/src/Admin/CourseEditor.php anchor-courses/assets/admin.css \
         anchor-courses/anchor-courses.php tests/test-courses-course-editor.php
-git commit -m "feat(courses): course settings metabox with validated enums and role pickers"
+git commit -m "feat(courses): course settings metabox with validated enums and a prerequisites-only role picker"
 ```
 
 ---
@@ -5025,7 +5081,9 @@ git commit -m "feat(courses): enrollment repository and value object"
   - Filter: `anchor_courses_can_enroll( true|\WP_Error $allowed, int $user_id, int $course_id )`
   - `anchor_courses_enroll_user( int $user_id, int $course_id, array $args = [] )` in `api.php`
 
-Error codes returned by `can_enroll()`: `no_user`, `no_course`, `course_closed`, `not_available_yet`, `no_longer_available`, `missing_prerequisite`. `enroll()` additionally returns `already_enrolled`? **No** - re-enrolling an active learner returns the existing `Enrollment` (idempotent, brief 26).
+Error codes returned by `can_enroll()`: `no_user`, `no_course`, `not_available_yet`, `no_longer_available`, `missing_prerequisite`. There is **no** `course_closed`: closed-ness was the access type, and the access type is gone (design spec 1). `enroll()` additionally returns `already_enrolled`? **No** - re-enrolling an active learner returns the existing `Enrollment` (idempotent, brief 26).
+
+**Who calls what.** `can_enroll()` is the gate on *granting the access role* - `Support\Roles::grant_access()` (Task 19) asks it, so the Learners tab (Task 21) and the WooCommerce adapter (Task 39) are both refused on an unmet prerequisite. `enroll()` is what the role listener (Task 20) calls once the role is already held, with `bypass_checks`, because by then the decision has been made: holding the role *is* enrolment. Nothing on the front end calls either - there is no self-enrolment (design spec 7).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -5060,7 +5118,7 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 
 	public function test_enroll_creates_one_row_and_fires_the_action() {
 		$user   = $this->make_learner();
-		$course = $this->make_course( [ 'access_type' => 'open' ] );
+		$course = $this->make_course();
 		$fired  = [];
 		add_action( 'anchor_courses_enrolled', function ( $e, $u, $c ) use ( &$fired ) { $fired[] = [ $u, $c ]; }, 10, 3 );
 
@@ -5085,18 +5143,23 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 		$this->assertSame( 1, $count, 'The enrolled action must fire once per enrolment.' );
 	}
 
-	public function test_closed_courses_refuse_self_enrolment_but_allow_the_integration_path() {
+	/** The source travels with the enrolment, whichever door it came through. */
+	public function test_the_bypass_path_records_its_source() {
 		$user   = $this->make_learner();
-		$course = $this->make_course( [ 'access_type' => 'closed' ] );
-
-		$refused = $this->service->enroll( $user, $course );
-		$this->assertWPError( $refused );
-		$this->assertSame( 'course_closed', $refused->get_error_code() );
+		$course = $this->make_course();
 
 		$allowed = $this->service->enroll( $user, $course, [ 'bypass_checks' => true, 'source' => 'woocommerce', 'source_id' => '4242' ] );
 		$this->assertInstanceOf( Enrollment::class, $allowed );
 		$this->assertSame( 'woocommerce', $allowed->source );
 		$this->assertSame( '4242', $allowed->source_id );
+	}
+
+	/** There is no access type, so there is no "closed" refusal to make. */
+	public function test_there_is_no_course_closed_refusal() {
+		$user   = $this->make_learner();
+		$course = $this->make_course();
+
+		$this->assertTrue( $this->service->can_enroll( $user, $course ) );
 	}
 
 	public function test_availability_window_is_enforced() {
@@ -5124,15 +5187,17 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 
 	public function test_prerequisite_roles_block_enrolment_until_held() {
 		$user   = $this->make_learner();
-		$course = $this->make_course( [ 'prerequisites' => [ 'anchor_course_999' ] ] );
+		$course = $this->make_course( [ 'prerequisites' => [ 'anchor_course_999_completed' ] ] );
 
 		$refused = $this->service->enroll( $user, $course );
 		$this->assertSame( 'missing_prerequisite', $refused->get_error_code() );
 
-		add_role( 'anchor_course_999', 'Completed: Prereq', [] );
-		get_user_by( 'id', $user )->add_role( 'anchor_course_999' );
+		add_role( 'anchor_course_999_completed', 'Completed: Prereq', [] );
+		get_user_by( 'id', $user )->add_role( 'anchor_course_999_completed' );
 
 		$this->assertInstanceOf( Enrollment::class, $this->service->enroll( $user, $course ) );
+
+		remove_role( 'anchor_course_999_completed' );
 	}
 
 	public function test_the_can_enroll_filter_can_veto() {
@@ -5234,16 +5299,22 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /**
  * Who is enrolled in what, and why (brief 15, 16, 26).
  *
- * Every enrolment in the system goes through enroll(): the WooCommerce adapter,
- * the events adapter, the REST route, the admin screen and the public API
- * function all call it, so the rules and the hooks have exactly one home.
+ * Every enrolment in the system goes through enroll(). In practice one caller
+ * reaches it: the Support\Roles listener, when somebody gains
+ * `anchor_course_{id}`. Purchases, the Learners tab, WP-CLI and any other
+ * plugin all grant that role rather than calling this service, so the rules,
+ * the hooks and the row shape have exactly one home.
  */
 final class EnrollmentService {
 
 	public const CRON_HOOK = 'anchor_courses_expire_sweep';
 
 	/**
-	 * May this user enrol themselves right now?
+	 * May this user be given access to this course right now?
+	 *
+	 * Asked by Support\Roles::grant_access() before it hands out the access
+	 * role, so the Learners tab and the WooCommerce adapter refuse together.
+	 * Never asked on the front end: nobody enrols themselves.
 	 *
 	 * @return true|\WP_Error
 	 */
@@ -5267,10 +5338,6 @@ final class EnrollmentService {
 		}
 		if ( CoursePostType::CPT !== \get_post_type( $course_id ) ) {
 			return new \WP_Error( 'no_course', \__( 'That course does not exist.', 'anchor-schema' ) );
-		}
-
-		if ( 'closed' === (string) CourseEditor::setting( $course_id, 'access_type' ) ) {
-			return new \WP_Error( 'course_closed', \__( 'This course is not open for self-enrolment.', 'anchor-schema' ) );
 		}
 
 		$now  = Clock::timestamp();
@@ -5503,7 +5570,7 @@ in the constructor, after the migrations block:
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Enrollment_Service
 ```
-Expected: PASS (12 tests).
+Expected: PASS (13 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -5983,7 +6050,7 @@ git commit -m "feat(courses): progress repository with an upsert that cannot dup
   - `::recalculate_course( int $user_id, int $course_id ): CourseProgress`
   - Actions: `anchor_courses_lesson_started( int $user_id, int $course_id, int $lesson_id, Progress $progress )`, `anchor_courses_lesson_completed( int $user_id, int $course_id, int $lesson_id, Progress $progress )`
   - Filter: `anchor_courses_can_access_lesson( bool $allowed, int $user_id, int $course_id, int $item_id, string $item_type )`
-  - `::set_completion_service( CompletionService $service ): void` - Task 26 injects it; until then `recalculate_course()` only computes.
+  - `::set_completion_service( CompletionService $service ): void` - Task 29 injects it; until then `recalculate_course()` only computes.
 
 `complete_lesson()` error codes: `not_enrolled`, `not_in_course`, `locked`, `quiz_required`.
 
@@ -6260,7 +6327,7 @@ final class ProgressService {
 		$this->enrollments = $enrollments ?? new EnrollmentService();
 	}
 
-	/** Injected by the Module once CompletionService exists (Task 26). */
+	/** Injected by the Module once CompletionService exists (Task 29). */
 	public function set_completion_service( CompletionService $service ): void {
 		$this->completion = $service;
 	}
@@ -6574,7 +6641,9 @@ git commit -m "feat(courses): progress service with sequential progression and c
   - `Frontend\Actions::complete_url( int $course_id, int $lesson_id ): string`
   - `Frontend\Actions::notice(): string` - the decoded notice for the current request, `''` when none
 
-There is deliberately **no** `wp_ajax_` route for lesson completion: the form posts to `admin-post.php` so it works without JavaScript, and REST (Task 30) covers scripted clients.
+There is deliberately **no** `wp_ajax_` route for lesson completion: the form posts to `admin-post.php` so it works without JavaScript, and REST (Task 33) covers scripted clients.
+
+There is also deliberately **no enrol handler** - no `NONCE_ENROLL`, no `enroll_url()`, no `handle_enroll()`. Self-enrolment does not exist (design spec 7): a learner gets `anchor_course_{id}` by buying a product mapped to the course or by an admin adding them on the Learners tab. A front-end form that called `EnrollmentService::enroll()` would be a second, unguarded door into the same room.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -6715,6 +6784,16 @@ class Test_Courses_Progress_Api extends Anchor_Courses_TestCase {
 		$this->assertStringContainsString( 'admin-post.php', $url );
 		$this->assertStringContainsString( 'action=anchor_courses_complete_lesson', $url );
 	}
+
+	/** Self-enrolment does not exist, so neither does an enrol endpoint. */
+	public function test_there_is_no_self_enrolment_endpoint() {
+		new Actions();
+
+		$this->assertFalse( has_action( 'admin_post_anchor_courses_enroll' ) );
+		$this->assertFalse( has_action( 'admin_post_nopriv_anchor_courses_enroll' ) );
+		$this->assertFalse( method_exists( Actions::class, 'handle_enroll' ) );
+		$this->assertFalse( method_exists( Actions::class, 'enroll_url' ) );
+	}
 }
 ```
 
@@ -6768,7 +6847,6 @@ declare(strict_types=1);
 namespace Anchor\Courses\Frontend;
 
 use Anchor\Courses\Domain\Progress;
-use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -6776,34 +6854,29 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /**
  * Form posts from the front end.
  *
- * admin-post.php rather than admin-ajax.php or REST, so "Mark complete" and
- * "Enrol" work with JavaScript switched off. Every handler verifies login,
- * nonce and service rules, then redirects with a notice code - never a raw
- * message, so nothing user-supplied reaches the page.
+ * admin-post.php rather than admin-ajax.php or REST, so "Mark complete" works
+ * with JavaScript switched off. The handler verifies login, nonce and service
+ * rules, then redirects with a notice code - never a raw message, so nothing
+ * user-supplied reaches the page.
+ *
+ * "Mark complete" is the ONLY thing a learner may post. There is no enrol
+ * action: access arrives as a role, granted by a purchase or an admin.
  */
 final class Actions {
 
 	public const NONCE_COMPLETE = 'anchor_courses_complete';
-	public const NONCE_ENROLL   = 'anchor_courses_enroll';
 
 	/** Notice codes this module will render. Anything else is ignored. */
 	public const NOTICES = [
-		'completed', 'enrolled', 'bad_nonce', 'login_required', 'not_enrolled',
-		'locked', 'quiz_required', 'not_in_course', 'course_closed',
-		'not_available_yet', 'no_longer_available', 'missing_prerequisite', 'error',
+		'completed', 'bad_nonce', 'login_required', 'not_enrolled',
+		'locked', 'quiz_required', 'not_in_course', 'error',
 	];
 
-	public function __construct(
-		private ?ProgressService $progress = null,
-		private ?EnrollmentService $enrollments = null
-	) {
-		$this->progress    = $progress ?? new ProgressService();
-		$this->enrollments = $enrollments ?? new EnrollmentService();
+	public function __construct( private ?ProgressService $progress = null ) {
+		$this->progress = $progress ?? new ProgressService();
 
 		\add_action( 'admin_post_anchor_courses_complete_lesson', [ $this, 'handle_complete_lesson' ] );
 		\add_action( 'admin_post_nopriv_anchor_courses_complete_lesson', [ $this, 'handle_complete_lesson' ] );
-		\add_action( 'admin_post_anchor_courses_enroll', [ $this, 'handle_enroll' ] );
-		\add_action( 'admin_post_nopriv_anchor_courses_enroll', [ $this, 'handle_enroll' ] );
 	}
 
 	public static function complete_url( int $course_id, int $lesson_id ): string {
@@ -6817,13 +6890,6 @@ final class Actions {
 		);
 	}
 
-	public static function enroll_url( int $course_id ): string {
-		return \add_query_arg(
-			[ 'action' => 'anchor_courses_enroll', 'course_id' => $course_id ],
-			\admin_url( 'admin-post.php' )
-		);
-	}
-
 	/** The notice code on the current request, or ''. */
 	public static function notice(): string {
 		$code = \sanitize_key( \wp_unslash( (string) ( $_GET['anchor_courses_notice'] ?? '' ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
@@ -6833,19 +6899,14 @@ final class Actions {
 	/** Human text for a notice code. */
 	public static function notice_text( string $code ): string {
 		$messages = [
-			'completed'            => \__( 'Lesson marked complete.', 'anchor-schema' ),
-			'enrolled'             => \__( 'You are enrolled.', 'anchor-schema' ),
-			'bad_nonce'            => \__( 'That link expired. Please try again.', 'anchor-schema' ),
-			'login_required'       => \__( 'Please sign in first.', 'anchor-schema' ),
-			'not_enrolled'         => \__( 'You are not enrolled in this course.', 'anchor-schema' ),
-			'locked'               => \__( 'Finish the earlier lessons first.', 'anchor-schema' ),
-			'quiz_required'        => \__( 'Pass this lesson\'s quiz to complete it.', 'anchor-schema' ),
-			'not_in_course'        => \__( 'That lesson is not part of this course.', 'anchor-schema' ),
-			'course_closed'        => \__( 'This course is not open for self-enrolment.', 'anchor-schema' ),
-			'not_available_yet'    => \__( 'This course is not open yet.', 'anchor-schema' ),
-			'no_longer_available'  => \__( 'This course has closed.', 'anchor-schema' ),
-			'missing_prerequisite' => \__( 'You need to finish the prerequisites first.', 'anchor-schema' ),
-			'error'                => \__( 'Something went wrong. Please try again.', 'anchor-schema' ),
+			'completed'      => \__( 'Lesson marked complete.', 'anchor-schema' ),
+			'bad_nonce'      => \__( 'That link expired. Please try again.', 'anchor-schema' ),
+			'login_required' => \__( 'Please sign in first.', 'anchor-schema' ),
+			'not_enrolled'   => \__( 'You do not have access to this course.', 'anchor-schema' ),
+			'locked'         => \__( 'Finish the earlier lessons first.', 'anchor-schema' ),
+			'quiz_required'  => \__( 'Pass this lesson\'s quiz to complete it.', 'anchor-schema' ),
+			'not_in_course'  => \__( 'That lesson is not part of this course.', 'anchor-schema' ),
+			'error'          => \__( 'Something went wrong. Please try again.', 'anchor-schema' ),
 		];
 		return $messages[ $code ] ?? '';
 	}
@@ -6871,26 +6932,6 @@ final class Actions {
 		);
 	}
 
-	public function handle_enroll(): void {
-		$course_id = \absint( $_POST['course_id'] ?? $_GET['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
-
-		if ( ! \is_user_logged_in() ) {
-			$this->redirect( 'login_required', $course_id );
-		}
-
-		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
-		if ( ! \wp_verify_nonce( $nonce, self::NONCE_ENROLL . '_' . $course_id ) ) {
-			$this->redirect( 'bad_nonce', $course_id );
-		}
-
-		$result = $this->enrollments->enroll( \get_current_user_id(), $course_id );
-
-		$this->redirect(
-			\is_wp_error( $result ) ? (string) $result->get_error_code() : 'enrolled',
-			$course_id
-		);
-	}
-
 	/** Redirect back with a notice CODE (never a message) and stop. */
 	private function redirect( string $code, int $fallback_post_id ): void {
 		if ( ! \in_array( $code, self::NOTICES, true ) ) {
@@ -6912,10 +6953,10 @@ final class Actions {
 }
 ```
 
-`anchor-courses/anchor-courses.php` - construct it unconditionally (the handlers live on `admin-post.php`):
+`anchor-courses/anchor-courses.php` - construct it unconditionally (the handler lives on `admin-post.php`):
 
 ```php
-		new Frontend\Actions( $this->progress, $this->enrollments );
+		new Frontend\Actions( $this->progress );
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -6924,7 +6965,7 @@ final class Actions {
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Progress_Api
 ```
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -6939,10 +6980,10 @@ git commit -m "feat(courses): public progress API and the no-JS completion form 
 ### Task 18: Front-end templates, shortcodes and assets
 
 **Files:**
-- Create: `anchor-courses/src/Frontend/Templates.php`, `Assets.php`, `Shortcodes.php`
+- Create: `anchor-courses/src/Frontend/Templates.php`, `Assets.php`, `Shortcodes.php`, `Access.php`
 - Create: `anchor-courses/templates/course.php`, `lesson.php`, `dashboard.php`
 - Create: `anchor-courses/assets/frontend.css`, `anchor-courses/assets/frontend.js`
-- Modify: `anchor-courses/anchor-courses.php` - construct the three classes
+- Modify: `anchor-courses/anchor-courses.php` - construct `Templates`, `Assets` and `Shortcodes` (`Access` is static)
 - Test: `tests/test-courses-shortcodes.php`
 
 **Interfaces:**
@@ -6953,7 +6994,11 @@ git commit -m "feat(courses): public progress API and the no-JS completion form 
   - `Frontend\Templates::template_include( string $template ): string` - `template_include` filter for single course/lesson
   - `Frontend\Assets::enqueue(): void` - `wp_enqueue_scripts`, only on courses screens; localises `anchorCourses` = `{restUrl, nonce, dataLayer: bool}`
   - `Frontend\Shortcodes` registering: `[anchor_courses]`, `[anchor_course id]`, `[anchor_course_progress course_id]`, `[anchor_my_courses]`, `[anchor_my_credits]`, `[anchor_my_certificates]` (the last two render "no records yet" until Phase 4 fills them)
+  - `Frontend\Access::cta( int $course_id, int $user_id = 0 ): array{url:string,label:string,message:string}` - the one answer to "how does this visitor get access?"
+  - Filters: `anchor_courses_no_access_message( string $message, int $course_id )`, `anchor_courses_access_cta( array $cta, int $course_id, int $user_id )`
   - Each callback uses `ob_start()` / `return ob_get_clean()` per repo convention.
+
+**No Enrol button.** A course page never offers self-enrolment (design spec 7). `Access::cta()` returns a *message* by default - "Ask us about access", filterable via `anchor_courses_no_access_message` - and returns a *link* only when something has filtered `anchor_courses_access_cta` to supply one. The WooCommerce adapter (Task 38) is that something: when a product maps to the course it filters in the product permalink with the label "Enrol". The core never mentions WooCommerce, and a site with no store shows the message. That is why the CTA is a filter and not an `if ( class_exists( 'WooCommerce' ) )` branch in the template.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -7004,10 +7049,52 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 		$this->assertStringContainsString( 'Dr Vega', $html );
 	}
 
-	public function test_single_course_shows_an_enrol_form_to_a_signed_in_visitor() {
+	/** No product, no self-enrolment: the page says how to ask, and offers no button. */
+	public function test_a_course_with_no_product_shows_the_ask_us_message() {
 		wp_set_current_user( $this->user );
 		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
-		$this->assertStringContainsString( 'anchor_courses_enroll', $html );
+
+		$this->assertStringContainsString( 'Ask us about access', $html );
+		$this->assertStringNotContainsString( 'anchor_courses_enroll', $html, 'There is no self-enrolment endpoint to post to.' );
+		$this->assertStringNotContainsString( '<button', $html );
+	}
+
+	public function test_the_no_access_message_is_filterable() {
+		wp_set_current_user( $this->user );
+		add_filter( 'anchor_courses_no_access_message', static fn() => 'Call the Academy on 555-0100.' );
+
+		$this->assertStringContainsString( 'Call the Academy on 555-0100.', do_shortcode( '[anchor_course id="' . $this->course . '"]' ) );
+
+		remove_all_filters( 'anchor_courses_no_access_message' );
+	}
+
+	/** An integration (in production, WooCommerce) may supply a real CTA link. */
+	public function test_a_filtered_cta_renders_as_a_link_not_a_form() {
+		wp_set_current_user( $this->user );
+		add_filter(
+			'anchor_courses_access_cta',
+			static fn( $cta ) => [ 'url' => 'https://example.test/product/laser-safety/', 'label' => 'Enrol', 'message' => '' ],
+			10,
+			3
+		);
+
+		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
+
+		$this->assertStringContainsString( 'https://example.test/product/laser-safety/', $html );
+		$this->assertStringContainsString( 'Enrol', $html );
+		$this->assertStringNotContainsString( '<form', $html );
+
+		remove_all_filters( 'anchor_courses_access_cta' );
+	}
+
+	/** An enrolled learner is offered neither: they get on with the course. */
+	public function test_an_enrolled_learner_sees_no_access_cta() {
+		wp_set_current_user( $this->user );
+		( new EnrollmentService() )->enroll( $this->user, $this->course );
+
+		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
+
+		$this->assertStringNotContainsString( 'Ask us about access', $html );
 	}
 
 	public function test_progress_shortcode_reflects_completion() {
@@ -7338,7 +7425,7 @@ final class Shortcodes {
 		);
 	}
 
-	/** Filled in by Task 27 (CreditService). */
+	/** Filled in by Task 30 (CreditService). */
 	public function my_credits(): string {
 		if ( \get_current_user_id() <= 0 ) {
 			return '<p class="anchor-courses-notice">' . \esc_html__( 'Please sign in to see your CE credits.', 'anchor-schema' ) . '</p>';
@@ -7346,7 +7433,7 @@ final class Shortcodes {
 		return '<p class="anchor-courses-notice">' . \esc_html__( 'No CE credits yet.', 'anchor-schema' ) . '</p>';
 	}
 
-	/** Filled in by Task 27 (CertificateService). */
+	/** Filled in by Task 30 (CertificateService). */
 	public function my_certificates(): string {
 		if ( \get_current_user_id() <= 0 ) {
 			return '<p class="anchor-courses-notice">' . \esc_html__( 'Please sign in to see your certificates.', 'anchor-schema' ) . '</p>';
@@ -7381,6 +7468,7 @@ Add to `EnrollmentService` (used by the dashboard):
  */
 
 use Anchor\Courses\Admin\CourseEditor;
+use Anchor\Courses\Frontend\Access;
 use Anchor\Courses\Frontend\Actions;
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
@@ -7455,21 +7543,92 @@ $notice = Actions::notice();
 		<?php endforeach; ?>
 	</ol>
 
-	<?php if ( 0 === $user_id ) : ?>
-		<p class="anchor-course-cta">
-			<a class="anchor-courses-button" href="<?php echo esc_url( wp_login_url( (string) get_permalink( $course_id ) ) ); ?>">
-				<?php esc_html_e( 'Sign in to enrol', 'anchor-schema' ); ?>
-			</a>
-		</p>
-	<?php elseif ( ! $enrollment ) : ?>
-		<form class="anchor-course-cta" method="post" action="<?php echo esc_url( Actions::enroll_url( $course_id ) ); ?>">
-			<?php wp_nonce_field( Actions::NONCE_ENROLL . '_' . $course_id ); ?>
-			<input type="hidden" name="course_id" value="<?php echo esc_attr( (string) $course_id ); ?>" />
-			<input type="hidden" name="_redirect" value="<?php echo esc_url( (string) get_permalink( $course_id ) ); ?>" />
-			<button type="submit" class="anchor-courses-button"><?php esc_html_e( 'Enrol', 'anchor-schema' ); ?></button>
-		</form>
+	<?php
+	/*
+	 * Access CTA. Never a self-enrol form: either a link an integration
+	 * supplied (a WooCommerce product that grants this course), or a line of
+	 * text telling the visitor how to ask. See Frontend\Access.
+	 */
+	if ( ! $enrollment ) :
+		$cta = Access::cta( $course_id, $user_id );
+		?>
+		<?php if ( '' !== $cta['url'] ) : ?>
+			<p class="anchor-course-cta">
+				<a class="anchor-courses-button" href="<?php echo esc_url( $cta['url'] ); ?>">
+					<?php echo esc_html( $cta['label'] ); ?>
+				</a>
+			</p>
+		<?php elseif ( '' !== $cta['message'] ) : ?>
+			<p class="anchor-course-cta anchor-course-cta--ask"><?php echo esc_html( $cta['message'] ); ?></p>
+		<?php endif; ?>
 	<?php endif; ?>
 </div>
+```
+
+`anchor-courses/src/Frontend/Access.php`:
+
+```php
+<?php
+declare(strict_types=1);
+
+namespace Anchor\Courses\Frontend;
+
+if ( ! \defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * How does this visitor get access to this course?
+ *
+ * Exactly one answer, in one place, used by the course template, the course
+ * list and anything else that needs to say something to a visitor who is not
+ * enrolled. It is deliberately NOT an "Enrol" button: self-enrolment does not
+ * exist (design spec 7), so the honest default is a sentence telling them how
+ * to ask.
+ *
+ * An integration turns that sentence into a link by filtering
+ * `anchor_courses_access_cta`. In this repo that is the WooCommerce adapter,
+ * which supplies the permalink of a product mapped to the course. The core
+ * knows nothing about it, so a site with no store still renders correctly.
+ */
+final class Access {
+
+	/**
+	 * @return array{url:string,label:string,message:string}
+	 */
+	public static function cta( int $course_id, int $user_id = 0 ): array {
+		/**
+		 * The text shown when nothing sells or grants this course.
+		 *
+		 * @param string $message
+		 * @param int    $course_id
+		 */
+		$message = (string) \apply_filters(
+			'anchor_courses_no_access_message',
+			\__( 'Ask us about access to this course.', 'anchor-schema' ),
+			$course_id
+		);
+
+		$cta = [ 'url' => '', 'label' => '', 'message' => $message ];
+
+		/**
+		 * Filter the access call to action.
+		 *
+		 * Return a `url` + `label` to render a link instead of the message.
+		 * Anything that can grant `anchor_course_{id}` - a product, a form, a
+		 * partner portal - belongs here.
+		 *
+		 * @param array{url:string,label:string,message:string} $cta
+		 * @param int                                           $course_id
+		 * @param int                                           $user_id
+		 */
+		$cta = (array) \apply_filters( 'anchor_courses_access_cta', $cta, $course_id, $user_id );
+
+		return [
+			'url'     => (string) ( $cta['url'] ?? '' ),
+			'label'   => (string) ( $cta['label'] ?? '' ),
+			'message' => (string) ( $cta['message'] ?? '' ),
+		];
+	}
+}
 ```
 
 `anchor-courses/templates/lesson.php`:
@@ -7689,6 +7848,7 @@ get_footer();
 .anchor-courses-progress-label { margin: .35rem 0 0; font-size: .85em; }
 .anchor-courses-notice { padding: .75rem 1rem; margin: 0 0 1rem; border-left: 3px solid currentColor; background: rgba(0,0,0,.04); }
 .anchor-courses-button { display: inline-block; padding: .6rem 1.2rem; cursor: pointer; }
+.anchor-course-cta--ask { margin: 1rem 0; opacity: .85; }
 .anchor-lesson-breadcrumb { font-size: .85em; margin: 0 0 1rem; }
 .anchor-lesson-breadcrumb-sep { margin: 0 .4rem; opacity: .5; }
 .anchor-lesson-nav { display: flex; justify-content: space-between; margin: 1.5rem 0; }
@@ -7706,7 +7866,7 @@ get_footer();
  *
  * Progressive enhancement only. Every action in this module also works as a
  * plain form post to admin-post.php, so this file must never be the only way
- * to do anything. Task 32 adds the dataLayer pushes here.
+ * to do anything. Task 35 adds the dataLayer pushes here.
  */
 (function ($) {
     'use strict';
@@ -7714,7 +7874,7 @@ get_footer();
     $(function () {
         // Prevent a double submit producing two identical POSTs. The server is
         // idempotent regardless (brief section 26); this is a UX nicety.
-        $('.anchor-lesson-complete, .anchor-course-cta').on('submit', function () {
+        $('.anchor-lesson-complete').on('submit', function () {
             $(this).find('button[type="submit"]').prop('disabled', true);
         });
     });
@@ -7739,7 +7899,7 @@ get_footer();
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Shortcodes
 ```
-Expected: PASS (10 tests).
+Expected: PASS (13 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -7752,9 +7912,1812 @@ git commit -m "feat(courses): front-end templates, shortcodes and progressive-en
 
 ---
 
+### Task 19: `Support\Roles` - the two per-course roles
+
+**Files:**
+- Create: `anchor-courses/src/Support/Roles.php`
+- Modify: `anchor-courses/anchor-courses.php` - hook `save_post_anchor_course`
+- Modify: `anchor-courses/src/Admin/CourseEditor.php` - the "Course Role" panel and its two delete handlers
+- Modify: `tests/class-anchor-courses-testcase.php` - strip minted roles in `tear_down()`
+- Test: `tests/test-courses-roles.php`
+
+**Interfaces:**
+- Consumes: `CoursePostType::CPT`, `Capabilities::cap( 'manage' )`, `Support\Log`.
+- Produces:
+  - `Support\Roles::ACCESS_PREFIX = 'anchor_course_'`, `::COMPLETED_SUFFIX = '_completed'`
+  - `::access_slug( int $course_id ): string` -> `anchor_course_{id}`
+  - `::completion_slug( int $course_id ): string` -> `anchor_course_{id}_completed`
+  - `::access_name( int $course_id ): string` -> `Course: {title}`; `::completion_name( int $course_id ): string` -> `Completed: {title}`
+  - `::is_access_slug( string $slug ): ?int` - the course id, or `null`. **Never matches the `_completed` variant.**
+  - `::ensure_access_role( int $course_id ): string` - on `save_post_anchor_course`, eagerly, when the course is published
+  - `::ensure_completion_role( int $course_id ): string` - lazily, from `grant_completed()`
+  - `::grant_completed( int $user_id, int $course_id ): bool`
+  - `::exists( string $slug ): bool`, `::holders( string $slug ): int`
+  - `::rename_on_title_change( int $post_id, \WP_Post $post ): void` - renames both roles
+  - `::delete_role( string $slug ): int` - strips it from every holder; returns the holder count
+  - `::user_has( int $user_id, string $role ): bool`, `::missing( int $user_id, array $role_slugs ): array`
+  - `Admin\CourseEditor::render_role_panel( \WP_Post $post ): void`, `::handle_delete_role(): void` (`admin_post_anchor_courses_delete_role`)
+
+**Why the access role is minted eagerly and the completion role lazily.** The access role has to exist *before* anybody can be given it: an admin opening the Learners tab on a brand-new course, or a customer buying it thirty seconds after publication, must find a role to be added to. The events module can mint lazily because every grant there goes through one function that can create as it goes; here a plain `add_user_role()` from wp-admin is a supported way in, and that call cannot mint anything. The completion role has no such pressure - nothing can hold it before somebody finishes the course - so it stays lazy and a course nobody completes never creates one.
+
+Neither role carries a capability. They are membership tags, exactly like the events module's `anchor_event_{id}` (events spec 4.1), so adding one can never widen what a user may do. Neither is ever deleted automatically: trashing or deleting a course leaves both standing, because the owner may still want to grant after the fact. The Course Role panel is the only thing that deletes one.
+
+**A note on the redirect notices.** The delete handler redirects with `anchor_courses_admin_notice={code}`. `Admin\EnrollmentManager::render_notice()` (Task 31) owns that whole vocabulary - one renderer, one list, rather than a banner per handler - so until Phase 4 the query argument is simply ignored: the action still works, there is just no confirmation banner yet. Task 31's `NOTICES` constant already carries every code this task and Task 21 emit.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test-courses-roles.php`:
+
+```php
+<?php
+/**
+ * Anchor Courses - the access and completion roles (design spec 3.1).
+ *
+ * Roles live in the `wp_user_roles` option AND in the $wp_roles global, and the
+ * global survives the per-test transaction rollback - so anything that mints a
+ * role removes it again. Anchor_Courses_TestCase::tear_down() does that for
+ * every course these helpers create; tests that mint a role by hand clean up
+ * after themselves.
+ *
+ * @package Anchor\Courses\Tests
+ */
+
+use Anchor\Courses\Admin\CourseEditor;
+use Anchor\Courses\Support\Roles;
+
+/** @group courses */
+class Test_Courses_Roles extends Anchor_Courses_TestCase {
+
+	private int $user;
+	private int $course;
+
+	public function set_up() {
+		parent::set_up();
+		$this->user   = $this->make_learner();
+		$this->course = $this->make_course( [], 'Laser Safety' );
+	}
+
+	public function test_the_slugs_and_names_follow_the_spec() {
+		$this->assertSame( 'anchor_course_' . $this->course, Roles::access_slug( $this->course ) );
+		$this->assertSame( 'anchor_course_' . $this->course . '_completed', Roles::completion_slug( $this->course ) );
+		$this->assertSame( 'Course: Laser Safety', Roles::access_name( $this->course ) );
+		$this->assertSame( 'Completed: Laser Safety', Roles::completion_name( $this->course ) );
+	}
+
+	/** The access role exists the moment the course is published - before anyone needs it. */
+	public function test_the_access_role_is_minted_eagerly_on_publish() {
+		$this->assertTrue( Roles::exists( Roles::access_slug( $this->course ) ) );
+		$this->assertSame( [], get_role( Roles::access_slug( $this->course ) )->capabilities, 'A role is a tag, not a permission.' );
+		$this->assertSame( 'Course: Laser Safety', wp_roles()->roles[ Roles::access_slug( $this->course ) ]['name'] );
+	}
+
+	/** A draft mints nothing; publishing it does. */
+	public function test_a_draft_course_mints_no_role_until_it_is_published() {
+		$draft = self::factory()->post->create( [ 'post_type' => 'anchor_course', 'post_status' => 'draft', 'post_title' => 'Later' ] );
+
+		$this->assertFalse( Roles::exists( Roles::access_slug( $draft ) ) );
+
+		wp_update_post( [ 'ID' => $draft, 'post_status' => 'publish' ] );
+
+		$this->assertTrue( Roles::exists( Roles::access_slug( $draft ) ) );
+		remove_role( Roles::access_slug( $draft ) );
+	}
+
+	/** The completion role waits until somebody actually completes something. */
+	public function test_the_completion_role_is_minted_lazily() {
+		$this->assertFalse( Roles::exists( Roles::completion_slug( $this->course ) ) );
+
+		Roles::grant_completed( $this->user, $this->course );
+
+		$this->assertTrue( Roles::exists( Roles::completion_slug( $this->course ) ) );
+		$this->assertTrue( Roles::user_has( $this->user, Roles::completion_slug( $this->course ) ) );
+		$this->assertContains( 'subscriber', get_userdata( $this->user )->roles, 'The grant is additive.' );
+	}
+
+	public function test_granting_completion_twice_is_harmless() {
+		Roles::grant_completed( $this->user, $this->course );
+		Roles::grant_completed( $this->user, $this->course );
+
+		$this->assertSame( 1, Roles::holders( Roles::completion_slug( $this->course ) ) );
+	}
+
+	/**
+	 * is_access_slug() is the listener's whole safety net: it must recognise an
+	 * access slug and reject everything else, especially the completion
+	 * variant, or completing a course would re-enrol the learner.
+	 */
+	public function test_is_access_slug_matches_the_access_role_and_nothing_else() {
+		$this->assertSame( $this->course, Roles::is_access_slug( 'anchor_course_' . $this->course ) );
+
+		foreach ( [
+			'anchor_course_' . $this->course . '_completed',
+			'anchor_event_12',
+			'anchor_course_',
+			'anchor_course_abc',
+			'anchor_course_12x',
+			'xanchor_course_12',
+			'customer',
+			'subscriber',
+			'',
+		] as $slug ) {
+			$this->assertNull( Roles::is_access_slug( $slug ), "{$slug} must not read as an access role." );
+		}
+	}
+
+	/** An id with no course behind it is still a well-formed slug, and still refused. */
+	public function test_is_access_slug_refuses_an_id_that_is_not_a_course() {
+		$lesson = $this->make_lesson();
+
+		$this->assertNull( Roles::is_access_slug( 'anchor_course_' . $lesson ) );
+		$this->assertNull( Roles::is_access_slug( 'anchor_course_999999' ) );
+	}
+
+	public function test_renaming_the_course_renames_both_roles() {
+		Roles::grant_completed( $this->user, $this->course );
+
+		wp_update_post( [ 'ID' => $this->course, 'post_title' => 'Advanced Laser Safety' ] );
+
+		$this->assertSame( 'Course: Advanced Laser Safety', wp_roles()->roles[ Roles::access_slug( $this->course ) ]['name'] );
+		$this->assertSame( 'Completed: Advanced Laser Safety', wp_roles()->roles[ Roles::completion_slug( $this->course ) ]['name'] );
+	}
+
+	public function test_trashing_the_course_leaves_both_roles_alone() {
+		Roles::grant_completed( $this->user, $this->course );
+
+		wp_trash_post( $this->course );
+
+		$this->assertTrue( Roles::exists( Roles::access_slug( $this->course ) ), 'A role must survive its course (events spec 4.1).' );
+		$this->assertTrue( Roles::exists( Roles::completion_slug( $this->course ) ) );
+		$this->assertTrue( Roles::user_has( $this->user, Roles::completion_slug( $this->course ) ) );
+	}
+
+	public function test_deleting_a_role_strips_it_from_every_holder() {
+		$second = $this->make_learner();
+		Roles::grant_completed( $this->user, $this->course );
+		Roles::grant_completed( $second, $this->course );
+
+		$this->assertSame( 2, Roles::delete_role( Roles::completion_slug( $this->course ) ) );
+
+		$this->assertFalse( Roles::exists( Roles::completion_slug( $this->course ) ) );
+		$this->assertFalse( Roles::user_has( $this->user, Roles::completion_slug( $this->course ) ) );
+		$this->assertContains( 'subscriber', get_userdata( $this->user )->roles, 'Only the one role goes.' );
+	}
+
+	public function test_missing_reports_unheld_roles_by_display_name() {
+		add_role( 'anchor_event_42', 'Event: Summit', [] );
+		Roles::ensure_completion_role( $this->course );
+
+		$required = [ 'anchor_event_42', Roles::completion_slug( $this->course ) ];
+
+		$this->assertSame( [ 'Event: Summit', 'Completed: Laser Safety' ], Roles::missing( $this->user, $required ) );
+
+		get_user_by( 'id', $this->user )->add_role( 'anchor_event_42' );
+		$this->assertSame( [ 'Completed: Laser Safety' ], Roles::missing( $this->user, $required ) );
+
+		remove_role( 'anchor_event_42' );
+	}
+
+	/** A completion role is exactly what another course names as a prerequisite. */
+	public function test_a_completion_role_works_as_another_courses_prerequisite() {
+		$advanced = $this->make_course( [], 'Advanced' );
+		update_post_meta( $advanced, '_anchor_course_prerequisites', [ Roles::completion_slug( $this->course ) ] );
+
+		$service = new \Anchor\Courses\Services\EnrollmentService();
+		$this->assertSame( 'missing_prerequisite', $service->can_enroll( $this->user, $advanced )->get_error_code() );
+
+		Roles::grant_completed( $this->user, $this->course );
+
+		$this->assertTrue( $service->can_enroll( $this->user, $advanced ) );
+	}
+
+	public function test_the_role_panel_shows_both_roles_and_two_delete_actions() {
+		Roles::grant_completed( $this->user, $this->course );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		ob_start();
+		( new CourseEditor() )->render_role_panel( get_post( $this->course ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringContainsString( Roles::access_slug( $this->course ), $html );
+		$this->assertStringContainsString( Roles::completion_slug( $this->course ), $html );
+		$this->assertSame( 2, substr_count( $html, 'anchor_courses_delete_role' ) );
+	}
+
+	public function test_the_role_panel_says_when_nobody_has_completed_yet() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		ob_start();
+		( new CourseEditor() )->render_role_panel( get_post( $this->course ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringContainsString( 'Not created yet', $html );
+		$this->assertSame( 1, substr_count( $html, 'anchor_courses_delete_role' ), 'Only the access role is deletable so far.' );
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
+vendor/bin/phpunit --filter Test_Courses_Roles
+```
+Expected: FAIL - `Class "Anchor\Courses\Support\Roles" not found`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+`anchor-courses/src/Support/Roles.php`:
+
+```php
+<?php
+declare(strict_types=1);
+
+namespace Anchor\Courses\Support;
+
+use Anchor\Courses\Content\CoursePostType;
+
+if ( ! \defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * The two roles every course owns (design spec 3.1).
+ *
+ *   anchor_course_{id}            "Course: {title}"     ACCESS - holding it is enrolment.
+ *   anchor_course_{id}_completed  "Completed: {title}"  COMPLETION - what others name as a prerequisite.
+ *
+ * Neither carries a capability. They are membership tags, exactly like the
+ * events module's `anchor_event_{id}`, so adding one can never widen what a
+ * user may do - and so any plugin, any admin and WP-CLI can all grant access
+ * without knowing this module exists.
+ *
+ * The access role is minted EAGERLY, on publish, because a plain
+ * `add_user_role()` from wp-admin is a supported way in and that call cannot
+ * mint anything - the role has to be waiting. The completion role is minted
+ * LAZILY, on the first completion, because nothing can hold it before then.
+ *
+ * Neither is ever deleted automatically. A trashed or deleted course keeps both
+ * so the owner can go on granting after the fact; the course editor's Course
+ * Role panel is the only thing that removes one.
+ */
+final class Roles {
+
+	public const ACCESS_PREFIX    = 'anchor_course_';
+	public const COMPLETED_SUFFIX = '_completed';
+
+	/* ---------------------------------------------------------------------
+	 * Slugs and names
+	 * ------------------------------------------------------------------- */
+
+	public static function access_slug( int $course_id ): string {
+		return self::ACCESS_PREFIX . $course_id;
+	}
+
+	public static function completion_slug( int $course_id ): string {
+		return self::ACCESS_PREFIX . $course_id . self::COMPLETED_SUFFIX;
+	}
+
+	public static function access_name( int $course_id ): string {
+		return \sprintf(
+			/* translators: %s: course title. */
+			\__( 'Course: %s', 'anchor-schema' ),
+			(string) \get_the_title( $course_id )
+		);
+	}
+
+	public static function completion_name( int $course_id ): string {
+		return \sprintf(
+			/* translators: %s: course title. */
+			\__( 'Completed: %s', 'anchor-schema' ),
+			(string) \get_the_title( $course_id )
+		);
+	}
+
+	/**
+	 * Is this slug a course's ACCESS role, and if so whose?
+	 *
+	 * The listener's whole safety net, so it is deliberately strict:
+	 *
+	 *   - anchored at both ends, so `xanchor_course_12` and `anchor_course_12x`
+	 *     are not access slugs;
+	 *   - digits only, so the `_completed` variant does not match - which is
+	 *     what stops completing a course from re-enrolling the learner;
+	 *   - the id must really be a course, so a role somebody hand-made called
+	 *     `anchor_course_999999` enrols nobody into nothing.
+	 *
+	 * @return int|null The course id, or null.
+	 */
+	public static function is_access_slug( string $slug ): ?int {
+		if ( 1 !== \preg_match( '/^' . self::ACCESS_PREFIX . '(\d+)$/', $slug, $m ) ) {
+			return null;
+		}
+
+		$course_id = (int) $m[1];
+
+		return CoursePostType::CPT === \get_post_type( $course_id ) ? $course_id : null;
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Minting
+	 * ------------------------------------------------------------------- */
+
+	public static function exists( string $slug ): bool {
+		return '' !== $slug && null !== \get_role( $slug );
+	}
+
+	/**
+	 * Mint the access role. Idempotent; returns the slug either way.
+	 *
+	 * Hooked to save_post_anchor_course. Only a published course gets one: a
+	 * draft has nobody to admit yet, and minting on every autosave would litter
+	 * the roles option with roles for posts that never ship.
+	 */
+	public static function ensure_access_role( int $course_id ): string {
+		$slug = self::access_slug( $course_id );
+
+		if ( self::exists( $slug ) ) {
+			return $slug;
+		}
+		if ( 'publish' !== \get_post_status( $course_id ) ) {
+			return '';
+		}
+
+		\add_role( $slug, self::access_name( $course_id ), [] );
+
+		Log::write( 'access_role_minted', [ 'course' => $course_id ] );
+
+		return self::exists( $slug ) ? $slug : '';
+	}
+
+	/** Mint the completion role. Idempotent; returns the slug. */
+	public static function ensure_completion_role( int $course_id ): string {
+		$slug = self::completion_slug( $course_id );
+
+		if ( ! self::exists( $slug ) ) {
+			\add_role( $slug, self::completion_name( $course_id ), [] );
+		}
+
+		return self::exists( $slug ) ? $slug : '';
+	}
+
+	/**
+	 * `save_post_anchor_course`: mint the access role, and keep both display
+	 * names in step with the title.
+	 */
+	public static function rename_on_title_change( int $post_id, ?\WP_Post $post = null ): void {
+		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+			return;
+		}
+		if ( \wp_is_post_revision( $post_id ) ) {
+			return;
+		}
+
+		self::ensure_access_role( $post_id );
+
+		self::rename( self::access_slug( $post_id ), self::access_name( $post_id ) );
+		self::rename( self::completion_slug( $post_id ), self::completion_name( $post_id ) );
+	}
+
+	/** Rename an existing role. Never mints one. */
+	private static function rename( string $slug, string $name ): void {
+		if ( ! self::exists( $slug ) ) {
+			return;
+		}
+
+		$roles = \wp_roles();
+		if ( ( $roles->roles[ $slug ]['name'] ?? '' ) === $name ) {
+			return;
+		}
+
+		$roles->roles[ $slug ]['name'] = $name;
+		$roles->role_names[ $slug ]    = $name;
+		\update_option( $roles->role_key, $roles->roles, false );
+	}
+
+	/**
+	 * Operator-only: strip a role from every holder and delete it.
+	 *
+	 * The ONE path that deletes a role. Nothing automatic calls it.
+	 *
+	 * @return int Holders it was stripped from.
+	 */
+	public static function delete_role( string $slug ): int {
+		if ( ! self::exists( $slug ) ) {
+			return 0;
+		}
+
+		$holders = \get_users( [ 'role' => $slug, 'fields' => 'ID', 'number' => -1 ] );
+
+		foreach ( $holders as $user_id ) {
+			$user = \get_userdata( (int) $user_id );
+			if ( $user instanceof \WP_User ) {
+				$user->remove_role( $slug );
+			}
+		}
+
+		\remove_role( $slug );
+
+		Log::write( 'role_deleted', [ 'role' => $slug, 'holders' => \count( $holders ) ] );
+
+		return \count( $holders );
+	}
+
+	public static function holders( string $slug ): int {
+		if ( ! self::exists( $slug ) ) {
+			return 0;
+		}
+		return \count( \get_users( [ 'role' => $slug, 'fields' => 'ID', 'number' => -1 ] ) );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Completion grants
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * Give a user the COMPLETION role.
+	 *
+	 * Additive, idempotent, and invisible to the access listener: the slug ends
+	 * in `_completed`, so is_access_slug() returns null for it and no enrolment
+	 * row is touched.
+	 */
+	public static function grant_completed( int $user_id, int $course_id ): bool {
+		$user = \get_userdata( $user_id );
+		if ( ! $user instanceof \WP_User ) {
+			return false;
+		}
+
+		$slug = self::ensure_completion_role( $course_id );
+		if ( '' === $slug ) {
+			return false;
+		}
+
+		if ( ! self::user_has( $user_id, $slug ) ) {
+			$user->add_role( $slug );
+			Log::write( 'completion_role_granted', [ 'user' => $user_id, 'course' => $course_id ] );
+		}
+
+		return true;
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Reading
+	 * ------------------------------------------------------------------- */
+
+	public static function user_has( int $user_id, string $role ): bool {
+		$user = \get_userdata( $user_id );
+		return $user instanceof \WP_User && \in_array( $role, \array_map( 'strval', (array) $user->roles ), true );
+	}
+
+	/**
+	 * Which of these role slugs does the user NOT hold?
+	 *
+	 * @param string[] $role_slugs
+	 * @return string[] Display names, in the order given.
+	 */
+	public static function missing( int $user_id, array $role_slugs ): array {
+		$user = \get_userdata( $user_id );
+		$held = $user instanceof \WP_User ? \array_map( 'strval', (array) $user->roles ) : [];
+
+		$missing = [];
+		foreach ( $role_slugs as $slug ) {
+			$slug = (string) $slug;
+			if ( '' === $slug || \in_array( $slug, $held, true ) ) {
+				continue;
+			}
+			$role      = \wp_roles()->roles[ $slug ] ?? null;
+			$missing[] = $role ? (string) $role['name'] : $slug;
+		}
+
+		return $missing;
+	}
+}
+```
+
+`anchor-courses/anchor-courses.php` - in the constructor, after the CPTs are registered:
+
+```php
+		// Mint the access role on publish and keep both names on the title
+		// (design spec 3.1). Priority 20: after CourseEditor::save() has run, so
+		// a title set in the same request is the one the role is named for.
+		\add_action( 'save_post_' . Content\CoursePostType::CPT, [ Support\Roles::class, 'rename_on_title_change' ], 20, 2 );
+```
+
+`anchor-courses/src/Admin/CourseEditor.php` - add `use Anchor\Courses\Support\Roles;` and, in the constructor:
+
+```php
+		\add_action( 'admin_post_anchor_courses_delete_role', [ $this, 'handle_delete_role' ] );
+```
+
+in `add_metaboxes()`:
+
+```php
+		\add_meta_box(
+			'anchor_courses_role',
+			\__( 'Course Role', 'anchor-schema' ),
+			[ $this, 'render_role_panel' ],
+			CoursePostType::CPT,
+			'side',
+			'default'
+		);
+```
+
+and the two methods:
+
+```php
+	/**
+	 * The Course Role panel (design spec 3.1).
+	 *
+	 * Read-only except for one destructive action per role, which is why each
+	 * is a POST with its own nonce and a confirm dialog rather than a link.
+	 */
+	public function render_role_panel( \WP_Post $post ): void {
+		$course_id = (int) $post->ID;
+
+		$this->role_row(
+			$course_id,
+			Roles::access_slug( $course_id ),
+			\__( 'Access - holding this role IS enrolment.', 'anchor-schema' ),
+			\__( 'Not created yet. It is minted when the course is published.', 'anchor-schema' )
+		);
+
+		$this->role_row(
+			$course_id,
+			Roles::completion_slug( $course_id ),
+			\__( 'Completion - what another course or event can require.', 'anchor-schema' ),
+			\__( 'Not created yet. It is minted the first time someone completes this course.', 'anchor-schema' )
+		);
+	}
+
+	private function role_row( int $course_id, string $slug, string $blurb, string $absent ): void {
+		\printf( '<p><code>%s</code><br /><span class="description">%s</span></p>', \esc_html( $slug ), \esc_html( $blurb ) );
+
+		if ( ! Roles::exists( $slug ) ) {
+			\printf( '<p>%s</p>', \esc_html( $absent ) );
+			return;
+		}
+
+		$holders = Roles::holders( $slug );
+
+		\printf(
+			'<p>%s<br /><strong>%s</strong></p>',
+			\esc_html( (string) ( \wp_roles()->roles[ $slug ]['name'] ?? $slug ) ),
+			\esc_html(
+				\sprintf(
+					/* translators: %d: number of users holding the role. */
+					\_n( '%d holder', '%d holders', $holders, 'anchor-schema' ),
+					$holders
+				)
+			)
+		);
+
+		\printf(
+			'<form method="post" action="%s" onsubmit="return confirm(%s);">',
+			\esc_url( \admin_url( 'admin-post.php' ) ),
+			\esc_attr( (string) \wp_json_encode( \__( 'Delete this role and strip it from every holder? This cannot be undone.', 'anchor-schema' ) ) )
+		);
+		\wp_nonce_field( 'anchor_courses_delete_role_' . $course_id );
+		echo '<input type="hidden" name="action" value="anchor_courses_delete_role" />';
+		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
+		\printf( '<input type="hidden" name="role" value="%s" />', \esc_attr( $slug ) );
+		\printf( '<button type="submit" class="button button-link-delete">%s</button>', \esc_html__( 'Delete role', 'anchor-schema' ) );
+		echo '</form>';
+	}
+
+	public function handle_delete_role(): void {
+		$course_id = \absint( $_POST['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
+		$slug      = \sanitize_key( \wp_unslash( (string) ( $_POST['role'] ?? '' ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
+
+		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
+		if ( ! \wp_verify_nonce( $nonce, 'anchor_courses_delete_role_' . $course_id )
+			|| ! \current_user_can( Capabilities::cap( 'manage' ) ) ) {
+			$this->redirect_to_course( $course_id, 'forbidden' );
+		}
+
+		// Only this course's own two roles, so a crafted POST cannot delete
+		// `administrator`.
+		$allowed = [ Roles::access_slug( $course_id ), Roles::completion_slug( $course_id ) ];
+		if ( ! \in_array( $slug, $allowed, true ) ) {
+			$this->redirect_to_course( $course_id, 'error' );
+		}
+
+		Roles::delete_role( $slug );
+
+		$this->redirect_to_course( $course_id, 'role_deleted' );
+	}
+
+	private function redirect_to_course( int $course_id, string $code ): void {
+		\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', $code, (string) \get_edit_post_link( $course_id, 'raw' ) ) );
+		exit;
+	}
+```
+
+`tests/class-anchor-courses-testcase.php` - remember every course the helpers make and strip its roles, so the `$wp_roles` global does not leak between tests:
+
+```php
+	/** @var int[] Courses made by make_course(), whose roles must be removed. */
+	protected array $minted_courses = [];
+
+	public function tear_down() {
+		foreach ( $this->minted_courses as $course_id ) {
+			remove_role( \Anchor\Courses\Support\Roles::access_slug( $course_id ) );
+			remove_role( \Anchor\Courses\Support\Roles::completion_slug( $course_id ) );
+		}
+		$this->minted_courses = [];
+		parent::tear_down();
+	}
+```
+
+and in `make_course()`, before returning: `$this->minted_courses[] = $id;`
+
+- [ ] **Step 4: Run test to verify it passes**
+
+```bash
+export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
+vendor/bin/phpunit --filter Test_Courses_Roles
+vendor/bin/phpunit --group courses
+```
+Expected: PASS (13 tests), and the whole `courses` group still green - every course now mints a role on publish, and the test base has to be cleaning them up.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add anchor-courses/src/Support/Roles.php anchor-courses/src/Admin/CourseEditor.php \
+        anchor-courses/anchor-courses.php tests/class-anchor-courses-testcase.php \
+        tests/test-courses-roles.php
+git commit -m "feat(courses): per-course access and completion roles with an operator delete"
+```
+
+---
+
+### Task 20: The role listener - holding the access role IS enrolment
+
+**Files:**
+- Modify: `anchor-courses/src/Support/Roles.php` - the grant context, `grant_access()` / `revoke_access()`, the three core listeners, the loss policy
+- Modify: `anchor-courses/anchor-courses.php` - register the listeners once `$this->enrollments` exists
+- Test: `tests/test-courses-role-enrolment.php`
+
+**Interfaces:**
+- Consumes: `Services\EnrollmentService::can_enroll()`, `::enroll()`, `::cancel()`, `::expire()`.
+- Produces:
+  - `Support\Roles::register_listeners( EnrollmentService $enrollments ): void` - hooks core `add_user_role`, `set_user_role`, `remove_user_role`
+  - `::grant_access( int $user_id, int $course_id, string $source = 'manual', string $source_id = '' ): true|\WP_Error`
+  - `::revoke_access( int $user_id, int $course_id, string $source = 'manual', string $source_id = '' ): bool`
+  - `::on_role_added( $user_id, $role ): void`, `::on_set_user_role( $user_id, $role, $old_roles = [] ): void`, `::on_role_removed( $user_id, $role ): void`
+  - `::apply_loss_policy( int $user_id, int $course_id, string $role ): void`
+  - Actions: `anchor_courses_access_granted( int $user_id, int $course_id, string $source, string $source_id )`, `anchor_courses_access_revoked( int $user_id, int $course_id, string $source )`
+  - Filter: `anchor_courses_role_loss_policy( string $policy, int $user_id, int $course_id, string $role )` - `keep|expire|cancel`, default `keep`
+
+**One door.** Everything that enrols anybody - the Learners tab, the WooCommerce adapter, WP-CLI, the wp-admin user screen, another plugin - does the same thing: it adds `anchor_course_{id}` to a user. This listener is what turns that into a row. Nothing else in the module calls `EnrollmentService::enroll()`.
+
+**Where `source` comes from (deviation D15).** `do_action( 'add_user_role', $user_id, $role )` carries two arguments and no reason. `grant_access()` therefore parks `['source' => ..., 'source_id' => ...]` in a private static, calls `add_role()` - the listener runs *inside* that call and reads it - and clears it in a `finally`. A role added by anything else finds the context empty and is recorded as `source = 'role'`. One writer, always cleared, so a stale value can never attach itself to the next grant.
+
+**`grant_access()` is also the prerequisite gate.** It asks `can_enroll()` before touching the role and returns the `WP_Error` unchanged, which is what makes prerequisites bind on the Learners tab and at the checkout alike. The listener, by contrast, enrols with `bypass_checks`: by the time it runs the role is already held, and re-litigating the decision would leave a user holding access with no row to show for it - the worst of both answers.
+
+**Losing a role does not un-enrol by default.** `anchor_courses_role_loss_policy` defaults to `keep`: access outlives the thing that granted it, and re-adding the role resumes the learner where they were (design spec 3.1). A site that wants the row closed filters it to `cancel` or `expire`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test-courses-role-enrolment.php`:
+
+```php
+<?php
+/**
+ * Anchor Courses - the access role IS the enrolment (design spec 3.1).
+ *
+ * @package Anchor\Courses\Tests
+ */
+
+use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Support\Roles;
+
+/** @group courses */
+class Test_Courses_Role_Enrolment extends Anchor_Courses_TestCase {
+
+	private EnrollmentService $enrollments;
+	private int $user;
+	private int $course;
+
+	public function set_up() {
+		parent::set_up();
+		$this->enrollments = new EnrollmentService();
+		$this->user        = $this->make_learner();
+		$this->course      = $this->make_course( [], 'Laser Safety' );
+	}
+
+	public function tear_down() {
+		remove_all_filters( 'anchor_courses_role_loss_policy' );
+		remove_all_actions( 'anchor_courses_access_granted' );
+		remove_all_actions( 'anchor_courses_access_revoked' );
+		parent::tear_down();
+	}
+
+	public function test_grant_access_adds_the_role_and_creates_the_row() {
+		$this->assertTrue( Roles::grant_access( $this->user, $this->course, 'manual', '7' ) );
+
+		$this->assertTrue( Roles::user_has( $this->user, Roles::access_slug( $this->course ) ) );
+		$this->assertContains( 'subscriber', get_userdata( $this->user )->roles, 'The grant is additive.' );
+
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		$this->assertNotNull( $enrollment );
+		$this->assertSame( 'enrolled', $enrollment->status );
+		$this->assertSame( 'manual', $enrollment->source );
+		$this->assertSame( '7', $enrollment->source_id );
+	}
+
+	/**
+	 * The point of the whole design: a role added from anywhere at all enrols.
+	 * This is the wp-admin user screen, WP-CLI and every other plugin.
+	 */
+	public function test_a_plain_add_user_role_enrols_with_the_role_source() {
+		get_user_by( 'id', $this->user )->add_role( Roles::access_slug( $this->course ) );
+
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		$this->assertNotNull( $enrollment, 'A bare add_user_role() must enrol.' );
+		$this->assertSame( 'role', $enrollment->source, 'Nothing said why, so the source is the role itself.' );
+		$this->assertSame( '', $enrollment->source_id );
+	}
+
+	/** set_user_role REPLACES the roles, and WordPress fires it for every new account. */
+	public function test_set_user_role_also_enrols() {
+		wp_update_user( [ 'ID' => $this->user, 'role' => Roles::access_slug( $this->course ) ] );
+
+		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ) );
+	}
+
+	/** The completion role is not the access role, and must not enrol anybody. */
+	public function test_the_completion_role_does_not_enrol() {
+		Roles::grant_completed( $this->user, $this->course );
+
+		$this->assertNull(
+			$this->enrollments->get( $this->user, $this->course ),
+			'anchor_course_{id}_completed must slide past the listener untouched.'
+		);
+	}
+
+	/** Neither does an event role, or any other role on the site. */
+	public function test_unrelated_roles_do_not_enrol() {
+		add_role( 'anchor_event_42', 'Event: Summit', [] );
+
+		$user = get_user_by( 'id', $this->user );
+		$user->add_role( 'anchor_event_42' );
+		$user->add_role( 'editor' );
+
+		$this->assertNull( $this->enrollments->get( $this->user, $this->course ) );
+
+		remove_role( 'anchor_event_42' );
+	}
+
+	/** Brief 26: granting twice must not duplicate the row or the action. */
+	public function test_granting_twice_is_idempotent() {
+		$fired = 0;
+		add_action( 'anchor_courses_enrolled', function () use ( &$fired ) { $fired++; }, 10, 3 );
+
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		get_user_by( 'id', $this->user )->add_role( Roles::access_slug( $this->course ) );
+
+		$this->assertSame( 1, $fired );
+
+		remove_all_actions( 'anchor_courses_enrolled' );
+	}
+
+	/** The source of the FIRST grant is the one that sticks. */
+	public function test_a_later_grant_does_not_rewrite_the_original_source() {
+		Roles::grant_access( $this->user, $this->course, 'woocommerce', '4242' );
+		Roles::revoke_access( $this->user, $this->course, 'woocommerce', '4242' );
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+
+		$this->assertSame( 'woocommerce', $this->enrollments->get( $this->user, $this->course )->source );
+		$this->assertSame( '4242', $this->enrollments->get( $this->user, $this->course )->source_id );
+	}
+
+	/** An unmet prerequisite refuses the grant - the role is never added. */
+	public function test_grant_access_refuses_an_unmet_prerequisite() {
+		add_role( 'anchor_course_555_completed', 'Completed: Required First', [] );
+		update_post_meta( $this->course, '_anchor_course_prerequisites', [ 'anchor_course_555_completed' ] );
+
+		$result = Roles::grant_access( $this->user, $this->course, 'manual' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'missing_prerequisite', $result->get_error_code() );
+		$this->assertFalse( Roles::user_has( $this->user, Roles::access_slug( $this->course ) ) );
+		$this->assertNull( $this->enrollments->get( $this->user, $this->course ) );
+
+		get_user_by( 'id', $this->user )->add_role( 'anchor_course_555_completed' );
+		$this->assertTrue( Roles::grant_access( $this->user, $this->course, 'manual' ) );
+
+		remove_role( 'anchor_course_555_completed' );
+	}
+
+	/** Both actions fire with the documented arguments. */
+	public function test_the_access_actions_fire() {
+		$seen = [];
+		add_action( 'anchor_courses_access_granted', function ( $u, $c, $s, $sid ) use ( &$seen ) { $seen[] = [ 'granted', $u, $c, $s, $sid ]; }, 10, 4 );
+		add_action( 'anchor_courses_access_revoked', function ( $u, $c, $s ) use ( &$seen ) { $seen[] = [ 'revoked', $u, $c, $s ]; }, 10, 3 );
+
+		Roles::grant_access( $this->user, $this->course, 'manual', '9' );
+		Roles::revoke_access( $this->user, $this->course, 'admin' );
+
+		$this->assertSame(
+			[
+				[ 'granted', $this->user, $this->course, 'manual', '9' ],
+				[ 'revoked', $this->user, $this->course, 'admin' ],
+			],
+			$seen
+		);
+	}
+
+	/** Design spec 3.1: access outlives the thing that granted it. */
+	public function test_losing_the_role_keeps_the_enrolment_by_default() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+
+		Roles::revoke_access( $this->user, $this->course, 'admin' );
+
+		$this->assertFalse( Roles::user_has( $this->user, Roles::access_slug( $this->course ) ) );
+		$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $this->course )->status );
+	}
+
+	public function test_the_loss_policy_can_cancel_or_expire() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
+		Roles::revoke_access( $this->user, $this->course, 'admin' );
+		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+
+		remove_all_filters( 'anchor_courses_role_loss_policy' );
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'expire', 10, 4 );
+		get_user_by( 'id', $this->user )->remove_role( Roles::access_slug( $this->course ) );
+		$this->assertSame( 'expired', $this->enrollments->get( $this->user, $this->course )->status );
+	}
+
+	/** `keep` leaves the progress rows, so re-granting resumes the learner. */
+	public function test_re_granting_after_a_loss_resumes_the_same_enrolment() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		$first = $this->enrollments->get( $this->user, $this->course )->id;
+
+		Roles::revoke_access( $this->user, $this->course, 'admin' );
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+
+		$this->assertSame( $first, $this->enrollments->get( $this->user, $this->course )->id );
+	}
+
+	/** set_user_role drops every other role, so the loss half must see it too. */
+	public function test_set_user_role_applies_the_loss_policy_to_what_it_replaced() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
+
+		wp_update_user( [ 'ID' => $this->user, 'role' => 'subscriber' ] );
+
+		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+	}
+
+	/** Deleting the role strips every holder, and each loss runs the policy. */
+	public function test_deleting_the_access_role_applies_the_policy_to_every_holder() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
+
+		Roles::delete_role( Roles::access_slug( $this->course ) );
+
+		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+	}
+
+	/** The grant context never survives the call that set it (deviation D15). */
+	public function test_the_grant_context_does_not_leak_to_the_next_grant() {
+		$second = $this->make_course( [], 'Second' );
+
+		Roles::grant_access( $this->user, $this->course, 'woocommerce', '4242' );
+		get_user_by( 'id', $this->user )->add_role( Roles::access_slug( $second ) );
+
+		$this->assertSame( 'role', $this->enrollments->get( $this->user, $second )->source );
+		$this->assertSame( '', $this->enrollments->get( $this->user, $second )->source_id );
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
+vendor/bin/phpunit --filter Test_Courses_Role_Enrolment
+```
+Expected: FAIL - `Call to undefined method ...Roles::grant_access()`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Add to `anchor-courses/src/Support/Roles.php` (with `use Anchor\Courses\Services\EnrollmentService;` at the top):
+
+```php
+	/**
+	 * Why the role currently being added was added.
+	 *
+	 * WordPress's role hooks carry no reason (deviation D15), so grant_access()
+	 * parks it here for the length of one add_role() call and the listener -
+	 * which runs INSIDE that call - reads it. Always cleared in a finally, so a
+	 * value can never attach itself to somebody else's grant.
+	 *
+	 * @var array{source:string,source_id:string}|null
+	 */
+	private static ?array $context = null;
+
+	/** @var EnrollmentService|null Set once, by register_listeners(). */
+	private static ?EnrollmentService $enrollments = null;
+
+	/**
+	 * Start listening to WordPress's role changes.
+	 *
+	 * These three core actions are the module's ONE enrolment entry point. A
+	 * purchase, an admin, WP-CLI and the wp-admin user screen all arrive here.
+	 */
+	public static function register_listeners( EnrollmentService $enrollments ): void {
+		self::$enrollments = $enrollments;
+
+		\add_action( 'add_user_role', [ self::class, 'on_role_added' ], 10, 2 );
+		\add_action( 'set_user_role', [ self::class, 'on_set_user_role' ], 10, 3 );
+		\add_action( 'remove_user_role', [ self::class, 'on_role_removed' ], 10, 2 );
+	}
+
+	private static function enrollments(): EnrollmentService {
+		return self::$enrollments ?? ( self::$enrollments = new EnrollmentService() );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Access grants
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * Give a user access to a course, and say why.
+	 *
+	 * The supported way to enrol somebody from anywhere. Asks can_enroll()
+	 * first, so an unmet prerequisite refuses the grant rather than letting
+	 * somebody in and hoping - which is what makes prerequisites bind on the
+	 * Learners tab and at the checkout alike.
+	 *
+	 * @param string $source    manual|woocommerce|role|... - recorded on the row.
+	 * @param string $source_id Order id, actor id, whatever identifies it.
+	 * @return true|\WP_Error
+	 */
+	public static function grant_access( int $user_id, int $course_id, string $source = 'manual', string $source_id = '' ) {
+		$user = \get_userdata( $user_id );
+		if ( ! $user instanceof \WP_User ) {
+			return new \WP_Error( 'no_user', \__( 'That user does not exist.', 'anchor-schema' ) );
+		}
+
+		$slug = self::ensure_access_role( $course_id );
+		if ( '' === $slug ) {
+			return new \WP_Error( 'no_course', \__( 'That course has no access role - is it published?', 'anchor-schema' ) );
+		}
+
+		if ( self::user_has( $user_id, $slug ) ) {
+			return true; // Already in (brief 26).
+		}
+
+		$allowed = self::enrollments()->can_enroll( $user_id, $course_id );
+		if ( \is_wp_error( $allowed ) ) {
+			return $allowed;
+		}
+
+		self::$context = [ 'source' => $source, 'source_id' => $source_id ];
+		try {
+			$user->add_role( $slug ); // Fires add_user_role -> on_role_added().
+		} finally {
+			self::$context = null;
+		}
+
+		Log::write( 'access_granted', [ 'user' => $user_id, 'course' => $course_id, 'source' => $source ] );
+
+		/**
+		 * A user just gained access to a course.
+		 *
+		 * @param int    $user_id
+		 * @param int    $course_id
+		 * @param string $source
+		 * @param string $source_id
+		 */
+		\do_action( 'anchor_courses_access_granted', $user_id, $course_id, $source, $source_id );
+
+		return true;
+	}
+
+	/**
+	 * Take access away.
+	 *
+	 * Removes the role; what that means for the enrolment row is decided in one
+	 * place, by the loss policy in on_role_removed(), whoever took it away.
+	 */
+	public static function revoke_access( int $user_id, int $course_id, string $source = 'manual', string $source_id = '' ): bool {
+		$user = \get_userdata( $user_id );
+		$slug = self::access_slug( $course_id );
+
+		if ( ! $user instanceof \WP_User || ! self::user_has( $user_id, $slug ) ) {
+			return false;
+		}
+
+		self::$context = [ 'source' => $source, 'source_id' => $source_id ];
+		try {
+			$user->remove_role( $slug ); // Fires remove_user_role -> on_role_removed().
+		} finally {
+			self::$context = null;
+		}
+
+		Log::write( 'access_revoked', [ 'user' => $user_id, 'course' => $course_id, 'source' => $source ] );
+
+		/**
+		 * A user just lost access to a course.
+		 *
+		 * @param int    $user_id
+		 * @param int    $course_id
+		 * @param string $source
+		 */
+		\do_action( 'anchor_courses_access_revoked', $user_id, $course_id, $source );
+
+		return true;
+	}
+
+	/* ---------------------------------------------------------------------
+	 * The listeners
+	 * ------------------------------------------------------------------- */
+
+	/** Core `add_user_role( $user_id, $role )`. */
+	public static function on_role_added( $user_id, $role ): void {
+		self::enroll_for_role( (int) $user_id, (string) $role );
+	}
+
+	/**
+	 * Core `set_user_role( $user_id, $role, $old_roles )` - the user's roles
+	 * were REPLACED, so this is a gain and a pile of losses at once.
+	 */
+	public static function on_set_user_role( $user_id, $role, $old_roles = [] ): void {
+		$user_id = (int) $user_id;
+		$role    = (string) $role;
+
+		self::enroll_for_role( $user_id, $role );
+
+		foreach ( (array) $old_roles as $lost ) {
+			$lost = (string) $lost;
+			if ( $lost === $role ) {
+				continue;
+			}
+			$course_id = self::is_access_slug( $lost );
+			if ( null !== $course_id ) {
+				self::apply_loss_policy( $user_id, $course_id, $lost );
+			}
+		}
+	}
+
+	/** Core `remove_user_role( $user_id, $role )`. */
+	public static function on_role_removed( $user_id, $role ): void {
+		$course_id = self::is_access_slug( (string) $role );
+		if ( null !== $course_id ) {
+			self::apply_loss_policy( (int) $user_id, $course_id, (string) $role );
+		}
+	}
+
+	/**
+	 * A user now holds this role. If it is an access role, that IS enrolment.
+	 *
+	 * bypass_checks is deliberate: by the time this runs the role is held, and
+	 * refusing here would leave somebody with access and no row - the worst of
+	 * both answers. The gate lives in grant_access(), before the role is added.
+	 */
+	private static function enroll_for_role( int $user_id, string $role ): void {
+		$course_id = self::is_access_slug( $role );
+		if ( null === $course_id || $user_id <= 0 ) {
+			return;
+		}
+
+		$context = self::$context ?? [ 'source' => 'role', 'source_id' => '' ];
+
+		$result = self::enrollments()->enroll(
+			$user_id,
+			$course_id,
+			[
+				'bypass_checks' => true,
+				'source'        => (string) $context['source'],
+				'source_id'     => (string) $context['source_id'],
+			]
+		);
+
+		if ( \is_wp_error( $result ) ) {
+			Log::write( 'role_enroll_failed', [ 'user' => $user_id, 'course' => $course_id, 'code' => $result->get_error_code() ] );
+		}
+	}
+
+	/**
+	 * What losing the access role does to the enrolment.
+	 *
+	 * Default `keep`: access outlives the thing that granted it, and the
+	 * progress rows stay, so re-adding the role resumes the learner exactly
+	 * where they stopped (design spec 3.1).
+	 */
+	public static function apply_loss_policy( int $user_id, int $course_id, string $role ): void {
+		if ( $user_id <= 0 || $course_id <= 0 ) {
+			return;
+		}
+
+		/**
+		 * What happens to an enrolment when its access role is lost.
+		 *
+		 * @param string $policy   keep|expire|cancel. Default 'keep'.
+		 * @param int    $user_id
+		 * @param int    $course_id
+		 * @param string $role
+		 */
+		$policy = (string) \apply_filters( 'anchor_courses_role_loss_policy', 'keep', $user_id, $course_id, $role );
+
+		if ( 'cancel' === $policy ) {
+			self::enrollments()->cancel( $user_id, $course_id );
+		} elseif ( 'expire' === $policy ) {
+			self::enrollments()->expire( $user_id, $course_id );
+		}
+	}
+```
+
+`anchor-courses/anchor-courses.php` - in the constructor, immediately after `$this->enrollments = new Services\EnrollmentService();`:
+
+```php
+		// Holding anchor_course_{id} IS enrolment (design spec 3.1). Registered
+		// here, once, so the listener and the service share one instance.
+		Support\Roles::register_listeners( $this->enrollments );
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+```bash
+export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
+vendor/bin/phpunit --filter Test_Courses_Role_Enrolment
+vendor/bin/phpunit --group courses
+```
+Expected: PASS (15 tests), and the whole `courses` group still green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add anchor-courses/src/Support/Roles.php anchor-courses/anchor-courses.php \
+        tests/test-courses-role-enrolment.php
+git commit -m "feat(courses): the access role IS the enrolment - one listener, one door"
+```
+
+---
+
+### Task 21: `Support\Accounts` and the Learners tab
+
+**Files:**
+- Create: `anchor-courses/src/Support/Accounts.php`
+- Create: `anchor-courses/src/Admin/LearnerReports.php`
+- Modify: `anchor-courses/anchor-courses.php` - construct `Admin\LearnerReports` when `is_admin()`
+- Test: `tests/test-courses-learners.php`
+
+**Interfaces:**
+- Consumes: `Support\Roles::grant_access()` / `::revoke_access()`, `EnrollmentRepository::for_course()`, `ProgressService::get_course_progress()`, `Capabilities::cap( 'reports' | 'enrollments' )`.
+- Produces:
+  - `Support\Accounts::ensure_user( string $name, string $email ): int` - find or create, **no new-account email**; `0` on failure or when a site opts out
+  - `Support\Accounts::unique_username( string $email ): string`
+  - Filter: `anchor_courses_create_account( bool $create, string $email )`
+  - `Admin\LearnerReports::add_metabox(): void`, `::render_learners( \WP_Post $post ): void`
+  - `::rows( int $course_id, int $limit = 50, int $offset = 0 ): array` - `['user_id','display_name','user_email','enrolled_at','percent','status','completed_at','has_access']`
+  - `::render_add_learner_form( int $course_id ): void`, `::revoke_button( int $course_id, int $user_id ): void`
+  - `::handle_add_learner(): void` (`admin_post_anchor_courses_add_learner`), `::handle_revoke(): void` (`admin_post_anchor_courses_revoke_access`)
+- Capability: both write handlers require `manage_anchor_enrollments` (`Capabilities::cap( 'enrollments' )`); the table requires `view_anchor_course_reports` (`::cap( 'reports' )`), because it prints learner email addresses.
+
+**`ensure_user()` mirrors the events module's, on purpose.** Events' `Entitlements::ensure_user()` resolves a seat to an account and creates one when it has to, suppressing WooCommerce's "New account" email for the length of the create (events plan Task 8). Courses needs the same behaviour from a different starting point - a name and an email typed into a form, with no seat - so the shape is copied rather than the code: `wc_create_new_customer()` when WooCommerce is present so My Account works, `wp_insert_user()` otherwise, `woocommerce_email_enabled_customer_new_account` filtered off inside a `try`/`finally`. The reason is the same in both modules: the person is being *added* by staff, and a "here is your new password" mail they did not ask for, with no context, is noise at best.
+
+`wp_insert_user()` sends nothing of its own, so the plain branch needs no suppression - the filter is there for the WooCommerce branch alone, and removing it in `finally` matters because the request may go on to create other accounts.
+
+**This is the "Learners tab" of design spec 3.1** - a metabox, because the course edit screen has metaboxes and not tabs (deviation D16). Task 31 adds the credits, certificate and best-quiz columns once Phase 4 has them; the add and revoke controls built here survive that.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test-courses-learners.php`:
+
+```php
+<?php
+/**
+ * Anchor Courses - the Learners tab and account resolution (design spec 3.1).
+ *
+ * @package Anchor\Courses\Tests
+ */
+
+use Anchor\Courses\Admin\LearnerReports;
+use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Support\Accounts;
+use Anchor\Courses\Support\Roles;
+
+/** Thrown from wp_redirect so the handler's exit() never runs. */
+class Anchor_Courses_Learners_Redirected extends \Exception {}
+
+/** @group courses */
+class Test_Courses_Learners extends Anchor_Courses_TestCase {
+
+	private EnrollmentService $enrollments;
+	private int $admin;
+	private int $course;
+
+	public function set_up() {
+		parent::set_up();
+		$this->enrollments = new EnrollmentService();
+		$this->admin       = self::factory()->user->create( [ 'role' => 'administrator' ] );
+		$this->course      = $this->make_course( [], 'Laser Safety' );
+
+		add_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
+	}
+
+	public function tear_down() {
+		remove_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
+		remove_all_filters( 'anchor_courses_create_account' );
+		remove_all_filters( 'anchor_courses_role_loss_policy' );
+		$_POST    = [];
+		$_REQUEST = [];
+		parent::tear_down();
+	}
+
+	public function trap_redirect( $location ) {
+		throw new Anchor_Courses_Learners_Redirected( (string) $location );
+	}
+
+	/** @return string The redirect URL the handler tried to send. */
+	private function post_learner_action( string $action, array $fields ): string {
+		$_POST = array_merge(
+			$fields,
+			[ '_wpnonce' => wp_create_nonce( 'anchor_courses_learners_' . $this->course ), 'course_id' => (string) $this->course ]
+		);
+		$_REQUEST = $_POST;
+
+		try {
+			'add' === $action
+				? ( new LearnerReports() )->handle_add_learner()
+				: ( new LearnerReports() )->handle_revoke();
+		} catch ( Anchor_Courses_Learners_Redirected $e ) {
+			return $e->getMessage();
+		}
+
+		$this->fail( 'Expected a redirect.' );
+	}
+
+	/* ----- Support\Accounts ------------------------------------------- */
+
+	public function test_ensure_user_returns_an_existing_account_by_email() {
+		$existing = self::factory()->user->create( [ 'user_email' => 'known@example.test' ] );
+
+		$this->assertSame( $existing, Accounts::ensure_user( 'Someone Else', 'known@example.test' ) );
+	}
+
+	public function test_ensure_user_creates_an_account_without_emailing() {
+		$mails = [];
+		$spy   = function ( $args ) use ( &$mails ) { $mails[] = $args; return $args; };
+		add_filter( 'wp_mail', $spy );
+
+		$user_id = Accounts::ensure_user( 'Grace Hopper', 'grace@example.test' );
+
+		remove_filter( 'wp_mail', $spy );
+
+		$this->assertGreaterThan( 0, $user_id );
+		$this->assertSame( 'grace@example.test', ( new WP_User( $user_id ) )->user_email );
+		$this->assertSame( 'Grace Hopper', ( new WP_User( $user_id ) )->display_name );
+		$this->assertSame( [], $mails, 'Adding a learner must not send a new-account email.' );
+	}
+
+	public function test_ensure_user_refuses_a_bad_email_and_can_be_opted_out() {
+		$this->assertSame( 0, Accounts::ensure_user( 'Nobody', 'not-an-email' ) );
+
+		add_filter( 'anchor_courses_create_account', '__return_false' );
+		$this->assertSame( 0, Accounts::ensure_user( 'Nobody', 'nope@example.test' ) );
+		$this->assertNull( get_user_by( 'email', 'nope@example.test' ) ?: null );
+	}
+
+	/* ----- Adding a learner -------------------------------------------- */
+
+	public function test_add_creates_the_account_grants_the_role_and_records_the_row() {
+		wp_set_current_user( $this->admin );
+
+		$url = $this->post_learner_action( 'add', [ 'learner_name' => 'Ada Lovelace', 'learner_email' => 'ada@example.test' ] );
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=learner_added', $url );
+
+		$user = get_user_by( 'email', 'ada@example.test' );
+		$this->assertInstanceOf( WP_User::class, $user );
+		$this->assertTrue( Roles::user_has( (int) $user->ID, Roles::access_slug( $this->course ) ) );
+
+		$enrollment = $this->enrollments->get( (int) $user->ID, $this->course );
+		$this->assertNotNull( $enrollment );
+		$this->assertSame( 'manual', $enrollment->source );
+		$this->assertSame( (string) $this->admin, $enrollment->source_id, 'The actor is recorded, so "who let them in" is answerable.' );
+	}
+
+	public function test_adding_the_same_person_twice_changes_nothing() {
+		wp_set_current_user( $this->admin );
+		$this->post_learner_action( 'add', [ 'learner_name' => 'Ada', 'learner_email' => 'ada@example.test' ] );
+		$first = $this->enrollments->get( (int) get_user_by( 'email', 'ada@example.test' )->ID, $this->course )->id;
+
+		$this->post_learner_action( 'add', [ 'learner_name' => 'Ada', 'learner_email' => 'ada@example.test' ] );
+
+		$this->assertCount( 1, LearnerReports::rows( $this->course ) );
+		$this->assertSame( $first, $this->enrollments->get( (int) get_user_by( 'email', 'ada@example.test' )->ID, $this->course )->id );
+	}
+
+	public function test_add_refuses_an_unmet_prerequisite() {
+		add_role( 'anchor_course_555_completed', 'Completed: Required First', [] );
+		update_post_meta( $this->course, '_anchor_course_prerequisites', [ 'anchor_course_555_completed' ] );
+		wp_set_current_user( $this->admin );
+
+		$url = $this->post_learner_action( 'add', [ 'learner_name' => 'Ada', 'learner_email' => 'ada@example.test' ] );
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=missing_prerequisite', $url );
+
+		$user = get_user_by( 'email', 'ada@example.test' );
+		$this->assertInstanceOf( WP_User::class, $user, 'The account is still created; only the access is refused.' );
+		$this->assertFalse( Roles::user_has( (int) $user->ID, Roles::access_slug( $this->course ) ) );
+		$this->assertNull( $this->enrollments->get( (int) $user->ID, $this->course ) );
+
+		remove_role( 'anchor_course_555_completed' );
+	}
+
+	public function test_add_refuses_without_the_enrollments_capability() {
+		wp_set_current_user( $this->make_learner() );
+
+		$url = $this->post_learner_action( 'add', [ 'learner_name' => 'Ada', 'learner_email' => 'ada@example.test' ] );
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=forbidden', $url );
+		$this->assertNull( get_user_by( 'email', 'ada@example.test' ) ?: null );
+	}
+
+	public function test_add_refuses_a_bad_nonce() {
+		wp_set_current_user( $this->admin );
+		$_POST    = [ 'course_id' => (string) $this->course, 'learner_name' => 'Ada', 'learner_email' => 'ada@example.test', '_wpnonce' => 'nope' ];
+		$_REQUEST = $_POST;
+
+		try {
+			( new LearnerReports() )->handle_add_learner();
+			$this->fail( 'Expected a redirect.' );
+		} catch ( Anchor_Courses_Learners_Redirected $e ) {
+			$this->assertStringContainsString( 'anchor_courses_admin_notice=bad_nonce', $e->getMessage() );
+		}
+
+		$this->assertNull( get_user_by( 'email', 'ada@example.test' ) ?: null );
+	}
+
+	/* ----- Revoking ----------------------------------------------------- */
+
+	public function test_revoke_removes_the_role_and_applies_the_loss_policy() {
+		$learner = $this->make_learner();
+		Roles::grant_access( $learner, $this->course, 'manual' );
+		wp_set_current_user( $this->admin );
+
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
+
+		$url = $this->post_learner_action( 'revoke', [ 'user_id' => (string) $learner ] );
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=access_revoked', $url );
+		$this->assertFalse( Roles::user_has( $learner, Roles::access_slug( $this->course ) ) );
+		$this->assertSame( 'cancelled', $this->enrollments->get( $learner, $this->course )->status );
+	}
+
+	/* ----- The table ----------------------------------------------------- */
+
+	public function test_rows_carry_the_phase_two_columns() {
+		$learner = $this->make_learner( [ 'display_name' => 'Ada Lovelace' ] );
+		Roles::grant_access( $learner, $this->course, 'manual' );
+
+		$rows = LearnerReports::rows( $this->course );
+
+		$this->assertCount( 1, $rows );
+		foreach ( [ 'user_id', 'display_name', 'user_email', 'enrolled_at', 'percent', 'status', 'completed_at', 'has_access' ] as $column ) {
+			$this->assertArrayHasKey( $column, $rows[0], "Missing column {$column}" );
+		}
+		$this->assertSame( 'Ada Lovelace', $rows[0]['display_name'] );
+		$this->assertSame( 0.0, $rows[0]['percent'] );
+		$this->assertTrue( $rows[0]['has_access'] );
+	}
+
+	/** A learner whose role was taken away but whose row was kept reads as "no access". */
+	public function test_a_kept_enrolment_without_the_role_reports_no_access() {
+		$learner = $this->make_learner();
+		Roles::grant_access( $learner, $this->course, 'manual' );
+		Roles::revoke_access( $learner, $this->course, 'admin' );
+
+		$rows = LearnerReports::rows( $this->course );
+
+		$this->assertCount( 1, $rows, 'The row is kept by default (anchor_courses_role_loss_policy).' );
+		$this->assertFalse( $rows[0]['has_access'] );
+	}
+
+	public function test_the_metabox_needs_the_reports_capability_and_escapes_its_output() {
+		$nasty = $this->make_learner( [ 'display_name' => '<script>alert(1)</script>' ] );
+		Roles::grant_access( $nasty, $this->course, 'manual' );
+
+		wp_set_current_user( $this->make_learner() );
+		ob_start();
+		( new LearnerReports() )->render_learners( get_post( $this->course ) );
+		$denied = (string) ob_get_clean();
+		$this->assertStringNotContainsString( 'alert(1)', $denied );
+
+		wp_set_current_user( $this->admin );
+		ob_start();
+		( new LearnerReports() )->render_learners( get_post( $this->course ) );
+		$allowed = (string) ob_get_clean();
+		$this->assertStringContainsString( 'anchor_courses_add_learner', $allowed );
+		$this->assertStringNotContainsString( '<script>alert(1)</script>', $allowed );
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
+vendor/bin/phpunit --filter Test_Courses_Learners
+```
+Expected: FAIL - `Class "Anchor\Courses\Support\Accounts" not found`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+`anchor-courses/src/Support/Accounts.php`:
+
+```php
+<?php
+declare(strict_types=1);
+
+namespace Anchor\Courses\Support;
+
+if ( ! \defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * Find or create the account a learner will be enrolled under.
+ *
+ * Progress, credits and certificates all hang off a user id, so somebody being
+ * added by name and email has to become a real WordPress user. They are being
+ * ADDED by staff, though - they did not sign up - so no "here is your new
+ * password" email goes out. The events module makes the same choice for the
+ * same reason (events spec 4.3); this is that behaviour, from a form instead of
+ * a seat.
+ */
+final class Accounts {
+
+	/**
+	 * The account for this email, creating one if there is none.
+	 *
+	 * @return int User id, or 0 (bad email, site opted out, or create failed).
+	 */
+	public static function ensure_user( string $name, string $email ): int {
+		$email = \sanitize_email( $email );
+		$name  = \sanitize_text_field( $name );
+
+		if ( '' === $email || ! \is_email( $email ) ) {
+			return 0;
+		}
+
+		$existing = \get_user_by( 'email', $email );
+		if ( $existing instanceof \WP_User ) {
+			return (int) $existing->ID;
+		}
+
+		/**
+		 * Whether this site creates accounts for learners who have none.
+		 *
+		 * Returning false means staff can only add people who already have an
+		 * account here.
+		 *
+		 * @param bool   $create
+		 * @param string $email
+		 */
+		if ( ! \apply_filters( 'anchor_courses_create_account', true, $email ) ) {
+			return 0;
+		}
+
+		$username = self::unique_username( $email );
+		$password = \wp_generate_password( 24, true, true );
+
+		// Suppress WooCommerce's "New account" email for the length of the
+		// create: wc_create_new_customer() fires woocommerce_created_customer,
+		// which WC_Emails turns into a mail. wp_insert_user() sends nothing of
+		// its own, so the plain branch needs no suppression - but the filter is
+		// removed in finally regardless, because this request may go on to
+		// create other accounts that DO want it.
+		\add_filter( 'woocommerce_email_enabled_customer_new_account', '__return_false', 99 );
+		try {
+			if ( \function_exists( 'wc_create_new_customer' ) ) {
+				// A WooCommerce customer, so My Account and past orders work.
+				$user_id = \wc_create_new_customer( $email, $username, $password, [ 'display_name' => $name ] );
+			} else {
+				$user_id = \wp_insert_user(
+					[
+						'user_login'   => $username,
+						'user_email'   => $email,
+						'user_pass'    => $password,
+						'display_name' => '' !== $name ? $name : $username,
+						'role'         => (string) \get_option( 'default_role', 'subscriber' ),
+					]
+				);
+			}
+		} finally {
+			\remove_filter( 'woocommerce_email_enabled_customer_new_account', '__return_false', 99 );
+		}
+
+		if ( \is_wp_error( $user_id ) || ! $user_id ) {
+			// Never log the address itself.
+			Log::write( 'account_create_failed', [ 'to' => \substr( \md5( $email ), 0, 8 ) ] );
+			return 0;
+		}
+
+		if ( '' !== $name ) {
+			\wp_update_user( [ 'ID' => (int) $user_id, 'display_name' => $name ] );
+		}
+
+		return (int) $user_id;
+	}
+
+	/** A login derived from the email, with a numeric suffix if it is taken. */
+	public static function unique_username( string $email ): string {
+		$base = \sanitize_user( (string) \strstr( $email, '@', true ), true );
+		if ( '' === $base ) {
+			$base = 'learner';
+		}
+
+		$candidate = $base;
+		$suffix    = 1;
+		while ( \username_exists( $candidate ) ) {
+			$candidate = $base . ++$suffix;
+		}
+
+		return $candidate;
+	}
+}
+```
+
+`anchor-courses/src/Admin/LearnerReports.php`:
+
+```php
+<?php
+declare(strict_types=1);
+
+namespace Anchor\Courses\Admin;
+
+use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Database\EnrollmentRepository;
+use Anchor\Courses\Services\ProgressService;
+use Anchor\Courses\Support\Accounts;
+use Anchor\Courses\Support\Capabilities;
+use Anchor\Courses\Support\Roles;
+
+if ( ! \defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * The Learners tab (design spec 3.1) - a metabox, because the course edit
+ * screen has metaboxes and not tabs (deviation D16).
+ *
+ * Who is in, how far they have got, and the two controls staff need: add
+ * somebody by name and email, or take their access away. Both go through
+ * Support\Roles, so this screen is a caller of the one enrolment door rather
+ * than a second one. Task 31 adds the credits and certificate columns.
+ *
+ * The table prints learner email addresses, so it is gated on the REPORTS
+ * capability, not on edit_posts; the two write handlers need
+ * manage_anchor_enrollments.
+ */
+final class LearnerReports {
+
+	public const NONCE = 'anchor_courses_learners';
+
+	public function __construct() {
+		\add_action( 'add_meta_boxes', [ $this, 'add_metabox' ] );
+		\add_action( 'admin_post_anchor_courses_add_learner', [ $this, 'handle_add_learner' ] );
+		\add_action( 'admin_post_anchor_courses_revoke_access', [ $this, 'handle_revoke' ] );
+	}
+
+	public function add_metabox(): void {
+		\add_meta_box(
+			'anchor_courses_learners',
+			\__( 'Learners', 'anchor-schema' ),
+			[ $this, 'render_learners' ],
+			CoursePostType::CPT,
+			'normal',
+			'low'
+		);
+	}
+
+	/**
+	 * One row per enrolled learner.
+	 *
+	 * `has_access` is read from the role, not the row, and the two can
+	 * legitimately disagree: the default loss policy keeps an enrolment after
+	 * its role goes, so "enrolled, no access" is a real and visible state.
+	 *
+	 * @return array<int,array<string,mixed>>
+	 */
+	public static function rows( int $course_id, int $limit = 50, int $offset = 0 ): array {
+		$progress = new ProgressService();
+		$slug     = Roles::access_slug( $course_id );
+		$rows     = [];
+
+		foreach ( EnrollmentRepository::for_course( $course_id, [], $limit, $offset ) as $enrollment ) {
+			$user = \get_userdata( $enrollment->user_id );
+
+			$rows[] = [
+				'user_id'      => $enrollment->user_id,
+				'display_name' => $user ? (string) $user->display_name : '',
+				'user_email'   => $user ? (string) $user->user_email : '',
+				'enrolled_at'  => $enrollment->enrolled_at,
+				'percent'      => $progress->get_course_progress( $enrollment->user_id, $course_id )->percent,
+				'status'       => $enrollment->status,
+				'completed_at' => (string) ( $enrollment->completed_at ?? '' ),
+				'has_access'   => Roles::user_has( $enrollment->user_id, $slug ),
+			];
+		}
+
+		return $rows;
+	}
+
+	public function render_learners( \WP_Post $post ): void {
+		if ( ! Capabilities::current_user_can( 'reports' ) ) {
+			echo '<p>' . \esc_html__( 'You do not have permission to view learner reports.', 'anchor-schema' ) . '</p>';
+			return;
+		}
+
+		$course_id = (int) $post->ID;
+		$rows      = self::rows( $course_id );
+		$may_write = Capabilities::current_user_can( 'enrollments' );
+
+		if ( [] === $rows ) {
+			echo '<p>' . \esc_html__( 'Nobody is enrolled yet.', 'anchor-schema' ) . '</p>';
+		} else {
+			echo '<table class="widefat striped anchor-courses-report"><thead><tr>';
+			foreach ( [
+				\__( 'Learner', 'anchor-schema' ),
+				\__( 'Email', 'anchor-schema' ),
+				\__( 'Enrolled', 'anchor-schema' ),
+				\__( 'Progress', 'anchor-schema' ),
+				\__( 'Status', 'anchor-schema' ),
+				\__( 'Completed', 'anchor-schema' ),
+				\__( 'Access', 'anchor-schema' ),
+			] as $heading ) {
+				echo '<th>' . \esc_html( $heading ) . '</th>';
+			}
+			echo '</tr></thead><tbody>';
+
+			foreach ( $rows as $row ) {
+				echo '<tr>';
+				\printf( '<td>%s</td>', \esc_html( (string) $row['display_name'] ) );
+				\printf( '<td>%s</td>', \esc_html( (string) $row['user_email'] ) );
+				\printf( '<td>%s</td>', \esc_html( \mysql2date( 'Y-m-d', (string) $row['enrolled_at'] ) ) );
+				\printf(
+					'<td class="progress"><div class="anchor-courses-bar"><span style="width:%1$s%%"></span></div>%1$s%%</td>',
+					\esc_html( \number_format_i18n( (float) $row['percent'], 0 ) )
+				);
+				\printf( '<td>%s</td>', \esc_html( (string) $row['status'] ) );
+				\printf( '<td>%s</td>', \esc_html( '' === $row['completed_at'] ? '-' : \mysql2date( 'Y-m-d', (string) $row['completed_at'] ) ) );
+
+				echo '<td>';
+				if ( $row['has_access'] && $may_write ) {
+					$this->revoke_button( $course_id, (int) $row['user_id'] );
+				} else {
+					echo \esc_html( $row['has_access'] ? \__( 'Yes', 'anchor-schema' ) : \__( 'No', 'anchor-schema' ) );
+				}
+				echo '</td>';
+				echo '</tr>';
+			}
+
+			echo '</tbody></table>';
+		}
+
+		if ( $may_write ) {
+			$this->render_add_learner_form( $course_id );
+		}
+	}
+
+	public function render_add_learner_form( int $course_id ): void {
+		\printf(
+			'<h4>%s</h4><form method="post" action="%s" class="anchor-courses-add-learner">',
+			\esc_html__( 'Add a learner', 'anchor-schema' ),
+			\esc_url( \admin_url( 'admin-post.php' ) )
+		);
+		\wp_nonce_field( self::NONCE . '_' . $course_id );
+		echo '<input type="hidden" name="action" value="anchor_courses_add_learner" />';
+		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
+		\printf(
+			'<p><input type="text" name="learner_name" placeholder="%s" /> '
+			. '<input type="email" name="learner_email" placeholder="%s" required /> '
+			. '<button type="submit" class="button">%s</button></p>',
+			\esc_attr__( 'Name', 'anchor-schema' ),
+			\esc_attr__( 'Email', 'anchor-schema' ),
+			\esc_html__( 'Add learner', 'anchor-schema' )
+		);
+		echo '<p class="description">' . \esc_html__( 'Creates the account if there is none. No email is sent.', 'anchor-schema' ) . '</p>';
+		echo '</form>';
+	}
+
+	public function revoke_button( int $course_id, int $user_id ): void {
+		\printf( '<form method="post" action="%s">', \esc_url( \admin_url( 'admin-post.php' ) ) );
+		\wp_nonce_field( self::NONCE . '_' . $course_id );
+		echo '<input type="hidden" name="action" value="anchor_courses_revoke_access" />';
+		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
+		\printf( '<input type="hidden" name="user_id" value="%d" />', $user_id );
+		\printf( '<button type="submit" class="button-link">%s</button>', \esc_html__( 'Revoke', 'anchor-schema' ) );
+		echo '</form>';
+	}
+
+	public function handle_add_learner(): void {
+		$course_id = $this->authorise();
+
+		$name  = \sanitize_text_field( \wp_unslash( (string) ( $_POST['learner_name'] ?? '' ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
+		$email = \sanitize_email( \wp_unslash( (string) ( $_POST['learner_email'] ?? '' ) ) );     // phpcs:ignore WordPress.Security.NonceVerification
+
+		$user_id = Accounts::ensure_user( $name, $email );
+		if ( $user_id <= 0 ) {
+			$this->redirect( $course_id, 'no_user' );
+		}
+
+		// The one door. grant_access() checks can_enroll() first, so an unmet
+		// prerequisite refuses here exactly as it does at the checkout.
+		$result = Roles::grant_access( $user_id, $course_id, 'manual', (string) \get_current_user_id() );
+
+		$this->redirect(
+			$course_id,
+			\is_wp_error( $result ) ? (string) $result->get_error_code() : 'learner_added'
+		);
+	}
+
+	public function handle_revoke(): void {
+		$course_id = $this->authorise();
+		$user_id   = \absint( $_POST['user_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
+
+		if ( $user_id <= 0 ) {
+			$this->redirect( $course_id, 'no_user' );
+		}
+
+		Roles::revoke_access( $user_id, $course_id, 'manual', (string) \get_current_user_id() );
+
+		$this->redirect( $course_id, 'access_revoked' );
+	}
+
+	/** Nonce + capability, or redirect and stop. @return int The course id. */
+	private function authorise(): int {
+		$course_id = \absint( $_POST['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
+
+		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
+		if ( ! \wp_verify_nonce( $nonce, self::NONCE . '_' . $course_id ) ) {
+			$this->redirect( $course_id, 'bad_nonce' );
+		}
+		if ( ! Capabilities::current_user_can( 'enrollments' ) ) {
+			$this->redirect( $course_id, 'forbidden' );
+		}
+
+		return $course_id;
+	}
+
+	private function redirect( int $course_id, string $code ): void {
+		$target = $course_id > 0 ? (string) \get_edit_post_link( $course_id, 'raw' ) : \admin_url();
+
+		\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', \sanitize_key( $code ), $target ) );
+		exit;
+	}
+}
+```
+
+`anchor-courses/anchor-courses.php` - inside the `is_admin()` branch:
+
+```php
+			new Admin\LearnerReports();
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+```bash
+export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
+vendor/bin/phpunit --filter Test_Courses_Learners
+```
+Expected: PASS (12 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add anchor-courses/src/Support/Accounts.php anchor-courses/src/Admin/LearnerReports.php \
+        anchor-courses/anchor-courses.php tests/test-courses-learners.php
+git commit -m "feat(courses): Learners tab - add by name and email, revoke access, no new-account mail"
+```
+
+---
+
 ## Phase 3 - Quiz Engine
 
-### Task 19: Quiz attempt repository and value object
+### Task 22: Quiz attempt repository and value object
 
 **Files:**
 - Create: `anchor-courses/src/Domain/QuizAttempt.php`
@@ -8210,7 +10173,7 @@ git commit -m "feat(courses): quiz attempt repository with race-free attempt num
 
 ---
 
-### Task 20: The grading engine (pure)
+### Task 23: The grading engine (pure)
 
 **Files:**
 - Create: `anchor-courses/src/Support/Grading.php`
@@ -8503,7 +10466,7 @@ git commit -m "feat(courses): pure server-side grading engine"
 
 ---
 
-### Task 21: QuizService - attempt lifecycle, allowance and retry delay
+### Task 24: QuizService - attempt lifecycle, allowance and retry delay
 
 **Files:**
 - Create: `anchor-courses/src/Services/QuizService.php`
@@ -8763,7 +10726,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  *
  * Everything authoritative about a quiz lives here: who may start, how many
  * attempts remain, when a retry unlocks, what the learner is allowed to see,
- * and (Task 22) the grade. Nothing in JavaScript is trusted (rule 4), and no
+ * and (Task 25) the grade. Nothing in JavaScript is trusted (rule 4), and no
  * surface may read Questions::get() directly for a learner (rule 8).
  */
 final class QuizService {
@@ -9009,7 +10972,7 @@ git commit -m "feat(courses): quiz attempt lifecycle with attempt limits and ret
 
 ---
 
-### Task 22: Quiz submission, server-side timer and progress hand-off
+### Task 25: Quiz submission, server-side timer and progress hand-off
 
 **Files:**
 - Modify: `anchor-courses/src/Services/QuizService.php` - add `submit()`, `enforce_timer()`, `sweep_expired_attempts()`
@@ -9487,7 +11450,7 @@ git commit -m "feat(courses): server-side quiz grading, timer policy and progres
 
 ---
 
-### Task 23: Quiz REST routes and the quiz front end
+### Task 26: Quiz REST routes and the quiz front end
 
 **Files:**
 - Create: `anchor-courses/src/Rest/Routes.php`, `anchor-courses/src/Rest/QuizController.php`
@@ -10275,7 +12238,7 @@ git commit -m "feat(courses): quiz REST routes and the answer-safe quiz runtime"
 
 ## Phase 4 - Course Completion + CE
 
-### Task 24: CE credits - repository, value object, service and public API
+### Task 27: CE credits - repository, value object, service and public API
 
 **Files:**
 - Create: `anchor-courses/src/Domain/Credit.php`, `anchor-courses/src/Database/CreditRepository.php`, `anchor-courses/src/Services/CreditService.php`
@@ -10773,7 +12736,7 @@ git commit -m "feat(courses): CE credit records that cannot be awarded twice"
 
 ---
 
-### Task 25: Certificates - repository, value object, numbering and service
+### Task 28: Certificates - repository, value object, numbering and service
 
 **Files:**
 - Create: `anchor-courses/src/Domain/Certificate.php`, `anchor-courses/src/Database/CertificateRepository.php`, `anchor-courses/src/Services/CertificateService.php`
@@ -11036,7 +12999,7 @@ final class Certificate {
 		);
 	}
 
-	/** The public HTML certificate / verification URL (Task 27 registers the route). */
+	/** The public HTML certificate / verification URL (Task 30 registers the route). */
 	public function url(): string {
 		return \home_url( '/certificate/' . \rawurlencode( $this->verification_token ) . '/' );
 	}
@@ -11336,7 +13299,7 @@ vendor/bin/phpunit -c phpunit-unit.xml.dist --filter Test_Courses_Unit_Certifica
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Certificates
 ```
-Expected: PASS (4 unit) and PASS (10 integration). The `render()` test needs `templates/certificate.php`, created in Task 27 - if it fails on a missing template, create the file as part of this task with the Task 27 body.
+Expected: PASS (4 unit) and PASS (10 integration). The `render()` test needs `templates/certificate.php`, created in Task 30 - if it fails on a missing template, create the file as part of this task with the Task 30 body.
 
 - [ ] **Step 5: Commit**
 
@@ -11349,7 +13312,7 @@ git commit -m "feat(courses): certificates with race-free numbering and verifica
 
 ---
 
-### Task 26: CompletionService - the once-only completion pipeline
+### Task 29: CompletionService - the once-only completion pipeline
 
 **Files:**
 - Create: `anchor-courses/src/Services/CompletionService.php`
@@ -11364,8 +13327,11 @@ git commit -m "feat(courses): certificates with race-free numbering and verifica
   - `::complete( int $user_id, int $course_id ): bool` - the pipeline; returns `true` only on the transition
   - `::uncomplete( int $user_id, int $course_id ): bool` - admin-only reversal; leaves credits and certificates intact
   - Action: `anchor_courses_course_completed( int $user_id, int $course_id, Enrollment $enrollment )`
+- Consumes (from Task 19): `Support\Roles::grant_completed( int $user_id, int $course_id ): bool`
 
-Pipeline (brief 11): enrolment -> `completed` + `completed_at` -> award CE -> issue certificate -> fire `anchor_courses_course_completed`. The transition is guarded by the enrolment status itself, so running it a hundred times produces one set of side effects (brief 26, rule 7).
+Pipeline (brief 11): enrolment -> `completed` + `completed_at` -> award CE -> issue certificate -> **grant the completion role** -> fire `anchor_courses_course_completed`. The transition is guarded by the enrolment status itself, so running it a hundred times produces one set of side effects (brief 26, rule 7).
+
+The completion role (`anchor_course_{id}_completed`, minted here on first use) is the slug another course or an event lists as a prerequisite. It is **not** the access role, and granting it must never be mistaken for an enrolment - the Task 20 listener matches `anchor_course_{digits}` exactly, so the `_completed` variant slides past it untouched. `uncomplete()` does not take the role away, for the same reason it does not delete credits: it is a record of something that happened.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -11383,6 +13349,7 @@ use Anchor\Courses\Database\CreditRepository;
 use Anchor\Courses\Services\CompletionService;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
+use Anchor\Courses\Support\Roles;
 
 /** @group courses */
 class Test_Courses_Completion extends Anchor_Courses_TestCase {
@@ -11512,6 +13479,40 @@ class Test_Courses_Completion extends Anchor_Courses_TestCase {
 		$this->assertNotNull( CreditRepository::find( $this->user, $this->course ), 'Earned credits are never revoked.' );
 		$this->assertNotNull( CertificateRepository::find( $this->user, $this->course ) );
 	}
+
+	/**
+	 * Completion mints and grants the COMPLETION role - and leaves the access
+	 * role and the enrolment exactly where they were.
+	 */
+	public function test_completion_grants_the_completion_role_only() {
+		$enrolled = $this->enrollments->get( $this->user, $this->course );
+		$this->assertNotNull( $enrolled );
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->lesson );
+
+		$completion_slug = Roles::completion_slug( $this->course );
+		$this->assertTrue( Roles::user_has( $this->user, $completion_slug ) );
+		$this->assertSame( 'Completed: ' . get_the_title( $this->course ), wp_roles()->roles[ $completion_slug ]['name'] );
+		$this->assertSame( [], get_role( $completion_slug )->capabilities, 'A completion role is a tag, not a permission.' );
+
+		$this->assertSame(
+			$enrolled->id,
+			$this->enrollments->get( $this->user, $this->course )->id,
+			'Granting the completion role must not create a second enrolment.'
+		);
+
+		remove_role( $completion_slug );
+	}
+
+	/** Undoing a completion is not a retraction of what was earned. */
+	public function test_uncomplete_keeps_the_completion_role() {
+		$this->progress->complete_lesson( $this->user, $this->course, $this->lesson );
+		$this->completion->uncomplete( $this->user, $this->course );
+
+		$this->assertTrue( Roles::user_has( $this->user, Roles::completion_slug( $this->course ) ) );
+
+		remove_role( Roles::completion_slug( $this->course ) );
+	}
 }
 ```
 
@@ -11537,6 +13538,7 @@ use Anchor\Courses\Database\EnrollmentRepository;
 use Anchor\Courses\Domain\Enrollment;
 use Anchor\Courses\Support\Clock;
 use Anchor\Courses\Support\Log;
+use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -11600,6 +13602,13 @@ final class CompletionService {
 		$this->credits->award( $user_id, $course_id );
 		$this->certificates->issue( $user_id, $course_id );
 
+		// Mint (lazily) and grant the COMPLETION role. This is the slug another
+		// course or an event lists as a prerequisite (design spec 3.1). It is a
+		// different role from the access role the learner already holds, and
+		// granting it never touches their enrolment - Support\Roles' listener
+		// matches the access slug only.
+		Roles::grant_completed( $user_id, $course_id );
+
 		Log::write( 'course_completed', [ 'user' => $user_id, 'course' => $course_id ] );
 
 		/**
@@ -11655,7 +13664,7 @@ final class CompletionService {
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Completion
 ```
-Expected: PASS (8 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -11666,7 +13675,7 @@ git commit -m "feat(courses): idempotent course completion pipeline"
 
 ---
 
-### Task 27: Certificate page, verification route and learner credit/certificate screens
+### Task 30: Certificate page, verification route and learner credit/certificate screens
 
 **Files:**
 - Create: `anchor-courses/src/Frontend/CertificatePage.php`
@@ -12116,24 +14125,27 @@ git commit -m "feat(courses): HTML certificate page, verification route and lear
 
 ---
 
-### Task 28: Admin learner report, user-screen tab and enrolment management
+### Task 31: Learner report columns, the user-screen tab and enrolment management
 
 **Files:**
-- Create: `anchor-courses/src/Admin/LearnerReports.php`, `anchor-courses/src/Admin/EnrollmentManager.php`
-- Modify: `anchor-courses/anchor-courses.php` - construct both when `is_admin()`
+- Modify: `anchor-courses/src/Admin/LearnerReports.php` - the Learners tab from Task 21 gains the Phase 4 columns and the user-profile surface
+- Create: `anchor-courses/src/Admin/EnrollmentManager.php`
+- Modify: `anchor-courses/anchor-courses.php` - construct `EnrollmentManager` when `is_admin()`
 - Test: `tests/test-courses-admin-reports.php`
 
+**This task extends the Learners tab, it does not build a second one.** Task 21 created `Admin\LearnerReports` with the columns Phase 2 could fill - learner, email, enrolled, progress, status, completed - plus the "Add learner" form and per-row Revoke. Phase 4 finally has credits, certificates and quiz attempts to report, so the *same* class grows three columns and a user-profile block. Step 3 restates the finished class in full, because an executor may read this task without Task 21 in front of them.
+
 **Interfaces:**
-- Consumes: `EnrollmentRepository`, `ProgressService`, `QuizAttemptRepository`, `CreditService`, `CertificateService`, `Capabilities`.
+- Consumes: `EnrollmentRepository`, `ProgressService`, `QuizAttemptRepository`, `CreditService`, `CertificateService`, `Capabilities`, `Support\Roles`.
 - Produces:
-  - `Admin\LearnerReports::add_metabox(): void` - "Learners" metabox on the course screen
-  - `::render_learners( \WP_Post $post ): void`
-  - `::rows( int $course_id, int $limit = 50, int $offset = 0 ): array` - one row per learner: `['user_id','display_name','user_email','enrolled_at','percent','last_activity','best_score','status','completed_at','credits','certificate_number','certificate_url']`
+  - `Admin\LearnerReports::rows( int $course_id, int $limit = 50, int $offset = 0 ): array` - now `['user_id','display_name','user_email','enrolled_at','percent','last_activity','best_score','status','completed_at','credits','certificate_number','certificate_url','has_access']`
   - `::render_user_profile( \WP_User $user ): void` - on `show_user_profile` / `edit_user_profile`
   - `::user_rows( int $user_id ): array`
   - `Admin\EnrollmentManager::NONCE = 'anchor_courses_enrollment_nonce'`
-  - `::handle_action(): void` - `admin_post_anchor_courses_manage_enrollment`; actions `enroll`, `cancel`, `reset`, `complete`, `uncomplete`
+  - `::handle_action(): void` - `admin_post_anchor_courses_manage_enrollment`; actions `cancel`, `reset`, `complete`, `uncomplete`
   - `::render_form( int $course_id ): void`
+
+**There is no `enroll` action here.** Adding a learner is the Learners tab's add form (Task 21), which goes through `Support\Roles::grant_access()` like every other grant. A second "Enrol" control on the same screen would be a second door into the same room, with its own chance to forget the prerequisite check. `cancel` does revoke the access role as well as cancelling the row - and deliberately does *not* consult `anchor_courses_role_loss_policy`, because an operator choosing "Cancel enrolment" has already said what they want.
 
 Every screen and handler is gated on `Capabilities::cap( 'reports' )` (read) or `Capabilities::cap( 'enrollments' )` (write). The learner report shows learner emails, so it never renders for a user without the reports capability.
 
@@ -12152,6 +14164,7 @@ use Anchor\Courses\Admin\LearnerReports;
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
+use Anchor\Courses\Support\Roles;
 
 /** Thrown from wp_redirect so the handler's exit() never runs. */
 class Anchor_Courses_Admin_Redirected extends \Exception {}
@@ -12244,7 +14257,10 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		$this->assertStringContainsString( 'Ada Lovelace', $allowed );
 	}
 
-	public function test_an_admin_can_enroll_a_learner_from_the_course_screen() {
+	/** Adding a learner belongs to the Learners tab; this screen never duplicates it. */
+	public function test_the_enrolment_manager_offers_no_enrol_action() {
+		$this->assertNotContains( 'enroll', EnrollmentManager::ACTIONS );
+
 		wp_set_current_user( $this->admin );
 		$_POST = [
 			'anchor_courses_action' => 'enroll',
@@ -12256,16 +14272,17 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		try {
 			( new EnrollmentManager() )->handle_action();
 		} catch ( Anchor_Courses_Admin_Redirected $e ) {
-			$this->assertStringContainsString( 'anchor_courses_admin_notice=enrolled', $e->getMessage() );
+			$this->assertStringContainsString( 'anchor_courses_admin_notice=error', $e->getMessage() );
 		}
 
-		$this->assertTrue( ( new EnrollmentService() )->is_enrolled( $this->learner, $this->course ) );
+		$this->assertFalse( ( new EnrollmentService() )->is_enrolled( $this->learner, $this->course ) );
 	}
 
 	public function test_a_learner_cannot_drive_the_enrolment_manager() {
+		Roles::grant_access( $this->learner, $this->course, 'manual' );
 		wp_set_current_user( $this->learner );
 		$_POST = [
-			'anchor_courses_action' => 'enroll',
+			'anchor_courses_action' => 'cancel',
 			'course_id'             => (string) $this->course,
 			'user_id'               => (string) $this->learner,
 			'_wpnonce'              => wp_create_nonce( EnrollmentManager::NONCE . '_' . $this->course ),
@@ -12277,13 +14294,15 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 			$this->assertStringContainsString( 'anchor_courses_admin_notice=forbidden', $e->getMessage() );
 		}
 
-		$this->assertFalse( ( new EnrollmentService() )->is_enrolled( $this->learner, $this->course ) );
+		$this->assertTrue( ( new EnrollmentService() )->is_enrolled( $this->learner, $this->course ) );
+		remove_role( Roles::access_slug( $this->course ) );
 	}
 
 	public function test_a_bad_nonce_is_refused() {
+		Roles::grant_access( $this->learner, $this->course, 'manual' );
 		wp_set_current_user( $this->admin );
 		$_POST = [
-			'anchor_courses_action' => 'enroll',
+			'anchor_courses_action' => 'cancel',
 			'course_id'             => (string) $this->course,
 			'user_id'               => (string) $this->learner,
 			'_wpnonce'              => 'nope',
@@ -12295,7 +14314,8 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 			$this->assertStringContainsString( 'anchor_courses_admin_notice=bad_nonce', $e->getMessage() );
 		}
 
-		$this->assertFalse( ( new EnrollmentService() )->is_enrolled( $this->learner, $this->course ) );
+		$this->assertTrue( ( new EnrollmentService() )->is_enrolled( $this->learner, $this->course ) );
+		remove_role( Roles::access_slug( $this->course ) );
 	}
 
 	public function test_reset_clears_progress_but_keeps_the_enrolment() {
@@ -12322,8 +14342,11 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		$this->assertTrue( $enrollments->is_enrolled( $this->learner, $this->course ) );
 	}
 
-	public function test_cancel_sets_the_enrolment_to_cancelled() {
-		( new EnrollmentService() )->enroll( $this->learner, $this->course );
+	/** Cancel takes the access role away too, whatever the loss policy says. */
+	public function test_cancel_revokes_the_role_and_cancels_the_row() {
+		Roles::grant_access( $this->learner, $this->course, 'manual' );
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'keep', 10, 4 );
+
 		wp_set_current_user( $this->admin );
 		$_POST = [
 			'anchor_courses_action' => 'cancel',
@@ -12339,6 +14362,10 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		}
 
 		$this->assertSame( 'cancelled', ( new EnrollmentService() )->get( $this->learner, $this->course )->status );
+		$this->assertFalse( Roles::user_has( $this->learner, Roles::access_slug( $this->course ) ) );
+
+		remove_all_filters( 'anchor_courses_role_loss_policy' );
+		remove_role( Roles::access_slug( $this->course ) );
 	}
 
 	public function test_learner_emails_are_escaped_in_the_report() {
@@ -12365,7 +14392,7 @@ Expected: FAIL - `Class "Anchor\Courses\Admin\LearnerReports" not found`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-`anchor-courses/src/Admin/LearnerReports.php`:
+`anchor-courses/src/Admin/LearnerReports.php`. Only three members change: `rows()` gains `best_score`, `credits`, `certificate_number` and `certificate_url`, `render_learners()` gains their columns, and `user_rows()` / `render_user_profile()` are new. **`handle_add_learner()`, `handle_revoke()`, `render_add_learner_form()`, `revoke_button()`, `authorise()` and `redirect()` are Task 21's and stay exactly as they are** - they are not repeated below, and deleting them would take the Learners tab's add and revoke controls with them, which is what Step 4's second test run is there to catch. `__construct()` and `add_metabox()` are shown unchanged so the top of the file reads whole:
 
 ```php
 <?php
@@ -12383,15 +14410,16 @@ use Anchor\Courses\Services\CertificateService;
 use Anchor\Courses\Services\CreditService;
 use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Capabilities;
+use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /**
- * Learner reporting (brief 21.3).
+ * The Learners tab, and learner reporting (brief 21.3, design spec 3.1).
  *
- * Two surfaces: a "Learners" metabox on the course screen, and a Courses block
- * on the user profile. Both show learner email addresses, so both are gated on
- * the reports capability - not on edit_posts.
+ * Two surfaces: the "Learners" metabox on the course screen, and a Courses
+ * block on the user profile. Both show learner email addresses, so both are
+ * gated on the reports capability - not on edit_posts.
  */
 final class LearnerReports {
 
@@ -12399,6 +14427,8 @@ final class LearnerReports {
 		\add_action( 'add_meta_boxes', [ $this, 'add_metabox' ] );
 		\add_action( 'show_user_profile', [ $this, 'render_user_profile' ] );
 		\add_action( 'edit_user_profile', [ $this, 'render_user_profile' ] );
+		\add_action( 'admin_post_anchor_courses_add_learner', [ $this, 'handle_add_learner' ] );
+		\add_action( 'admin_post_anchor_courses_revoke_access', [ $this, 'handle_revoke' ] );
 	}
 
 	public function add_metabox(): void {
@@ -12450,6 +14480,7 @@ final class LearnerReports {
 				'credits'            => $credit instanceof Credit ? $credit->credits : 0.0,
 				'certificate_number' => $certificate instanceof Certificate ? $certificate->certificate_number : '',
 				'certificate_url'    => $certificate instanceof Certificate ? $certificate->url() : '',
+				'has_access'         => Roles::user_has( $enrollment->user_id, Roles::access_slug( $course_id ) ),
 			];
 		}
 
@@ -12480,6 +14511,7 @@ final class LearnerReports {
 				\__( 'Completed', 'anchor-schema' ),
 				\__( 'Credits', 'anchor-schema' ),
 				\__( 'Certificate', 'anchor-schema' ),
+				\__( 'Access', 'anchor-schema' ),
 			] as $heading ) {
 				echo '<th>' . \esc_html( $heading ) . '</th>';
 			}
@@ -12508,6 +14540,14 @@ final class LearnerReports {
 				} else {
 					echo '<td>-</td>';
 				}
+				// Access + per-row Revoke, carried over from Task 21.
+				echo '<td>';
+				if ( $row['has_access'] && Capabilities::current_user_can( 'enrollments' ) ) {
+					$this->revoke_button( $course_id, (int) $row['user_id'] );
+				} else {
+					echo \esc_html( $row['has_access'] ? \__( 'Yes', 'anchor-schema' ) : \__( 'No', 'anchor-schema' ) );
+				}
+				echo '</td>';
 				echo '</tr>';
 			}
 
@@ -12515,6 +14555,7 @@ final class LearnerReports {
 		}
 
 		if ( Capabilities::current_user_can( 'enrollments' ) ) {
+			$this->render_add_learner_form( $course_id ); // Task 21.
 			( new EnrollmentManager() )->render_form( $course_id );
 		}
 	}
@@ -12638,19 +14679,35 @@ use Anchor\Courses\Module;
 use Anchor\Courses\Services\CompletionService;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Support\Capabilities;
+use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
-/** Manual enrolment actions on the course screen (brief 32 "enrollment management"). */
+/**
+ * Enrolment maintenance on the course screen (brief 32 "enrollment management").
+ *
+ * Four verbs, all of them about an enrolment that already exists. ADDING a
+ * learner is not here: that is the Learners tab's add form (Task 21), which
+ * grants the access role through Support\Roles like every other grant. Two
+ * ways to enrol from one screen would be two chances to skip the prerequisite
+ * check.
+ */
 final class EnrollmentManager {
 
 	public const NONCE = 'anchor_courses_enrollment_nonce';
 
-	public const ACTIONS = [ 'enroll', 'cancel', 'reset', 'complete', 'uncomplete' ];
+	public const ACTIONS = [ 'cancel', 'reset', 'complete', 'uncomplete' ];
 
+	/**
+	 * The whole `anchor_courses_admin_notice` vocabulary, for every course
+	 * screen - this class owns the banner so there is one renderer and one
+	 * list, not one per handler. Tasks 19 and 21 redirect with codes from here.
+	 */
 	public const NOTICES = [
-		'enrolled', 'cancelled', 'reset', 'completed', 'uncompleted',
+		'cancelled', 'reset', 'completed', 'uncompleted', 'role_deleted',
+		'learner_added', 'access_revoked',
 		'bad_nonce', 'forbidden', 'no_user', 'error',
+		'missing_prerequisite', 'not_available_yet', 'no_longer_available',
 	];
 
 	public function __construct() {
@@ -12679,8 +14736,7 @@ final class EnrollmentManager {
 		);
 		echo ' <select name="anchor_courses_action">';
 		$labels = [
-			'enroll'     => \__( 'Enrol', 'anchor-schema' ),
-			'cancel'     => \__( 'Cancel enrolment', 'anchor-schema' ),
+			'cancel'     => \__( 'Cancel enrolment (removes access)', 'anchor-schema' ),
 			'reset'      => \__( 'Reset progress', 'anchor-schema' ),
 			'complete'   => \__( 'Mark complete', 'anchor-schema' ),
 			'uncomplete' => \__( 'Undo completion', 'anchor-schema' ),
@@ -12717,12 +14773,12 @@ final class EnrollmentManager {
 		$completion  = $module ? $module->completion : null;
 
 		switch ( $action ) {
-			case 'enroll':
-				$result = $enrollments->enroll( $user_id, $course_id, [ 'bypass_checks' => true, 'source' => 'admin' ] );
-				$this->redirect( \is_wp_error( $result ) ? 'error' : 'enrolled', $course_id );
-				break;
-
 			case 'cancel':
+				// Take the access away AND close the row. The loss policy is
+				// not consulted: it exists to decide what an *incidental* role
+				// loss means, and there is nothing incidental about an operator
+				// choosing "Cancel enrolment".
+				Roles::revoke_access( $user_id, $course_id, 'admin' );
 				$enrollments->cancel( $user_id, $course_id );
 				$this->redirect( 'cancelled', $course_id );
 				break;
@@ -12734,7 +14790,9 @@ final class EnrollmentManager {
 				break;
 
 			case 'complete':
-				$enrollments->enroll( $user_id, $course_id, [ 'bypass_checks' => true, 'source' => 'admin' ] );
+				// Marking someone complete implies they had access. Grant the
+				// role (idempotent); the listener creates the enrolment row.
+				Roles::grant_access( $user_id, $course_id, 'manual' );
 				if ( $completion instanceof CompletionService ) {
 					// Force the transition even when items are outstanding: an
 					// admin saying "complete" is the manual completion mode.
@@ -12761,18 +14819,23 @@ final class EnrollmentManager {
 		}
 
 		$messages = [
-			'enrolled'    => \__( 'Learner enrolled.', 'anchor-schema' ),
-			'cancelled'   => \__( 'Enrolment cancelled.', 'anchor-schema' ),
-			'reset'       => \__( 'Progress reset.', 'anchor-schema' ),
-			'completed'   => \__( 'Course marked complete.', 'anchor-schema' ),
-			'uncompleted' => \__( 'Completion undone. Credits and certificates were kept.', 'anchor-schema' ),
-			'bad_nonce'   => \__( 'That request expired. Please try again.', 'anchor-schema' ),
-			'forbidden'   => \__( 'You are not allowed to manage enrolments.', 'anchor-schema' ),
-			'no_user'     => \__( 'Select a user first.', 'anchor-schema' ),
-			'error'       => \__( 'That action could not be completed.', 'anchor-schema' ),
+			'cancelled'            => \__( 'Enrolment cancelled and access removed.', 'anchor-schema' ),
+			'reset'                => \__( 'Progress reset.', 'anchor-schema' ),
+			'completed'            => \__( 'Course marked complete.', 'anchor-schema' ),
+			'uncompleted'          => \__( 'Completion undone. Credits and certificates were kept.', 'anchor-schema' ),
+			'role_deleted'         => \__( 'Role deleted.', 'anchor-schema' ),
+			'learner_added'        => \__( 'Learner added and given access.', 'anchor-schema' ),
+			'access_revoked'       => \__( 'Access removed.', 'anchor-schema' ),
+			'bad_nonce'            => \__( 'That request expired. Please try again.', 'anchor-schema' ),
+			'forbidden'            => \__( 'You are not allowed to manage enrolments.', 'anchor-schema' ),
+			'no_user'              => \__( 'That person could not be resolved to an account.', 'anchor-schema' ),
+			'error'                => \__( 'That action could not be completed.', 'anchor-schema' ),
+			'missing_prerequisite' => \__( 'Access was not granted: this course has prerequisites they have not finished.', 'anchor-schema' ),
+			'not_available_yet'    => \__( 'Access was not granted: this course is not open yet.', 'anchor-schema' ),
+			'no_longer_available'  => \__( 'Access was not granted: this course has closed.', 'anchor-schema' ),
 		];
 
-		$is_error = \in_array( $code, [ 'bad_nonce', 'forbidden', 'no_user', 'error' ], true );
+		$is_error = ! \in_array( $code, [ 'cancelled', 'reset', 'completed', 'uncompleted', 'role_deleted', 'learner_added', 'access_revoked' ], true );
 
 		\printf(
 			'<div class="notice notice-%s is-dismissible"><p>%s</p></div>',
@@ -12792,10 +14855,9 @@ final class EnrollmentManager {
 }
 ```
 
-`anchor-courses/anchor-courses.php` - inside the `is_admin()` branch:
+`anchor-courses/anchor-courses.php` - inside the `is_admin()` branch, next to the `Admin\LearnerReports()` line Task 21 already added:
 
 ```php
-			new Admin\LearnerReports();
 			new Admin\EnrollmentManager();
 ```
 
@@ -12804,24 +14866,27 @@ final class EnrollmentManager {
 ```bash
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Admin_Reports
+vendor/bin/phpunit --filter Test_Courses_Learners
 ```
-Expected: PASS (10 tests).
+Expected: PASS (10 tests), and the Task 21 Learners suite still green - the add and revoke controls must survive this task's rewrite of `render_learners()`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add anchor-courses/src/Admin/LearnerReports.php anchor-courses/src/Admin/EnrollmentManager.php \
         anchor-courses/anchor-courses.php tests/test-courses-admin-reports.php
-git commit -m "feat(courses): learner reports, user-profile courses tab and enrolment management"
+git commit -m "feat(courses): learner report columns, user-profile courses tab and enrolment management"
 ```
 
 ---
 
-### Task 29 (GATE): The brief section 38 milestone, end to end
+### Task 32 (GATE): The brief section 38 milestone, end to end
 
 **This task is a gate. Phase 5 does not start until both of its tests pass.**
 
-The brief's first-usable-milestone path, exactly: admin creates Course A -> Module 1 -> Lesson 1 -> Quiz 1 -> passing score 80% -> max attempts 2 -> user enrols -> reads Lesson 1 -> marks it complete -> takes Quiz 1 -> fails -> retries -> passes -> course reaches 100% -> course marked completed -> 2 CE credits awarded -> certificate generated.
+The brief's first-usable-milestone path, exactly: admin creates Course A -> Module 1 -> Lesson 1 -> Quiz 1 -> passing score 80% -> max attempts 2 -> user is enrolled -> reads Lesson 1 -> marks it complete -> takes Quiz 1 -> fails -> retries -> passes -> course reaches 100% -> course marked completed -> 2 CE credits awarded -> certificate generated.
+
+"User enrols" is the one step the brief describes that this module does not have: nobody enrols themselves (design spec 7). The milestone therefore enrols the learner the way production does - `Support\Roles::grant_access()`, exactly what the Learners tab and the WooCommerce adapter call - and asserts the enrolment row appeared *via the listener*. That makes the gate prove the whole access mechanism, not just the progress engine.
 
 **Files:**
 - Create: `tests/test-courses-milestone.php` (PHPUnit integration)
@@ -12830,7 +14895,7 @@ The brief's first-usable-milestone path, exactly: admin creates Course A -> Modu
 - Modify: `package.json` - no change needed; `npm run test:e2e` already runs `playwright test` over `./e2e`
 
 **Interfaces:**
-- Consumes: everything from Tasks 1-28.
+- Consumes: everything from Tasks 1-31.
 - Produces:
   - `.seed.json` keys `courses_course_id`, `courses_course_url`, `courses_lesson_url`, `courses_learner_user`, `courses_learner_pass`
   - No new PHP.
@@ -12856,6 +14921,7 @@ use Anchor\Courses\Content\Questions;
 use Anchor\Courses\Database\CertificateRepository;
 use Anchor\Courses\Database\CreditRepository;
 use Anchor\Courses\Domain\QuizAttempt;
+use Anchor\Courses\Support\Roles;
 
 /** @group courses @group milestone */
 class Test_Courses_Milestone extends Anchor_Courses_TestCase {
@@ -12904,11 +14970,16 @@ class Test_Courses_Milestone extends Anchor_Courses_TestCase {
 
 		$this->assertSame( 2, count( Curriculum::required_items( $course ) ) );
 
-		// --- Learner enrols -----------------------------------------------
-		$user       = $this->make_learner( [ 'display_name' => 'Milestone Learner' ] );
-		$enrollment = anchor_courses_enroll_user( $user, $course );
-		$this->assertNotWPError( $enrollment );
+		// --- Learner is given access (the role IS the enrolment) ----------
+		$user = $this->make_learner( [ 'display_name' => 'Milestone Learner' ] );
+
+		$this->assertTrue( Roles::grant_access( $user, $course, 'manual' ) );
+		$this->assertTrue( Roles::user_has( $user, Roles::access_slug( $course ) ) );
+
+		$enrollment = $module->enrollments->get( $user, $course );
+		$this->assertNotNull( $enrollment, 'The role listener must have created the enrolment row.' );
 		$this->assertSame( 'enrolled', $enrollment->status );
+		$this->assertSame( 'manual', $enrollment->source );
 
 		// --- Sequential progression locks the quiz ------------------------
 		$this->assertFalse( $module->progress->is_item_available( $user, $course, $quiz, 'quiz' ) );
@@ -12970,7 +15041,11 @@ class Test_Courses_Milestone extends Anchor_Courses_TestCase {
 			$module->quizzes->start_attempt( $user, $quiz, $course )->get_error_code()
 		);
 
+		// --- The completion role is now a prerequisite others can use -----
+		$this->assertTrue( Roles::user_has( $user, Roles::completion_slug( $course ) ) );
+
 		// --- Re-running everything changes nothing (brief 26) -------------
+		Roles::grant_access( $user, $course, 'manual' );
 		anchor_courses_enroll_user( $user, $course );
 		anchor_courses_complete_lesson( $user, $course, $lesson );
 		$module->completion->complete( $user, $course );
@@ -12978,6 +15053,9 @@ class Test_Courses_Milestone extends Anchor_Courses_TestCase {
 		$this->assertCount( 1, CreditRepository::for_user( $user ) );
 		$this->assertCount( 1, CertificateRepository::for_user( $user ) );
 		$this->assertSame( 2.0, CreditRepository::total_for_user( $user ) );
+
+		remove_role( Roles::access_slug( $course ) );
+		remove_role( Roles::completion_slug( $course ) );
 	}
 }
 ```
@@ -12988,7 +15066,7 @@ class Test_Courses_Milestone extends Anchor_Courses_TestCase {
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Milestone
 ```
-Expected: FAIL on the first assertion that exposes a gap between Tasks 1-28. If it passes first time, that is fine - the gate is the point, not the red bar.
+Expected: FAIL on the first assertion that exposes a gap between Tasks 1-31. If it passes first time, that is fine - the gate is the point, not the red bar.
 
 - [ ] **Step 3: Fix whatever it exposes, then run again**
 
@@ -13039,7 +15117,6 @@ COURSES_IDS="$(wp eval '
 
   update_post_meta( $course, "_anchor_course_progression_mode", "sequential" );
   update_post_meta( $course, "_anchor_course_completion_mode", "all_required_items" );
-  update_post_meta( $course, "_anchor_course_access_type", "open" );
   update_post_meta( $course, "_anchor_course_ce_credits", 2 );
   update_post_meta( $course, "_anchor_course_ce_type", "Dental CE" );
   update_post_meta( $course, "_anchor_course_ce_provider_name", "DEKA Academy" );
@@ -13081,11 +15158,18 @@ COURSES_LESSON_ID="${COURSES_REST%%|*}"
 COURSES_QUIZ_ID="${COURSES_REST##*|}"
 log "Course #${COURSES_COURSE_ID}, lesson #${COURSES_LESSON_ID}, quiz #${COURSES_QUIZ_ID}"
 
-# Learner account the courses spec signs in as.
+# Learner account the courses spec signs in as, holding the course's ACCESS
+# role - which is what enrolment is (design spec 3.1). Granting it through
+# Support\Roles rather than wp user add-role exercises the same path the
+# Learners tab uses, so the seed cannot drift from production.
 if ! wp user get courses-learner >/dev/null 2>&1; then
   wp user create courses-learner courses-learner@example.test --role=subscriber --user_pass=courses-pass --display_name="Courses Learner"
 fi
-log "Learner account: courses-learner"
+wp eval '
+  $user = get_user_by( "login", "courses-learner" );
+  \Anchor\Courses\Support\Roles::grant_access( (int) $user->ID, '"${COURSES_COURSE_ID}"', "manual" );
+'
+log "Learner account: courses-learner (holds anchor_course_${COURSES_COURSE_ID})"
 ```
 
 Finally add the keys to the `.seed.json` write (extend the existing `json_encode` array):
@@ -13113,11 +15197,14 @@ const { test, expect } = require('@playwright/test');
  * Anchor Courses - the brief section 38 milestone, through the browser.
  *
  * FIXTURES: bin/e2e-seed.sh publishes Course A (sequential) with Lesson 1 and
- * Quiz 1 (passing 80%, 2 attempts) and creates the `courses-learner` account,
- * writing the ids/urls into e2e/.seed.json. Run `npm run env:seed` first.
+ * Quiz 1 (passing 80%, 2 attempts), creates the `courses-learner` account and
+ * grants it the course's access role, writing the ids/urls into
+ * e2e/.seed.json. Run `npm run env:seed` first.
  *
- * The spec drives the real UI: enrol, read, mark complete, fail the quiz,
- * retry, pass, and land on a 100% course with a certificate link.
+ * The spec drives the real UI: read, mark complete, fail the quiz, retry,
+ * pass, and land on a 100% course with a certificate link. There is no enrol
+ * step to drive - the learner arrives already holding the access role, which
+ * is the only way anybody is ever enrolled (design spec 3.1, 7).
  */
 
 const SEED_PATH = path.join(__dirname, '..', '.seed.json');
@@ -13144,14 +15231,15 @@ async function loginAsLearner(page) {
   }
 }
 
-test('milestone: enrol, complete a lesson, fail a quiz, retry, pass, finish the course', async ({ page }) => {
+test('milestone: complete a lesson, fail a quiz, retry, pass, finish the course', async ({ page }) => {
   await loginAsLearner(page);
 
-  // 1) Enrol from the course page.
+  // 1) The learner already holds the access role, so the course opens with no
+  //    enrol control at all - not a button, not a "sign in to enrol" link.
   await page.goto(new URL(seed.courses_course_url).pathname);
   await expect(page.locator('.anchor-course-title')).toContainText('Course A');
-  await page.locator('.anchor-course-cta button[type="submit"]').click();
-  await expect(page.locator('.anchor-courses-notice')).toContainText(/enrolled/i);
+  await expect(page.locator('.anchor-course-cta')).toHaveCount(0);
+  await expect(page.locator('.anchor-courses-progress-label')).toContainText('0%');
 
   // 2) Sequential progression: the quiz is not startable yet.
   await expect(page.locator('.anchor-course-item--quiz.is-locked')).toHaveCount(1);
@@ -13190,6 +15278,15 @@ test('milestone: enrol, complete a lesson, fail a quiz, retry, pass, finish the 
   await expect(page.locator('.anchor-courses-progress-label')).toContainText('100%');
 });
 
+test('a visitor without access is told how to ask, and offered no enrol control', async ({ page }) => {
+  // Signed out on purpose: the one place a stray "Enrol" button would show up.
+  await page.goto(new URL(seed.courses_course_url).pathname);
+
+  await expect(page.locator('.anchor-course-cta--ask')).toContainText(/ask us about access/i);
+  await expect(page.locator('.anchor-course-cta form')).toHaveCount(0);
+  expect(await page.content()).not.toContain('anchor_courses_enroll');
+});
+
 test('the learner dashboard shows the credit and the certificate', async ({ page }) => {
   await loginAsLearner(page);
 
@@ -13207,7 +15304,7 @@ npm install && npm run wp-env start
 npm run env:seed
 npx playwright test e2e/courses/milestone.spec.js
 ```
-Expected: FAIL until the seed and the UI line up, then PASS (2 tests).
+Expected: FAIL until the seed and the UI line up, then PASS (3 tests).
 
 - [ ] **Step 7: Commit**
 
@@ -13220,7 +15317,7 @@ git commit -m "test(courses): brief section 38 milestone as a PHPUnit integratio
 
 ## Phase 5 - Integration Layer
 
-### Task 30: Course and learner REST routes
+### Task 33: Course and learner REST routes
 
 **Files:**
 - Create: `anchor-courses/src/Rest/CoursesController.php`, `anchor-courses/src/Rest/MeController.php`
@@ -13233,7 +15330,6 @@ git commit -m "test(courses): brief section 38 milestone as a PHPUnit integratio
     - `GET /courses` (`Routes::public_read`) - published courses, ids/titles/credits, never learner data
     - `GET /courses/(?P<id>\d+)` (`Routes::public_read`)
     - `GET /courses/(?P<id>\d+)/curriculum` (`Routes::public_read`) - titles and types only; no quiz questions
-    - `POST /courses/(?P<id>\d+)/enroll` (`Routes::require_login`)
   - `Rest\MeController::register_routes(): void`
     - `GET /me/courses` (`Routes::require_login`)
     - `GET /me/courses/(?P<id>\d+)/progress` (`Routes::require_login`)
@@ -13243,6 +15339,8 @@ git commit -m "test(courses): brief section 38 milestone as a PHPUnit integratio
     - `GET /me/credits` (`Routes::require_login`)
 
 Every `/me/` route reads `get_current_user_id()` and ignores any `user_id` in the request, so one learner can never address another's records (brief 25).
+
+**There is no `POST /courses/{id}/enroll`.** A REST enrol route is self-enrolment with a JSON body, and self-enrolment does not exist (design spec 7). Access is a role; the things that may hand one out are the Learners tab and the WooCommerce adapter, both server-side. A client that needs to know whether it may show a "buy" link reads the course resource and checks whether it is enrolled via `/me/courses`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -13258,6 +15356,8 @@ use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\Questions;
 use Anchor\Courses\Rest\Routes;
 use Anchor\Courses\Services\CreditService;
+use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Support\Roles;
 
 /** @group courses */
 class Test_Courses_Rest_Public extends Anchor_Courses_TestCase {
@@ -13295,6 +15395,11 @@ class Test_Courses_Rest_Public extends Anchor_Courses_TestCase {
 		);
 	}
 
+	public function tear_down() {
+		remove_role( Roles::access_slug( $this->course ) );
+		parent::tear_down();
+	}
+
 	private function request( string $method, string $route, array $body = [] ): WP_REST_Response {
 		$request = new WP_REST_Request( $method, '/' . Routes::NAMESPACE . $route );
 		foreach ( $body as $key => $value ) {
@@ -13306,12 +15411,18 @@ class Test_Courses_Rest_Public extends Anchor_Courses_TestCase {
 	public function test_every_brief_route_is_registered() {
 		$routes = array_keys( $this->server->get_routes() );
 		foreach ( [
-			'/courses', '/courses/(?P<id>\d+)', '/courses/(?P<id>\d+)/curriculum', '/courses/(?P<id>\d+)/enroll',
+			'/courses', '/courses/(?P<id>\d+)', '/courses/(?P<id>\d+)/curriculum',
 			'/me/courses', '/me/courses/(?P<id>\d+)/progress', '/lessons/(?P<id>\d+)/start',
 			'/lessons/(?P<id>\d+)/complete', '/me/certificates', '/me/credits',
 		] as $route ) {
 			$this->assertContains( '/' . Routes::NAMESPACE . $route, $routes, "Missing route {$route}" );
 		}
+
+		$this->assertNotContains(
+			'/' . Routes::NAMESPACE . '/courses/(?P<id>\d+)/enroll',
+			$routes,
+			'A REST enrol route is self-enrolment with a JSON body (design spec 7).'
+		);
 	}
 
 	public function test_the_course_index_lists_published_courses() {
@@ -13331,30 +15442,19 @@ class Test_Courses_Rest_Public extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( 'correct', $json );
 	}
 
-	public function test_enrolling_requires_login_and_then_works() {
-		wp_set_current_user( 0 );
-		$this->assertSame( 401, $this->request( 'POST', "/courses/{$this->course}/enroll" )->get_status() );
-
+	/** POSTing to the route that used to exist must 404, not enrol anybody. */
+	public function test_there_is_no_enrol_endpoint() {
 		wp_set_current_user( $this->user );
+
 		$response = $this->request( 'POST', "/courses/{$this->course}/enroll" );
-		$this->assertSame( 201, $response->get_status() );
-		$this->assertSame( 'enrolled', $response->get_data()['status'] );
-	}
 
-	public function test_enrolling_twice_returns_200_with_the_same_record() {
-		wp_set_current_user( $this->user );
-		$first  = $this->request( 'POST', "/courses/{$this->course}/enroll" );
-		$second = $this->request( 'POST', "/courses/{$this->course}/enroll" );
-
-		$this->assertSame( 201, $first->get_status() );
-		$this->assertSame( 200, $second->get_status() );
-		$this->assertSame( $first->get_data()['id'], $second->get_data()['id'] );
+		$this->assertSame( 404, $response->get_status() );
+		$this->assertFalse( ( new EnrollmentService() )->is_enrolled( $this->user, $this->course ) );
 	}
 
 	public function test_me_courses_only_ever_returns_the_signed_in_learner() {
 		$other = $this->make_learner();
-		wp_set_current_user( $other );
-		$this->request( 'POST', "/courses/{$this->course}/enroll" );
+		Roles::grant_access( $other, $this->course, 'manual' );
 
 		wp_set_current_user( $this->user );
 		$response = $this->request( 'GET', '/me/courses', [ 'user_id' => $other ] );
@@ -13363,8 +15463,8 @@ class Test_Courses_Rest_Public extends Anchor_Courses_TestCase {
 	}
 
 	public function test_lesson_start_and_complete_move_progress() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
 		wp_set_current_user( $this->user );
-		$this->request( 'POST', "/courses/{$this->course}/enroll" );
 
 		$this->assertSame( 200, $this->request( 'POST', "/lessons/{$this->lesson}/start", [ 'course_id' => $this->course ] )->get_status() );
 
@@ -13426,8 +15526,6 @@ namespace Anchor\Courses\Rest;
 use Anchor\Courses\Admin\CourseEditor;
 use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Content\Curriculum;
-use Anchor\Courses\Domain\Enrollment;
-use Anchor\Courses\Services\EnrollmentService;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -13439,8 +15537,6 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * carries quiz questions (brief 25).
  */
 final class CoursesController {
-
-	public function __construct( private EnrollmentService $enrollments ) {}
 
 	public function register_routes(): void {
 		$id_arg = [ 'id' => [ 'required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint' ] ];
@@ -13481,16 +15577,8 @@ final class CoursesController {
 			]
 		);
 
-		\register_rest_route(
-			Routes::NAMESPACE,
-			'/courses/(?P<id>\d+)/enroll',
-			[
-				'methods'             => 'POST',
-				'permission_callback' => [ Routes::class, 'require_login' ],
-				'callback'            => [ $this, 'enroll' ],
-				'args'                => $id_arg,
-			]
-		);
+		// No /enroll route, deliberately: access is a role, and roles are handed
+		// out server-side (design spec 7). See the task notes.
 	}
 
 	public function index( \WP_REST_Request $request ): \WP_REST_Response {
@@ -13546,20 +15634,6 @@ final class CoursesController {
 		return new \WP_REST_Response( [ 'course_id' => $course_id, 'modules' => $modules ], 200 );
 	}
 
-	public function enroll( \WP_REST_Request $request ): \WP_REST_Response {
-		$user_id   = \get_current_user_id();
-		$course_id = (int) $request['id'];
-
-		$already = $this->enrollments->get( $user_id, $course_id ) instanceof Enrollment;
-
-		$result = $this->enrollments->enroll( $user_id, $course_id );
-		if ( \is_wp_error( $result ) ) {
-			return Routes::error_response( $result );
-		}
-
-		return new \WP_REST_Response( $result->to_array(), $already ? 200 : 201 );
-	}
-
 	private function summary( \WP_Post $course ): array {
 		$id = (int) $course->ID;
 
@@ -13572,7 +15646,6 @@ final class CoursesController {
 			'duration'         => (string) CourseEditor::setting( $id, 'duration' ),
 			'difficulty'       => (string) CourseEditor::setting( $id, 'difficulty' ),
 			'ce_credits'       => (float) CourseEditor::setting( $id, 'ce_credits' ),
-			'access_type'      => (string) CourseEditor::setting( $id, 'access_type' ),
 			'progression_mode' => (string) CourseEditor::setting( $id, 'progression_mode' ),
 			'item_count'       => \count( Curriculum::items( $id ) ),
 		];
@@ -13731,7 +15804,7 @@ final class MeController {
 ```php
 		new Rest\Routes(
 			new Rest\QuizController( $this->quizzes ),
-			new Rest\CoursesController( $this->enrollments ),
+			new Rest\CoursesController(),
 			new Rest\MeController( $this->enrollments, $this->progress, $this->credits, $this->certificates )
 		);
 ```
@@ -13755,7 +15828,7 @@ git commit -m "feat(courses): catalogue and learner REST routes"
 
 ---
 
-### Task 31: Admin REST routes
+### Task 34: Admin REST routes
 
 **Files:**
 - Create: `anchor-courses/src/Rest/AdminController.php`
@@ -14119,7 +16192,7 @@ git commit -m "feat(courses): admin reporting REST routes behind per-capability 
 
 ---
 
-### Task 32: dataLayer analytics integration
+### Task 35: dataLayer analytics integration
 
 **Files:**
 - Create: `anchor-courses/src/Integrations/Analytics.php`
@@ -14127,7 +16200,7 @@ git commit -m "feat(courses): admin reporting REST routes behind per-capability 
 - Test: `tests/test-courses-analytics.php`
 
 **Interfaces:**
-- Consumes: every action from Tasks 14-26.
+- Consumes: every action from Tasks 14-29.
 - Produces:
   - `Integrations\Analytics::EVENTS` - the brief 19 list mapped to hooks
   - `::queue( string $event, array $payload ): void` - stores in a user transient so the push survives the post-redirect
@@ -14515,830 +16588,16 @@ git commit -m "feat(courses): IDs-only dataLayer events for the whole learner pa
 
 ---
 
-### Task 33: Completion roles and role-based prerequisites
-
-**Files:**
-- Create: `anchor-courses/src/Support/Roles.php`
-- Modify: `anchor-courses/src/Services/CompletionService.php` - grant the role on completion
-- Modify: `anchor-courses/src/Admin/CourseEditor.php` - role panel with a Delete role action
-- Modify: `anchor-courses/anchor-courses.php` - hook `save_post_anchor_course` for renames, register the delete handler
-- Test: `tests/test-courses-roles.php`
-
-**Interfaces:**
-- Produces:
-  - `Support\Roles::slug( int $course_id ): string` -> `anchor_course_{id}`
-  - `::display_name( int $course_id ): string` -> `Completed: {title}`
-  - `::ensure( int $course_id ): string` - mints lazily, returns the slug
-  - `::exists( int $course_id ): bool`
-  - `::grant_completed( int $user_id, int $course_id ): bool`
-  - `::rename( int $course_id ): void` - on `save_post_anchor_course`
-  - `::delete( int $course_id ): int` - strips the role from every holder and removes it; returns the holder count
-  - `::holders( int $course_id ): int`
-  - `::user_has( int $user_id, string $role ): bool`
-  - `::missing( int $user_id, array $role_slugs ): array` - display names of roles not held
-  - `Admin\CourseEditor::render_role_panel( \WP_Post $post ): void`, `::handle_delete_role(): void` (`admin_post_anchor_courses_delete_role`)
-
-The role carries **no capabilities**: it is a membership tag, exactly like the events module's `anchor_event_{id}` (events spec 4.1). It is never auto-deleted - deleting a course leaves the role, because the owner wants to keep granting after the fact.
-
-- [ ] **Step 1: Write the failing test**
-
-```php
-<?php
-/**
- * Anchor Courses - completion roles and prerequisites
- * (design spec 3.1, events spec 4.1/4.6).
- *
- * @package Anchor\Courses\Tests
- */
-
-use Anchor\Courses\Content\Curriculum;
-use Anchor\Courses\Services\EnrollmentService;
-use Anchor\Courses\Services\ProgressService;
-use Anchor\Courses\Support\Roles;
-
-/** @group courses */
-class Test_Courses_Roles extends Anchor_Courses_TestCase {
-
-	private int $user;
-	private int $course;
-	private int $lesson;
-
-	public function set_up() {
-		parent::set_up();
-		$this->user   = $this->make_learner();
-		$this->course = $this->make_course( [ 'progression_mode' => 'free' ], 'Laser Safety' );
-		$this->lesson = $this->make_lesson();
-		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $this->lesson ] ] ] ] );
-	}
-
-	public function tear_down() {
-		remove_role( Roles::slug( $this->course ) );
-		parent::tear_down();
-	}
-
-	public function test_the_slug_and_display_name_follow_the_spec() {
-		$this->assertSame( 'anchor_course_' . $this->course, Roles::slug( $this->course ) );
-		$this->assertSame( 'Completed: Laser Safety', Roles::display_name( $this->course ) );
-	}
-
-	public function test_the_role_is_minted_lazily_with_no_capabilities() {
-		$this->assertFalse( Roles::exists( $this->course ) );
-
-		Roles::ensure( $this->course );
-
-		$this->assertTrue( Roles::exists( $this->course ) );
-		$this->assertSame( [], get_role( Roles::slug( $this->course ) )->capabilities );
-	}
-
-	public function test_completing_the_course_grants_the_role() {
-		$enrollments = new EnrollmentService();
-		$progress    = new ProgressService( $enrollments );
-		$progress->set_completion_service( $this->courses()->completion );
-
-		$enrollments->enroll( $this->user, $this->course );
-		$progress->complete_lesson( $this->user, $this->course, $this->lesson );
-
-		$this->assertTrue( Roles::user_has( $this->user, Roles::slug( $this->course ) ) );
-		$this->assertContains( 'subscriber', get_userdata( $this->user )->roles, 'The role is additive.' );
-	}
-
-	public function test_granting_twice_is_harmless() {
-		Roles::grant_completed( $this->user, $this->course );
-		Roles::grant_completed( $this->user, $this->course );
-
-		$this->assertSame( 1, Roles::holders( $this->course ) );
-	}
-
-	public function test_renaming_the_course_renames_the_role() {
-		Roles::ensure( $this->course );
-		wp_update_post( [ 'ID' => $this->course, 'post_title' => 'Advanced Laser Safety' ] );
-
-		Roles::rename( $this->course );
-
-		$this->assertSame( 'Completed: Advanced Laser Safety', wp_roles()->roles[ Roles::slug( $this->course ) ]['name'] );
-	}
-
-	public function test_deleting_the_role_strips_it_from_every_holder() {
-		Roles::grant_completed( $this->user, $this->course );
-		$second = $this->make_learner();
-		Roles::grant_completed( $second, $this->course );
-
-		$this->assertSame( 2, Roles::delete( $this->course ) );
-
-		$this->assertFalse( Roles::exists( $this->course ) );
-		$this->assertFalse( Roles::user_has( $this->user, Roles::slug( $this->course ) ) );
-		$this->assertContains( 'subscriber', get_userdata( $this->user )->roles );
-	}
-
-	public function test_trashing_the_course_leaves_the_role_alone() {
-		Roles::grant_completed( $this->user, $this->course );
-
-		wp_trash_post( $this->course );
-
-		$this->assertTrue( Roles::exists( $this->course ), 'A role must survive its course (events spec 4.1).' );
-		$this->assertTrue( Roles::user_has( $this->user, Roles::slug( $this->course ) ) );
-	}
-
-	public function test_missing_reports_unheld_prerequisite_roles_by_display_name() {
-		add_role( 'anchor_event_42', 'Event: Summit', [] );
-		Roles::ensure( $this->course );
-
-		$missing = Roles::missing( $this->user, [ 'anchor_event_42', Roles::slug( $this->course ) ] );
-
-		$this->assertSame( [ 'Event: Summit', 'Completed: Laser Safety' ], $missing );
-
-		get_user_by( 'id', $this->user )->add_role( 'anchor_event_42' );
-		$this->assertSame( [ 'Completed: Laser Safety' ], Roles::missing( $this->user, [ 'anchor_event_42', Roles::slug( $this->course ) ] ) );
-
-		remove_role( 'anchor_event_42' );
-	}
-
-	public function test_a_course_completion_role_works_as_another_courses_prerequisite() {
-		$advanced = $this->make_course( [ 'prerequisites' => [ Roles::slug( $this->course ) ] ], 'Advanced' );
-		$service  = new EnrollmentService();
-
-		$this->assertSame( 'missing_prerequisite', $service->enroll( $this->user, $advanced )->get_error_code() );
-
-		Roles::grant_completed( $this->user, $this->course );
-
-		$this->assertNotWPError( $service->enroll( $this->user, $advanced ) );
-	}
-
-	public function test_holders_counts_users_with_the_role() {
-		$this->assertSame( 0, Roles::holders( $this->course ) );
-		Roles::grant_completed( $this->user, $this->course );
-		$this->assertSame( 1, Roles::holders( $this->course ) );
-	}
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-```bash
-export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
-vendor/bin/phpunit --filter Test_Courses_Roles
-```
-Expected: FAIL - `Class "Anchor\Courses\Support\Roles" not found`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-`anchor-courses/src/Support/Roles.php`:
-
-```php
-<?php
-declare(strict_types=1);
-
-namespace Anchor\Courses\Support;
-
-if ( ! \defined( 'ABSPATH' ) ) { exit; }
-
-/**
- * Course completion roles (design spec 3.1).
- *
- * A course mints `anchor_course_{id}` with the display name
- * "Completed: {title}" and NO capabilities - a membership tag, exactly like the
- * events module's `anchor_event_{id}`. Roles are the shared currency between
- * the two modules and the file manager: an event can require a course's
- * completion role, and a course can require an event's attendance role, with
- * neither module knowing anything about the other's tables.
- *
- * Never auto-deleted. Trashing or deleting a course leaves the role standing so
- * the owner can keep granting after the fact; the course editor has an explicit
- * Delete role action.
- */
-final class Roles {
-
-	public const PREFIX = 'anchor_course_';
-
-	public static function slug( int $course_id ): string {
-		return self::PREFIX . $course_id;
-	}
-
-	public static function display_name( int $course_id ): string {
-		return \sprintf(
-			/* translators: %s: course title. */
-			\__( 'Completed: %s', 'anchor-schema' ),
-			(string) \get_the_title( $course_id )
-		);
-	}
-
-	public static function exists( int $course_id ): bool {
-		return null !== \get_role( self::slug( $course_id ) );
-	}
-
-	/** Mint the role if it does not exist yet. Returns the slug either way. */
-	public static function ensure( int $course_id ): string {
-		$slug = self::slug( $course_id );
-
-		if ( null === \get_role( $slug ) ) {
-			\add_role( $slug, self::display_name( $course_id ), [] );
-		}
-
-		return $slug;
-	}
-
-	/** Add the completion role to a user. Additive: existing roles are kept. */
-	public static function grant_completed( int $user_id, int $course_id ): bool {
-		$user = \get_userdata( $user_id );
-		if ( ! $user instanceof \WP_User ) {
-			return false;
-		}
-
-		$slug = self::ensure( $course_id );
-
-		if ( \in_array( $slug, \array_map( 'strval', (array) $user->roles ), true ) ) {
-			return true;
-		}
-
-		$user->add_role( $slug );
-
-		Log::write( 'role_granted', [ 'user' => $user_id, 'role' => $slug ] );
-
-		return true;
-	}
-
-	/** Keep the display name in step with the course title. */
-	public static function rename( int $course_id ): void {
-		$slug = self::slug( $course_id );
-		if ( null === \get_role( $slug ) ) {
-			return; // Nobody has completed it yet; nothing to rename.
-		}
-
-		$roles = \wp_roles();
-		$name  = self::display_name( $course_id );
-
-		if ( ( $roles->roles[ $slug ]['name'] ?? '' ) === $name ) {
-			return;
-		}
-
-		$roles->roles[ $slug ]['name'] = $name;
-		$roles->role_names[ $slug ]    = $name;
-		\update_option( $roles->role_key, $roles->roles, false );
-	}
-
-	/**
-	 * Remove the role from every holder and delete it.
-	 *
-	 * @return int How many users held it.
-	 */
-	public static function delete( int $course_id ): int {
-		$slug = self::slug( $course_id );
-
-		$holders = \get_users( [ 'role' => $slug, 'fields' => 'ID', 'number' => -1 ] );
-		foreach ( $holders as $user_id ) {
-			$user = \get_userdata( (int) $user_id );
-			if ( $user instanceof \WP_User ) {
-				$user->remove_role( $slug );
-			}
-		}
-
-		\remove_role( $slug );
-
-		Log::write( 'role_deleted', [ 'role' => $slug, 'holders' => \count( $holders ) ] );
-
-		return \count( $holders );
-	}
-
-	public static function holders( int $course_id ): int {
-		return \count( \get_users( [ 'role' => self::slug( $course_id ), 'fields' => 'ID', 'number' => -1 ] ) );
-	}
-
-	public static function user_has( int $user_id, string $role ): bool {
-		$user = \get_userdata( $user_id );
-		return $user instanceof \WP_User && \in_array( $role, \array_map( 'strval', (array) $user->roles ), true );
-	}
-
-	/**
-	 * Which of these role slugs does the user NOT hold?
-	 *
-	 * @param string[] $role_slugs
-	 * @return string[] Display names, in the order given.
-	 */
-	public static function missing( int $user_id, array $role_slugs ): array {
-		$user = \get_userdata( $user_id );
-		$held = $user instanceof \WP_User ? \array_map( 'strval', (array) $user->roles ) : [];
-
-		$missing = [];
-		foreach ( $role_slugs as $slug ) {
-			$slug = (string) $slug;
-			if ( '' === $slug || \in_array( $slug, $held, true ) ) {
-				continue;
-			}
-			$role      = \wp_roles()->roles[ $slug ] ?? null;
-			$missing[] = $role ? (string) $role['name'] : $slug;
-		}
-
-		return $missing;
-	}
-}
-```
-
-`anchor-courses/src/Services/CompletionService.php` - inside `complete()`, immediately after the credits/certificate calls and before `do_action`:
-
-```php
-		// Mint and grant the completion role. This is what an event or another
-		// course lists as a prerequisite (design spec 3.1).
-		\Anchor\Courses\Support\Roles::grant_completed( $user_id, $course_id );
-```
-
-`anchor-courses/src/Services/EnrollmentService.php` - replace the body of `missing_prerequisites()` with the shared helper:
-
-```php
-	public function missing_prerequisites( int $user_id, int $course_id ): array {
-		$required = (array) CourseEditor::setting( $course_id, 'prerequisites' );
-		if ( [] === $required ) {
-			return [];
-		}
-		return \Anchor\Courses\Support\Roles::missing( $user_id, $required );
-	}
-```
-
-`anchor-courses/src/Admin/CourseEditor.php` - add to the constructor:
-
-```php
-		\add_action( 'save_post_' . CoursePostType::CPT, [ Roles::class, 'rename' ], 12 );
-		\add_action( 'admin_post_anchor_courses_delete_role', [ $this, 'handle_delete_role' ] );
-```
-
-add to `add_metaboxes()`:
-
-```php
-		\add_meta_box(
-			'anchor_courses_role',
-			\__( 'Completion Role', 'anchor-schema' ),
-			[ $this, 'render_role_panel' ],
-			CoursePostType::CPT,
-			'side',
-			'default'
-		);
-```
-
-and the two methods (with `use Anchor\Courses\Support\Roles;` at the top):
-
-```php
-	public function render_role_panel( \WP_Post $post ): void {
-		$course_id = (int) $post->ID;
-		$slug      = Roles::slug( $course_id );
-
-		\printf( '<p><code>%s</code></p>', \esc_html( $slug ) );
-
-		if ( ! Roles::exists( $course_id ) ) {
-			echo '<p>' . \esc_html__( 'Not created yet. It is minted the first time someone completes this course.', 'anchor-schema' ) . '</p>';
-			return;
-		}
-
-		\printf(
-			'<p>%s<br /><strong>%s</strong></p>',
-			\esc_html( Roles::display_name( $course_id ) ),
-			\esc_html(
-				\sprintf(
-					/* translators: %d: number of users holding the role. */
-					\_n( '%d holder', '%d holders', Roles::holders( $course_id ), 'anchor-schema' ),
-					Roles::holders( $course_id )
-				)
-			)
-		);
-
-		\printf(
-			'<form method="post" action="%s" onsubmit="return confirm(%s);">',
-			\esc_url( \admin_url( 'admin-post.php' ) ),
-			\esc_attr( \wp_json_encode( \__( 'Delete this role and strip it from every holder? This cannot be undone.', 'anchor-schema' ) ) )
-		);
-		\wp_nonce_field( 'anchor_courses_delete_role_' . $course_id );
-		echo '<input type="hidden" name="action" value="anchor_courses_delete_role" />';
-		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
-		\printf( '<button type="submit" class="button button-link-delete">%s</button>', \esc_html__( 'Delete role', 'anchor-schema' ) );
-		echo '</form>';
-	}
-
-	public function handle_delete_role(): void {
-		$course_id = \absint( $_POST['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
-
-		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
-		if ( ! \wp_verify_nonce( $nonce, 'anchor_courses_delete_role_' . $course_id )
-			|| ! \current_user_can( Capabilities::cap( 'manage' ) ) ) {
-			\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', 'forbidden', (string) \get_edit_post_link( $course_id, 'raw' ) ) );
-			exit;
-		}
-
-		Roles::delete( $course_id );
-
-		\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', 'role_deleted', (string) \get_edit_post_link( $course_id, 'raw' ) ) );
-		exit;
-	}
-```
-
-`anchor-courses/src/Admin/EnrollmentManager.php` - add `'role_deleted'` to `NOTICES` and to the `$messages` map:
-
-```php
-			'role_deleted' => \__( 'Completion role deleted.', 'anchor-schema' ),
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-```bash
-export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
-vendor/bin/phpunit --filter Test_Courses_Roles
-vendor/bin/phpunit --filter Test_Courses_Completion
-```
-Expected: PASS (11 tests) and PASS (8 tests, still green).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add anchor-courses/src/Support/Roles.php anchor-courses/src/Services/CompletionService.php \
-        anchor-courses/src/Services/EnrollmentService.php anchor-courses/src/Admin/CourseEditor.php \
-        anchor-courses/src/Admin/EnrollmentManager.php tests/test-courses-roles.php
-git commit -m "feat(courses): completion roles as the shared prerequisite currency"
-```
-
----
-
-### Task 34: Events integration - role-driven auto-enrolment
-
-**Files:**
-- Create: `anchor-courses/src/Integrations/Events.php`
-- Modify: `anchor-courses/anchor-courses.php` - construct it
-- Test: `tests/test-courses-events-enrolment.php`
-
-**Interfaces:**
-- Consumes (all guarded - the events module may be absent or older, deviation D6):
-  - `do_action( 'anchor_events_access_granted', $event_id, $user_id, $source )`
-  - `do_action( 'anchor_events_access_revoked', $event_id, $user_id, $source )`
-  - WordPress core `add_user_role( $user_id, $role )` and `set_user_role( $user_id, $role, $old_roles )`
-- Produces:
-  - `Integrations\Events::courses_for_role( string $role ): int[]` - courses whose `access_type = roles` list this slug
-  - `::on_role_gained( int $user_id, string $role ): void`
-  - `::on_set_user_role( int $user_id, string $role, array $old_roles ): void`
-  - `::on_events_access_granted( int $event_id, int $user_id, string $source = '' ): void`
-  - `::on_events_access_revoked( int $event_id, int $user_id, string $source = '' ): void`
-  - `::apply_role_loss_policy( int $user_id, string $role ): void`
-  - Filter: `anchor_courses_role_loss_policy( string $policy, int $user_id, int $course_id, string $role )` - `keep|expire|cancel`, default `keep`
-
-Losing a role does **not** un-enrol by default: access outlives the event (design spec 3.1).
-
-- [ ] **Step 1: Write the failing test**
-
-```php
-<?php
-/**
- * Anchor Courses - role-driven auto-enrolment from the events module
- * (design spec 3.1, 3.2).
- *
- * Guarded: the events-side hooks may not exist yet, so the tests fire them
- * directly rather than depending on the events module's internals.
- *
- * @package Anchor\Courses\Tests
- */
-
-use Anchor\Courses\Integrations\Events;
-use Anchor\Courses\Services\EnrollmentService;
-use Anchor\Courses\Support\Roles;
-
-/** @group courses */
-class Test_Courses_Events_Enrolment extends Anchor_Courses_TestCase {
-
-	private EnrollmentService $enrollments;
-	private int $user;
-	private int $course;
-
-	public function set_up() {
-		parent::set_up();
-		$this->enrollments = new EnrollmentService();
-		$this->user        = $this->make_learner();
-
-		add_role( 'anchor_event_42', 'Event: Summit', [] );
-
-		$this->course = $this->make_course(
-			[ 'access_type' => 'roles', 'auto_enroll_roles' => [ 'anchor_event_42' ] ],
-			'Post-Summit Course'
-		);
-	}
-
-	public function tear_down() {
-		remove_role( 'anchor_event_42' );
-		remove_all_filters( 'anchor_courses_role_loss_policy' );
-		parent::tear_down();
-	}
-
-	public function test_courses_for_role_finds_only_role_gated_courses() {
-		$this->make_course( [ 'access_type' => 'open', 'auto_enroll_roles' => [ 'anchor_event_42' ] ], 'Open' );
-
-		$this->assertSame( [ $this->course ], Events::courses_for_role( 'anchor_event_42' ) );
-		$this->assertSame( [], Events::courses_for_role( 'anchor_event_99' ) );
-	}
-
-	public function test_gaining_the_role_via_core_add_user_role_auto_enrols() {
-		get_user_by( 'id', $this->user )->add_role( 'anchor_event_42' );
-
-		$enrollment = $this->enrollments->get( $this->user, $this->course );
-
-		$this->assertNotNull( $enrollment );
-		$this->assertSame( 'role', $enrollment->source );
-		$this->assertSame( 'anchor_event_42', $enrollment->source_id );
-	}
-
-	public function test_set_user_role_also_auto_enrols() {
-		wp_update_user( [ 'ID' => $this->user, 'role' => 'anchor_event_42' ] );
-
-		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ) );
-	}
-
-	public function test_the_events_access_granted_action_auto_enrols() {
-		get_user_by( 'id', $this->user )->add_role( 'anchor_event_42' );
-		$this->enrollments->cancel( $this->user, $this->course );
-
-		do_action( 'anchor_events_access_granted', 42, $this->user, 'seat' );
-
-		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status,
-			'An existing enrolment is never silently reopened.' );
-
-		$second = $this->make_course( [ 'access_type' => 'roles', 'auto_enroll_roles' => [ 'anchor_event_42' ] ], 'Second' );
-		do_action( 'anchor_events_access_granted', 42, $this->user, 'seat' );
-
-		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $second ) );
-	}
-
-	/** Brief 26: gaining the role twice must not duplicate anything. */
-	public function test_auto_enrolment_is_idempotent() {
-		$fired = 0;
-		add_action( 'anchor_courses_enrolled', function () use ( &$fired ) { $fired++; }, 10, 3 );
-
-		get_user_by( 'id', $this->user )->add_role( 'anchor_event_42' );
-		do_action( 'anchor_events_access_granted', 42, $this->user, 'seat' );
-		do_action( 'anchor_events_access_granted', 42, $this->user, 'manual' );
-
-		$this->assertSame( 1, $fired );
-
-		remove_all_actions( 'anchor_courses_enrolled' );
-	}
-
-	public function test_a_closed_course_is_still_auto_enrolled_because_the_role_is_the_gate() {
-		$closed = $this->make_course(
-			[ 'access_type' => 'roles', 'auto_enroll_roles' => [ 'anchor_event_42' ], 'prerequisites' => [ 'anchor_course_999' ] ],
-			'Gated'
-		);
-
-		get_user_by( 'id', $this->user )->add_role( 'anchor_event_42' );
-
-		$this->assertTrue(
-			$this->enrollments->is_enrolled( $this->user, $closed ),
-			'Auto-enrolment bypasses self-enrolment checks: holding the role IS the decision.'
-		);
-	}
-
-	/** Design spec 3.1: access outlives the event. */
-	public function test_losing_the_role_keeps_the_enrolment_by_default() {
-		get_user_by( 'id', $this->user )->add_role( 'anchor_event_42' );
-		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ) );
-
-		do_action( 'anchor_events_access_revoked', 42, $this->user, 'seat' );
-
-		$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $this->course )->status );
-	}
-
-	public function test_the_role_loss_policy_filter_can_cancel_or_expire() {
-		get_user_by( 'id', $this->user )->add_role( 'anchor_event_42' );
-
-		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
-		do_action( 'anchor_events_access_revoked', 42, $this->user, 'seat' );
-		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
-
-		remove_all_filters( 'anchor_courses_role_loss_policy' );
-		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'expire', 10, 4 );
-		do_action( 'anchor_events_access_revoked', 42, $this->user, 'seat' );
-		$this->assertSame( 'expired', $this->enrollments->get( $this->user, $this->course )->status );
-	}
-
-	public function test_a_course_completion_role_can_also_drive_auto_enrolment() {
-		$prereq   = $this->make_course( [], 'Prereq' );
-		$follow   = $this->make_course(
-			[ 'access_type' => 'roles', 'auto_enroll_roles' => [ Roles::slug( $prereq ) ] ],
-			'Follow-on'
-		);
-
-		Roles::grant_completed( $this->user, $prereq );
-
-		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $follow ) );
-
-		remove_role( Roles::slug( $prereq ) );
-	}
-
-	public function test_nothing_breaks_when_the_events_module_never_fires_anything() {
-		$this->assertTrue( true ); // The integration registers listeners; absent events = no calls.
-		$this->assertFalse( $this->enrollments->is_enrolled( $this->make_learner(), $this->course ) );
-	}
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-```bash
-export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
-vendor/bin/phpunit --filter Test_Courses_Events_Enrolment
-```
-Expected: FAIL - `Class "Anchor\Courses\Integrations\Events" not found`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-`anchor-courses/src/Integrations/Events.php`:
-
-```php
-<?php
-declare(strict_types=1);
-
-namespace Anchor\Courses\Integrations;
-
-use Anchor\Courses\Admin\CourseEditor;
-use Anchor\Courses\Content\CoursePostType;
-use Anchor\Courses\Services\EnrollmentService;
-use Anchor\Courses\Support\Log;
-
-if ( ! \defined( 'ABSPATH' ) ) { exit; }
-
-/**
- * The events module, seen from the courses side (design spec 3).
- *
- * Courses NEVER queries event tables, seat posts or `_anchor_event_*` meta.
- * The only surfaces used are:
- *   - WordPress core role changes (add_user_role / set_user_role), which work
- *     whether or not the events module exists;
- *   - the events actions `anchor_events_access_granted` / `_revoked`, which do
- *     not exist yet (deviation D6) and are simply never fired until they do.
- *
- * That means this file has no hard dependency on the events module at all: it
- * is a role listener that happens to be most useful alongside one.
- */
-final class Events {
-
-	public function __construct( private EnrollmentService $enrollments ) {
-		// Core role changes: the dependable path.
-		\add_action( 'add_user_role', [ $this, 'on_role_gained' ], 10, 2 );
-		\add_action( 'set_user_role', [ $this, 'on_set_user_role' ], 10, 3 );
-		\add_action( 'remove_user_role', [ $this, 'on_role_lost' ], 10, 2 );
-
-		// Events-module surface (events spec 4.2). Guarded by simply listening:
-		// an action nobody fires costs nothing.
-		\add_action( 'anchor_events_access_granted', [ $this, 'on_events_access_granted' ], 10, 3 );
-		\add_action( 'anchor_events_access_revoked', [ $this, 'on_events_access_revoked' ], 10, 3 );
-	}
-
-	/**
-	 * Courses that auto-enrol holders of this role.
-	 *
-	 * @return int[] Course post ids.
-	 */
-	public static function courses_for_role( string $role ): array {
-		if ( '' === $role ) {
-			return [];
-		}
-
-		$courses = \get_posts(
-			[
-				'post_type'      => CoursePostType::CPT,
-				'post_status'    => [ 'publish', 'private' ],
-				'fields'         => 'ids',
-				'posts_per_page' => -1,
-				'no_found_rows'  => true,
-			]
-		);
-
-		$matches = [];
-		foreach ( $courses as $course_id ) {
-			$course_id = (int) $course_id;
-			if ( 'roles' !== (string) CourseEditor::setting( $course_id, 'access_type' ) ) {
-				continue;
-			}
-			$roles = \array_map( 'strval', (array) CourseEditor::setting( $course_id, 'auto_enroll_roles' ) );
-			if ( \in_array( $role, $roles, true ) ) {
-				$matches[] = $course_id;
-			}
-		}
-
-		return $matches;
-	}
-
-	/** Core `add_user_role`. */
-	public function on_role_gained( $user_id, $role ): void {
-		$this->enroll_for_role( (int) $user_id, (string) $role );
-	}
-
-	/** Core `set_user_role` (the user's roles were REPLACED by $role). */
-	public function on_set_user_role( $user_id, $role, $old_roles = [] ): void {
-		$this->enroll_for_role( (int) $user_id, (string) $role );
-
-		foreach ( (array) $old_roles as $lost ) {
-			if ( (string) $lost !== (string) $role ) {
-				$this->apply_role_loss_policy( (int) $user_id, (string) $lost );
-			}
-		}
-	}
-
-	/** Core `remove_user_role`. */
-	public function on_role_lost( $user_id, $role ): void {
-		$this->apply_role_loss_policy( (int) $user_id, (string) $role );
-	}
-
-	/**
-	 * `anchor_events_access_granted( $event_id, $user_id, $source )`.
-	 *
-	 * The events module grants its role first, then fires this; re-running the
-	 * role sweep catches any course listed against that role.
-	 */
-	public function on_events_access_granted( $event_id, $user_id, $source = '' ): void {
-		$this->enroll_for_role( (int) $user_id, 'anchor_event_' . (int) $event_id );
-	}
-
-	/** `anchor_events_access_revoked( $event_id, $user_id, $source )`. */
-	public function on_events_access_revoked( $event_id, $user_id, $source = '' ): void {
-		$this->apply_role_loss_policy( (int) $user_id, 'anchor_event_' . (int) $event_id );
-	}
-
-	/**
-	 * Enrol the user in every course gated on this role.
-	 *
-	 * bypass_checks is deliberate: holding the role IS the access decision, so
-	 * the self-enrolment gate (closed / prerequisites / window) must not
-	 * second-guess it (design spec 3.1).
-	 */
-	private function enroll_for_role( int $user_id, string $role ): void {
-		if ( $user_id <= 0 || '' === $role ) {
-			return;
-		}
-
-		foreach ( self::courses_for_role( $role ) as $course_id ) {
-			$result = $this->enrollments->enroll(
-				$user_id,
-				$course_id,
-				[ 'bypass_checks' => true, 'source' => 'role', 'source_id' => $role ]
-			);
-
-			if ( \is_wp_error( $result ) ) {
-				Log::write( 'role_enroll_failed', [ 'user' => $user_id, 'course' => $course_id, 'role' => $role, 'code' => $result->get_error_code() ] );
-			}
-		}
-	}
-
-	/**
-	 * Losing a role does NOT un-enrol by default: access outlives the event
-	 * (design spec 3.1). A site may opt into `expire` or `cancel`.
-	 */
-	public function apply_role_loss_policy( int $user_id, string $role ): void {
-		if ( $user_id <= 0 || '' === $role ) {
-			return;
-		}
-
-		foreach ( self::courses_for_role( $role ) as $course_id ) {
-			/**
-			 * What happens to an enrolment when its granting role is lost.
-			 *
-			 * @param string $policy   keep|expire|cancel. Default 'keep'.
-			 * @param int    $user_id
-			 * @param int    $course_id
-			 * @param string $role
-			 */
-			$policy = (string) \apply_filters( 'anchor_courses_role_loss_policy', 'keep', $user_id, $course_id, $role );
-
-			if ( 'cancel' === $policy ) {
-				$this->enrollments->cancel( $user_id, $course_id );
-			} elseif ( 'expire' === $policy ) {
-				$this->enrollments->expire( $user_id, $course_id );
-			}
-		}
-	}
-}
-```
-
-`anchor-courses/anchor-courses.php`:
-
-```php
-		new Integrations\Events( $this->enrollments );
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-```bash
-export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
-vendor/bin/phpunit --filter Test_Courses_Events_Enrolment
-```
-Expected: PASS (10 tests).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add anchor-courses/src/Integrations/Events.php anchor-courses/anchor-courses.php tests/test-courses-events-enrolment.php
-git commit -m "feat(courses): role-driven auto-enrolment from events and core role changes"
-```
-
----
-
-### Task 35: The live_session lesson type
+### Task 36: The live_session lesson type
 
 **Files:**
 - Create: `anchor-courses/templates/live-session.php`
-- Modify: `anchor-courses/src/Integrations/Events.php` - add the read helpers
+- Create: `anchor-courses/src/Integrations/Events.php` - the read-only consumer of the events module
+- Modify: `anchor-courses/anchor-courses.php` - construct it
 - Modify: `anchor-courses/src/Frontend/Shortcodes.php` - `render_lesson()` branches on `lesson_type`
 - Test: `tests/test-courses-live-session.php`
+
+**`Integrations\Events` is a reader, and nothing else.** It resolves sessions, a room URL and a stream state so a `live_session` lesson can render, and (Task 37) it may veto stream access. It does **not** enrol anybody: an event grants `anchor_event_{id}`, which is a prerequisite role, not an access role, so the Task 20 listener ignores it and no course is ever entered by attending an event (design spec 7 - if that is wanted later it belongs on the *event* as an "also grant these roles" field, not as a picker here).
 
 **Interfaces:**
 - Consumes (all guarded, deviation D5/D6):
@@ -15478,13 +16737,40 @@ class Test_Courses_Live_Session extends Anchor_Courses_TestCase {
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Live_Session
 ```
-Expected: FAIL - `Call to undefined method ...Events::available()`.
+Expected: FAIL - `Class "Anchor\Courses\Integrations\Events" not found`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add to `anchor-courses/src/Integrations/Events.php`:
+Create `anchor-courses/src/Integrations/Events.php`:
 
 ```php
+<?php
+declare(strict_types=1);
+
+namespace Anchor\Courses\Integrations;
+
+if ( ! \defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * The events module, seen from the courses side (design spec 3).
+ *
+ * A READER. It resolves an event's sessions, its room URL and its stream state
+ * so a `live_session` lesson can render, and - once Task 37 adds it - it may
+ * veto stream access until the learner's pre-work is done. That is the whole
+ * surface.
+ *
+ * It does not enrol anybody, and there is no auto-enrolment from events. An
+ * event grants `anchor_event_{id}`, which this module treats as a PREREQUISITE
+ * role, never an access role: Support\Roles' listener matches
+ * `anchor_course_{digits}` and nothing else, so an attendee never silently
+ * lands inside a course (design spec 7).
+ *
+ * Courses NEVER queries event tables, seat posts or `_anchor_event_*` meta.
+ * Every symbol it touches may be absent (deviation D5/D6), so every call is
+ * guarded and every degraded path renders rather than fatals.
+ */
+final class Events {
+
 	/** Is the events module booted in this request? */
 	public static function available(): bool {
 		return \class_exists( '\Anchor\Events\Module' )
@@ -15575,6 +16861,13 @@ Add to `anchor-courses/src/Integrations/Events.php`:
 
 		return \is_array( $state ) ? $state : [ 'state' => 'unknown' ];
 	}
+}
+```
+
+`anchor-courses/anchor-courses.php` - construct it unconditionally. It is guarded from the inside, so a site with the events module disabled simply gets `available() === false`:
+
+```php
+		new Integrations\Events();
 ```
 
 Add to `Frontend\Shortcodes`:
@@ -15715,13 +17008,14 @@ Expected: PASS (9 tests; some skip while the events symbols are absent).
 
 ```bash
 git add anchor-courses/src/Integrations/Events.php anchor-courses/src/Frontend/Shortcodes.php \
-        anchor-courses/templates/live-session.php tests/test-courses-live-session.php
+        anchor-courses/anchor-courses.php anchor-courses/templates/live-session.php \
+        tests/test-courses-live-session.php
 git commit -m "feat(courses): live_session lesson type reading the events module defensively"
 ```
 
 ---
 
-### Task 36: Pre-work veto on stream access
+### Task 37: Pre-work veto on stream access
 
 **Files:**
 - Modify: `anchor-courses/src/Integrations/Events.php` - add `veto_stream_access()`
@@ -15869,13 +17163,15 @@ Expected: FAIL - `Call to undefined method ...Events::live_lessons_for_event()`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add to the constructor of `anchor-courses/src/Integrations/Events.php`:
+Give `anchor-courses/src/Integrations/Events.php` a constructor (Task 36 left the class stateless and static):
 
 ```php
+	public function __construct() {
 		// The events module's single "may this person watch?" filter (events
 		// spec 4.5). It does not exist yet (deviation D6); attaching to a filter
 		// nobody applies is free, and the day it ships this starts working.
 		\add_filter( 'anchor_events_can_access_stream', [ $this, 'veto_stream_access' ], 10, 4 );
+	}
 ```
 
 and the two methods:
@@ -15997,7 +17293,7 @@ git commit -m "feat(courses): optional pre-work veto on event stream access"
 
 ## Phase 6 - WooCommerce Adapter
 
-### Task 37: Product-to-course mapping
+### Task 38: Product-to-course mapping
 
 **Files:**
 - Create: `anchor-courses/src/Integrations/WooCommerce.php`
@@ -16014,8 +17310,12 @@ git commit -m "feat(courses): optional pre-work veto on event stream access"
   - `::render_product_panel(): void` - a "Courses" panel in the product data metabox
   - `::add_product_tab( array $tabs ): array`
   - `::save_product( int $product_id ): void` - on `woocommerce_process_product_meta`
+  - `::products_for_course( int $course_id ): int[]` - the reverse lookup, purchasable products first
+  - `::filter_access_cta( array $cta, int $course_id, int $user_id ): array` - on `anchor_courses_access_cta`
 
 Core LMS must remain usable without WooCommerce (brief rule 2): nothing outside this file mentions WooCommerce, and the class is only constructed when `class_exists( 'WooCommerce' )`.
+
+**This is also where the course page's "Enrol" button comes from.** `Frontend\Access::cta()` (Task 18) returns "Ask us about access" and lets anything filter it into a link; this adapter is the only thing in the repo that does, supplying the mapped product's permalink. That is why the core template has no `class_exists( 'WooCommerce' )` branch: the store is a subscriber to a question the core asks, not a dependency of it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -16085,21 +17385,21 @@ class Test_Courses_Wc_Mapping extends Anchor_Courses_TestCase {
 			WooCommerce::NONCE     => wp_create_nonce( WooCommerce::NONCE ),
 			'anchor_course_ids'    => [ (string) $this->course_a ],
 		];
-		( new WooCommerce( $this->courses()->enrollments ) )->save_product( $this->product );
+		( new WooCommerce() )->save_product( $this->product );
 		$_POST = [];
 
 		$this->assertSame( [ $this->course_a ], WooCommerce::courses_for_product( $this->product ) );
 
 		// Without the nonce nothing changes.
 		$_POST = [ 'anchor_course_ids' => [ (string) $this->course_b ] ];
-		( new WooCommerce( $this->courses()->enrollments ) )->save_product( $this->product );
+		( new WooCommerce() )->save_product( $this->product );
 		$_POST = [];
 
 		$this->assertSame( [ $this->course_a ], WooCommerce::courses_for_product( $this->product ) );
 	}
 
 	public function test_a_courses_tab_is_added_to_the_product_data_metabox() {
-		$tabs = ( new WooCommerce( $this->courses()->enrollments ) )->add_product_tab( [] );
+		$tabs = ( new WooCommerce() )->add_product_tab( [] );
 		$this->assertArrayHasKey( 'anchor_courses', $tabs );
 		$this->assertSame( 'anchor_courses_product_data', $tabs['anchor_courses']['target'] );
 	}
@@ -16125,8 +17425,8 @@ declare(strict_types=1);
 namespace Anchor\Courses\Integrations;
 
 use Anchor\Courses\Content\CoursePostType;
-use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Support\Capabilities;
+use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -16136,6 +17436,11 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * Every mention of WooCommerce in this module lives in this file, and the class
  * is only constructed when class_exists('WooCommerce'). Removing WooCommerce
  * removes the adapter and nothing else.
+ *
+ * It grants and removes the course's ACCESS ROLE; it never writes an enrolment
+ * row itself. Support\Roles' listener turns the role into the row, with
+ * source=woocommerce and the order id, so a purchase, an admin and a WP-CLI
+ * `user add-role` all produce the same shape (design spec 3.1, 4).
  */
 final class WooCommerce {
 
@@ -16144,10 +17449,14 @@ final class WooCommerce {
 
 	public const NONCE = 'anchor_courses_product_nonce';
 
-	public function __construct( private EnrollmentService $enrollments ) {
+	public function __construct() {
 		\add_filter( 'woocommerce_product_data_tabs', [ $this, 'add_product_tab' ] );
 		\add_action( 'woocommerce_product_data_panels', [ $this, 'render_product_panel' ] );
 		\add_action( 'woocommerce_process_product_meta', [ $this, 'save_product' ] );
+
+		// Turn the course page's "Ask us about access" line into a real link
+		// when something on this store sells the course.
+		\add_filter( 'anchor_courses_access_cta', [ $this, 'filter_access_cta' ], 10, 3 );
 	}
 
 	public static function available(): bool {
@@ -16255,6 +17564,91 @@ final class WooCommerce {
 
 		self::set_courses_for_product( $product_id, (array) $ids );
 	}
+
+	/**
+	 * Which products grant this course?
+	 *
+	 * The reverse of the mapping, by meta query. Purchasable products come
+	 * first, so the course page links at something the visitor can actually
+	 * buy rather than a draft or an out-of-stock variant.
+	 *
+	 * @return int[] Product ids.
+	 */
+	public static function products_for_course( int $course_id ): array {
+		if ( ! self::available() || $course_id <= 0 ) {
+			return [];
+		}
+
+		$products = \get_posts(
+			[
+				'post_type'      => 'product',
+				'post_status'    => 'publish',
+				'fields'         => 'ids',
+				'posts_per_page' => 50,
+				'no_found_rows'  => true,
+				// The mapping is a serialised int[], so LIKE on the serialised
+				// integer is the only index-friendly test. The exact id is
+				// re-checked in PHP below, which is what makes a substring
+				// match (12 inside 123) harmless.
+				'meta_query'     => [
+					[
+						'key'     => self::META_KEY,
+						'value'   => ';i:' . $course_id . ';',
+						'compare' => 'LIKE',
+					],
+				],
+			]
+		);
+
+		$matches = [];
+		foreach ( $products as $product_id ) {
+			if ( \in_array( $course_id, self::courses_for_product( (int) $product_id ), true ) ) {
+				$matches[] = (int) $product_id;
+			}
+		}
+
+		\usort(
+			$matches,
+			static function ( int $a, int $b ): int {
+				$pa = \function_exists( 'wc_get_product' ) ? \wc_get_product( $a ) : null;
+				$pb = \function_exists( 'wc_get_product' ) ? \wc_get_product( $b ) : null;
+				$sa = ( $pa && $pa->is_purchasable() ) ? 0 : 1;
+				$sb = ( $pb && $pb->is_purchasable() ) ? 0 : 1;
+				return $sa <=> $sb;
+			}
+		);
+
+		return $matches;
+	}
+
+	/**
+	 * Supply the course page's access CTA (Task 18).
+	 *
+	 * An "Enrol" button appears on a course page for exactly one reason: a
+	 * product on this store grants it. No product, no button - the visitor
+	 * gets the "ask us" line instead, because there is nothing for them to
+	 * click that would work.
+	 *
+	 * @param array{url:string,label:string,message:string} $cta
+	 * @return array{url:string,label:string,message:string}
+	 */
+	public function filter_access_cta( array $cta, int $course_id, int $user_id = 0 ): array {
+		$products = self::products_for_course( $course_id );
+		if ( [] === $products ) {
+			return $cta;
+		}
+
+		$permalink = (string) \get_permalink( $products[0] );
+		if ( '' === $permalink ) {
+			return $cta;
+		}
+
+		return [
+			'url'     => $permalink,
+			'label'   => \__( 'Enrol', 'anchor-schema' ),
+			'message' => '',
+		];
+	}
 }
 ```
 
@@ -16262,7 +17656,7 @@ final class WooCommerce {
 
 ```php
 		if ( \class_exists( 'WooCommerce' ) ) {
-			$this->woocommerce = new Integrations\WooCommerce( $this->enrollments );
+			$this->woocommerce = new Integrations\WooCommerce();
 		}
 ```
 
@@ -16289,7 +17683,7 @@ git commit -m "feat(courses): map WooCommerce products to courses"
 
 ---
 
-### Task 38: Enrol on a qualifying order status
+### Task 39: Grant access on a qualifying order status
 
 **Files:**
 - Modify: `anchor-courses/src/Integrations/WooCommerce.php` - add the order listeners
@@ -16300,11 +17694,16 @@ git commit -m "feat(courses): map WooCommerce products to courses"
   - `WooCommerce::ENROLL_STATUSES = [ 'processing', 'completed' ]`
   - `::qualifying_statuses(): array` - the constant through `anchor_courses_wc_enroll_statuses`
   - `::on_order_status_changed( int $order_id, string $from, string $to, $order = null ): void`
-  - `::enroll_order( int $order_id ): int` - returns how many enrolments were created; idempotent
+  - `::enroll_order( int $order_id ): int` - returns how many access roles were newly granted; idempotent
   - `::customer_for_order( $order ): int`
   - Filter: `anchor_courses_wc_enroll_statuses( string[] $statuses )`
+- Consumes: `Support\Roles::grant_access( int $user_id, int $course_id, string $source, string $source_id = '' )` (Task 19), which asks `EnrollmentService::can_enroll()` first.
 
-Enrolment source is `woocommerce`, `source_id` is the order id (design spec 4). This store confirms event tickets on `processing`, so both `processing` and `completed` qualify by default.
+**The adapter grants the role. It never calls `enroll()`.** Support\Roles' listener sees `add_user_role`, reads the grant context and writes the enrolment row with `source = woocommerce` and `source_id = {order_id}` (design spec 4, brief 18). This is why the tests below assert on the *enrolment row* after granting: the row appearing is the proof that the one door works, and if the listener ever stopped firing these tests would fail rather than the adapter quietly writing its own row.
+
+**An unmet prerequisite blocks the purchase path too.** `grant_access()` returns the `missing_prerequisite` error, the adapter grants nothing and records a `blocked_prerequisite` note on the order (`$order->add_order_note()`) so a human can see why the buyer did not get in. It does **not** refund, cancel or fail the order: money changed hands, and deciding what to do about that is the shop manager's call, not this adapter's.
+
+This store confirms event tickets on `processing`, so both `processing` and `completed` qualify by default.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -16318,6 +17717,7 @@ Enrolment source is `woocommerce`, `source_id` is the order id (design spec 4). 
 
 use Anchor\Courses\Integrations\WooCommerce;
 use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Support\Roles;
 
 /** @group courses @group woocommerce */
 class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
@@ -16335,7 +17735,7 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 
 		$this->enrollments = new EnrollmentService();
 		$this->customer    = $this->make_learner( [ 'role' => 'customer' ] );
-		$this->course      = $this->make_course( [ 'access_type' => 'closed' ], 'Paid Course' );
+		$this->course      = $this->make_course( [], 'Paid Course' );
 		$this->product     = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
 
 		WooCommerce::set_courses_for_product( $this->product, [ $this->course ] );
@@ -16343,6 +17743,7 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 
 	public function tear_down() {
 		remove_all_filters( 'anchor_courses_wc_enroll_statuses' );
+		remove_role( Roles::access_slug( $this->course ) );
 		parent::tear_down();
 	}
 
@@ -16364,29 +17765,56 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 		$this->assertSame( [ 'completed' ], WooCommerce::qualifying_statuses() );
 	}
 
-	public function test_processing_enrols_the_customer_with_the_order_as_the_source() {
+	/**
+	 * The adapter grants the ROLE; the listener writes the row. Asserting on
+	 * the row is what proves the two halves are still joined up.
+	 */
+	public function test_processing_grants_the_role_and_the_listener_records_the_order() {
 		$order = $this->make_order( 'pending' );
 
-		( new WooCommerce( $this->enrollments ) )->on_order_status_changed( $order->get_id(), 'pending', 'processing', $order );
+		( new WooCommerce() )->on_order_status_changed( $order->get_id(), 'pending', 'processing', $order );
+
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
 
 		$enrollment = $this->enrollments->get( $this->customer, $this->course );
-		$this->assertNotNull( $enrollment );
+		$this->assertNotNull( $enrollment, 'The role listener must have created the enrolment row.' );
 		$this->assertSame( 'woocommerce', $enrollment->source );
 		$this->assertSame( (string) $order->get_id(), $enrollment->source_id );
 	}
 
-	public function test_a_closed_course_is_still_granted_because_the_order_is_the_decision() {
+	public function test_completed_also_grants() {
 		$order = $this->make_order( 'pending' );
 
-		( new WooCommerce( $this->enrollments ) )->on_order_status_changed( $order->get_id(), 'pending', 'completed', $order );
+		( new WooCommerce() )->on_order_status_changed( $order->get_id(), 'pending', 'completed', $order );
 
 		$this->assertTrue( $this->enrollments->is_enrolled( $this->customer, $this->course ) );
+	}
+
+	/** An unmet prerequisite refuses the grant and says so on the order. */
+	public function test_an_unmet_prerequisite_blocks_the_grant_and_notes_the_order() {
+		add_role( 'anchor_course_555_completed', 'Completed: Required First', [] );
+		update_post_meta( $this->course, '_anchor_course_prerequisites', [ 'anchor_course_555_completed' ] );
+
+		$order = $this->make_order( 'pending' );
+		( new WooCommerce() )->on_order_status_changed( $order->get_id(), 'pending', 'processing', $order );
+
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertNull( $this->enrollments->get( $this->customer, $this->course ) );
+
+		$notes = wc_get_order_notes( [ 'order_id' => $order->get_id() ] );
+		$this->assertNotEmpty( $notes );
+		$this->assertStringContainsString( 'blocked_prerequisite', $notes[0]->content );
+
+		// The order itself is untouched: refunding is a human decision.
+		$this->assertSame( 'processing', wc_get_order( $order->get_id() )->get_status() );
+
+		remove_role( 'anchor_course_555_completed' );
 	}
 
 	public function test_a_non_qualifying_status_enrols_nobody() {
 		$order = $this->make_order( 'pending' );
 
-		( new WooCommerce( $this->enrollments ) )->on_order_status_changed( $order->get_id(), 'pending', 'on-hold', $order );
+		( new WooCommerce() )->on_order_status_changed( $order->get_id(), 'pending', 'on-hold', $order );
 
 		$this->assertFalse( $this->enrollments->is_enrolled( $this->customer, $this->course ) );
 	}
@@ -16394,7 +17822,7 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 	/** Brief 26: processing then completed must not enrol twice. */
 	public function test_enrolment_is_idempotent_across_status_changes() {
 		$order   = $this->make_order( 'pending' );
-		$adapter = new WooCommerce( $this->enrollments );
+		$adapter = new WooCommerce();
 
 		$first  = $adapter->enroll_order( $order->get_id() );
 		$order->set_status( 'completed' );
@@ -16412,7 +17840,7 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 		$order->set_status( 'processing' );
 		$order->save();
 
-		$this->assertSame( 0, ( new WooCommerce( $this->enrollments ) )->enroll_order( $order->get_id() ) );
+		$this->assertSame( 0, ( new WooCommerce() )->enroll_order( $order->get_id() ) );
 	}
 
 	public function test_a_guest_order_with_no_customer_enrols_nobody() {
@@ -16421,7 +17849,7 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 		$order->set_status( 'processing' );
 		$order->save();
 
-		$this->assertSame( 0, ( new WooCommerce( $this->enrollments ) )->enroll_order( $order->get_id() ) );
+		$this->assertSame( 0, ( new WooCommerce() )->enroll_order( $order->get_id() ) );
 	}
 
 	public function test_one_product_may_grant_several_courses() {
@@ -16429,7 +17857,7 @@ class Test_Courses_Wc_Enrolment extends Anchor_Courses_TestCase {
 		WooCommerce::set_courses_for_product( $this->product, [ $this->course, $second ] );
 		$order = $this->make_order( 'pending' );
 
-		$this->assertSame( 2, ( new WooCommerce( $this->enrollments ) )->enroll_order( $order->get_id() ) );
+		$this->assertSame( 2, ( new WooCommerce() )->enroll_order( $order->get_id() ) );
 		$this->assertTrue( $this->enrollments->is_enrolled( $this->customer, $second ) );
 	}
 }
@@ -16485,9 +17913,10 @@ and the methods:
 	}
 
 	/**
-	 * Enrol the order's customer in every course its products grant.
+	 * Give the order's customer the access role for every course its products
+	 * grant. Support\Roles' listener turns each grant into an enrolment row.
 	 *
-	 * @return int How many NEW enrolments were created.
+	 * @return int How many access roles were NEWLY granted.
 	 */
 	public function enroll_order( int $order_id ): int {
 		if ( ! \function_exists( 'wc_get_order' ) ) {
@@ -16506,7 +17935,7 @@ and the methods:
 			return 0;
 		}
 
-		$created = 0;
+		$granted = 0;
 
 		foreach ( $order->get_items() as $item ) {
 			$product_id = (int) $item->get_product_id();
@@ -16515,31 +17944,42 @@ and the methods:
 			}
 
 			foreach ( self::courses_for_product( $product_id ) as $course_id ) {
-				if ( $this->enrollments->get( $user_id, $course_id ) ) {
-					continue; // Already enrolled: nothing new (brief 26).
+				if ( Roles::user_has( $user_id, Roles::access_slug( $course_id ) ) ) {
+					continue; // Already has access: nothing new (brief 26).
 				}
 
-				$result = $this->enrollments->enroll(
-					$user_id,
-					$course_id,
-					[
-						'bypass_checks' => true, // The order IS the access decision.
-						'source'        => 'woocommerce',
-						'source_id'     => (string) $order_id,
-						'metadata'      => [ 'product_id' => $product_id ],
-					]
-				);
+				// The grant - not enroll(). The role is the enrolment, and
+				// grant_access() carries the source through to the listener.
+				$result = Roles::grant_access( $user_id, $course_id, 'woocommerce', (string) $order_id );
 
 				if ( \is_wp_error( $result ) ) {
-					Log::write( 'wc_enroll_failed', [ 'order' => $order_id, 'course' => $course_id, 'code' => $result->get_error_code() ] );
+					$code = (string) $result->get_error_code();
+
+					Log::write( 'wc_grant_failed', [ 'order' => $order_id, 'course' => $course_id, 'code' => $code ] );
+
+					if ( 'missing_prerequisite' === $code ) {
+						// Say so where a shop manager will see it. Deliberately
+						// NOT a refund or a status change: the money is a human
+						// decision, and an adapter should not make it.
+						$order->add_order_note(
+							\sprintf(
+								/* translators: 1: error code, 2: course title, 3: reason. */
+								\__( '%1$s: access to "%2$s" was not granted. %3$s', 'anchor-schema' ),
+								'blocked_prerequisite',
+								(string) \get_the_title( $course_id ),
+								(string) $result->get_error_message()
+							)
+						);
+					}
+
 					continue;
 				}
 
-				$created++;
+				$granted++;
 			}
 		}
 
-		return $created;
+		return $granted;
 	}
 
 	/** @param mixed $order A WC_Order. */
@@ -16559,18 +17999,18 @@ Add `use Anchor\Courses\Support\Log;` at the top of the file.
 export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Wc_Enrolment
 ```
-Expected: PASS (9 tests), or SKIP without WooCommerce.
+Expected: PASS (10 tests), or SKIP without WooCommerce.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add anchor-courses/src/Integrations/WooCommerce.php tests/test-courses-wc-enrolment.php
-git commit -m "feat(courses): enrol buyers on a qualifying WooCommerce order status"
+git commit -m "feat(courses): grant course access on a qualifying WooCommerce order status"
 ```
 
 ---
 
-### Task 39: Refund and cancellation policy
+### Task 40: Refund and cancellation policy
 
 **Files:**
 - Modify: `anchor-courses/src/Integrations/WooCommerce.php` - add the refund listeners
@@ -16579,12 +18019,14 @@ git commit -m "feat(courses): enrol buyers on a qualifying WooCommerce order sta
 **Interfaces:**
 - Produces:
   - `WooCommerce::REVOKE_STATUSES = [ 'refunded', 'cancelled', 'failed' ]`
-  - `::refund_policy( int $order_id, int $course_id ): string` - `keep|cancel|expire`, default `cancel`
+  - `::refund_policy( int $order_id, int $course_id ): string` - `remove_role|keep`, default `remove_role`
   - `::on_order_refunded( $order_id, $refund_id = 0 ): void` - `woocommerce_order_refunded`
-  - `::revoke_order( int $order_id ): int` - returns how many enrolments were changed
+  - `::revoke_order( int $order_id ): int` - returns how many access roles were removed
   - Filter: `anchor_courses_wc_refund_policy( string $policy, int $order_id, int $course_id, int $user_id )`
 
-Only enrolments whose `source = woocommerce` **and** `source_id = this order id` are touched: a learner enrolled twice over (a role grant and a purchase) keeps the other grant.
+**Two policies, stacked, and they answer different questions.** `anchor_courses_wc_refund_policy` (`remove_role` by default, design spec 4) decides whether a refund takes the *access role* away. If it does, `anchor_courses_role_loss_policy` (`keep` by default) then decides what that loss means for the *enrolment row* - so out of the box a refunded learner loses access but keeps their progress, and re-granting resumes them where they were. A site that wants the row closed too filters the second one to `cancel` or `expire`; it does not need to touch this adapter.
+
+Only enrolments whose `source = woocommerce` **and** `source_id = this order id` are touched: a learner who also holds a manual grant for the same course keeps their access, because taking it away would be this order undoing a decision it never made.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -16598,6 +18040,7 @@ Only enrolments whose `source = woocommerce` **and** `source_id = this order id`
 
 use Anchor\Courses\Integrations\WooCommerce;
 use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Support\Roles;
 
 /** @group courses @group woocommerce */
 class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
@@ -16615,7 +18058,7 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 		}
 
 		$this->enrollments = new EnrollmentService();
-		$this->adapter     = new WooCommerce( $this->enrollments );
+		$this->adapter     = new WooCommerce();
 		$this->customer    = $this->make_learner( [ 'role' => 'customer' ] );
 		$this->course      = $this->make_course( [], 'Paid Course' );
 		$this->product     = $this->factory->post->create( [ 'post_type' => 'product', 'post_status' => 'publish' ] );
@@ -16625,6 +18068,8 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 
 	public function tear_down() {
 		remove_all_filters( 'anchor_courses_wc_refund_policy' );
+		remove_all_filters( 'anchor_courses_role_loss_policy' );
+		remove_role( Roles::access_slug( $this->course ) );
 		parent::tear_down();
 	}
 
@@ -16638,16 +18083,26 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 		return $order;
 	}
 
-	public function test_the_default_policy_is_cancel() {
+	public function test_the_default_policy_is_remove_role() {
 		$order = $this->paid_order();
-		$this->assertSame( 'cancel', WooCommerce::refund_policy( $order->get_id(), $this->course ) );
+		$this->assertSame( 'remove_role', WooCommerce::refund_policy( $order->get_id(), $this->course ) );
 	}
 
-	public function test_a_refund_cancels_the_enrolment_by_default() {
+	/**
+	 * The default pairing: access goes, progress stays. Re-granting the role
+	 * resumes the learner exactly where they stopped.
+	 */
+	public function test_a_refund_removes_access_and_keeps_the_progress_row() {
 		$order = $this->paid_order();
 
 		$this->assertSame( 1, $this->adapter->revoke_order( $order->get_id() ) );
-		$this->assertSame( 'cancelled', $this->enrollments->get( $this->customer, $this->course )->status );
+
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertSame(
+			'enrolled',
+			$this->enrollments->get( $this->customer, $this->course )->status,
+			'anchor_courses_role_loss_policy defaults to keep (design spec 3.1).'
+		);
 	}
 
 	public function test_the_policy_filter_can_keep_access() {
@@ -16655,16 +18110,28 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 		add_filter( 'anchor_courses_wc_refund_policy', static fn() => 'keep', 10, 4 );
 
 		$this->assertSame( 0, $this->adapter->revoke_order( $order->get_id() ) );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
 		$this->assertSame( 'enrolled', $this->enrollments->get( $this->customer, $this->course )->status );
 	}
 
-	public function test_the_policy_filter_can_expire_instead() {
+	/** The second policy decides what the role loss means for the row. */
+	public function test_the_role_loss_policy_can_cancel_the_row_too() {
 		$order = $this->paid_order();
-		add_filter( 'anchor_courses_wc_refund_policy', static fn() => 'expire', 10, 4 );
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
 
 		$this->adapter->revoke_order( $order->get_id() );
 
-		$this->assertSame( 'expired', $this->enrollments->get( $this->customer, $this->course )->status );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
+		$this->assertSame( 'cancelled', $this->enrollments->get( $this->customer, $this->course )->status );
+	}
+
+	/** A manual grant is not this order's to take away. */
+	public function test_a_manual_grant_on_the_same_course_survives_the_refund() {
+		$order = $this->paid_order();
+		Roles::grant_access( $this->customer, $this->course, 'manual' );
+
+		$this->assertSame( 0, $this->adapter->revoke_order( $order->get_id() ) );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
 	}
 
 	public function test_a_cancelled_order_status_also_revokes() {
@@ -16672,21 +18139,22 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 
 		$this->adapter->on_order_status_changed( $order->get_id(), 'processing', 'cancelled', $order );
 
-		$this->assertSame( 'cancelled', $this->enrollments->get( $this->customer, $this->course )->status );
+		$this->assertFalse( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
 	}
 
-	/** The point of matching on source_id: another grant must survive. */
+	/** The point of matching on source_id: another order's grant must survive. */
 	public function test_an_enrolment_from_another_source_is_untouched() {
 		$order = $this->paid_order();
 
-		// Re-enrol from a different source by rewriting the existing row's source.
+		// Rewrite the row as though something else had granted it.
 		$enrollment = $this->enrollments->get( $this->customer, $this->course );
 		\Anchor\Courses\Database\EnrollmentRepository::update(
 			$enrollment->id,
-			[ 'source' => 'role', 'source_id' => 'anchor_event_42' ]
+			[ 'source' => 'manual', 'source_id' => '' ]
 		);
 
 		$this->assertSame( 0, $this->adapter->revoke_order( $order->get_id() ) );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
 		$this->assertSame( 'enrolled', $this->enrollments->get( $this->customer, $this->course )->status );
 	}
 
@@ -16698,7 +18166,7 @@ class Test_Courses_Wc_Refunds extends Anchor_Courses_TestCase {
 		$other->save();
 
 		$this->assertSame( 0, $this->adapter->revoke_order( $other->get_id() ) );
-		$this->assertSame( 'enrolled', $this->enrollments->get( $this->customer, $this->course )->status );
+		$this->assertTrue( Roles::user_has( $this->customer, Roles::access_slug( $this->course ) ) );
 	}
 
 	public function test_revoking_twice_is_harmless() {
@@ -16754,10 +18222,16 @@ and add:
 	public const REVOKE_STATUSES = [ 'refunded', 'cancelled', 'failed' ];
 
 	/**
-	 * What a refund does to an enrolment.
+	 * What a refund does to the ACCESS ROLE.
 	 *
-	 * Default `cancel`: the learner paid, then un-paid. A site that would rather
-	 * let people keep what they started can filter to `keep` or `expire`.
+	 * Default `remove_role` (design spec 4): the learner paid, then un-paid, so
+	 * the thing the payment bought goes away. What that loss then means for
+	 * their progress row is a separate question, answered by
+	 * `anchor_courses_role_loss_policy` (default `keep`) - so the out-of-the-box
+	 * behaviour is "access gone, progress preserved", and re-granting resumes
+	 * them where they were.
+	 *
+	 * @return string remove_role|keep
 	 */
 	public static function refund_policy( int $order_id, int $course_id ): string {
 		$user_id = 0;
@@ -16769,14 +18243,14 @@ and add:
 		/**
 		 * Filter the refund policy for one order and course.
 		 *
-		 * @param string $policy  keep|cancel|expire. Default 'cancel'.
+		 * @param string $policy   remove_role|keep. Default 'remove_role'.
 		 * @param int    $order_id
 		 * @param int    $course_id
 		 * @param int    $user_id
 		 */
-		$policy = (string) \apply_filters( 'anchor_courses_wc_refund_policy', 'cancel', $order_id, $course_id, $user_id );
+		$policy = (string) \apply_filters( 'anchor_courses_wc_refund_policy', 'remove_role', $order_id, $course_id, $user_id );
 
-		return \in_array( $policy, [ 'keep', 'cancel', 'expire' ], true ) ? $policy : 'cancel';
+		return \in_array( $policy, [ 'remove_role', 'keep' ], true ) ? $policy : 'remove_role';
 	}
 
 	/** `woocommerce_order_refunded`. */
@@ -16785,12 +18259,18 @@ and add:
 	}
 
 	/**
-	 * Apply the refund policy to the enrolments THIS order created.
+	 * Take back the access THIS order granted.
 	 *
 	 * Matching on both source and source_id matters: a learner who also holds a
-	 * role grant for the same course keeps that grant.
+	 * manual grant for the same course keeps their access, because this order
+	 * never made that decision and has no business undoing it.
 	 *
-	 * @return int How many enrolments changed status.
+	 * The row is not touched here. `revoke_access()` removes the role, the
+	 * listener sees `remove_user_role` and applies
+	 * `anchor_courses_role_loss_policy` - one place decides what a lost role
+	 * means, whoever took it away.
+	 *
+	 * @return int How many access roles were removed.
 	 */
 	public function revoke_order( int $order_id ): int {
 		if ( ! \function_exists( 'wc_get_order' ) ) {
@@ -16807,7 +18287,7 @@ and add:
 			return 0;
 		}
 
-		$changed = 0;
+		$revoked = 0;
 
 		foreach ( $order->get_items() as $item ) {
 			$product_id = (int) $item->get_product_id();
@@ -16816,34 +18296,30 @@ and add:
 			}
 
 			foreach ( self::courses_for_product( $product_id ) as $course_id ) {
-				$enrollment = $this->enrollments->get( $user_id, $course_id );
+				if ( ! Roles::user_has( $user_id, Roles::access_slug( $course_id ) ) ) {
+					continue; // Nothing to take back (or already taken).
+				}
+
+				$enrollment = ( new \Anchor\Courses\Services\EnrollmentService() )->get( $user_id, $course_id );
 				if ( ! $enrollment ) {
 					continue;
 				}
 				if ( 'woocommerce' !== $enrollment->source || (string) $order_id !== $enrollment->source_id ) {
 					continue; // Granted by something else; not this order's to take.
 				}
-				if ( ! $enrollment->is_active() ) {
-					continue; // Already cancelled or expired.
-				}
 
-				$policy = self::refund_policy( $order_id, $course_id );
-				if ( 'keep' === $policy ) {
+				if ( 'keep' === self::refund_policy( $order_id, $course_id ) ) {
 					continue;
 				}
 
-				if ( 'expire' === $policy ) {
-					$this->enrollments->expire( $user_id, $course_id );
-				} else {
-					$this->enrollments->cancel( $user_id, $course_id );
-				}
+				Roles::revoke_access( $user_id, $course_id, 'woocommerce', (string) $order_id );
 
-				Log::write( 'wc_revoked', [ 'order' => $order_id, 'course' => $course_id, 'policy' => $policy ] );
-				$changed++;
+				Log::write( 'wc_access_revoked', [ 'order' => $order_id, 'course' => $course_id ] );
+				$revoked++;
 			}
 		}
 
-		return $changed;
+		return $revoked;
 	}
 ```
 
@@ -16854,20 +18330,20 @@ export WP_TESTS_DIR=/tmp/wordpress-tests-lib WP_CORE_DIR=/tmp/wordpress
 vendor/bin/phpunit --filter Test_Courses_Wc_Refunds
 vendor/bin/phpunit --group courses
 ```
-Expected: PASS (9 tests), and the whole `courses` group still green.
+Expected: PASS (10 tests), and the whole `courses` group still green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add anchor-courses/src/Integrations/WooCommerce.php tests/test-courses-wc-refunds.php
-git commit -m "feat(courses): configurable refund policy for WooCommerce enrolments"
+git commit -m "feat(courses): configurable refund policy for WooCommerce course access"
 ```
 
 ---
 
 ## Documentation
 
-### Task 40: COURSES.md and the repo module tables
+### Task 41: COURSES.md and the repo module tables
 
 **Files:**
 - Modify: `anchor-courses/COURSES.md` - replace the skeleton with the full reference
@@ -16877,7 +18353,7 @@ git commit -m "feat(courses): configurable refund policy for WooCommerce enrolme
 - Test: `tests/test-courses-docs.php`
 
 **Interfaces:**
-- Consumes: every public symbol from Tasks 1-39.
+- Consumes: every public symbol from Tasks 1-40.
 - Produces: no PHP. The test is the contract: it reflects over the codebase and fails when a hook, route or API function exists in code but not in `COURSES.md`.
 
 - [ ] **Step 1: Write the failing test**
@@ -17040,7 +18516,7 @@ wins on conflict).
 
 | Post type | Purpose | Public |
 |---|---|---|
-| `anchor_course` | A course. Carries its curriculum, CE settings and access rules as meta. | yes |
+| `anchor_course` | A course. Carries its curriculum, CE settings and prerequisites as meta. | yes |
 | `anchor_lesson` | A lesson. `content` or `live_session`. | yes |
 | `anchor_quiz` | A quiz. Settings and questions as meta. | **no** - a quiz is never a standalone URL |
 
@@ -17068,12 +18544,18 @@ untouched.
 ### Course meta (`_anchor_course_*`)
 
 `duration`, `difficulty`, `instructor`, `ce_credits`, `ce_type`,
-`ce_provider_name`, `ce_provider_number`, `ce_expires_days`, `access_type`
-(`open|closed|roles`), `auto_enroll_roles`, `prerequisites`, `completion_mode`
-(`all_required_items|minimum_percentage|manual`), `completion_percentage`,
-`progression_mode` (`free|sequential`), `certificate_enabled`,
-`certificate_template`, `expiration_days`, `available_from`, `available_until`,
-`curriculum`.
+`ce_provider_name`, `ce_provider_number`, `ce_expires_days`, `prerequisites`,
+`completion_mode` (`all_required_items|minimum_percentage|manual`),
+`completion_percentage`, `progression_mode` (`free|sequential`),
+`certificate_enabled`, `certificate_template`, `expiration_days`,
+`available_from`, `available_until`, `curriculum`.
+
+There is **no access-type setting and no auto-enrol role list.** A course has
+one access rule - hold `anchor_course_{id}` - so there is nothing to configure.
+`prerequisites` is the only place a role is chosen, and it accepts only
+completion roles (`anchor_course_{id}_completed`) and event roles
+(`anchor_event_{id}`); a built-in or WooCommerce role there would gate on
+nothing, because `set_user_role` fires for every new account.
 
 ### Lesson meta (`_anchor_lesson_*`)
 
@@ -17125,11 +18607,13 @@ anchor_courses_award_ce_credit( int $user_id, int $course_id, float $credits ): 
 ```
 
 `$args` for `anchor_courses_enroll_user()`: `source` (string), `source_id`
-(string), `metadata` (array), `bypass_checks` (bool - skip the self-enrolment
-gate; use when something else already made the access decision).
+(string), `metadata` (array), `bypass_checks` (bool - skip `can_enroll()`; use
+when something else already made the access decision).
 
 All four are idempotent. Integrators should use these rather than querying the
-tables.
+tables - but for *enrolling* somebody, prefer granting the access role
+(`Support\Roles::grant_access()`, or plain `add_user_role()`): that is the
+supported door, and it is the one the Learners tab and the store use.
 
 ---
 
@@ -17150,6 +18634,8 @@ tables.
 | `anchor_courses_certificate_issued` | `int $user_id, int $course_id, Certificate $certificate` |
 | `anchor_courses_enrollment_status_changed` | `int $user_id, int $course_id, string $from, string $to` |
 | `anchor_courses_curriculum_saved` | `int $course_id, array $modules` |
+| `anchor_courses_access_granted` | `int $user_id, int $course_id, string $source, string $source_id` |
+| `anchor_courses_access_revoked` | `int $user_id, int $course_id, string $source` |
 | `anchor_courses_expire_sweep` | (cron hook; no arguments) |
 
 Each fires **once** for the transition it names.
@@ -17158,7 +18644,7 @@ Each fires **once** for the transition it names.
 
 | Filter | Signature | Default |
 |---|---|---|
-| `anchor_courses_can_enroll` | `true\|WP_Error $result, int $user_id, int $course_id` | the service's decision |
+| `anchor_courses_can_enroll` | `true\|WP_Error $result, int $user_id, int $course_id` | the service's decision (asked before a role is granted) |
 | `anchor_courses_can_access_lesson` | `bool $allowed, int $user_id, int $course_id, int $item_id, string $item_type` | progression rules |
 | `anchor_courses_can_start_quiz` | `true\|WP_Error $result, int $user_id, int $quiz_id, int $course_id` | attempt/retry rules |
 | `anchor_courses_quiz_result` | `array $result, QuizAttempt $attempt` | grading output + `passed`, `passing_score` |
@@ -17171,8 +18657,11 @@ Each fires **once** for the transition it names.
 | `anchor_courses_now` | `int $timestamp` | `time()` (test/E2E clock control) |
 | `anchor_courses_datalayer_event` | `array\|null $payload, string $event, array $args` | the IDs-only payload; return `null` to drop |
 | `anchor_courses_role_loss_policy` | `string $policy, int $user_id, int $course_id, string $role` | `keep` |
+| `anchor_courses_prerequisite_role_choices` | `array $choices` | completion + event roles |
+| `anchor_courses_no_access_message` | `string $message, int $course_id` | "Ask us about access to this course." |
+| `anchor_courses_access_cta` | `array $cta, int $course_id, int $user_id` | the message; WooCommerce filters in a product link |
 | `anchor_courses_wc_enroll_statuses` | `string[] $statuses` | `['processing','completed']` |
-| `anchor_courses_wc_refund_policy` | `string $policy, int $order_id, int $course_id, int $user_id` | `cancel` |
+| `anchor_courses_wc_refund_policy` | `string $policy, int $order_id, int $course_id, int $user_id` | `remove_role` |
 
 ---
 
@@ -17188,7 +18677,8 @@ permission callback.
 | `/courses` | GET | public when the course post type is publicly queryable |
 | `/courses/{id}` | GET | same |
 | `/courses/{id}/curriculum` | GET | same - titles and types only, never quiz questions |
-| `/courses/{id}/enroll` | POST | signed in |
+
+There is no enrol route: access is a role, and roles are granted server-side.
 
 ### Learner
 
@@ -17233,7 +18723,7 @@ response ever carries a `correct` flag before the attempt is graded, and
 | Shortcode | Attributes | Shows |
 |---|---|---|
 | `[anchor_courses]` | `limit` | the published course list |
-| `[anchor_course]` | `id` | one course: meta, curriculum, enrol/continue |
+| `[anchor_course]` | `id` | one course: meta, curriculum, and either a link to the product that grants it or the "ask us about access" line |
 | `[anchor_course_progress]` | `course_id` | the signed-in learner's progress bar |
 | `[anchor_my_courses]` | - | the learner's enrolments |
 | `[anchor_my_credits]` | - | the learner's CE ledger and total |
@@ -17259,27 +18749,64 @@ other roles with `anchor_courses_capability_roles`.
 
 ## Roles as the integration currency
 
-Completing a course grants the role `anchor_course_{course_id}`, display name
-`Completed: {title}`, with **no capabilities**. The role:
+Every course owns **two** capability-less roles, both managed by
+`Support\Roles`:
 
-- is minted lazily on the first completion;
-- is renamed when the course title changes;
-- is never deleted automatically (the course editor has a Delete role action);
-- is what another course lists in `prerequisites`, and what an event lists in
-  its own `required_roles`.
+| Role | Slug | Display name | Minted | Means |
+|---|---|---|---|---|
+| **Access** | `anchor_course_{id}` | `Course: {title}` | eagerly, on save of a published course | **Holding it is enrolment.** |
+| **Completion** | `anchor_course_{id}_completed` | `Completed: {title}` | lazily, on the first completion | what another course or an event lists as a prerequisite |
 
-The reverse also works: a course with `access_type = roles` auto-enrols holders
-of the roles in `auto_enroll_roles` - including an event's
-`anchor_event_{id}` role. Losing a role keeps the enrolment by default
-(`anchor_courses_role_loss_policy`).
+Both are renamed when the course title changes and are never deleted
+automatically; the course editor's Course Role panel has an explicit **Delete
+role** action for each.
+
+**Holding the access role IS enrolment.** A listener on core `add_user_role` /
+`set_user_role` / `remove_user_role` watches for slugs matching
+`anchor_course_{id}` exactly - never the `_completed` variant - and:
+
+- on gain, calls `EnrollmentService::enroll()` (idempotent on `(user_id,
+  course_id)`), recording why: `woocommerce` + the order id from the store,
+  `manual` + the actor from the Learners tab, `role` for anything else;
+- on loss, applies `anchor_courses_role_loss_policy` (`keep|expire|cancel`,
+  default `keep`), so access outlives the thing that granted it and re-adding
+  the role resumes the learner where they were.
+
+That means anything able to add a WordPress role can enrol somebody:
+WooCommerce, the Learners tab, WP-CLI, a membership plugin, the user screen in
+wp-admin. There is no self-enrolment, no auto-enrol picker and no access-type
+setting.
+
+```php
+// The supported way to enrol somebody, from anywhere:
+\Anchor\Courses\Support\Roles::grant_access( $user_id, $course_id, 'manual' );
+```
+
+`grant_access()` asks `EnrollmentService::can_enroll()` first, so an unmet
+prerequisite refuses the grant - which is what makes prerequisites bind on the
+Learners tab and at the checkout alike.
+
+### Learners tab
+
+The `Learners` metabox on a course lists everyone enrolled with their progress,
+status and completion date, and lets anyone with `manage_anchor_enrollments`:
+
+- **add a learner** by name and email - the account is created if it does not
+  exist, with no WordPress or WooCommerce new-account email
+  (`Support\Accounts::ensure_user()`), then granted the access role with
+  `source = manual`;
+- **revoke access** per row, which removes the role and lets the loss policy
+  decide what happens to their progress.
 
 ### Events module
 
-Courses reads the events module only through roles, actions and its public read
-API - never its tables or meta. Everything is guarded, so courses works when the
+Courses reads the events module only through roles and its public read API -
+never its tables or meta. Everything is guarded, so courses works when the
 events module is absent or older:
 
-- listens to `anchor_events_access_granted` / `anchor_events_access_revoked`;
+- treats `anchor_event_{id}` as a **prerequisite** role only. Attending an event
+  never enrols anybody in a course; if that is wanted it belongs on the event as
+  an "also grant these roles" field, not as a picker here;
 - filters `anchor_events_can_access_stream` to hold back a livestream until a
   `live_session` lesson's prior items are complete (off unless
   `require_prior_items` is ticked - and it can only subtract access);
@@ -17291,11 +18818,22 @@ events module is absent or older:
 ### WooCommerce
 
 Product meta `_anchor_course_ids` maps one product to any number of courses.
-A qualifying order status (`processing` or `completed` by default) enrols the
-customer with `source = woocommerce` and `source_id = {order_id}`; a refund or
-cancellation applies `anchor_courses_wc_refund_policy` (default `cancel`) to
-exactly the enrolments that order created. Earned credits and certificates are
-never revoked.
+A qualifying order status (`processing` or `completed` by default) **grants the
+access role** for each mapped course, and the role listener records the
+enrolment with `source = woocommerce` and `source_id = {order_id}`. If a
+prerequisite is unmet the grant is refused and a `blocked_prerequisite` note is
+added to the order; the order itself is left alone, because refunding is a human
+decision.
+
+A refund or cancellation applies `anchor_courses_wc_refund_policy` (default
+`remove_role`) to exactly the access this order granted, and
+`anchor_courses_role_loss_policy` (default `keep`) then decides what that means
+for the progress row - so by default the learner loses access and keeps their
+progress. Earned credits and certificates are never revoked.
+
+A course page shows an **Enrol** button only when a product maps to the course,
+and it links to that product. With no product, the page shows the
+`anchor_courses_no_access_message` text instead.
 
 ---
 
@@ -17391,70 +18929,112 @@ Run after the plan is written, before execution starts.
 |---|---|
 | 5-6 domain model, CPTs, modules, course meta | Tasks 6, 7, 8 |
 | 7 tables (7.1-7.5) | Task 2 (+ D13 uniqueness) |
-| 8 quiz engine (8.1-8.5) | Tasks 11, 12, 19, 20, 21, 22 |
-| 9 lesson completion (manual/view/quiz_pass) | Tasks 10, 16, 22 |
+| 8 quiz engine (8.1-8.5) | Tasks 11, 12, 22, 23, 24, 25 |
+| 9 lesson completion (manual/view/quiz_pass) | Tasks 10, 16, 25 |
 | 10 progress calculation | Task 16 |
-| 11 course completion | Task 26 |
-| 12 CE credits | Task 24 |
-| 13 certificates | Tasks 25, 27 (PDF deferred, D11) |
-| 14 REST API | Tasks 23, 30, 31 (D12 splits it) |
-| 15 public PHP API | Tasks 14, 17, 24 |
-| 16 hooks and filters | Tasks 14, 16, 21, 22, 24, 25, 26; documented in 40 |
-| 17-18 integration architecture, WooCommerce | Tasks 37, 38, 39 |
-| 19 analytics | Task 32 |
+| 11 course completion | Task 29 |
+| 12 CE credits | Task 27 |
+| 13 certificates | Tasks 28, 30 (PDF deferred, D11) |
+| 14 REST API | Tasks 26, 33, 34 (D12 splits it) |
+| 15 public PHP API | Tasks 14, 17, 27 |
+| 16 hooks and filters | Tasks 14, 20, 16, 24, 25, 27, 28, 29; documented in 41 |
+| 17-18 integration architecture, WooCommerce | Tasks 38, 39, 40 |
+| 19 analytics | Task 35 |
 | 20 webhooks | **out of scope** (design spec 7) |
-| 21 admin experience | Tasks 8, 9, 10, 11, 12, 28 |
-| 22-23 frontend, shortcodes | Tasks 18, 23, 27 |
-| 24 capabilities | Task 3 |
-| 25 security | every task (nonce + cap + prepared SQL + escaping); Tasks 12, 19, 23 for the answer-key rule |
-| 26 concurrency/idempotency | Tasks 2, 13, 15, 19, 24, 25, 26, 29 |
+| 21 admin experience | Tasks 8, 9, 10, 11, 12, 19, 21, 31 |
+| 22-23 frontend, shortcodes | Tasks 18, 26, 30 |
+| 24 capabilities | Task 3 (`manage_anchor_enrollments` is enforced in Tasks 21 and 31) |
+| 25 security | every task (nonce + cap + prepared SQL + escaping); Tasks 12, 22, 26 for the answer-key rule; Task 19 for the delete-role allowlist |
+| 26 concurrency/idempotency | Tasks 2, 13, 20, 15, 22, 27, 28, 29, 32 |
 | 27 performance | Tasks 7, 15, 16 (normalised rows, no full-history scans) |
 | 28 migrations | Task 2 |
 | 29 structure | design spec 2 layout; D7 |
 | 30 coding standards | Global Constraints |
-| 31 testing | every task; Task 4 (unit suite), Task 29 (gate) |
-| 32 Phase 1 feature set | Tasks 1-29 |
+| 31 testing | every task; Task 4 (unit suite), Task 32 (gate) |
+| 32 Phase 1 feature set | Tasks 1-32 |
 | 33 out of scope | not implemented |
 | 34 phases | Phases 0-6 as numbered |
-| 37 critical rules 1-10 | 1: Task 2; 2: Task 37; 3: Task 18; 4: Tasks 20, 22, 23; 5: Task 18 templates; 6: Tasks 32-39; 7: Tasks 24, 25, 26; 8: Tasks 12, 19, 23; 9: Task 5; 10: scope held to brief 32 |
-| 38 milestone | **Task 29 (gate)** |
+| 37 critical rules 1-10 | 1: Task 2; 2: Task 38; 3: Task 18; 4: Tasks 23, 25, 26; 5: Task 18 templates; 6: Tasks 35-40; 7: Tasks 27, 28, 29; 8: Tasks 12, 22, 26; 9: Task 5; 10: scope held to brief 32 |
+| 38 milestone | **Task 32 (gate)** |
 | 39 build order | Phases follow it: migrations -> repositories -> DTOs -> services -> REST -> admin -> frontend -> integrations |
 
-Design spec coverage: 1 deltas (Global Constraints + D7, D8, D11); 2 layout
-(File Structure); 3 events contract (Tasks 33, 34, 35, 36); 4 decisions (Tasks
-8, 11, 24, 25, 38, 39, 5); 5 phases; 6 testing (Task 4); 7 out of scope.
+**Brief 6.3's `course_access_type` is deliberately not implemented** (design
+spec 1, row "Course access type"): there is no access setting, because there is
+only one access rule. Brief 18's "enrol the customer" is implemented as a role
+grant (Task 39), which is the same outcome through the module's one door.
+
+Design spec coverage: 1 deltas (Global Constraints + D7, D8, D11, and the
+access-type removal above); 2 layout (File Structure); 3.1 roles as the currency
+(**Tasks 19, 20, 21**, with the completion grant in Task 29 and the prerequisites
+picker in Task 8); 3.2-3.3 events contract (Tasks 36, 37); 4 decisions (Tasks 8,
+11, 27, 28, 39, 40, 5, and the access CTA in Tasks 18 and 38); 5 phases - Phase 2
+owns the roles, the listener and the Learners tab, Phase 5 keeps only the events
+read API and the stream veto, Phase 6 is the WooCommerce adapter; 6 testing
+(Task 4); 7 out of scope.
+
+**Enrolment coverage, end to end.** Every way somebody can come to hold
+`anchor_course_{id}` has a test: `grant_access()` (Task 20), a bare
+`add_user_role()` from wp-admin or WP-CLI (Task 20,
+`test_a_plain_add_user_role_enrols_with_the_role_source`), `set_user_role()`
+(Task 20), the Learners tab (Task 21), a WooCommerce order (Task 39), and the
+milestone gate's full path (Task 32). Every way it can be lost has one too:
+`revoke_access()` and the three loss policies (Task 20), the Learners tab's
+Revoke (Task 21), Cancel on the enrolment manager (Task 31), a refund (Task 40)
+and an operator deleting the role outright (Tasks 19, 20). The refusal path -
+an unmet prerequisite - is tested at all three entry points that can hit it:
+`grant_access()` itself (Task 20), the Learners tab (Task 21) and the checkout,
+where it also writes the `blocked_prerequisite` order note (Task 39). And the
+things that must **not** enrol anybody are pinned as tests rather than left to
+inference: the completion role, event roles, built-in roles (Task 20), the
+absent front-end enrol handler (Task 17), the absent REST route (Task 33) and
+the absent Enrol button (Tasks 18, 32 E2E).
 
 **Gaps, deliberate:** webhooks (brief 20), PDF certificates, `external_event`
-lesson completion, instructor roles, video-percentage completion. All are named
-as out of scope in design spec 7.
+lesson completion, instructor roles, video-percentage completion, self-enrolment
+and event-attendance -> course auto-enrolment. All are named as out of scope in
+design spec 7.
 
 ### 2. Placeholder scan
 
 No task contains "TBD", "TODO", "implement later", "add appropriate error
 handling", "write tests for the above", or "similar to Task N". Every code step
 carries the actual code. Tasks that reuse an earlier idea (for example the
-`INSERT IGNORE` pattern in Tasks 13 and 24) repeat the code rather than pointing
-at a neighbour, because an executor may read tasks out of order.
+`INSERT IGNORE` pattern in Tasks 13 and 27) repeat the code rather than pointing
+at a neighbour, because an executor may read tasks out of order. Task 31 is the
+one place that restates a whole class an earlier task created - `LearnerReports`
+- and says so at the top, for the same reason.
 
 ### 3. Type consistency
 
 Checked across tasks:
 
-- `Migrations::table()`, `::TABLES`, `::DB_VERSION`, `::OPTION` - identical in Tasks 2, 5, 22, 31, 40.
-- `Clock::now()/timestamp()/offset()/to_timestamp()` - one signature, used in Tasks 13, 15, 19, 21, 22, 24, 25, 26.
-- `Capabilities::cap( string $key )` keys `manage|edit_courses|edit_lessons|edit_quizzes|reports|enrollments|credits|certificates` - same eight everywhere (Tasks 3, 6, 8, 10, 11, 28, 31, 33, 37).
-- `Curriculum::items()` rows always `['type','id','required','module_id','index']` (Tasks 7, 16, 22, 30, 36).
-- `ProgressService::record_item( $user_id, $course_id, $item_id, $item_type, $status, $extra = [] )` - same signature in Tasks 16, 21, 22.
-- `CourseProgress` property names `completed_required`, `total_required`, `percent`, `complete`, `completed_item_keys` - same in Tasks 15, 16, 18, 28, 30, 36.
-- `QuizAttempt::for_learner( bool $show_correct )` - Tasks 19, 23.
-- `EnrollmentService::enroll()` `$args` keys `source`, `source_id`, `metadata`, `bypass_checks` - Tasks 14, 28, 34, 38.
-- `Roles::slug()/ensure()/grant_completed()/rename()/delete()/holders()/user_has()/missing()` - Tasks 33, 34, 35.
-- `Integrations\Events::available()/sessions()/room_url()/stream_state()/courses_for_role()/live_lessons_for_event()/veto_stream_access()` - Tasks 34, 35, 36.
-- `Routes::NAMESPACE`, `::require_login`, `::require_cap`, `::public_read`, `::error_response` - Tasks 23, 30, 31.
-- Hook argument order is fixed once per hook in the task that fires it and re-read identically in Task 32's `payload_for()` and Task 40's table.
+- `Migrations::table()`, `::TABLES`, `::DB_VERSION`, `::OPTION` - identical in Tasks 2, 5, 25, 34, 41.
+- `Clock::now()/timestamp()/offset()/to_timestamp()` - one signature, used in Tasks 13, 15, 22, 24, 25, 27, 28, 29.
+- `Capabilities::cap( string $key )` keys `manage|edit_courses|edit_lessons|edit_quizzes|reports|enrollments|credits|certificates` - same eight everywhere (Tasks 3, 6, 8, 10, 11, 19, 21, 31, 33, 34, 38).
+- `Curriculum::items()` rows always `['type','id','required','module_id','index']` (Tasks 7, 16, 25, 33, 37).
+- `ProgressService::record_item( $user_id, $course_id, $item_id, $item_type, $status, $extra = [] )` - same signature in Tasks 16, 24, 25.
+- `CourseProgress` property names `completed_required`, `total_required`, `percent`, `complete`, `completed_item_keys` - same in Tasks 15, 16, 18, 31, 33, 37.
+- `QuizAttempt::for_learner( bool $show_correct )` - Tasks 22, 26.
+- `EnrollmentService::enroll()` `$args` keys `source`, `source_id`, `metadata`, `bypass_checks` - Tasks 14, 20, 34.
+- `EnrollmentService::can_enroll()` error codes `no_user|no_course|not_available_yet|no_longer_available|missing_prerequisite` - Tasks 14, 20, 21, 39. There is no `course_closed`.
+- `Roles::access_slug()/completion_slug()/access_name()/completion_name()/is_access_slug()/ensure_access_role()/ensure_completion_role()/exists()/holders()/delete_role()/user_has()/missing()/grant_completed()` - Tasks 19, 29, 31.
+- `Roles::grant_access( int, int, string $source = 'manual', string $source_id = '' ): true|WP_Error` and `::revoke_access( int, int, string $source = 'manual', string $source_id = '' ): bool` - same signature in Tasks 20, 21, 31, 32, 39, 40.
+- `Frontend\Access::cta( int $course_id, int $user_id = 0 ): array{url,label,message}` - Tasks 18, 38.
+- `Integrations\Events::available()/sessions()/room_url()/stream_state()/live_lessons_for_event()/veto_stream_access()` - Tasks 36, 37. `courses_for_role()` is gone with the auto-enrolment it served.
+- `Routes::NAMESPACE`, `::require_login`, `::require_cap`, `::public_read`, `::error_response` - Tasks 26, 33, 34.
+- Hook argument order is fixed once per hook in the task that fires it and re-read identically in Task 35's `payload_for()` and Task 41's table.
 
-**One correction applied during review:** `Frontend\Shortcodes::__construct()`
-takes two services in Task 18 and four from Task 27 onward; Task 27 restates the
-full constructor so an executor reading it alone gets the final signature, and
-Task 30's `Rest\Routes` construction restates the whole call rather than
-implying an append.
+**Corrections applied during review:**
+
+1. `Frontend\Shortcodes::__construct()` takes two services in Task 18 and four
+   from Task 30 onward; Task 30 restates the full constructor so an executor
+   reading it alone gets the final signature, and Task 33's `Rest\Routes`
+   construction restates the whole call rather than implying an append.
+2. `Admin\LearnerReports` is created in Task 21 and rewritten in Task 31. Task 31
+   restates the finished class and its Step 4 runs the Task 21 suite as well, so
+   a rewrite that quietly dropped the add or revoke controls fails loudly
+   instead of passing.
+3. `Support\Roles::grant_completed()` is called from `CompletionService` (Task 29)
+   and must never look like an access grant. `is_access_slug()`'s digits-only
+   anchor is what guarantees that, and Task 19 tests the `_completed` variant
+   against it explicitly rather than trusting the regex to read correctly.

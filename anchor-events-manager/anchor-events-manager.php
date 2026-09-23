@@ -2806,6 +2806,23 @@ class Module {
             // paths — only ever by whatever future authoring UI/AJAX handler
             // is built for it (out of scope for this task).
             'recurrence' => [ 'type' => 'array', 'show_in_rest' => false ],
+            // Hosted livestream (virtual-events spec §3.1). Metabox/console
+            // owned, same reason as `sessions` above: show_in_rest=false keeps
+            // a block-editor autosave from racing the metabox save.
+            // The master switch (spec §2 row 8a / §3.1 / §4 preamble). Default
+            // TRUE (owner decision 2026-09-23): every plugin-registered event
+            // grants the role by default. No §4 gating logic exists yet in
+            // this task, so the flip changes only the stored default, not
+            // behaviour.
+            'access_role_enabled' => [ 'type' => 'boolean', 'show_in_rest' => false ],
+            'stream_embed' => [ 'type' => 'array', 'show_in_rest' => false ],
+            'stream_default_modality' => [ 'type' => 'string', 'show_in_rest' => false ],
+            'in_person_includes_stream' => [ 'type' => 'boolean', 'show_in_rest' => false ],
+            'stream_open_before_minutes' => [ 'type' => 'integer', 'show_in_rest' => false ],
+            'stream_close_after_minutes' => [ 'type' => 'integer', 'show_in_rest' => false ],
+            // Prerequisites (§4.6) — role slugs the registrant must already hold.
+            'required_roles' => [ 'type' => 'array', 'show_in_rest' => false ],
+            'required_roles_mode' => [ 'type' => 'string', 'show_in_rest' => false ],
         ];
     }
 
@@ -2869,6 +2886,14 @@ class Module {
             'occurrence_key' => '',
             'occurrence_closed' => false,
             'recurrence' => [],
+            'access_role_enabled' => true,
+            'stream_embed' => [],
+            'stream_default_modality' => 'in_person',
+            'in_person_includes_stream' => true,
+            'stream_open_before_minutes' => 15,
+            'stream_close_after_minutes' => 30,
+            'required_roles' => [],
+            'required_roles_mode' => 'any',
         ];
     }
 
@@ -5193,6 +5218,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'gallery' => $this->sanitize_gallery_ids( $src['anchor_event_gallery'] ?? '' ),
             'reminder_offsets' => $this->sanitize_offset_csv( $src['anchor_event_reminder_offsets'] ?? '' ),
             'labels' => $this->labels_input( $src ),
+            // Livestream scalars (spec §3.1). Never unslashed above, so they are
+            // already in the slashed domain and must NOT be wp_slash()ed again.
+            //
+            // access_role_enabled is the Access section's checkbox and nothing
+            // more AT THIS TASK. Task 4 gives event_authoring_input() a
+            // $post_id and replaces this line with the full rule: keep the
+            // stored value when the Access section was not on the form, and OR
+            // in the automatic flips (a saved embed, a virtual/hybrid session).
+            // Until then, no Access UI exists, so this line writes false on
+            // EVERY classic-editor save regardless of the get_meta_defaults()
+            // true default (owner decision 2026-09-23) — a resave silently
+            // drops an unsaved event's access grant back to false ahead of
+            // Task 4's fix. No consumer reads this key yet (§4 gating doesn't
+            // exist), so nothing observable changes; flagged here so Task 4
+            // doesn't ship without also covering that gap.
+            'access_role_enabled' => ! empty( $src['anchor_event_access_role_enabled'] ),
+            'stream_default_modality' => $this->sanitize_modality( $src['anchor_event_stream_default_modality'] ?? '' ),
+            'in_person_includes_stream' => ! empty( $src['anchor_event_in_person_includes_stream'] ),
+            'stream_open_before_minutes' => max( 0, (int) ( $src['anchor_event_stream_open_before_minutes'] ?? 15 ) ),
+            'stream_close_after_minutes' => max( 0, (int) ( $src['anchor_event_stream_close_after_minutes'] ?? 30 ) ),
+            'required_roles_mode' => ( ( $src['anchor_event_required_roles_mode'] ?? '' ) === 'all' ) ? 'all' : 'any',
         ];
 
         // Event-type / registration-mode authoring UI (Task 1.3+1.4).
@@ -5509,6 +5555,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // raw regardless of which save path wrote it.
             'external_embed' => $this->sanitize_external_embed( \wp_unslash( $src['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
             'external_display_price' => sanitize_text_field( \wp_unslash( $src['anchor_event_external_display_price'] ?? '' ) ),
+            'required_roles' => $this->sanitize_role_slugs( \wp_unslash( $src['anchor_event_required_roles'] ?? [] ) ),
         ] );
     }
 
@@ -5544,6 +5591,44 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $value;
         }
         return in_array( $fallback, $valid, true ) ? $fallback : 'free';
+    }
+
+    /**
+     * Validate a posted modality against the event/session vocabulary.
+     *
+     * A tier may only be in_person|virtual (Ticket_Types::normalize()); this
+     * one also accepts `hybrid`, which is an EVENT/SESSION-level statement
+     * ("both ways to attend exist"), never a price.
+     *
+     * @param mixed  $raw
+     * @param string $fallback Used for an empty or unrecognised value.
+     * @return string One of in_person|virtual|hybrid.
+     */
+    public function sanitize_modality( $raw, $fallback = 'in_person' ) {
+        $valid = [ 'in_person', 'virtual', 'hybrid' ];
+        $value = \sanitize_key( (string) $raw );
+        if ( \in_array( $value, $valid, true ) ) {
+            return $value;
+        }
+        return \in_array( $fallback, $valid, true ) ? $fallback : 'in_person';
+    }
+
+    /**
+     * Sanitize a posted list of role slugs (the prerequisites picker).
+     * sanitize_key() lowercases, which is what WP_Roles keys are.
+     *
+     * @param mixed $raw
+     * @return string[] De-duplicated, re-indexed, empties dropped.
+     */
+    public function sanitize_role_slugs( $raw ) {
+        $out = [];
+        foreach ( (array) $raw as $slug ) {
+            $slug = \sanitize_key( (string) $slug );
+            if ( $slug !== '' && ! \in_array( $slug, $out, true ) ) {
+                $out[] = $slug;
+            }
+        }
+        return $out;
     }
 
     /**

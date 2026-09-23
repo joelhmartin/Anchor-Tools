@@ -395,4 +395,31 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertStringContainsString( '<mark class="highlight">Sale!</mark>', $sanitized, 'Tag added via the anchor_events_embed_allowed_html filter must survive.' );
 		$this->assertStringNotContainsString( '<script', $sanitized );
 	}
+
+	/** New stream keys default to previous behaviour. */
+	public function test_stream_meta_defaults() {
+		$event_id = $this->make_event();
+		$meta     = $this->module()->get_meta( $event_id );
+
+		// The master switch (spec §2 row 8a / §3.1).
+		$this->assertArrayHasKey( 'access_role_enabled', $meta );
+		$this->assertTrue( $meta['access_role_enabled'], 'Every plugin-registered event grants the role by default (owner decision 2026-09-23).' );
+
+		$this->assertSame( [], $meta['stream_embed'] );
+		$this->assertSame( 'in_person', $meta['stream_default_modality'] );
+		$this->assertTrue( $meta['in_person_includes_stream'] );
+		$this->assertSame( 15, $meta['stream_open_before_minutes'] );
+		$this->assertSame( 30, $meta['stream_close_after_minutes'] );
+		$this->assertSame( [], $meta['required_roles'] );
+		$this->assertSame( 'any', $meta['required_roles_mode'] );
+	}
+
+	/** A garbage modality falls back; minutes are clamped to >= 0. */
+	public function test_sanitize_modality_and_minutes() {
+		$m = $this->module();
+		$this->assertSame( 'hybrid', $m->sanitize_modality( 'hybrid' ) );
+		$this->assertSame( 'in_person', $m->sanitize_modality( '<script>' ) );
+		$this->assertSame( 'virtual', $m->sanitize_modality( '', 'virtual' ) );
+		$this->assertSame( [ 'anchor_event_12', 'subscriber' ], $m->sanitize_role_slugs( [ 'anchor_event_12', 'Subscriber', '' ] ) );
+	}
 }

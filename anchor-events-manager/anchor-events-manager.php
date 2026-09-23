@@ -5644,12 +5644,28 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $date === '' ) {
                 continue;
             }
-            $sessions[] = [
+            $row_out = [
                 'date' => $date,
                 'start_time' => \sanitize_text_field( $row['start_time'] ?? '' ),
                 'end_time' => \sanitize_text_field( $row['end_time'] ?? '' ),
                 'label' => \sanitize_text_field( $row['label'] ?? '' ),
             ];
+            // Optional per-session modality. '' is MEANINGFUL: it means "use the
+            // event's stream_default_modality", resolved on read in
+            // get_sessions() — so it is stored as '' rather than defaulted here.
+            $modality = \sanitize_key( (string) ( $row['modality'] ?? '' ) );
+            $row_out['modality'] = \in_array( $modality, [ 'in_person', 'virtual', 'hybrid' ], true ) ? $modality : '';
+            // Per-session embed override. Already a normalized {provider,src,raw}
+            // array by the time it reaches here (Task 4 normalizes the raw input);
+            // anything else is dropped rather than stored half-formed.
+            $embed = $row['stream_embed'] ?? [];
+            $row_out['stream_embed'] = ( \is_array( $embed ) && ! empty( $embed['src'] ) ) ? [
+                'provider' => \sanitize_key( (string) ( $embed['provider'] ?? '' ) ),
+                'kind'     => ( ( $embed['kind'] ?? 'iframe' ) === 'link' ) ? 'link' : 'iframe',
+                'src'      => \esc_url_raw( (string) $embed['src'] ),
+                'raw'      => \sanitize_textarea_field( (string) ( $embed['raw'] ?? '' ) ),
+            ] : [];
+            $sessions[] = $row_out;
         }
         return $sessions;
     }
@@ -11283,13 +11299,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * Normalized session rows for a multisession event.
      *
      * @param int $event_id
-     * @return array<int,array{date:string,start_time:string,end_time:string,label:string}>
+     * @return array<int,array{date:string,start_time:string,end_time:string,label:string,modality:string,stream_embed:array,start_ts:int,end_ts:int}>
      */
     public function get_sessions( $event_id ) {
         $stored = \get_post_meta( $event_id, $this->meta_key( 'sessions' ), true );
         if ( ! is_array( $stored ) ) {
             return [];
         }
+
+        $meta       = $this->get_meta( $event_id );
+        $default_mo = $this->sanitize_modality( $meta['stream_default_modality'] ?? '' );
+        $event_embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
+        $tz         = $this->event_timezone( $meta );
 
         $sessions = [];
         foreach ( $stored as $row ) {
@@ -11300,14 +11321,74 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             if ( $date === '' ) {
                 continue;
             }
+            $start_time = \sanitize_text_field( $row['start_time'] ?? '' );
+            $end_time   = \sanitize_text_field( $row['end_time'] ?? '' );
+            $row_embed  = ( \is_array( $row['stream_embed'] ?? null ) && ! empty( $row['stream_embed']['src'] ) )
+                ? $row['stream_embed']
+                : $event_embed;
             $sessions[] = [
                 'date' => $date,
-                'start_time' => \sanitize_text_field( $row['start_time'] ?? '' ),
-                'end_time' => \sanitize_text_field( $row['end_time'] ?? '' ),
+                'start_time' => $start_time,
+                'end_time' => $end_time,
                 'label' => \sanitize_text_field( $row['label'] ?? '' ),
+                // Resolved, never empty (spec §3.2): the room, the theme and the
+                // state machine read ONE shape.
+                'modality' => $this->sanitize_modality( $row['modality'] ?? '', $default_mo ),
+                'stream_embed' => \is_array( $row_embed ) ? $row_embed : [],
+                'start_ts' => $this->to_timestamp( $date, $start_time !== '' ? $start_time : '00:00', $tz ),
+                'end_ts' => $this->to_timestamp( $date, $end_time !== '' ? $end_time : '23:59', $tz ),
             ];
         }
         return $sessions;
+    }
+
+    /**
+     * The sessions the ROOM reasons about — always at least one row.
+     *
+     * A multisession event returns get_sessions(). Everything else returns one
+     * implicit session [0] spanning the event's own start_ts..end_ts with the
+     * event's default modality and embed, which is what lets Stream_State treat
+     * a single event, a group child and a three-day course identically
+     * (spec §3.2). get_sessions() itself deliberately stays empty for a
+     * non-multisession event — render_sessions_list() would otherwise print a
+     * one-row "Sessions" table on every single event.
+     *
+     * @param int $event_id
+     * @return array<int,array{date:string,start_time:string,end_time:string,label:string,modality:string,stream_embed:array,start_ts:int,end_ts:int}>
+     */
+    public function resolved_sessions( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $this->event_type( $event_id ) === 'multisession' ) {
+            $rows = $this->get_sessions( $event_id );
+            if ( ! empty( $rows ) ) {
+                return $rows;
+            }
+        }
+
+        $meta = $this->get_meta( $event_id );
+        $event_embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
+        // Legacy bridge (spec §3.1): an event authored before the Livestream
+        // field existed has only `virtual_url`. Treat it as the embed input so
+        // a Zoom link renders as a "Join on Zoom" button in the room without a
+        // data migration. Only when no real embed is saved, and only when the
+        // normaliser accepts the host — an unknown host leaves the embed empty.
+        if ( empty( $event_embed['src'] ) && ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] ) ) {
+            $fallback = Embed::normalize( (string) $meta['virtual_url'] );
+            if ( ! \is_wp_error( $fallback ) && ! empty( $fallback['src'] ) ) {
+                $event_embed = $fallback;
+            }
+        }
+
+        return [ [
+            'date' => (string) $meta['start_date'],
+            'start_time' => (string) $meta['start_time'],
+            'end_time' => (string) $meta['end_time'],
+            'label' => '',
+            'modality' => $this->sanitize_modality( $meta['stream_default_modality'] ?? '' ),
+            'stream_embed' => \is_array( $event_embed ) ? $event_embed : [],
+            'start_ts' => (int) $meta['start_ts'],
+            'end_ts' => (int) $meta['end_ts'],
+        ] ];
     }
 
     /**

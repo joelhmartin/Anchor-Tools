@@ -127,6 +127,10 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 				'start_time' => '09:00',
 				'end_time' => '10:00',
 				'label' => 'Day 1',
+				// Additive fields (Task 2): unposted modality/embed persist as
+				// empty — '' means "inherit the event default", resolved on read.
+				'modality' => '',
+				'stream_embed' => [],
 			],
 			$stored[0]
 		);

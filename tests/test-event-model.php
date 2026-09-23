@@ -255,15 +255,17 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$sessions = $this->module()->get_sessions( $event_id );
 
 		$this->assertCount( 1, $sessions );
-		$this->assertSame(
-			[
-				'date'       => '2026-08-01',
-				'start_time' => '09:00',
-				'end_time'   => '10:00',
-				'label'      => 'Day 1',
-			],
-			$sessions[0]
-		);
+		$this->assertSame( '2026-08-01', $sessions[0]['date'] );
+		$this->assertSame( '09:00', $sessions[0]['start_time'] );
+		$this->assertSame( '10:00', $sessions[0]['end_time'] );
+		$this->assertSame( 'Day 1', $sessions[0]['label'] );
+		// Additive fields (Task 2): unset modality/embed resolve to the event's
+		// own defaults, and the row gets real timestamps in the event's zone.
+		$this->assertSame( 'in_person', $sessions[0]['modality'] );
+		$this->assertSame( [], $sessions[0]['stream_embed'] );
+		$tz = $this->module()->event_timezone( $this->module()->get_meta( $event_id ) );
+		$this->assertSame( $this->module()->to_timestamp( '2026-08-01', '09:00', $tz ), $sessions[0]['start_ts'] );
+		$this->assertSame( $this->module()->to_timestamp( '2026-08-01', '10:00', $tz ), $sessions[0]['end_ts'] );
 	}
 
 	/**
@@ -421,5 +423,69 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertSame( 'in_person', $m->sanitize_modality( '<script>' ) );
 		$this->assertSame( 'virtual', $m->sanitize_modality( '', 'virtual' ) );
 		$this->assertSame( [ 'anchor_event_12', 'subscriber' ], $m->sanitize_role_slugs( [ 'anchor_event_12', 'Subscriber', '' ] ) );
+	}
+
+	/** Session rows resolve modality from the event default and get timestamps. */
+	public function test_sessions_resolve_modality_and_timestamps() {
+		$event_id = $this->make_event( [
+			'type'                    => 'multisession',
+			'timezone'                => 'UTC',
+			'stream_default_modality' => 'hybrid',
+			'sessions'                => [
+				[ 'date' => '2027-03-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 1' ],
+				[ 'date' => '2027-03-02', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 2', 'modality' => 'in_person' ],
+			],
+		] );
+
+		$rows = $this->module()->get_sessions( $event_id );
+		$this->assertCount( 2, $rows );
+		$this->assertSame( 'hybrid', $rows[0]['modality'], 'An empty row modality inherits the event default.' );
+		$this->assertSame( 'in_person', $rows[1]['modality'] );
+		$this->assertSame( strtotime( '2027-03-01 09:00:00 UTC' ), $rows[0]['start_ts'] );
+		$this->assertSame( strtotime( '2027-03-01 11:00:00 UTC' ), $rows[0]['end_ts'] );
+	}
+
+	/** A single event resolves to exactly one implicit session spanning its own bounds. */
+	public function test_resolved_sessions_single_event_implicit_row() {
+		$event_id = $this->make_event( [
+			'type'       => 'single',
+			'timezone'   => 'UTC',
+			'start_date' => '2027-04-10',
+			'start_time' => '14:00',
+			'end_date'   => '2027-04-10',
+			'end_time'   => '16:00',
+			'start_ts'   => strtotime( '2027-04-10 14:00:00 UTC' ),
+			'end_ts'     => strtotime( '2027-04-10 16:00:00 UTC' ),
+			'stream_default_modality' => 'virtual',
+		] );
+
+		$this->assertSame( [], $this->module()->get_sessions( $event_id ), 'get_sessions() stays empty for a single event.' );
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertCount( 1, $rows );
+		$this->assertSame( 'virtual', $rows[0]['modality'] );
+		$this->assertSame( strtotime( '2027-04-10 14:00:00 UTC' ), $rows[0]['start_ts'] );
+		$this->assertSame( strtotime( '2027-04-10 16:00:00 UTC' ), $rows[0]['end_ts'] );
+	}
+
+	/** Spec §3.1: a legacy virtual_url is the fallback embed input. */
+	public function test_resolved_sessions_fall_back_to_legacy_virtual_url() {
+		$event_id = $this->make_event( [
+			'virtual'     => true,
+			'virtual_url' => 'https://us02web.zoom.us/j/123456789',
+		] );
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertSame( 'zoom', $rows[0]['stream_embed']['provider'] );
+		$this->assertSame( 'link', $rows[0]['stream_embed']['kind'] );
+
+		$saved = $this->make_event( [
+			'virtual'      => true,
+			'virtual_url'  => 'https://us02web.zoom.us/j/123456789',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/5', 'raw' => '' ],
+		] );
+		$this->assertSame( 'vimeo', $this->module()->resolved_sessions( $saved )[0]['stream_embed']['provider'], 'A saved embed always wins over the legacy URL.' );
+
+		$bad = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://example.invalid/room' ] );
+		$this->assertSame( [], $this->module()->resolved_sessions( $bad )[0]['stream_embed'], 'An unknown host leaves the embed empty.' );
 	}
 }

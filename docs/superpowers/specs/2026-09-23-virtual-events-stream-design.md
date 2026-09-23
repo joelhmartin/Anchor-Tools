@@ -129,12 +129,11 @@ Resolution order, first hit wins:
 
 1. `Roster::current_user_can_manage()` (for the current user) → true.
 2. Not logged in → false.
-3. Event is not stream-capable (external registration, or no resolvable embed on that session) → false.
+3. Event is not stream-capable (external registration), the session's resolved `modality = in_person` (no stream for that session; the room shows the venue instead), or no embed resolves for that session → false.
 4. `_anchor_event_grants[event_id].source = manual` → true.
 5. Holds the event role **and** has a confirmed seat whose tier `modality = virtual` → true.
 6. Holds the role and a confirmed seat with tier `in_person` **and** `in_person_includes_stream` → true.
-7. Session `modality = in_person` (no stream for this session at all) → false regardless of the above (the room shows the venue instead).
-8. Otherwise false.
+7. Otherwise false.
 
 Result passes through `apply_filters( 'anchor_events_can_access_stream', $allowed, $event_id, $session_index, $user_id )` so the courses module can veto later ("finish the pre-work first"). `Module::can_view_virtual_link()` is rewritten to delegate here so the event page's "Join here" and the room never disagree.
 

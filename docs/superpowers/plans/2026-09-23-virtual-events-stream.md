@@ -4,7 +4,7 @@
 
 **Goal:** Give every plugin-registered event a private `/live/` room that counts down, switches to a provider-agnostic embed at start time, and closes after the session — gated by a per-event WordPress role that outlives the event.
 
-**Architecture:** Three new pure-ish classes (`Embed` normalises provider input, `Stream_State` is a pure state machine over resolved sessions, `Entitlements` owns "who holds access and why") are constructed by `Module` exactly like `Registrations`/`Roster`/`Occurrences`. The room is a `EP_PERMALINK` rewrite endpoint rendered through `templates/live-event.php`; a single REST endpoint re-runs the same two classes server-side so the embed URL never appears in markup before its window opens. Access is a role (`anchor_event_{id}`) granted from seat lifecycle hooks, plus a manual grant channel on the roster. **All of it is behind one boolean, `access_role_enabled`, default false** — an event opts in by having a stream, a virtual session or a virtual tier saved, or by an author ticking the Access switch, and until it does, every code path in this plan returns the answer it returned before this plan existed. `Entitlements::enabled()` is that check, and `tests/test-inertness.php` (Task 9b) is its standing proof.
+**Architecture:** Three new pure-ish classes (`Embed` normalises provider input, `Stream_State` is a pure state machine over resolved sessions, `Entitlements` owns "who holds access and why") are constructed by `Module` exactly like `Registrations`/`Roster`/`Occurrences`. The room is a `EP_PERMALINK` rewrite endpoint rendered through `templates/live-event.php`; a single REST endpoint re-runs the same two classes server-side so the embed URL never appears in markup before its window opens. Access is a role (`anchor_event_{id}`) granted from seat lifecycle hooks, plus a manual grant channel on the roster. **All of it is behind one boolean, `access_role_enabled`, default TRUE** (owner ruling 2026-09-23, superseding the earlier "inert by default"): every plugin-registered event — `stream_capable()`, i.e. registration mode `wc`/`free` and not a group parent — grants its confirmed attendees the event role and creates the account that carries it, whether they attend in person or not, because the owner assigns event materials by role. The switch is a **real, reversible checkbox**: un-ticking it stops *future* grants for that event and never strips existing holders (that is **Delete role**), and a save whose form did not carry the field leaves the stored value alone. What stays gated on a stream is the *room*: `room_url()`, `{room_link}` and `can_access_stream()` additionally require a resolvable stream embed, so a plain event's attendees hold the role and get no room and no join link. `Entitlements::enabled()` is the switch check, and `tests/test-inertness.php` (Task 9b) is the standing proof of both halves — what the default does, and what "off" means.
 
 **Tech Stack:** PHP 8.1+ (composer.json floor) / WordPress, namespaced `\Anchor\Events`, backslash-prefixed global functions, `'anchor-schema'` text domain, WooCommerce (optional, guarded), jQuery IIFE JS (no ES modules, source `.js` enqueued), PHPUnit 9 on the WP test library, Playwright on `@wordpress/env`.
 
@@ -22,9 +22,12 @@
 - Room URL: `trailingslashit( get_permalink( $event_id ) ) . 'live/'`.
 - Login-token query arg: `aek`. Token expiry: **last session `end_ts` + 7 days**.
 - Modality vocabulary: events/sessions `in_person|virtual|hybrid`; tiers `in_person|virtual` only.
-- Defaults that preserve today's behaviour: `access_role_enabled=false`, `stream_default_modality='in_person'`, `in_person_includes_stream=true`, `stream_open_before_minutes=15`, `stream_close_after_minutes=30`, `required_roles=[]`, `required_roles_mode='any'`, `stream_embed=[]`.
-- **`access_role_enabled` is the master switch (spec §2 row 8a, §3.1, §4 preamble).** Default **false**. While it is false the event mints no role, creates no account, has no room URL, emits no `{room_link}`, shows no Access column and no role panel, and every code path returns its pre-spec answer. It is auto-set **true** — never auto-cleared — when a non-empty `stream_embed` is saved, when a session row (or the event's own `stream_default_modality`, which is the implicit session's modality) is `virtual`/`hybrid`, or when a tier is saved `virtual`. An author may tick it by hand for an in-person event whose recordings or handouts are role-gated in the file manager.
-- `Entitlements::enabled( int $event_id ): bool` = `Module::stream_capable( $event_id ) && access_role_enabled`. It is the **stricter** check; `stream_capable()` keeps its existing meaning (registration mode `wc`/`free` and not a group parent) and is never re-defined.
+- Defaults: `access_role_enabled=true`, `stream_default_modality='in_person'`, `in_person_includes_stream=true`, `stream_open_before_minutes=15`, `stream_close_after_minutes=30`, `required_roles=[]`, `required_roles_mode='any'`, `stream_embed=[]`. Every one but the first preserves today's behaviour; `access_role_enabled` is the one deliberate change of default (see the next bullet).
+- **`access_role_enabled` is the master switch (spec §2 row 8a, §3.1, §4 preamble). Default `true`.** On — the default — a plugin-registered event grants the `anchor_event_{id}` role to every confirmed attendee and creates the account that holds it, in person or not: the owner assigns event materials by role, so a role for every attendee is the point, not a side effect. **A stream is a separate question.** The room, `{room_link}` and `can_access_stream()` additionally require a resolvable stream embed, so a plain in-person event's attendees hold the role and see no room, no Live column state and no join link.
+- **"Off" is a real, reversible state, and it only ever looks forward.** Un-ticking the Access checkbox stores `false` and stops *future* grants for that event: no new roles, no new accounts, no room, no `{room_link}`, no Access column, and `can_access_stream()` refuses even a standing role holder. It **never** strips anybody who already holds the role — the only thing that does is **Delete role** on the console's Basics tab. And a save whose POST does not carry the `anchor_event_access_role_enabled` field (a partial programmatic save, an older cached form) **leaves the stored value exactly as it is**, on or off.
+- **Three saves force it back to `true`**, because a stream is useless without the role: storing a non-empty `stream_embed`, storing a `virtual`/`hybrid` session row (or the event's own `stream_default_modality`, which is the implicit session's modality), or saving a `virtual` ticket tier. These flips are unchanged by the default-true ruling and still beat an un-tick on the same save.
+- `Entitlements::enabled( int $event_id ): bool` = `Module::stream_capable( $event_id ) && access_role_enabled`. It is the **stricter** check; `stream_capable()` keeps its existing meaning (registration mode `wc`/`free` and not a group parent) and is never re-defined. It answers "does the role apply", not "is there a room" — the room asks `Module::room_url() !== ''`, which is `enabled()` **and** a resolvable stream.
+- **Backfill (spec §4.4).** `Entitlements::backfill( int $event_id ): int` runs `grant_for_seat()` over every confirmed seat, creating accounts as needed, and returns how many were newly granted. It is idempotent and is how an event that was already selling is brought in line. Reached from the Basics "Event role" panel: admin-post action `anchor_events_backfill_role`, nonce `anchor_events_backfill_role_{event_id}`, capability `Roster::current_user_can_manage()`.
 - New hooks, exact names: `anchor_events_access_granted`, `anchor_events_access_revoked`, `anchor_events_can_access_stream`, `anchor_events_embed_providers`, `anchor_events_create_account`, `anchor_events_room_denied_message`, `anchor_events_seat_created`.
 - Test command for every task (CLAUDE.md):
   ```bash
@@ -94,7 +97,7 @@ WooCommerce fires `woocommerce_created_customer` → `WC_Emails` "Customer new a
 | `anchor-events-manager/assets/room.js` | jQuery IIFE — countdown, skew correction, REST refresh, 5-minute live poll. |
 | `anchor-events-manager/assets/room.css` | Room layout, 16:9 embed box, schedule list, badges. |
 | `tests/test-embed.php`, `tests/test-stream-state.php`, `tests/test-entitlements.php`, `tests/test-room.php`, `tests/test-prerequisites.php`, `tests/test-login-token.php` | New suites. |
-| `tests/test-inertness.php` | The standing guarantee that a plain event with `access_role_enabled=false` is untouched by this whole spec (Task 9b). Deliberately its own file so it is one greppable suite, not a stray method in a feature suite. |
+| `tests/test-inertness.php` | Switch semantics (Task 9b, spec §8): the default grants the role and creates the account but hands out no room; `access_role_enabled=false` is untouched by the whole spec; the un-tick, absent-field and force-true rules. Deliberately its own file so it is one greppable suite, not a stray method in a feature suite. |
 | `e2e/live-room.spec.js` | Playwright. |
 
 **Modified** — `anchor-events-manager/anchor-events-manager.php` (meta model, sanitisers, sessions, metabox, console, room routing/render, REST, email tokens, admin column), `class-registrations.php` (seat-created action, `user_id` meta, prerequisite branch), `class-ticket-types.php` (tier `modality`), `class-product-sync.php` (variation modality meta), `class-occurrences.php` (inherited keys), `class-roster.php` (access column, grant/revoke, add-by-email, export scope), `class-event-schema.php` (prerequisite availability, VirtualLocation room URL), `class-woocommerce.php` (prerequisite message, attendee-capture `ensure_user`), `EVENTS.md`, `EMAILS.md`, plus the existing test files named per task.
@@ -112,7 +115,7 @@ WooCommerce fires `woocommerce_created_customer` → `WC_Emails` "Customer new a
 
 **Interfaces:**
 - Consumes: `Module::meta_key()`, `Module::get_meta()`, `Module::get_meta_defaults()`.
-- Produces: `Module::sanitize_modality( $raw, $fallback = 'in_person' ): string` (values `in_person|virtual|hybrid`); `Module::sanitize_role_slugs( $raw ): string[]`; eight meta keys — `access_role_enabled` (bool, **default false**), `stream_embed` (array), `stream_default_modality` (string), `in_person_includes_stream` (bool), `stream_open_before_minutes` (int), `stream_close_after_minutes` (int), `required_roles` (string[]), `required_roles_mode` (string `any|all`).
+- Produces: `Module::sanitize_modality( $raw, $fallback = 'in_person' ): string` (values `in_person|virtual|hybrid`); `Module::sanitize_role_slugs( $raw ): string[]`; eight meta keys — `access_role_enabled` (bool, **default true**), `stream_embed` (array), `stream_default_modality` (string), `in_person_includes_stream` (bool), `stream_open_before_minutes` (int), `stream_close_after_minutes` (int), `required_roles` (string[]), `required_roles_mode` (string `any|all`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -124,10 +127,15 @@ Append to `tests/test-event-model.php`:
 		$event_id = $this->make_event();
 		$meta     = $this->module()->get_meta( $event_id );
 
-		// The master switch (spec §2 row 8a / §3.1). FALSE is the whole of the
-		// inertness guarantee: a plain event opts in, it is never opted in for.
+		// The master switch (spec §2 row 8a / §3.1). TRUE: the role is the
+		// default for every plugin-registered event, because event materials
+		// are assigned by role. What a plain event does NOT get is a room —
+		// that needs a resolvable stream, which is a separate condition.
 		$this->assertArrayHasKey( 'access_role_enabled', $meta );
-		$this->assertFalse( $meta['access_role_enabled'] );
+		$this->assertTrue(
+			$meta['access_role_enabled'],
+			'Every plugin-registered event grants the role by default (owner decision 2026-09-23).'
+		);
 
 		$this->assertSame( [], $meta['stream_embed'] );
 		$this->assertSame( 'in_person', $meta['stream_default_modality'] );
@@ -165,7 +173,8 @@ In `get_meta_schema()`, immediately after the `'recurrence' => [ … ]` entry:
             // owned, same reason as `sessions` above: show_in_rest=false keeps
             // a block-editor autosave from racing the metabox save.
             // The master switch (spec §2 row 8a / §3.1 / §4 preamble). Default
-            // false: nothing in §4 runs for an event that has not opted in.
+            // TRUE: every plugin-registered event grants the event role. The
+            // room is the thing that also needs a stream.
             'access_role_enabled' => [ 'type' => 'boolean', 'show_in_rest' => false ],
             'stream_embed' => [ 'type' => 'array', 'show_in_rest' => false ],
             'stream_default_modality' => [ 'type' => 'string', 'show_in_rest' => false ],
@@ -180,7 +189,7 @@ In `get_meta_schema()`, immediately after the `'recurrence' => [ … ]` entry:
 In `get_meta_defaults()`, after `'recurrence' => [],`:
 
 ```php
-            'access_role_enabled' => false,
+            'access_role_enabled' => true,
             'stream_embed' => [],
             'stream_default_modality' => 'in_person',
             'in_person_includes_stream' => true,
@@ -196,14 +205,17 @@ In `event_authoring_input()`, after `'labels' => $this->labels_input( $src ),`:
             // Livestream scalars (spec §3.1). Never unslashed above, so they are
             // already in the slashed domain and must NOT be wp_slash()ed again.
             //
-            // access_role_enabled is the Access section's checkbox and nothing
-            // more AT THIS TASK. Task 4 gives event_authoring_input() a
-            // $post_id and replaces this line with the full rule: keep the
-            // stored value when the Access section was not on the form, and OR
-            // in the automatic flips (a saved embed, a virtual/hybrid session).
-            // Until then the default is false either way, so no event changes
-            // behaviour in between.
-            'access_role_enabled' => ! empty( $src['anchor_event_access_role_enabled'] ),
+            // NOTE: `access_role_enabled` is deliberately NOT in this list at
+            // this task. Its rule needs the stored value and the $post_id to
+            // read it with, which Task 4 adds (access_role_enabled_input()).
+            // A bare `! empty( $src['anchor_event_access_role_enabled'] )`
+            // here would be actively wrong now that the default is TRUE: every
+            // save from a form that does not render the Access section — the
+            // console before Task 17, any partial programmatic save — would
+            // silently store false and switch the event's attendees off.
+            // Leaving the key out means save_meta()'s generic meta loop never
+            // writes it, so get_meta() keeps returning the default until the
+            // real rule arrives.
             'stream_default_modality' => $this->sanitize_modality( $src['anchor_event_stream_default_modality'] ?? '' ),
             'in_person_includes_stream' => ! empty( $src['anchor_event_in_person_includes_stream'] ),
             'stream_open_before_minutes' => max( 0, (int) ( $src['anchor_event_stream_open_before_minutes'] ?? 15 ) ),
@@ -837,10 +849,14 @@ git commit -m "feat(events): add provider-agnostic stream Embed normaliser"
 **Interfaces:**
 - Consumes: `Embed::normalize()`, `Module::queue_group_notice( $code, $post_id, $detail )`, `Module::sanitize_sessions_rows()`.
 - Produces: `Module::stream_embed_input( array $src, $post_id, array &$sessions ): array` — returns the normalised event-level embed, mutates the already-sanitised `$sessions` rows in place with their own normalised overrides, and queues `stream_embed_invalid` on refusal. A refused value **keeps the previous stored one**.
-- Produces: `Module::access_role_enabled_input( array $src, $post_id, array $merged ): bool` — the one place the master switch is decided on a save. **A pure OR**: stored value, the Access checkbox, a non-empty saved embed, a `virtual`/`hybrid` session row, a `virtual`/`hybrid` `stream_default_modality`. It therefore only ever returns `true` over a stored `true`.
+- Produces: `Module::access_role_enabled_input( array $src, $post_id, array $merged ): bool` — the one place the master switch is decided on a save. **Two steps, in order.** (1) *Did this form carry the field?* `array_key_exists( 'anchor_event_access_role_enabled', $src )` — presence, not truthiness, and `array_key_exists()` rather than `isset()` because `isset()` is false for a null value — if yes, take it (`'1'` → true, `'0'` → false); if no, keep the stored value, or the default `true` when nothing is stored. (2) *Force true* if this save stores a non-empty `stream_embed`, a `virtual`/`hybrid` session row, or a `virtual`/`hybrid` `stream_default_modality`. Step 2 beats an un-tick on the same save.
 - Produces: `Module::enable_access_role( int $event_id, string $reason ): void` — the shared "turn it on and leave it on" writer, used by the *post-persist* callers (`Ticket_Types::save()`) that run after `save_meta()`'s generic meta loop.
 
-**The switch can be turned on by a save and never off by one.** The spec's rule is "auto-set true … never auto-cleared" (§3.1) and "clearing them does not flip it back — an author who turned it on keeps it" (§8). Rather than try to tell an author's deliberate untick apart from a form that simply did not carry the field (a console save, a partial programmatic save, a stale cached form, the locked checkbox's hidden input going missing), `access_role_enabled_input()` is a plain OR over the stored value and every opt-in signal. That makes the guarantee unconditional and removes the entire class of bug where somebody's saved event silently strips the role from attendees who already hold it. Turning an event back off is a deliberate operator act, and the console already has the blunt instrument for it: **Delete role** on the Basics tab (Task 19), which strips the role from every holder. If the owner later wants a reversible off switch, that is a follow-up with its own confirm dialog — it is not something a routine save should be able to do by omission.
+**The switch is a real, reversible control — and an absent field is not an un-tick.** The owner's ruling of 2026-09-23 replaced "inert by default, and a save can only ever turn it on" with "on by default, and the checkbox genuinely turns it off". Making that safe rests on one distinction the earlier design refused to draw: **a deliberate un-tick is a form that carried the field with value `0`; a partial or programmatic save is a form that did not carry the field at all.** Task 16 renders the checkbox with a hidden `value="0"` companion, so every rendered authoring form — metabox and console alike — always posts the field, and its presence is therefore a reliable answer to "did a human look at this control". A save that omits it (a REST/programmatic write, an older cached form, a partial update) falls through to the stored value and changes nothing.
+
+Turning it off is **forward-looking only**. It stops future grants; it does not touch the `anchor_event_{id}` role or anybody holding it, because people are already gated on that role in the Private File Manager. The one thing that strips holders is **Delete role** on the console's Basics tab (Task 19), which has its own confirm dialog. That is why the un-tick is safe to honour where the earlier design's blind OR was not: the worst an un-tick can do is stop the *next* attendee being granted, and the operator can un-do it by ticking the box again or running the backfill (Task 19).
+
+The three force-true flips survive the ruling unchanged and are checked **after** the checkbox, so saving a stream while the box is un-ticked turns it back on rather than shipping an event with a room nobody can enter.
 
 **Where the tier flip lives, and why.** In **`Ticket_Types::save()`**, not in the shared save path. `save()` is the single write point for tiers — `persist_event_authoring()` (anchor-events-manager.php:5370) delegates to it and never reads the result back, and `Product_Sync` and the tests call it directly — so a flip anywhere else would miss callers. It also runs *after* `save_meta()`'s generic `update_post_meta()` loop over `$input` (:5264 vs :5275), so writing the meta there cannot be clobbered by that loop. The check reads the **posted** rows (`$raw`), not the normalised `$clean`, so it is correct both before and after Task 15 teaches `normalize()` about `modality`; only `virtual` counts, because a tier is never `hybrid` (spec §3.3), which is exactly what Task 15's normaliser enforces.
 
@@ -869,12 +885,107 @@ Append to `tests/test-event-save.php`:
 		$_POST = [];
 	}
 
+	/** A fresh event saves with the switch ON — that is the default (§3.1). */
+	public function test_fresh_event_saves_with_the_switch_on() {
+		$event_id = $this->make_event();
+		$_POST    = [ 'anchor_event_start_date' => '2027-06-01' ];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue(
+			$this->module()->get_meta( $event_id )['access_role_enabled'],
+			'Every plugin-registered event grants the role by default (owner decision 2026-09-23).'
+		);
+		$this->assertSame( [], $this->module()->get_meta( $event_id )['stream_embed'], 'No stream, so no room — the role is the whole of it.' );
+		$_POST = [];
+	}
+
+	/** Un-ticking the box is a real, persisted OFF. */
+	public function test_unticking_the_switch_persists_false() {
+		$event_id = $this->make_event();
+		$_POST    = [
+			'anchor_event_start_date'          => '2027-06-01',
+			// The hidden companion Task 16 renders beside the checkbox: the
+			// field is PRESENT with value 0, which is how a deliberate untick
+			// is told apart from a form that never carried the control.
+			'anchor_event_access_role_enabled' => '0',
+		];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+		$_POST = [];
+	}
+
+	/** A save whose form did not carry the field keeps a stored FALSE. */
+	public function test_absent_field_keeps_a_stored_false() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', false );
+
+		$_POST = [ 'anchor_event_start_date' => '2027-06-01' ]; // No Access section on this form.
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertFalse(
+			$this->module()->get_meta( $event_id )['access_role_enabled'],
+			'A partial save must not resurrect an event the operator switched off.'
+		);
+		$_POST = [];
+	}
+
+	/** And it keeps a stored TRUE — the symmetric half of the same rule. */
+	public function test_absent_field_keeps_a_stored_true() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+
+		$_POST = [ 'anchor_event_start_date' => '2027-06-01' ];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue(
+			$this->module()->get_meta( $event_id )['access_role_enabled'],
+			'A partial save must not strip the role from attendees who hold it.'
+		);
+		$_POST = [];
+	}
+
+	/** Saving a stream forces the switch on, even over an untick on the same POST. */
+	public function test_embed_forces_the_switch_on_over_an_untick() {
+		$event_id = $this->make_event();
+		$_POST    = [
+			'anchor_event_start_date'          => '2027-06-01',
+			'anchor_event_stream_embed'        => 'https://vimeo.com/515151',
+			'anchor_event_access_role_enabled' => '0',
+		];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue(
+			$this->module()->get_meta( $event_id )['access_role_enabled'],
+			'A room nobody can be granted access to is not a state this plugin ships.'
+		);
+		$_POST = [];
+	}
+
 	/** A virtual/hybrid session flips the master switch with no embed at all. */
 	public function test_virtual_session_flips_the_access_switch() {
 		$event_id = $this->make_event();
 		$_POST    = [
 			'anchor_event_start_date' => '2027-06-01',
 			'anchor_event_type'       => 'multisession',
+			// Unticked on this POST, so the assertion below is about the flip
+			// and not about the default.
+			'anchor_event_access_role_enabled' => '0',
 			'anchor_event_sessions'   => [
 				[ 'date' => '2027-06-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day 1', 'modality' => 'in_person' ],
 				[ 'date' => '2027-06-02', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day 2', 'modality' => 'hybrid' ],
@@ -895,6 +1006,7 @@ Append to `tests/test-event-save.php`:
 		$_POST    = [
 			'anchor_event_start_date'              => '2027-06-01',
 			'anchor_event_stream_default_modality' => 'virtual',
+			'anchor_event_access_role_enabled'     => '0',
 		];
 		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
@@ -905,9 +1017,11 @@ Append to `tests/test-event-save.php`:
 		$_POST = [];
 	}
 
-	/** A virtual TIER flips it, through the one tier write point. */
+	/** A virtual TIER flips it back on, through the one tier write point. */
 	public function test_virtual_tier_flips_the_access_switch() {
-		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		// Explicitly OFF, so the assertion is about the tier flip and not
+		// about the default, which is on.
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
 		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
 
 		$this->ticket_types()->save( $event_id, [
@@ -917,9 +1031,9 @@ Append to `tests/test-event-save.php`:
 		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'] );
 	}
 
-	/** An in-person-only tier save leaves a plain event alone. */
+	/** An in-person-only tier save leaves a switched-off event switched off. */
 	public function test_in_person_tier_does_not_flip_the_access_switch() {
-		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
 
 		$this->ticket_types()->save( $event_id, [
 			[ 'label' => 'General admission', 'price' => '0', 'active' => 1 ],
@@ -928,19 +1042,18 @@ Append to `tests/test-event-save.php`:
 		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
 	}
 
-	/** The switch is NEVER auto-cleared: clearing the stream leaves it on. */
-	public function test_clearing_the_embed_does_not_clear_the_access_switch() {
+	/** Clearing the stream does not by itself turn the switch off. */
+	public function test_clearing_the_embed_alone_leaves_the_switch_on() {
 		$event_id = $this->make_event();
 		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
 		update_post_meta( $event_id, '_anchor_event_stream_embed', [
 			'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/1', 'raw' => '',
 		] );
 
-		// The Access checkbox is unticked on this POST AND the stream is being
-		// cleared — every signal that could turn the switch off at once. It
-		// still stays on: attendees already hold the role, and silently
-		// stripping their access because the author tidied a field away is the
-		// outcome the "never auto-cleared" rule exists to prevent.
+		// The stream goes away; the Access field is NOT on this POST. Removing
+		// a stream is not a statement about the role — attendees already hold
+		// it and the file manager is gating files on it, so only an explicit
+		// untick (or Delete role) may take it away.
 		$_POST = [
 			'anchor_event_start_date'   => '2027-06-01',
 			'anchor_event_stream_embed' => '',
@@ -952,15 +1065,39 @@ Append to `tests/test-event-save.php`:
 		$meta = $this->module()->get_meta( $event_id );
 
 		$this->assertSame( [], $meta['stream_embed'], 'The stream itself is cleared.' );
-		$this->assertTrue( $meta['access_role_enabled'], 'The switch is never cleared by a save.' );
+		$this->assertTrue( $meta['access_role_enabled'], 'Losing the stream is not an untick.' );
 		$_POST = [];
 	}
 
-	/** Ticking the box by hand opts an ordinary in-person event in. */
-	public function test_author_can_tick_the_switch_by_hand() {
+	/** Clearing the stream AND unticking does turn it off — nothing forces it. */
+	public function test_clearing_the_embed_with_an_untick_turns_it_off() {
 		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+		update_post_meta( $event_id, '_anchor_event_stream_embed', [
+			'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/1', 'raw' => '',
+		] );
+
+		$_POST = [
+			'anchor_event_start_date'          => '2027-06-01',
+			'anchor_event_stream_embed'        => '',
+			'anchor_event_access_role_enabled' => '0',
+		];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$this->module()->save_meta( $event_id );
+		$meta = $this->module()->get_meta( $event_id );
+
+		$this->assertSame( [], $meta['stream_embed'] );
+		$this->assertFalse( $meta['access_role_enabled'], 'With no stream left to force it, the untick stands.' );
+		$_POST = [];
+	}
+
+	/** Re-ticking the box turns a switched-off event back on. */
+	public function test_author_can_tick_the_switch_back_on() {
+		$event_id = $this->make_event( [ 'access_role_enabled' => false ] );
 		$_POST    = [
-			'anchor_event_start_date'         => '2027-06-01',
+			'anchor_event_start_date'          => '2027-06-01',
 			'anchor_event_access_role_enabled' => '1',
 		];
 		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
@@ -1141,8 +1278,9 @@ In `event_authoring_input()`, after building `$input` and before the `array_merg
             $merged['virtual'] = true;
         }
 
-        // The master switch (spec §2 row 8a / §3.1 / §4 preamble). Replaces
-        // Task 1's bare checkbox read.
+        // The master switch (spec §2 row 8a / §3.1 / §4 preamble). Task 1
+        // deliberately left this key out of the authoring input; this is where
+        // it joins, with the full rule.
         $merged['access_role_enabled'] = $this->access_role_enabled_input( $src, $post_id, $merged );
 
         return $merged;
@@ -1154,20 +1292,27 @@ And the switch's one decision point, next to `stream_embed_input()`:
     /**
      * Decide `access_role_enabled` for a save (spec §2 row 8a, §3.1, §4).
      *
-     * This is a PURE OR, deliberately: stored value, the author's checkbox,
-     * and every automatic opt-in signal. It can turn the switch ON and it can
-     * never turn it off.
+     * TWO STEPS, in this order.
      *
-     * Why it is not also a way to turn it off: the spec's rule is "auto-set to
-     * true … never auto-cleared", and once an event is on, real people hold
-     * `anchor_event_{id}` and the file manager is gating real files on it.
-     * A save that arrives without the field — the front-end console, a
-     * programmatic save, a stale cached form, the locked checkbox's hidden
-     * input lost to a browser quirk — is indistinguishable from a deliberate
-     * untick, so honouring an absent field would mean any of those silently
-     * strips access from everybody who holds the role. Turning an event back
-     * off is an operator act with its own confirmation: `Delete role` on the
-     * console's Basics tab.
+     * 1. Did this form carry the control? isset(), NOT empty(): Task 16 renders
+     *    the checkbox with a hidden `value="0"` companion, so every rendered
+     *    authoring form — metabox and console — always posts the field, and
+     *    its PRESENCE is therefore a reliable "a human looked at this switch".
+     *    Present → take it (0 or 1). Absent → keep the stored value, and fall
+     *    back to the default (TRUE) when the event has nothing stored yet.
+     *    That is what makes a partial or programmatic save harmless in both
+     *    directions: it neither resurrects an event the operator switched off
+     *    nor strips the role from attendees who already hold it.
+     *
+     * 2. Force TRUE when this save stores a stream, a virtual/hybrid session,
+     *    or a virtual/hybrid default modality. Checked AFTER the checkbox, so
+     *    saving a stream with the box unticked turns it back on rather than
+     *    shipping a room nobody can be granted access to.
+     *
+     * Turning it off is forward-looking only: nothing here removes a role or
+     * an account. The only thing that strips holders is `Delete role` on the
+     * console's Basics tab, and the backfill (Task 19) is how an operator
+     * re-grants after switching an event back on.
      *
      * The event's own `stream_default_modality` counts as a signal because it
      * IS the modality of the implicit session a `single` event resolves to
@@ -1183,12 +1328,20 @@ And the switch's one decision point, next to `stream_embed_input()`:
      * @return bool
      */
     private function access_role_enabled_input( array $src, $post_id, array $merged ) {
-        if ( (int) $post_id > 0 && ! empty( \get_post_meta( (int) $post_id, $this->meta_key( 'access_role_enabled' ), true ) ) ) {
-            return true;
+        $post_id = (int) $post_id;
+
+        // Step 1 — the form's answer, or the stored one.
+        if ( \array_key_exists( 'anchor_event_access_role_enabled', $src ) ) {
+            $enabled = ! empty( $src['anchor_event_access_role_enabled'] )
+                && (string) \wp_unslash( $src['anchor_event_access_role_enabled'] ) !== '0';
+        } else {
+            $stored  = ( $post_id > 0 ) ? \get_post_meta( $post_id, $this->meta_key( 'access_role_enabled' ), true ) : '';
+            // '' means "never written" — a brand-new event, or one saved before
+            // this key existed — and that takes the default, which is TRUE.
+            $enabled = ( $stored === '' ) ? true : ! empty( $stored );
         }
-        if ( ! empty( $src['anchor_event_access_role_enabled'] ) ) {
-            return true; // The author ticked it (§7) — an in-person event whose files are role-gated.
-        }
+
+        // Step 2 — the forced-on signals. A stream is useless without the role.
         if ( ! empty( $merged['stream_embed']['src'] ) ) {
             return true;
         }
@@ -1203,7 +1356,8 @@ And the switch's one decision point, next to `stream_embed_input()`:
                 return true;
             }
         }
-        return false;
+
+        return $enabled;
     }
 
     /**
@@ -1696,11 +1850,26 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		return $this->event( array_merge( [ 'access_role_enabled' => true ], $meta ) );
 	}
 
+	/**
+	 * A streamable event with the switch explicitly OFF.
+	 *
+	 * The default is TRUE (spec §3.1, owner decision 2026-09-23), so every
+	 * test whose POINT is the off state has to say so — `$this->event()` on
+	 * its own is now an ON event.
+	 */
+	private function disabled_event( array $meta = [] ) {
+		return $this->event( array_merge( [ 'access_role_enabled' => false ], $meta ) );
+	}
+
 	/** enabled() is stream_capable() AND the master switch (spec §4 preamble). */
 	public function test_enabled_is_capability_and_the_switch() {
-		$off = $this->event();
-		$this->assertTrue( $this->module()->stream_capable( $off ), 'A free event IS stream-capable…' );
-		$this->assertFalse( $this->ent()->enabled( $off ), '…but inert until it opts in.' );
+		$default = $this->event();
+		$this->assertTrue( $this->module()->stream_capable( $default ), 'A free event IS stream-capable…' );
+		$this->assertTrue( $this->ent()->enabled( $default ), '…and by default it is in the feature too.' );
+
+		$off = $this->disabled_event();
+		$this->assertTrue( $this->module()->stream_capable( $off ), 'Still stream-capable…' );
+		$this->assertFalse( $this->ent()->enabled( $off ), '…but the operator switched it off.' );
 
 		$on = $this->enabled_event();
 		$this->assertTrue( $this->ent()->enabled( $on ) );
@@ -1872,22 +2041,31 @@ class Entitlements {
      * ------------------------------------------------------------------- */
 
     /**
-     * Does ANY of this apply to this event?
+     * Does the event-role machinery apply to this event?
      *
-     * Nothing in §4 runs for an event whose `access_role_enabled` is false:
-     * no account is created, no role is minted, no room resolves, no email
-     * gains a link, no Access column appears. Every entry point below —
-     * grant_for_seat(), ensure_user(), the two seat hooks,
-     * maybe_revoke_seat_grant(), can_access_stream() — asks this first and
-     * returns its PRE-SPEC answer when it is false. That is the whole of the
-     * inertness guarantee, and tests/test-inertness.php is its standing proof.
+     * TRUE for nearly every plugin-registered event, because the switch
+     * defaults on (spec §3.1, owner decision 2026-09-23): confirmed attendees
+     * get an account and the `anchor_event_{id}` role whether they attend in
+     * person or over a stream, since event materials are handed out by role.
+     *
+     * FALSE means the operator switched this event off, or it was never in
+     * the feature (external registration, a group parent). Then nothing in §4
+     * runs: no account is created, no role is minted, no email gains a link,
+     * no Access column appears. Every entry point below — grant_for_seat(),
+     * ensure_user(), the two seat hooks, maybe_revoke_seat_grant(),
+     * can_access_stream() — asks this first and returns its pre-spec answer.
+     * tests/test-inertness.php is the standing proof of both halves.
+     *
+     * This is NOT "has a room". The room needs a stream as well, and asks
+     * Module::room_url() (Task 11), which is this AND a resolvable embed.
      *
      * Two conditions, and they mean different things:
      *   - stream_capable(): "could this event ever hold a room?" Registration
      *     mode wc|free and not a group parent (spec §2 decision 1). A fact
      *     about the event's shape, unchanged by this switch.
-     *   - access_role_enabled: "has somebody said it should?" Set by saving a
-     *     stream, by a virtual/hybrid session or tier, or by hand.
+     *   - access_role_enabled: "should attendees of it get the role?" On by
+     *     default; un-tickable by the author; forced back on by saving a
+     *     stream, a virtual/hybrid session or a virtual tier.
      *
      * @param int $event_id
      * @return bool
@@ -2181,13 +2359,13 @@ Append to `tests/test-entitlements.php`:
 ```php
 	/** A seat on a switch-off event grants nothing and mints nothing. */
 	public function test_disabled_event_seat_grants_nothing() {
-		$event_id = $this->event(); // access_role_enabled defaults to false.
+		$event_id = $this->disabled_event(); // The default is TRUE, so say so.
 		$user_id  = self::factory()->user->create( [ 'user_email' => 'inert@example.test' ] );
 
 		$seat_id = $this->make_seat( $event_id, [ 'email' => 'inert@example.test' ] );
 
 		$this->assertFalse( $this->ent()->holds_role( $event_id, $user_id ) );
-		$this->assertNull( get_role( 'anchor_event_' . $event_id ), 'No role is minted for an inert event.' );
+		$this->assertNull( get_role( 'anchor_event_' . $event_id ), 'No role is minted for a switched-off event.' );
 		$this->assertSame( [], $this->ent()->grants_for_user( $user_id ) );
 
 		// And the cancellation half is just as inert — it must not reach
@@ -2472,9 +2650,9 @@ git commit -m "feat(events): grant and revoke event access from the seat lifecyc
 Append to `tests/test-entitlements.php`:
 
 ```php
-	/** Branch 0: an inert event resolves nothing and creates nothing. */
+	/** Branch 0: a switched-off event resolves nothing and creates nothing. */
 	public function test_ensure_user_is_inert_when_the_switch_is_off() {
-		$event_id = $this->event(); // access_role_enabled defaults to false.
+		$event_id = $this->disabled_event(); // The default is TRUE, so say so.
 		$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Nobody', 'email' => 'never@example.test' ] );
 		$before   = count_users()['total_users'];
 
@@ -2998,10 +3176,12 @@ Append to `Entitlements`:
         if ( $user_id <= 0 ) {
             return false;
         }
-        // 3 — enabled(), NOT stream_capable(): the stricter of the two. An
-        // event that could hold a room but has not opted in is refused here,
-        // ahead of the manual-grant branch, so a stale role from a
-        // hand-granted event that was later switched off is not a key.
+        // 3 — enabled(), NOT stream_capable(): the stricter of the two, and
+        // checked AHEAD of the manual-grant branch so a standing role on an
+        // event the operator switched off is not a key. The switch defaults
+        // on, so for most events this passes and the two session checks below
+        // do the real work: holding the event role is not stream access, and
+        // an in-person event with no embed refuses everybody but staff.
         if ( ! $this->enabled( $event_id ) ) {
             return false;
         }
@@ -3137,7 +3317,7 @@ git commit -m "feat(events): add can_access_stream() and route the join-link gat
 
 ---
 
-### Task 9b: Inertness — a plain event is untouched
+### Task 9b: Switch semantics — role by default, nothing when off
 
 **Files:**
 - Create: `tests/test-inertness.php`
@@ -3147,9 +3327,11 @@ git commit -m "feat(events): add can_access_stream() and route the join-link gat
 - Produces: `Roster::access_state( int $event_id, array $seat ): string` → `off|yes|manual|no`. `off` is new and is what an event whose master switch is false always answers; Task 18's Access column consumes it and renders nothing for it.
 - Consumes: `Entitlements::enabled()` (T6), `Entitlements::ensure_user()` (T8), `Module::room_url()` (T11 — `''` until then, which is the value this task asserts), `Module::email_tokens()` (T14 — the `room_link` key arrives there, which is why the assertion reads it with `?? ''`).
 
-**Why this task exists.** Everything in Tasks 1–9 is a guard scattered across four classes. This is the one place that asserts the *whole* guarantee end to end, in the order a real plain event actually experiences it: somebody registers, somebody cancels, a confirmation goes out, a crawler asks for the room, the console opens the roster. Spec §8's "Inertness" bullet, verbatim. If a later task regresses it, this suite is what says so.
+**Why this task exists.** The switch's rules are guards scattered across four classes — Module (meta, the save rule, `room_url()`, email tokens), Entitlements (`enabled()`, `ensure_user()`, the seat hooks), Roster (the Access column). This is the one place that asserts the *whole* of spec §8's "Switch semantics" bullet end to end, in the order a real event experiences it: somebody registers, somebody cancels, a confirmation goes out, a crawler asks for the room, the console opens the roster. If a later task regresses any of it, this suite is what says so.
 
-**Two assertions are written to hold both before and after a later task adds the thing they touch**, and are annotated as such in the test: the REST room endpoint does not exist until Task 12 (a missing route is a 404, a disabled event is a 403 or 404, so the assertion is "not 200"), and `email_tokens()` has no `room_link` key until Task 14 (so it is read with `?? ''`, which is the same empty string either way). Neither is a placeholder — both are the real, permanent assertion.
+**What the owner's 2026-09-23 ruling changed here.** The default is **true**, so the headline case is no longer "nothing happens": a plain in-person event *does* mint the role and *does* create the account, because event materials are assigned by role. What a plain event still does not get is the **room** — `room_url()` is `''`, `{room_link}` is `''`, `can_access_stream()` is false — because those need a resolvable stream embed as well as the switch. The old inertness assertions all survive; they now describe case (b), an event whose operator switched it off, rather than the default.
+
+**Two assertions are written to hold both before and after a later task adds the thing they touch**, and are annotated as such in the test: the REST room endpoint does not exist until Task 12 (a missing route is a 404, an event with no room is a 403 or 404, so the assertion is "not 200"), and `email_tokens()` has no `room_link` key until Task 14 (so it is read with `?? ''`, which is the same empty string either way). `Module::room_url()` arrives in Task 11, so it is called behind `method_exists()` and treated as `''` until then — the same value it returns afterwards for these events. None of the three is a placeholder; all are the real, permanent assertions.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3158,14 +3340,20 @@ Create `tests/test-inertness.php`:
 ```php
 <?php
 /**
- * Inertness: nothing in the virtual-events spec applies to a plain event
- * (spec §2 row 8a, §3.1 `access_role_enabled`, §4 preamble, §8).
+ * Switch semantics for `access_role_enabled` (spec §2 row 8a, §3.1, §4
+ * preamble, §8).
  *
- * The owner's instruction, 2026-09-23: none of this may apply to plain events
- * and their attendees by accident. Every guard that makes that true lives in a
- * different class — Module (meta + room_url + email tokens), Entitlements
- * (enabled + ensure_user + the seat hooks), Roster (the Access column) — so
- * this suite is the one place the guarantee is asserted as a whole.
+ * The owner's ruling, 2026-09-23 (superseding "inert by default"): EVERY
+ * plugin-registered event grants its confirmed attendees the event role and
+ * the account that carries it, in person or not, because event materials are
+ * assigned by role. The checkbox is a real, reversible switch — un-ticking it
+ * stops future grants and never strips existing holders — and the ROOM is a
+ * separate question that also needs a resolvable stream.
+ *
+ * Every guard that makes those rules true lives in a different class, so this
+ * suite is the one place they are asserted as a whole. Spec §8's "Switch
+ * semantics" bullet, (a) to (f), is the table of contents; (f) — the backfill
+ * — is asserted in Task 19's Test_Entitlements, next to the action it tests.
  *
  * @package Anchor\Events\Tests
  */
@@ -3175,7 +3363,7 @@ Create `tests/test-inertness.php`:
  */
 class Test_Inertness extends Anchor_Events_TestCase {
 
-	/** @var int[] Events whose roles a flip test may have minted. */
+	/** @var int[] Events whose roles a test may have minted. */
 	private $minted = [];
 
 	public function tear_down() {
@@ -3186,10 +3374,15 @@ class Test_Inertness extends Anchor_Events_TestCase {
 		parent::tear_down();
 	}
 
-	/** A plain event: registered through the plugin, in person, switch off. */
-	private function plain_event( $mode = 'free' ) {
+	/**
+	 * An ordinary in-person event registered through the plugin.
+	 *
+	 * `access_role_enabled` is NOT passed: the point of most of this suite is
+	 * what the DEFAULT does, and the default is true.
+	 */
+	private function plain_event( $mode = 'free', array $meta = [] ) {
 		$start          = time() + DAY_IN_SECONDS;
-		$event_id       = $this->make_event( [
+		$event_id       = $this->make_event( array_merge( [
 			'registration_mode' => $mode,
 			'timezone'          => 'UTC',
 			'start_date'        => gmdate( 'Y-m-d', $start ),
@@ -3197,77 +3390,132 @@ class Test_Inertness extends Anchor_Events_TestCase {
 			'start_ts'          => $start,
 			'end_ts'            => $start + 3600,
 			'venue'             => 'The Grand Ballroom',
-		] );
+		], $meta ) );
 		$this->minted[] = $event_id;
 		return $event_id;
 	}
 
+	/** The same event with the operator's switch explicitly off. */
+	private function switched_off_event( $mode = 'free' ) {
+		return $this->plain_event( $mode, [ 'access_role_enabled' => false ] );
+	}
+
 	/**
-	 * Spec §8, "Inertness", in full — for a `free` event and a `wc` event.
-	 *
-	 * Confirm a seat, cancel it, render its confirmation email, ask for the
-	 * room, hit the REST endpoint, open the roster. Nothing anywhere.
+	 * room_url() arrives in Task 11. Before it exists there is no room, which
+	 * is the same '' this suite asserts after it exists.
+	 */
+	private function room_url( $event_id ) {
+		return method_exists( $this->module(), 'room_url' )
+			? (string) $this->module()->room_url( (int) $event_id )
+			: '';
+	}
+
+	/* -----------------------------------------------------------------
+	 * (a) The default: role and account, no room.
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * Spec §8 (a). A fresh free/wc event with nothing else set grants the role
+	 * and creates an account on a confirmed seat — and still has no room,
+	 * because no stream resolves.
 	 *
 	 * @dataProvider registration_modes
 	 * @param string $mode
 	 */
-	public function test_a_plain_event_is_untouched( $mode ) {
+	public function test_default_grants_the_role_and_creates_the_account( $mode ) {
 		$event_id = $this->plain_event( $mode );
-		$before   = count_users()['total_users'];
 
-		$this->assertFalse(
+		$this->assertTrue(
 			$this->module()->get_meta( $event_id )['access_role_enabled'],
-			'The master switch is off by default.'
+			'Every plugin-registered event grants the role by default (owner decision 2026-09-23).'
 		);
-		$this->assertFalse( $this->module()->entitlements->enabled( $event_id ) );
+		$this->assertTrue( $this->module()->entitlements->enabled( $event_id ) );
 
-		// 1. Confirm a seat. A free/wc seat is BORN confirmed (D2), which is
-		//    the path that would grant if anything were listening.
+		// A free/wc seat is BORN confirmed (D2) — the path most attendees take.
 		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Plain Attendee', 'email' => 'plain@example.test' ] );
 		$seat    = $this->registrations()->get_seat( $seat_id );
 
-		// 2. Cancel it.
+		// --- The account exists and the seat names it. ---
+		$user = get_user_by( 'email', 'plain@example.test' );
+		$this->assertInstanceOf( 'WP_User', $user, 'A confirmed attendee gets an account.' );
+		$this->assertSame( (int) $user->ID, (int) get_post_meta( $seat_id, '_anchor_event_user_id', true ) );
+
+		// --- The role exists, is held, and is recorded as a seat grant. ---
+		$slug = 'anchor_event_' . $event_id;
+		$this->assertArrayHasKey( $slug, wp_roles()->roles, 'The event role is minted on the first grant.' );
+		$this->assertTrue( $this->module()->entitlements->holds_role( $event_id, (int) $user->ID ) );
+		$this->assertSame( 'seat', $this->module()->entitlements->grant_record( $event_id, (int) $user->ID )['source'] );
+		$this->assertSame( 'yes', $this->module()->roster->access_state( $event_id, $seat ) );
+
+		// --- But there is NO room: the role is not a stream. ---
+		$this->assertSame( '', $this->room_url( $event_id ), 'No stream resolves, so there is no room.' );
+
+		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id, 'seat' => $seat ] );
+		// `room_link` joins the token map in Task 14; until then the key is
+		// simply absent, which is the same empty string this asserts.
+		$this->assertSame( '', (string) ( $tokens['room_link'] ?? '' ), '{room_link} is empty with no stream to join.' );
+
+		$this->assertFalse(
+			$this->module()->entitlements->can_access_stream( $event_id, 0, (int) $user->ID ),
+			'Holding the role is not stream access.'
+		);
+
+		// The REST room endpoint does not exist until Task 12 (404) and
+		// answers 403/404 for an event with no room after it. "Not 200" is the
+		// permanent assertion, correct on both sides of that task.
+		$response = rest_do_request( new WP_REST_Request( 'GET', '/anchor-events/v1/events/' . $event_id . '/room' ) );
+		$this->assertNotSame( 200, $response->get_status(), 'A stream-less event reports no room state.' );
+	}
+
+	/* -----------------------------------------------------------------
+	 * (b) Switched off: the whole feature is absent.
+	 * --------------------------------------------------------------- */
+
+	/**
+	 * Spec §8 (b). With the switch explicitly false: confirm a seat, cancel
+	 * it, render its confirmation email, request /live/, open the roster.
+	 * Nothing anywhere.
+	 *
+	 * @dataProvider registration_modes
+	 * @param string $mode
+	 */
+	public function test_a_switched_off_event_is_untouched( $mode ) {
+		$event_id = $this->switched_off_event( $mode );
+		$before   = count_users()['total_users'];
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+		$this->assertFalse( $this->module()->entitlements->enabled( $event_id ) );
+
+		// 1. Confirm a seat.  2. Cancel it.
+		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Off Attendee', 'email' => 'off@example.test' ] );
+		$seat    = $this->registrations()->get_seat( $seat_id );
 		$this->registrations()->update_status( $seat_id, \Anchor\Events\Registrations::STATUS_CANCELLED );
 
-		// 3. Render its confirmation email.
+		// 3. Render its confirmation email.  4. Ask for the room.
 		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id, 'seat' => $seat ] );
+		$room   = $this->room_url( $event_id );
 
-		// 4. Ask for the room.
-		$room = $this->module()->room_url( $event_id );
-
-		// 5. Hit the REST room endpoint.
+		// 5. Hit the REST room endpoint.  6. Open the roster.
 		$response = rest_do_request( new WP_REST_Request( 'GET', '/anchor-events/v1/events/' . $event_id . '/room' ) );
-
-		// 6. Open the roster.
-		$access = $this->module()->roster->access_state( $event_id, $seat );
+		$access   = $this->module()->roster->access_state( $event_id, $seat );
 
 		// --- No account was created, on any path. ---
-		$this->assertSame( $before, count_users()['total_users'], 'No account is created for a plain event.' );
-		$this->assertNull( get_user_by( 'email', 'plain@example.test' ) ?: null );
+		$this->assertSame( $before, count_users()['total_users'], 'No account is created for a switched-off event.' );
+		$this->assertNull( get_user_by( 'email', 'off@example.test' ) ?: null );
 		$this->assertSame( 0, (int) get_post_meta( $seat_id, '_anchor_event_user_id', true ) );
 
 		// --- No role was minted. ---
 		$this->assertArrayNotHasKey( 'anchor_event_' . $event_id, wp_roles()->roles );
 		$this->assertNull( get_role( 'anchor_event_' . $event_id ) );
 
-		// --- No room. ---
-		$this->assertSame( '', $room, 'A plain event has no room URL.' );
-
-		// The REST room endpoint does not exist until Task 12 (404) and
-		// answers 403/404 for a disabled event after it. "Not 200" is the
-		// permanent assertion, and is correct on both sides of that task.
-		$this->assertNotSame( 200, $response->get_status(), 'A plain event reports no room state.' );
-
-		// --- No email link. ---
-		// `room_link` joins the token map in Task 14; until then the key is
-		// simply absent, which is the same empty string this asserts.
-		$this->assertSame( '', (string) ( $tokens['room_link'] ?? '' ), '{room_link} is empty for a plain event.' );
-		// The CTA's own "no livestream button for a plain event" assertion
-		// lives in Task 14's Test_Email_Templates, where default_email_cta()
-		// becomes public; duplicating it here would only test a private method.
-
-		// --- No Access column. ---
+		// --- No room, no link, no Access column. ---
+		$this->assertSame( '', $room, 'A switched-off event has no room URL.' );
+		$this->assertNotSame( 200, $response->get_status(), 'A switched-off event reports no room state.' );
+		$this->assertSame( '', (string) ( $tokens['room_link'] ?? '' ), '{room_link} is empty for a switched-off event.' );
 		$this->assertSame( 'off', $access, 'The roster reports the whole feature as off, not "no access".' );
+		// The CTA's own "no livestream button" assertion lives in Task 14's
+		// Test_Email_Templates, where default_email_cta() becomes public;
+		// duplicating it here would only test a private method.
 	}
 
 	/** @return array<string,string[]> */
@@ -3275,13 +3523,91 @@ class Test_Inertness extends Anchor_Events_TestCase {
 		return [ 'free' => [ 'free' ], 'woocommerce' => [ 'wc' ] ];
 	}
 
-	/** Saving a stream flips the switch on. */
-	public function test_saving_a_stream_flips_the_switch_on() {
+	/* -----------------------------------------------------------------
+	 * (c) The un-tick looks forward only.
+	 * --------------------------------------------------------------- */
+
+	/** Spec §8 (c). Un-ticking keeps every existing holder and stops the next grant. */
+	public function test_unticking_keeps_holders_and_stops_future_grants() {
 		$event_id = $this->plain_event();
 
+		// One attendee registers while the switch is on (the default).
+		$this->make_seat( $event_id, [ 'name' => 'First In', 'email' => 'first@example.test' ] );
+		$first = get_user_by( 'email', 'first@example.test' );
+		$this->assertInstanceOf( 'WP_User', $first );
+		$this->assertTrue( $this->module()->entitlements->holds_role( $event_id, (int) $first->ID ) );
+
+		// The operator unticks the box. The hidden companion Task 16 renders
+		// means the field is PRESENT with value 0 — a deliberate untick, not
+		// a form that simply did not carry the control.
 		$_POST = [
-			'anchor_event_start_date'   => '2027-06-01',
-			'anchor_event_stream_embed' => 'https://vimeo.com/909090',
+			'anchor_event_start_date'          => gmdate( 'Y-m-d', time() + DAY_IN_SECONDS ),
+			'anchor_event_access_role_enabled' => '0',
+		];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->module()->save_meta( $event_id );
+		$_POST = [];
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+
+		// The existing holder is untouched: only Delete role removes people.
+		$this->assertTrue(
+			$this->module()->entitlements->holds_role( $event_id, (int) $first->ID ),
+			'Un-ticking never strips an existing holder — that is Delete role.'
+		);
+		$this->assertNotNull( get_role( 'anchor_event_' . $event_id ), 'The role itself survives the untick.' );
+
+		// The NEXT confirmed seat gets nothing at all.
+		$before  = count_users()['total_users'];
+		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Too Late', 'email' => 'second@example.test', 'seat_index' => 2 ] );
+
+		$this->assertNull( get_user_by( 'email', 'second@example.test' ) ?: null );
+		$this->assertSame( $before, count_users()['total_users'] );
+		$this->assertSame( 0, (int) get_post_meta( $seat_id, '_anchor_event_user_id', true ) );
+	}
+
+	/* -----------------------------------------------------------------
+	 * (d) An absent field is not an answer.
+	 * --------------------------------------------------------------- */
+
+	/** Spec §8 (d). A save whose form did not carry the field keeps the stored value — both ways. */
+	public function test_a_save_without_the_field_keeps_the_stored_value() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$post = function ( $event_id ) {
+			$_POST = [ 'anchor_event_start_date' => gmdate( 'Y-m-d', time() + DAY_IN_SECONDS ) ];
+			$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+			$this->module()->save_meta( $event_id );
+			$_POST = [];
+		};
+
+		$off = $this->switched_off_event();
+		$post( $off );
+		$this->assertFalse(
+			$this->module()->get_meta( $off )['access_role_enabled'],
+			'A partial save must not resurrect an event the operator switched off.'
+		);
+
+		$on = $this->plain_event();
+		$post( $on );
+		$this->assertTrue(
+			$this->module()->get_meta( $on )['access_role_enabled'],
+			'A partial save must not strip the role from attendees who hold it.'
+		);
+	}
+
+	/* -----------------------------------------------------------------
+	 * (e) The three force-true flips.
+	 * --------------------------------------------------------------- */
+
+	/** Spec §8 (e), flip 1: saving a stream forces the switch back on. */
+	public function test_saving_a_stream_forces_the_switch_on() {
+		$event_id = $this->switched_off_event();
+
+		$_POST = [
+			'anchor_event_start_date'          => '2027-06-01',
+			'anchor_event_stream_embed'        => 'https://vimeo.com/909090',
+			'anchor_event_access_role_enabled' => '0', // Unticked, and overruled.
 		];
 		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
@@ -3290,11 +3616,34 @@ class Test_Inertness extends Anchor_Events_TestCase {
 
 		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'] );
 		$this->assertTrue( $this->module()->entitlements->enabled( $event_id ) );
+		$this->assertNotSame( '', $this->room_url( $event_id ), 'A stream is what creates the room.' );
 	}
 
-	/** Saving a virtual TIER flips it on, with no embed anywhere. */
-	public function test_saving_a_virtual_tier_flips_the_switch_on() {
-		$event_id = $this->plain_event();
+	/** Spec §8 (e), flip 2: a virtual/hybrid SESSION forces it on, with no embed anywhere. */
+	public function test_saving_a_virtual_session_forces_the_switch_on() {
+		$event_id = $this->switched_off_event();
+
+		$_POST = [
+			'anchor_event_start_date'          => '2027-06-01',
+			'anchor_event_type'                => 'multisession',
+			'anchor_event_access_role_enabled' => '0',
+			'anchor_event_sessions'            => [
+				[ 'date' => '2027-06-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day 1', 'modality' => 'in_person' ],
+				[ 'date' => '2027-06-02', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day 2', 'modality' => 'virtual' ],
+			],
+		];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->module()->save_meta( $event_id );
+		$_POST = [];
+
+		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+		$this->assertSame( [], $this->module()->get_meta( $event_id )['stream_embed'] );
+	}
+
+	/** Spec §8 (e), flip 3: a virtual TIER forces it on, through the one tier write point. */
+	public function test_saving_a_virtual_tier_forces_the_switch_on() {
+		$event_id = $this->switched_off_event();
 
 		$this->ticket_types()->save( $event_id, [
 			[ 'label' => 'Livestream', 'price' => '0', 'active' => 1, 'modality' => 'virtual' ],
@@ -3304,8 +3653,8 @@ class Test_Inertness extends Anchor_Events_TestCase {
 		$this->assertSame( [], $this->module()->get_meta( $event_id )['stream_embed'] );
 	}
 
-	/** Clearing the stream again does NOT flip it back. */
-	public function test_clearing_the_stream_leaves_the_switch_on() {
+	/** Clearing the stream again does NOT flip it back — that takes an untick. */
+	public function test_clearing_the_stream_alone_leaves_the_switch_on() {
 		$event_id = $this->plain_event();
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
 
@@ -3326,18 +3675,37 @@ class Test_Inertness extends Anchor_Events_TestCase {
 
 		$meta = $this->module()->get_meta( $event_id );
 		$this->assertSame( [], $meta['stream_embed'], 'The stream is gone…' );
+		$this->assertSame( '', $this->room_url( $event_id ), '…so the room is gone with it…' );
 		$this->assertTrue( $meta['access_role_enabled'], '…but the attendees who hold the role keep it.' );
 	}
 
-	/** An event that opted in is, of course, no longer inert. */
-	public function test_an_opted_in_event_does_grant() {
-		$event_id       = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => true ] );
-		$this->minted[] = $event_id;
-		$user_id        = self::factory()->user->create( [ 'user_email' => 'opted@example.test' ] );
+	/* -----------------------------------------------------------------
+	 * (f) The backfill is asserted in Task 19's Test_Entitlements.
+	 * --------------------------------------------------------------- */
 
-		$this->make_seat( $event_id, [ 'email' => 'opted@example.test' ] );
+	/**
+	 * Spec §8 (f) — "the backfill action grants every confirmed seat exactly
+	 * once" — lives in Task 19's Test_Entitlements
+	 * (test_backfill_grants_every_confirmed_seat_once and its siblings), next
+	 * to Entitlements::backfill() and the admin-post handler it exercises.
+	 * Named here so the §8 checklist reads complete in one file.
+	 *
+	 * @doesNotPerformAssertions
+	 */
+	public function test_backfill_is_covered_in_test_entitlements() {
+	}
 
-		$this->assertTrue( $this->module()->entitlements->holds_role( $event_id, $user_id ) );
+	/** An event that is never stream-capable is out of the feature whatever the switch says. */
+	public function test_external_registration_is_never_in_the_feature() {
+		$event_id = $this->plain_event( 'external' );
+
+		$this->assertFalse( $this->module()->entitlements->enabled( $event_id ) );
+
+		$before = count_users()['total_users'];
+		$this->make_seat( $event_id, [ 'email' => 'external@example.test' ] );
+
+		$this->assertSame( $before, count_users()['total_users'] );
+		$this->assertNull( get_role( 'anchor_event_' . $event_id ) );
 	}
 }
 ```
@@ -3350,7 +3718,7 @@ vendor/bin/phpunit --filter Test_Inertness
 ```
 Expected: FAIL — `Call to undefined method Anchor\Events\Roster::access_state()`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 3: Write the minimal implementation**
 
 Add to `Roster` (it is born here rather than in Task 18 because this is the task that needs the roster's answer for an event the whole feature is off for; Task 18 only adds the column that renders it):
 
@@ -3359,14 +3727,19 @@ Add to `Roster` (it is born here rather than in Task 18 because this is the task
      * How a seat's holder stands on this event's role.
      *
      * Four values, and `off` is not a fourth flavour of "no":
-     *   - `off`    — the event's `access_role_enabled` is false, so the whole
-     *                feature does not apply. The Access column is not rendered
-     *                at all (Task 18); saying "No" would invite an operator to
-     *                click Grant on an event that has no room to grant into.
+     *   - `off`    — the event's `access_role_enabled` is false (or it was
+     *                never in the feature: external registration, a group
+     *                parent), so the whole thing does not apply. The Access
+     *                column is not rendered at all (Task 18); saying "No"
+     *                would invite an operator to click Grant on an event that
+     *                is not granting.
      *   - `yes`    — holds the role, granted by a seat.
      *   - `manual` — holds the role, granted by hand; a cancellation cannot
      *                take it away.
      *   - `no`     — the event is on and this person does not hold the role.
+     *
+     * NOTE the default is ON (spec §3.1), so `off` is the exception now, not
+     * the rule: most events answer yes/manual/no.
      *
      * @param int   $event_id
      * @param array $seat Registrations::get_seat() DTO.
@@ -3403,7 +3776,7 @@ Expected: PASS.
 
 ```bash
 git add anchor-events-manager/class-roster.php tests/test-inertness.php
-git commit -m "test(events): standing proof that a plain event is untouched by the stream spec"
+git commit -m "test(events): standing proof of the access switch semantics, default through untick"
 ```
 
 ---
@@ -3736,19 +4109,48 @@ git commit -m "feat(events): refuse registration on unmet prerequisite roles"
 - Test: `tests/test-room.php`
 
 **Interfaces:**
-- Produces: `Module::room_url( int $event_id ): string`; `Module::is_room_request(): bool`; `Module::render_room( int $event_id ): string`; `Module::room_state_block( int $event_id, array $state ): string`; `Module::room_headers(): void` (on `template_redirect`); `Module::maybe_flush_rewrites(): void` (on `init`, priority 99).
+- Produces: `Module::room_url( int $event_id ): string`; `Module::has_stream( int $event_id ): bool`; `Module::is_room_request(): bool`; `Module::render_room( int $event_id ): string`; `Module::room_state_block( int $event_id, array $state ): string`; `Module::room_headers(): void` (on `template_redirect`); `Module::maybe_flush_rewrites(): void` (on `init`, priority 99).
 
-**Which predicate guards the room, and why there are two.** `stream_capable()` keeps exactly the meaning Task 5 gave it and is **not** redefined: *could* this event ever hold a room — registration mode `wc` or `free`, and not a group parent (spec §2 decision 1). It is a fact about the event's shape. `Entitlements::enabled()` is the **stricter** check, `stream_capable() && access_role_enabled`, and it is the one every *room-related* use asks:
+**Which predicate guards the room, and why there are three.** `stream_capable()` keeps exactly the meaning Task 5 gave it and is **not** redefined: *could* this event ever hold a room — registration mode `wc` or `free`, and not a group parent (spec §2 decision 1). It is a fact about the event's shape. `Entitlements::enabled()` is stricter, `stream_capable() && access_role_enabled`, and answers *does the event role apply* — which, since the owner's 2026-09-23 ruling made the switch default **true**, is "yes" for nearly every plugin-registered event. It is therefore **no longer enough on its own to mean "there is a room"**: a plain in-person event is `enabled()` and has no stream.
 
-| Use | Predicate | Disabled event gets |
+So the room's own predicate is **`Module::room_url( $event_id ) !== ''`**, which is `enabled()` **and** a resolvable stream. One expression, computed in one place, consumed by every room surface — rather than each surface re-deciding what "has a room" means and drifting:
+
+| Use | Predicate | Event with no room gets |
 |---|---|---|
-| `Module::room_url()` | `enabled()` | `''` — so nothing anywhere can link to a room that does not exist |
-| `room_headers()` on `template_redirect` | `enabled()` | 302 back to the event page; `/live/` is never a page |
-| Events-list **Live** column | `enabled()` | `—`, with no `Stream_State` call at all |
-| `Event_Schema` `VirtualLocation.url` | `enabled()`, via `room_url()` | the existing fallback: `virtual_url`, else the permalink — i.e. exactly the markup it emits today |
-| `Stream_State::for_event()` | `stream_capable()`, unchanged | a pure function, reached only through the three rows above; leaving it alone keeps it a pure function of sessions and the clock rather than of a policy flag |
+| `Module::room_url()` | `enabled()` **and** `has_stream()` | `''` — so nothing anywhere can link to a room that does not exist |
+| `room_headers()` on `template_redirect` | `room_url() === ''` | 302 back to the event page; `/live/` is never a page |
+| Events-list **Live** column | `room_url() === ''` | `—`, with no `Stream_State` call at all |
+| REST `…/room` | `room_url() === ''` | 404 |
+| `Event_Schema` `VirtualLocation.url` | via `room_url()` | the existing fallback: `virtual_url`, else the permalink — i.e. exactly the markup it emits today |
+| Roster Access column / role panel / grants | `enabled()` | the role surfaces, which are about membership and do not need a stream |
+| `Stream_State::for_event()` | `stream_capable()`, unchanged | a pure function, reached only through the rows above; leaving it alone keeps it a pure function of sessions and the clock rather than of a policy flag |
 
-The split is deliberate: `stream_capable()` answers a question about the event, `enabled()` answers a question about the owner's intent, and the room needs both. Collapsing them into one predicate would mean either the schema fallback silently changed for every external event, or `Stream_State`'s state table gained a seventh state that is not a state.
+The split is deliberate. `stream_capable()` answers a question about the event's shape, `enabled()` a question about the owner's access intent, `room_url() !== ''` a question about whether there is anything to attend. Collapsing them would mean either the schema fallback silently changed for every external event, or `Stream_State`'s state table gained a seventh state that is not a state, or — since the default is now on — a room appearing on every in-person event in the calendar.
+
+`has_stream()` is the new half, and it is a read, not a policy:
+
+```php
+    /**
+     * Does any of this event's sessions resolve to a stream to watch?
+     *
+     * The second half of "has a room". Kept separate from enabled() because
+     * the two answer different questions and the default-true switch made
+     * that difference load-bearing (spec §4 preamble): a plain in-person
+     * event IS enabled — its attendees hold the event role — and still has
+     * nothing to show at /live/.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function has_stream( $event_id ) {
+        foreach ( $this->resolved_sessions( (int) $event_id ) as $row ) {
+            if ( ! empty( $row['stream_embed']['src'] ) ) {
+                return true;
+            }
+        }
+        return false;
+    }
+```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3819,12 +4221,31 @@ class Test_Room extends Anchor_Events_TestCase {
 		$this->assertSame( '', $this->module()->room_url( $parent_id ) );
 	}
 
-	/** Neither has an event whose master switch is off (spec §4 preamble). */
+	/**
+	 * Nor has an ordinary in-person event — which, since the switch defaults
+	 * on (spec §4 preamble), is `enabled()` and still roomless. That is the
+	 * whole reason room_url() asks has_stream() as well.
+	 */
 	public function test_plain_event_has_no_room() {
 		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
 
 		$this->assertTrue( $this->module()->stream_capable( $event_id ), 'It COULD hold a room…' );
-		$this->assertSame( '', $this->module()->room_url( $event_id ), '…and it does not have one.' );
+		$this->assertTrue( $this->module()->entitlements->enabled( $event_id ), '…its attendees do get the event role…' );
+		$this->assertFalse( $this->module()->has_stream( $event_id ), '…but nothing resolves to watch…' );
+		$this->assertSame( '', $this->module()->room_url( $event_id ), '…so it has no room.' );
+	}
+
+	/** And neither has one whose operator switched access off. */
+	public function test_switched_off_event_has_no_room() {
+		$event_id = $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => false,
+			'stream_default_modality' => 'virtual',
+			'stream_embed'        => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/78', 'raw' => '' ],
+		] );
+
+		$this->assertTrue( $this->module()->has_stream( $event_id ), 'There is a stream…' );
+		$this->assertSame( '', $this->module()->room_url( $event_id ), '…but the switch is off, so no room.' );
 	}
 
 	/** The Live column is a dash for a plain event, not a state. */
@@ -3984,11 +4405,19 @@ Add to `Module` (next to `template_include()`):
     /**
      * The room URL for an event, or '' when the event has no room.
      *
-     * Guards on Entitlements::enabled(), not stream_capable(): an event that
-     * COULD hold a room but has not opted in (spec §2 row 8a) has no room, and
+     * TWO conditions, and both are load-bearing since the switch's default
+     * became true (spec §4 preamble):
+     *   - Entitlements::enabled() — the event is in the access feature at all
+     *     (registration mode wc/free, not a group parent, switch on);
+     *   - has_stream() — something actually resolves to watch.
+     * A plain in-person event passes the first and fails the second: its
+     * attendees hold the event role and there is no room.
+     *
      * '' is how every caller learns that — the metabox prints no Room URL, the
-     * Live column prints a dash, Event_Schema falls back to virtual_url or the
-     * permalink, and room_url_for() mints no sign-in token.
+     * Live column prints a dash, the REST endpoint 404s, Event_Schema falls
+     * back to virtual_url or the permalink, and room_url_for() mints no
+     * sign-in token. This method is THE definition of "has a room"; no caller
+     * re-derives it.
      *
      * @param int $event_id
      * @return string
@@ -3996,6 +4425,9 @@ Add to `Module` (next to `template_include()`):
     public function room_url( $event_id ) {
         $event_id = (int) $event_id;
         if ( ! $this->entitlements || ! $this->entitlements->enabled( $event_id ) ) {
+            return '';
+        }
+        if ( ! $this->has_stream( $event_id ) ) {
             return '';
         }
         $permalink = (string) \get_permalink( $event_id );
@@ -4019,10 +4451,12 @@ Add to `Module` (next to `template_include()`):
         }
         $event_id = (int) \get_queried_object_id();
         // No room: an external-registration event, a group parent (its dates
-        // each have one), or an event whose access switch is off. All three
-        // are "this URL is not a page", so they redirect to the event itself
-        // rather than rendering an empty room.
-        if ( ! $this->entitlements || ! $this->entitlements->enabled( $event_id ) ) {
+        // each have one), an event whose access switch is off, or — the common
+        // case now that the switch defaults on — an ordinary in-person event
+        // with no stream. All of them are "this URL is not a page", so they
+        // redirect to the event itself rather than rendering an empty room.
+        // One predicate for all four: room_url() is the definition.
+        if ( $this->room_url( $event_id ) === '' ) {
             \wp_safe_redirect( (string) \get_permalink( $event_id ), 302 );
             exit;
         }
@@ -4279,10 +4713,13 @@ Add the admin column (in `columns()`, `render_column()`, after the capacity arms
 ```
 ```php
             case 'anchor_event_live':
-                // enabled(), not stream_capable(): a plain in-person event is
-                // not "in person" in this column, it is not in this feature at
-                // all, and Stream_State is never asked about it.
-                if ( ! $this->entitlements || ! $this->entitlements->enabled( $post_id ) ) {
+                // room_url(), not enabled(): since the switch defaults on,
+                // enabled() is true for nearly every event in this list and
+                // would put a state on every in-person row. The column is
+                // about the ROOM, so it asks the one question that means
+                // "there is a room", and Stream_State is never asked about an
+                // event that has none.
+                if ( $this->room_url( $post_id ) === '' ) {
                     echo '&mdash;';
                     break;
                 }
@@ -4427,12 +4864,12 @@ And to `tests/test-assets.php`:
      */
     public function rest_room( $request ) {
         $event_id = (int) $request['id'];
-        // enabled(), not stream_capable(): an event that has not opted in has
-        // no room to report on, and 404 is the honest answer — the same one an
-        // external-registration event or a group parent gets. This is what the
-        // inertness suite (Task 9b) asserts for a plain event.
-        if ( \get_post_type( $event_id ) !== self::CPT
-            || ! $this->entitlements || ! $this->entitlements->enabled( $event_id ) ) {
+        // room_url(), the one definition of "has a room": an event with no
+        // stream, one whose switch is off, an external-registration event and
+        // a group parent all have nothing to report, and 404 is the honest
+        // answer for all four. This is what Task 9b's suite asserts for both a
+        // plain event and a switched-off one.
+        if ( \get_post_type( $event_id ) !== self::CPT || $this->room_url( $event_id ) === '' ) {
             return new \WP_Error( 'anchor_events_room_missing', \__( 'No room for that event.', 'anchor-schema' ), [ 'status' => 404 ] );
         }
         $state = Stream_State::for_event( $event_id );
@@ -4615,12 +5052,24 @@ class Test_Login_Token extends Anchor_Events_TestCase {
 		] );
 	}
 
-	/** A plain event mints no token: there is no room to sign in to. */
-	public function test_no_token_for_an_event_with_the_switch_off() {
-		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
-		$user_id  = self::factory()->user->create();
+	/**
+	 * No room, no token. Both ways an event can lack a room: no stream (the
+	 * common case, since the access switch defaults on), and the switch
+	 * explicitly off despite a stream.
+	 */
+	public function test_no_token_for_an_event_with_no_room() {
+		$user_id = self::factory()->user->create();
 
-		$this->assertSame( '', $this->module()->entitlements->room_url_for( $user_id, $event_id ) );
+		$no_stream = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$this->assertSame( '', $this->module()->entitlements->room_url_for( $user_id, $no_stream ) );
+
+		$switched_off = $this->make_event( [
+			'registration_mode'       => 'free',
+			'access_role_enabled'     => false,
+			'stream_default_modality' => 'virtual',
+			'stream_embed'            => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/3', 'raw' => '' ],
+		] );
+		$this->assertSame( '', $this->module()->entitlements->room_url_for( $user_id, $switched_off ) );
 	}
 
 	public function test_valid_token_verifies() {
@@ -4813,7 +5262,9 @@ git commit -m "feat(events): stateless one-click room sign-in tokens"
 
 **Interfaces:** new scalar token `room_link`; `default_email_cta()` gains a stream branch above the virtual one.
 
-**Both are gated on `Entitlements::enabled()` (spec §6.2).** `{room_link}` resolves to `''` for a disabled event **without calling `ensure_user()`** — the guard is checked before the resolution, not relied on through `ensure_user()`'s own return of 0, because rendering a plain event's confirmation must not even look up an account. `enabled()` already implies `stream_capable()`, so the CTA branch drops the separate `stream_capable()` call and reads `enabled() && ! empty( $meta['stream_embed']['src'] )`: the switch says the feature applies, the embed says there is something to join.
+**Both are gated on `Module::room_url( $event_id ) !== ''` (spec §6.2, and Task 11's predicate table).** That single expression is `Entitlements::enabled()` **and** a resolvable stream, which is exactly the pair of conditions a join link needs: the switch says the feature applies to this event, the stream says there is something to join. Since the owner's 2026-09-23 ruling made the switch default **true**, `enabled()` alone is no longer a sufficient gate — it is true for nearly every event, and gating on it would put a "Join the livestream" button on an in-person workshop's confirmation.
+
+`{room_link}` resolves to `''` **without calling `ensure_user()`** whenever there is no room — the guard is checked before the resolution, not relied on through `ensure_user()`'s own return of 0, because rendering a plain event's confirmation must not even look up an account. (For an event that *is* switched on, its attendee already has an account: they got one when the seat was confirmed. The guard is about the no-room case.)
 
 - [ ] **Step 1: Failing test** — append to `tests/test-email-templates.php`:
 
@@ -4875,15 +5326,38 @@ git commit -m "feat(events): stateless one-click room sign-in tokens"
 		$this->assertSame( '{room_link}', $cta['url'] );
 	}
 
-	/** A plain event's confirmation gets no link and resolves no account. */
-	public function test_room_link_is_empty_and_inert_when_the_switch_is_off() {
+	/**
+	 * An in-person event with no stream gets no room link — even though the
+	 * access switch is ON for it by default and its attendee therefore has an
+	 * account. No room, no link, and nothing is looked up to decide that.
+	 */
+	public function test_room_link_is_empty_for_an_event_with_no_stream() {
 		$event_id = $this->make_event( [
 			'registration_mode' => 'free',
 			'timezone'          => 'UTC',
 			'start_ts'          => time() + DAY_IN_SECONDS,
 			'end_ts'            => time() + DAY_IN_SECONDS + 3600,
-		] ); // access_role_enabled defaults to false.
+		] ); // access_role_enabled defaults to TRUE; there is simply no stream.
 		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Plain', 'email' => 'plain-cta@example.test' ] );
+		$seat    = $this->registrations()->get_seat( $seat_id );
+
+		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id, 'seat' => $seat ] );
+
+		$this->assertSame( '', $tokens['room_link'] );
+		$this->assertSame( 'View event details', $this->module()->default_email_cta( $event_id )['label'] );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** A switched-off event's confirmation resolves no account at all. */
+	public function test_room_link_is_inert_when_the_switch_is_off() {
+		$event_id = $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => false,
+			'timezone'            => 'UTC',
+			'start_ts'            => time() + DAY_IN_SECONDS,
+			'end_ts'              => time() + DAY_IN_SECONDS + 3600,
+		] );
+		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Off', 'email' => 'off-cta@example.test' ] );
 		$seat    = $this->registrations()->get_seat( $seat_id );
 		$before  = count_users()['total_users'];
 
@@ -4891,11 +5365,11 @@ git commit -m "feat(events): stateless one-click room sign-in tokens"
 
 		$this->assertSame( '', $tokens['room_link'] );
 		$this->assertSame( $before, count_users()['total_users'], 'Rendering the email creates nothing.' );
-		$this->assertNull( get_user_by( 'email', 'plain-cta@example.test' ) ?: null );
+		$this->assertNull( get_user_by( 'email', 'off-cta@example.test' ) ?: null );
 		$this->assertSame( 'View event details', $this->module()->default_email_cta( $event_id )['label'] );
 	}
 
-	/** A saved embed with the switch somehow off still gets no livestream CTA. */
+	/** A saved embed on a switched-off event still gets no livestream CTA. */
 	public function test_cta_needs_the_switch_as_well_as_an_embed() {
 		$event_id = $this->make_event( [
 			'registration_mode' => 'free',
@@ -4922,11 +5396,12 @@ git commit -m "feat(events): stateless one-click room sign-in tokens"
         // all live. The URL is the {room_link} TOKEN, not a resolved link —
         // the CTA is rendered once per recipient and the token expands there.
         //
-        // TWO conditions, and both are load-bearing: enabled() says this event
-        // is in the feature at all (it subsumes stream_capable()), the embed
-        // says there is something to join. A plain event fails the first and
-        // falls through to exactly the button it sends today.
-        if ( $event_id && $this->entitlements && $this->entitlements->enabled( (int) $event_id ) && ! empty( $meta['stream_embed']['src'] ) ) {
+        // room_url() is BOTH conditions in one expression (Task 11): the
+        // access switch is on for this event AND a stream resolves. Since the
+        // switch defaults on, the second half is what keeps this button off an
+        // in-person workshop's confirmation — a plain event falls through to
+        // exactly the button it sends today.
+        if ( $event_id && $this->room_url( (int) $event_id ) !== '' ) {
             return [ 'label' => __( 'Join the livestream', 'anchor-schema' ), 'url' => '{room_link}' ];
         }
         if ( ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] ) ) {
@@ -4947,12 +5422,12 @@ git commit -m "feat(events): stateless one-click room sign-in tokens"
         // sign in for. {join_link} keeps meaning the raw provider URL so legacy
         // templates are untouched.
         //
-        // enabled() is checked HERE rather than leaning on ensure_user()'s own
-        // guard: rendering a plain event's confirmation must not so much as
-        // look up an account, let alone create one. An inert event's token is
-        // the empty string and nothing runs to produce it.
+        // The room's own predicate (Task 11) is checked HERE rather than
+        // leaning on ensure_user()'s guard: rendering the confirmation for an
+        // event with no room must not so much as look up an account. The
+        // token is the empty string and nothing runs to produce it.
         $room_link = '';
-        if ( $event_id && $this->entitlements && $this->entitlements->enabled( (int) $event_id )
+        if ( $event_id && $this->room_url( (int) $event_id ) !== ''
             && ( ! $seat || ( $seat['status'] ?? '' ) === Registrations::STATUS_CONFIRMED ) ) {
             $seat_user = (int) ( $seat['user_id'] ?? 0 );
             if ( $seat_user <= 0 && ! empty( $seat['id'] ) ) {
@@ -4970,7 +5445,7 @@ git commit -m "feat(events): stateless one-click room sign-in tokens"
 ```php
         $room_link = '';
         if ( $event_id && $status === Registrations::STATUS_CONFIRMED
-            && $this->entitlements && $this->entitlements->enabled( (int) $event_id ) ) {
+            && $this->room_url( (int) $event_id ) !== '' ) {
             $seat_id = (int) ( $ctx['seat_id'] ?? 0 );
             $user_id = $seat_id > 0 ? $this->entitlements->ensure_user( [ 'id' => $seat_id ] ) : 0;
             if ( $user_id > 0 ) {
@@ -5102,7 +5577,11 @@ git commit -m "feat(events): per-tier modality on tiers, variations and the atte
 
 **Interfaces:** `Module::render_livestream_fields( int $event_id, array $meta, bool $admin ): string`; `Module::render_access_fields( int $event_id, array $meta, bool $admin ): string`; `Module::prerequisite_role_choices(): array<string,array<string,string>>` (grouped: Site roles / Events / Courses).
 
-**The Access section leads with the master switch** (spec §7): the checkbox `anchor_event_access_role_enabled`, "Give confirmed attendees an account and the event role", then the prerequisites picker and any/all. When a stream is saved the checkbox is rendered **checked and `disabled`**, with a hidden `anchor_event_access_role_enabled=1` beside it so the value still posts (a disabled input does not) — and the sanitiser is a pure OR anyway (D6 / Task 4), so a lost hidden input can never turn it off. Sanitised in `event_authoring_input()` per **D6**: it is a scalar, so it belongs there and not in `sanitize_event_type_input()`.
+**The Access section leads with the master switch** (spec §7): the checkbox `anchor_event_access_role_enabled`, "Give confirmed attendees an account and the event role", **checked by default**, then the prerequisites picker and any/all. Sanitised in `event_authoring_input()` per **D6**: it is a scalar, so it belongs there and not in `sanitize_event_type_input()`.
+
+**The hidden companion is what makes the switch reversible.** Task 4's rule turns on `isset( $src['anchor_event_access_role_enabled'] )`: field present → take it, field absent → keep the stored value. An unticked checkbox posts nothing, so on its own it is indistinguishable from a form that never rendered the control — which is exactly the ambiguity that forced the old design into a pure OR. The fix is the standard WordPress pairing: a `<input type="hidden" name="anchor_event_access_role_enabled" value="0">` **immediately before** the checkbox, so the field is always in the POST and PHP's last-wins array parsing yields `1` when ticked and `0` when not. **Every surface that renders this control renders the hidden input**, which is why both surfaces share this one renderer.
+
+**When a stream is saved the checkbox is rendered checked and `disabled`**, and the hidden companion carries `1` instead of `0` — a disabled input posts nothing, and the value must still arrive. Even if that hidden input were lost, Task 4's step 2 forces the switch true whenever the save stores a stream, so the locked state cannot be defeated by a missing field.
 
 - [ ] **Step 1: Failing test:**
 
@@ -5119,15 +5598,40 @@ git commit -m "feat(events): per-tier modality on tiers, variations and the atte
 		$this->assertStringContainsString( 'name="anchor_event_stream_open_before_minutes"', $html );
 		$this->assertStringContainsString( 'name="anchor_event_stream_close_after_minutes"', $html );
 		// No stream saved yet, so there is no room and no Room URL row —
-		// room_url() is '' until the event opts in (Task 11).
+		// room_url() needs a resolvable stream as well as the switch (Task 11).
 		$this->assertStringNotContainsString( 'Room URL', $html );
 
 		$access = $this->module()->render_access_fields( $event_id, $meta, true );
 		$this->assertStringContainsString( 'name="anchor_event_access_role_enabled"', $access );
 		$this->assertStringContainsString( 'Give confirmed attendees an account and the event role', $access );
+		// Default CHECKED (spec §3.1) — this is the owner's 2026-09-23 ruling
+		// as the author sees it.
+		$this->assertMatchesRegularExpression(
+			'/<input type="checkbox"[^>]*name="anchor_event_access_role_enabled"[^>]*checked/',
+			$access,
+			'The switch is ticked by default.'
+		);
+		// The hidden companion is what lets an UNTICK be told from an absent
+		// field (Task 4). Without it the checkbox is a one-way switch again.
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="0"', $access );
+		$this->assertStringContainsString( 'never removes anyone who already has it', $access );
 		$this->assertStringNotContainsString( 'disabled', $access, 'With no stream saved the switch is the author\'s to set.' );
 		$this->assertStringContainsString( 'name="anchor_event_required_roles[]"', $access );
 		$this->assertStringContainsString( 'name="anchor_event_required_roles_mode"', $access );
+	}
+
+	/** An event whose operator unticked it renders unticked, and still reversible. */
+	public function test_access_switch_renders_unticked_when_stored_false() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+
+		$access = $this->module()->render_access_fields( $event_id, $this->module()->get_meta( $event_id ), true );
+
+		$this->assertDoesNotMatchRegularExpression(
+			'/<input type="checkbox"[^>]*name="anchor_event_access_role_enabled"[^>]*checked/',
+			$access
+		);
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="0"', $access );
+		$this->assertStringNotContainsString( 'disabled', $access );
 	}
 
 	/** With a stream saved the switch is checked, locked, and still posts a 1. */
@@ -5141,8 +5645,10 @@ git commit -m "feat(events): per-tier modality on tiers, variations and the atte
 		$access = $this->module()->render_access_fields( $event_id, $this->module()->get_meta( $event_id ), true );
 
 		$this->assertStringContainsString( 'disabled', $access );
+		// The hidden companion carries 1 here, because a disabled checkbox
+		// posts nothing at all.
 		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="1"', $access );
-		$this->assertStringContainsString( 'Turn it off by deleting the event role', $access );
+		$this->assertStringContainsString( 'Remove the stream first', $access );
 
 		// And the Livestream group now shows the room, because there is one.
 		$stream = $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true );
@@ -5227,9 +5733,10 @@ git commit -m "feat(events): per-tier modality on tiers, variations and the atte
                     <label for="anchor_event_stream_close_after_minutes"><?php echo esc_html__( 'Close the room (minutes after)', 'anchor-schema' ); ?></label>
                     <input type="number" min="0" step="1" id="anchor_event_stream_close_after_minutes" name="anchor_event_stream_close_after_minutes" value="<?php echo esc_attr( (int) $meta['stream_close_after_minutes'] ); ?>" />
                 </div>
-                <?php /* room_url() is '' until the event opts in (Task 11), so
-                         the Room URL row appears the moment a stream is saved
-                         and never for an event that has no room. */ ?>
+                <?php /* room_url() needs a resolvable stream as well as the
+                         access switch (Task 11), so the Room URL row appears
+                         the moment a stream is saved and never for an ordinary
+                         in-person event — whose attendees still get the role. */ ?>
                 <?php if ( $room !== '' ) : ?>
                     <div class="anchor-event-field" style="grid-column:1/-1;">
                         <span class="anchor-event-field-heading"><?php echo esc_html__( 'Room URL', 'anchor-schema' ); ?></span>
@@ -5281,11 +5788,9 @@ git commit -m "feat(events): per-tier modality on tiers, variations and the atte
     public function render_access_fields( $event_id, array $meta, $admin = true ) {
         $selected = \is_array( $meta['required_roles'] ?? null ) ? $meta['required_roles'] : [];
         $hint     = $admin ? 'description' : 'anchor-event-hint';
-        // A saved stream IS the opt-in (spec §3.1), so the switch is shown
-        // checked and locked rather than as a control that appears to do
-        // nothing. The hidden input carries the value a disabled checkbox
-        // would not post; the sanitiser ORs it against the stored value
-        // anyway, so losing it cannot turn the event off.
+        // A saved stream IS the opt-in (spec §3.1), so with one saved the
+        // switch is shown checked and locked rather than as a control that
+        // appears to do nothing.
         $locked = ! empty( $meta['stream_embed']['src'] );
         $on     = $locked || ! empty( $meta['access_role_enabled'] );
         \ob_start();
@@ -5294,9 +5799,23 @@ git commit -m "feat(events): per-tier modality on tiers, variations and the atte
             <h3><?php echo esc_html__( 'Access', 'anchor-schema' ); ?></h3>
             <div class="anchor-event-grid">
                 <div class="anchor-event-field anchor-event-field--check" style="grid-column:1/-1;">
-                    <?php if ( $locked ) : ?>
-                        <input type="hidden" name="anchor_event_access_role_enabled" value="1" />
-                    <?php endif; ?>
+                    <?php
+                    /*
+                     * The hidden companion, ALWAYS rendered, and always first:
+                     * an unticked checkbox posts nothing, so without this the
+                     * save rule (Task 4) cannot tell "the author unticked it"
+                     * from "this form never carried the control" and has to
+                     * treat both as "leave it alone". PHP takes the last value
+                     * for a repeated name, so hidden-then-checkbox yields 1
+                     * when ticked and 0 when not.
+                     *
+                     * When the switch is locked the checkbox is disabled and
+                     * posts nothing at all, so the hidden input carries the 1.
+                     * (Task 4 would force it true from the saved stream
+                     * regardless; this just keeps the POST honest.)
+                     */
+                    ?>
+                    <input type="hidden" name="anchor_event_access_role_enabled" value="<?php echo $locked ? '1' : '0'; ?>" />
                     <label>
                         <input type="checkbox" id="anchor_event_access_role_enabled"
                             <?php echo $locked ? '' : 'name="anchor_event_access_role_enabled"'; ?>
@@ -5304,11 +5823,14 @@ git commit -m "feat(events): per-tier modality on tiers, variations and the atte
                         <?php echo esc_html__( 'Give confirmed attendees an account and the event role', 'anchor-schema' ); ?>
                     </label>
                     <p class="<?php echo esc_attr( $hint ); ?>">
-                        <?php echo esc_html__( 'Off by default. Leave it off and this event behaves exactly as it always has: no accounts are created, no event role exists, and there is no livestream room. Turn it on and every confirmed attendee gets an account and the role "Event: {title}" — which is what unlocks the livestream room and lets the Private File Manager gate recordings and handouts on having attended. Saving a stream, or a livestream session or ticket, turns it on for you.', 'anchor-schema' ); ?>
+                        <?php echo esc_html__( 'On by default, for every event. Each confirmed attendee gets an account and the role "Event: {title}" — which is what lets the Private File Manager hand out recordings, handouts and certificates to the people who attended, and what unlocks the livestream room if this event has a stream. An in-person event with no stream still grants the role; it simply has no room.', 'anchor-schema' ); ?>
+                    </p>
+                    <p class="<?php echo esc_attr( $hint ); ?>">
+                        <?php echo esc_html__( 'Turning it off stops new attendees being given the role from now on. It never removes anyone who already has it — to do that, delete the event role on the Basics tab. To give the role to people who registered while it was off, use "Grant role to current attendees" there.', 'anchor-schema' ); ?>
                     </p>
                     <?php if ( $locked ) : ?>
                         <p class="<?php echo esc_attr( $hint ); ?>">
-                            <?php echo esc_html__( 'This event has a stream, so attendee access is required and cannot be switched off here. Turn it off by deleting the event role on the Basics tab, which also removes it from everyone who holds it.', 'anchor-schema' ); ?>
+                            <?php echo esc_html__( 'This event has a stream, so attendee access is required and cannot be switched off here — the room would have nobody who could enter it. Remove the stream first if you need to turn it off.', 'anchor-schema' ); ?>
                         </p>
                     <?php endif; ?>
                 </div>
@@ -5439,15 +5961,33 @@ git commit -m "feat(events): Livestream metabox group, session modality/override
 			'name="anchor_event_stream_embed"',
 			$this->module()->render_livestream_fields( $event_id, $meta, false )
 		);
-		$this->assertStringContainsString(
-			'name="anchor_event_access_role_enabled"',
-			$this->module()->render_access_fields( $event_id, $meta, false )
-		);
+		$console_access = $this->module()->render_access_fields( $event_id, $meta, false );
+		$this->assertStringContainsString( 'name="anchor_event_access_role_enabled"', $console_access );
+		// The hidden companion has to be on the CONSOLE form too, or a console
+		// save silently becomes "field absent" and the switch is one-way there
+		// (Task 4). Same renderer, so this is a regression guard.
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="0"', $console_access );
 	}
 
-	/** The console can tick the switch by hand for an in-person event. */
-	public function test_console_can_tick_the_access_switch_by_hand() {
+	/** The console can untick the switch, and it persists — same rule as the metabox. */
+	public function test_console_can_untick_the_access_switch() {
 		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'], 'On by default.' );
+
+		$this->module()->save_event_manager_fields( $event_id, [
+			'anchor_event_title'               => 'Hands-On Day',
+			'anchor_event_start_date'          => '2027-07-01',
+			// What the hidden companion posts when the box is unticked.
+			'anchor_event_access_role_enabled' => '0',
+		] );
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+	}
+
+	/** And tick it back on for an in-person event whose handouts are role-gated. */
+	public function test_console_can_tick_the_access_switch_back_on() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
 
 		$this->module()->save_event_manager_fields( $event_id, [
@@ -5459,6 +5999,19 @@ git commit -m "feat(events): Livestream metabox group, session modality/override
 		$meta = $this->module()->get_meta( $event_id );
 		$this->assertTrue( $meta['access_role_enabled'] );
 		$this->assertSame( [], $meta['stream_embed'], 'No stream — the file manager gates the handouts.' );
+	}
+
+	/** A console save that never rendered the Access section leaves it alone. */
+	public function test_console_save_without_the_access_field_keeps_the_stored_value() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$this->module()->save_event_manager_fields( $event_id, [
+			'anchor_event_title'      => 'Partial Save',
+			'anchor_event_start_date' => '2027-07-01',
+		] );
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
 	}
 ```
 
@@ -5490,7 +6043,7 @@ git commit -m "feat(events): console parity for the Livestream and Access fields
 
 **Interfaces:** admin-post actions `anchor_roster_grant`, `anchor_roster_revoke`, `anchor_roster_add_access` (nonces `anchor_roster_edit_{event_id}`); export scope `access`. `Roster::access_state( int $event_id, array $seat ): string` → `off|yes|manual|no` **already exists from Task 9b** and is consumed here, not redefined.
 
-**Nothing in this task renders for an event whose master switch is off** (spec §4 preamble). `get_columns()` omits the Access column entirely rather than printing a column of `off`; the header's "Add person by email" form is omitted with it; and the export's `access` scope is not offered. The three admin-post handlers stay registered (an unconditional `add_action` in the constructor is cheaper and simpler than a conditional one) but each is unreachable from the UI, and `add_access_by_email()` refuses on its own — it is the one entry point that creates an account without a seat, so it never passes through `ensure_user()`'s guard and needs its own.
+**Nothing in this task renders for an event whose master switch is off** (spec §4 preamble) — which, since the switch defaults **on**, is the exception rather than the rule: an ordinary in-person event's roster now *does* carry the Access column, because its attendees really do hold the event role. `get_columns()` omits the Access column entirely rather than printing a column of `off`; the header's "Add person by email" form is omitted with it; and the export's `access` scope is not offered. The three admin-post handlers stay registered (an unconditional `add_action` in the constructor is cheaper and simpler than a conditional one) but each is unreachable from the UI, and `add_access_by_email()` refuses on its own — it is the one entry point that creates an account without a seat, so it never passes through `ensure_user()`'s guard and needs its own.
 
 - [ ] **Step 1: Failing test:**
 
@@ -5553,9 +6106,11 @@ git commit -m "feat(events): console parity for the Livestream and Access fields
 		remove_role( 'anchor_event_' . $event_id );
 	}
 
-	/** A plain event's roster has no Access column and no add-by-email form. */
+	/** A switched-off event's roster has no Access column and no add-by-email form. */
 	public function test_no_access_column_when_the_switch_is_off() {
-		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] ); // switch off
+		// Explicitly off: the default is ON (spec §3.1), so an ordinary
+		// in-person event's roster DOES show this column now.
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
 		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'plain-roster@example.test' ] );
 		$seat     = $this->registrations()->get_seat( $seat_id );
 
@@ -5566,7 +6121,7 @@ git commit -m "feat(events): console parity for the Livestream and Access fields
 
 	/** And add-by-email refuses outright — it never reaches ensure_user(). */
 	public function test_add_person_by_email_refuses_when_the_switch_is_off() {
-		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
 		$before = count_users()['total_users'];
 
@@ -5777,14 +6332,26 @@ git commit -m "feat(events): roster access column, manual grant/revoke, add-by-e
 
 ---
 
-### Task 19: Console Basics — the "Event role" panel
+### Task 19: Console Basics — the "Event role" panel, with backfill
 
-**Files:** Modify `anchor-events-manager.php` — `render_event_manager_form()` Basics section (~:7975), constructor (`admin_post_anchor_events_delete_role`), new `render_event_role_panel()` / `handle_delete_role()`. Test: `tests/test-entitlements.php`.
+**Files:** Modify `anchor-events-manager.php` — `render_event_manager_form()` Basics section (~:7975), constructor (`admin_post_anchor_events_delete_role`, `admin_post_anchor_events_backfill_role`), new `render_event_role_panel()` / `handle_delete_role()` / `handle_backfill_role()`; `class-entitlements.php` (new `backfill()`). Test: `tests/test-entitlements.php`.
+
+**Interfaces:**
+- Produces: `Entitlements::backfill( int $event_id ): int` — loops every **confirmed** seat on the event through `grant_for_seat()`, creating accounts as needed, and returns **how many were newly granted**. Idempotent: a second run returns 0. Returns 0 without touching anything when `enabled()` is false.
+- Produces: `Module::handle_backfill_role(): void` on `admin_post_anchor_events_backfill_role`; nonce `anchor_events_backfill_role_{event_id}`; capability `Roster::current_user_can_manage()`; reports the count back through the same redirect-query-arg notice mechanism `handle_delete_role()` uses.
+
+**Why the backfill exists (spec §4.4).** The switch's default is true, but that default only decides what happens at the *next* seat transition. An event that was already selling before this shipped — or one whose switch was off for a fortnight — has confirmed attendees who hold no role and, for the guests among them, no account. "Grant role to current attendees" is the one button that reconciles the roster with the switch, and it is the answer to the only real objection to a reversible off switch: turning it back on is not a dead end.
+
+`grant_for_seat()` already does every part of the work (resolve or create the account, write `_anchor_event_user_id`, mint the role, add it, record the grant, fire the action) and already checks `enabled()` through `ensure_user()`. The backfill is a **loop over seats**, not a second implementation of granting — which is also why it cannot drift from what a live registration does.
+
+**Seats come from `Registrations::query_seats()`**, the module's existing paged seat query (class-registrations.php:1449), with `status => 'confirmed'` and `per_page => -1`. Not a fresh `WP_Query`: that method already owns the `_anchor_event_id` numeric meta clause, the status clause and the meta-cache priming, and a parallel query here is exactly the duplicated-logic-that-must-agree trap.
+
+`grant_for_seat()` gains a `bool` return (true when a role was newly added) so the count is the truth rather than an estimate; `on_seat_created()` / `on_seat_status_changed()` ignore it, so no caller changes.
 
 - [ ] **Step 1: Failing test:**
 
 ```php
-	/** The Basics panel shows the role, its members, and a Delete action. */
+	/** The Basics panel shows the role, its members, the backfill and Delete. */
 	public function test_event_role_panel() {
 		$event_id = $this->enabled_event( [ 'title' => 'Panel Event' ] );
 		$this->ent()->grant( $event_id, self::factory()->user->create(), 'seat' );
@@ -5795,27 +6362,106 @@ git commit -m "feat(events): roster access column, manual grant/revoke, add-by-e
 		$this->assertStringContainsString( 'Event: Panel Event', $html );
 		$this->assertStringContainsString( '1', $html );
 		$this->assertStringContainsString( 'anchor_events_delete_role', $html );
+		$this->assertStringContainsString( 'anchor_events_backfill_role', $html );
+		$this->assertStringContainsString( 'Grant role to current attendees', $html );
 	}
 
-	/** An event with no role yet says so and offers nothing to delete. */
+	/**
+	 * An event with no role yet still offers the backfill — that is precisely
+	 * the event that needs it (one that was selling before this shipped).
+	 */
 	public function test_event_role_panel_before_any_grant() {
 		$event_id = $this->enabled_event();
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
 		$html = $this->module()->render_event_role_panel( $event_id );
 		$this->assertStringContainsString( 'No role yet', $html );
 		$this->assertStringNotContainsString( 'anchor_events_delete_role', $html );
+		$this->assertStringContainsString( 'anchor_events_backfill_role', $html );
 	}
 
-	/** A plain event gets one line pointing at the switch, and nothing else. */
+	/** A switched-off event gets one line pointing at the switch, and nothing else. */
 	public function test_event_role_panel_when_the_switch_is_off() {
-		$event_id = $this->event(); // access_role_enabled defaults to false.
+		$event_id = $this->disabled_event(); // The default is TRUE, so say so.
 		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
 
 		$html = $this->module()->render_event_role_panel( $event_id );
 
 		$this->assertStringContainsString( 'Attendee access is off for this event', $html );
 		$this->assertStringNotContainsString( 'anchor_events_delete_role', $html );
+		$this->assertStringNotContainsString( 'anchor_events_backfill_role', $html );
 		$this->assertStringNotContainsString( 'anchor_event_' . $event_id, $html, 'No slug is advertised for a role that does not exist.' );
+	}
+
+	/* -----------------------------------------------------------------
+	 * Backfill (spec §4.4, §8 (f))
+	 * --------------------------------------------------------------- */
+
+	/** Every confirmed seat is granted, once, and accounts are created as needed. */
+	public function test_backfill_grants_every_confirmed_seat_once() {
+		// Built switched-OFF so the seats exist without having been granted —
+		// the exact shape of an event that was selling before this shipped.
+		$event_id = $this->disabled_event();
+		$known    = self::factory()->user->create( [ 'user_email' => 'known-bf@example.test' ] );
+		$this->make_seat( $event_id, [ 'name' => 'Known', 'email' => 'known-bf@example.test' ] );
+		$this->make_seat( $event_id, [ 'name' => 'Guest', 'email' => 'guest-bf@example.test', 'seat_index' => 2 ] );
+
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $known ) );
+		$this->assertNull( get_user_by( 'email', 'guest-bf@example.test' ) ?: null );
+
+		// The operator ticks Access back on, then runs the backfill.
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+
+		$this->assertSame( 2, $this->ent()->backfill( $event_id ) );
+
+		$guest = get_user_by( 'email', 'guest-bf@example.test' );
+		$this->assertInstanceOf( 'WP_User', $guest, 'The backfill creates the accounts it needs.' );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $known ) );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, (int) $guest->ID ) );
+		$this->assertSame( 'seat', $this->ent()->grant_record( $event_id, $known )['source'] );
+	}
+
+	/** Idempotent: a second run grants nobody. */
+	public function test_backfill_is_idempotent() {
+		$event_id = $this->enabled_event();
+		$this->make_seat( $event_id, [ 'name' => 'Already', 'email' => 'already-bf@example.test' ] );
+
+		// The seat was born confirmed, so the hook already granted it.
+		$this->assertSame( 0, $this->ent()->backfill( $event_id ) );
+		$this->assertSame( 0, $this->ent()->backfill( $event_id ) );
+	}
+
+	/** Pending, waitlisted and cancelled seats are skipped. */
+	public function test_backfill_skips_seats_that_are_not_confirmed() {
+		$event_id = $this->disabled_event();
+		$this->make_seat( $event_id, [
+			'name'   => 'Pending',
+			'email'  => 'pending-bf@example.test',
+			'status' => \Anchor\Events\Registrations::STATUS_PENDING,
+		] );
+		$cancelled = $this->make_seat( $event_id, [ 'name' => 'Gone', 'email' => 'gone-bf@example.test', 'seat_index' => 2 ] );
+		$this->registrations()->update_status( $cancelled, \Anchor\Events\Registrations::STATUS_CANCELLED );
+
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+
+		$this->assertSame( 0, $this->ent()->backfill( $event_id ) );
+		$this->assertNull( get_user_by( 'email', 'pending-bf@example.test' ) ?: null );
+		$this->assertNull( get_user_by( 'email', 'gone-bf@example.test' ) ?: null );
+	}
+
+	/** It refuses outright when the switch is off, and says so. */
+	public function test_backfill_refuses_when_the_switch_is_off() {
+		$event_id = $this->disabled_event();
+		$this->make_seat( $event_id, [ 'name' => 'Nope', 'email' => 'nope-bf@example.test' ] );
+		$before = count_users()['total_users'];
+
+		$this->assertSame( 0, $this->ent()->backfill( $event_id ) );
+		$this->assertSame( $before, count_users()['total_users'] );
+		$this->assertNull( get_role( 'anchor_event_' . $event_id ) );
+		$this->assertStringContainsString(
+			'Attendee access is off',
+			$this->module()->backfill_notice_message( 0, false ),
+			'The operator is told WHY nothing happened, not just that nothing happened.'
+		);
 	}
 ```
 
@@ -5848,7 +6494,8 @@ git commit -m "feat(events): roster access column, manual grant/revoke, add-by-e
                 . \esc_html__( 'Attendee access is off for this event — turn it on in Access.', 'anchor-schema' )
                 . '</p></div>';
         }
-        $slug = $this->entitlements->role_for( $event_id, false );
+        $slug     = $this->entitlements->role_for( $event_id, false );
+        $redirect = \remove_query_arg( 'event_manager_notice' );
         \ob_start();
         ?>
         <div class="anchor-event-field anchor-event-role-panel" style="grid-column:1/-1;">
@@ -5873,11 +6520,29 @@ git commit -m "feat(events): roster access column, manual grant/revoke, add-by-e
                       onsubmit="return confirm('<?php echo esc_js( __( 'Delete this event role and remove it from every holder? This cannot be undone.', 'anchor-schema' ) ); ?>');">
                     <input type="hidden" name="action" value="anchor_events_delete_role" />
                     <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
-                    <input type="hidden" name="redirect_to" value="<?php echo esc_url( \remove_query_arg( 'event_manager_notice' ) ); ?>" />
+                    <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
                     <?php \wp_nonce_field( 'anchor_events_delete_role_' . $event_id ); ?>
                     <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Delete role', 'anchor-schema' ); ?></button>
                 </form>
             <?php endif; ?>
+
+            <?php
+            /*
+             * The backfill (spec §4.4) is offered whether or not the role
+             * exists yet: the event that most needs it is one that was already
+             * selling when this shipped, which by definition has no role.
+             * Not destructive and idempotent, so no confirm dialog — running
+             * it twice is a no-op, which is the point.
+             */
+            ?>
+            <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>">
+                <input type="hidden" name="action" value="anchor_events_backfill_role" />
+                <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
+                <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
+                <?php \wp_nonce_field( 'anchor_events_backfill_role_' . $event_id ); ?>
+                <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Grant role to current attendees', 'anchor-schema' ); ?></button>
+                <span class="anchor-event-hint"><?php echo esc_html__( 'Gives the role (and an account, where they have none) to everyone with a confirmed seat right now. Safe to run more than once.', 'anchor-schema' ); ?></span>
+            </form>
         </div>
         <?php
         return (string) \ob_get_clean();
@@ -5895,16 +6560,135 @@ git commit -m "feat(events): roster access column, manual grant/revoke, add-by-e
         \wp_safe_redirect( \add_query_arg( 'anchor_events_role_deleted', (string) $stripped, $redirect ) );
         exit;
     }
+
+    /**
+     * Grant the event role to everyone holding a confirmed seat right now
+     * (spec §4.4 "Backfill").
+     *
+     * Same guard/redirect shape as handle_delete_role(), and the count comes
+     * back through the same query-arg notice mechanism.
+     */
+    public function handle_backfill_role() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        \check_admin_referer( 'anchor_events_backfill_role_' . $event_id );
+        if ( ! Roster::current_user_can_manage() || \get_post_type( $event_id ) !== self::CPT ) {
+            \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
+        }
+        $enabled = ( $this->entitlements && $this->entitlements->enabled( $event_id ) );
+        $granted = $enabled ? $this->entitlements->backfill( $event_id ) : 0;
+        $redirect = \wp_validate_redirect( \wp_unslash( $_POST['redirect_to'] ?? '' ), \admin_url() );
+        \wp_safe_redirect( \add_query_arg( [
+            'anchor_events_role_backfilled' => (string) $granted,
+            'anchor_events_role_enabled'    => $enabled ? '1' : '0',
+        ], $redirect ) );
+        exit;
+    }
+
+    /**
+     * The wording for a finished backfill.
+     *
+     * Its own method so the notice reader and the test say the same thing —
+     * and so "nothing happened" can say WHY, which is the difference between
+     * a useful button and a mysterious one.
+     *
+     * @param int  $granted
+     * @param bool $enabled Whether the event's access switch was on.
+     * @return string
+     */
+    public function backfill_notice_message( $granted, $enabled ) {
+        if ( ! $enabled ) {
+            return \__( 'Attendee access is off for this event, so nobody was granted the role. Turn it on in Access first.', 'anchor-schema' );
+        }
+        if ( (int) $granted === 0 ) {
+            return \__( 'Everyone with a confirmed seat already has the event role.', 'anchor-schema' );
+        }
+        return \sprintf(
+            /* translators: %d: number of attendees newly granted the event role. */
+            \_n( '%d attendee was given the event role.', '%d attendees were given the event role.', (int) $granted, 'anchor-schema' ),
+            (int) $granted
+        );
+    }
 ```
 
-Constructor: `\add_action( 'admin_post_anchor_events_delete_role', [ $this, 'handle_delete_role' ] );`. Call `echo $this->render_event_role_panel( $event_id );` inside the console's Basics `.anchor-event-grid`.
+Append to `Entitlements` (`class-entitlements.php`):
 
-- [ ] **Step 4: Run** `--filter Test_Entitlements` → PASS.
+```php
+    /**
+     * Give the event role to everyone with a confirmed seat right now
+     * (spec §4.4 "Backfill", §8 (f)).
+     *
+     * This is how an event that was already selling when the feature shipped —
+     * or one whose switch was off for a while — is reconciled with the switch.
+     * Without it, turning access back on would only ever affect future seats,
+     * and the reversible off switch would be a one-way door in practice.
+     *
+     * It is a LOOP OVER SEATS, not a second granting implementation:
+     * grant_for_seat() already resolves or creates the account, writes
+     * _anchor_event_user_id, mints the role, adds it, records the grant and
+     * fires the action, so a backfilled attendee is indistinguishable from one
+     * who registered live. Seats come from Registrations::query_seats(), the
+     * module's existing seat query, rather than a parallel WP_Query that would
+     * have to agree with it forever.
+     *
+     * Idempotent: grant_for_seat() reports whether it actually added the role,
+     * so a second run returns 0 and changes nothing.
+     *
+     * @param int $event_id
+     * @return int How many attendees were NEWLY granted.
+     */
+    public function backfill( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( ! $this->enabled( $event_id ) ) {
+            return 0; // Not a silent no-op: handle_backfill_role() says why.
+        }
+        $result = $this->module->registrations->query_seats( [
+            'event_id' => $event_id,
+            'status'   => Registrations::STATUS_CONFIRMED,
+            'per_page' => -1,
+        ] );
+
+        $granted = 0;
+        foreach ( (array) ( $result['items'] ?? [] ) as $seat ) {
+            $seat_id = (int) ( $seat['id'] ?? 0 );
+            if ( $seat_id > 0 && $this->grant_for_seat( $seat_id ) ) {
+                $granted++;
+            }
+        }
+        return $granted;
+    }
+```
+
+…and give `grant_for_seat()` a `bool` return so that count is the truth rather than an estimate (the two seat hooks ignore it, so no caller changes):
+
+```php
+    /**
+     * @param int $seat_id
+     * @return bool True when the role was NEWLY added to the seat's account.
+     */
+    private function grant_for_seat( $seat_id ) {
+        $seat_id  = (int) $seat_id;
+        $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
+        if ( $event_id <= 0 ) {
+            return false;
+        }
+        $user_id = $this->ensure_user( [ 'id' => $seat_id ] );
+        if ( $user_id <= 0 ) {
+            return false;
+        }
+        $already = $this->holds_role( $event_id, $user_id );
+        $this->grant( $event_id, $user_id, self::SOURCE_SEAT );
+        return ! $already;
+    }
+```
+
+Constructor: `\add_action( 'admin_post_anchor_events_delete_role', [ $this, 'handle_delete_role' ] );` and `\add_action( 'admin_post_anchor_events_backfill_role', [ $this, 'handle_backfill_role' ] );`. Call `echo $this->render_event_role_panel( $event_id );` inside the console's Basics `.anchor-event-grid`, and read `anchor_events_role_backfilled` / `anchor_events_role_enabled` into a console notice through `backfill_notice_message()` beside the existing `anchor_events_role_deleted` reader.
+
+- [ ] **Step 4: Run** `--filter Test_Entitlements` → PASS. Then `--filter Test_Inertness` and `--filter Test_Roster`, because `grant_for_seat()`'s return type changed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add anchor-events-manager/anchor-events-manager.php tests/test-entitlements.php
-git commit -m "feat(events): Event role panel with an explicit Delete role action"
+git add anchor-events-manager/anchor-events-manager.php anchor-events-manager/class-entitlements.php tests/test-entitlements.php
+git commit -m "feat(events): Event role panel with Delete role and a Grant-to-current-attendees backfill"
 ```
 
 ---
@@ -5935,7 +6719,7 @@ git commit -m "feat(events): Event role panel with an explicit Delete role actio
 		$children = $this->module()->occurrences->reconcile( $parent_id );
 		$child    = $this->module()->get_meta( $children[0] );
 
-		$this->assertTrue( $child['access_role_enabled'], 'A date is opted in exactly when its offering is.' );
+		$this->assertTrue( $child['access_role_enabled'], 'A date grants the role exactly when its offering says to.' );
 		$this->assertSame( 'hybrid', $child['stream_default_modality'] );
 		$this->assertFalse( $child['in_person_includes_stream'] );
 		$this->assertSame( 20, $child['stream_open_before_minutes'] );
@@ -5945,9 +6729,15 @@ git commit -m "feat(events): Event role panel with an explicit Delete role actio
 		$this->assertSame( 'https://player.vimeo.com/video/55', $child['stream_embed']['src'] );
 	}
 
-	/** A plain offering's dates are plain too — inheritance carries the OFF. */
-	public function test_children_of_a_plain_offering_are_inert() {
-		$parent_id = $this->make_event( [ 'type' => 'offering', 'registration_mode' => 'free' ] );
+	/** A switched-off offering's dates are switched off too — inheritance carries the OFF. */
+	public function test_children_of_a_switched_off_offering_are_inert() {
+		// Explicitly off: the default is ON (spec §3.1), so an ordinary
+		// offering's dates DO grant the role.
+		$parent_id = $this->make_event( [
+			'type'                => 'offering',
+			'registration_mode'   => 'free',
+			'access_role_enabled' => false,
+		] );
 		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
 			[ 'date' => '2027-08-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'A' ],
 		] );
@@ -5955,6 +6745,20 @@ git commit -m "feat(events): Event role panel with an explicit Delete role actio
 
 		$this->assertFalse( $this->module()->get_meta( $children[0] )['access_role_enabled'] );
 		$this->assertSame( '', $this->module()->room_url( $children[0] ) );
+	}
+
+	/** An ordinary offering's dates each grant the role, and still have no room. */
+	public function test_children_of_an_ordinary_offering_grant_the_role() {
+		$parent_id = $this->make_event( [ 'type' => 'offering', 'registration_mode' => 'free' ] );
+		update_post_meta( $parent_id, '_anchor_event_offering_dates', [
+			[ 'date' => '2027-08-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'A' ],
+		] );
+		$children = $this->module()->occurrences->reconcile( $parent_id );
+
+		$this->assertTrue( $this->module()->get_meta( $children[0] )['access_role_enabled'] );
+		$this->assertTrue( $this->module()->entitlements->enabled( $children[0] ), 'Each date is its own bookable thing with its own role.' );
+		$this->assertSame( '', $this->module()->room_url( $children[0] ), 'No stream, so still no room.' );
+		remove_role( 'anchor_event_' . $children[0] );
 	}
 
 	/** A child's own stream override survives the next reconcile. */
@@ -6110,7 +6914,7 @@ Expected: FAIL — missing seed keys.
 
 Add to `bin/e2e-seed.sh` (WP-CLI, idempotent, mirroring the existing fixtures): create a published `event` with `registration_mode=free`, `stream_default_modality=virtual`, a Vimeo `stream_embed`, `start_ts` two hours out; create a confirmed seat for a seeded user; register an mu-plugin `anchor-e2e-stream-clock.php` that maps `?anchor_stream_now=start|after` onto `anchor_events_stream_now`; mint the `aek` token with `wp eval` via `Entitlements::room_url_for()`; create the two in-person-toggle variants; write all five URLs into `.seed.json`.
 
-The seed writes `_anchor_event_stream_embed` **through the save path** (`wp eval` calling `Module::save_event_manager_fields()`), not with `wp post meta update`, so the `access_role_enabled` flip actually runs. A fixture whose meta is poked in directly would have a stream and no switch, `room_url()` would return `''`, and every one of these specs would fail on a fixture bug rather than a code bug. (The in-person-toggle variants are streams too, so the same applies to them.)
+The seed writes `_anchor_event_stream_embed` **through the save path** (`wp eval` calling `Module::save_event_manager_fields()`), not with `wp post meta update`, so the embed is normalised (a raw pasted URL is not a `{provider,kind,src,raw}` array) and the `access_role_enabled` force-true flip runs as it does in production. A fixture whose meta is poked in directly would carry an un-normalised embed, `room_url()` would return `''` because `has_stream()` finds no `src`, and every one of these specs would fail on a fixture bug rather than a code bug. (The in-person-toggle variants are streams too, so the same applies to them.)
 
 - [ ] **Step 4: Run** `npx playwright test e2e/live-room.spec.js` → PASS.
 - [ ] **Step 5: Commit**
@@ -6131,7 +6935,7 @@ No test — documentation. Verify by reading.
 - [ ] **Step 1: Add the meta keys to `EVENTS.md`'s table**
 
 ```markdown
-| `access_role_enabled` | bool | **The master switch for everything below.** Default `false`. While it is off the event mints no role, creates no accounts, has no room, emits no `{room_link}` and shows no Access column — it behaves exactly as it did before this feature existed. Auto-set `true` when a non-empty `stream_embed` is saved, when a session (or `stream_default_modality`) is `virtual`/`hybrid`, or when a tier is saved `virtual`. **Never cleared by a save** — an author who turned it on keeps it, because people already hold the role. To turn an event back off, delete the event role on the console's Basics tab. Inherited. |
+| `access_role_enabled` | bool | **The master switch for everything below. Default `true`.** On: every confirmed attendee gets an account and the `anchor_event_{id}` role, in person or not, because event materials are handed out by role. Off: the event mints no role, creates no accounts, has no room, emits no `{room_link}` and shows no Access column. A **real, reversible checkbox** — un-ticking stops *future* grants and never removes an existing holder (that is **Delete role**); **Grant role to current attendees** on the Basics tab re-grants after it is switched back on. A save whose form did not carry the field leaves the stored value alone. Forced back to `true` by any save that stores a non-empty `stream_embed`, a `virtual`/`hybrid` session (or `stream_default_modality`), or a `virtual` tier. **Not the same as "has a room"** — that is `Module::room_url() !== ''`, which is this *and* a resolvable stream. Inherited. |
 | `stream_embed` | array | Normalised stream `{provider, kind, src, raw}` — output of `Embed::normalize()`, never raw HTML. Saving a non-empty value forces `virtual=1` **and** `access_role_enabled=1`. Inherited by occurrence children. |
 | `stream_default_modality` | string | `in_person` \| `virtual` \| `hybrid` — the seed for new session rows and new tiers. Inherited. |
 | `in_person_includes_stream` | bool | "In-person registrants also get the stream". Default `true`. Inherited. |
@@ -6150,41 +6954,63 @@ No test — documentation. Verify by reading.
 ```markdown
 ## Hosted livestream room
 
-### None of this applies until an event opts in
+### Every event grants a role; only some have a room
 
-`access_role_enabled` (default **false**) is the master switch. While it is off:
+`access_role_enabled` (default **true**, owner decision 2026-09-23) is the
+master switch. While it is **on** — which is every plugin-registered event
+unless somebody turned it off — each confirmed attendee gets an account and the
+capability-less role `anchor_event_{id}` ("Event: {title}"), whether they
+attend in person or over a stream. That is the point of it: the Private File
+Manager hands out recordings, handouts and certificates **by role**, so the
+role is how "attended this" is written down.
+
+**The role is not the room.** A room exists only when the event also has a
+resolvable stream, and that is `Module::room_url( $event_id ) !== ''` — the one
+expression every room surface asks. For an ordinary in-person event:
+`room_url()` is `''`, `/live/` redirects to the event page, the events list
+shows `—` in the Live column, `{room_link}` is `''`, the email CTA is the one
+it has always been, and `can_access_stream()` is false for everybody but staff.
+Its roster still shows the Access column, because its attendees really do hold
+the role.
+
+While the switch is **off**:
 
 - no attendee account is created, on any path — free registration, comped
   roster add, or WooCommerce checkout;
 - no `anchor_event_{id}` role is minted, so `wp_roles()` is untouched;
-- `Module::room_url()` returns `''`, `/live/` redirects to the event page, and
-  the events list shows `—` in the Live column;
-- `{room_link}` is `''` and the email CTA is the one it has always been;
+- there is no room, no `{room_link}` and no changed email;
 - the roster shows no Access column, and the Basics tab shows one line saying
   access is off.
 
-`Entitlements::enabled( $event_id )` is that guarantee in code —
+`Entitlements::enabled( $event_id )` is that check in code —
 `Module::stream_capable( $event_id ) && access_role_enabled` — and every entry
-point checks it first: `grant_for_seat()`, `ensure_user()`, both seat hooks,
-`maybe_revoke_seat_grant()`, `can_access_stream()`, `room_url()`, the
-`{room_link}` token, the roster's Access surfaces. `stream_capable()` is the
-weaker, unchanged predicate ("could this event ever hold a room": registration
-mode `wc`/`free`, not a group parent); `enabled()` is the stricter one the room
-uses. `tests/test-inertness.php` is the standing proof.
+point asks it first: `grant_for_seat()`, `ensure_user()`, both seat hooks,
+`maybe_revoke_seat_grant()`, `can_access_stream()`, `backfill()`, the roster's
+Access surfaces. `stream_capable()` is the weaker, unchanged predicate ("could
+this event ever hold a room": registration mode `wc`/`free`, not a group
+parent). `tests/test-inertness.php` is the standing proof of all of it.
 
-An event opts in by having a stream saved, a `virtual`/`hybrid` session or
-`stream_default_modality`, or a `virtual` ticket tier — or by an author ticking
-**Access → "Give confirmed attendees an account and the event role"** for an
-in-person event whose recordings and handouts are gated by role in the Private
-File Manager. A save can only ever turn the switch **on**: once real people
-hold the role, a routine save must not be able to strip it from them by
-omission. Turning an event back off is deliberate — **Delete role** on the
-console's Basics tab, which also removes it from every holder.
+**Turning it off is a real, reversible operator act, and it looks forward
+only.** Un-tick **Access → "Give confirmed attendees an account and the event
+role"** and no *future* attendee is granted. Nobody who already holds the role
+loses it — the only thing that removes holders is **Delete role** on the
+console's Basics tab, which strips it from everyone. Tick it back on and use
+**Grant role to current attendees** (Basics tab) to catch up the people who
+registered in between; that backfill is idempotent, so running it twice is a
+no-op.
+
+Three saves force the switch back on, because a stream is useless without the
+role: storing a non-empty `stream_embed`, a `virtual`/`hybrid` session (or
+`stream_default_modality`), or a `virtual` ticket tier. With a stream saved,
+the Access checkbox renders checked and disabled. A save whose form did not
+carry the field at all — a programmatic write, a partial update — leaves the
+stored value exactly as it is, in either direction.
 
 ### The room itself
 
 Every event registered **through this plugin** (`registration_mode` `wc` or `free`;
-never `external`, never a group parent) **that has opted in** has a private room
+never `external`, never a group parent) **that has a resolvable stream and its
+access switch on** has a private room
 at `<event permalink>/live/` — an `add_rewrite_endpoint( 'live', EP_PERMALINK )`
 endpoint, so it is a URL on the event, not a second post.
 
@@ -6212,7 +7038,9 @@ every 5 minutes while `live`. 401 logged out, 403 not entitled.
 **Access** is a capability-less WordPress role `anchor_event_{id}`
 ("Event: {title}"), minted lazily on the first grant, renamed with the title,
 and **never deleted automatically** — trashing the event leaves it. The console's
-Basics step has an explicit **Delete role** action.
+Basics step has **Grant role to current attendees** (the backfill: every
+confirmed seat, accounts created as needed, idempotent) and an explicit
+**Delete role** action.
 
 **Sign-in link:** `Entitlements::room_url_for( $user_id, $event_id )` appends a
 stateless `?aek=` HMAC (user | event | expiry | password fragment), expiring at
@@ -6226,7 +7054,8 @@ admin or logs.
 To "Main Public API", under `Module`:
 
 ```markdown
-- `room_url( $event_id ): string` — `''` when the event can never have a room.
+- `room_url( $event_id ): string` — **the one definition of "this event has a room"**: `''` unless the access switch is on AND a stream resolves. Every room surface asks this, not `enabled()`.
+- `has_stream( $event_id ): bool` — does any resolved session carry an embed?
 - `render_room( $event_id ): string`, `room_state_block( $event_id, array $state ): string`
 - `resolved_sessions( $event_id ): array` — always at least one row (a single event resolves to one implicit session).
 - `stream_capable( $event_id ): bool`
@@ -6235,8 +7064,9 @@ To "Main Public API", under `Module`:
 
 ```markdown
 **`Anchor\Events\Entitlements`** (`$module->entitlements`)
-- `enabled( $event_id ): bool` — `stream_capable() && access_role_enabled`. The master switch every other entry point checks first; `false` means this event is not in the feature and every code path returns its pre-feature answer.
-- `can_access_stream( $event_id, $session_index = 0, $user_id = 0 ): bool` — the one access question.
+- `enabled( $event_id ): bool` — `stream_capable() && access_role_enabled`. The master switch every other entry point checks first; `true` for nearly every event, because the switch defaults on. `false` means this event is not in the feature and every code path returns its pre-feature answer. **Not "has a room"** — that is `Module::room_url() !== ''`.
+- `can_access_stream( $event_id, $session_index = 0, $user_id = 0 ): bool` — the one access question. Needs a resolvable stream as well as the role, so holding `anchor_event_{id}` on a plain event is not stream access.
+- `backfill( $event_id ): int` — grant the role to every confirmed seat now, creating accounts as needed. Returns how many were newly granted; idempotent; returns 0 when `enabled()` is false. This is how an event that was already selling is reconciled with the switch.
 - `role_for( $event_id, $create = true ): string` / `role_name()` / `role_members()` / `delete_role()`
 - `grant( $event_id, $user_id, $source = 'seat' )` / `revoke( … )` — `$source` is `seat` or `manual`; a manual grant is never downgraded by a seat cancellation.
 - `ensure_user( array $seat ): int` — resolve or create the account a seat entitles.
@@ -6253,7 +7083,7 @@ To the Filters table:
 ```markdown
 | `anchor_events_can_access_stream` | `$allowed, $event_id, $session_index, $user_id` | The final say on room access. The courses module vetoes here ("finish the pre-work first"). |
 | `anchor_events_embed_providers` | `$providers` | The stream provider table — `slug => { hosts[], kind: iframe\|link, transform }`. Add a host to allow it. |
-| `anchor_events_create_account` | `$create, $event_id, $email` | Return `false` to stop the module creating accounts for registrants who have none. Opting out means guests get no room access. |
+| `anchor_events_create_account` | `$create, $event_id, $email` | Return `false` to stop the module creating accounts for registrants who have none. Since the access switch defaults on, this is the site-wide way to say "do not make accounts for my attendees"; opting out means those guests hold no event role and get no room access. |
 | `anchor_events_room_denied_message` | `$message, $event_id` | The wording a signed-in but unentitled visitor sees in the room. |
 | `anchor_events_stream_now` | `$now, $event_id` | The instant `Stream_State` reasons about. Exists for end-to-end tests; filtering it in production lies to the room. |
 ```
@@ -6269,23 +7099,30 @@ And an **Actions** table (new — the file has none):
 | `anchor_events_seat_status_changed` | `$seat_id, $from, $to, $actor` | An actual status transition only — a same-status note-only call never fires it. |
 | `anchor_events_access_granted` | `$event_id, $user_id, $source` | A user gained the event role. `$source` is `seat` or `manual`. |
 | `anchor_events_access_revoked` | `$event_id, $user_id, $source` | A user lost the event role. |
+
+Both access actions fire from the backfill too — it grants through the same
+`grant_for_seat()` path a live registration uses, so a backfilled attendee is
+indistinguishable from one who registered normally.
 ```
 
 - [ ] **Step 4: `EMAILS.md`** — add to the body-template token table:
 
 ```markdown
-| `{room_link}` | The hosted room URL **for this recipient**, carrying their own one-click sign-in token (`?aek=`). **Empty for any event whose `access_role_enabled` is false — which is every event by default — and resolving it then touches nothing: no account is looked up, none is created.** Otherwise confirmed seats only, so a waitlisted recipient gets an empty string exactly like `{join_link}`. Expires at the last session's end + 7 days. Requires an account; when `anchor_events_create_account` is filtered off and the recipient has none, it is empty. |
+| `{room_link}` | The hosted room URL **for this recipient**, carrying their own one-click sign-in token (`?aek=`). **Empty for any event with no room — which is every event that has no stream saved, and every event whose `access_role_enabled` was switched off — and resolving it then touches nothing: no account is looked up, none is created.** Otherwise confirmed seats only, so a waitlisted recipient gets an empty string exactly like `{join_link}`. Expires at the last session's end + 7 days. Requires an account; when `anchor_events_create_account` is filtered off and the recipient has none, it is empty. |
 ```
 …and a note under "Overview":
 
 > **CTA default order.** With no per-event override, the button resolves
-> **stream > virtual > event page**: an event that has opted in
-> (`access_role_enabled`) *and* has a saved embed gets "Join the livestream"
-> pointing at `{room_link}`; a legacy virtual event gets "Join the event"
-> pointing at `virtual_url`; everything else gets "View event details". Both
-> conditions matter — an ordinary event never reaches the first branch, so its
-> confirmation is byte-identical to the one it sends today. `{join_link}` still
-> means the raw provider URL, so existing templates are untouched.
+> **stream > virtual > event page**, on one condition: `Module::room_url()` is
+> non-empty, i.e. the event's access switch is on *and* a stream resolves. Such
+> an event gets "Join the livestream" pointing at `{room_link}`; a legacy
+> virtual event gets "Join the event" pointing at `virtual_url`; everything
+> else gets "View event details". The stream half of that condition is what
+> matters most now that `access_role_enabled` defaults to **on**: an ordinary
+> in-person event's attendees hold the event role and its confirmation is
+> still byte-identical to the one it sends today, because it has no room to
+> link to. `{join_link}` still means the raw provider URL, so existing
+> templates are untouched.
 
 - [ ] **Step 5: Commit**
 
@@ -6316,25 +7153,52 @@ Expected: PASS.
 - [ ] **Step 3: Record the rollout steps in the PR description (not in code)**
 
 ```
-New keys default to previous behaviour, so there is no data migration. In
-particular `access_role_enabled` defaults to FALSE, so on deploy every
-existing event — including every existing `virtual_url` event — is inert:
-no accounts, no roles, no rooms, no changed emails. An event joins the
-feature only when somebody saves a stream, a virtual session or a virtual
-tier on it, or ticks Access → "Give confirmed attendees an account and the
-event role". `virtual_url`-only events then get a room through the fallback
-embed (a Zoom link renders as a "Join on Zoom" button) — but only after that
-opt-in, so step 2 below is "open one legacy virtual event and save it",
-not "watch rooms appear".
+There is no data migration — but this release DOES change behaviour on
+existing events, on purpose, and that is the headline of the rollout.
+
+`access_role_enabled` defaults to TRUE (owner decision, 2026-09-23). No
+existing event has the key stored, so every one of them reads the default.
+The moment this deploys, **the next confirmed seat on any live event mints
+the event role `anchor_event_{id}` and, if that attendee has no account,
+creates one** — an in-person workshop as much as a webinar. That is the
+intent: event materials are handed out by role, so every attendee needs
+one. Account creation sends no WordPress new-user email (D13), so nobody
+receives anything unexpected; the confirmation email they already get is
+unchanged, because an event with no stream has no room to link to.
+
+What does NOT change on deploy: no existing attendee is granted anything
+retroactively (grants happen at seat transitions only), no room appears on
+any event (a room needs a resolvable `stream_embed`, and none is stored
+yet), no email CTA changes, and `virtual_url`-only events are untouched —
+their Zoom link still renders exactly as it does today. Such an event gets
+a room only once somebody pastes its link into the new Access → Livestream
+"Stream link or embed code" field, which normalises it (a Zoom link becomes
+a "Join on Zoom" button in the room).
+
+Events that were already selling keep their pre-deploy attendees roleless
+until the owner runs the backfill: **event console → Basics → Event role →
+"Grant role to current attendees"**. It grants every confirmed seat,
+creating accounts as needed, is idempotent, and reports the count. Do this
+per event, for the events whose materials will be role-gated — there is no
+site-wide sweep, deliberately, so the owner decides which back catalogue
+gets accounts.
+
+If an event should NOT give its attendees a role, untick **Access → "Give
+confirmed attendees an account and the event role"** on it. That stops
+future grants; it never removes anyone who already holds the role (Delete
+role, on the same panel, is what does that). Site-wide, filtering
+`anchor_events_create_account` to false stops account creation everywhere.
 
 On deploy: rewrite rules flush themselves on the first request
 (Module::maybe_flush_rewrites(), signature option `anchor_events_rw_sig`).
-Then, in order: (1) confirm a plain in-person event's roster still has no
-Access column and its /live/ redirects to the event page — that is the
-inertness guarantee holding in production; (2) open ONE legacy virtual
-event, tick Access (or re-save it, which flips the switch if its modality
-is virtual), and spot-check its /live/ renders the "Join on Zoom" button;
-(3) author the first hybrid event.
+Then, in order: (1) register a test seat on a plain in-person event and
+confirm it gets the role and an account, its roster shows the Access
+column, and its /live/ still redirects to the event page — role yes, room
+no, which is the whole ruling in one check; (2) run the backfill on one
+event that is already selling and confirm the count matches its confirmed
+seats; (3) open ONE legacy virtual event, paste its Zoom link into the
+Livestream field, save, and spot-check /live/ renders the "Join on Zoom"
+button; (4) author the first hybrid event.
 
 NOT part of this branch: the Anchor-Tools 3.31.0 version bump and tag. Per
 CLAUDE.md the release is cut from `main` by the owner — merge first, bump
@@ -6354,8 +7218,8 @@ git commit --allow-empty -m "chore(events): virtual-events stream room complete;
 
 ## Self-Review
 
-**Spec coverage.** §2 row 8a (inert by default) → T1 (the key and its `false` default), T4 (the three automatic flips and the never-cleared rule), T6 (`Entitlements::enabled()`), T7/T8 (the seat hooks and `ensure_user()` no-op), T9 (`can_access_stream()` step 3), **T9b (the end-to-end guarantee, spec §8's "Inertness" bullet in full)**, T11 (no room URL, no Live column, unchanged schema), T14 (`{room_link}` and the CTA), T16/T17 (the Access checkbox), T18 (no Access column), T19 (the role panel's one-line hint), T20 (children inherit the switch), T22 (documented); §3.1 → T1, T4 (including `access_role_enabled`, whose default `false` T1 asserts and whose flips T4 asserts); §3.2 → T2, T4, T16; §3.3 → T15; §3.4 → T20; §3.5 → T8 (`_anchor_event_user_id`, `_anchor_event_grants`); §4 preamble → T6 (`enabled()`), T7, T8, T9, T9b, T11, T14, T18, T19; §4.1 → T6, T19; §4.2 → T6, T7; §4.3 → T8; §4.4 → T18; §4.5 → T9 (step 3 is `enabled()`; D3's informational-public branch stays first and unchanged); §4.6 → T10, T16; §5.1 → T11; §5.2 → T11; §5.3 → T5; §5.4 → T3; §5.5 → T11; §5.6 → T12; §6.1 → T15; §6.2 → T13, T14 (`{room_link}` is `''` for a disabled event without touching accounts); §6.3 → T9, T11 (schema `VirtualLocation`); §7 → T16 (Access section, master switch first), T17, T18, T19, T11 (Live column); §8 → every task's tests, plus T9b for the Inertness bullet and T21 for Playwright; §10 → T23 (with the version bump explicitly excluded).
+**Spec coverage.** §2 row 8a (**role by default, room only with a stream**) → T1 (the key and its `true` default, asserted with the owner's own wording), T4 (the form-carried-the-field rule and the three force-true flips), T6 (`Entitlements::enabled()`), T7/T8 (the seat hooks and `ensure_user()`), T9 (`can_access_stream()` step 3 plus the session/embed checks that make the role ≠ stream access), **T9b (spec §8's "Switch semantics" (a)–(e) end to end)**, T11 (`room_url()` = switch AND stream; no Live column; unchanged schema), T14 (`{room_link}` and the CTA gated on `room_url()`), T16/T17 (the reversible checkbox and its hidden `0` companion), T18 (the Access column, absent only when switched off), T19 (the role panel, the backfill, and the one-line hint when off), T20 (children inherit the switch), T22 (documented), T23 (the rollout consequence); §3.1 (`access_role_enabled` row) → T1 (default `true`), T4 (the save rule and the flips), T16 (default checked, hidden `0`, locked with a stream), T20 (inherited); §3.2 → T2, T4, T16; §3.3 → T15; §3.4 → T20; §3.5 → T8 (`_anchor_event_user_id`, `_anchor_event_grants`); §4 preamble (bold paragraph: enabled by default, room needs a stream) → T6 (`enabled()`), T7, T8, T9, T9b, T11 (the three-predicate table), T14, T18, T19; §4.1 → T6, T19; §4.2 → T6, T7; §4.3 → T8; **§4.4 "Backfill" → T19 (`Entitlements::backfill()`, `Module::handle_backfill_role()`, the Basics button, and the four tests: every confirmed seat once, idempotent, skips non-confirmed, refuses when off)**; §4.4 manual grant/revoke/add-by-email → T18; §4.5 → T9 (step 3 is `enabled()`; D3's informational-public branch stays first and unchanged); §4.6 → T10, T16; §5.1 → T11; §5.2 → T11; §5.3 → T5; §5.4 → T3; §5.5 → T11; §5.6 → T12; §6.1 → T15; §6.2 → T13, T14 (`{room_link}` is `''` for an event with no room, without touching accounts); §6.3 → T9, T11 (schema `VirtualLocation`); §7 Access section → T16 (master switch first, default checked, hidden companion, help text naming the room, the file manager and "never removes anyone who already has it"), T17 (console parity, including the untick); §7 Basics tab → T19 (slug, display name, holder count, **Grant role to current attendees**, Delete role); §7 roster/list → T18, T11; **§8 "Switch semantics" → T9b for (a)–(e) and T19 for (f)**, which T9b names in a placeholder-free pointer method so the checklist reads complete in one file; §8's other bullets → each feature task's tests, T21 for Playwright; §10 → T23 (with the version bump explicitly excluded).
 
-**Placeholder scan.** No "TBD"/"similar to Task N"/"add error handling". Every code step carries real PHP or JS. Four deliberate forward references are named and closed where they are made: T7's email-only user resolution is replaced by `ensure_user()` in T8 (stated in T7's Interfaces); T4's session embed sanitiser consumes `Embed` from T3; T1's bare `access_role_enabled` checkbox read is replaced by `access_role_enabled_input()` in T4 (stated in T1's code comment, and the default is `false` either way so nothing changes in between); and T9b's two cross-task assertions (`room_link` arrives in T14, the REST route in T12) are written to hold on both sides of those tasks and say so in the test.
+**Placeholder scan.** No "TBD"/"similar to Task N"/"add error handling". Every code step carries real PHP or JS. Five deliberate forward references are named and closed where they are made: T7's email-only user resolution is replaced by `ensure_user()` in T8 (stated in T7's Interfaces); T4's session embed sanitiser consumes `Embed` from T3; T1 deliberately leaves `access_role_enabled` out of `event_authoring_input()` and says why — a bare `! empty()` read would be wrong now that the default is `true`, and omitting the key means `get_meta()` returns the default until T4 adds the real rule; T9b's three cross-task reads (`room_url()` arrives in T11 and is called behind `method_exists()`, `room_link` arrives in T14 and is read with `?? ''`, the REST route arrives in T12 so the assertion is "not 200") are each written to hold on both sides of the task that adds them and say so; and T19's `grant_for_seat()` return-type change is stated in T19 rather than reaching back into T7/T8, whose two callers ignore the value.
 
-**Type consistency.** `stream_embed` is `{provider, kind, src, raw}` everywhere (T3 produces it, T2/T4 store it, T5 passes it, T11 renders it). `Stream_State::decide()`/`for_event()` both return `{state, session_index, target_ts, embed}` — the same four keys the REST response and `room_state_block()` read. `Entitlements::can_access_stream( $event_id, $session_index = 0, $user_id = 0 )` has one signature in T9, T11, T12 and `can_view_virtual_link()`. `Entitlements::enabled( int $event_id ): bool` has one signature and one definition (T6) and is what T7, T8, T9, T9b, T11 (`room_url()`, `room_headers()`, the Live column), T14 (`{room_link}`, the CTA), T18 (via `Roster::access_enabled()`) and T19 all call — never re-implemented as an inline `get_meta()['access_role_enabled']` read. `Module::stream_capable()` keeps exactly its T5 meaning and is deliberately **not** redefined; the two predicates and which surface uses which are tabulated in T11. `Roster::access_state()` returns `off|yes|manual|no` — four values, defined once in T9b and consumed by T18's column; `off` is a statement about the event, the other three about the person. `has_confirmed_seat()` (T7) is the name T9's `resolve_access()` and T18's `revoke_access()` both call — not `user_has_confirmed_seat`. `Ticket_Types` tier key is `modality` in T15, in T4's flip and in T9's `seat_tier_modality()`.
+**Type consistency.** `stream_embed` is `{provider, kind, src, raw}` everywhere (T3 produces it, T2/T4 store it, T5 passes it, T11 renders it). `Stream_State::decide()`/`for_event()` both return `{state, session_index, target_ts, embed}` — the same four keys the REST response and `room_state_block()` read. `Entitlements::can_access_stream( $event_id, $session_index = 0, $user_id = 0 )` has one signature in T9, T11, T12 and `can_view_virtual_link()`. `Entitlements::enabled( int $event_id ): bool` has one signature and one definition (T6), and is what T7, T8, T9, T9b, T18 (via `Roster::access_enabled()`) and T19 call — never re-implemented as an inline `get_meta()['access_role_enabled']` read. **`Module::room_url( int $event_id ): string` is the single definition of "this event has a room"** (`enabled()` && `has_stream()`, T11) and is what `room_headers()`, the Live column, the REST endpoint, `Event_Schema`, `Entitlements::room_url_for()` and T14's `{room_link}`/CTA all ask — none of them re-derives it, and none of them asks `enabled()` for a room question. `Module::has_stream( int $event_id ): bool` is defined once (T11) and called only from `room_url()` and its tests. `Module::stream_capable()` keeps exactly its T5 meaning and is deliberately **not** redefined; the three predicates and which surface uses which are tabulated in T11. **`Entitlements::backfill( int $event_id ): int`** returns a count of NEWLY granted attendees — `int` in T19's interface, its docblock, its four tests and `Module::handle_backfill_role()`, which passes it to `backfill_notice_message( int $granted, bool $enabled ): string`; it grants through `grant_for_seat()`, whose return type is `bool` in the one place it is defined (T19 restates the T7/T8 body with the added return) and whose two hook callers ignore it. Seats for the backfill come from `Registrations::query_seats( array $args ): array{items,total}`, the existing query — not a parallel `WP_Query`. `Roster::access_state()` returns `off|yes|manual|no` — four values, defined once in T9b and consumed by T18's column; `off` is a statement about the event, the other three about the person. `has_confirmed_seat()` (T7) is the name T9's `resolve_access()` and T18's `revoke_access()` both call — not `user_has_confirmed_seat`. `Ticket_Types` tier key is `modality` in T15, in T4's flip and in T9's `seat_tier_modality()`.

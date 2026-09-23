@@ -74,7 +74,10 @@ class Test_Embed extends Anchor_Events_TestCase {
 			$providers['generic'] = [
 				'hosts'     => [ 'stream.example.org' ],
 				'kind'      => 'iframe',
-				'transform' => static function ( $url ) { return $url; },
+				// Providers always declare the full ( $path, $query, $url )
+				// signature documented on Embed::providers(); dispatch is
+				// plain positional call_user_func(), not name-matched.
+				'transform' => static function ( $path, $query, $url ) { return $url; },
 			];
 			return $providers;
 		};
@@ -84,6 +87,29 @@ class Test_Embed extends Anchor_Events_TestCase {
 
 		$this->assertSame( 'generic', $out['provider'] );
 		$this->assertSame( 'https://stream.example.org/live/1', $out['src'] );
+	}
+
+	/** A transform registered as an array (object or static) callable works the same as a closure. */
+	public function test_provider_filter_accepts_array_callable() {
+		$add = function ( $providers ) {
+			$providers['arraycb'] = [
+				'hosts'     => [ 'arraycb.example.org' ],
+				'kind'      => 'iframe',
+				'transform' => [ __CLASS__, 'array_callable_transform' ],
+			];
+			return $providers;
+		};
+		add_filter( 'anchor_events_embed_providers', $add );
+		$out = Embed::normalize( 'https://arraycb.example.org/live/2' );
+		remove_filter( 'anchor_events_embed_providers', $add );
+
+		$this->assertSame( 'arraycb', $out['provider'] );
+		$this->assertSame( 'https://arraycb.example.org/live/2', $out['src'] );
+	}
+
+	/** Static-method transform used by test_provider_filter_accepts_array_callable(). */
+	public static function array_callable_transform( $path, $query, $url ) {
+		return $url;
 	}
 
 	/** Non-https and javascript: payloads never become a src. */

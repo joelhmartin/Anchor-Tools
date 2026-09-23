@@ -127,7 +127,7 @@ class Embed {
                 if ( $host !== $candidate && \substr( $host, - ( \strlen( $candidate ) + 1 ) ) !== '.' . $candidate ) {
                     continue;
                 }
-                $src = \call_user_func_array( $provider['transform'], self::transform_args( $provider['transform'], $path, $query, $url ) );
+                $src = \call_user_func( $provider['transform'], $path, $query, $url );
                 $src = \esc_url_raw( (string) $src, [ 'https' ] );
                 if ( $src === '' ) {
                     return new \WP_Error(
@@ -182,31 +182,5 @@ class Embed {
     private static function query_suffix( array $query ) {
         $keep = \array_intersect_key( $query, \array_flip( [ 'h', 'badge', 'autopause', 'player_id', 'app_id' ] ) );
         return empty( $keep ) ? '' : '?' . \http_build_query( $keep );
-    }
-
-    /**
-     * Build the positional argument list for a `transform` callable by
-     * matching its declared parameter names against {path, query, url}.
-     *
-     * Every transform in the provider table (and the one a site adds via the
-     * filter) names its parameters `$path`, `$query`, `$url` in whatever
-     * subset it needs — Vimeo/YouTube take the first two, Zoom and a
-     * pass-through `generic` provider take (or take only) `$url`. Calling
-     * with a fixed positional signature would silently hand a one-parameter
-     * transform the wrong value, so this dispatches by name instead.
-     *
-     * @param callable $transform
-     * @param string   $path
-     * @param array    $query
-     * @param string   $url
-     * @return array Positional args for call_user_func_array().
-     */
-    private static function transform_args( callable $transform, $path, array $query, $url ) {
-        $values = [ 'path' => $path, 'query' => $query, 'url' => $url ];
-        $args   = [];
-        foreach ( ( new \ReflectionFunction( $transform ) )->getParameters() as $param ) {
-            $args[] = \array_key_exists( $param->getName(), $values ) ? $values[ $param->getName() ] : null;
-        }
-        return $args;
     }
 }

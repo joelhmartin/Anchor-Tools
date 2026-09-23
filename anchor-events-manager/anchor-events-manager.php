@@ -11343,39 +11343,64 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * The event-level embed, WITH the legacy virtual_url fallback resolved.
+     *
+     * The ONE place resolved_sessions() reads "what does this event embed when
+     * a row doesn't say otherwise" — both the multisession back-fill and the
+     * implicit single-row branch call this so the fallback logic exists once
+     * (spec §3.1, "Legacy fields stay"). An event authored before the
+     * Livestream field existed has only `virtual_url`; this treats it as the
+     * embed input so a Zoom link still renders as a "Join on Zoom" button in
+     * the room without a data migration. Only when no real embed is saved,
+     * and only when the normaliser accepts the host — an unknown host leaves
+     * the embed empty. get_sessions() itself does NOT call this: it never
+     * resolves the event-level embed's legacy fallback.
+     *
+     * @param array $meta get_meta() result.
+     * @return array {provider,kind,src,raw} or [].
+     */
+    private function event_level_embed( array $meta ) {
+        $event_embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
+        if ( empty( $event_embed['src'] ) && ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] ) ) {
+            $fallback = Embed::normalize( (string) $meta['virtual_url'] );
+            if ( ! \is_wp_error( $fallback ) && ! empty( $fallback['src'] ) ) {
+                $event_embed = $fallback;
+            }
+        }
+        return \is_array( $event_embed ) ? $event_embed : [];
+    }
+
+    /**
      * The sessions the ROOM reasons about — always at least one row.
      *
-     * A multisession event returns get_sessions(). Everything else returns one
-     * implicit session [0] spanning the event's own start_ts..end_ts with the
-     * event's default modality and embed, which is what lets Stream_State treat
-     * a single event, a group child and a three-day course identically
-     * (spec §3.2). get_sessions() itself deliberately stays empty for a
-     * non-multisession event — render_sessions_list() would otherwise print a
-     * one-row "Sessions" table on every single event.
+     * A multisession event returns get_sessions(), with every row whose own
+     * embed override is empty back-filled from event_level_embed() (spec
+     * §3.1's legacy virtual_url fallback reaches EVERY resolved row, not just
+     * the implicit one). Everything else returns one implicit session [0]
+     * spanning the event's own start_ts..end_ts with the event's default
+     * modality and embed, which is what lets Stream_State treat a single
+     * event, a group child and a three-day course identically (spec §3.2).
+     * get_sessions() itself deliberately stays empty for a non-multisession
+     * event — render_sessions_list() would otherwise print a one-row
+     * "Sessions" table on every single event.
      *
      * @param int $event_id
      * @return array<int,array{date:string,start_time:string,end_time:string,label:string,modality:string,stream_embed:array,start_ts:int,end_ts:int}>
      */
     public function resolved_sessions( $event_id ) {
         $event_id = (int) $event_id;
+        $meta        = $this->get_meta( $event_id );
+        $event_embed = $this->event_level_embed( $meta );
+
         if ( $this->event_type( $event_id ) === 'multisession' ) {
             $rows = $this->get_sessions( $event_id );
             if ( ! empty( $rows ) ) {
+                foreach ( $rows as $i => $row ) {
+                    if ( empty( $row['stream_embed']['src'] ) ) {
+                        $rows[ $i ]['stream_embed'] = $event_embed;
+                    }
+                }
                 return $rows;
-            }
-        }
-
-        $meta = $this->get_meta( $event_id );
-        $event_embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
-        // Legacy bridge (spec §3.1): an event authored before the Livestream
-        // field existed has only `virtual_url`. Treat it as the embed input so
-        // a Zoom link renders as a "Join on Zoom" button in the room without a
-        // data migration. Only when no real embed is saved, and only when the
-        // normaliser accepts the host — an unknown host leaves the embed empty.
-        if ( empty( $event_embed['src'] ) && ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] ) ) {
-            $fallback = Embed::normalize( (string) $meta['virtual_url'] );
-            if ( ! \is_wp_error( $fallback ) && ! empty( $fallback['src'] ) ) {
-                $event_embed = $fallback;
             }
         }
 
@@ -11385,7 +11410,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'end_time' => (string) $meta['end_time'],
             'label' => '',
             'modality' => $this->sanitize_modality( $meta['stream_default_modality'] ?? '' ),
-            'stream_embed' => \is_array( $event_embed ) ? $event_embed : [],
+            'stream_embed' => $event_embed,
             'start_ts' => (int) $meta['start_ts'],
             'end_ts' => (int) $meta['end_ts'],
         ] ];

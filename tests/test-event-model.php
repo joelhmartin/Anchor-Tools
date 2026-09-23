@@ -445,6 +445,22 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertSame( strtotime( '2027-03-01 11:00:00 UTC' ), $rows[0]['end_ts'] );
 	}
 
+	/** A session row with no times saved gets the 00:00/23:59 day-span default. */
+	public function test_sessions_default_empty_times_to_full_day_span() {
+		$event_id = $this->make_event( [
+			'type'     => 'multisession',
+			'timezone' => 'UTC',
+			'sessions' => [
+				[ 'date' => '2027-05-01', 'start_time' => '', 'end_time' => '', 'label' => 'No times' ],
+			],
+		] );
+
+		$rows = $this->module()->get_sessions( $event_id );
+		$this->assertCount( 1, $rows );
+		$this->assertSame( strtotime( '2027-05-01 00:00:00 UTC' ), $rows[0]['start_ts'] );
+		$this->assertSame( strtotime( '2027-05-01 23:59:00 UTC' ), $rows[0]['end_ts'] );
+	}
+
 	/** A single event resolves to exactly one implicit session spanning its own bounds. */
 	public function test_resolved_sessions_single_event_implicit_row() {
 		$event_id = $this->make_event( [
@@ -487,5 +503,32 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 
 		$bad = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://example.invalid/room' ] );
 		$this->assertSame( [], $this->module()->resolved_sessions( $bad )[0]['stream_embed'], 'An unknown host leaves the embed empty.' );
+	}
+
+	/** Spec §3.1: the legacy fallback reaches EVERY resolved row, multisession included. */
+	public function test_resolved_sessions_multisession_rows_inherit_legacy_fallback() {
+		$event_id = $this->make_event( [
+			'type'        => 'multisession',
+			'timezone'    => 'UTC',
+			'virtual'     => true,
+			'virtual_url' => 'https://us02web.zoom.us/j/123456789',
+			'sessions'    => [
+				[ 'date' => '2027-06-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 1' ],
+				[ 'date' => '2027-06-02', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 2' ],
+				[
+					'date' => '2027-06-03',
+					'start_time' => '09:00',
+					'end_time' => '11:00',
+					'label' => 'Day 3',
+					'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/9', 'raw' => '' ],
+				],
+			],
+		] );
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertCount( 3, $rows );
+		$this->assertSame( 'zoom', $rows[0]['stream_embed']['provider'], 'A row with no override inherits the legacy virtual_url fallback.' );
+		$this->assertSame( 'zoom', $rows[1]['stream_embed']['provider'] );
+		$this->assertSame( 'vimeo', $rows[2]['stream_embed']['provider'], 'A row with its own saved embed keeps it.' );
 	}
 }

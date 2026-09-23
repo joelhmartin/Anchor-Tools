@@ -399,6 +399,9 @@ class Module {
         require_once $dir . 'class-series.php';
         require_once $dir . 'class-occurrences.php';
         require_once $dir . 'class-event-schema.php';
+        // Stream embed normaliser (virtual-events spec §5.4) — static, no
+        // instance: it holds no state and hooks nothing.
+        require_once $dir . 'class-embed.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );

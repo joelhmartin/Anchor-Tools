@@ -76,6 +76,7 @@ A lesson gains `lesson_type ∈ {content, live_session}`. A `live_session` lesso
 
 ## 4. Decisions where the brief leaves options
 
+- **Access type default `closed`** (leak review 2026-09-23): a new course accepts enrolment only through admin, the API, roles or WooCommerce until an author opens it. `open` self-enrolment is a deliberate choice, never the default.
 - **Progression default** `sequential`; **completion default** `all_required_items` (brief §6.3).
 - **Timer expiry default** auto-submit saved answers (brief §8.5).
 - **Enrolment via WooCommerce**: enrol on `processing` **or** `completed` (filterable), because this store's event tickets confirm on `processing`; refund → `cancel` enrolment by default (`anchor_courses_wc_refund_policy` filter). Order id in `source_id`. Product↔course mapping is product meta `_anchor_course_ids[]` edited on the product.

@@ -30,6 +30,7 @@ Replays are **out of scope**. The owner reuses one stream across days and hands 
 | 5 | Two products or one? | **One event, one product, tiers carry modality.** | A tier answers "what am I paying for", a child post answers "which occurrence". A livestream seat is a price, not an occurrence. (Occurrence-model memory, 2026-09-03.) |
 | 6 | Entitlement | **A role per event**, `anchor_event_{id}`, granted/revoked from seat status, plus manual grant/revoke. | One door for paid, comped, imported, and late-added attendees; drops straight into the file manager's role policy and the webinars module's role gate. |
 | 7 | Where does courses live? | New module in Anchor-Tools (see companion spec), talking to events **only through roles, actions, filters and a read API** defined in §7. | In-process access, one loader, one test harness; no install-order guessing. |
+| 8a | Regular events | **Inert by default.** `access_role_enabled=false` unless a stream is saved or the author ticks it; then and only then do accounts, roles, the room and `{room_link}` exist for that event. | Owner's instruction 2026-09-23: none of this may apply to plain events and their attendees by accident. |
 | 8 | Approach | **A: build inside the events module.** Not B (webinars-as-room: Vimeo-ID/VOD only, would need a second reconcile engine) nor C (standalone module importing half of events). | |
 
 ## 3. Data model
@@ -43,6 +44,7 @@ All keys use the existing `_anchor_event_` prefix via `Module::meta_key()`, are 
 | `stream_embed` | array `{provider, src, raw}` | `[]` | Output of `Embed::normalize()` (§5.4). Never raw HTML. Inherited to occurrence children (`INHERITED_KEYS`). |
 | `stream_default_modality` | `in_person\|virtual\|hybrid` | `in_person` | Seed for new session rows and new tiers. Inherited. |
 | `in_person_includes_stream` | bool | `true` | The owner's toggle. Inherited. |
+| `access_role_enabled` | bool | `false` | **The master switch for everything in §4.** Off: the event mints no role, creates no accounts, has no room, and behaves exactly as before this spec. On: confirmed attendees get an account and the event role. Auto-set to `true` when a non-empty `stream_embed` is saved or any session/tier is `virtual`/`hybrid`; an author may also turn it on by hand for an in-person event whose recordings or handouts are gated by role in the file manager. Inherited. |
 | `stream_open_before_minutes` | int | `15` | Room switches countdown → player this many minutes before a session's start. Inherited. |
 | `stream_close_after_minutes` | int | `30` | Room keeps the player this long after a session's `end_ts`. Inherited. |
 | `required_roles` | string[] role slugs | `[]` | Prerequisites (§4.6). Inherited. |
@@ -50,7 +52,7 @@ All keys use the existing `_anchor_event_` prefix via `Module::meta_key()`, are 
 
 **Legacy fields stay.** `virtual` (bool) and `virtual_url` are untouched in storage and UI. Two bridges keep one code path:
 
-- Saving a non-empty `stream_embed` **forces `virtual=1`** so `Event_Schema::location_fields()`, the email venue line ("Online"), the archive badge and the `moved_online` status all keep working with no second branch.
+- Saving a non-empty `stream_embed` **forces `virtual=1` and `access_role_enabled=1`** so `Event_Schema::location_fields()`, the email venue line ("Online"), the archive badge and the `moved_online` status all keep working with no second branch.
 - The room's stream resolver (§5.3) treats `virtual_url` as a **fallback embed input**: `Embed::normalize( $virtual_url )`. A Zoom link therefore renders as a "Join on Zoom" button inside the room, so existing virtual events get a room with no data migration.
 
 ### 3.2 Session rows (multisession)
@@ -85,6 +87,8 @@ User meta `_anchor_event_grants` (array `{event_id: {source: 'seat'|'manual', at
 ## 4. Entitlements and roles
 
 New class `Anchor\Events\Entitlements` (`class-entitlements.php`), constructed by `Module` like `Registrations`/`Roster`, exposed as `$module->entitlements`. One responsibility: who holds access to an event and why.
+
+**Nothing in this section runs for an event whose `access_role_enabled` is false.** `Entitlements::enabled( $event_id )` = `Module::stream_capable( $event_id ) && access_role_enabled`, and every entry point below (`grant_for_seat()`, `ensure_user()`, the seat hooks, `can_access_stream()`, `room_url()`, the `{room_link}` token, the roster Access column, the Basics role panel) checks it first and returns its pre-spec answer when it is off. This is the guarantee that a plain in-person event and its attendees are untouched: no account is created, no role is minted, no room resolves, no email gains a link. The only way an event opts in is saving a stream (auto) or ticking the switch (manual).
 
 ### 4.1 Role minting
 
@@ -129,11 +133,13 @@ Resolution order, first hit wins:
 
 1. `Roster::current_user_can_manage()` (for the current user) → true.
 2. Not logged in → false.
-3. Event is not stream-capable (external registration), the session's resolved `modality = in_person` (no stream for that session; the room shows the venue instead), or no embed resolves for that session → false.
+3. `Entitlements::enabled()` is false (external registration, group parent, or `access_role_enabled` off), the session's resolved `modality = in_person` (no stream for that session; the room shows the venue instead), or no embed resolves for that session → false.
 4. `_anchor_event_grants[event_id].source = manual` → true.
 5. Holds the event role **and** has a confirmed seat whose tier `modality = virtual` → true.
 6. Holds the role and a confirmed seat with tier `in_person` **and** `in_person_includes_stream` → true.
 7. Otherwise false.
+
+**Informational public events keep their public link.** `can_view_virtual_link()`'s first branch (registration disabled and no product: the link is visible to everyone) stays exactly as it is today and is evaluated *before* delegation, so a public Zoom webinar's "Join here" is never hidden from anonymous visitors by this spec. Such an event has no seats, so it also never mints a role or creates an account.
 
 Result passes through `apply_filters( 'anchor_events_can_access_stream', $allowed, $event_id, $session_index, $user_id )` so the courses module can veto later ("finish the pre-work first"). `Module::can_view_virtual_link()` is rewritten to delegate here so the event page's "Join here" and the room never disagree.
 
@@ -203,7 +209,7 @@ Nothing structural changes in WooCommerce: tiers already map to variations. Addi
 
 `Entitlements::login_token( $user_id, $event_id )` mints an HMAC (`wp_hash`) over `user_id|event_id|expiry|user_pass fragment`, expiry = last session `end_ts` + 7 days, stored nowhere (stateless; changing the password invalidates it). `room_url_for( $user_id, $event_id )` = room URL + `?aek=…`. `template_redirect` on a room request with a valid `aek` for a logged-out visitor calls `wp_set_auth_cookie()` and redirects to the clean room URL; an invalid or expired token falls through to the login form with a notice. Tokens are never shown in admin or logs.
 
-Email: a new scalar `{room_link}` (per recipient, tokenised) and the existing `default_email_cta()` gains a branch **above** the virtual one: stream-capable event → label "Join the livestream", URL `{room_link}`. Reminders and confirmations pick it up with no template changes. `{join_link}` keeps meaning the raw provider URL for legacy templates.
+Email: a new scalar `{room_link}` (per recipient, tokenised; **resolves to `''` without touching accounts when `Entitlements::enabled()` is false**, so rendering a plain event's confirmation creates nothing) and the existing `default_email_cta()` gains a branch **above** the virtual one: stream-capable event → label "Join the livestream", URL `{room_link}`. Reminders and confirmations pick it up with no template changes. `{join_link}` keeps meaning the raw provider URL for legacy templates.
 
 ### 6.3 Event page
 
@@ -214,7 +220,7 @@ Email: a new scalar `{room_link}` (per recipient, tokenised) and the existing `d
 - **Event Details metabox → Location section** gains a **Livestream** group: embed textarea with provider help text, default modality, the toggle, open-before / close-after minutes, and a read-only room URL with "Open room". Shown when `registration_mode ≠ external`.
 - **Sessions repeater**: modality select + "Stream override" text input per row (collapsed until "Use a different stream for this session" is ticked).
 - **Ticket tiers repeater**: modality select per tier.
-- **Access section** (new, under Registration): required roles picker + any/all.
+- **Access section** (new, under Registration): the **"Give confirmed attendees an account and the event role"** switch (`access_role_enabled`, with help text naming the room and the file manager as what it unlocks; shown checked-and-locked when a stream is saved), then the required roles picker + any/all.
 - **Front-end console** (manager.js / manager-wizard.js) gets the same fields through the existing `anchor_events_manager_form_fields` filter so the DEKA team's authoring path has parity.
 - **Roster tab**: "Access" column (role held: yes / manual / no), Grant/Revoke row actions, "Add person by email" in the header, export scope "confirmed + manual access".
 - **Basics tab**: "Event role" panel — slug, display name, holder count, Delete role.
@@ -224,6 +230,7 @@ Email: a new scalar `{room_link}` (per recipient, tokenised) and the existing `d
 
 PHPUnit (`Anchor_Events_TestCase` helpers `make_event`, `make_seat`):
 
+- **Inertness**: a `free`/`wc` event with `access_role_enabled=false` — confirm a seat, cancel it, render its confirmation email, request `/live/`, open the roster: no user created, no role in `wp_roles()`, `room_url()` is `''`, `{room_link}` is `''`, Access column absent. Saving a `stream_embed` flips the switch; saving a `virtual` tier or session flips it; clearing them does not flip it back (an author who turned it on keeps it).
 - `Entitlements`: confirm → role + grant record; cancel → revoke; cancel with a second confirmed seat → keep; cancel with manual grant → keep; manual revoke with live seat → keep and warn; role renames with title; role survives event trash; `ensure_user()` four branches; no WP new-user mail.
 - `can_access_stream()` truth table across tier modality × toggle × session modality × manual × staff × logged-out.
 - `Stream_State` table: every state, boundary instants, multi-day gap, single event as implicit session, timezone edge (session crossing midnight in event TZ).

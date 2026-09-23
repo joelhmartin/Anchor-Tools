@@ -74,7 +74,7 @@ There is **no auto-enrol picker, no `open` self-enrolment, no `roles` list**. A 
 
 **Prerequisites** (`course_prerequisites`, brief §6.3) remain role slugs, chosen from a list of **completion roles and event roles only** (`anchor_course_*_completed`, `anchor_event_*`), never built-in or WooCommerce roles: `set_user_role` fires on every new account, so `customer` or `subscriber` there would gate on nothing. `EnrollmentService::can_enroll()` refuses when prerequisites are unmet, which blocks the Learners-tab add and the WooCommerce adapter alike (the adapter records a `blocked_prerequisite` note on the order instead of enrolling).
 
-**Events side, for symmetry:** an event only mints `anchor_event_{id}` when its `access_role_enabled` switch is on (stream spec §3.1). An event that should count as a prerequisite for a course needs that switch ticked.
+**Events side, for symmetry:** events mint `anchor_event_{id}` by default (stream spec §3.1: the switch is on for every plugin-registered event), so any past or future event is a usable prerequisite; one whose author switched it off is not, until it is switched back on and backfilled.
 
 ### 3.2 Actions and filters we hook
 

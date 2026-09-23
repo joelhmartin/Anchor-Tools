@@ -5221,19 +5221,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // Livestream scalars (spec §3.1). Never unslashed above, so they are
             // already in the slashed domain and must NOT be wp_slash()ed again.
             //
-            // access_role_enabled is the Access section's checkbox and nothing
-            // more AT THIS TASK. Task 4 gives event_authoring_input() a
-            // $post_id and replaces this line with the full rule: keep the
-            // stored value when the Access section was not on the form, and OR
-            // in the automatic flips (a saved embed, a virtual/hybrid session).
-            // Until then, no Access UI exists, so this line writes false on
-            // EVERY classic-editor save regardless of the get_meta_defaults()
-            // true default (owner decision 2026-09-23) — a resave silently
-            // drops an unsaved event's access grant back to false ahead of
-            // Task 4's fix. No consumer reads this key yet (§4 gating doesn't
-            // exist), so nothing observable changes; flagged here so Task 4
-            // doesn't ship without also covering that gap.
-            'access_role_enabled' => ! empty( $src['anchor_event_access_role_enabled'] ),
+            // access_role_enabled is deliberately NOT written here — no Access
+            // UI exists yet, so there is no form field to read. Task 4 adds
+            // access_role_enabled_input() with the real "absent field keeps
+            // the stored value" rule.
             'stream_default_modality' => $this->sanitize_modality( $src['anchor_event_stream_default_modality'] ?? '' ),
             'in_person_includes_stream' => ! empty( $src['anchor_event_in_person_includes_stream'] ),
             'stream_open_before_minutes' => max( 0, (int) ( $src['anchor_event_stream_open_before_minutes'] ?? 15 ) ),

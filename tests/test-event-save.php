@@ -203,4 +203,287 @@ class Test_Event_Save extends Anchor_Events_TestCase {
 
 		$this->assertStringNotContainsString( '[event_registration]', get_post( $event_id )->post_content );
 	}
+
+	/** A pasted Vimeo URL is normalised on save and forces virtual=1. */
+	public function test_stream_embed_saved_and_forces_virtual() {
+		$event_id = $this->make_event();
+		$_POST    = [
+			'anchor_event_start_date'   => '2027-06-01',
+			'anchor_event_stream_embed' => 'https://vimeo.com/424242',
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+		$meta = $this->module()->get_meta( $event_id );
+
+		$this->assertSame( 'vimeo', $meta['stream_embed']['provider'] );
+		$this->assertSame( 'https://player.vimeo.com/video/424242', $meta['stream_embed']['src'] );
+		$this->assertTrue( $meta['virtual'], 'A saved stream forces the legacy virtual flag on.' );
+		$this->assertTrue( $meta['access_role_enabled'], 'A saved stream opts the event in to accounts and the event role.' );
+		$_POST = [];
+	}
+
+	/** A fresh event saves with the switch ON — that is the default (§3.1). */
+	public function test_fresh_event_saves_with_the_switch_on() {
+		$event_id = $this->make_event();
+		$_POST    = [ 'anchor_event_start_date' => '2027-06-01' ];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue(
+			$this->module()->get_meta( $event_id )['access_role_enabled'],
+			'Every plugin-registered event grants the role by default (owner decision 2026-09-23).'
+		);
+		$this->assertSame( [], $this->module()->get_meta( $event_id )['stream_embed'], 'No stream, so no room — the role is the whole of it.' );
+		$_POST = [];
+	}
+
+	/** Un-ticking the box is a real, persisted OFF. */
+	public function test_unticking_the_switch_persists_false() {
+		$event_id = $this->make_event();
+		$_POST    = [
+			'anchor_event_start_date'          => '2027-06-01',
+			// The hidden companion Task 16 renders beside the checkbox: the
+			// field is PRESENT with value 0, which is how a deliberate untick
+			// is told apart from a form that never carried the control.
+			'anchor_event_access_role_enabled' => '0',
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+		$_POST = [];
+	}
+
+	/** A save whose form did not carry the field keeps a stored FALSE. */
+	public function test_absent_field_keeps_a_stored_false() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', false );
+
+		$_POST = [ 'anchor_event_start_date' => '2027-06-01' ]; // No Access section on this form.
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertFalse(
+			$this->module()->get_meta( $event_id )['access_role_enabled'],
+			'A partial save must not resurrect an event the operator switched off.'
+		);
+		$_POST = [];
+	}
+
+	/** And it keeps a stored TRUE — the symmetric half of the same rule. */
+	public function test_absent_field_keeps_a_stored_true() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+
+		$_POST = [ 'anchor_event_start_date' => '2027-06-01' ];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue(
+			$this->module()->get_meta( $event_id )['access_role_enabled'],
+			'A partial save must not strip the role from attendees who hold it.'
+		);
+		$_POST = [];
+	}
+
+	/** Saving a stream forces the switch on, even over an untick on the same POST. */
+	public function test_embed_forces_the_switch_on_over_an_untick() {
+		$event_id = $this->make_event();
+		$_POST    = [
+			'anchor_event_start_date'          => '2027-06-01',
+			'anchor_event_stream_embed'        => 'https://vimeo.com/515151',
+			'anchor_event_access_role_enabled' => '0',
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue(
+			$this->module()->get_meta( $event_id )['access_role_enabled'],
+			'A room nobody can be granted access to is not a state this plugin ships.'
+		);
+		$_POST = [];
+	}
+
+	/** A virtual/hybrid session flips the master switch with no embed at all. */
+	public function test_virtual_session_flips_the_access_switch() {
+		$event_id = $this->make_event();
+		$_POST    = [
+			'anchor_event_start_date' => '2027-06-01',
+			'anchor_event_type'       => 'multisession',
+			// Unticked on this POST, so the assertion below is about the flip
+			// and not about the default.
+			'anchor_event_access_role_enabled' => '0',
+			'anchor_event_sessions'   => [
+				[ 'date' => '2027-06-01', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day 1', 'modality' => 'in_person' ],
+				[ 'date' => '2027-06-02', 'start_time' => '09:00', 'end_time' => '10:00', 'label' => 'Day 2', 'modality' => 'hybrid' ],
+			],
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+		$_POST = [];
+	}
+
+	/** So does the event's own default modality — it IS the implicit session's. */
+	public function test_virtual_default_modality_flips_the_access_switch() {
+		$event_id = $this->make_event();
+		$_POST    = [
+			'anchor_event_start_date'              => '2027-06-01',
+			'anchor_event_stream_default_modality' => 'virtual',
+			'anchor_event_access_role_enabled'     => '0',
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+		$_POST = [];
+	}
+
+	/** A virtual TIER flips it back on, through the one tier write point. */
+	public function test_virtual_tier_flips_the_access_switch() {
+		// Explicitly OFF, so the assertion is about the tier flip and not
+		// about the default, which is on.
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+
+		$this->ticket_types()->save( $event_id, [
+			[ 'label' => 'Livestream', 'price' => '0', 'active' => 1, 'modality' => 'virtual' ],
+		] );
+
+		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+	}
+
+	/** An in-person-only tier save leaves a switched-off event switched off. */
+	public function test_in_person_tier_does_not_flip_the_access_switch() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+
+		$this->ticket_types()->save( $event_id, [
+			[ 'label' => 'General admission', 'price' => '0', 'active' => 1 ],
+		] );
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+	}
+
+	/** Clearing the stream does not by itself turn the switch off. */
+	public function test_clearing_the_embed_alone_leaves_the_switch_on() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+		update_post_meta( $event_id, '_anchor_event_stream_embed', [
+			'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/1', 'raw' => '',
+		] );
+
+		// The stream goes away; the Access field is NOT on this POST. Removing
+		// a stream is not a statement about the role — attendees already hold
+		// it and the file manager is gating files on it, so only an explicit
+		// untick (or Delete role) may take it away.
+		$_POST = [
+			'anchor_event_start_date'   => '2027-06-01',
+			'anchor_event_stream_embed' => '',
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+		$meta = $this->module()->get_meta( $event_id );
+
+		$this->assertSame( [], $meta['stream_embed'], 'The stream itself is cleared.' );
+		$this->assertTrue( $meta['access_role_enabled'], 'Losing the stream is not an untick.' );
+		$_POST = [];
+	}
+
+	/** Clearing the stream AND unticking does turn it off — nothing forces it. */
+	public function test_clearing_the_embed_with_an_untick_turns_it_off() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+		update_post_meta( $event_id, '_anchor_event_stream_embed', [
+			'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/1', 'raw' => '',
+		] );
+
+		$_POST = [
+			'anchor_event_start_date'          => '2027-06-01',
+			'anchor_event_stream_embed'        => '',
+			'anchor_event_access_role_enabled' => '0',
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+		$meta = $this->module()->get_meta( $event_id );
+
+		$this->assertSame( [], $meta['stream_embed'] );
+		$this->assertFalse( $meta['access_role_enabled'], 'With no stream left to force it, the untick stands.' );
+		$_POST = [];
+	}
+
+	/** Re-ticking the box turns a switched-off event back on. */
+	public function test_author_can_tick_the_switch_back_on() {
+		$event_id = $this->make_event( [ 'access_role_enabled' => false ] );
+		$_POST    = [
+			'anchor_event_start_date'          => '2027-06-01',
+			'anchor_event_access_role_enabled' => '1',
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+		$this->assertSame( [], $this->module()->get_meta( $event_id )['stream_embed'], 'No stream needed — the file manager gates the files.' );
+		$_POST = [];
+	}
+
+	/** A refused host keeps the previous embed rather than blanking it. */
+	public function test_bad_stream_embed_keeps_previous_value() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_stream_embed', [
+			'provider' => 'vimeo', 'kind' => 'iframe',
+			'src' => 'https://player.vimeo.com/video/1', 'raw' => 'https://vimeo.com/1',
+		] );
+
+		$_POST = [
+			'anchor_event_start_date'   => '2027-06-01',
+			'anchor_event_stream_embed' => 'https://evil.example.com/x',
+		];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+		$meta = $this->module()->get_meta( $event_id );
+
+		$this->assertSame( 'https://player.vimeo.com/video/1', $meta['stream_embed']['src'] );
+		$_POST = [];
+	}
+
+	/** Clearing the field clears the embed (and leaves `virtual` to the checkbox). */
+	public function test_empty_stream_embed_clears_it() {
+		$event_id = $this->make_event();
+		update_post_meta( $event_id, '_anchor_event_stream_embed', [
+			'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/1', 'raw' => '',
+		] );
+
+		$_POST = [ 'anchor_event_start_date' => '2027-06-01', 'anchor_event_stream_embed' => '' ];
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+		$this->assertSame( [], $this->module()->get_meta( $event_id )['stream_embed'] );
+		$_POST = [];
+	}
 }

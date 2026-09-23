@@ -5178,10 +5178,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                                                re-derives it here from $src,
      *                                                matching the metabox's own
      *                                                behavior.
+     * @param int         $post_id                   0 for an event that does not exist
+     *                                                yet (console "new"); otherwise the id
+     *                                                being saved, so stream_embed_input()/
+     *                                                access_role_enabled_input() can read
+     *                                                what is already stored.
      * @return array The sanitized authoring input, ready for the caller's own
      *               update_post_meta() loop.
      */
-    private function event_authoring_input( array $src, $current_registration_mode, $start_date = null ) {
+    private function event_authoring_input( array $src, $current_registration_mode, $start_date = null, $post_id = 0 ) {
         $input = [
             'start_date' => $start_date !== null ? $start_date : $this->sanitize_date( $src['anchor_event_start_date'] ?? '' ),
             'end_date' => $this->sanitize_date( $src['anchor_event_end_date'] ?? '' ),
@@ -5240,7 +5245,132 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // forms; no seats/capacity/tiers/product logic here. The one helper
         // both surfaces already shared, folded in here so the two save paths
         // can never drift on how these six keys are sanitized.
-        return array_merge( $input, $this->sanitize_event_type_input( $src, $current_registration_mode ) );
+        $merged = array_merge( $input, $this->sanitize_event_type_input( $src, $current_registration_mode, $post_id ) );
+
+        // Legacy bridge (spec §3.1): a saved stream IS a virtual event, so
+        // Event_Schema::location_fields(), the "Online" email venue line, the
+        // archive badge and the moved_online status all keep working through
+        // the one flag they already read, with no second branch anywhere.
+        if ( ! empty( $merged['stream_embed']['src'] ) ) {
+            $merged['virtual'] = true;
+        }
+
+        // The master switch (spec §2 row 8a / §3.1 / §4 preamble). Task 1
+        // deliberately left this key out of the authoring input; this is where
+        // it joins, with the full rule.
+        //
+        // Stored as an int, not the raw bool access_role_enabled_input()
+        // returns: the caller's generic update_post_meta() loop persists
+        // whatever type lands here, and WordPress round-trips a literal
+        // `false` back as '' — indistinguishable from a key that was never
+        // written, which is exactly the state get_meta() (and this method's
+        // own Step 1, above) must NOT confuse an explicit un-tick with. `0`
+        // survives the round trip as the string '0'; get_meta()'s is_bool()
+        // cast on the default reads it back as false either way.
+        $merged['access_role_enabled'] = $this->access_role_enabled_input( $src, $post_id, $merged ) ? 1 : 0;
+
+        return $merged;
+    }
+
+    /**
+     * Decide `access_role_enabled` for a save (spec §2 row 8a, §3.1, §4).
+     *
+     * TWO STEPS, in this order.
+     *
+     * 1. Did this form carry the control? isset(), NOT empty(): Task 16 renders
+     *    the checkbox with a hidden `value="0"` companion, so every rendered
+     *    authoring form — metabox and console — always posts the field, and
+     *    its PRESENCE is therefore a reliable "a human looked at this switch".
+     *    Present → take it (0 or 1). Absent → keep the stored value, and fall
+     *    back to the default (TRUE) when the event has nothing stored yet.
+     *    That is what makes a partial or programmatic save harmless in both
+     *    directions: it neither resurrects an event the operator switched off
+     *    nor strips the role from attendees who already hold it.
+     *
+     * 2. Force TRUE when this save stores a stream, a virtual/hybrid session,
+     *    or a virtual/hybrid default modality. Checked AFTER the checkbox, so
+     *    saving a stream with the box unticked turns it back on rather than
+     *    shipping a room nobody can be granted access to.
+     *
+     * Turning it off is forward-looking only: nothing here removes a role or
+     * an account. The only thing that strips holders is `Delete role` on the
+     * console's Basics tab, and the backfill (Task 19) is how an operator
+     * re-grants after switching an event back on.
+     *
+     * The event's own `stream_default_modality` counts as a signal because it
+     * IS the modality of the implicit session a `single` event resolves to
+     * (D7 / Module::resolved_sessions()) — "this event is a livestream" is the
+     * same statement whether it is written on a session row or on the event.
+     *
+     * Tiers are NOT read here: they are written by Ticket_Types::save(), which
+     * runs after this and calls enable_access_role() itself.
+     *
+     * @param array $src     Raw $_POST-shaped input.
+     * @param int   $post_id 0 for an event that does not exist yet.
+     * @param array $merged  The sanitised meta about to be written.
+     * @return bool
+     */
+    private function access_role_enabled_input( array $src, $post_id, array $merged ) {
+        $post_id = (int) $post_id;
+
+        // Step 1 — the form's answer, or the stored one.
+        if ( \array_key_exists( 'anchor_event_access_role_enabled', $src ) ) {
+            $enabled = ! empty( $src['anchor_event_access_role_enabled'] )
+                && (string) \wp_unslash( $src['anchor_event_access_role_enabled'] ) !== '0';
+        } else {
+            // get_post_meta() alone can't tell "never written" apart from
+            // "explicitly stored false": WordPress round-trips a stored
+            // boolean `false` back as '' — the exact same read a brand-new
+            // event returns. metadata_exists() answers the question value
+            // comparison can't: did a row ever get written here at all, even
+            // to a falsy value? Only an ACTUALLY missing row takes the
+            // default (TRUE).
+            $key = $this->meta_key( 'access_role_enabled' );
+            if ( $post_id > 0 && \metadata_exists( 'post', $post_id, $key ) ) {
+                $enabled = ! empty( \get_post_meta( $post_id, $key, true ) );
+            } else {
+                $enabled = true;
+            }
+        }
+
+        // Step 2 — the forced-on signals. A stream is useless without the role.
+        if ( ! empty( $merged['stream_embed']['src'] ) ) {
+            return true;
+        }
+        if ( \in_array( (string) ( $merged['stream_default_modality'] ?? '' ), [ 'virtual', 'hybrid' ], true ) ) {
+            return true;
+        }
+        foreach ( (array) ( $merged['sessions'] ?? [] ) as $row ) {
+            if ( \is_array( $row ) && \in_array( (string) ( $row['modality'] ?? '' ), [ 'virtual', 'hybrid' ], true ) ) {
+                return true;
+            }
+            if ( \is_array( $row ) && ! empty( $row['stream_embed']['src'] ) ) {
+                return true;
+            }
+        }
+
+        return $enabled;
+    }
+
+    /**
+     * Turn the master switch on from outside the save path and leave it on.
+     *
+     * For callers that run AFTER save_meta()'s generic update_post_meta() loop
+     * — Ticket_Types::save() is the only one today — so their write cannot be
+     * clobbered by that loop. Read-then-write, never a blind write, so this
+     * can never be the thing that clears it.
+     *
+     * @param int    $event_id
+     * @param string $reason   Free text for the debug log only; not stored.
+     */
+    public function enable_access_role( $event_id, $reason = '' ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
+            return;
+        }
+        if ( empty( \get_post_meta( $event_id, $this->meta_key( 'access_role_enabled' ), true ) ) ) {
+            \update_post_meta( $event_id, $this->meta_key( 'access_role_enabled' ), true );
+        }
     }
 
     public function save_meta( $post_id ) {
@@ -5271,7 +5401,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // shared builder both this metabox save and the front-end console's
         // save_event_manager_fields() call; see event_authoring_input()'s
         // docblock.
-        $input = $this->event_authoring_input( $_POST, $current_registration_mode );
+        $input = $this->event_authoring_input( $_POST, $current_registration_mode, null, $post_id );
 
         if ( ! $input['start_date'] ) {
             $this->queue_group_notice( 'missing_start_date', $post_id );
@@ -5497,11 +5627,11 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
     /**
      * Shared sanitizer for the event-type / registration-mode authoring fields
-     * (type, registration_mode, sessions, external_url, external_embed,
-     * external_display_price). Called by BOTH save paths — the admin metabox
-     * save_meta() and the front-end manager form handle_event_manager_save()
-     * (Task 1.5) — so the two forms can never drift out of sync on how these
-     * six keys are sanitized.
+     * (type, registration_mode, sessions, stream_embed, external_url,
+     * external_embed, external_display_price). Called by BOTH save paths — the
+     * admin metabox save_meta() and the front-end manager form
+     * handle_event_manager_save() (Task 1.5) — so the two forms can never
+     * drift out of sync on how these keys are sanitized.
      *
      * $src is a raw, NOT-yet-unslashed input array shaped like $_POST; every
      * value is wp_unslash()ed here (esp. external_embed, unslashed BEFORE it
@@ -5525,32 +5655,121 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                                            registration_mode is missing or
      *                                            invalid — see
      *                                            sanitize_registration_mode().
+     * @param int    $post_id                    0 for an event that does not
+     *                                            exist yet (console "new");
+     *                                            otherwise forwarded to
+     *                                            stream_embed_input() so a
+     *                                            refused paste keeps whatever
+     *                                            is already stored instead of
+     *                                            blanking it.
      * @return array{
      *     type: string,
      *     registration_mode: string,
      *     sessions: array,
+     *     stream_embed: array,
      *     external_url: string,
      *     external_embed: string,
      *     external_display_price: string,
      * }
      */
-    private function sanitize_event_type_input( array $src, $registration_mode_fallback ) {
+    private function sanitize_event_type_input( array $src, $registration_mode_fallback, $post_id = 0 ) {
         $sessions_raw = isset( $src['anchor_event_sessions'] ) && is_array( $src['anchor_event_sessions'] )
             ? \wp_unslash( $src['anchor_event_sessions'] )
             : [];
+        $sessions = $this->sanitize_sessions_rows( $sessions_raw );
+
+        // Normalises the event-level embed AND each session override in place,
+        // queuing a notice (and keeping the stored value) for anything refused.
+        $stream_embed = $this->stream_embed_input( $src, (int) $post_id, $sessions );
 
         return \wp_slash( [
             'type' => $this->sanitize_event_type( \wp_unslash( $src['anchor_event_type'] ?? '' ) ),
             'registration_mode' => $this->sanitize_registration_mode( \wp_unslash( $src['anchor_event_registration_mode'] ?? '' ), $registration_mode_fallback ),
-            'sessions' => $this->sanitize_sessions_rows( $sessions_raw ),
+            'sessions' => $sessions,
+            'stream_embed' => $stream_embed,
+            'required_roles' => $this->sanitize_role_slugs( \wp_unslash( $src['anchor_event_required_roles'] ?? [] ) ),
             'external_url' => esc_url_raw( \wp_unslash( $src['anchor_event_external_url'] ?? '' ) ),
-            // Reuses the SAME wp_kses() allowlist sanitizer as the REST write
-            // path (sanitize_external_embed()) so this field is never stored
-            // raw regardless of which save path wrote it.
             'external_embed' => $this->sanitize_external_embed( \wp_unslash( $src['anchor_event_external_embed'] ?? '' ), $this->meta_key( 'external_embed' ), self::CPT ),
             'external_display_price' => sanitize_text_field( \wp_unslash( $src['anchor_event_external_display_price'] ?? '' ) ),
-            'required_roles' => $this->sanitize_role_slugs( \wp_unslash( $src['anchor_event_required_roles'] ?? [] ) ),
         ] );
+    }
+
+    /**
+     * Normalise the posted stream embeds (spec §3.1/§3.2/§5.4).
+     *
+     * Event level plus one optional override per session row. Every refusal
+     * queues `stream_embed_invalid` and KEEPS whatever is already stored —
+     * blanking an author's working stream because they pasted the wrong thing
+     * into the box is the one outcome that must not happen. An EMPTY field is
+     * not a refusal: it clears the embed, which is how "this session uses the
+     * event's stream" is expressed.
+     *
+     * @param array $src      Raw $_POST-shaped input (still slashed).
+     * @param int   $post_id  0 when the event does not exist yet (console "new").
+     * @param array $sessions Already-sanitised session rows, mutated in place.
+     * @return array The event-level {provider,kind,src,raw}, or [].
+     */
+    private function stream_embed_input( array $src, $post_id, array &$sessions ) {
+        $stored = ( $post_id > 0 ) ? \get_post_meta( $post_id, $this->meta_key( 'stream_embed' ), true ) : [];
+        $stored = \is_array( $stored ) ? $stored : [];
+
+        $event_embed = $this->normalize_one_embed(
+            \wp_unslash( $src['anchor_event_stream_embed'] ?? '' ),
+            $stored,
+            $post_id,
+            ''
+        );
+
+        $raw_rows = isset( $src['anchor_event_sessions'] ) && is_array( $src['anchor_event_sessions'] )
+            ? \wp_unslash( $src['anchor_event_sessions'] )
+            : [];
+        $stored_rows = ( $post_id > 0 ) ? \get_post_meta( $post_id, $this->meta_key( 'sessions' ), true ) : [];
+        $stored_rows = \is_array( $stored_rows ) ? \array_values( $stored_rows ) : [];
+
+        $i = 0;
+        foreach ( \array_values( $raw_rows ) as $row ) {
+            if ( ! \is_array( $row ) || \sanitize_text_field( $row['date'] ?? '' ) === '' ) {
+                continue; // Dropped by sanitize_sessions_rows() too — indexes stay aligned.
+            }
+            if ( ! isset( $sessions[ $i ] ) ) {
+                break;
+            }
+            $prev = ( \is_array( $stored_rows[ $i ]['stream_embed'] ?? null ) ) ? $stored_rows[ $i ]['stream_embed'] : [];
+            $sessions[ $i ]['stream_embed'] = $this->normalize_one_embed(
+                (string) ( $row['stream_embed'] ?? '' ),
+                $prev,
+                $post_id,
+                (string) ( $sessions[ $i ]['label'] !== '' ? $sessions[ $i ]['label'] : $sessions[ $i ]['date'] )
+            );
+            $i++;
+        }
+
+        return $event_embed;
+    }
+
+    /**
+     * One field's worth of the rule above.
+     *
+     * @param string $raw      Author input.
+     * @param array  $previous Currently stored value for this field.
+     * @param int    $post_id  For the queued notice.
+     * @param string $where    '' for the event field, else the session's name.
+     * @return array
+     */
+    private function normalize_one_embed( $raw, array $previous, $post_id, $where ) {
+        $raw = \trim( (string) $raw );
+        if ( $raw === '' ) {
+            return [];
+        }
+        $normalized = Embed::normalize( $raw );
+        if ( \is_wp_error( $normalized ) ) {
+            $detail = $where === ''
+                ? $normalized->get_error_message()
+                : $where . ': ' . $normalized->get_error_message();
+            $this->queue_group_notice( 'stream_embed_invalid', (int) $post_id, $detail );
+            return $previous;
+        }
+        return $normalized;
     }
 
     /**
@@ -6440,6 +6659,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'email_bcc_invalid' => [
                 'level' => 'warning',
                 'message' => \__( 'Some Bcc addresses were not valid email addresses and were not saved.', 'anchor-schema' ),
+            ],
+            // Not a guard: the rest of the save went through. The refused field
+            // kept the value it already had — see normalize_one_embed().
+            'stream_embed_invalid' => [
+                'level' => 'warning',
+                'message' => \__( 'That stream link was not recognised, so the previous stream was kept. Paste a Vimeo, YouTube or Zoom link (or the provider\'s iframe embed code).', 'anchor-schema' ),
             ],
         ];
     }
@@ -8789,7 +9014,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         // save_meta() call; see event_authoring_input()'s docblock. $start_date
         // is passed through (already sanitized from this same $_POST key by
         // handle_event_manager_save(), before the post itself existed).
-        $input = $this->event_authoring_input( $_POST, $current_registration_mode, $start_date );
+        $input = $this->event_authoring_input( $_POST, $current_registration_mode, $start_date, $saved_id );
 
         $status_raw = sanitize_text_field( $_POST['anchor_event_status'] ?? 'auto' );
         if ( $status_raw === 'auto' ) {
@@ -11134,7 +11359,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         foreach ( $defaults as $key => $value ) {
             $stored = \get_post_meta( $post_id, $this->meta_key( $key ), true );
             if ( $stored === '' ) {
-                $stored = $value;
+                // Task 4 (spec §2 row 8a): `access_role_enabled` is the one
+                // default-TRUE boolean here, so this is the one key where the
+                // '' == "never written" assumption below is unsafe — WordPress
+                // round-trips a stored boolean `false` back as '' too, and
+                // this loop would otherwise resurrect an explicit un-tick as
+                // the default. metadata_exists() tells the two apart by
+                // presence rather than value. Every other default in this
+                // list is falsy, so '' already reads the same as its default
+                // and needs no such check.
+                if ( $key === 'access_role_enabled' && \metadata_exists( 'post', $post_id, $this->meta_key( $key ) ) ) {
+                    $stored = false;
+                } else {
+                    $stored = $value;
+                }
             }
             if ( is_bool( $value ) ) {
                 $stored = (bool) $stored;

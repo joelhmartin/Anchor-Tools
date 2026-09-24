@@ -14,4 +14,10 @@ class Test_Shared_Assets extends WP_UnitTestCase {
 		$this->assertNotNull( $gallery, 'gallery module must be enabled in tests/bootstrap.php' );
 		$this->assertContains( 'anchor-lightbox', $gallery->deps );
 	}
+
+	public function test_carousel_handle_registered_and_gallery_depends_on_it() {
+		do_action( 'wp_enqueue_scripts' );
+		$this->assertArrayHasKey( 'anchor-carousel', wp_scripts()->registered );
+		$this->assertContains( 'anchor-carousel', wp_scripts()->registered['anchor-video-gallery']->deps );
+	}
 }

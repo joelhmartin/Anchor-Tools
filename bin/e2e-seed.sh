@@ -460,6 +460,48 @@ GALLERY_PAGE_ID="$(wp eval '
 log "Gallery page #${GALLERY_PAGE_ID}"
 
 # ---------------------------------------------------------------------------
+# Carousel-layout gallery fixture (shared carousel E2E, e2e/shared-carousel.spec.js).
+# Five video items, carousel layout, 3 desktop columns, dots on. Same idiom as
+# the lightbox fixture above, reusing the module's own sample YouTube ids so
+# no extra binary fixtures are needed.
+# ---------------------------------------------------------------------------
+GALLERY_CAROUSEL_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "anchor_video_gallery", "name" => "avg-e2e-carousel", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "anchor_video_gallery",
+      "post_title"  => "AVG E2E Carousel",
+      "post_name"   => "avg-e2e-carousel",
+      "post_status" => "publish",
+  ] );
+  $video_ids = [ "dQw4w9WgXcQ", "jNQXAC9IVRw", "9bZkp7q19f0", "kJQP7kiw5Fk", "RgKAFK5djSk" ];
+  $items = [];
+  foreach ( $video_ids as $i => $vid ) {
+      $items[] = [ "type" => "video", "url" => "https://www.youtube.com/watch?v=$vid", "title" => "Carousel Video " . ( $i + 1 ), "caption" => "Caption " . ( $i + 1 ), "categories" => [] ];
+  }
+  update_post_meta( $id, "avg_videos", $items );
+  update_post_meta( $id, "avg_layout", "carousel" );
+  update_post_meta( $id, "avg_popup_style", "lightbox" );
+  update_post_meta( $id, "avg_pagination_enabled", 0 );
+  update_post_meta( $id, "avg_columns_desktop", 3 );
+  update_post_meta( $id, "avg_slider_dots", 1 );
+  echo (int) $id;
+')"
+log "Carousel gallery #${GALLERY_CAROUSEL_ID}"
+
+GALLERY_CAROUSEL_PAGE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "page", "name" => "avg-e2e-gallery-carousel", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "AVG E2E Gallery Carousel",
+      "post_name"   => "avg-e2e-gallery-carousel",
+      "post_status" => "publish",
+  ] );
+  wp_update_post( [ "ID" => $id, "post_content" => "[anchor_video_gallery id=\"'"${GALLERY_CAROUSEL_ID}"'\"]" ] );
+  echo (int) $id;
+')"
+log "Carousel gallery page #${GALLERY_CAROUSEL_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
 # Compliance fixture (consent banner / script blocker E2E).
 # One published page carrying: a known third-party iframe (YouTube embed —
 # gated as `marketing` by the built-in service registry), the
@@ -499,9 +541,10 @@ EXT_EMBED_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EMBED_EVENT_ID}"');')
 OFFERING_EVENT_URL="$(wp eval 'echo get_permalink('"${OFFERING_EVENT_ID}"');')"
 RECURRING_EVENT_URL="$(wp eval 'echo get_permalink('"${RECURRING_EVENT_ID}"');')"
 GALLERY_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_PAGE_ID}"');')"
+GALLERY_CAROUSEL_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"');')"
 COMPLIANCE_PAGE_URL="$(wp eval 'echo get_permalink('"${COMPLIANCE_PAGE_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"galleryCarouselUrl"=>get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Multisession event URL: ${MULTI_EVENT_URL}"
@@ -510,6 +553,7 @@ log "External (embed) event URL: ${EXT_EMBED_EVENT_URL}"
 log "Offering event URL: ${OFFERING_EVENT_URL}"
 log "Recurring event URL: ${RECURRING_EVENT_URL}"
 log "Gallery page URL: ${GALLERY_PAGE_URL}"
+log "Carousel gallery page URL: ${GALLERY_CAROUSEL_PAGE_URL}"
 log "Compliance page URL: ${COMPLIANCE_PAGE_URL}"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 log "Seed complete."

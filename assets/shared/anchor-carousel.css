@@ -1,0 +1,27 @@
+/*
+ * Shared carousel primitives (assets/shared/anchor-carousel.js).
+ *
+ * Generic rules for non-gallery consumers only, driven by the
+ * --anchor-carousel-* custom properties. The gallery module keeps its own
+ * .avg-track / .avg-tile styling untouched; it does not use these classes.
+ */
+
+.anchor-carousel__viewport {
+  overflow: hidden;
+}
+
+.anchor-carousel__track {
+  display: flex;
+  gap: var(--anchor-carousel-gap, 16px);
+  transition: transform 0.45s ease;
+}
+
+.anchor-carousel__track > * {
+  flex: 0 0 calc((100% - (var(--anchor-carousel-cols, 3) - 1) * var(--anchor-carousel-gap, 16px)) / var(--anchor-carousel-cols, 3));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anchor-carousel__track {
+    transition: none;
+  }
+}

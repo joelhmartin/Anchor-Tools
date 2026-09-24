@@ -1432,7 +1432,7 @@ class Anchor_Gallery_Module {
         }
 
         wp_register_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), ['anchor-lightbox'], filemtime($base_dir . 'anchor-video-slider.css'));
-        wp_register_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), ['anchor-lightbox'], filemtime($base_dir . 'anchor-video-slider.js'), true);
+        wp_register_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.js'), true);
     }
 
     /* ══════════════════════════════════════════════════════════

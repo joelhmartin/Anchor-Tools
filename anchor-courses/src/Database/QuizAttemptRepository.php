@@ -5,6 +5,7 @@ namespace Anchor\Courses\Database;
 
 use Anchor\Courses\Domain\QuizAttempt;
 use Anchor\Courses\Support\Clock;
+use Anchor\Courses\Support\Json;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -18,6 +19,8 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class QuizAttemptRepository {
 
+	use RepositoryGuards;
+
 	/** Attempts that count toward the max_attempts allowance ("every non-abandoned attempt"). */
 	private const COUNTED_STATUSES = [ 'in_progress', 'submitted', 'graded', 'expired' ];
 
@@ -26,20 +29,6 @@ final class QuizAttemptRepository {
 		'status', 'score', 'points_earned', 'points_possible', 'passed',
 		'submitted_at', 'duration_seconds', 'answers', 'grading_data',
 	];
-
-	/**
-	 * The status column has no CHECK constraint, so the repository is the last
-	 * place an unknown value can be refused before it becomes a corrupt row
-	 * (same rule EnrollmentRepository::assert_status() and
-	 * ProgressRepository::upsert() apply to their own enum columns).
-	 *
-	 * @throws \InvalidArgumentException
-	 */
-	private static function assert_status( string $status ): void {
-		if ( ! \in_array( $status, QuizAttempt::STATUSES, true ) ) {
-			throw new \InvalidArgumentException( 'Unknown quiz attempt status: ' . $status );
-		}
-	}
 
 	private static function table(): string {
 		return Migrations::table( 'quiz_attempts' );
@@ -96,19 +85,15 @@ final class QuizAttemptRepository {
 	public static function update( int $id, array $data ): ?QuizAttempt {
 		global $wpdb;
 
-		$data = \array_intersect_key( $data, \array_flip( self::UPDATABLE ) );
+		$data = self::filter_updatable( $data, self::UPDATABLE );
 
 		if ( isset( $data['status'] ) ) {
-			self::assert_status( (string) $data['status'] );
+			self::assert_enum( (string) $data['status'], QuizAttempt::STATUSES, 'quiz attempt status' );
 		}
 
 		foreach ( [ 'answers', 'grading_data' ] as $json_column ) {
 			if ( isset( $data[ $json_column ] ) && \is_array( $data[ $json_column ] ) ) {
-				// JSON_PRESERVE_ZERO_FRACTION: grading_data stores point values (e.g. score
-				// components) as floats. Without this flag an integral float like 1.0
-				// encodes as "1" and decodes back as int, breaking the float type contract
-				// from_row()/to_array() promise callers.
-				$data[ $json_column ] = (string) \wp_json_encode( $data[ $json_column ], JSON_PRESERVE_ZERO_FRACTION );
+				$data[ $json_column ] = Json::encode( $data[ $json_column ] );
 			}
 		}
 		$data['updated_at'] = Clock::now();

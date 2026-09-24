@@ -165,4 +165,14 @@ class Test_Courses_Progress_Repo extends Anchor_Courses_TestCase {
 		$this->assertNull( $found->completed_at );
 		$this->assertNull( $found->last_viewed_at );
 	}
+
+	/** Task 22 review: an integral float must not come back as an int (JSON_PRESERVE_ZERO_FRACTION). */
+	public function test_float_metadata_survives_a_round_trip() {
+		$p = ProgressRepository::upsert(
+			[ 'user_id' => $this->make_learner(), 'course_id' => $this->make_course(), 'item_id' => 7,
+			  'item_type' => 'quiz', 'status' => 'completed', 'metadata' => [ 'best_score' => 1.0 ] ]
+		);
+
+		$this->assertSame( 1.0, $p->metadata['best_score'] );
+	}
 }

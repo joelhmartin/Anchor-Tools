@@ -5,6 +5,7 @@ namespace Anchor\Courses\Database;
 
 use Anchor\Courses\Domain\Enrollment;
 use Anchor\Courses\Support\Clock;
+use Anchor\Courses\Support\Json;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -17,19 +18,6 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 final class EnrollmentRepository {
 
 	use RepositoryGuards;
-
-	/**
-	 * The status column has no CHECK constraint, so the repository is the last
-	 * place an unknown value can be refused before it becomes a corrupt row.
-	 * ProgressRepository::upsert() applies the same rule to its enums.
-	 *
-	 * @throws \InvalidArgumentException
-	 */
-	private static function assert_status( string $status ): void {
-		if ( ! \in_array( $status, Enrollment::STATUSES, true ) ) {
-			throw new \InvalidArgumentException( 'Unknown enrollment status: ' . $status );
-		}
-	}
 
 	private static function table(): string {
 		return Migrations::table( 'enrollments' );
@@ -69,7 +57,7 @@ final class EnrollmentRepository {
 
 		$now    = Clock::now();
 		$status = (string) ( $data['status'] ?? 'enrolled' );
-		self::assert_status( $status );
+		self::assert_enum( $status, Enrollment::STATUSES, 'enrollment status' );
 
 		$values = [
 			'user_id'      => (int) ( $data['user_id'] ?? 0 ),
@@ -81,7 +69,7 @@ final class EnrollmentRepository {
 			'expires_at'   => $data['expires_at'] ?? null,
 			'source'       => (string) ( $data['source'] ?? '' ),
 			'source_id'    => (string) ( $data['source_id'] ?? '' ),
-			'metadata'     => (string) \wp_json_encode( (array) ( $data['metadata'] ?? [] ) ),
+			'metadata'     => Json::encode( (array) ( $data['metadata'] ?? [] ) ),
 			'created_at'   => $now,
 			'updated_at'   => $now,
 		];
@@ -104,12 +92,12 @@ final class EnrollmentRepository {
 	public static function update( int $id, array $data ): ?Enrollment {
 		global $wpdb;
 
-		$data = \array_intersect_key( $data, \array_flip( self::UPDATABLE ) );
+		$data = self::filter_updatable( $data, self::UPDATABLE );
 		if ( isset( $data['status'] ) ) {
-			self::assert_status( (string) $data['status'] );
+			self::assert_enum( (string) $data['status'], Enrollment::STATUSES, 'enrollment status' );
 		}
 		if ( isset( $data['metadata'] ) && \is_array( $data['metadata'] ) ) {
-			$data['metadata'] = (string) \wp_json_encode( $data['metadata'] );
+			$data['metadata'] = Json::encode( $data['metadata'] );
 		}
 		$data['updated_at'] = Clock::now();
 

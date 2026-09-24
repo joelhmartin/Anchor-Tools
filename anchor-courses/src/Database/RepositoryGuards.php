@@ -6,14 +6,36 @@ namespace Anchor\Courses\Database;
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /**
- * Shared write-path helpers for the learner-table repositories.
+ * Shared write-path guards for the learner-table repositories.
  *
  * SQL shapes and table() stay in each repository; what lives here is the part
- * that must behave identically everywhere - most importantly that a PHP null
- * reaches MySQL as SQL NULL, never as '' (which wpdb's relaxed sql_mode turns
- * into the '0000-00-00 00:00:00' zero-date on a DATETIME column).
+ * that must behave identically everywhere:
+ * - enum columns have no CHECK constraint, so the repository is the last place
+ *   an unknown value can be refused before it becomes a corrupt row;
+ * - an update may only touch a repository's allowlist, never identity columns;
+ * - a PHP null reaches MySQL as SQL NULL, never as '' (which wpdb's relaxed
+ *   sql_mode turns into the '0000-00-00 00:00:00' zero-date on a DATETIME).
  */
 trait RepositoryGuards {
+
+	/**
+	 * @param string[] $allowed
+	 * @throws \InvalidArgumentException When $value is not in $allowed.
+	 */
+	protected static function assert_enum( string $value, array $allowed, string $label ): void {
+		if ( ! \in_array( $value, $allowed, true ) ) {
+			throw new \InvalidArgumentException( 'Unknown ' . $label . ': ' . $value );
+		}
+	}
+
+	/**
+	 * Only the allowlisted keys of $data, in $data's order.
+	 *
+	 * @param string[] $allowlist
+	 */
+	protected static function filter_updatable( array $data, array $allowlist ): array {
+		return \array_intersect_key( $data, \array_flip( $allowlist ) );
+	}
 
 	/**
 	 * A prepared single-row INSERT whose null values are written as a literal

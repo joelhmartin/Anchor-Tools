@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Courses\Domain;
 
 use Anchor\Courses\Support\Clock;
+use Anchor\Courses\Support\Json;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -31,8 +32,6 @@ final class Progress {
 	) {}
 
 	public static function from_row( array $row ): self {
-		$metadata = \json_decode( (string) ( $row['metadata'] ?? '' ), true );
-
 		return new self(
 			(int) ( $row['id'] ?? 0 ),
 			(int) ( $row['user_id'] ?? 0 ),
@@ -45,7 +44,7 @@ final class Progress {
 			Clock::nullable( $row['completed_at'] ?? null ),
 			Clock::nullable( $row['last_viewed_at'] ?? null ),
 			(int) ( $row['time_spent_seconds'] ?? 0 ),
-			\is_array( $metadata ) ? $metadata : [],
+			Json::decode( $row['metadata'] ?? null ),
 			(string) ( $row['created_at'] ?? '' ),
 			(string) ( $row['updated_at'] ?? '' )
 		);

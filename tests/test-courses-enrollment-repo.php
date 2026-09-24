@@ -198,4 +198,13 @@ class Test_Courses_Enrollment_Repo extends Anchor_Courses_TestCase {
 		$this->assertNull( $found->completed_at );
 		$this->assertNull( $found->expires_at );
 	}
+
+	/** Task 22 review: an integral float must not come back as an int (JSON_PRESERVE_ZERO_FRACTION). */
+	public function test_float_metadata_survives_a_round_trip() {
+		$e = EnrollmentRepository::insert_ignore( $this->row( $this->make_learner(), $this->make_course(), [ 'metadata' => [ 'credits' => 1.0 ] ] ) );
+		$this->assertSame( 1.0, $e->metadata['credits'] );
+
+		$after = EnrollmentRepository::update( $e->id, [ 'metadata' => [ 'credits' => 2.0 ] ] );
+		$this->assertSame( 2.0, $after->metadata['credits'] );
+	}
 }

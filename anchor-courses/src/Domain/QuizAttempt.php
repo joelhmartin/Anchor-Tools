@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Courses\Domain;
 
 use Anchor\Courses\Support\Clock;
+use Anchor\Courses\Support\Json;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -33,9 +34,6 @@ final class QuizAttempt {
 	) {}
 
 	public static function from_row( array $row ): self {
-		$answers = \json_decode( (string) ( $row['answers'] ?? '' ), true );
-		$grading = \json_decode( (string) ( $row['grading_data'] ?? '' ), true );
-
 		return new self(
 			(int) ( $row['id'] ?? 0 ),
 			(int) ( $row['user_id'] ?? 0 ),
@@ -50,8 +48,8 @@ final class QuizAttempt {
 			(string) ( $row['started_at'] ?? '' ),
 			Clock::nullable( $row['submitted_at'] ?? null ),
 			isset( $row['duration_seconds'] ) && null !== $row['duration_seconds'] ? (int) $row['duration_seconds'] : null,
-			\is_array( $answers ) ? $answers : [],
-			\is_array( $grading ) ? $grading : [],
+			Json::decode( $row['answers'] ?? null ),
+			Json::decode( $row['grading_data'] ?? null ),
 			(string) ( $row['created_at'] ?? '' ),
 			(string) ( $row['updated_at'] ?? '' )
 		);

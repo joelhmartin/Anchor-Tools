@@ -5,6 +5,7 @@ namespace Anchor\Courses\Database;
 
 use Anchor\Courses\Domain\Progress;
 use Anchor\Courses\Support\Clock;
+use Anchor\Courses\Support\Json;
 use InvalidArgumentException;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -25,6 +26,9 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 final class ProgressRepository {
 
 	use RepositoryGuards;
+
+	/** Non-identity columns the UPDATE half of upsert() may overwrite. */
+	private const UPDATABLE = [ 'status', 'progress_percent', 'started_at', 'completed_at', 'last_viewed_at', 'time_spent_seconds', 'metadata' ];
 
 	private static function table(): string {
 		return Migrations::table( 'progress' );
@@ -64,12 +68,8 @@ final class ProgressRepository {
 		$item_type = (string) ( $data['item_type'] ?? 'lesson' );
 		$status    = (string) ( $data['status'] ?? 'not_started' );
 
-		if ( ! \in_array( $item_type, Progress::ITEM_TYPES, true ) ) {
-			throw new InvalidArgumentException( "Unknown item_type '{$item_type}'." );
-		}
-		if ( ! \in_array( $status, Progress::STATUSES, true ) ) {
-			throw new InvalidArgumentException( "Unknown status '{$status}'." );
-		}
+		self::assert_enum( $item_type, Progress::ITEM_TYPES, 'progress item_type' );
+		self::assert_enum( $status, Progress::STATUSES, 'progress status' );
 
 		$row = [
 			'user_id'            => $user_id,
@@ -82,7 +82,7 @@ final class ProgressRepository {
 			'completed_at'       => $data['completed_at'] ?? null,
 			'last_viewed_at'     => $data['last_viewed_at'] ?? null,
 			'time_spent_seconds' => (int) ( $data['time_spent_seconds'] ?? 0 ),
-			'metadata'           => (string) \wp_json_encode( (array) ( $data['metadata'] ?? [] ) ),
+			'metadata'           => Json::encode( (array) ( $data['metadata'] ?? [] ) ),
 			'created_at'         => $now,
 			'updated_at'         => $now,
 		];
@@ -90,12 +90,7 @@ final class ProgressRepository {
 		// Allowlist: only non-identity columns the caller actually supplied are
 		// what the UPDATE half overwrites. user_id/course_id/item_id/item_type
 		// are the unique key itself and must never appear here.
-		$updatable = \array_values(
-			\array_intersect(
-				[ 'status', 'progress_percent', 'started_at', 'completed_at', 'last_viewed_at', 'time_spent_seconds', 'metadata' ],
-				\array_keys( $data )
-			)
-		);
+		$updatable   = \array_keys( self::filter_updatable( $data, self::UPDATABLE ) );
 		$updatable[] = 'updated_at';
 
 		$assignments = \implode( ', ', \array_map( static fn( string $c ): string => "{$c} = VALUES({$c})", $updatable ) );

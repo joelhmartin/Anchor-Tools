@@ -212,6 +212,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-testimonials/anchor-testimonials.php',
                 'class'       => 'Anchor_Testimonials_Module',
             ],
+            'speakers' => [
+                'label'       => __( 'Anchor Speakers', 'anchor-schema' ),
+                'description' => __( 'Speaker/faculty CPT with a configurable URL base and optional Events linkage.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-speakers/anchor-speakers.php',
+                'class'       => 'Anchor_Speakers_Module',
+            ],
             'store_locator' => [
                 'label'       => __( 'Anchor Store Locator', 'anchor-schema' ),
                 'description' => __( 'Add a map-based store locator with search and proximity filtering.', 'anchor-schema' ),

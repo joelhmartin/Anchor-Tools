@@ -66,6 +66,77 @@ class Test_Speakers_Events extends Anchor_Events_TestCase {
 		);
 	}
 
+	/**
+	 * Final whole-branch review finding 2: Anchor_Speaker_Events::save() and
+	 * Module::save_meta() are both hooked on save_post_event at priority 10;
+	 * save_meta() was registered first (Events bootstraps before the
+	 * speakers integration), so on a single real save it ran BEFORE this
+	 * module's save() and persist_group_authoring()'s reconcile() copied the
+	 * PREVIOUS speaker list to occurrence children, one save late. This test
+	 * goes through the real save_post_event dispatch (both callbacks fire
+	 * from one do_action(), exactly like a real post save) rather than
+	 * calling save_meta()/reconcile() directly, so it actually exercises
+	 * hook order.
+	 */
+	public function test_speaker_change_reaches_occurrence_children_on_the_same_save() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$speaker_a = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_status' => 'publish' ] );
+		$speaker_b = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_status' => 'publish' ] );
+
+		$event_id = $this->make_event();
+
+		$_POST = [
+			\Anchor\Events\Module::NONCE => wp_create_nonce( \Anchor\Events\Module::NONCE ),
+			'anchor_event_start_date'        => '2027-04-01',
+			'anchor_event_type'              => 'offering',
+			'anchor_event_registration_mode' => 'free',
+			'anchor_event_offering_dates'    => [
+				[ 'date' => '2027-04-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 1', 'capacity' => 10 ],
+				[ 'date' => '2027-04-08', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 2', 'capacity' => 10 ],
+			],
+			Anchor_Speaker_Events::NONCE     => wp_create_nonce( 'anchor_speaker_events' ),
+			'anchor_event_speaker_ids'       => [ $speaker_a ],
+		];
+		do_action( 'save_post_' . \Anchor\Events\Module::CPT, $event_id );
+
+		$children = $this->module()->occurrences->children( $event_id );
+		$this->assertCount( 2, $children, 'Expected two occurrence children from the offering save.' );
+		foreach ( $children as $child_id ) {
+			$this->assertSame( [ $speaker_a ], get_post_meta( $child_id, '_anchor_event_speaker_ids', true ) );
+		}
+
+		// Same request shape, speaker A swapped for B: both hooks fire again
+		// from this single save_post_event dispatch. Children must end up
+		// with B on THIS save, not the stale A a persist_group_authoring()
+		// run that reconciled before save() wrote B would leave behind.
+		$_POST['anchor_event_speaker_ids'] = [ $speaker_b ];
+		do_action( 'save_post_' . \Anchor\Events\Module::CPT, $event_id );
+
+		foreach ( $children as $child_id ) {
+			$this->assertSame(
+				[ $speaker_b ],
+				get_post_meta( $child_id, '_anchor_event_speaker_ids', true ),
+				'Children must reflect the NEW speaker on the same save, not the list from before this save.'
+			);
+		}
+
+		// Clearing: no speaker ids submitted -> parent and children cleared,
+		// on the same save.
+		unset( $_POST['anchor_event_speaker_ids'] );
+		do_action( 'save_post_' . \Anchor\Events\Module::CPT, $event_id );
+
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_speaker_ids' ) );
+		foreach ( $children as $child_id ) {
+			$this->assertFalse(
+				metadata_exists( 'post', $child_id, '_anchor_event_speaker_ids' ),
+				'Clearing the parent speaker list must clear it on the child on the same save.'
+			);
+		}
+
+		unset( $_POST );
+	}
+
 	public function test_child_without_own_list_uses_parent() {
 		$s      = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_status' => 'publish' ] );
 		$parent = self::factory()->post->create( [ 'post_type' => 'event' ] );

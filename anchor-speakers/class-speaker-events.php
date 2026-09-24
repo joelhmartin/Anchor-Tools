@@ -33,7 +33,14 @@ class Anchor_Speaker_Events {
 		add_filter( 'anchor_events_inherited_keys', [ $this, 'inherited_keys' ] );
 		add_filter( 'anchor_events_schema_node', [ $this, 'schema_node' ], 10, 2 );
 		add_action( 'add_meta_boxes_' . \Anchor\Events\Module::CPT, [ $this, 'add_meta_box' ] );
-		add_action( 'save_post_' . \Anchor\Events\Module::CPT, [ $this, 'save' ] );
+		// Priority 5: Module::save_meta() is hooked on the same action at the
+		// default priority 10 and runs persist_group_authoring() -> reconcile(),
+		// which copies this module's own META_KEY to occurrence children as
+		// one of the INHERITED_KEYS. This save() must write the new speaker
+		// list to the parent BEFORE that copy runs, or a speaker change
+		// reaches the children one save late (see class docblock and the
+		// final whole-branch review finding this fixes).
+		add_action( 'save_post_' . \Anchor\Events\Module::CPT, [ $this, 'save' ], 5 );
 		add_action( 'admin_enqueue_scripts', [ $this, 'admin_assets' ] );
 	}
 

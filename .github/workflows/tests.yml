@@ -85,6 +85,12 @@ jobs:
       - name: Run PHPUnit
         run: composer test
 
+      # WordPress-free unit suite (Anchor Courses pure logic). Runs even when the
+      # integration suite fails, so a maths regression is reported in its own right.
+      - name: PHPUnit (unit, no WordPress)
+        if: always()
+        run: composer test:unit
+
       # The `composer test` script above is `phpunit && phpunit --group ajax`,
       # but composer aborts the sequence on the first non-zero exit — so while
       # any pre-existing failure stands in the main suite, the ajax pass inside

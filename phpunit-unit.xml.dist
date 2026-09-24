@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!--
+    PHPUnit 9 configuration for the Anchor Courses PURE unit suite.
+
+    These tests never boot WordPress and never touch MySQL: they cover the
+    module's pure logic (grading maths, progress maths, curriculum validation,
+    question projection, clock arithmetic). The WordPress-booting integration
+    suite lives in phpunit.xml.dist, which EXCLUDES ./tests/unit so the two
+    never collide.
+
+    Run: vendor/bin/phpunit -c phpunit-unit.xml.dist
+-->
+<phpunit
+    bootstrap="tests/unit/bootstrap.php"
+    backupGlobals="false"
+    colors="true"
+    convertDeprecationsToExceptions="false"
+    convertErrorsToExceptions="true"
+    convertNoticesToExceptions="false"
+    convertWarningsToExceptions="false"
+    verbose="true"
+>
+    <testsuites>
+        <testsuite name="anchor-courses-unit">
+            <directory prefix="test-" suffix=".php">./tests/unit</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

@@ -179,7 +179,10 @@ final class Roles {
 
 		$roles->roles[ $slug ]['name'] = $name;
 		$roles->role_names[ $slug ]    = $name;
-		\update_option( $roles->role_key, $roles->roles, false );
+		// No autoload argument: WP_Roles expects wp_user_roles autoloaded, and an
+		// explicit false here would flip the option out of alloptions (core's own
+		// remove_role() passes none either).
+		\update_option( $roles->role_key, $roles->roles );
 	}
 
 	/**

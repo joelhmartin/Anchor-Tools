@@ -16,9 +16,13 @@ abstract class Anchor_Courses_TestCase extends WP_UnitTestCase {
 	protected array $minted_courses = [];
 
 	public function tear_down() {
-		foreach ( $this->minted_courses as $course_id ) {
-			remove_role( \Anchor\Courses\Support\Roles::access_slug( $course_id ) );
-			remove_role( \Anchor\Courses\Support\Roles::completion_slug( $course_id ) );
+		// Strip every course role, not only those make_course() tracked: any
+		// test that publishes an anchor_course through the raw factory mints
+		// roles too, and a leak here bloats wp_user_roles for the whole run.
+		foreach ( array_keys( wp_roles()->roles ) as $slug ) {
+			if ( preg_match( '/^anchor_course_\d+(_completed)?$/', (string) $slug ) ) {
+				remove_role( (string) $slug );
+			}
 		}
 		$this->minted_courses = [];
 		parent::tear_down();

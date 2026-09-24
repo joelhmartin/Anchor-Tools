@@ -229,10 +229,20 @@ class Entitlements {
      *
      * add_role() is additive — a customer/subscriber keeps everything they had.
      *
+     * Idempotent: re-granting what's already held and already recorded the
+     * same way is a no-op — no meta rewrite (the original `at` survives), no
+     * action, `false` returned — so a caller (e.g. a seat reconcile loop) can
+     * call grant() defensively without spamming listeners or resetting a
+     * grant's timestamp every time it runs. A manual grant OUTRANKS a seat
+     * grant and is never downgraded by one (that's what makes "a cancellation
+     * cannot strip a comp" true) — attempting the downgrade is itself treated
+     * as a no-op. The one legitimate re-write is the upgrade seat -> manual,
+     * which updates the record and fires the action.
+     *
      * @param int    $event_id
      * @param int    $user_id
      * @param string $source   seat|manual.
-     * @return bool
+     * @return bool True when a role and/or the grant record actually changed.
      */
     public function grant( $event_id, $user_id, $source = self::SOURCE_SEAT ) {
         $event_id = (int) $event_id;
@@ -250,22 +260,29 @@ class Entitlements {
             return false;
         }
 
-        if ( ! \in_array( $slug, (array) $user->roles, true ) ) {
+        $had_role = \in_array( $slug, (array) $user->roles, true );
+
+        $grants          = $this->grants_for_user( $user_id );
+        $existing        = $grants[ $event_id ] ?? null;
+        $existing_source = $existing['source'] ?? '';
+        $incoming_source = ( $source === self::SOURCE_MANUAL ) ? self::SOURCE_MANUAL : self::SOURCE_SEAT;
+        $downgrade       = ( $existing_source === self::SOURCE_MANUAL && $incoming_source !== self::SOURCE_MANUAL );
+        $unchanged       = $had_role && $existing !== null && ( $existing_source === $incoming_source || $downgrade );
+
+        if ( $unchanged ) {
+            return false;
+        }
+
+        if ( ! $had_role ) {
             $user->add_role( $slug );
         }
 
-        $grants = $this->grants_for_user( $user_id );
-        // A manual grant OUTRANKS a seat grant and is never downgraded by one:
-        // that is what makes "a cancellation cannot strip a comp" true.
-        $existing = $grants[ $event_id ]['source'] ?? '';
-        if ( $existing !== self::SOURCE_MANUAL || $source === self::SOURCE_MANUAL ) {
-            $grants[ $event_id ] = [
-                'source' => ( $source === self::SOURCE_MANUAL ) ? self::SOURCE_MANUAL : self::SOURCE_SEAT,
-                'at'     => \time(),
-                'by'     => (int) \get_current_user_id(),
-            ];
-            \update_user_meta( $user_id, self::GRANTS_META, $grants );
-        }
+        $grants[ $event_id ] = [
+            'source' => $incoming_source,
+            'at'     => \time(),
+            'by'     => (int) \get_current_user_id(),
+        ];
+        \update_user_meta( $user_id, self::GRANTS_META, $grants );
 
         /**
          * A user just gained access to an event.

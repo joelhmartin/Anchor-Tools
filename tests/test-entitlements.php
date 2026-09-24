@@ -121,6 +121,67 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		$this->assertSame( [ [ $event_id, $user_id, 'seat' ], [ $event_id, $user_id, 'seat' ] ], $seen );
 	}
 
+	/** A repeat grant with the same source is a no-op: no rewrite, no action. */
+	public function test_repeat_grant_same_source_is_a_noop() {
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create();
+		$fired    = 0;
+
+		$count = function () use ( &$fired ) { $fired++; };
+		add_action( 'anchor_events_access_granted', $count );
+
+		$this->assertTrue( $this->ent()->grant( $event_id, $user_id, 'seat' ) );
+		$first = $this->ent()->grant_record( $event_id, $user_id );
+
+		$this->assertFalse( $this->ent()->grant( $event_id, $user_id, 'seat' ), 'Already held, already recorded — nothing changed.' );
+		$second = $this->ent()->grant_record( $event_id, $user_id );
+
+		remove_action( 'anchor_events_access_granted', $count );
+
+		$this->assertSame( 1, $fired, 'The action fires once, not on the repeat call.' );
+		$this->assertSame( $first, $second, 'The record — including its `at` — is untouched by the repeat.' );
+	}
+
+	/** A seat grant, later upgraded to manual, rewrites the record and fires again. */
+	public function test_grant_seat_then_manual_upgrades_and_fires_again() {
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create();
+		$fired    = 0;
+
+		$count = function () use ( &$fired ) { $fired++; };
+		add_action( 'anchor_events_access_granted', $count );
+
+		$this->assertTrue( $this->ent()->grant( $event_id, $user_id, 'seat' ) );
+		$this->assertTrue( $this->ent()->grant( $event_id, $user_id, 'manual' ), 'The upgrade IS a change.' );
+
+		remove_action( 'anchor_events_access_granted', $count );
+
+		$this->assertSame( 'manual', $this->ent()->grant_record( $event_id, $user_id )['source'] );
+		$this->assertSame( 2, $fired, 'Both the original grant and the upgrade fire.' );
+	}
+
+	/** A manual grant can never be downgraded by a later seat grant. */
+	public function test_grant_manual_then_seat_does_not_downgrade() {
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create();
+		$fired    = 0;
+
+		$count = function () use ( &$fired ) { $fired++; };
+		add_action( 'anchor_events_access_granted', $count );
+
+		$this->assertTrue( $this->ent()->grant( $event_id, $user_id, 'manual' ) );
+		$first = $this->ent()->grant_record( $event_id, $user_id );
+
+		$this->assertFalse( $this->ent()->grant( $event_id, $user_id, 'seat' ), 'A seat grant cannot downgrade a comp.' );
+		$second = $this->ent()->grant_record( $event_id, $user_id );
+
+		remove_action( 'anchor_events_access_granted', $count );
+
+		$this->assertSame( 'manual', $second['source'], 'Still manual.' );
+		$this->assertSame( $first, $second, 'No rewrite at all — not even a refreshed timestamp.' );
+		$this->assertSame( 1, $fired, 'The seat attempt fires nothing.' );
+	}
+
 	/** Renaming the event renames the role. */
 	public function test_role_renames_with_the_title() {
 		$event_id = $this->event( [ 'title' => 'Old Name' ] );

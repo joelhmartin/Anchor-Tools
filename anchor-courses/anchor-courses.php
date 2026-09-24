@@ -31,6 +31,10 @@ class Module {
 		// plugin upgrade that never touches wp-admin still converges. Brief section 28.
 		Migrations::maybe_migrate();
 		\add_action( 'admin_init', [ Migrations::class, 'maybe_migrate' ] );
+
+		\add_action( 'init', [ Content\CoursePostType::class, 'register' ] );
+		\add_action( 'init', [ Content\LessonPostType::class, 'register' ] );
+		\add_action( 'init', [ Content\QuizPostType::class, 'register' ] );
 	}
 
 	public static function instance(): ?Module {

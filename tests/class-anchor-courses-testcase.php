@@ -40,4 +40,29 @@ abstract class Anchor_Courses_TestCase extends WP_UnitTestCase {
 	protected function make_learner( array $args = [] ): int {
 		return (int) self::factory()->user->create( array_merge( [ 'role' => 'subscriber' ], $args ) );
 	}
+
+	/** Create a published course with `_anchor_course_*` meta (keys WITHOUT the prefix). */
+	protected function make_course( array $meta = [], string $title = 'Test Course' ): int {
+		return $this->make_content( \Anchor\Courses\Content\CoursePostType::CPT, '_anchor_course_', $meta, $title );
+	}
+
+	/** Create a published lesson with `_anchor_lesson_*` meta. */
+	protected function make_lesson( array $meta = [], string $title = 'Test Lesson' ): int {
+		return $this->make_content( \Anchor\Courses\Content\LessonPostType::CPT, '_anchor_lesson_', $meta, $title );
+	}
+
+	/** Create a published quiz with `_anchor_quiz_*` meta. */
+	protected function make_quiz( array $meta = [], string $title = 'Test Quiz' ): int {
+		return $this->make_content( \Anchor\Courses\Content\QuizPostType::CPT, '_anchor_quiz_', $meta, $title );
+	}
+
+	private function make_content( string $cpt, string $prefix, array $meta, string $title ): int {
+		$id = (int) self::factory()->post->create(
+			[ 'post_type' => $cpt, 'post_status' => 'publish', 'post_title' => $title ]
+		);
+		foreach ( $meta as $key => $value ) {
+			update_post_meta( $id, $prefix . $key, $value );
+		}
+		return $id;
+	}
 }

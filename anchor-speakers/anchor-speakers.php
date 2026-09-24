@@ -5,6 +5,9 @@
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+require_once __DIR__ . '/class-speaker-meta.php';
+require_once __DIR__ . '/class-speaker-render.php';
+
 class Anchor_Speakers_Module {
 	const CPT              = 'anchor_speaker';
 	const OPTION           = 'anchor_speakers_options';
@@ -26,6 +29,11 @@ class Anchor_Speakers_Module {
 		add_filter( 'request', [ $this, 'page_fallback' ] );
 		add_action( 'admin_menu', [ $this, 'settings_menu' ] );
 		add_action( 'admin_init', [ $this, 'settings_register' ] );
+		add_filter( 'single_template', [ $this, 'single_template' ] );
+		add_shortcode( 'anchor_speakers', [ $this, 'shortcode' ] );
+		add_action( 'add_meta_boxes', [ $this, 'add_meta_boxes' ] );
+		add_action( 'save_post_' . self::CPT, [ $this, 'save' ] );
+		add_action( 'wp_enqueue_scripts', [ $this, 'maybe_enqueue_frontend_assets' ] );
 	}
 
 	public function register() {
@@ -136,5 +144,180 @@ class Anchor_Speakers_Module {
 		echo '<tr><th>' . esc_html__( 'Archive page', 'anchor-schema' ) . '</th><td><label><input type="checkbox" name="' . esc_attr( self::OPTION ) . '[archive]" value="1" ' . checked( $o['archive'], true, false ) . '> ' . esc_html__( 'Enable an archive at the base URL', 'anchor-schema' ) . '</label></td></tr></table>';
 		submit_button();
 		echo '</form></div>';
+	}
+
+	/* ------------------------------------------------------------------
+	   Single template fallback
+	   ------------------------------------------------------------------ */
+
+	/**
+	 * Ships a minimal fallback template only when the active theme has no
+	 * single-anchor_speaker.php of its own.
+	 */
+	public function single_template( $template ) {
+		if ( get_post_type() === self::CPT ) {
+			$theme_template = locate_template( 'single-anchor_speaker.php' );
+			if ( ! $theme_template ) {
+				return __DIR__ . '/templates/single-anchor_speaker.php';
+			}
+		}
+		return $template;
+	}
+
+	/* ------------------------------------------------------------------
+	   Admin metabox
+	   ------------------------------------------------------------------ */
+
+	public function add_meta_boxes() {
+		add_meta_box(
+			'anchor_speaker_details',
+			__( 'Speaker details', 'anchor-schema' ),
+			[ $this, 'render_metabox' ],
+			self::CPT,
+			'normal',
+			'high'
+		);
+	}
+
+	public function render_metabox( $post ) {
+		wp_nonce_field( 'anchor_speakers_meta', 'anchor_speakers_meta_nonce' );
+		$m = Anchor_Speaker_Meta::get( $post->ID );
+		?>
+		<table class="form-table anchor-speaker-fields">
+			<tr>
+				<th><label for="as_credentials"><?php esc_html_e( 'Credentials', 'anchor-schema' ); ?></label></th>
+				<td><input type="text" id="as_credentials" name="anchor_speaker[credentials]" value="<?php echo esc_attr( $m['credentials'] ); ?>" class="regular-text" placeholder="<?php esc_attr_e( 'e.g. DDS, MS, DABCP', 'anchor-schema' ); ?>" /></td>
+			</tr>
+			<tr>
+				<th><label for="as_title"><?php esc_html_e( 'Title', 'anchor-schema' ); ?></label></th>
+				<td><input type="text" id="as_title" name="anchor_speaker[title]" value="<?php echo esc_attr( $m['title'] ); ?>" class="regular-text" placeholder="<?php esc_attr_e( 'e.g. Founder', 'anchor-schema' ); ?>" /></td>
+			</tr>
+			<tr>
+				<th><label for="as_location"><?php esc_html_e( 'Location', 'anchor-schema' ); ?></label></th>
+				<td><input type="text" id="as_location" name="anchor_speaker[location]" value="<?php echo esc_attr( $m['location'] ); ?>" class="regular-text" /></td>
+			</tr>
+			<tr>
+				<th><label for="as_featured"><?php esc_html_e( 'Featured', 'anchor-schema' ); ?></label></th>
+				<td><label><input type="checkbox" id="as_featured" name="anchor_speaker[featured]" value="1" <?php checked( $m['featured'] ); ?> /> <?php esc_html_e( 'Show in featured speakers', 'anchor-schema' ); ?></label></td>
+			</tr>
+			<tr>
+				<th><?php esc_html_e( 'Links', 'anchor-schema' ); ?></th>
+				<td>
+					<?php for ( $i = 0; $i < 5; $i++ ) :
+						$row = $m['links'][ $i ] ?? [ 'label' => '', 'url' => '' ];
+						?>
+						<p>
+							<input type="text" name="anchor_speaker[links][<?php echo esc_attr( $i ); ?>][label]" value="<?php echo esc_attr( $row['label'] ); ?>" placeholder="<?php esc_attr_e( 'Label', 'anchor-schema' ); ?>" class="regular-text" style="width:180px;" />
+							<input type="url" name="anchor_speaker[links][<?php echo esc_attr( $i ); ?>][url]" value="<?php echo esc_attr( $row['url'] ); ?>" placeholder="https://" class="regular-text" style="width:320px;" />
+						</p>
+					<?php endfor; ?>
+				</td>
+			</tr>
+		</table>
+		<?php
+	}
+
+	public function save( $post_id ) {
+		$nonce = isset( $_POST['anchor_speakers_meta_nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['anchor_speakers_meta_nonce'] ) ) : '';
+		if ( ! wp_verify_nonce( $nonce, 'anchor_speakers_meta' ) ) {
+			return;
+		}
+		if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+			return;
+		}
+		if ( wp_is_post_revision( $post_id ) ) {
+			return;
+		}
+		if ( ! current_user_can( 'edit_post', $post_id ) ) {
+			return;
+		}
+		Anchor_Speaker_Meta::save( $post_id, wp_unslash( $_POST['anchor_speaker'] ?? [] ) );
+	}
+
+	/* ------------------------------------------------------------------
+	   Shortcode and front-end assets
+	   ------------------------------------------------------------------ */
+
+	/**
+	 * [anchor_speakers] shortcode. Ordering: `ids` order when given, event
+	 * order when `event` resolves (via Anchor_Speakers_Module::event_speaker_ids(),
+	 * added in Task 10 and only called when it exists), else menu_order ASC,
+	 * title ASC. Renders nothing when the query is empty, and only enqueues
+	 * front-end assets when there is something to render.
+	 */
+	public function shortcode( $atts ) {
+		$atts = shortcode_atts( [
+			'featured' => '',
+			'ids'      => '',
+			'event'    => '',
+			'layout'   => 'grid',
+			'columns'  => 3,
+			'limit'    => -1,
+			'link'     => 1,
+			'show'     => 'credentials,title,excerpt',
+		], $atts, 'anchor_speakers' );
+
+		$posts = $this->query_speakers( $atts );
+		if ( empty( $posts ) ) {
+			return '';
+		}
+
+		$this->enqueue_frontend_assets();
+
+		return Anchor_Speaker_Render::html( $posts, $atts );
+	}
+
+	private function query_speakers( array $atts ) {
+		$ids = array_values( array_filter( array_map( 'absint', explode( ',', (string) $atts['ids'] ) ) ) );
+
+		if ( empty( $ids ) && (string) $atts['event'] !== '' && method_exists( __CLASS__, 'event_speaker_ids' ) ) {
+			$event_id = $atts['event'] === 'current' ? get_queried_object_id() : absint( $atts['event'] );
+			if ( $event_id ) {
+				$ids = self::event_speaker_ids( $event_id );
+			}
+		}
+
+		$args = [
+			'post_type'      => self::CPT,
+			'post_status'    => 'publish',
+			'posts_per_page' => (int) $atts['limit'],
+			'no_found_rows'  => true,
+			'meta_query'     => [],
+		];
+
+		if ( (string) $atts['featured'] === '1' ) {
+			$args['meta_query'][] = [ 'key' => '_as_featured', 'value' => '1' ];
+		}
+
+		if ( ! empty( $ids ) ) {
+			$args['post__in'] = $ids;
+			$args['orderby']  = 'post__in';
+		} else {
+			$args['orderby'] = [ 'menu_order' => 'ASC', 'title' => 'ASC' ];
+		}
+
+		return get_posts( $args );
+	}
+
+	/**
+	 * Only fires the front-end enqueue on a singular speaker page (the
+	 * fallback single template); the shortcode enqueues directly from its
+	 * own handler (not hooked on wp_enqueue_scripts) so nothing loads on
+	 * pages that never render a speaker.
+	 */
+	public function maybe_enqueue_frontend_assets() {
+		if ( is_singular( self::CPT ) ) {
+			$this->enqueue_frontend_assets();
+		}
+	}
+
+	public function enqueue_frontend_assets() {
+		$css_path = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-speakers/assets/speakers.css';
+		wp_enqueue_style(
+			'anchor-speakers',
+			Anchor_Asset_Loader::url( 'anchor-speakers/assets/speakers.css' ),
+			[],
+			file_exists( $css_path ) ? filemtime( $css_path ) : false
+		);
 	}
 }

@@ -1,0 +1,82 @@
+/*
+ * [anchor_speakers] front-end styles. Layout only, driven by the custom
+ * properties the renderer sets inline on .anchor-speakers:
+ *   --as-cols          number of columns (grid layout)
+ *   --as-gap           gap between cards (default 24px)
+ *   --as-photo-radius  speaker photo corner radius (default 50%, a circle)
+ *
+ * The single-speaker fallback template (templates/single-anchor_speaker.php)
+ * uses the separate .anchor-speaker-single block below, unrelated to the
+ * shortcode's grid/list/compact layouts.
+ */
+
+.anchor-speakers--grid {
+	display: grid;
+	grid-template-columns: repeat( var( --as-cols, 3 ), minmax( 0, 1fr ) );
+	gap: var( --as-gap, 24px );
+}
+
+@media ( max-width: 1023px ) {
+	.anchor-speakers--grid {
+		grid-template-columns: repeat( 2, minmax( 0, 1fr ) );
+	}
+}
+
+@media ( max-width: 767px ) {
+	.anchor-speakers--grid {
+		grid-template-columns: 1fr;
+	}
+}
+
+.anchor-speakers--list .anchor-speaker {
+	display: flex;
+	align-items: flex-start;
+	gap: var( --as-gap, 24px );
+	margin-bottom: var( --as-gap, 24px );
+}
+
+.anchor-speakers--compact {
+	display: grid;
+	grid-template-columns: repeat( var( --as-cols, 3 ), minmax( 0, 1fr ) );
+	gap: calc( var( --as-gap, 24px ) / 2 );
+}
+
+.anchor-speaker {
+	display: flex;
+	flex-direction: column;
+}
+
+.anchor-speaker__photo,
+.anchor-speaker__photo img {
+	display: block;
+	width: 100%;
+	aspect-ratio: 1 / 1;
+	object-fit: cover;
+	border-radius: var( --as-photo-radius, 50% );
+}
+
+.anchor-speakers--list .anchor-speaker__photo,
+.anchor-speakers--list .anchor-speaker__photo img {
+	width: 96px;
+	flex: 0 0 auto;
+}
+
+.anchor-speaker__name {
+	margin: 0.5em 0 0;
+}
+
+.anchor-speaker__credentials,
+.anchor-speaker__title,
+.anchor-speaker__location,
+.anchor-speaker__excerpt {
+	margin: 0.25em 0;
+}
+
+.anchor-speaker__link {
+	margin-top: 0.5em;
+}
+
+.anchor-speaker-single__photo img {
+	max-width: 320px;
+	border-radius: var( --as-photo-radius, 50% );
+}

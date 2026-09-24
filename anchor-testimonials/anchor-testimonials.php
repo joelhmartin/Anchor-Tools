@@ -7,6 +7,7 @@
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 require_once __DIR__ . '/class-testimonial-meta.php';
+require_once __DIR__ . '/class-testimonial-query.php';
 
 class Anchor_Testimonials_Module {
 	const CPT         = 'anchor_testimonial';

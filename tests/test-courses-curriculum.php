@@ -72,6 +72,33 @@ class Test_Courses_Curriculum extends Anchor_Courses_TestCase {
 		$this->assertSame( 0, Curriculum::course_for_item( $this->make_lesson(), 'lesson' ) );
 	}
 
+	/**
+	 * Nothing stops the same item appearing in two courses' curricula. When
+	 * that happens `course_for_item()` must resolve deterministically to the
+	 * lowest course id - not to whichever course happened to save last.
+	 */
+	public function test_course_for_item_resolves_to_the_lowest_course_id_when_shared() {
+		$lower_course  = $this->course;
+		$higher_course = $this->make_course( [], 'Higher Course' );
+		$this->assertGreaterThan( $lower_course, $higher_course );
+
+		$shared = $this->make_lesson( [], 'Shared Lesson' );
+
+		// Save the HIGHER-id course's curriculum first, to prove the result
+		// is not insertion order.
+		Curriculum::save( $higher_course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $shared ] ] ] ] );
+		Curriculum::save(
+			$lower_course,
+			[ [ 'title' => 'Module 1', 'items' => [
+				[ 'type' => 'lesson', 'id' => $this->lesson_a ],
+				[ 'type' => 'quiz', 'id' => $this->quiz ],
+				[ 'type' => 'lesson', 'id' => $shared ],
+			] ] ]
+		);
+
+		$this->assertSame( $lower_course, Curriculum::course_for_item( $shared, 'lesson' ) );
+	}
+
 	/** Brief section 21.1: removing an item from a course must not delete the post. */
 	public function test_removing_an_item_leaves_the_lesson_post_intact() {
 		Curriculum::save(

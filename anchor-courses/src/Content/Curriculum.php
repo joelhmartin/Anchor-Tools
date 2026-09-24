@@ -26,6 +26,9 @@ final class Curriculum {
 	/**
 	 * Normalise authored input to the canonical shape. Pure.
 	 *
+	 * A module with an empty (or all-invalid) `items` array is preserved as an
+	 * empty module rather than dropped - an author may be mid-build.
+	 *
 	 * @param array $modules Raw module rows.
 	 * @return array<int,array{id:string,title:string,description:string,items:array<int,array{type:string,id:int,required:bool}>}>
 	 */
@@ -147,6 +150,12 @@ final class Curriculum {
 	 * `meta_key` (rather than loading each course through `get()` twice), so
 	 * courses with no curriculum meta at all are excluded from the candidate
 	 * list before `contains()` walks their items.
+	 *
+	 * Nothing enforces that an item belongs to only one course's curriculum,
+	 * so sharing is possible. When an item is shared by several courses this
+	 * resolves to the LOWEST course id, deterministically, by ordering the
+	 * candidate query by `ID ASC`: sharing is allowed, but the owner used for
+	 * progress purposes is always the same one, regardless of save order.
 	 */
 	public static function course_for_item( int $item_id, string $type ): int {
 		$courses = \get_posts(
@@ -156,6 +165,8 @@ final class Curriculum {
 				'fields'         => 'ids',
 				'posts_per_page' => -1,
 				'no_found_rows'  => true,
+				'orderby'        => 'ID',
+				'order'          => 'ASC',
 				'meta_key'       => self::META, // phpcs:ignore WordPress.DB.SlowDBQuery
 			]
 		);

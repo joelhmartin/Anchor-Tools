@@ -12,6 +12,11 @@
         "phpunit/phpunit": "^9.6",
         "yoast/phpunit-polyfills": "^1.1"
     },
+    "autoload": {
+        "psr-4": {
+            "Anchor\\Courses\\": "anchor-courses/src/"
+        }
+    },
     "scripts": {
         "test": [
             "phpunit",

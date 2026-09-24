@@ -72,7 +72,14 @@ final class QuizEditor {
 		$clean = [];
 
 		foreach ( self::INT_RANGES as $key => $range ) {
-			$value         = \absint( $input[ $key ] ?? self::defaults()[ $key ] );
+			// Blank or garbage input is not "as little as possible" - it is
+			// unset, so it falls back to the authored default, not the
+			// absint('nope') === 0 floor a clamp would otherwise produce.
+			// An explicit numeric 0 is still honoured where the range allows
+			// it (unlimited / untimed / immediate). Mirrors
+			// CourseEditor::sanitize_value()'s completion_percentage rule.
+			$raw   = $input[ $key ] ?? '';
+			$value = ( '' === $raw || ! \is_numeric( $raw ) ) ? self::defaults()[ $key ] : \absint( $raw );
 			$clean[ $key ] = \max( $range[0], \min( $range[1], $value ) );
 		}
 

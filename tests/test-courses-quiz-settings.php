@@ -70,6 +70,38 @@ class Test_Courses_Quiz_Settings extends Anchor_Courses_TestCase {
 		$this->assertSame( 0, $s['allow_review'] );
 	}
 
+	/**
+	 * Blank or garbage input is not "as little as possible" - it is unset, so
+	 * it falls back to the authored default, not the absint('') === 0 floor.
+	 * An explicit numeric 0 is still honoured where the range allows it.
+	 * Mirrors CourseEditor::sanitize_value()'s completion_percentage rule.
+	 */
+	public function test_blank_or_garbage_integer_fields_fall_back_to_the_default_not_the_floor() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$quiz = $this->make_quiz();
+
+		$this->submit( $quiz, [ 'passing_score' => '' ] );
+		$this->assertSame( 80, QuizEditor::settings( $quiz )['passing_score'], "Blank passing_score falls back to the default (80)." );
+
+		$this->submit( $quiz, [ 'passing_score' => 'abc' ] );
+		$this->assertSame( 80, QuizEditor::settings( $quiz )['passing_score'], "Non-numeric passing_score falls back to the default (80)." );
+
+		$this->submit( $quiz, [ 'passing_score' => '0' ] );
+		$this->assertSame( 1, QuizEditor::settings( $quiz )['passing_score'], "An explicit numeric 0 is honoured, then clamped to the 1..100 floor." );
+
+		$this->submit( $quiz, [ 'passing_score' => '150' ] );
+		$this->assertSame( 100, QuizEditor::settings( $quiz )['passing_score'], "Out-of-range passing_score clamps to the ceiling." );
+
+		$this->submit( $quiz, [ 'max_attempts' => '' ] );
+		$this->assertSame( 0, QuizEditor::settings( $quiz )['max_attempts'], "Blank max_attempts falls back to the default (0 = unlimited)." );
+
+		$this->submit( $quiz, [ 'max_attempts' => '0' ] );
+		$this->assertSame( 0, QuizEditor::settings( $quiz )['max_attempts'], "An explicit numeric 0 stays 0 (unlimited is within range)." );
+
+		$this->submit( $quiz, [ 'max_attempts' => '5' ] );
+		$this->assertSame( 5, QuizEditor::settings( $quiz )['max_attempts'] );
+	}
+
 	public function test_save_requires_the_quiz_capability() {
 		$quiz = $this->make_quiz( [ 'settings' => [ 'passing_score' => 70 ] ] );
 		wp_set_current_user( $this->make_learner() );

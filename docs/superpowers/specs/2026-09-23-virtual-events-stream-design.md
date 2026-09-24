@@ -253,6 +253,6 @@ Replays / recordings (file manager), live chat, watch-time logging for live stre
 
 ## 10. Rollout
 
-1. Ship as Anchor-Tools **3.31.0** from `main` per the release process. New keys default to previous behaviour, so no data migration; `virtual_url` events get a room automatically via the fallback.
+1. Ship in the next Anchor-Tools release, cut from `main` by the owner per the release process (this branch does NOT bump `Version:`; the number is decided at release time — the registration-form-conditions branch also targets the next release). New keys default to previous behaviour, so no data migration; `virtual_url` events get a room automatically via the fallback.
 2. On DEKA production: flush rewrite rules (version bump does it), spot-check one legacy virtual event's `/live/` renders a "Join on Zoom" button, then author the first hybrid event.
 3. Theme follow-up in `deka-context`: `events/live-event.php` override and a modality badge on `events/single-event.php`, using `docs/DESIGN-SYSTEM.md`.

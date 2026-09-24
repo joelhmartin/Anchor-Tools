@@ -48,6 +48,11 @@ class Module {
 		$this->enrollments = new Services\EnrollmentService();
 		$this->progress    = new Services\ProgressService( $this->enrollments );
 
+		// admin-post.php, not wp-admin, so it must be constructed unconditionally
+		// (not inside the is_admin() block above) - the handler runs on requests
+		// from the front end too.
+		new Frontend\Actions( $this->progress );
+
 		// Daily expiry sweep. Scheduled here rather than on activation because
 		// modules have no activation hook (see Migrations' note).
 		\add_action( Services\EnrollmentService::CRON_HOOK, [ $this->enrollments, 'sweep_expired' ] );

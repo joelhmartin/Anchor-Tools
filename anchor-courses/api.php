@@ -23,3 +23,30 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 function anchor_courses_enroll_user( $user_id, $course_id, array $args = [] ) {
 	return ( new \Anchor\Courses\Services\EnrollmentService() )->enroll( (int) $user_id, (int) $course_id, $args );
 }
+
+/**
+ * Mark a lesson complete for a user (brief section 15).
+ *
+ * Idempotent, and subject to enrolment + progression rules.
+ *
+ * @param int $user_id
+ * @param int $course_id
+ * @param int $lesson_id
+ * @return \Anchor\Courses\Domain\Progress|WP_Error
+ */
+function anchor_courses_complete_lesson( $user_id, $course_id, $lesson_id ) {
+	return ( new \Anchor\Courses\Services\ProgressService() )
+		->complete_lesson( (int) $user_id, (int) $course_id, (int) $lesson_id );
+}
+
+/**
+ * Rolled-up progress for one learner on one course (brief section 15).
+ *
+ * @param int $user_id
+ * @param int $course_id
+ * @return \Anchor\Courses\Domain\CourseProgress
+ */
+function anchor_courses_get_progress( $user_id, $course_id ) {
+	return ( new \Anchor\Courses\Services\ProgressService() )
+		->get_course_progress( (int) $user_id, (int) $course_id );
+}

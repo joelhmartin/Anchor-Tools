@@ -645,6 +645,151 @@ class Test_Email_Templates extends Anchor_Events_TestCase {
 		}
 	}
 
+	/* ---------------------------------------------------------------------
+	 * Task 14: the {room_link} scalar and the stream-first CTA default.
+	 * ------------------------------------------------------------------- */
+
+	/** {room_link} resolves per recipient and carries their own token. */
+	public function test_room_link_token_is_per_recipient() {
+		$event_id = $this->make_event( [
+			'registration_mode' => 'free',
+			'access_role_enabled' => true,
+			'timezone'          => 'UTC',
+			'start_ts'          => time() + DAY_IN_SECONDS,
+			'end_ts'            => time() + DAY_IN_SECONDS + 3600,
+			'stream_default_modality' => 'virtual',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/8', 'raw' => '' ],
+		] );
+		$a = self::factory()->user->create( [ 'user_email' => 'one@example.test' ] );
+		$b = self::factory()->user->create( [ 'user_email' => 'two@example.test' ] );
+		$seat_a = $this->registrations()->get_seat( $this->make_seat( $event_id, [ 'email' => 'one@example.test' ] ) );
+		$seat_b = $this->registrations()->get_seat( $this->make_seat( $event_id, [ 'email' => 'two@example.test', 'seat_index' => 2 ] ) );
+
+		$link_a = $this->module()->email_tokens( [ 'event_id' => $event_id, 'seat' => $seat_a ] )['room_link'];
+		$link_b = $this->module()->email_tokens( [ 'event_id' => $event_id, 'seat' => $seat_b ] )['room_link'];
+
+		$this->assertStringContainsString( 'aek=', $link_a );
+		$this->assertNotSame( $link_a, $link_b, 'Each recipient gets their own token.' );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** A waitlist seat never gets a room link. */
+	public function test_waitlist_seat_gets_no_room_link() {
+		$event_id = $this->make_event( [
+			'registration_mode' => 'free',
+			'access_role_enabled' => true,
+			'stream_default_modality' => 'virtual',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/8', 'raw' => '' ],
+		] );
+		$seat = [ 'id' => 0, 'name' => 'W', 'email' => 'w@example.test', 'status' => 'waitlist' ];
+		$this->assertSame( '', $this->module()->email_tokens( [ 'event_id' => $event_id, 'seat' => $seat ] )['room_link'] );
+	}
+
+	/** CTA default order: stream > virtual > event page. */
+	public function test_default_cta_order() {
+		$page_only = $this->make_event();
+		$this->assertSame( 'View event details', $this->module()->default_email_cta( $page_only )['label'] );
+
+		$virtual = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://zoom.example/j/1' ] );
+		$this->assertSame( 'Join the event', $this->module()->default_email_cta( $virtual )['label'] );
+
+		$stream = $this->make_event( [
+			'registration_mode' => 'free',
+			'access_role_enabled' => true,
+			'virtual' => true,
+			'virtual_url' => 'https://zoom.example/j/1',
+			'stream_default_modality' => 'virtual',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/8', 'raw' => '' ],
+		] );
+		$cta = $this->module()->default_email_cta( $stream );
+		$this->assertSame( 'Join the livestream', $cta['label'] );
+		$this->assertSame( '{room_link}', $cta['url'] );
+	}
+
+	/**
+	 * An in-person event with no stream gets no room link — even though the
+	 * access switch is ON for it by default and its attendee therefore has an
+	 * account. No room, no link, and nothing is looked up to decide that.
+	 */
+	public function test_room_link_is_empty_for_an_event_with_no_stream() {
+		$event_id = $this->make_event( [
+			'registration_mode' => 'free',
+			'timezone'          => 'UTC',
+			'start_ts'          => time() + DAY_IN_SECONDS,
+			'end_ts'            => time() + DAY_IN_SECONDS + 3600,
+		] ); // access_role_enabled defaults to TRUE; there is simply no stream.
+		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Plain', 'email' => 'plain-cta@example.test' ] );
+		$seat    = $this->registrations()->get_seat( $seat_id );
+
+		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id, 'seat' => $seat ] );
+
+		$this->assertSame( '', $tokens['room_link'] );
+		$this->assertSame( 'View event details', $this->module()->default_email_cta( $event_id )['label'] );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** A switched-off event's confirmation resolves no account at all. */
+	public function test_room_link_is_inert_when_the_switch_is_off() {
+		$event_id = $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => false,
+			'timezone'            => 'UTC',
+			'start_ts'            => time() + DAY_IN_SECONDS,
+			'end_ts'              => time() + DAY_IN_SECONDS + 3600,
+		] );
+		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Off', 'email' => 'off-cta@example.test' ] );
+		$seat    = $this->registrations()->get_seat( $seat_id );
+		$before  = count_users()['total_users'];
+
+		$tokens = $this->module()->email_tokens( [ 'event_id' => $event_id, 'seat' => $seat ] );
+
+		$this->assertSame( '', $tokens['room_link'] );
+		$this->assertSame( $before, count_users()['total_users'], 'Rendering the email creates nothing.' );
+		$this->assertNull( get_user_by( 'email', 'off-cta@example.test' ) ?: null );
+		$this->assertSame( 'View event details', $this->module()->default_email_cta( $event_id )['label'] );
+	}
+
+	/** A saved embed on a switched-off event still gets no livestream CTA. */
+	public function test_cta_needs_the_switch_as_well_as_an_embed() {
+		$event_id = $this->make_event( [
+			'registration_mode' => 'free',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/8', 'raw' => '' ],
+		] );
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', false );
+
+		$this->assertSame( 'View event details', $this->module()->default_email_cta( $event_id )['label'] );
+	}
+
+	/**
+	 * The stream CTA's URL is the literal `{room_link}` TOKEN
+	 * (default_email_cta()), rendered once per recipient. It must expand to
+	 * the real per-recipient link in the button's href — not survive as
+	 * literal text, and not get mangled by tpl_block_cta_button()'s esc_url()
+	 * stripping the curly braces before the token has a chance to resolve.
+	 */
+	public function test_stream_cta_button_expands_to_a_working_room_link() {
+		$event_id = $this->make_event( [
+			'registration_mode'       => 'free',
+			'access_role_enabled'     => true,
+			'stream_default_modality' => 'virtual',
+			'stream_embed'            => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/8', 'raw' => '' ],
+		] );
+		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Attendee', 'email' => 'stream-cta@example.test' ] );
+
+		$html = $this->module()->build_registration_email_html( [
+			'event_id' => $event_id,
+			'name'     => 'Attendee',
+			'status'   => Registrations::STATUS_CONFIRMED,
+			'seat_id'  => $seat_id,
+			'type'     => 'confirmation',
+		] );
+
+		$this->assertStringContainsString( 'Join the livestream', $html );
+		$this->assertStringNotContainsString( 'room_link', $html, 'The token never reaches the output unexpanded or mangled.' );
+		$this->assertStringContainsString( 'aek=', $html, "The button's href carries the recipient's own sign-in token." );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
 	private function expected_confirmation() {
 		return <<<'EXPECTED_CONFIRMATION'
 <!DOCTYPE html>

@@ -4032,6 +4032,15 @@ class WooCommerce {
             'cta_label'     => \__( 'View event details', 'anchor-schema' ),
             'cta_url'       => \get_permalink( $event_id ),
             'type'          => 'confirmation',
+            // {room_link} (Task 14) needs ONE seat id to resolve an account
+            // for. This confirmation can cover several seats on one order, but
+            // build_registration_email_html() only produces a room link when
+            // $ctx['status'] is CONFIRMED — the aggregate above already forces
+            // that to WAITLIST the moment any seat here is waitlisted, so the
+            // seat picked below is only ever used when every seat on this
+            // event is confirmed and any one of their accounts serves the
+            // button (they all resolve the same room).
+            'seat_id'       => (int) ( \reset( $seats )['id'] ?? 0 ),
         ];
         $html = $this->module->build_registration_email_html( $ctx );
         // finding-13 — the order identity keeps two different buyers on the

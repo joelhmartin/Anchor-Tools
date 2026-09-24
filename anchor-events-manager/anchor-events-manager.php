@@ -1508,6 +1508,7 @@ class Module {
             'cta_label'     => \__( 'View event details', 'anchor-schema' ),
             'cta_url'       => $tokens['event_url'],
             'type'          => 'reminder',
+            'seat_id'       => (int) ( $seat['id'] ?? 0 ),
         ];
         $html = $this->build_registration_email_html( $ctx );
         // finding-13 — the seat identity keeps two different attendees on the
@@ -4330,6 +4331,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'order_number'  => '1042',
             'order_url'     => \home_url( '/my-account/view-order/1042/' ),
             'join_link'     => \home_url( '/sample-join-link/' ),
+            'room_link'     => \home_url( '/sample-event/live/?aek=sample' ),
             'event_url'     => $event_id ? (string) \get_permalink( $event_id ) : \home_url(),
             'event_id'      => (string) (int) $event_id,
         ];
@@ -4532,15 +4534,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * The button an event gets when nobody has set one.
      *
-     * Virtual events point at the room, everything else at the event page. Kept
-     * in one place because the builder's field and the renderer must agree —
-     * if they drifted, the preview would show a different button from the one
-     * that sends.
+     * Stream first, then virtual, then the event page (spec §6.2). Kept in one
+     * place because the builder's field and the renderer must agree — if they
+     * drifted, the preview would show a different button from the one that
+     * sends. Public: called by the CTA resolver already in-class and exercised
+     * directly by tests.
      *
      * @param array $fallback Caller's own label/url, used for a non-virtual event.
      */
-    private function default_email_cta( $event_id, array $fallback = [] ) {
+    public function default_email_cta( $event_id, array $fallback = [] ) {
         $meta = $event_id ? $this->get_meta( (int) $event_id ) : [];
+
+        // Stream first (spec §6.2): a hosted room beats a raw provider link,
+        // because the room is where identity, the countdown and the close-out
+        // all live. The URL is the {room_link} TOKEN, not a resolved link —
+        // the CTA is rendered once per recipient and the token expands there.
+        //
+        // room_url() is BOTH conditions in one expression (Task 11): the
+        // access switch is on for this event AND a stream resolves. Since the
+        // switch defaults on, the second half is what keeps this button off an
+        // in-person workshop's confirmation — a plain event falls through to
+        // exactly the button it sends today.
+        if ( $event_id && $this->room_url( (int) $event_id ) !== '' ) {
+            return [ 'label' => __( 'Join the livestream', 'anchor-schema' ), 'url' => '{room_link}' ];
+        }
         if ( ! empty( $meta['virtual'] ) && ! empty( $meta['virtual_url'] ) ) {
             return [
                 'label' => __( 'Join the event', 'anchor-schema' ),
@@ -11277,7 +11294,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
 
         // v1.1 lifecycle email settings. Always shown (free + paid registrations).
         \add_settings_section( 'anchor_events_lifecycle_emails', __( 'Lifecycle Emails', 'anchor-schema' ), function() {
-            echo '<p>' . esc_html__( 'Automated emails for registration reminders, cancellations, and organizer roster digests. Apply to both free (internal) and paid (WooCommerce) registrations. Available tokens: {event_title}, {event_url}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}, {remaining}, {seat_count}, {order_number}, {order_url}, {status}, {site_name}.', 'anchor-schema' ) . '</p>';
+            echo '<p>' . esc_html__( 'Automated emails for registration reminders, cancellations, and organizer roster digests. Apply to both free (internal) and paid (WooCommerce) registrations. Available tokens: {event_title}, {event_url}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}, {room_link}, {remaining}, {seat_count}, {order_number}, {order_url}, {status}, {site_name}.', 'anchor-schema' ) . '</p>';
         }, 'anchor_events_settings' );
 
         \add_settings_field( 'reminder_enabled', __( 'Send reminders', 'anchor-schema' ), function() {
@@ -11309,7 +11326,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $opts = $this->get_settings();
             ?>
             <textarea name="<?php echo esc_attr( self::OPTION_KEY ); ?>[reminder_intro]" rows="3" class="large-text"><?php echo esc_textarea( $opts['reminder_intro'] ); ?></textarea>
-            <p class="description"><?php echo esc_html__( 'Tokens: {event_title}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}.', 'anchor-schema' ); ?></p>
+            <p class="description"><?php echo esc_html__( 'Tokens: {event_title}, {event_date}, {event_time}, {venue}, {days_until}, {attendee_name}, {join_link}, {room_link}.', 'anchor-schema' ); ?></p>
             <?php
         }, 'anchor_events_settings', 'anchor_events_lifecycle_emails' );
 
@@ -14408,6 +14425,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'cta_label'     => __( 'View event details', 'anchor-schema' ),
             'cta_url'       => $event_link,
             'type'          => 'confirmation',
+            'seat_id'       => (int) $seat_id,
         ] );
         // finding-13 — the seat identity keeps two different attendees on the
         // same event from collapsing into one deduped error row.
@@ -14649,6 +14667,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $days_until = ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '';
 
+        // The room, tokenised for THIS recipient (spec §6.2). Confirmed seats
+        // only, exactly like {join_link}: a waitlisted person has no seat to
+        // sign in for. {join_link} keeps meaning the raw provider URL so legacy
+        // templates are untouched.
+        //
+        // The room's own predicate (Task 11) is checked HERE rather than
+        // leaning on ensure_user()'s guard: rendering the confirmation for an
+        // event with no room must not so much as look up an account. The
+        // token is the empty string and nothing runs to produce it.
+        $room_link = '';
+        if ( $event_id && $this->room_url( (int) $event_id ) !== ''
+            && ( ! $seat || ( $seat['status'] ?? '' ) === Registrations::STATUS_CONFIRMED ) ) {
+            $seat_user = (int) ( $seat['user_id'] ?? 0 );
+            if ( $seat_user <= 0 && ! empty( $seat['id'] ) ) {
+                $seat_user = $this->entitlements->ensure_user( $seat );
+            }
+            if ( $seat_user > 0 ) {
+                $room_link = $this->entitlements->room_url_for( $seat_user, $event_id );
+            }
+        }
+
         return [
             'event_title'  => $event_id ? \get_the_title( $event_id ) : \get_bloginfo( 'name' ),
             'event_url'    => $event_id ? \get_permalink( $event_id ) : \home_url(),
@@ -14658,6 +14697,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'days_until'   => $days_until,
             'attendee_name'=> (string) ( $seat['name'] ?? '' ),
             'join_link'    => $join,
+            'room_link'    => $room_link,
             'remaining'    => (string) $remaining,
             'seat_count'   => (string) (int) ( $ctx['seat_count'] ?? 0 ),
             'order_number' => $order ? (string) $order->get_order_number() : '',
@@ -15376,6 +15416,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'cta_label'     => __( 'View event details', 'anchor-schema' ),
             'cta_url'       => '',
             'type'          => 'confirmation',
+            'seat_id'       => 0,
         ] );
 
         $event_id    = (int) $ctx['event_id'];
@@ -15405,6 +15446,19 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         if ( $event_id && $status === 'confirmed' ) {
             if ( ! empty( $event_meta['virtual'] ) && ! empty( $event_meta['virtual_url'] ) ) {
                 $join_url = (string) $event_meta['virtual_url'];
+            }
+        }
+
+        // {room_link}: same confirmed-only gate as {join_link}, plus the room
+        // predicate itself (spec §6.2, Task 11) checked BEFORE any account is
+        // looked up — a plain event's confirmation must create nothing.
+        $room_link = '';
+        if ( $event_id && $status === Registrations::STATUS_CONFIRMED
+            && $this->room_url( (int) $event_id ) !== '' ) {
+            $seat_id = (int) ( $ctx['seat_id'] ?? 0 );
+            $user_id = $seat_id > 0 ? $this->entitlements->ensure_user( [ 'id' => $seat_id ] ) : 0;
+            if ( $user_id > 0 ) {
+                $room_link = $this->entitlements->room_url_for( $user_id, $event_id );
             }
         }
 
@@ -15449,6 +15503,25 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             }
         }
 
+        // default_email_cta()'s stream branch (and any CTA override an author
+        // types verbatim as `{room_link}`) hands back the literal TOKEN, not a
+        // URL — the button is rendered once per recipient and the token is
+        // meant to expand here, before it ever reaches tpl_block_cta_button().
+        // That renderer runs its argument through esc_url(), which strips
+        // curly braces; expanding first (once) means it esc_url()'s a real
+        // URL instead of mangling the placeholder into a dead link. A preview
+        // has no seat to mint an account for, so it gets the same stand-in the
+        // {room_link} scalar uses.
+        if ( '{room_link}' === $cta['url'] || '{room_link}' === $cta2['url'] ) {
+            $cta_room_link = $room_link !== '' ? $room_link : ( $preview ? (string) ( $samples['room_link'] ?? '' ) : '' );
+            if ( '{room_link}' === $cta['url'] ) {
+                $cta['url'] = $cta_room_link;
+            }
+            if ( '{room_link}' === $cta2['url'] ) {
+                $cta2['url'] = $cta_room_link;
+            }
+        }
+
         $paragraphs = $this->tpl_block_intro( $message );
 
         // Task 3.1 — resolve the template (per-event override -> global option ->
@@ -15485,6 +15558,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'attendee_name' => esc_html( $name ),
             'status'        => esc_html( $status ),
             'join_link'     => esc_url( $join_url ),
+            'room_link'     => esc_url( $room_link ),
             'event_url'     => esc_url( $event_id ? \get_permalink( $event_id ) : \home_url() ),
             'event_date'    => esc_html( $start_ts ? \wp_date( \get_option( 'date_format' ), $start_ts ) : '' ),
             'event_time'    => esc_html( ( $start_ts && empty( $event_meta['all_day'] ) ) ? \wp_date( \get_option( 'time_format' ), $start_ts ) : '' ),
@@ -15521,7 +15595,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
                 if ( ! isset( $tokens[ $key ] ) || \trim( (string) $tokens[ $key ] ) !== '' ) {
                     continue;
                 }
-                $tokens[ $key ] = \in_array( $key, [ 'join_link', 'event_url', 'order_url' ], true )
+                $tokens[ $key ] = \in_array( $key, [ 'join_link', 'room_link', 'event_url', 'order_url' ], true )
                     ? \esc_url( $sample )
                     : \esc_html( $sample );
             }
@@ -15531,7 +15605,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // would push markup into a line the inbox reads as plain text.
         $scalars = \array_intersect_key( $tokens, \array_flip( [
             'event_id', 'event_title', 'site_name', 'attendee_name', 'status', 'join_link',
-            'event_url', 'event_date', 'event_time', 'venue', 'days_until',
+            'room_link', 'event_url', 'event_date', 'event_time', 'venue', 'days_until',
         ] ) );
         $tokens['preheader'] = $this->tpl_block_preheader( $this->expand_email_tokens(
             $this->get_email_field( $event_id, $type, 'preheader', '' ),

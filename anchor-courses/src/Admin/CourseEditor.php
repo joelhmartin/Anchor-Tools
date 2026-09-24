@@ -9,6 +9,7 @@ use Anchor\Courses\Content\LessonPostType;
 use Anchor\Courses\Content\QuizPostType;
 use Anchor\Courses\Module;
 use Anchor\Courses\Support\Capabilities;
+use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -25,6 +26,7 @@ final class CourseEditor {
 		\add_action( 'admin_enqueue_scripts', [ $this, 'assets' ] );
 		\add_action( 'wp_ajax_anchor_courses_search_items', [ $this, 'ajax_search_items' ] );
 		\add_action( 'wp_ajax_anchor_courses_create_item', [ $this, 'ajax_create_item' ] );
+		\add_action( 'admin_post_anchor_courses_delete_role', [ $this, 'handle_delete_role' ] );
 	}
 
 	/** Authored defaults (design spec section 4). */
@@ -75,6 +77,14 @@ final class CourseEditor {
 			CoursePostType::CPT,
 			'normal',
 			'high'
+		);
+		\add_meta_box(
+			'anchor_courses_role',
+			\__( 'Course Role', 'anchor-schema' ),
+			[ $this, 'render_role_panel' ],
+			CoursePostType::CPT,
+			'side',
+			'default'
 		);
 	}
 
@@ -515,5 +525,91 @@ final class CourseEditor {
 			\wp_send_json_error( [ 'message' => \__( 'Could not create that item.', 'anchor-schema' ) ], 400 );
 		}
 		\wp_send_json_success( $result );
+	}
+
+	/**
+	 * The Course Role panel (design spec 3.1).
+	 *
+	 * Read-only except for one destructive action per role, which is why each
+	 * is a POST with its own nonce and a confirm dialog rather than a link.
+	 */
+	public function render_role_panel( \WP_Post $post ): void {
+		$course_id = (int) $post->ID;
+
+		$this->role_row(
+			$course_id,
+			Roles::access_slug( $course_id ),
+			\__( 'Access - holding this role IS enrolment.', 'anchor-schema' ),
+			\__( 'Not created yet. It is minted when the course is published.', 'anchor-schema' )
+		);
+
+		$this->role_row(
+			$course_id,
+			Roles::completion_slug( $course_id ),
+			\__( 'Completion - what another course or event can require.', 'anchor-schema' ),
+			\__( 'Not created yet. It is minted the first time someone completes this course.', 'anchor-schema' )
+		);
+	}
+
+	private function role_row( int $course_id, string $slug, string $blurb, string $absent ): void {
+		\printf( '<p><code>%s</code><br /><span class="description">%s</span></p>', \esc_html( $slug ), \esc_html( $blurb ) );
+
+		if ( ! Roles::exists( $slug ) ) {
+			\printf( '<p>%s</p>', \esc_html( $absent ) );
+			return;
+		}
+
+		$holders = Roles::holders( $slug );
+
+		\printf(
+			'<p>%s<br /><strong>%s</strong></p>',
+			\esc_html( (string) ( \wp_roles()->roles[ $slug ]['name'] ?? $slug ) ),
+			\esc_html(
+				\sprintf(
+					/* translators: %d: number of users holding the role. */
+					\_n( '%d holder', '%d holders', $holders, 'anchor-schema' ),
+					$holders
+				)
+			)
+		);
+
+		\printf(
+			'<form method="post" action="%s" onsubmit="return confirm(%s);">',
+			\esc_url( \admin_url( 'admin-post.php' ) ),
+			\esc_attr( (string) \wp_json_encode( \__( 'Delete this role and strip it from every holder? This cannot be undone.', 'anchor-schema' ) ) )
+		);
+		\wp_nonce_field( 'anchor_courses_delete_role_' . $course_id );
+		echo '<input type="hidden" name="action" value="anchor_courses_delete_role" />';
+		\printf( '<input type="hidden" name="course_id" value="%d" />', $course_id );
+		\printf( '<input type="hidden" name="role" value="%s" />', \esc_attr( $slug ) );
+		\printf( '<button type="submit" class="button button-link-delete">%s</button>', \esc_html__( 'Delete role', 'anchor-schema' ) );
+		echo '</form>';
+	}
+
+	public function handle_delete_role(): void {
+		$course_id = \absint( $_POST['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
+		$slug      = \sanitize_key( \wp_unslash( (string) ( $_POST['role'] ?? '' ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
+
+		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
+		if ( ! \wp_verify_nonce( $nonce, 'anchor_courses_delete_role_' . $course_id )
+			|| ! \current_user_can( Capabilities::cap( 'manage' ) ) ) {
+			$this->redirect_to_course( $course_id, 'forbidden' );
+		}
+
+		// Only this course's own two roles, so a crafted POST cannot delete
+		// `administrator`.
+		$allowed = [ Roles::access_slug( $course_id ), Roles::completion_slug( $course_id ) ];
+		if ( ! \in_array( $slug, $allowed, true ) ) {
+			$this->redirect_to_course( $course_id, 'error' );
+		}
+
+		Roles::delete_role( $slug );
+
+		$this->redirect_to_course( $course_id, 'role_deleted' );
+	}
+
+	private function redirect_to_course( int $course_id, string $code ): void {
+		\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', $code, (string) \get_edit_post_link( $course_id, 'raw' ) ) );
+		exit;
 	}
 }

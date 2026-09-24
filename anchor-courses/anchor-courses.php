@@ -40,6 +40,15 @@ class Module {
 		\add_action( 'init', [ Content\LessonPostType::class, 'register' ] );
 		\add_action( 'init', [ Content\QuizPostType::class, 'register' ] );
 
+		// Mint the access role on publish and keep both names on the title
+		// (design spec 3.1). Priority 20: after CourseEditor::save() has run, so
+		// a title set in the same request is the one the role is named for.
+		\add_action( 'save_post_' . Content\CoursePostType::CPT, [ Support\Roles::class, 'rename_on_title_change' ], 20, 2 );
+
+		// A course role must survive an unrelated primary-role change (design
+		// spec 3.1 - see Support\Roles::reapply_after_set_role()).
+		\add_action( 'set_user_role', [ Support\Roles::class, 'reapply_after_set_role' ], 10, 3 );
+
 		if ( \is_admin() ) {
 			new Admin\CourseEditor();
 			new Admin\LessonEditor();

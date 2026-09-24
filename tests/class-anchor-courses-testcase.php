@@ -12,6 +12,18 @@ use Anchor\Courses\Module;
 
 abstract class Anchor_Courses_TestCase extends WP_UnitTestCase {
 
+	/** @var int[] Courses made by make_course(), whose roles must be removed. */
+	protected array $minted_courses = [];
+
+	public function tear_down() {
+		foreach ( $this->minted_courses as $course_id ) {
+			remove_role( \Anchor\Courses\Support\Roles::access_slug( $course_id ) );
+			remove_role( \Anchor\Courses\Support\Roles::completion_slug( $course_id ) );
+		}
+		$this->minted_courses = [];
+		parent::tear_down();
+	}
+
 	/** The courses module singleton, instantiated by the priority-25 bootstrap. */
 	protected function courses(): Module {
 		$module = Module::instance();
@@ -62,6 +74,9 @@ abstract class Anchor_Courses_TestCase extends WP_UnitTestCase {
 		);
 		foreach ( $meta as $key => $value ) {
 			update_post_meta( $id, $prefix . $key, $value );
+		}
+		if ( \Anchor\Courses\Content\CoursePostType::CPT === $cpt ) {
+			$this->minted_courses[] = $id;
 		}
 		return $id;
 	}

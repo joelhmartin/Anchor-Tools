@@ -5,7 +5,26 @@
   // dependency of this script. Video URL building, the lightbox modal, and
   // the shared popup-option helper live there now; other popup styles below
   // (theater, side panel, inline, legacy) call the same shared helpers.
+  //
+  // Defensive: if a page enqueues this script without its anchor-lightbox
+  // dependency (a wiring bug, not the normal path), fall back to no-op stubs
+  // instead of throwing here and aborting the rest of this IIFE, which would
+  // silently skip window.AnchorVideoGallery below and every gallery on the
+  // page.
   var LB = window.AnchorLightbox;
+  if (!LB) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('Anchor Gallery: window.AnchorLightbox is missing (anchor-lightbox dependency not enqueued), lightbox/popup features are disabled on this page.');
+    }
+    LB = {
+      open: function() {},
+      close: function() {},
+      isOpen: function() { return false; },
+      getVideoSrc: function() { return ''; },
+      getDirectUrl: function() { return ''; },
+      applyPopupOptions: function() {}
+    };
+  }
   var getVideoSrc = LB.getVideoSrc;
   var getDirectUrl = LB.getDirectUrl;
   var applyPopupOptions = LB.applyPopupOptions;
@@ -429,6 +448,17 @@
   function initSliderNavigation(gallery) {
     var layout = gallery.getAttribute('data-layout');
     if (layout !== 'slider' && layout !== 'carousel') return;
+
+    // Defensive: a page that enqueues this script without its
+    // anchor-carousel dependency (a wiring bug, not the normal path) would
+    // otherwise throw here and abort the caller's loop over every gallery on
+    // the page. Warn and skip this gallery instead.
+    if (!window.AnchorCarousel) {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('Anchor Gallery: window.AnchorCarousel is missing (anchor-carousel dependency not enqueued), slider/carousel navigation is disabled for this gallery.');
+      }
+      return;
+    }
 
     var cols = parseInt(gallery.getAttribute('data-cols-desktop'), 10) || 3;
 

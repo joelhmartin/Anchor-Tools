@@ -1396,9 +1396,14 @@ class Anchor_Gallery_Module {
             $base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-gallery/assets/';
             $ver = filemtime($base_dir . 'admin.js');
 
-            // Frontend styles/script for preview
-            wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), [], filemtime($base_dir . 'anchor-video-slider.css'));
-            wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), [], filemtime($base_dir . 'anchor-video-slider.js'), true);
+            // Frontend styles/script for preview. Depends on the shared
+            // lightbox/carousel handles (registered by Anchor_Shared_Assets
+            // on admin_enqueue_scripts priority 5, ahead of this priority-10
+            // hook) exactly like the front-end registration in
+            // enqueue_assets() below, so window.AnchorLightbox and
+            // window.AnchorCarousel are defined before this script runs.
+            wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), ['anchor-lightbox'], filemtime($base_dir . 'anchor-video-slider.css'));
+            wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.js'), true);
 
             // Admin
             wp_enqueue_style('anchor-video-gallery-admin', Anchor_Asset_Loader::url('anchor-gallery/assets/admin.css'), [], $ver);

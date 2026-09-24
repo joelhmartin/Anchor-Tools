@@ -11,6 +11,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /** Lesson settings metabox: completion mode (brief 9) and live-session fields (design spec 3.3). */
 final class LessonEditor {
+	use MetaboxSave;
 
 	public const NONCE = 'anchor_courses_lesson_nonce';
 
@@ -136,21 +137,7 @@ final class LessonEditor {
 	}
 
 	public function save( int $post_id ): void {
-		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-			return;
-		}
-		// WordPress's own update_post_meta() redirects a revision id to its
-		// parent, so without this bail a revision id here would silently
-		// overwrite the real lesson's meta instead (house pattern, mirrors
-		// Admin\CourseEditor::save()/save_curriculum()).
-		if ( \wp_is_post_revision( $post_id ) ) {
-			return;
-		}
-		$nonce = isset( $_POST[ self::NONCE ] ) ? \sanitize_text_field( \wp_unslash( (string) $_POST[ self::NONCE ] ) ) : '';
-		if ( '' === $nonce || ! \wp_verify_nonce( $nonce, self::NONCE ) ) {
-			return;
-		}
-		if ( ! \current_user_can( Capabilities::cap( 'edit_lessons' ) ) ) {
+		if ( ! $this->authorized_to_save( $post_id, self::NONCE, Capabilities::cap( 'edit_lessons' ) ) ) {
 			return;
 		}
 

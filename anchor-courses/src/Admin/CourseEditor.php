@@ -14,6 +14,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /** Course settings metabox: brief 6.3 authored meta, 12 CE fields, 21.1 grouping. */
 final class CourseEditor {
+	use MetaboxSave;
 
 	public const NONCE = 'anchor_courses_course_nonce';
 
@@ -305,17 +306,7 @@ final class CourseEditor {
 	}
 
 	public function save( int $post_id ): void {
-		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-			return;
-		}
-		if ( \wp_is_post_revision( $post_id ) ) {
-			return;
-		}
-		$nonce = isset( $_POST[ self::NONCE ] ) ? \sanitize_text_field( \wp_unslash( (string) $_POST[ self::NONCE ] ) ) : '';
-		if ( '' === $nonce || ! \wp_verify_nonce( $nonce, self::NONCE ) ) {
-			return;
-		}
-		if ( ! \current_user_can( Capabilities::cap( 'edit_courses' ) ) ) {
+		if ( ! $this->authorized_to_save( $post_id, self::NONCE, Capabilities::cap( 'edit_courses' ) ) ) {
 			return;
 		}
 
@@ -420,17 +411,7 @@ final class CourseEditor {
 	}
 
 	public function save_curriculum( int $post_id ): void {
-		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-			return;
-		}
-		if ( \wp_is_post_revision( $post_id ) ) {
-			return;
-		}
-		$nonce = isset( $_POST[ self::NONCE ] ) ? \sanitize_text_field( \wp_unslash( (string) $_POST[ self::NONCE ] ) ) : '';
-		if ( '' === $nonce || ! \wp_verify_nonce( $nonce, self::NONCE ) ) {
-			return;
-		}
-		if ( ! \current_user_can( Capabilities::cap( 'edit_courses' ) ) ) {
+		if ( ! $this->authorized_to_save( $post_id, self::NONCE, Capabilities::cap( 'edit_courses' ) ) ) {
 			return;
 		}
 		if ( ! isset( $_POST['anchor_course_curriculum'] ) ) {

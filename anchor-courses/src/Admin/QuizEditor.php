@@ -10,6 +10,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /** Quiz configuration (brief 8.1) and timer-expiry policy (brief 8.5). */
 final class QuizEditor {
+	use MetaboxSave;
 
 	public const NONCE = 'anchor_courses_quiz_nonce';
 
@@ -165,21 +166,7 @@ final class QuizEditor {
 	}
 
 	public function save( int $post_id ): void {
-		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-			return;
-		}
-		// WordPress's own update_post_meta() redirects a revision id to its
-		// parent, so without this bail a revision id here would silently
-		// overwrite the real quiz's meta instead (house pattern, mirrors
-		// Admin\CourseEditor::save()/Admin\LessonEditor::save()).
-		if ( \wp_is_post_revision( $post_id ) ) {
-			return;
-		}
-		$nonce = isset( $_POST[ self::NONCE ] ) ? \sanitize_text_field( \wp_unslash( (string) $_POST[ self::NONCE ] ) ) : '';
-		if ( '' === $nonce || ! \wp_verify_nonce( $nonce, self::NONCE ) ) {
-			return;
-		}
-		if ( ! \current_user_can( Capabilities::cap( 'edit_quizzes' ) ) ) {
+		if ( ! $this->authorized_to_save( $post_id, self::NONCE, Capabilities::cap( 'edit_quizzes' ) ) ) {
 			return;
 		}
 

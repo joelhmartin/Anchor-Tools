@@ -206,6 +206,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-events-manager/anchor-events-manager.php',
                 'class'       => '\\Anchor\\Events\\Module',
             ],
+            'testimonials' => [
+                'label'       => __( 'Anchor Testimonials', 'anchor-schema' ),
+                'description' => __( 'Authored patient and professional testimonials (quotes and videos) with audience and related-page scoping.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-testimonials/anchor-testimonials.php',
+                'class'       => 'Anchor_Testimonials_Module',
+            ],
             'store_locator' => [
                 'label'       => __( 'Anchor Store Locator', 'anchor-schema' ),
                 'description' => __( 'Add a map-based store locator with search and proximity filtering.', 'anchor-schema' ),

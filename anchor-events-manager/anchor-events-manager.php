@@ -7626,6 +7626,30 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
         $event_id = (int) \get_queried_object_id();
+
+        // One-click sign-in (spec §6.2). Only for a LOGGED-OUT visitor — a
+        // token must never silently switch an already-signed-in account —
+        // and it runs BEFORE the roomless/entitlement decision below so a
+        // valid link signs the visitor in and lands them on the clean room
+        // URL rather than being bounced by a guard that has no idea a token
+        // was even presented. The query arg is stripped on that redirect so
+        // it never reaches the browser history, a referrer header, or an
+        // analytics hit.
+        if ( ! \is_user_logged_in() && ! empty( $_GET[ Entitlements::TOKEN_ARG ] ) && $this->entitlements ) {
+            $token   = \sanitize_text_field( \wp_unslash( $_GET[ Entitlements::TOKEN_ARG ] ) );
+            $user_id = $this->entitlements->verify_login_token( $token, $event_id );
+            if ( $user_id > 0 ) {
+                \wp_set_current_user( $user_id );
+                \wp_set_auth_cookie( $user_id, false );
+                \wp_safe_redirect( $this->room_url( $event_id ), 302 );
+                exit;
+            }
+            // Invalid or expired: fall through to the sign-in form with a notice.
+            \add_filter( 'anchor_events_room_denied_message', static function ( $message ) {
+                return \__( 'That sign-in link has expired. Sign in below, or ask us for a new link.', 'anchor-schema' );
+            } );
+        }
+
         $decision = $this->room_header_list( $event_id );
         if ( $decision['redirect'] !== '' ) {
             \wp_safe_redirect( $decision['redirect'], 302 );

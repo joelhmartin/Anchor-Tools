@@ -872,4 +872,97 @@ class Entitlements {
     public static function default_prerequisite_message() {
         return \__( 'You are not yet eligible to register for this course.', 'anchor-schema' );
     }
+
+    /* ---------------------------------------------------------------------
+     * One-click sign-in (spec §6.2)
+     * ------------------------------------------------------------------- */
+
+    /** The query arg the room reads. */
+    const TOKEN_ARG = 'aek';
+
+    /**
+     * When a token for this event stops working: the last session's end plus a
+     * week. Stored nowhere — the expiry is INSIDE the signed payload.
+     *
+     * @param int $event_id
+     * @return int
+     */
+    public function token_expiry( $event_id ) {
+        $sessions = $this->module->resolved_sessions( (int) $event_id );
+        $last     = 0;
+        foreach ( $sessions as $row ) {
+            // end_ts only — this is "the last session's END", not its start.
+            // Folding start_ts into the max would make an event whose end_ts
+            // was moved (e.g. rescheduled shorter, or in the expired-token
+            // test below, backdated on its own) inert as long as start_ts
+            // still lies later, silently keeping stale tokens alive.
+            $last = \max( $last, (int) $row['end_ts'] );
+        }
+        if ( $last <= 0 ) {
+            $last = \time();
+        }
+        return $last + ( 7 * \DAY_IN_SECONDS );
+    }
+
+    /**
+     * Mint a stateless sign-in token.
+     *
+     * HMAC over user|event|expiry|password-fragment, with wp_hash()'s
+     * site-secret key. Stored nowhere: nothing to leak, nothing to clean up,
+     * and changing the password invalidates every outstanding token because
+     * the fragment is part of what is signed.
+     *
+     * @param int $user_id
+     * @param int $event_id
+     * @return string '' when the user does not exist.
+     */
+    public function login_token( $user_id, $event_id ) {
+        $user = \get_userdata( (int) $user_id );
+        if ( ! $user instanceof \WP_User ) {
+            return '';
+        }
+        $expiry = $this->token_expiry( $event_id );
+        return (int) $user_id . '.' . $expiry . '.' . $this->token_signature( (int) $user_id, (int) $event_id, $expiry, $user->user_pass );
+    }
+
+    /**
+     * Verify a token for an event.
+     *
+     * @param string $token
+     * @param int    $event_id
+     * @return int User id, or 0.
+     */
+    public function verify_login_token( $token, $event_id ) {
+        $parts = \explode( '.', (string) $token );
+        if ( \count( $parts ) !== 3 ) {
+            return 0;
+        }
+        [ $user_id, $expiry, $signature ] = $parts;
+        $user_id = (int) $user_id;
+        $expiry  = (int) $expiry;
+        if ( $user_id <= 0 || $expiry <= \time() ) {
+            return 0;
+        }
+        $user = \get_userdata( $user_id );
+        if ( ! $user instanceof \WP_User ) {
+            return 0;
+        }
+        $expected = $this->token_signature( $user_id, (int) $event_id, $expiry, $user->user_pass );
+        return \hash_equals( $expected, (string) $signature ) ? $user_id : 0;
+    }
+
+    /** The room URL carrying a per-recipient sign-in token. */
+    public function room_url_for( $user_id, $event_id ) {
+        $room = $this->module->room_url( (int) $event_id );
+        if ( $room === '' ) {
+            return '';
+        }
+        $token = $this->login_token( (int) $user_id, (int) $event_id );
+        return $token === '' ? $room : \add_query_arg( self::TOKEN_ARG, \rawurlencode( $token ), $room );
+    }
+
+    /** The signed half. Only the first 12 chars of the stored hash are used. */
+    private function token_signature( $user_id, $event_id, $expiry, $user_pass ) {
+        return \wp_hash( $user_id . '|' . $event_id . '|' . $expiry . '|' . \substr( (string) $user_pass, 8, 12 ), 'auth' );
+    }
 }

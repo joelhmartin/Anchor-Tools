@@ -3,7 +3,10 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Admin;
 
+use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Content\LessonPostType;
+use Anchor\Courses\Content\QuizPostType;
 use Anchor\Courses\Module;
 use Anchor\Courses\Support\Capabilities;
 
@@ -17,7 +20,10 @@ final class CourseEditor {
 	public function __construct() {
 		\add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
 		\add_action( 'save_post_' . CoursePostType::CPT, [ $this, 'save' ] );
+		\add_action( 'save_post_' . CoursePostType::CPT, [ $this, 'save_curriculum' ], 11 );
 		\add_action( 'admin_enqueue_scripts', [ $this, 'assets' ] );
+		\add_action( 'wp_ajax_anchor_courses_search_items', [ $this, 'ajax_search_items' ] );
+		\add_action( 'wp_ajax_anchor_courses_create_item', [ $this, 'ajax_create_item' ] );
 	}
 
 	/** Authored defaults (design spec section 4). */
@@ -61,6 +67,14 @@ final class CourseEditor {
 			'normal',
 			'high'
 		);
+		\add_meta_box(
+			'anchor_courses_curriculum',
+			\__( 'Curriculum', 'anchor-schema' ),
+			[ $this, 'render_curriculum' ],
+			CoursePostType::CPT,
+			'normal',
+			'high'
+		);
 	}
 
 	public function assets( string $hook = '' ): void {
@@ -73,6 +87,36 @@ final class CourseEditor {
 		}
 
 		\wp_enqueue_style( 'anchor-courses-admin', Module::assets_url() . 'admin.css', [], Module::VERSION );
+
+		\wp_enqueue_script(
+			'anchor-courses-curriculum',
+			Module::assets_url() . 'admin-curriculum.js',
+			[ 'jquery', 'jquery-ui-sortable' ],
+			Module::VERSION,
+			true
+		);
+		\wp_localize_script(
+			'anchor-courses-curriculum',
+			'anchorCoursesCurriculum',
+			[
+				'ajaxUrl' => \admin_url( 'admin-ajax.php' ),
+				'nonce'   => \wp_create_nonce( self::NONCE ),
+				'strings' => [
+					'newModule'     => \__( 'New module', 'anchor-schema' ),
+					'moduleTitle'   => \__( 'Module title', 'anchor-schema' ),
+					'removeModule'  => \__( 'Remove module', 'anchor-schema' ),
+					'removeItem'    => \__( 'Remove', 'anchor-schema' ),
+					'addLesson'     => \__( 'Add lesson', 'anchor-schema' ),
+					'addQuiz'       => \__( 'Add quiz', 'anchor-schema' ),
+					'createLesson'  => \__( 'Create lesson', 'anchor-schema' ),
+					'createQuiz'    => \__( 'Create quiz', 'anchor-schema' ),
+					'search'        => \__( 'Search by title...', 'anchor-schema' ),
+					'required'      => \__( 'Required', 'anchor-schema' ),
+					'noResults'     => \__( 'No matches.', 'anchor-schema' ),
+					'confirmModule' => \__( 'Remove this module? The lessons and quizzes themselves are not deleted.', 'anchor-schema' ),
+				],
+			]
+		);
 	}
 
 	public function render_settings( \WP_Post $post ): void {
@@ -343,5 +387,139 @@ final class CourseEditor {
 			default:
 				return \sanitize_text_field( (string) $value );
 		}
+	}
+
+	public function render_curriculum( \WP_Post $post ): void {
+		$modules = Curriculum::get( (int) $post->ID );
+
+		echo '<div class="anchor-courses-curriculum" data-course="' . \esc_attr( (string) $post->ID ) . '">';
+		echo '<ul class="anchor-courses-modules"></ul>';
+		\printf(
+			'<p><button type="button" class="button anchor-courses-add-module">%s</button></p>',
+			\esc_html__( 'Add module', 'anchor-schema' )
+		);
+		\printf(
+			'<input type="hidden" name="anchor_course_curriculum" class="anchor-courses-curriculum-data" value="%s" />',
+			\esc_attr( (string) \wp_json_encode( $this->decorate( $modules ) ) )
+		);
+		echo '<noscript><p>' . \esc_html__( 'The curriculum builder needs JavaScript. Existing curriculum is preserved.', 'anchor-schema' ) . '</p></noscript>';
+		echo '</div>';
+	}
+
+	/** Attach display titles so the builder renders without a second request. */
+	private function decorate( array $modules ): array {
+		foreach ( $modules as $m => $module ) {
+			foreach ( $module['items'] as $i => $item ) {
+				$modules[ $m ]['items'][ $i ]['title'] = (string) \get_the_title( $item['id'] );
+			}
+		}
+		return $modules;
+	}
+
+	public function save_curriculum( int $post_id ): void {
+		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+			return;
+		}
+		$nonce = isset( $_POST[ self::NONCE ] ) ? \sanitize_text_field( \wp_unslash( (string) $_POST[ self::NONCE ] ) ) : '';
+		if ( '' === $nonce || ! \wp_verify_nonce( $nonce, self::NONCE ) ) {
+			return;
+		}
+		if ( ! \current_user_can( Capabilities::cap( 'edit_courses' ) ) ) {
+			return;
+		}
+		if ( ! isset( $_POST['anchor_course_curriculum'] ) ) {
+			return;
+		}
+
+		$decoded = \json_decode( \wp_unslash( (string) $_POST['anchor_course_curriculum'] ), true ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+
+		// A decode failure means a broken editor, not "the author deleted everything".
+		if ( ! \is_array( $decoded ) ) {
+			return;
+		}
+
+		Curriculum::save( $post_id, $decoded );
+	}
+
+	/** @return array<int,array{id:int,title:string,type:string}> */
+	public static function search_items( string $term, string $type ): array {
+		$map = [ 'lesson' => LessonPostType::CPT, 'quiz' => QuizPostType::CPT ];
+		if ( ! isset( $map[ $type ] ) ) {
+			return [];
+		}
+
+		$posts = \get_posts(
+			[
+				'post_type'      => $map[ $type ],
+				'post_status'    => [ 'publish', 'draft', 'private', 'pending' ],
+				's'              => $term,
+				'posts_per_page' => 20,
+				'orderby'        => 'title',
+				'order'          => 'ASC',
+				'no_found_rows'  => true,
+			]
+		);
+
+		return \array_map(
+			static fn( \WP_Post $p ): array => [
+				'id'    => (int) $p->ID,
+				'title' => (string) $p->post_title,
+				'type'  => $type,
+			],
+			$posts
+		);
+	}
+
+	/** @return array{id:int,title:string,type:string,edit_url:string}|array{} */
+	public static function create_item( string $title, string $type ): array {
+		$map = [ 'lesson' => LessonPostType::CPT, 'quiz' => QuizPostType::CPT ];
+		if ( ! isset( $map[ $type ] ) ) {
+			return [];
+		}
+		$cap = 'quiz' === $type ? 'edit_quizzes' : 'edit_lessons';
+		if ( ! \current_user_can( Capabilities::cap( $cap ) ) ) {
+			return [];
+		}
+
+		$title = \sanitize_text_field( $title );
+		$id    = \wp_insert_post(
+			[
+				'post_type'   => $map[ $type ],
+				'post_status' => 'draft',
+				'post_title'  => '' === $title ? \__( 'Untitled', 'anchor-schema' ) : $title,
+			],
+			true
+		);
+		if ( \is_wp_error( $id ) ) {
+			return [];
+		}
+
+		return [
+			'id'       => (int) $id,
+			'title'    => (string) \get_the_title( (int) $id ),
+			'type'     => $type,
+			'edit_url' => (string) \get_edit_post_link( (int) $id, 'raw' ),
+		];
+	}
+
+	public function ajax_search_items(): void {
+		\check_ajax_referer( self::NONCE, 'nonce' );
+		if ( ! \current_user_can( Capabilities::cap( 'edit_courses' ) ) ) {
+			\wp_send_json_error( [ 'message' => \__( 'Not allowed.', 'anchor-schema' ) ], 403 );
+		}
+		$term = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['term'] ?? '' ) ) );
+		$type = \sanitize_key( \wp_unslash( (string) ( $_REQUEST['type'] ?? 'lesson' ) ) );
+		\wp_send_json_success( self::search_items( $term, $type ) );
+	}
+
+	public function ajax_create_item(): void {
+		\check_ajax_referer( self::NONCE, 'nonce' );
+		$title  = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['title'] ?? '' ) ) );
+		$type   = \sanitize_key( \wp_unslash( (string) ( $_REQUEST['type'] ?? '' ) ) );
+		$result = self::create_item( $title, $type );
+		if ( [] === $result ) {
+			\wp_send_json_error( [ 'message' => \__( 'Could not create that item.', 'anchor-schema' ) ], 400 );
+		}
+		\wp_send_json_success( $result );
 	}
 }

@@ -689,6 +689,13 @@ class Product_Sync {
                         'price'     => (float) $variation->get_regular_price(),
                         'label'     => (string) $variation->get_description(),
                         'option'    => $option,
+                        // Freeze modality from the existing variation, same as
+                        // price/label above — the tier itself is gone/inactive
+                        // so there is no live $tier['modality'] to read, and
+                        // write_variation() defaulting a missing key to
+                        // 'in_person' would otherwise silently flip a virtual
+                        // seat back to in_person on the very next sync.
+                        'modality'  => (string) $variation->get_meta( self::VARIATION_MODALITY_META ) ?: 'in_person',
                     ];
                 } else {
                     $variation->delete( true );

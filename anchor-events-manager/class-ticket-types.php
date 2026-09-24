@@ -171,11 +171,7 @@ class Ticket_Types {
                 'sale_end'        => $sale_end,
                 'active'          => $active,
                 'wc_variation_id' => $wc_variation_id,
-                // A tier is a PRICE, so it is one way in or the other — never
-                // `hybrid`, which is an event-level statement ("both exist").
-                // An absent value is `in_person`: the meaning every
-                // pre-upgrade tier already had (spec §3.3).
-                'modality'        => ( ( $row['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person',
+                'modality'        => $this->clamp_modality( $row ),
             ];
 
             $clean[] = $tier;
@@ -347,12 +343,23 @@ class Ticket_Types {
             'sale_end'        => isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '',
             'active'          => ! empty( $row['active'] ),
             'wc_variation_id' => isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0,
-            // A tier is a PRICE, so it is one way in or the other — never
-            // `hybrid`, which is an event-level statement ("both exist"). An
-            // absent value is `in_person`: the meaning every pre-upgrade tier
-            // already had (spec §3.3).
-            'modality'        => ( ( $row['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person',
+            'modality'        => $this->clamp_modality( $row ),
         ];
+    }
+
+    /**
+     * Clamp a raw row's `modality` to the two values a tier can be.
+     *
+     * A tier is a PRICE, so it is one way in or the other — never `hybrid`,
+     * which is an event-level statement ("both exist"). An absent or invalid
+     * value is `in_person`: the meaning every pre-upgrade tier already had
+     * (spec §3.3). Shared by save()/normalize() so the two can't drift.
+     *
+     * @param array $row
+     * @return string
+     */
+    private function clamp_modality( array $row ) {
+        return ( ( $row['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person';
     }
 
     /**

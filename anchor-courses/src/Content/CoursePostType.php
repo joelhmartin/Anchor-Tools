@@ -35,6 +35,21 @@ final class CoursePostType {
 		return self::META_PREFIX . $key;
 	}
 
+	/**
+	 * Whether the courses admin menu tree is shown at all, filtered by
+	 * `anchor_courses_parent_menu`. Lessons and quizzes nest under this CPT's
+	 * own admin menu page, so LessonPostType/QuizPostType read this same
+	 * filter through {@see parent_menu()} rather than re-declaring it.
+	 */
+	private static function show_parent_menu(): bool {
+		return (bool) \apply_filters( 'anchor_courses_parent_menu', true );
+	}
+
+	/** The admin menu page lessons/quizzes nest under, or false to hide them from the menu entirely. */
+	public static function parent_menu(): string|false {
+		return self::show_parent_menu() ? 'edit.php?post_type=' . self::CPT : false;
+	}
+
 	public static function register(): void {
 		$cap = Capabilities::cap( 'edit_courses' );
 
@@ -53,20 +68,12 @@ final class CoursePostType {
 				'has_archive'     => true,
 				'menu_icon'       => 'dashicons-welcome-learn-more',
 				'menu_position'   => 26,
-				'show_in_menu'    => (bool) \apply_filters( 'anchor_courses_parent_menu', true ),
+				'show_in_menu'    => self::show_parent_menu(),
 				'supports'        => [ 'title', 'editor', 'excerpt', 'thumbnail', 'revisions' ],
 				'rewrite'         => [ 'slug' => 'courses', 'with_front' => false ],
 				'capability_type' => [ 'anchor_course', 'anchor_courses' ],
 				'map_meta_cap'    => true,
-				'capabilities'    => [
-					'edit_posts'           => $cap,
-					'edit_others_posts'    => $cap,
-					'publish_posts'        => $cap,
-					'delete_posts'         => $cap,
-					'edit_published_posts' => $cap,
-					'read_private_posts'   => $cap,
-					'create_posts'         => $cap,
-				],
+				'capabilities'    => Capabilities::post_type_capabilities( $cap ),
 			]
 		);
 	}

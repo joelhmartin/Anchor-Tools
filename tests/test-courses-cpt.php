@@ -77,4 +77,46 @@ class Test_Courses_Cpt extends Anchor_Courses_TestCase {
 		$this->assertSame( 'anchor_quiz', get_post_type( $quiz ) );
 		$this->assertSame( '2', get_post_meta( $course, '_anchor_course_ce_credits', true ) );
 	}
+
+	/**
+	 * Fix round 1, defect 1. `capability_type` is a custom array, so
+	 * `map_meta_cap` derives a capability name (e.g.
+	 * `delete_published_anchor_courses`) for every primitive the
+	 * `capabilities` array does not name explicitly, and `Capabilities::sync()`
+	 * never grants a derived name to anyone. Before the fix, this left NO
+	 * role - administrator included - able to edit or delete a private post,
+	 * or delete a published one, of any of the three types.
+	 */
+	public function test_administrator_can_edit_and_delete_published_and_private_posts_of_each_type() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+
+		foreach ( $this->post_types() as $cpt ) {
+			foreach ( [ 'publish', 'private' ] as $status ) {
+				$id = self::factory()->post->create( [ 'post_type' => $cpt, 'post_status' => $status ] );
+				$this->assertTrue( current_user_can( 'edit_post', $id ), "administrator edit_post on {$cpt}/{$status}" );
+				$this->assertTrue( current_user_can( 'delete_post', $id ), "administrator delete_post on {$cpt}/{$status}" );
+			}
+		}
+	}
+
+	public function test_a_learner_cannot_edit_or_delete_published_or_private_posts_of_any_type() {
+		$ids = [];
+		foreach ( $this->post_types() as $cpt ) {
+			foreach ( [ 'publish', 'private' ] as $status ) {
+				$ids[ "{$cpt}/{$status}" ] = self::factory()->post->create( [ 'post_type' => $cpt, 'post_status' => $status ] );
+			}
+		}
+
+		wp_set_current_user( $this->make_learner() );
+
+		foreach ( $ids as $label => $id ) {
+			$this->assertFalse( current_user_can( 'edit_post', $id ), "learner edit_post on {$label}" );
+			$this->assertFalse( current_user_can( 'delete_post', $id ), "learner delete_post on {$label}" );
+		}
+	}
+
+	/** @return string[] */
+	private function post_types(): array {
+		return [ CoursePostType::CPT, LessonPostType::CPT, QuizPostType::CPT ];
+	}
 }

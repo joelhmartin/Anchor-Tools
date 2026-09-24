@@ -45,21 +45,11 @@ final class QuizPostType {
 				'exclude_from_search' => true,
 				'has_archive'         => false,
 				'rewrite'             => false,
-				'show_in_menu'        => \apply_filters( 'anchor_courses_parent_menu', true )
-					? 'edit.php?post_type=' . CoursePostType::CPT
-					: false,
+				'show_in_menu'        => CoursePostType::parent_menu(),
 				'supports'            => [ 'title', 'revisions' ],
 				'capability_type'     => [ 'anchor_quiz', 'anchor_quizzes' ],
 				'map_meta_cap'        => true,
-				'capabilities'        => [
-					'edit_posts'           => $cap,
-					'edit_others_posts'    => $cap,
-					'publish_posts'        => $cap,
-					'delete_posts'         => $cap,
-					'edit_published_posts' => $cap,
-					'read_private_posts'   => $cap,
-					'create_posts'         => $cap,
-				],
+				'capabilities'        => Capabilities::post_type_capabilities( $cap ),
 			]
 		);
 	}

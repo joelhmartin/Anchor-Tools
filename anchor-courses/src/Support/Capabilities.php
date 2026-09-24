@@ -39,6 +39,38 @@ final class Capabilities {
 		return \current_user_can( self::cap( $key ) );
 	}
 
+	/**
+	 * The full `register_post_type()` `capabilities` map for a CPT that maps
+	 * every primitive `map_meta_cap` can derive to a single capability.
+	 *
+	 * `capability_type` being a custom (non-"post") array means WordPress
+	 * derives capabilities it isn't given explicitly (e.g.
+	 * `delete_published_anchor_courses`) from that custom base rather than
+	 * falling back to a real, granted capability - and `Capabilities::sync()`
+	 * never grants anything with that derived name. Naming all eleven keys
+	 * here, all pointing at the same $cap, is what makes edit/delete of a
+	 * published OR private post resolve to a capability someone actually
+	 * holds. Used by CoursePostType, LessonPostType and QuizPostType so the
+	 * map can't drift out of sync between the three.
+	 *
+	 * @return array<string,string>
+	 */
+	public static function post_type_capabilities( string $cap ): array {
+		return [
+			'edit_posts'             => $cap,
+			'edit_others_posts'      => $cap,
+			'edit_private_posts'     => $cap,
+			'edit_published_posts'   => $cap,
+			'publish_posts'          => $cap,
+			'read_private_posts'     => $cap,
+			'create_posts'           => $cap,
+			'delete_posts'           => $cap,
+			'delete_others_posts'    => $cap,
+			'delete_published_posts' => $cap,
+			'delete_private_posts'   => $cap,
+		];
+	}
+
 	/** Grant every capability to administrator. Idempotent. */
 	public static function sync(): void {
 		$roles = \apply_filters( 'anchor_courses_capability_roles', [ 'administrator' ] );

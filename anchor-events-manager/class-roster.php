@@ -131,6 +131,15 @@ class Roster {
 
         // Organizer roster digest — manual trigger (Task 4).
         \add_action( 'admin_post_anchor_events_send_roster', [ $this, 'handle_send_roster' ] );
+
+        // Manual access (spec §4.4). Same per-event nonce as the seat actions.
+        // Registered unconditionally — cheaper and simpler than a conditional
+        // add_action() — even though each handler is unreachable from the UI
+        // for an event whose master switch is off; add_access_by_email() and
+        // revoke_access() each carry their own guard for that case.
+        \add_action( 'admin_post_anchor_roster_grant', [ $this, 'handle_grant' ] );
+        \add_action( 'admin_post_anchor_roster_revoke', [ $this, 'handle_revoke' ] );
+        \add_action( 'admin_post_anchor_roster_add_access', [ $this, 'handle_add_access' ] );
     }
 
     /* ---------------------------------------------------------------------
@@ -173,6 +182,87 @@ class Roster {
             return 'no';
         }
         return ( ( $ent->grant_record( (int) $event_id, $user_id )['source'] ?? '' ) === 'manual' ) ? 'manual' : 'yes';
+    }
+
+    /**
+     * Whether this event is in the attendee-access feature at all.
+     *
+     * A thin, null-safe read of Entitlements::enabled(), because three roster
+     * surfaces ask it — the Access column, the add-by-email form, and the
+     * export scope — so the "is this event in the feature" test is written
+     * once and Roster keeps working when $module->entitlements is somehow
+     * absent.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function access_enabled( $event_id ) {
+        return (bool) ( $this->module->entitlements && $this->module->entitlements->enabled( (int) $event_id ) );
+    }
+
+    /**
+     * Give somebody access with no seat at all (spec §4.4) — a comp, a
+     * speaker, a late add. Creates the account when there isn't one.
+     *
+     * The ONE entry point in this plan that creates an account without going
+     * through Entitlements::ensure_user(), so it carries its own master-switch
+     * guard rather than inheriting one. The UI never offers it for a disabled
+     * event (the Access column and this form are both omitted), but an
+     * admin-post request is a URL and this is what makes the refusal real.
+     *
+     * @param int    $event_id
+     * @param string $name
+     * @param string $email
+     * @return int User id, or 0.
+     */
+    public function add_access_by_email( $event_id, $name, $email ) {
+        $email = \sanitize_email( (string) $email );
+        $ent   = $this->module->entitlements;
+        if ( $email === '' || ! $ent || ! $ent->enabled( (int) $event_id ) ) {
+            return 0;
+        }
+        $user = \get_user_by( 'email', $email );
+        if ( $user instanceof \WP_User ) {
+            $user_id = (int) $user->ID;
+        } else {
+            // Reuse Entitlements::create_account() — the same no-mail path
+            // ensure_user() takes when a seat resolves to no existing account.
+            $user_id = $ent->create_account( \sanitize_text_field( (string) $name ), $email, (int) $event_id );
+        }
+        if ( $user_id <= 0 ) {
+            return 0;
+        }
+        $ent->grant( (int) $event_id, $user_id, 'manual' );
+        return $user_id;
+    }
+
+    /**
+     * Take a manual grant away.
+     *
+     * A holder who still has a confirmed seat KEEPS the role — the seat
+     * entitles them independently — and the caller is told so rather than
+     * being shown "Access revoked." for a change that did not happen.
+     *
+     * @param int $event_id
+     * @param int $user_id
+     * @return string revoked|kept_seat|none
+     */
+    public function revoke_access( $event_id, $user_id ) {
+        $ent = $this->module->entitlements;
+        if ( ! $ent || ! $ent->holds_role( (int) $event_id, (int) $user_id ) ) {
+            return 'none';
+        }
+        if ( $ent->has_confirmed_seat( (int) $event_id, (int) $user_id ) ) {
+            // Downgrade the RECORD to 'seat' so a later cancellation can clear
+            // it, but leave the role in place. NOT grant( ..., 'seat' ):
+            // grant() treats a manual -> seat downgrade as a no-op on purpose
+            // (manual outranks seat everywhere else), so this one legitimate
+            // downgrade goes through its own dedicated method.
+            $ent->downgrade_manual_grant_to_seat( (int) $event_id, (int) $user_id );
+            return 'kept_seat';
+        }
+        $ent->revoke( (int) $event_id, (int) $user_id, 'manual' );
+        return 'revoked';
     }
 
     /* ---------------------------------------------------------------------
@@ -329,6 +419,10 @@ class Roster {
         echo '<p>';
         echo '<a class="button" href="' . \esc_url( $all ) . '">' . \esc_html__( 'Export CSV (all statuses)', 'anchor-schema' ) . '</a> ';
         echo '<a class="button" href="' . \esc_url( $act ) . '">' . \esc_html__( 'Export CSV (confirmed only)', 'anchor-schema' ) . '</a>';
+        if ( $this->access_enabled( $event_id ) ) {
+            $acc = \wp_nonce_url( \add_query_arg( 'scope', 'access', $base ), 'anchor_event_export' );
+            echo ' <a class="button" href="' . \esc_url( $acc ) . '">' . \esc_html__( 'Export confirmed + manual access', 'anchor-schema' ) . '</a>';
+        }
         echo '</p>';
 
         if ( self::current_user_can_manage() ) {
@@ -361,6 +455,24 @@ class Roster {
         echo '</tbody></table>';
         \submit_button( \__( 'Add attendee', 'anchor-schema' ) );
         echo '</form>';
+
+        // Add-by-email (spec §4.4) — omitted entirely for an event that is
+        // not in the access feature (access_enabled()), same as the Access
+        // column: there is nothing to grant into.
+        if ( $this->access_enabled( $event_id ) ) {
+            echo '<h2>' . \esc_html__( 'Add person by email', 'anchor-schema' ) . '</h2>';
+            echo '<p class="description">' . \esc_html__( 'Grants this event’s role directly — no seat is created and it never counts toward capacity. Use this for a comp, a speaker, or anyone who needs access without registering.', 'anchor-schema' ) . '</p>';
+            echo '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:24px;">';
+            echo '<input type="hidden" name="action" value="anchor_roster_add_access" />';
+            echo '<input type="hidden" name="event_id" value="' . \esc_attr( (string) $event_id ) . '" />';
+            \wp_nonce_field( 'anchor_roster_edit_' . $event_id );
+            echo '<table class="form-table"><tbody>';
+            $this->text_row( 'access_name', \__( 'Name', 'anchor-schema' ), '' );
+            $this->text_row( 'access_email', \__( 'Email', 'anchor-schema' ), '', true, 'email' );
+            echo '</tbody></table>';
+            \submit_button( \__( 'Grant access', 'anchor-schema' ) );
+            echo '</form>';
+        }
     }
 
     /**
@@ -932,6 +1044,56 @@ class Roster {
         $this->redirect( $event_id, 'error', \__( 'Could not cancel this seat.', 'anchor-schema' ) );
     }
 
+    /* ---------------------------------------------------------------------
+     * Manual access (spec §4.4)
+     * ------------------------------------------------------------------- */
+
+    public function handle_grant() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        $this->guard( 'anchor_roster_edit_' . $event_id );
+        $seat_id = isset( $_POST['seat_id'] ) ? (int) \wp_unslash( $_POST['seat_id'] ) : 0;
+        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
+            $this->redirect( $event_id, 'error', \__( 'That seat is not on this event.', 'anchor-schema' ), 'invalid' );
+        }
+        $user_id = $this->module->entitlements->ensure_user( [ 'id' => $seat_id ] );
+        if ( $user_id <= 0 ) {
+            $this->redirect( $event_id, 'error', \__( 'That seat has no usable email address, so no account could be resolved.', 'anchor-schema' ), 'invalid' );
+        }
+        $this->module->entitlements->grant( $event_id, $user_id, 'manual' );
+        $this->redirect( $event_id, 'success', \__( 'Access granted.', 'anchor-schema' ) );
+    }
+
+    public function handle_revoke() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        $this->guard( 'anchor_roster_edit_' . $event_id );
+        $user_id = isset( $_POST['user_id'] ) ? (int) \wp_unslash( $_POST['user_id'] ) : 0;
+        $result  = $this->revoke_access( $event_id, $user_id );
+        $message = [
+            'revoked'   => \__( 'Access revoked.', 'anchor-schema' ),
+            'kept_seat' => \__( 'The manual grant was removed, but this person still holds a confirmed seat — so they keep access. Cancel the seat to remove it.', 'anchor-schema' ),
+            'none'      => \__( 'That person did not hold access.', 'anchor-schema' ),
+        ][ $result ];
+        $this->redirect( $event_id, $result === 'none' ? 'error' : 'success', $message );
+    }
+
+    public function handle_add_access() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        $this->guard( 'anchor_roster_edit_' . $event_id );
+        $name  = \sanitize_text_field( \wp_unslash( $_POST['access_name'] ?? '' ) );
+        $email = \sanitize_email( \wp_unslash( $_POST['access_email'] ?? '' ) );
+        if ( $email === '' ) {
+            $this->redirect( $event_id, 'error', \__( 'An email address is required.', 'anchor-schema' ), 'invalid' );
+        }
+        $user_id = $this->add_access_by_email( $event_id, $name, $email );
+        $this->redirect(
+            $event_id,
+            $user_id > 0 ? 'success' : 'error',
+            $user_id > 0
+                ? \__( 'Access granted. This person has no seat and does not count toward capacity.', 'anchor-schema' )
+                : \__( 'Could not create or find an account for that address.', 'anchor-schema' )
+        );
+    }
+
     /** Send the organizer roster digest for a specific event (Task 4). */
     public function handle_send_roster() {
         $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
@@ -1140,7 +1302,16 @@ class Roster {
         if ( ! self::is_exportable_event( $event_id ) ) {
             \wp_die( \esc_html__( 'Invalid event.', 'anchor-schema' ) );
         }
-        $scope = ( isset( $_GET['scope'] ) && \wp_unslash( $_GET['scope'] ) === 'active' ) ? 'active' : 'all';
+        $scope = isset( $_GET['scope'] ) ? \sanitize_key( \wp_unslash( $_GET['scope'] ) ) : 'all';
+        if ( ! \in_array( $scope, [ 'active', 'access' ], true ) ) {
+            $scope = 'all';
+        }
+        // `access` is a bookmarkable URL (spec §4.4), and access_role_enabled
+        // can be switched off after the link was made — fall back to the
+        // confirmed-only scope rather than erroring on a stale bookmark.
+        if ( $scope === 'access' && ! $this->access_enabled( $event_id ) ) {
+            $scope = 'active';
+        }
 
         // Task 42 — the page-level "All dates" export on a group parent's
         // console. Same nonce -> capability -> is_exportable_event(parent)
@@ -1207,18 +1378,26 @@ class Roster {
      */
     private function export_row_cells( $event_id, array $row, array $field_keys ) {
         // Tier label: get_export_rows() rows don't carry the tier id, so resolve
-        // it from the seat meta (falls back to Primary for legacy seats).
-        $tier_label = $this->tier_label(
-            $event_id,
-            (string) \get_post_meta( (int) $row['seat_id'], '_anchor_event_ticket_type_id', true )
-        );
+        // it from the seat meta (falls back to Primary for legacy seats). A
+        // manual-access row (export `access` scope) has no seat at all — no
+        // seat_id means no tier to look up, not a "Primary (retired tier)".
+        $seat_id    = (int) ( $row['seat_id'] ?? 0 );
+        $tier_label = $seat_id > 0
+            ? $this->tier_label( $event_id, (string) \get_post_meta( $seat_id, '_anchor_event_ticket_type_id', true ) )
+            : '';
 
+        // `?? ''` on every column (not just seat_id/tier above): a manual-access
+        // row is built with only a handful of keys set (name/email/status/
+        // source/fields), and a sibling branch will add a "Registration code"
+        // column right after Seat Index (export_columns()) — this is the one
+        // place a row becomes cells, so that column only ever needs a `?? ''`
+        // here, never a second row-shape to keep in step.
         $cells = [
-            $row['seat_id'], $row['event'], $row['name'], $row['email'], $row['phone'],
-            $row['status'], $row['source'], $tier_label, $row['guests'], $row['party_size'], $row['reg_date'],
-            $row['order_number'], $row['order_id'], $row['order_status'], $row['order_date'],
-            $row['customer_id'], $row['customer_email'], $row['product'], $row['product_id'],
-            $row['variation_id'], $row['order_item_id'], $row['seat_index'],
+            $row['seat_id'] ?? '', $row['event'] ?? '', $row['name'] ?? '', $row['email'] ?? '', $row['phone'] ?? '',
+            $row['status'] ?? '', $row['source'] ?? '', $tier_label, $row['guests'] ?? '', $row['party_size'] ?? '', $row['reg_date'] ?? '',
+            $row['order_number'] ?? '', $row['order_id'] ?? '', $row['order_status'] ?? '', $row['order_date'] ?? '',
+            $row['customer_id'] ?? '', $row['customer_email'] ?? '', $row['product'] ?? '', $row['product_id'] ?? '',
+            $row['variation_id'] ?? '', $row['order_item_id'] ?? '', $row['seat_index'] ?? '',
         ];
         foreach ( $field_keys as $k ) {
             $cells[] = isset( $row['fields'][ $k ] ) ? $row['fields'][ $k ] : '';
@@ -1227,15 +1406,111 @@ class Roster {
     }
 
     /**
+     * User ids that hold this event's role by a MANUAL grant (spec §4.4) —
+     * role_members() only counts; the Access column's Grant/Revoke actions
+     * work seat-by-seat so they never needed the list, but the export
+     * `access` scope does.
+     *
+     * @param int $event_id
+     * @return int[]
+     */
+    private function manual_access_user_ids( $event_id ) {
+        $ent = $this->module->entitlements;
+        if ( ! $ent ) {
+            return [];
+        }
+        $slug = $ent->role_for( (int) $event_id, false );
+        if ( $slug === '' ) {
+            return [];
+        }
+        $ids   = [];
+        $query = new \WP_User_Query( [ 'role' => $slug, 'fields' => 'ID', 'number' => 0 ] );
+        foreach ( (array) $query->get_results() as $user_id ) {
+            $user_id = (int) $user_id;
+            if ( ( $ent->grant_record( (int) $event_id, $user_id )['source'] ?? '' ) === 'manual' ) {
+                $ids[] = $user_id;
+            }
+        }
+        return $ids;
+    }
+
+    /**
+     * One synthetic export row per manual-access holder not already
+     * represented among $existing_rows (matched by email — a holder who
+     * ALSO has a confirmed seat already has a row from that seat, and must
+     * not appear twice). Seat ID blank, Source "manual access", Status
+     * "access only" — the one place those three literals are set, so the
+     * single-event and all-dates exports can never describe an access-only
+     * row differently.
+     *
+     * @param int   $event_id
+     * @param array $existing_rows Raw get_export_rows() rows already gathered
+     *                             for this event, so a dual-entitled holder
+     *                             is not double-counted.
+     * @return array[] Raw row shape — cells are cut by export_row_cells().
+     */
+    private function manual_access_export_rows( $event_id, array $existing_rows ) {
+        $seen = [];
+        foreach ( $existing_rows as $row ) {
+            $email = \strtolower( \trim( (string) ( $row['email'] ?? '' ) ) );
+            if ( $email !== '' ) {
+                $seen[ $email ] = true;
+            }
+        }
+
+        $rows = [];
+        foreach ( $this->manual_access_user_ids( $event_id ) as $user_id ) {
+            $user = \get_userdata( $user_id );
+            if ( ! $user instanceof \WP_User || isset( $seen[ \strtolower( (string) $user->user_email ) ] ) ) {
+                continue;
+            }
+            $rows[] = [
+                'event'  => \get_the_title( $event_id ),
+                'name'   => $user->display_name,
+                'email'  => $user->user_email,
+                'status' => \__( 'access only', 'anchor-schema' ),
+                'source' => \__( 'manual access', 'anchor-schema' ),
+                'fields' => [],
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * Registrations::get_export_rows() plus, for the `access` scope, one
+     * synthetic row per manual-access holder — the ONE place scope becomes
+     * rows, shared by export_table() and export_table_all_dates() so the
+     * `access` scope can never behave differently between a single event and
+     * the all-dates export.
+     *
+     * `access` always sources its seat rows from `active` (confirmed only):
+     * a comp export next to pending/waitlisted/cancelled seats would answer
+     * a different question than "who currently has access".
+     *
+     * @param int    $event_id
+     * @param string $scope 'all' | 'active' | 'access'.
+     * @return array{field_keys:string[],rows:array[]}
+     */
+    private function export_rows_for_scope( $event_id, $scope ) {
+        $event_id   = (int) $event_id;
+        $seat_scope = ( $scope === 'access' ) ? 'active' : $scope;
+        $data       = $this->registrations->get_export_rows( $event_id, $seat_scope );
+        if ( $scope === 'access' ) {
+            $data['rows'] = \array_merge( $data['rows'], $this->manual_access_export_rows( $event_id, $data['rows'] ) );
+        }
+        return $data;
+    }
+
+    /**
      * Header + data rows for one event's CSV export (spec §10.4).
      *
      * @param int    $event_id
-     * @param string $scope 'all' | 'active'.
+     * @param string $scope 'all' | 'active' | 'access'.
      * @return array{header:string[],rows:array<int,array>}
      */
     private function export_table( $event_id, $scope ) {
         $event_id = (int) $event_id;
-        $data     = $this->registrations->get_export_rows( $event_id, $scope );
+        $data     = $this->export_rows_for_scope( $event_id, $scope );
 
         // The answer columns are keyed by question id; the heading is resolved
         // from the event's current questions, falling back to the stored key for
@@ -1257,6 +1532,18 @@ class Roster {
     }
 
     /**
+     * Test seam for export_table() (Task 18) — WP_UnitTestCase can call this
+     * without reflection.
+     *
+     * @param int    $event_id
+     * @param string $scope
+     * @return array{header:string[],rows:array<int,array>}
+     */
+    public function export_table_public( $event_id, $scope ) {
+        return $this->export_table( (int) $event_id, (string) $scope );
+    }
+
+    /**
      * Header + data rows for the "All dates" export on a group parent
      * (Task 42): one leading Date column carrying each child's own
      * occurrence label, the base columns unchanged, question columns
@@ -1267,8 +1554,12 @@ class Roster {
      * cancelled children included, their seats still exist) and, within a
      * child, in get_export_rows()'s own order.
      *
-     * One get_export_rows() call per child, one row-cell builder
-     * (export_row_cells()) — never a second export implementation.
+     * One export_rows_for_scope() call per child, one row-cell builder
+     * (export_row_cells()) — never a second export implementation. Task 18 —
+     * the `access` scope is per-child too: each occurrence child mints its
+     * own event role, so export_rows_for_scope() appends that CHILD's own
+     * manual-access holders, keeping this in step with export_table()
+     * without a second copy of manual_access_export_rows().
      *
      * Task 42 review — children_any_status(), not children($parent, true):
      * the latter is publish-only, so a child an admin unpublished
@@ -1276,7 +1567,7 @@ class Roster {
      * vanish from this export.
      *
      * @param int    $parent_id
-     * @param string $scope 'all' | 'active'.
+     * @param string $scope 'all' | 'active' | 'access'.
      * @return array{header:string[],rows:array<int,array>}
      */
     private function export_table_all_dates( $parent_id, $scope ) {
@@ -1287,7 +1578,7 @@ class Roster {
         $per_child   = [];
         foreach ( $children as $child_id ) {
             $child_id                = (int) $child_id;
-            $data                    = $this->registrations->get_export_rows( $child_id, $scope );
+            $data                    = $this->export_rows_for_scope( $child_id, $scope );
             $per_child[ $child_id ]  = $data;
             foreach ( $data['field_keys'] as $k ) {
                 if ( ! isset( $field_owner[ $k ] ) ) {
@@ -1369,6 +1660,47 @@ class Roster {
     /* ---------------------------------------------------------------------
      * Shared helpers (used by the list table too)
      * ------------------------------------------------------------------- */
+
+    /**
+     * The roster list table's columns, base + this event's own questions +
+     * (Task 18) Access, when the event is in the feature. The one place this
+     * set is built, so Roster_List_Table::get_columns() and the
+     * list_table_columns_public() test seam can never describe it differently.
+     *
+     * @param int $event_id
+     * @return array<string,string> column id => label.
+     */
+    public function list_table_columns( $event_id ) {
+        $event_id = (int) $event_id;
+        $columns  = [
+            'attendee' => \__( 'Attendee', 'anchor-schema' ),
+            'email'    => \__( 'Email', 'anchor-schema' ),
+            'phone'    => \__( 'Phone', 'anchor-schema' ),
+            'status'   => \__( 'Status', 'anchor-schema' ),
+            'tier'     => \__( 'Tier', 'anchor-schema' ),
+            'guests'   => \__( 'Guests', 'anchor-schema' ),
+            'source'   => \__( 'Source', 'anchor-schema' ),
+            'order'    => \__( 'Order', 'anchor-schema' ),
+            'seat'     => \__( 'Seat', 'anchor-schema' ),
+            'date'     => \__( 'Date', 'anchor-schema' ),
+        ];
+        foreach ( $this->module_questions( $event_id ) as $q ) {
+            $columns[ 'q_' . $q['key'] ] = $q['label'];
+        }
+        // A plain event has no access to report. Omitting the column beats
+        // printing a column of "off": the roster of an in-person event should
+        // look exactly as it does today, and an operator should never be
+        // shown a Grant button for an event with nothing to grant into.
+        if ( $this->access_enabled( $event_id ) ) {
+            $columns['access'] = \__( 'Access', 'anchor-schema' );
+        }
+        return $columns;
+    }
+
+    /** Test seam for list_table_columns() (Task 18). */
+    public function list_table_columns_public( $event_id ) {
+        return $this->list_table_columns( $event_id );
+    }
 
     /** Status options for the edit select. */
     /** Questions for an event — lets the inner list-table class reach the module. */
@@ -1977,11 +2309,17 @@ class Roster {
      * exactly what it always was, since check_admin_referer() reads that
      * field by name, not by id). Echoes, matching wp_nonce_field()'s default.
      *
+     * Task 18 — $id_base lets a panel that renders more than one nonced form
+     * for the SAME event_id (the add-attendee form and the add-by-email form
+     * both live in frontend_add_form()) give each its own id; every existing
+     * caller renders one nonce per event_id per panel and keeps the default.
+     *
      * @param string $action
      * @param int    $event_id
+     * @param string $id_base
      */
-    private function nonce_field_with_unique_id( $action, $event_id ) {
-        echo '<input type="hidden" id="' . \esc_attr( $this->field_id( '_wpnonce', $event_id ) ) . '" name="_wpnonce" value="'
+    private function nonce_field_with_unique_id( $action, $event_id, $id_base = '_wpnonce' ) {
+        echo '<input type="hidden" id="' . \esc_attr( $this->field_id( $id_base, $event_id ) ) . '" name="_wpnonce" value="'
             . \esc_attr( \wp_create_nonce( $action ) ) . '" />';
         echo \wp_referer_field( false ); // phpcs:ignore WordPress.Security.EscapeOutput -- core-escaped.
     }
@@ -2053,8 +2391,38 @@ class Roster {
                 <button type="submit" class="anchor-event-button"><?php \esc_html_e( 'Add attendee', 'anchor-schema' ); ?></button>
             </form>
         </div>
+        <?php if ( $this->access_enabled( $event_id ) ) : ?>
+        <div class="anchor-event-section">
+            <h3><?php \esc_html_e( 'Add person by email', 'anchor-schema' ); ?></h3>
+            <p class="anchor-roster-fe-help"><?php \esc_html_e( 'Grants this event’s role directly — no seat is created and it never counts toward capacity. Use this for a comp, a speaker, or anyone who needs access without registering.', 'anchor-schema' ); ?></p>
+            <form method="post" action="<?php echo \esc_url( \admin_url( 'admin-post.php' ) ); ?>" class="anchor-roster-fe-form">
+                <input type="hidden" name="action" value="anchor_roster_add_access" />
+                <input type="hidden" name="event_id" value="<?php echo \esc_attr( (string) $event_id ); ?>" />
+                <input type="hidden" name="roster_return" value="<?php echo \esc_url( $self_url ); ?>" />
+                <?php $this->nonce_field_with_unique_id( 'anchor_roster_edit_' . $event_id, $event_id, '_wpnonce_access' ); ?>
+
+                <div class="anchor-event-grid">
+                    <div class="anchor-event-field">
+                        <label for="<?php echo \esc_attr( $this->field_id( 'access_name', $event_id ) ); ?>"><?php \esc_html_e( 'Name', 'anchor-schema' ); ?></label>
+                        <input type="text" id="<?php echo \esc_attr( $this->field_id( 'access_name', $event_id ) ); ?>" name="access_name" />
+                    </div>
+                    <div class="anchor-event-field">
+                        <label for="<?php echo \esc_attr( $this->field_id( 'access_email', $event_id ) ); ?>"><?php \esc_html_e( 'Email', 'anchor-schema' ); ?> *</label>
+                        <input type="email" id="<?php echo \esc_attr( $this->field_id( 'access_email', $event_id ) ); ?>" name="access_email" required />
+                    </div>
+                </div>
+
+                <button type="submit" class="anchor-event-button"><?php \esc_html_e( 'Grant access', 'anchor-schema' ); ?></button>
+            </form>
+        </div>
+        <?php endif; ?>
         <?php
         return (string) \ob_get_clean();
+    }
+
+    /** Test seam for frontend_add_form() (Task 18). */
+    public function frontend_add_form_public( $event_id, $self_url = '' ) {
+        return $this->frontend_add_form( (int) $event_id, (string) $self_url );
     }
 
     /**
@@ -2211,35 +2579,19 @@ function load_roster_list_table() {
                 ] );
             }
 
-            /** Extra columns for this event's own attendee questions. */
-            private function question_columns() {
-                $cols = [];
-                foreach ( $this->roster->module_questions( $this->event_id ) as $q ) {
-                    $cols[ 'q_' . $q['key'] ] = $q['label'];
-                }
-                return $cols;
-            }
-
             /**
              * REG-D14 — no 'cb' column. The table used to render a row
              * checkbox posting `seat[]`, but there is no get_bulk_actions()
              * and no handler reads `seat[]`, so ticking ten seats and looking
              * for a bulk cancel found nothing to submit to. The checkbox is
              * gone until the bulk action that would consume it ships.
+             *
+             * Task 18 — delegates to Roster::list_table_columns(), the one
+             * place base + question + (conditional) Access columns are built,
+             * shared with the list_table_columns_public() test seam.
              */
             public function get_columns() {
-                return \array_merge( [
-                    'attendee' => \__( 'Attendee', 'anchor-schema' ),
-                    'email'    => \__( 'Email', 'anchor-schema' ),
-                    'phone'    => \__( 'Phone', 'anchor-schema' ),
-                    'status'   => \__( 'Status', 'anchor-schema' ),
-                    'tier'     => \__( 'Tier', 'anchor-schema' ),
-                    'guests'   => \__( 'Guests', 'anchor-schema' ),
-                    'source'   => \__( 'Source', 'anchor-schema' ),
-                    'order'    => \__( 'Order', 'anchor-schema' ),
-                    'seat'     => \__( 'Seat', 'anchor-schema' ),
-                    'date'     => \__( 'Date', 'anchor-schema' ),
-                ], $this->question_columns() );
+                return $this->roster->list_table_columns( $this->event_id );
             }
 
             protected function get_sortable_columns() {
@@ -2341,10 +2693,36 @@ function load_roster_list_table() {
                 return \esc_html( (string) (int) $item['seat_index'] );
             }
 
+            /**
+             * Task 18 — the seat's access ROLE, with an inline Grant/Revoke
+             * form. Only rendered at all when get_columns() offered the
+             * column, so this never runs for an event outside the feature.
+             */
+            public function column_access( $item ) {
+                $state = $this->roster->access_state( $this->event_id, $item );
+                $label = [
+                    'yes'    => \__( 'Yes', 'anchor-schema' ),
+                    'manual' => \__( 'Manual', 'anchor-schema' ),
+                    'no'     => \__( 'No', 'anchor-schema' ),
+                ][ $state ] ?? \__( 'Off', 'anchor-schema' ); // Not reachable: get_columns() omits this column for 'off'.
+                $nonce   = \wp_create_nonce( 'anchor_roster_edit_' . $this->event_id );
+                $action  = ( $state === 'no' ) ? 'anchor_roster_grant' : 'anchor_roster_revoke';
+                $caption = ( $state === 'no' ) ? \__( 'Grant access', 'anchor-schema' ) : \__( 'Revoke access', 'anchor-schema' );
+                return '<span class="anchor-roster-access anchor-roster-access--' . \esc_attr( $state ) . '">' . \esc_html( $label ) . '</span>'
+                    . '<form method="post" action="' . \esc_url( \admin_url( 'admin-post.php' ) ) . '" class="anchor-roster-access-form">'
+                    . '<input type="hidden" name="action" value="' . \esc_attr( $action ) . '" />'
+                    . '<input type="hidden" name="event_id" value="' . (int) $this->event_id . '" />'
+                    . '<input type="hidden" name="seat_id" value="' . (int) $item['id'] . '" />'
+                    . '<input type="hidden" name="user_id" value="' . (int) ( $item['user_id'] ?? 0 ) . '" />'
+                    . '<input type="hidden" name="_wpnonce" value="' . \esc_attr( $nonce ) . '" />'
+                    . '<button type="submit" class="button-link">' . \esc_html( $caption ) . '</button>'
+                    . '</form>';
+            }
+
             public function column_default( $item, $column_name ) {
                 if ( \strpos( $column_name, 'q_' ) === 0 ) {
-                    // The column id IS the question key (question_columns()), and
-                    // seat_dto() hands the answers back keyed the same way — the
+                    // The column id IS the question key (Roster::list_table_columns()),
+                    // and seat_dto() hands the answers back keyed the same way — the
                     // label is a heading only (REG-D10/D11).
                     $key    = \substr( $column_name, 2 );
                     $fields = isset( $item['reg_fields'] ) && \is_array( $item['reg_fields'] ) ? $item['reg_fields'] : [];

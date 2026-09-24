@@ -1635,4 +1635,90 @@ class Test_Roster extends Anchor_Events_TestCase {
 		$this->assertCount( 1, $table['rows'] );
 		$this->assertSame( 'Session A', $table['rows'][0][0] );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Task 18 — Roster access column, grant/revoke, add-by-email, export.
+	 * ------------------------------------------------------------------- */
+
+	/** The Access column reports how a seat holder stands. */
+	public function test_access_state_column() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => true ] );
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'acc@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'acc@example.test' ] );
+		$seat     = $this->registrations()->get_seat( $seat_id );
+
+		$this->assertSame( 'yes', $this->module()->roster->access_state( $event_id, $seat ) );
+
+		$this->module()->entitlements->revoke( $event_id, $user_id );
+		$this->assertSame( 'no', $this->module()->roster->access_state( $event_id, $this->registrations()->get_seat( $seat_id ) ) );
+
+		$this->module()->entitlements->grant( $event_id, $user_id, 'manual' );
+		$this->assertSame( 'manual', $this->module()->roster->access_state( $event_id, $this->registrations()->get_seat( $seat_id ) ) );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** Add-by-email creates the account, grants manually, and mints no seat. */
+	public function test_add_person_by_email_grants_without_a_seat() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => true ] );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$user_id = $this->module()->roster->add_access_by_email( $event_id, 'Comped Person', 'comp@example.test' );
+
+		$this->assertGreaterThan( 0, $user_id );
+		$this->assertTrue( $this->module()->entitlements->holds_role( $event_id, $user_id ) );
+		$this->assertSame( 'manual', $this->module()->entitlements->grant_record( $event_id, $user_id )['source'] );
+		$this->assertSame( 0, $this->count_seats( $event_id ), 'Manual access is not a seat and never touches capacity.' );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** Revoking a manual grant on a live seat holder leaves the role and says so. */
+	public function test_manual_revoke_with_a_live_seat_keeps_access() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => true ] );
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'both@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'both@example.test' ] );
+		$this->module()->entitlements->grant( $event_id, $user_id, 'manual' );
+
+		$outcome = $this->module()->roster->revoke_access( $event_id, $user_id );
+
+		$this->assertTrue( $this->module()->entitlements->holds_role( $event_id, $user_id ) );
+		$this->assertSame( 'kept_seat', $outcome );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** The export offers a scope that includes manual-access holders. */
+	public function test_export_access_scope_includes_manual_holders() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => true ] );
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'only-access@example.test', 'display_name' => 'Only Access' ] );
+		$this->module()->entitlements->grant( $event_id, $user_id, 'manual' );
+
+		$table = $this->module()->roster->export_table_public( $event_id, 'access' );
+		$flat  = wp_json_encode( $table );
+
+		$this->assertStringContainsString( 'only-access@example.test', $flat );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** A switched-off event's roster has no Access column and no add-by-email form. */
+	public function test_no_access_column_when_the_switch_is_off() {
+		// Explicitly off: the default is ON (spec §3.1), so an ordinary
+		// in-person event's roster DOES show this column now.
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'plain-roster@example.test' ] );
+		$seat     = $this->registrations()->get_seat( $seat_id );
+
+		$this->assertSame( 'off', $this->module()->roster->access_state( $event_id, $seat ) );
+		$this->assertArrayNotHasKey( 'access', $this->module()->roster->list_table_columns_public( $event_id ) );
+		$this->assertStringNotContainsString( 'anchor_roster_add_access', $this->module()->roster->frontend_add_form_public( $event_id ) );
+	}
+
+	/** And add-by-email refuses outright — it never reaches ensure_user(). */
+	public function test_add_person_by_email_refuses_when_the_switch_is_off() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$before = count_users()['total_users'];
+
+		$this->assertSame( 0, $this->module()->roster->add_access_by_email( $event_id, 'Nope', 'nope-access@example.test' ) );
+		$this->assertSame( $before, count_users()['total_users'] );
+		$this->assertNull( get_role( 'anchor_event_' . $event_id ) );
+	}
 }

@@ -302,6 +302,42 @@ class Entitlements {
     }
 
     /**
+     * Downgrade a MANUAL grant record to `seat`, without touching the role.
+     *
+     * The one legitimate manual -> seat transition, and grant() will not do
+     * it: its own idempotency guard treats "manual outranks seat" as an
+     * invariant and folds this exact transition into `$unchanged` (a plain
+     * `grant( $event_id, $user_id, 'seat' )` on an existing manual record is
+     * a silent no-op — by design, so a cancellation can never casually strip
+     * a comp). Roster::revoke_access() needs the opposite on purpose: an
+     * operator explicitly revoking a manual grant while a confirmed seat
+     * still independently entitles the person should leave the record
+     * saying `seat`, so that seat's own later cancellation can go on to
+     * revoke it via maybe_revoke_seat_grant() rather than finding `source
+     * === manual` forever and refusing. Bypasses grant() rather than adding
+     * a force flag to it, so grant()'s guard stays absolute everywhere else.
+     *
+     * @param int $event_id
+     * @param int $user_id
+     * @return bool True when a manual record was actually downgraded.
+     */
+    public function downgrade_manual_grant_to_seat( $event_id, $user_id ) {
+        $event_id = (int) $event_id;
+        $user_id  = (int) $user_id;
+        $grants   = $this->grants_for_user( $user_id );
+        if ( ( $grants[ $event_id ]['source'] ?? '' ) !== self::SOURCE_MANUAL ) {
+            return false;
+        }
+        $grants[ $event_id ] = [
+            'source' => self::SOURCE_SEAT,
+            'at'     => \time(),
+            'by'     => (int) \get_current_user_id(),
+        ];
+        \update_user_meta( $user_id, self::GRANTS_META, $grants );
+        return true;
+    }
+
+    /**
      * Take the role away and clear the grant record.
      *
      * Fires the action only when something actually changed — a redundant
@@ -444,12 +480,11 @@ class Entitlements {
         if ( ! $user instanceof \WP_User ) {
             return false;
         }
-        $identity = [
-            'relation' => 'OR',
-            [ 'key' => self::SEAT_USER_META, 'value' => (int) $user_id, 'compare' => '=', 'type' => 'NUMERIC' ],
-            [ 'key' => '_anchor_event_customer_id', 'value' => (int) $user_id, 'compare' => '=', 'type' => 'NUMERIC' ],
-            [ 'key' => '_anchor_event_email', 'value' => (string) $user->user_email, 'compare' => '=' ],
-        ];
+        // Same shared OR fragment user_has_active_seat() and seat_tier_modality()
+        // use — this used to hand-roll its own (keyed off SEAT_USER_META rather
+        // than identity_meta_query()'s _anchor_event_user_id, though both name
+        // the same meta key, so the query is unchanged, just no longer a
+        // fourth copy of the same three clauses).
         $q = new \WP_Query( [
             'post_type'      => Module::REG_CPT,
             'post_status'    => 'publish',
@@ -460,7 +495,7 @@ class Entitlements {
                 'relation' => 'AND',
                 [ 'key' => '_anchor_event_id', 'value' => (int) $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
                 [ 'key' => '_anchor_event_reg_status', 'value' => Registrations::STATUS_CONFIRMED, 'compare' => '=' ],
-                $identity,
+                $this->module->registrations->identity_meta_query( (int) $user_id, (string) $user->user_email ),
             ],
         ] );
         return ! empty( $q->posts );
@@ -577,6 +612,54 @@ class Entitlements {
             return $this->remember_seat_user( $seat_id, (int) $existing->ID );
         }
 
+        // 4 — create. Factored out to create_account() (Task 18) so the
+        // roster's add-by-email — the one other caller that ever creates an
+        // account for someone with no seat at all — goes through the exact
+        // same no-mail path rather than a second copy of it.
+        $name    = \sanitize_text_field( (string) ( $seat['name'] ?? \get_post_meta( $seat_id, '_anchor_event_name', true ) ) );
+        $user_id = $this->create_account( $name, $email, $event_id );
+        if ( $user_id <= 0 ) {
+            return 0;
+        }
+        return $this->remember_seat_user( $seat_id, $user_id );
+    }
+
+    /** Write the resolution onto the seat and return it. */
+    private function remember_seat_user( $seat_id, $user_id ) {
+        \update_post_meta( (int) $seat_id, self::SEAT_USER_META, (int) $user_id );
+        return (int) $user_id;
+    }
+
+    /**
+     * Create a WordPress (or, when WooCommerce is active, a WooCommerce
+     * customer) account, with no "new account" mail — ensure_user()'s branch
+     * 4, factored out (Task 18) so the roster's add-by-email path shares it
+     * rather than re-implementing account creation.
+     *
+     * Runs the `anchor_events_create_account` opt-out filter itself; that
+     * check used to live at ensure_user()'s call site, but a caller with no
+     * seat at all (add-by-email) needs the same opt-out honored, so the
+     * guard belongs on the thing that actually creates the account.
+     *
+     * Deliberately does NOT check enabled() — that guard means something
+     * different to each caller (ensure_user() checks it once for every
+     * branch including the lookups above this one; add_access_by_email()
+     * checks it before even attempting a lookup, since it is the one entry
+     * point with no seat to resolve one from), so each owns its own call.
+     *
+     * @param string $name
+     * @param string $email     Assumed already validated non-empty by the caller.
+     * @param int    $event_id  Passed to the create-account filter and the
+     *                          failure log only; this method mints no seat
+     *                          meta and records no event association itself.
+     * @return int User id, or 0 (the site opted out, or the create failed).
+     */
+    public function create_account( $name, $email, $event_id ) {
+        $email = \sanitize_email( (string) $email );
+        if ( $email === '' ) {
+            return 0;
+        }
+
         /**
          * Whether this site creates accounts for registrants who have none.
          *
@@ -587,12 +670,11 @@ class Entitlements {
          * @param int    $event_id
          * @param string $email
          */
-        if ( ! \apply_filters( 'anchor_events_create_account', true, $event_id, $email ) ) {
+        if ( ! \apply_filters( 'anchor_events_create_account', true, (int) $event_id, $email ) ) {
             return 0;
         }
 
-        // 4 — create.
-        $name     = \sanitize_text_field( (string) ( $seat['name'] ?? \get_post_meta( $seat_id, '_anchor_event_name', true ) ) );
+        $name     = \sanitize_text_field( (string) $name );
         $username = $this->unique_username( $email );
         $password = \wp_generate_password( 24, true, true );
 
@@ -619,8 +701,7 @@ class Entitlements {
 
         if ( \is_wp_error( $user_id ) || ! $user_id ) {
             Events_Log::error( 'access_user_create_failed', [
-                'event' => $event_id,
-                'seat'  => $seat_id,
+                'event' => (int) $event_id,
                 'to'    => \substr( \md5( $email ), 0, 8 ), // redacted identity (ERROR_IDENTITY_KEYS).
             ] );
             return 0;
@@ -629,12 +710,6 @@ class Entitlements {
         if ( $name !== '' ) {
             \wp_update_user( [ 'ID' => (int) $user_id, 'display_name' => $name ] );
         }
-        return $this->remember_seat_user( $seat_id, (int) $user_id );
-    }
-
-    /** Write the resolution onto the seat and return it. */
-    private function remember_seat_user( $seat_id, $user_id ) {
-        \update_post_meta( (int) $seat_id, self::SEAT_USER_META, (int) $user_id );
         return (int) $user_id;
     }
 

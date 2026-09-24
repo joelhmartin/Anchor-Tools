@@ -13,6 +13,9 @@ class Anchor_Speakers_Module {
 	const OPTION           = 'anchor_speakers_options';
 	const SIGNATURE_OPTION = 'anchor_speakers_rules_signature';
 
+	/** @var Anchor_Speaker_Events|null Null when the events module is inactive. */
+	public $events = null;
+
 	public static function options() {
 		$o = get_option( self::OPTION, [] );
 		return wp_parse_args( is_array( $o ) ? $o : [], [ 'base' => 'speakers', 'archive' => false ] );
@@ -34,6 +37,28 @@ class Anchor_Speakers_Module {
 		add_action( 'add_meta_boxes', [ $this, 'add_meta_boxes' ] );
 		add_action( 'save_post_' . self::CPT, [ $this, 'save' ] );
 		add_action( 'wp_enqueue_scripts', [ $this, 'maybe_enqueue_frontend_assets' ] );
+
+		// Optional Events linkage (Task 10). Loaded only when the events
+		// module is active, mirroring the events module's own nullable
+		// collaborator pattern for its optional WooCommerce integration.
+		if ( class_exists( '\\Anchor\\Events\\Module' ) ) {
+			require_once __DIR__ . '/class-speaker-events.php';
+			$this->events = new Anchor_Speaker_Events();
+		}
+	}
+
+	/**
+	 * Ordered speaker ids linked to an event, resolving a group child with no
+	 * list of its own to its group parent's list. Returns an empty array
+	 * when the events module isn't active. Added in Task 10; the
+	 * method_exists() guard around this call in query_speakers() below
+	 * predates it and stays as a defensive check for a partial rollout.
+	 *
+	 * @param int $event_id
+	 * @return int[]
+	 */
+	public static function event_speaker_ids( $event_id ) {
+		return class_exists( 'Anchor_Speaker_Events' ) ? Anchor_Speaker_Events::event_speaker_ids( (int) $event_id ) : [];
 	}
 
 	public function register() {

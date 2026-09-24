@@ -183,6 +183,25 @@ class Occurrences {
     ];
 
     /**
+     * INHERITED_KEYS, extendable by other modules (e.g. Anchor Speakers).
+     *
+     * Every other module reads INHERITED_KEYS through this method rather than
+     * the constant directly, so a module that owns its own meta key (already
+     * fully prefixed with `_anchor_event_`, e.g. Anchor Speakers'
+     * `_anchor_event_speaker_ids`) can add itself here without needing to know
+     * the unprefixed-key convention the constant above uses internally.
+     * inherited_meta_keys() below only prefixes an entry that is not already
+     * prefixed, so both forms are safe to filter in.
+     *
+     * @return string[] A mix of unprefixed schema keys (from the constant) and
+     *                   already-prefixed meta keys (from other modules).
+     */
+    private static function inherited_keys() {
+        $keys = (array) \apply_filters( 'anchor_events_inherited_keys', self::INHERITED_KEYS );
+        return array_values( array_unique( array_filter( $keys, 'is_string' ) ) );
+    }
+
+    /**
      * The `_anchor_event_` suffixes of the per-event email overrides, one set
      * per EMAIL_TEMPLATE_TYPES entry. Assembled in inherited_meta_keys() from
      * the module's own type list rather than written out, so a fifth email
@@ -1498,8 +1517,11 @@ class Occurrences {
      */
     private function inherited_meta_keys( $parent_id, $child_id ) {
         $keys = [];
-        foreach ( self::INHERITED_KEYS as $key ) {
-            $keys[] = $this->module->meta_key( $key );
+        foreach ( self::inherited_keys() as $key ) {
+            // A key filtered in by another module may already be a full,
+            // prefixed meta key (see inherited_keys() above); prefixing it
+            // again would look for a key nobody ever writes.
+            $keys[] = ( \strpos( $key, '_anchor_event_' ) === 0 ) ? $key : $this->module->meta_key( $key );
         }
 
         $keys = \array_merge( $keys, $this->authored_child_meta_keys() );

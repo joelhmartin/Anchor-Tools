@@ -11,6 +11,8 @@
 
 namespace Anchor\Courses;
 
+use Anchor\Courses\Database\Migrations;
+
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 require_once __DIR__ . '/api.php';
@@ -23,6 +25,12 @@ class Module {
 
 	public function __construct() {
 		self::$instance = $this;
+
+		// No per-module activation hook exists (anchor_tools_bootstrap_modules()
+		// only requires + instantiates). Run on load and again on admin_init so a
+		// plugin upgrade that never touches wp-admin still converges. Brief section 28.
+		Migrations::maybe_migrate();
+		\add_action( 'admin_init', [ Migrations::class, 'maybe_migrate' ] );
 	}
 
 	public static function instance(): ?Module {

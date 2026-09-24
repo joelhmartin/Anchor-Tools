@@ -9070,6 +9070,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 </div>
             </div>
 
+            <?php echo $this->render_livestream_fields( $event_id, $meta, false ); // already escaped ?>
+
             <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Status', 'anchor-schema' ); ?></h3>
                 <p class="anchor-event-hint anchor-event-hint--section"><?php echo esc_html__( 'Whether people can still sign up. Closing it keeps the event page online but takes the sign-up form off it.', 'anchor-schema' ); ?></p>
@@ -9105,6 +9107,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 </div>
 
             </div>
+
+            <?php echo $this->render_access_fields( $event_id, $meta, false ); // already escaped ?>
 
             <div class="anchor-event-section" data-step="4">
                 <h3><?php echo esc_html__( 'Attendee questions', 'anchor-schema' ); ?></h3>

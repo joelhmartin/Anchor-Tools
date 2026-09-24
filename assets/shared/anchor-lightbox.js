@@ -153,8 +153,8 @@
     }
   }
 
-  // The ONE render path. Every entry point — click, arrow, key, swipe — goes
-  // through here, and the first thing it does is destroy the current frame.
+  // The ONE render path (every entry point, click, arrow, key, swipe, goes
+  // through here), and the first thing it does is destroy the current frame.
   // Because playback is a raw autoplay iframe, that teardown IS the video stop.
   function renderLightboxItem(index) {
     var total = lbState.items.length;
@@ -174,8 +174,8 @@
 
     if (item.type === 'image') {
       dialog.classList.add('avg-modal-image');
-      // Built via the DOM, not string concatenation — the URL and alt text are
-      // never interpolated into markup.
+      // Built via the DOM, not string concatenation (the URL and alt text are
+      // never interpolated into markup).
       var img = document.createElement('img');
       img.src = item.fullUrl;
       img.alt = item.alt || '';
@@ -301,7 +301,8 @@
     close: closeLightbox,
     isOpen: function () { return !!(lightboxModal && !lightboxModal.hidden); },
     getVideoSrc: getVideoSrc,
-    getDirectUrl: getDirectUrl
+    getDirectUrl: getDirectUrl,
+    applyPopupOptions: applyPopupOptions
   };
 
 })();

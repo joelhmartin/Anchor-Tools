@@ -2,14 +2,14 @@
   'use strict';
 
   // Shared lightbox (assets/shared/anchor-lightbox.js), enqueued as a
-  // dependency of this script. Video URL building and the lightbox modal
-  // itself live there now; other popup styles below (theater, side panel,
-  // inline, legacy) still build embed src via the shared getVideoSrc.
+  // dependency of this script. Video URL building, the lightbox modal, and
+  // the shared popup-option helper live there now; other popup styles below
+  // (theater, side panel, inline, legacy) call the same shared helpers.
   var LB = window.AnchorLightbox;
   var getVideoSrc = LB.getVideoSrc;
   var getDirectUrl = LB.getDirectUrl;
+  var applyPopupOptions = LB.applyPopupOptions;
   function openLightbox(seq, i, opts) { LB.open(seq, i, opts); }
-  function closeLightbox() { LB.close(); }
 
   // ============================================================================
   // Lightbox Sequence Collection
@@ -73,33 +73,6 @@
       items.push(readTile(nodes[i]));
     }
     return { items: items, startIndex: startIndex };
-  }
-
-  // ============================================================================
-  // Shared popup option helper (theater + side panel; the lightbox has its
-  // own copy inside assets/shared/anchor-lightbox.js — AnchorLightbox only
-  // exposes open/close/isOpen/getVideoSrc/getDirectUrl, not this helper).
-  // ============================================================================
-
-  function applyPopupOptions(dialog, frame, opts) {
-    if (!dialog) return;
-    // Reset previous overrides.
-    dialog.style.maxWidth = '';
-    if (frame) frame.style.aspectRatio = '';
-    var caption = dialog.querySelector('.avg-popup-caption');
-    if (caption) caption.remove();
-    if (!opts) return;
-    if (opts.maxWidth) dialog.style.maxWidth = opts.maxWidth;
-    if (opts.aspect && frame) {
-      // 'auto' means leave default. Map "16:9" -> "16 / 9".
-      frame.style.aspectRatio = opts.aspect.replace(':', ' / ');
-    }
-    if (opts.caption) {
-      var cap = document.createElement('div');
-      cap.className = 'avg-popup-caption';
-      cap.textContent = opts.caption;
-      dialog.appendChild(cap);
-    }
   }
 
   // ============================================================================

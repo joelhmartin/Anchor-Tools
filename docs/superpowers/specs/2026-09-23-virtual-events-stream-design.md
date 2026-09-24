@@ -53,6 +53,7 @@ All keys use the existing `_anchor_event_` prefix via `Module::meta_key()`, are 
 **Legacy fields stay.** `virtual` (bool) and `virtual_url` are untouched in storage and UI. Two bridges keep one code path:
 
 - Saving a non-empty `stream_embed` **forces `virtual=1` and `access_role_enabled=1`** so `Event_Schema::location_fields()`, the email venue line ("Online"), the archive badge and the `moved_online` status all keep working with no second branch.
+- **An event with `virtual=1` and no stored `stream_default_modality` resolves its default modality to `virtual`** (execution ruling 2026-09-24): a legacy virtual event must keep granting its seat holders the join link it grants today; without this bridge the new modality model would default it to `in_person` and `can_access_stream()` would deny everyone.
 - The room's stream resolver (§5.3) treats `virtual_url` as a **fallback embed input**: `Embed::normalize( $virtual_url )`. A Zoom link therefore renders as a "Join on Zoom" button inside the room, so existing virtual events get a room with no data migration.
 
 ### 3.2 Session rows (multisession)

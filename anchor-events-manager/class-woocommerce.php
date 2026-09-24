@@ -3088,6 +3088,15 @@ class WooCommerce {
                             ] ) );
                             if ( $seat_id ) {
                                 $created[] = $seat_id;
+                                // Resolve the attendee's account at capture time,
+                                // not at grant time: the attendee's email on the
+                                // line may differ from the order's customer.
+                                // ensure_user() returns 0 for an event whose
+                                // access switch is off, so an ordinary paid
+                                // in-person event still creates no accounts.
+                                if ( $this->module->entitlements ) {
+                                    $this->module->entitlements->ensure_user( [ 'id' => (int) $seat_id ] );
+                                }
                             }
                         }
                         $deficit--;

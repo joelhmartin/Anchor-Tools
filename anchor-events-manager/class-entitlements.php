@@ -467,34 +467,32 @@ class Entitlements {
     }
 
     /**
-     * Resolve the seat's user and grant. Task 8 replaces the resolution with
-     * ensure_user(); until then an existing account by email is enough.
+     * Resolve (and, per ensure_user(), create if needed) the seat's account,
+     * then grant it. ensure_user() owns the master-switch guard, so this
+     * method does its own event lookup only to short-circuit before touching
+     * the seat at all when it isn't even a real event.
      *
      * @param int $seat_id
-     * @return bool True when the grant actually changed something.
      */
     private function grant_for_seat( $seat_id ) {
         $seat_id  = (int) $seat_id;
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
-        // The master switch (spec §4 preamble). An inert event grants nothing,
-        // so it never mints a role — which is what makes "no anchor_event_{id}
-        // in wp_roles()" true for a plain event that ran with 200 attendees.
-        if ( $event_id <= 0 || ! $this->enabled( $event_id ) ) {
-            return false;
+        if ( $event_id <= 0 ) {
+            return;
         }
-        $user_id = $this->resolve_seat_user( $seat_id );
-        if ( $user_id <= 0 ) {
-            return false;
+        $user_id = $this->ensure_user( [ 'id' => $seat_id ] );
+        if ( $user_id > 0 ) {
+            $this->grant( $event_id, $user_id, self::SOURCE_SEAT );
         }
-        return $this->grant( $event_id, $user_id, self::SOURCE_SEAT );
     }
 
     /**
-     * The one place a seat resolves to an account.
+     * The revoke path's one place a seat resolves to an account.
      *
-     * Task 8 replaces this one line with ensure_user(), which will also
-     * create an account when none exists yet — until then an existing
-     * account found by email is enough, and no account means no grant.
+     * Deliberately NOT ensure_user(): a cancellation must never create an
+     * account for someone who never had one, so this stays read-only —
+     * SEAT_USER_META first, then an existing account by email. grant_for_seat()
+     * (the grant path) uses ensure_user() instead, which may create one.
      *
      * @param int $seat_id
      * @return int User id, or 0 when unresolved.
@@ -507,5 +505,150 @@ class Entitlements {
         }
         $user = \get_user_by( 'email', (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) );
         return $user ? (int) $user->ID : 0;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Accounts (spec §4.3)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * The account a seat entitles, creating one if there isn't one.
+     *
+     * FIRST, the master switch (spec §4 preamble): an event whose
+     * `access_role_enabled` is false returns 0 and does nothing — no lookup,
+     * no seat meta write, and above all no account. The check lives HERE, not
+     * at the five call sites (grant_for_seat(), Roster::handle_add(), the
+     * WooCommerce attendee capture, the {room_link} token, the roster's Grant
+     * action), because a guard at the call sites is five chances to miss one
+     * and the sixth caller is written by somebody who never read the spec.
+     * It is deliberately ahead of branch 1: an inert event does not even
+     * report an account it happens to have resolved earlier.
+     *
+     * Then four branches, in order:
+     *   1. `_anchor_event_user_id` already set and the user still exists.
+     *   2. An order seat with `customer_id > 0`.
+     *   3. An existing account with the seat's email.
+     *   4. Create one — wc_create_new_customer() when WooCommerce is active, so
+     *      My Account works, else wp_insert_user() with the site's default role.
+     *
+     * NO WordPress (or WooCommerce) new-account email is ever sent: our own
+     * confirmation carries the one-click sign-in link (§6.2), and a second
+     * "here is your new password" mail from a course registration is noise the
+     * attendee did not ask for.
+     *
+     * Always writes the resolution back to the seat so the next caller takes
+     * branch 1.
+     *
+     * @param array $seat Registrations::get_seat() DTO, or [ 'id' => int ].
+     * @return int User id, or 0 (no email on the seat, or the site opted out).
+     */
+    public function ensure_user( array $seat ) {
+        $seat_id = (int) ( $seat['id'] ?? 0 );
+        if ( $seat_id <= 0 ) {
+            return 0;
+        }
+        $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
+
+        // 0 — the master switch. Nothing below this line runs for a plain event.
+        if ( ! $this->enabled( $event_id ) ) {
+            return 0;
+        }
+
+        // 1 — already resolved.
+        $stored = (int) \get_post_meta( $seat_id, self::SEAT_USER_META, true );
+        if ( $stored > 0 && \get_userdata( $stored ) ) {
+            return $stored;
+        }
+
+        // 2 — the order's customer.
+        $customer_id = (int) ( $seat['customer_id'] ?? \get_post_meta( $seat_id, '_anchor_event_customer_id', true ) );
+        if ( $customer_id > 0 && \get_userdata( $customer_id ) ) {
+            return $this->remember_seat_user( $seat_id, $customer_id );
+        }
+
+        $email = \sanitize_email( (string) ( $seat['email'] ?? \get_post_meta( $seat_id, '_anchor_event_email', true ) ) );
+        if ( $email === '' ) {
+            return 0;
+        }
+
+        // 3 — an existing account.
+        $existing = \get_user_by( 'email', $email );
+        if ( $existing instanceof \WP_User ) {
+            return $this->remember_seat_user( $seat_id, (int) $existing->ID );
+        }
+
+        /**
+         * Whether this site creates accounts for registrants who have none.
+         *
+         * Returning false means guests get no room access; the confirmation
+         * email says so rather than pointing at a room they cannot enter.
+         *
+         * @param bool   $create
+         * @param int    $event_id
+         * @param string $email
+         */
+        if ( ! \apply_filters( 'anchor_events_create_account', true, $event_id, $email ) ) {
+            return 0;
+        }
+
+        // 4 — create.
+        $name     = \sanitize_text_field( (string) ( $seat['name'] ?? \get_post_meta( $seat_id, '_anchor_event_name', true ) ) );
+        $username = $this->unique_username( $email );
+        $password = \wp_generate_password( 24, true, true );
+
+        // Suppress WooCommerce's "New account" email for the duration of the
+        // create — wc_create_new_customer() fires woocommerce_created_customer,
+        // which WC_Emails turns into a mail. wp_insert_user() sends nothing of
+        // its own, so the plain branch needs no suppression.
+        \add_filter( 'woocommerce_email_enabled_customer_new_account', '__return_false', 99 );
+        try {
+            if ( \function_exists( 'wc_create_new_customer' ) ) {
+                $user_id = \wc_create_new_customer( $email, $username, $password, [ 'display_name' => $name ] );
+            } else {
+                $user_id = \wp_insert_user( [
+                    'user_login'   => $username,
+                    'user_email'   => $email,
+                    'user_pass'    => $password,
+                    'display_name' => $name !== '' ? $name : $username,
+                    'role'         => (string) \get_option( 'default_role', 'subscriber' ),
+                ] );
+            }
+        } finally {
+            \remove_filter( 'woocommerce_email_enabled_customer_new_account', '__return_false', 99 );
+        }
+
+        if ( \is_wp_error( $user_id ) || ! $user_id ) {
+            Events_Log::error( 'access_user_create_failed', [
+                'event' => $event_id,
+                'seat'  => $seat_id,
+                'to'    => \substr( \md5( $email ), 0, 8 ), // redacted identity (ERROR_IDENTITY_KEYS).
+            ] );
+            return 0;
+        }
+
+        if ( $name !== '' ) {
+            \wp_update_user( [ 'ID' => (int) $user_id, 'display_name' => $name ] );
+        }
+        return $this->remember_seat_user( $seat_id, (int) $user_id );
+    }
+
+    /** Write the resolution onto the seat and return it. */
+    private function remember_seat_user( $seat_id, $user_id ) {
+        \update_post_meta( (int) $seat_id, self::SEAT_USER_META, (int) $user_id );
+        return (int) $user_id;
+    }
+
+    /** A login that is not taken, derived from the email local part. */
+    private function unique_username( $email ) {
+        $base = \sanitize_user( \current( \explode( '@', $email ) ), true );
+        if ( $base === '' ) {
+            $base = 'attendee';
+        }
+        $candidate = $base;
+        $n         = 1;
+        while ( \username_exists( $candidate ) ) {
+            $candidate = $base . '-' . ( ++$n );
+        }
+        return $candidate;
     }
 }

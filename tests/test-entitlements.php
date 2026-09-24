@@ -298,4 +298,100 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ) );
 		$this->assertSame( 'manual', $this->ent()->grant_record( $event_id, $user_id )['source'] );
 	}
+
+	/** Branch 0: a switched-off event resolves nothing and creates nothing. */
+	public function test_ensure_user_is_inert_when_the_switch_is_off() {
+		$event_id = $this->disabled_event(); // The default is TRUE, so say so.
+		$seat_id  = $this->make_seat( $event_id, [ 'name' => 'Nobody', 'email' => 'never@example.test' ] );
+		$before   = count_users()['total_users'];
+
+		$this->assertSame( 0, $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) ) );
+		$this->assertNull( get_user_by( 'email', 'never@example.test' ) ?: null );
+		$this->assertSame( $before, count_users()['total_users'] );
+		$this->assertSame( 0, (int) get_post_meta( $seat_id, '_anchor_event_user_id', true ) );
+	}
+
+	/** Branch 1: the seat already names a user. */
+	public function test_ensure_user_uses_stored_user_id() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create();
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'nobody@example.test' ] );
+		update_post_meta( $seat_id, '_anchor_event_user_id', $user_id );
+
+		$this->assertSame( $user_id, $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) ) );
+	}
+
+	/** Branch 2: an order seat with a customer id. */
+	public function test_ensure_user_uses_order_customer_id() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create();
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'guest@example.test', 'customer_id' => $user_id ] );
+
+		$this->assertSame( $user_id, $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) ) );
+		$this->assertSame( $user_id, (int) get_post_meta( $seat_id, '_anchor_event_user_id', true ) );
+	}
+
+	/** Branch 3: an existing account matched by email. */
+	public function test_ensure_user_matches_by_email() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'known@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'known@example.test' ] );
+
+		$this->assertSame( $user_id, $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) ) );
+	}
+
+	/**
+	 * Branch 4: a new account, with the seat's name, and NO WordPress new-user
+	 * mail. The spy goes up BEFORE make_seat(): a confirmed seat on an enabled
+	 * event already triggers account creation via the seat-lifecycle hook
+	 * (on_seat_created -> grant_for_seat() -> ensure_user()), so the explicit
+	 * ensure_user() call below is only confirming idempotency (branch 1). The
+	 * mail assertion has to watch the seat's birth, or it is not testing the
+	 * creation path at all.
+	 */
+	public function test_ensure_user_creates_account_without_emailing() {
+		$event_id = $this->enabled_event();
+
+		$mails = [];
+		$spy   = function ( $args ) use ( &$mails ) { $mails[] = $args; return $args; };
+		add_filter( 'wp_mail', $spy );
+		$seat_id = $this->make_seat( $event_id, [ 'name' => 'Grace Hopper', 'email' => 'grace@example.test' ] );
+		$user_id = $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) );
+		remove_filter( 'wp_mail', $spy );
+
+		$this->assertGreaterThan( 0, $user_id );
+		$this->assertSame( 'grace@example.test', ( new WP_User( $user_id ) )->user_email );
+		$this->assertSame( 'Grace Hopper', ( new WP_User( $user_id ) )->display_name );
+		$this->assertSame( [], $mails, 'Account creation must not send a WordPress new-user email.' );
+	}
+
+	/**
+	 * A site may opt out of account creation entirely. The filter goes up
+	 * BEFORE make_seat(): a confirmed seat on an enabled event resolves an
+	 * account immediately via the seat-lifecycle hook, so the opt-out has to
+	 * be in effect for that automatic call too, not just the explicit one
+	 * below, or this test would pass by accident (asserting 0 against an
+	 * account that was already created).
+	 */
+	public function test_create_account_filter_opts_out() {
+		$event_id = $this->enabled_event();
+
+		add_filter( 'anchor_events_create_account', '__return_false' );
+		$seat_id = $this->make_seat( $event_id, [ 'email' => 'nope@example.test' ] );
+		$user_id = $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) );
+		remove_filter( 'anchor_events_create_account', '__return_false' );
+
+		$this->assertSame( 0, $user_id );
+		$this->assertNull( get_user_by( 'email', 'nope@example.test' ) ?: null );
+	}
+
+	/** user_has_active_seat() matches on the resolved user id first. */
+	public function test_user_has_active_seat_matches_user_id() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'renamed@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'old-address@example.test' ] );
+		update_post_meta( $seat_id, '_anchor_event_user_id', $user_id );
+
+		$this->assertTrue( $this->registrations()->user_has_active_seat( $event_id, $user_id, 'renamed@example.test' ) );
+	}
 }

@@ -734,6 +734,16 @@ class Roster {
             'note'           => $allow_over ? 'manual add (capacity override)' : 'manual roster add',
         ], $tier, $allow_over );
 
+        // Comped adds resolve (and if necessary create) an account too, so a
+        // hand-added attendee reaches the room exactly like a paid one. No
+        // enabled() check here on purpose: ensure_user() owns that guard, so
+        // adding a comped seat to a plain in-person event creates nothing.
+        if ( $this->module->entitlements ) {
+            foreach ( \array_merge( (array) ( $result['created'] ?? [] ), (array) ( $result['waitlisted'] ?? [] ) ) as $new_seat_id ) {
+                $this->module->entitlements->ensure_user( [ 'id' => (int) $new_seat_id ] );
+            }
+        }
+
         // L2: surface an admin-visible signal when a seat was created while the
         // event capacity lock was unavailable (mirrors the paid path), so manual
         // adds can't silently oversell under lock degradation.

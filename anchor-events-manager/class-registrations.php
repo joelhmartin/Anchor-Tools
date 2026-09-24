@@ -331,6 +331,10 @@ class Registrations {
             '_anchor_event_product_id'    => max( 0, (int) ( $args['product_id'] ?? 0 ) ),
             '_anchor_event_variation_id'  => max( 0, (int) ( $args['variation_id'] ?? 0 ) ),
             '_anchor_event_customer_id'   => max( 0, (int) ( $args['customer_id'] ?? 0 ) ),
+            // The account this seat ENTITLES, as distinct from the WooCommerce
+            // order's customer above (0 = guest). Resolved by
+            // Entitlements::ensure_user() on every path — free, manual, paid.
+            '_anchor_event_user_id'       => max( 0, (int) ( $args['user_id'] ?? 0 ) ),
             '_anchor_event_seat_index'    => max( 1, (int) ( $args['seat_index'] ?? 1 ) ),
             '_anchor_event_history'       => [
                 [ 'status' => $status, 'time' => \time(), 'note' => $note, 'actor' => $actor ],
@@ -1204,6 +1208,9 @@ class Registrations {
             $identity[] = [ 'key' => '_anchor_event_email', 'value' => $email, 'compare' => '=' ];
         }
         if ( $user_id > 0 ) {
+            // Checked first (spec §3.5): the resolved account is authoritative,
+            // an attendee who changed their email address still matches.
+            $identity[] = [ 'key' => '_anchor_event_user_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
             $identity[] = [ 'key' => '_anchor_event_customer_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
         }
 
@@ -1608,6 +1615,7 @@ class Registrations {
             'product_id'    => (int) $g( '_anchor_event_product_id' ),
             'variation_id'  => (int) $g( '_anchor_event_variation_id' ),
             'customer_id'   => (int) $g( '_anchor_event_customer_id' ),
+            'user_id'       => (int) $g( '_anchor_event_user_id' ),
             'seat_index'    => (int) $g( '_anchor_event_seat_index' ),
             // Pre-tier seats have no meta — default to the primary tier id.
             'ticket_type_id' => (string) ( $g( '_anchor_event_ticket_type_id' ) ?: 'primary' ),

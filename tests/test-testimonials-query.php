@@ -34,4 +34,20 @@ class Test_Testimonials_Query extends WP_UnitTestCase {
 		$ids = wp_list_pluck( Anchor_Testimonial_Query::find( [ 'type' => 'video', 'featured' => '1' ] ), 'ID' );
 		$this->assertSame( [ $v ], $ids );
 	}
+	public function test_type_quote_excludes_video_and_includes_missing_or_empty_video_id() {
+		$quote = $this->t( 'patient' );
+		$video = $this->t( 'patient', [], [ 'video_url' => 'https://youtu.be/dwr8S2iOfs8' ] );
+		$ids   = wp_list_pluck( Anchor_Testimonial_Query::find( [ 'type' => 'quote' ] ), 'ID' );
+		$this->assertContains( $quote, $ids );
+		$this->assertNotContains( $video, $ids );
+	}
+	public function test_related_junk_only_with_default_fallback_returns_all() {
+		$a = $this->t( 'patient' );
+		$b = $this->t( 'doctor' );
+		$ids = wp_list_pluck( Anchor_Testimonial_Query::find( [ 'related' => 'abc' ] ), 'ID' );
+		sort( $ids );
+		$expected = [ $a, $b ];
+		sort( $expected );
+		$this->assertSame( $expected, $ids );
+	}
 }

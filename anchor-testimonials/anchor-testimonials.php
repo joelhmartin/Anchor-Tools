@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 require_once __DIR__ . '/class-testimonial-meta.php';
 require_once __DIR__ . '/class-testimonial-query.php';
+require_once __DIR__ . '/class-testimonial-render.php';
 
 class Anchor_Testimonials_Module {
 	const CPT         = 'anchor_testimonial';
@@ -22,6 +23,7 @@ class Anchor_Testimonials_Module {
 		add_action( 'admin_notices', [ $this, 'incomplete_notice' ] );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 		add_action( 'wp_ajax_anchor_testimonials_search_posts', [ $this, 'ajax_search_posts' ] );
+		add_shortcode( 'anchor_testimonials', [ $this, 'shortcode' ] );
 
 		add_filter( 'manage_' . self::CPT . '_posts_columns', [ $this, 'admin_columns' ] );
 		add_action( 'manage_' . self::CPT . '_posts_custom_column', [ $this, 'render_admin_column' ], 10, 2 );
@@ -188,6 +190,57 @@ class Anchor_Testimonials_Module {
 			'ajaxUrl' => admin_url( 'admin-ajax.php' ),
 			'nonce'   => wp_create_nonce( 'anchor_testimonials_admin' ),
 		] );
+	}
+
+	/* ------------------------------------------------------------------
+	   Shortcode and front-end assets
+	   ------------------------------------------------------------------ */
+
+	/**
+	 * [anchor_testimonials] shortcode. Scopes to the current viewed post via
+	 * get_queried_object_id() (used by the `related="current"` attribute),
+	 * renders nothing when the query is empty, and only enqueues the
+	 * front-end assets when there is something to render.
+	 */
+	public function shortcode( $atts ) {
+		$atts = shortcode_atts( array_merge( Anchor_Testimonial_Query::defaults(), [
+			'layout'  => 'grid',
+			'columns' => 3,
+		] ), $atts, 'anchor_testimonials' );
+
+		$posts = Anchor_Testimonial_Query::find( $atts, get_queried_object_id() );
+		if ( empty( $posts ) ) {
+			return '';
+		}
+
+		$this->enqueue_frontend_assets();
+
+		return Anchor_Testimonial_Render::html( $posts, $atts );
+	}
+
+	/**
+	 * Registers and enqueues the front-end script/style, called directly
+	 * from the shortcode handler (not hooked on wp_enqueue_scripts) so
+	 * nothing loads on pages that never render the shortcode.
+	 */
+	public function enqueue_frontend_assets() {
+		$base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-testimonials/assets/';
+		$css_path = $base_dir . 'testimonials.css';
+		$js_path  = $base_dir . 'testimonials.js';
+
+		wp_enqueue_style(
+			'anchor-testimonials',
+			Anchor_Asset_Loader::url( 'anchor-testimonials/assets/testimonials.css' ),
+			[ 'anchor-lightbox', 'anchor-carousel' ],
+			file_exists( $css_path ) ? filemtime( $css_path ) : false
+		);
+		wp_enqueue_script(
+			'anchor-testimonials',
+			Anchor_Asset_Loader::url( 'anchor-testimonials/assets/testimonials.js' ),
+			[ 'anchor-lightbox', 'anchor-carousel' ],
+			file_exists( $js_path ) ? filemtime( $js_path ) : false,
+			true
+		);
 	}
 
 	/**

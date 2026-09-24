@@ -78,11 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true}}'
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"testimonials":true}}'
 if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
   wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events + Gallery + Compliance modules enabled."
+log "Events + Gallery + Compliance + Testimonials modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.
@@ -502,6 +502,52 @@ GALLERY_CAROUSEL_PAGE_ID="$(wp eval '
 log "Carousel gallery page #${GALLERY_CAROUSEL_PAGE_ID}"
 
 # ---------------------------------------------------------------------------
+# Testimonials fixture (grid/slider E2E, e2e/testimonials.spec.js).
+# Four testimonials (2 with YouTube video URLs, 2 quote-only) on a page with
+# [anchor_testimonials layout="slider"]. Anchor_Testimonial_Meta::save() is
+# called directly so the video URLs get the module's own YouTube parsing and
+# thumbnail resolution (no HTTP call needed, unlike Vimeo). Idempotent, same
+# idiom as the gallery fixtures above.
+# ---------------------------------------------------------------------------
+TESTIMONIAL_IDS="$(wp eval '
+  $defs = [
+      [ "title" => "E2E Testimonial 1", "slug" => "e2e-testimonial-1", "name" => "Jane Doe",    "meta" => "Patient, Denver", "content" => "Life changing care.", "video" => "https://www.youtube.com/watch?v=dQw4w9WgXcQ" ],
+      [ "title" => "E2E Testimonial 2", "slug" => "e2e-testimonial-2", "name" => "John Smith",  "meta" => "Patient, Austin", "content" => "Highly recommend.",   "video" => "https://www.youtube.com/watch?v=jNQXAC9IVRw" ],
+      [ "title" => "E2E Testimonial 3", "slug" => "e2e-testimonial-3", "name" => "Alex Rivera", "meta" => "Patient, Miami",  "content" => "Wonderful team.",      "video" => "" ],
+      [ "title" => "E2E Testimonial 4", "slug" => "e2e-testimonial-4", "name" => "Priya Patel", "meta" => "Patient, Tampa",  "content" => "Great results.",       "video" => "" ],
+  ];
+  $ids = [];
+  foreach ( $defs as $d ) {
+      $existing = get_posts( [ "post_type" => "anchor_testimonial", "name" => $d["slug"], "posts_per_page" => 1, "fields" => "ids", "post_status" => "any" ] );
+      $id = $existing ? (int) $existing[0] : wp_insert_post( [
+          "post_type"    => "anchor_testimonial",
+          "post_title"   => $d["title"],
+          "post_name"    => $d["slug"],
+          "post_content" => $d["content"],
+          "post_status"  => "publish",
+      ] );
+      wp_update_post( [ "ID" => $id, "post_status" => "publish", "post_content" => $d["content"] ] );
+      Anchor_Testimonial_Meta::save( $id, [ "person_name" => $d["name"], "person_meta" => $d["meta"], "video_url" => $d["video"] ] );
+      $ids[] = $id;
+  }
+  echo implode( ",", $ids );
+')"
+log "Testimonials: ${TESTIMONIAL_IDS}"
+
+TESTIMONIALS_SLIDER_PAGE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "page", "name" => "at-e2e-slider", "posts_per_page" => 1, "fields" => "ids", "post_status" => "any" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "AT E2E Testimonials Slider",
+      "post_name"   => "at-e2e-slider",
+      "post_status" => "publish",
+  ] );
+  wp_update_post( [ "ID" => $id, "post_status" => "publish", "post_content" => "[anchor_testimonials layout=\"slider\"]" ] );
+  echo (int) $id;
+')"
+log "Testimonials slider page #${TESTIMONIALS_SLIDER_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
 # Compliance fixture (consent banner / script blocker E2E).
 # One published page carrying: a known third-party iframe (YouTube embed —
 # gated as `marketing` by the built-in service registry), the
@@ -543,8 +589,9 @@ RECURRING_EVENT_URL="$(wp eval 'echo get_permalink('"${RECURRING_EVENT_ID}"');')
 GALLERY_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_PAGE_ID}"');')"
 GALLERY_CAROUSEL_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"');')"
 COMPLIANCE_PAGE_URL="$(wp eval 'echo get_permalink('"${COMPLIANCE_PAGE_ID}"');')"
+TESTIMONIALS_SLIDER_PAGE_URL="$(wp eval 'echo get_permalink('"${TESTIMONIALS_SLIDER_PAGE_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"galleryCarouselUrl"=>get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"galleryCarouselUrl"=>get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"'),"testimonialsSliderUrl"=>get_permalink('"${TESTIMONIALS_SLIDER_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Multisession event URL: ${MULTI_EVENT_URL}"
@@ -555,5 +602,6 @@ log "Recurring event URL: ${RECURRING_EVENT_URL}"
 log "Gallery page URL: ${GALLERY_PAGE_URL}"
 log "Carousel gallery page URL: ${GALLERY_CAROUSEL_PAGE_URL}"
 log "Compliance page URL: ${COMPLIANCE_PAGE_URL}"
+log "Testimonials slider page URL: ${TESTIMONIALS_SLIDER_PAGE_URL}"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 log "Seed complete."

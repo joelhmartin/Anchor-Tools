@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Domain;
 
+use Anchor\Courses\Support\Clock;
+
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /** One learner's run at one quiz (brief 7.3, 8.4). Immutable. */
@@ -46,7 +48,7 @@ final class QuizAttempt {
 			isset( $row['points_possible'] ) && null !== $row['points_possible'] ? (float) $row['points_possible'] : null,
 			! empty( $row['passed'] ),
 			(string) ( $row['started_at'] ?? '' ),
-			isset( $row['submitted_at'] ) ? (string) $row['submitted_at'] : null,
+			Clock::nullable( $row['submitted_at'] ?? null ),
 			isset( $row['duration_seconds'] ) && null !== $row['duration_seconds'] ? (int) $row['duration_seconds'] : null,
 			\is_array( $answers ) ? $answers : [],
 			\is_array( $grading ) ? $grading : [],

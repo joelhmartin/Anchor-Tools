@@ -24,6 +24,8 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class ProgressRepository {
 
+	use RepositoryGuards;
+
 	private static function table(): string {
 		return Migrations::table( 'progress' );
 	}
@@ -96,16 +98,9 @@ final class ProgressRepository {
 		);
 		$updatable[] = 'updated_at';
 
-		$columns      = \implode( ', ', \array_keys( $row ) );
-		$placeholders = \implode( ', ', \array_fill( 0, \count( $row ), '%s' ) );
-		$assignments  = \implode( ', ', \array_map( static fn( string $c ): string => "{$c} = VALUES({$c})", $updatable ) );
+		$assignments = \implode( ', ', \array_map( static fn( string $c ): string => "{$c} = VALUES({$c})", $updatable ) );
 
-		$wpdb->query(
-			$wpdb->prepare(
-				"INSERT INTO " . self::table() . " ({$columns}) VALUES ({$placeholders}) ON DUPLICATE KEY UPDATE {$assignments}", // phpcs:ignore WordPress.DB.PreparedSQL
-				\array_values( $row )
-			)
-		);
+		$wpdb->query( self::insert_sql( self::table(), $row, false, $assignments ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 
 		return self::find( $user_id, $course_id, $item_id, $item_type );
 	}

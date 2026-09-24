@@ -6,6 +6,7 @@
  */
 
 use Anchor\Courses\Database\EnrollmentRepository;
+use Anchor\Courses\Database\Migrations;
 use Anchor\Courses\Domain\Enrollment;
 
 /** @group courses */
@@ -135,5 +136,66 @@ class Test_Courses_Enrollment_Repo extends Anchor_Courses_TestCase {
 		$this->assertSame( $user, $after->user_id );
 		$this->assertSame( $course, $after->course_id );
 		$this->assertSame( 'import', $after->source );
+	}
+	/** Raw column test: SQL NULL, not the '' -> '0000-00-00 00:00:00' coercion. */
+	private function is_null_in_db( int $id, string $column ): bool {
+		global $wpdb;
+		return '1' === (string) $wpdb->get_var(
+			$wpdb->prepare( "SELECT {$column} IS NULL FROM " . Migrations::table( 'enrollments' ) . ' WHERE id = %d', $id ) // phpcs:ignore WordPress.DB.PreparedSQL
+		);
+	}
+
+	/**
+	 * Review of Task 14 (HIGH): nullable datetimes went in through %s, so a PHP
+	 * null became '' and MySQL stored the zero-date.
+	 */
+	public function test_unset_datetimes_are_stored_as_sql_null() {
+		$e = EnrollmentRepository::insert_ignore( $this->row( $this->make_learner(), $this->make_course() ) );
+
+		foreach ( [ 'started_at', 'completed_at', 'expires_at' ] as $column ) {
+			$this->assertTrue( $this->is_null_in_db( $e->id, $column ), "{$column} must be SQL NULL." );
+			$this->assertNull( $e->{$column}, "{$column} must read back as null." );
+		}
+	}
+
+	public function test_update_to_null_stores_sql_null() {
+		$e = EnrollmentRepository::insert_ignore( $this->row( $this->make_learner(), $this->make_course(), [ 'expires_at' => '2030-01-01 00:00:00' ] ) );
+
+		$after = EnrollmentRepository::update( $e->id, [ 'expires_at' => null ] );
+
+		$this->assertTrue( $this->is_null_in_db( $e->id, 'expires_at' ) );
+		$this->assertNull( $after->expires_at );
+	}
+
+	public function test_expire_due_never_sweeps_a_row_without_expiry() {
+		$user   = $this->make_learner();
+		$course = $this->make_course();
+		EnrollmentRepository::insert_ignore( $this->row( $user, $course ) );
+
+		$this->assertSame( 0, EnrollmentRepository::expire_due( '2099-01-01 00:00:00' ) );
+		$this->assertSame( 'enrolled', EnrollmentRepository::find( $user, $course )->status );
+	}
+
+	/** Rows written by the pre-fix code carry the zero-date; they must neither sweep nor lie. */
+	public function test_a_legacy_zero_date_row_reads_as_null_and_is_never_swept() {
+		global $wpdb;
+		$user   = $this->make_learner();
+		$course = $this->make_course();
+		$e      = EnrollmentRepository::insert_ignore( $this->row( $user, $course ) );
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . Migrations::table( 'enrollments' ) . " SET started_at = '0000-00-00 00:00:00', completed_at = '0000-00-00 00:00:00', expires_at = '0000-00-00 00:00:00' WHERE id = %d", // phpcs:ignore WordPress.DB.PreparedSQL
+				$e->id
+			)
+		);
+		$this->assertFalse( $this->is_null_in_db( $e->id, 'expires_at' ), 'Precondition: the legacy row really holds the zero-date.' );
+
+		$this->assertSame( 0, EnrollmentRepository::expire_due( '2099-01-01 00:00:00' ) );
+
+		$found = EnrollmentRepository::find( $user, $course );
+		$this->assertSame( 'enrolled', $found->status );
+		$this->assertNull( $found->started_at );
+		$this->assertNull( $found->completed_at );
+		$this->assertNull( $found->expires_at );
 	}
 }

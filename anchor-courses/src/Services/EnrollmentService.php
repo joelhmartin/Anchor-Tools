@@ -193,10 +193,7 @@ final class EnrollmentService {
 		if ( ! $enrollment instanceof Enrollment ) {
 			return null;
 		}
-		// An unset optional datetime column round-trips as the MySQL zero-date
-		// sentinel, not PHP null or '' - Clock::to_timestamp() is the
-		// established idiom for treating that (and null, and '') as unset.
-		if ( 0 !== Clock::to_timestamp( $enrollment->started_at ) ) {
+		if ( null !== $enrollment->started_at ) {
 			return $enrollment;
 		}
 

@@ -5,6 +5,7 @@
  * @package Anchor\Courses\Tests
  */
 
+use Anchor\Courses\Database\Migrations;
 use Anchor\Courses\Database\QuizAttemptRepository;
 use Anchor\Courses\Domain\QuizAttempt;
 
@@ -143,5 +144,37 @@ class Test_Courses_Attempt_Repo extends Anchor_Courses_TestCase {
 		$this->assertSame( $this->quiz, $updated->quiz_id );
 		$this->assertSame( 1, $updated->attempt_number );
 		$this->assertSame( 'submitted', $updated->status );
+	}
+	private function is_null_in_db( int $id, string $column ): bool {
+		global $wpdb;
+		return '1' === (string) $wpdb->get_var(
+			$wpdb->prepare( "SELECT {$column} IS NULL FROM " . Migrations::table( 'quiz_attempts' ) . ' WHERE id = %d', $id ) // phpcs:ignore WordPress.DB.PreparedSQL
+		);
+	}
+
+	/** Task 14 review (HIGH), checked on this table too: submitted_at is SQL NULL until set, and after a clear. */
+	public function test_submitted_at_is_sql_null_until_set_and_after_a_clear() {
+		$attempt = $this->create();
+		$this->assertTrue( $this->is_null_in_db( $attempt->id, 'submitted_at' ) );
+		$this->assertNull( $attempt->submitted_at );
+
+		QuizAttemptRepository::update( $attempt->id, [ 'submitted_at' => '2026-04-04 04:04:04' ] );
+		$cleared = QuizAttemptRepository::update( $attempt->id, [ 'submitted_at' => null ] );
+
+		$this->assertTrue( $this->is_null_in_db( $attempt->id, 'submitted_at' ) );
+		$this->assertNull( $cleared->submitted_at );
+	}
+
+	public function test_a_legacy_zero_date_submitted_at_reads_as_null() {
+		global $wpdb;
+		$attempt = $this->create();
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . Migrations::table( 'quiz_attempts' ) . " SET submitted_at = '0000-00-00 00:00:00' WHERE id = %d", // phpcs:ignore WordPress.DB.PreparedSQL
+				$attempt->id
+			)
+		);
+
+		$this->assertNull( QuizAttemptRepository::find( $attempt->id )->submitted_at );
 	}
 }

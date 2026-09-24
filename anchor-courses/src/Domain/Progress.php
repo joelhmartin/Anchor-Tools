@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Domain;
 
+use Anchor\Courses\Support\Clock;
+
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /** One learner's state on one curriculum item (brief 7.2). Immutable. */
@@ -39,9 +41,9 @@ final class Progress {
 			(string) ( $row['item_type'] ?? 'lesson' ),
 			(string) ( $row['status'] ?? 'not_started' ),
 			(float) ( $row['progress_percent'] ?? 0 ),
-			isset( $row['started_at'] ) ? (string) $row['started_at'] : null,
-			isset( $row['completed_at'] ) ? (string) $row['completed_at'] : null,
-			isset( $row['last_viewed_at'] ) ? (string) $row['last_viewed_at'] : null,
+			Clock::nullable( $row['started_at'] ?? null ),
+			Clock::nullable( $row['completed_at'] ?? null ),
+			Clock::nullable( $row['last_viewed_at'] ?? null ),
 			(int) ( $row['time_spent_seconds'] ?? 0 ),
 			\is_array( $metadata ) ? $metadata : [],
 			(string) ( $row['created_at'] ?? '' ),

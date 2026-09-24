@@ -193,4 +193,18 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 			'The daily expiry sweep must be scheduled once the module boots.'
 		);
 	}
+	/** Task 14 review (HIGH): a course with no expiration_days must survive every sweep. */
+	public function test_an_enrollment_with_no_expiration_is_never_swept() {
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-01-01 00:00:00 UTC' ) );
+		$user   = $this->make_learner();
+		$course = $this->make_course();
+		$this->service->enroll( $user, $course );
+		$this->assertNull( $this->service->get( $user, $course )->expires_at );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2036-01-01 00:00:00 UTC' ) );
+
+		$this->assertSame( 0, $this->service->sweep_expired() );
+		$this->assertSame( 'enrolled', $this->service->get( $user, $course )->status );
+	}
 }

@@ -5,6 +5,7 @@
  * @package Anchor\Courses\Tests
  */
 
+use Anchor\Courses\Database\Migrations;
 use Anchor\Courses\Database\ProgressRepository;
 use Anchor\Courses\Domain\Progress;
 
@@ -114,5 +115,54 @@ class Test_Courses_Progress_Repo extends Anchor_Courses_TestCase {
 			[ 'user_id' => $this->make_learner(), 'course_id' => $this->make_course(), 'item_id' => 1,
 			  'item_type' => 'assignment', 'status' => 'completed' ]
 		);
+	}
+	private function is_null_in_db( int $id, string $column ): bool {
+		global $wpdb;
+		return '1' === (string) $wpdb->get_var(
+			$wpdb->prepare( "SELECT {$column} IS NULL FROM " . Migrations::table( 'progress' ) . ' WHERE id = %d', $id ) // phpcs:ignore WordPress.DB.PreparedSQL
+		);
+	}
+
+	/** Task 14 review (HIGH), same defect as the enrollment table: null must be SQL NULL. */
+	public function test_unset_datetimes_are_stored_as_sql_null() {
+		$p = ProgressRepository::upsert(
+			[ 'user_id' => $this->make_learner(), 'course_id' => $this->make_course(), 'item_id' => 4,
+			  'item_type' => 'lesson', 'status' => 'not_started' ]
+		);
+
+		foreach ( [ 'started_at', 'completed_at', 'last_viewed_at' ] as $column ) {
+			$this->assertTrue( $this->is_null_in_db( $p->id, $column ), "{$column} must be SQL NULL." );
+			$this->assertNull( $p->{$column}, "{$column} must read back as null." );
+		}
+	}
+
+	/** The UPDATE half of the upsert writes an explicit null as SQL NULL too. */
+	public function test_upsert_can_clear_a_datetime_back_to_null() {
+		$base = [ 'user_id' => $this->make_learner(), 'course_id' => $this->make_course(), 'item_id' => 5, 'item_type' => 'lesson' ];
+		ProgressRepository::upsert( $base + [ 'status' => 'completed', 'completed_at' => '2026-03-03 09:00:00' ] );
+
+		$reset = ProgressRepository::upsert( $base + [ 'status' => 'in_progress', 'completed_at' => null ] );
+
+		$this->assertTrue( $this->is_null_in_db( $reset->id, 'completed_at' ) );
+		$this->assertNull( $reset->completed_at );
+	}
+
+	public function test_a_legacy_zero_date_row_reads_as_null() {
+		global $wpdb;
+		$p = ProgressRepository::upsert(
+			[ 'user_id' => $this->make_learner(), 'course_id' => $this->make_course(), 'item_id' => 6,
+			  'item_type' => 'lesson', 'status' => 'not_started' ]
+		);
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . Migrations::table( 'progress' ) . " SET started_at = '0000-00-00 00:00:00', completed_at = '0000-00-00 00:00:00', last_viewed_at = '0000-00-00 00:00:00' WHERE id = %d", // phpcs:ignore WordPress.DB.PreparedSQL
+				$p->id
+			)
+		);
+
+		$found = ProgressRepository::find( $p->user_id, $p->course_id, 6, 'lesson' );
+		$this->assertNull( $found->started_at );
+		$this->assertNull( $found->completed_at );
+		$this->assertNull( $found->last_viewed_at );
 	}
 }

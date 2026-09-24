@@ -24,4 +24,12 @@ class Test_Courses_Unit_Clock extends TestCase {
 		$this->assertSame( 0, Clock::to_timestamp( null ) );
 		$this->assertSame( 0, Clock::to_timestamp( '0000-00-00 00:00:00' ) );
 	}
+
+	/** A nullable DATETIME read: null, '' and the legacy zero-date all mean unset. */
+	public function test_nullable_maps_unset_forms_to_null() {
+		$this->assertNull( Clock::nullable( null ) );
+		$this->assertNull( Clock::nullable( '' ) );
+		$this->assertNull( Clock::nullable( Clock::ZERO_DATE ) );
+		$this->assertSame( '2026-01-01 00:00:00', Clock::nullable( '2026-01-01 00:00:00' ) );
+	}
 }

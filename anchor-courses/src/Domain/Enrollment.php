@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Domain;
 
+use Anchor\Courses\Support\Clock;
+
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
 /** One learner's relationship to one course (brief 7.1). Immutable. */
@@ -38,9 +40,9 @@ final class Enrollment {
 			(int) ( $row['course_id'] ?? 0 ),
 			(string) ( $row['status'] ?? 'enrolled' ),
 			(string) ( $row['enrolled_at'] ?? '' ),
-			isset( $row['started_at'] ) ? (string) $row['started_at'] : null,
-			isset( $row['completed_at'] ) ? (string) $row['completed_at'] : null,
-			isset( $row['expires_at'] ) ? (string) $row['expires_at'] : null,
+			Clock::nullable( $row['started_at'] ?? null ),
+			Clock::nullable( $row['completed_at'] ?? null ),
+			Clock::nullable( $row['expires_at'] ?? null ),
 			(string) ( $row['source'] ?? '' ),
 			(string) ( $row['source_id'] ?? '' ),
 			\is_array( $metadata ) ? $metadata : [],

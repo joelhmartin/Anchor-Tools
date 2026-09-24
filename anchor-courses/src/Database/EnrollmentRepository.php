@@ -16,6 +16,8 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class EnrollmentRepository {
 
+	use RepositoryGuards;
+
 	/**
 	 * The status column has no CHECK constraint, so the repository is the last
 	 * place an unknown value can be refused before it becomes a corrupt row.
@@ -86,15 +88,7 @@ final class EnrollmentRepository {
 
 		// INSERT IGNORE, not $wpdb->insert(): the unique key is the concurrency
 		// guard, and a duplicate must be a no-op rather than a warning.
-		$columns      = \implode( ', ', \array_keys( $values ) );
-		$placeholders = \implode( ', ', \array_fill( 0, \count( $values ), '%s' ) );
-
-		$wpdb->query(
-			$wpdb->prepare(
-				"INSERT IGNORE INTO " . self::table() . " ({$columns}) VALUES ({$placeholders})", // phpcs:ignore WordPress.DB.PreparedSQL
-				\array_values( $values )
-			)
-		);
+		$wpdb->query( self::insert_sql( self::table(), $values, true ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 
 		return self::find( $values['user_id'], $values['course_id'] );
 	}
@@ -176,7 +170,13 @@ final class EnrollmentRepository {
 		return (int) $wpdb->get_var( $wpdb->prepare( $sql, $params ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 	}
 
-	/** Flip active enrolments whose expires_at has passed. @return int rows changed. */
+	/**
+	 * Flip active enrolments whose expires_at has passed. @return int rows changed.
+	 *
+	 * The zero-date exclusion covers rows written before nulls were stored as
+	 * SQL NULL: those meant "never expires", and the zero-date sorts before
+	 * every real datetime.
+	 */
 	public static function expire_due( string $now ): int {
 		global $wpdb;
 
@@ -186,8 +186,10 @@ final class EnrollmentRepository {
 				 SET status = 'expired', updated_at = %s
 				 WHERE status IN ('enrolled', 'in_progress')
 				   AND expires_at IS NOT NULL
+				   AND expires_at <> %s
 				   AND expires_at <= %s",
 				$now,
+				Clock::ZERO_DATE,
 				$now
 			)
 		);

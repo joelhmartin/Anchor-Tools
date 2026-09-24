@@ -133,4 +133,58 @@ class Test_Stream_State extends Anchor_Events_TestCase {
 		$out = Stream_State::decide( $row, 900, 1800, 1000000 + ( 3 * HOUR_IN_SECONDS ), true );
 		$this->assertSame( Stream_State::LIVE, $out['state'] );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * anchor_events_stream_now (Task 21) — the clock an E2E test can move
+	 * without sleeping through a real countdown. Nothing in the plugin
+	 * itself filters it; only a test (or, here, a unit test standing in for
+	 * the mu-plugin the E2E environment registers) ever should.
+	 * ------------------------------------------------------------------- */
+
+	/** The filtered clock, not time(), is what decide()'s $now ends up as. */
+	public function test_for_event_applies_the_stream_now_filter() {
+		$start    = time() + DAY_IN_SECONDS;
+		$event_id = $this->make_event( [
+			'timezone'   => 'UTC',
+			'start_date' => gmdate( 'Y-m-d', $start ),
+			'start_time' => gmdate( 'H:i', $start ),
+			'start_ts'   => $start,
+			'end_ts'     => $start + 3600,
+			'registration_mode'       => 'free',
+			'stream_default_modality' => 'virtual',
+			'stream_embed'            => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/9', 'raw' => '' ],
+		] );
+
+		// Sanity: at the real clock, this event has not opened yet.
+		$this->assertSame( Stream_State::COUNTDOWN, Stream_State::for_event( $event_id, time() )['state'] );
+
+		$seen     = [];
+		$override = function ( $now, $filtered_event_id ) use ( &$seen, $start ) {
+			$seen[] = [ $now, $filtered_event_id ];
+			return $start; // Jump straight into the live window.
+		};
+		add_filter( 'anchor_events_stream_now', $override, 10, 2 );
+		$out = Stream_State::for_event( $event_id, 0 );
+		remove_filter( 'anchor_events_stream_now', $override );
+
+		$this->assertSame( Stream_State::LIVE, $out['state'], 'The filtered clock, not time(), decides the state.' );
+		$this->assertCount( 1, $seen, 'The filter runs exactly once per for_event() call.' );
+		$this->assertSame( $event_id, $seen[0][1], 'The event id is passed through to the filter.' );
+	}
+
+	/** An explicit (non-zero) $now argument still reaches the filter, unmodified, as its second-class citizen. */
+	public function test_for_event_stream_now_filter_receives_the_explicit_now() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+
+		$received = null;
+		$capture  = function ( $now, $filtered_event_id ) use ( &$received ) {
+			$received = $now;
+			return $now;
+		};
+		add_filter( 'anchor_events_stream_now', $capture, 10, 2 );
+		Stream_State::for_event( $event_id, 12345 );
+		remove_filter( 'anchor_events_stream_now', $capture );
+
+		$this->assertSame( 12345, $received, 'A caller-supplied $now is the value the filter receives, not time().' );
+	}
 }

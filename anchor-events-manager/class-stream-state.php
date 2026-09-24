@@ -44,8 +44,18 @@ class Stream_State {
      */
     public static function for_event( $event_id, $now = 0 ) {
         $event_id = (int) $event_id;
-        $now      = $now > 0 ? (int) $now : \time();
-        $module   = Module::instance();
+        /**
+         * The instant the room reasons about.
+         *
+         * Exists so an end-to-end test can advance the clock without sleeping
+         * through a real countdown. Nothing in the plugin filters it; a site
+         * that does is choosing to lie to its own room.
+         *
+         * @param int $now
+         * @param int $event_id
+         */
+        $now    = (int) \apply_filters( 'anchor_events_stream_now', $now > 0 ? (int) $now : \time(), (int) $event_id );
+        $module = Module::instance();
         if ( ! $module ) {
             return self::result( self::UNAVAILABLE, 0, 0, [] );
         }

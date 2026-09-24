@@ -923,13 +923,64 @@ class Registrations {
      * Test_Capacity::test_capacity_decision_* — including the waitlist one,
      * which asserts the seat status by name.
      *
+     * Prerequisites (spec §4.6) rank BELOW every viewer-independent inventory
+     * outcome and ABOVE only `open`/`waitlist` (controller ruling, Task 10 fix
+     * round 1): `closed`/`full` are inventory truths — the event has finished,
+     * its window hasn't opened, or its seats are gone — and are exactly as
+     * true for an ineligible visitor as for anyone else, so JSON-LD
+     * availability (which Event_Schema::availability_for() maps straight from
+     * this decision) must never vary by who is asking. `prerequisite` is a
+     * fact about THIS viewer, so it can only ever downgrade an outcome that
+     * would otherwise have let them register — it never overrides a decision
+     * everybody already gets. Computed last, against the inventory decision
+     * inventory_decision() already reached, rather than checked first.
+     *
      * @param int        $event_id
      * @param array      $meta      Event meta (capacity, waitlist, window).
      * @param int        $requested Seats requested.
      * @param array|null $tier      Optional normalized tier (needs 'id' + 'quota').
-     * @return string open|closed|full|waitlist
+     * @return string open|closed|full|waitlist|prerequisite
      */
     public function capacity_decision( $event_id, $meta, $requested = 1, $tier = null ) {
+        $decision = $this->inventory_decision( $event_id, $meta, $requested, $tier );
+
+        // Prerequisites (spec §4.6). Placed in the single registration
+        // authority so the date picker, the CTA, the storefront row and
+        // WooCommerce::filter_is_purchasable() refuse together instead of each
+        // re-deciding. Guarded on required_roles being non-empty, which is the
+        // default, so every existing event's answer is unchanged — and this is
+        // the one branch that depends on WHO is asking, so keeping it inert for
+        // ungated events (and behind the inventory decision for gated ones)
+        // keeps the rest of the decision viewer-independent and cacheable.
+        // Only reachable when the inventory decision would otherwise have let
+        // this viewer through (see the ranking note above) — a closed or full
+        // event stays closed or full for everybody.
+        if (
+            \in_array( $decision, [ 'open', self::STATUS_WAITLIST ], true )
+            && ! empty( $meta['required_roles'] )
+        ) {
+            $entitlements = $this->module->entitlements ?? null;
+            if ( $entitlements && ! $entitlements->meets_prerequisites( (int) $event_id ) ) {
+                return 'prerequisite';
+            }
+        }
+
+        return $decision;
+    }
+
+    /**
+     * The viewer-independent half of capacity_decision() — window, sold-out
+     * flag, event/tier capacity. Split out so capacity_decision() can compute
+     * it once and rank the (viewer-dependent) prerequisite check against the
+     * result, rather than the two being interleaved in one pass.
+     *
+     * @param int        $event_id
+     * @param array      $meta
+     * @param int        $requested
+     * @param array|null $tier
+     * @return string open|closed|full|waitlist
+     */
+    private function inventory_decision( $event_id, $meta, $requested = 1, $tier = null ) {
         // MODEL-D5: an event that has already finished is never bookable, and
         // this is the FIRST branch so no amount of remaining room can outvote
         // it. Without it an occurrence with registration_enabled=1, no
@@ -945,20 +996,6 @@ class Registrations {
         // legacy event that never had timestamps written.
         if ( ! empty( $meta['end_ts'] ) && (int) $meta['end_ts'] < \time() ) {
             return 'closed';
-        }
-
-        // Prerequisites (spec §4.6). Placed in the single registration
-        // authority so the date picker, the CTA, the storefront row and
-        // WooCommerce::filter_is_purchasable() refuse together instead of each
-        // re-deciding. Guarded on required_roles being non-empty, which is the
-        // default, so every existing event's answer is unchanged — and this is
-        // the one branch that depends on WHO is asking, so keeping it inert for
-        // ungated events keeps the decision cacheable everywhere else.
-        if ( ! empty( $meta['required_roles'] ) ) {
-            $entitlements = $this->module->entitlements ?? null;
-            if ( $entitlements && ! $entitlements->meets_prerequisites( (int) $event_id ) ) {
-                return 'prerequisite';
-            }
         }
 
         // Compare the registration window in WordPress site-local time — the

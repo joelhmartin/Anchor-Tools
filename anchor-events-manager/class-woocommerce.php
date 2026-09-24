@@ -1406,7 +1406,7 @@ class WooCommerce {
                 $message      = $entitlements ? $entitlements->prerequisite_message( (int) $event_id ) : '';
                 return $message !== ''
                     ? $message
-                    : \__( 'You are not yet eligible to register for this course.', 'anchor-schema' );
+                    : Entitlements::default_prerequisite_message();
             case 'parent':
                 return \__( 'Please choose a date before registering.', 'anchor-schema' );
             case 'disabled':

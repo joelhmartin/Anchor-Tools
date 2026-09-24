@@ -78,6 +78,98 @@ class Test_Prerequisites extends Anchor_Events_TestCase {
 		$this->assertSame( 'open', $this->registrations()->capacity_decision( $event_id, $meta ) );
 	}
 
+	/* ------------------------------------------------------------------
+	 * Ranking (controller ruling, Task 10 fix round 1): 'prerequisite'
+	 * ranks BELOW every viewer-independent inventory outcome and ABOVE
+	 * only 'open'/'waitlist'. A full, sold-out or closed event is that
+	 * for everyone — it must never read differently for an eligible vs.
+	 * an ineligible vs. an anonymous visitor.
+	 * ------------------------------------------------------------------ */
+
+	/** Sold out outranks prerequisite for every viewer, eligible or not. */
+	public function test_ranking_sold_out_wins_over_prerequisite_for_every_viewer() {
+		$event_id = $this->make_event( [
+			'capacity'             => 0,
+			'sold_out'             => true,
+			'registration_enabled' => true,
+			'required_roles'       => [ 'anchor_course_intro' ],
+			'required_roles_mode'  => 'any',
+		] );
+		$meta = $this->module()->get_meta( $event_id );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$this->assertSame( 'full', $this->registrations()->capacity_decision( $event_id, $meta ) );
+
+		$eligible = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		( new WP_User( $eligible ) )->add_role( 'anchor_course_intro' );
+		wp_set_current_user( $eligible );
+		$this->assertSame( 'full', $this->registrations()->capacity_decision( $event_id, $meta ) );
+
+		wp_set_current_user( 0 );
+		$this->assertSame( 'full', $this->registrations()->capacity_decision( $event_id, $meta ) );
+	}
+
+	/** A closed registration window outranks prerequisite for every viewer. */
+	public function test_ranking_closed_window_wins_over_prerequisite_for_every_viewer() {
+		$event_id = $this->make_event( [
+			'capacity'             => 0,
+			'registration_enabled' => true,
+			'registration_close'   => gmdate( 'Y-m-d', time() - DAY_IN_SECONDS ),
+			'required_roles'       => [ 'anchor_course_intro' ],
+			'required_roles_mode'  => 'any',
+		] );
+		$meta = $this->module()->get_meta( $event_id );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$this->assertSame( 'closed', $this->registrations()->capacity_decision( $event_id, $meta ) );
+
+		$eligible = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		( new WP_User( $eligible ) )->add_role( 'anchor_course_intro' );
+		wp_set_current_user( $eligible );
+		$this->assertSame( 'closed', $this->registrations()->capacity_decision( $event_id, $meta ) );
+
+		wp_set_current_user( 0 );
+		$this->assertSame( 'closed', $this->registrations()->capacity_decision( $event_id, $meta ) );
+	}
+
+	/** An 'open' inventory decision downgrades to prerequisite only for an ineligible/anonymous viewer. */
+	public function test_ranking_open_downgrades_to_prerequisite_only_for_ineligible_viewers() {
+		$event_id = $this->gated( [ 'anchor_course_intro' ] );
+		$meta     = $this->module()->get_meta( $event_id );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$this->assertSame( 'prerequisite', $this->registrations()->capacity_decision( $event_id, $meta ) );
+
+		wp_set_current_user( 0 );
+		$this->assertSame( 'prerequisite', $this->registrations()->capacity_decision( $event_id, $meta ) );
+
+		$eligible = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		( new WP_User( $eligible ) )->add_role( 'anchor_course_intro' );
+		wp_set_current_user( $eligible );
+		$this->assertSame( 'open', $this->registrations()->capacity_decision( $event_id, $meta ) );
+	}
+
+	/** A 'waitlist' inventory decision downgrades to prerequisite only for an ineligible viewer. */
+	public function test_ranking_waitlist_downgrades_to_prerequisite_only_for_ineligible_viewers() {
+		$event_id = $this->make_event( [
+			'capacity'             => 1,
+			'waitlist'             => true,
+			'registration_enabled' => true,
+			'required_roles'       => [ 'anchor_course_intro' ],
+			'required_roles_mode'  => 'any',
+		] );
+		$meta = $this->module()->get_meta( $event_id );
+		$this->make_seat( $event_id ); // Fill the one seat → event-level decision is 'waitlist'.
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$this->assertSame( 'prerequisite', $this->registrations()->capacity_decision( $event_id, $meta ) );
+
+		$eligible = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		( new WP_User( $eligible ) )->add_role( 'anchor_course_intro' );
+		wp_set_current_user( $eligible );
+		$this->assertSame( Registrations::STATUS_WAITLIST, $this->registrations()->capacity_decision( $event_id, $meta ) );
+	}
+
 	/** Staff bypass the gate. */
 	public function test_staff_bypass() {
 		$event_id = $this->gated( [ 'anchor_course_intro' ] );

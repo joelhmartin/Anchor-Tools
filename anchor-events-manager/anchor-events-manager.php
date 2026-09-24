@@ -9466,7 +9466,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'registration_success' => __( 'Registration received.', 'anchor-schema' ),
             'registration_waitlisted' => __( 'This event is full — you have been added to the waitlist. We will be in touch if a seat opens up.', 'anchor-schema' ),
             'registration_closed' => __( 'Registration is closed for this event.', 'anchor-schema' ),
-            'registration_prerequisite' => __( 'You are not yet eligible to register for this course.', 'anchor-schema' ),
+            'registration_prerequisite' => Entitlements::default_prerequisite_message(),
             'registration_invalid' => __( 'Please complete all required registration fields.', 'anchor-schema' ),
             'registration_error' => __( 'Registration could not be processed. Please try again.', 'anchor-schema' ),
         ];

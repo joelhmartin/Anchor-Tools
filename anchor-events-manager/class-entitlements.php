@@ -858,4 +858,18 @@ class Entitlements {
             \implode( ', ', $names )
         );
     }
+
+    /**
+     * The generic prerequisite refusal, for a caller that has no per-event
+     * message to fall back to (WooCommerce::bookability_message() when
+     * Entitlements is unavailable, and the query-arg notice dictionary, which
+     * can't call prerequisite_message() with an event id). Single source so
+     * the two never drift apart — they used to be two hand-typed copies of
+     * the same sentence (Task 10 fix round 1).
+     *
+     * @return string
+     */
+    public static function default_prerequisite_message() {
+        return \__( 'You are not yet eligible to register for this course.', 'anchor-schema' );
+    }
 }

@@ -138,10 +138,14 @@ class Event_Schema {
             case 'full':
                 return 'https://schema.org/SoldOut';
             case 'prerequisite':
-                // Eligibility is a policy, not inventory: seats exist, and an
-                // anonymous crawler — the only reader whose markup is ever
-                // cached — is never the one being refused. Keeping InStock here
-                // is what stops the JSON-LD varying by viewer.
+                // Registrations::capacity_decision() only ever returns
+                // 'prerequisite' in place of an 'open'/'waitlist' inventory
+                // decision (Task 10 fix round 1 ranking) — it never overrides
+                // 'closed'/'full', which stay exactly that for everyone. So by
+                // the time this case is reached, seats genuinely exist; the
+                // refusal is a fact about the current viewer's eligibility, not
+                // about inventory, and JSON-LD availability must not vary by
+                // who — or what crawler — is looking.
                 return 'https://schema.org/InStock';
             default:
                 return null;

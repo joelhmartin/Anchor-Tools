@@ -55,7 +55,14 @@ final class Capabilities {
 		}
 	}
 
-	/** Strip every capability from every role. Uninstall only. */
+	/**
+	 * Strip every capability from every role. Uninstall only.
+	 *
+	 * Deliberately purges ALL roles, not just the ones sync()'s
+	 * `anchor_courses_capability_roles` filter names — a role could have been
+	 * granted a cap by a filter value that changed or was removed since, and
+	 * uninstall must not leave any of the eight caps stranded on any role.
+	 */
 	public static function remove(): void {
 		$wp_roles = \wp_roles();
 		foreach ( \array_keys( $wp_roles->roles ) as $role_slug ) {

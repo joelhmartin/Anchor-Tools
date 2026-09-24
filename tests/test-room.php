@@ -353,6 +353,46 @@ class Test_Room extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'noindex, nofollow', $head );
 	}
 
+	/**
+	 * Task 23: under the PHPUnit CLI SAPI, output has almost always already
+	 * started by the time this test runs (WordPress's own bootstrap and the
+	 * rest of the suite print ahead of it), so header()/nocache_headers()
+	 * would otherwise raise "Cannot modify header information - headers
+	 * already sent" warnings — exactly what a full `composer test` run
+	 * showed for this method before the headers_sent() guard was added.
+	 * Same pattern as
+	 * test_sanitize_settings_with_a_missing_key_warns_never_and_defaults_correctly()
+	 * in test-event-model.php: a custom error handler captures anything
+	 * PHP would have warned about, so the assertion is on real interpreter
+	 * behaviour rather than a mock. The wp_head robots-meta hook — which
+	 * the guard must leave alone — is asserted separately, so a guard that
+	 * over-broadly skipped everything would still fail this test.
+	 */
+	public function test_room_headers_never_warns_when_headers_already_sent() {
+		$this->pretty_permalinks();
+		$event_id = $this->stream_event();
+		$this->go_to( $this->module()->room_url( $event_id ) );
+
+		$warnings = [];
+		set_error_handler( static function ( $errno, $errstr ) use ( &$warnings ) {
+			$warnings[] = $errstr;
+			return true;
+		}, E_WARNING | E_NOTICE | E_DEPRECATED );
+
+		try {
+			$this->module()->room_headers();
+		} finally {
+			restore_error_handler();
+		}
+
+		$this->assertSame( [], $warnings, 'room_headers() must never raise a PHP warning, headers already sent or not.' );
+
+		ob_start();
+		do_action( 'wp_head' );
+		$head = ob_get_clean();
+		$this->assertStringContainsString( '<meta name="robots" content="noindex, nofollow" />', $head );
+	}
+
 	private function room_request( $event_id ) {
 		$req = new WP_REST_Request( 'GET', '/anchor-events/v1/events/' . $event_id . '/room' );
 		return rest_get_server()->dispatch( $req );

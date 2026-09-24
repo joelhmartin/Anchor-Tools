@@ -8085,11 +8085,20 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             \wp_safe_redirect( $decision['redirect'], 302 );
             exit;
         }
-        if ( $decision['nocache'] ) {
-            \nocache_headers();
-        }
-        foreach ( $decision['headers'] as $name => $value ) {
-            \header( $name . ': ' . $value, true );
+        // headers_sent() guard: under the PHPUnit CLI SAPI (and any other
+        // context where output has already started) header()/nocache_headers()
+        // would emit "headers already sent" warnings. Skipping them there is
+        // also a legitimate production guard — a theme or plugin that has
+        // already flushed output shouldn't get a fatal-adjacent warning for
+        // a best-effort cache header. The redirect/exit path above and the
+        // wp_head robots-meta hook below are unaffected either way.
+        if ( ! \headers_sent() ) {
+            if ( $decision['nocache'] ) {
+                \nocache_headers();
+            }
+            foreach ( $decision['headers'] as $name => $value ) {
+                \header( $name . ': ' . $value, true );
+            }
         }
         \add_action( 'wp_head', static function () {
             echo '<meta name="robots" content="noindex, nofollow" />' . "\n";

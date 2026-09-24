@@ -28,6 +28,8 @@ class Test_Video_URL extends WP_UnitTestCase {
 			[ 'https://vimeo.com/123456789', 'vimeo', '123456789', 0 ],
 			[ 'https://player.vimeo.com/video/123456789?h=abc123', 'vimeo', '123456789', 0 ],
 			[ 'https://vimeo.com/channels/staffpicks/987654321', 'vimeo', '987654321', 0 ],
+			[ 'https://vimeo.com/1234', 'vimeo', '1234', 0 ],
+			[ 'https://vimeo.com/123456789#t=30', 'vimeo', '123456789', 0 ],
 		];
 	}
 

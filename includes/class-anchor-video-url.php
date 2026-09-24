@@ -31,7 +31,7 @@ class Anchor_Video_URL {
 		if ( preg_match( '~youtube\.com/~', $url ) && ! empty( $query['v'] ) && preg_match( '~^[A-Za-z0-9_-]{6,}$~', $query['v'] ) ) {
 			return [ 'provider' => 'youtube', 'id' => $query['v'], 'start' => $start ];
 		}
-		if ( preg_match( '~vimeo\.com/(?:.*/)?(?:video/)?([0-9]{6,})~', $url, $m ) ) {
+		if ( preg_match( '~vimeo\.com/(?:.*/)?(?:video/)?([0-9]+)(?:[/?#]|$)~', $url, $m ) ) {
 			return [ 'provider' => 'vimeo', 'id' => $m[1], 'start' => $start ];
 		}
 		return null;
@@ -52,8 +52,11 @@ class Anchor_Video_URL {
 	 * result is cached in a transient for a week (and briefly on failure, so
 	 * a broken/private video doesn't re-hit the API on every request).
 	 *
+	 * $id must be the id returned by parse(), not raw user input: it is used
+	 * unescaped to build the Vimeo oEmbed lookup URL and the transient key.
+	 *
 	 * @param string $provider 'youtube'|'vimeo'
-	 * @param string $id
+	 * @param string $id id from parse(), not a raw URL or user-supplied value
 	 * @return string
 	 */
 	public static function thumbnail( $provider, $id ) {

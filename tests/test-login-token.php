@@ -14,6 +14,13 @@ class Test_Login_Token extends Anchor_Events_TestCase {
 
 	public function tear_down() {
 		wp_set_current_user( 0 );
+		// room_login_notice is request-scoped in production (a fresh Module
+		// per request); the test suite's Module singleton lives across
+		// tests, so it must be reset here or a rejected-token test would
+		// leak its notice into a later, unrelated one.
+		$prop = new \ReflectionProperty( \Anchor\Events\Module::class, 'room_login_notice' );
+		$prop->setAccessible( true );
+		$prop->setValue( $this->module(), '' );
 		parent::tear_down();
 	}
 
@@ -189,5 +196,43 @@ class Test_Login_Token extends Anchor_Events_TestCase {
 		$this->module()->room_headers();
 
 		$this->assertSame( $viewer, get_current_user_id(), 'An already-signed-in visitor must never be switched by a token in the URL.' );
+	}
+
+	/**
+	 * Fix round 1: a rejected token must not leave the visitor with a plain,
+	 * unexplained sign-in form — render_room()'s logged-out branch prints
+	 * room_headers()'s notice above wp_login_form().
+	 */
+	public function test_a_tampered_token_renders_the_login_form_with_a_notice() {
+		$this->pretty_permalinks();
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create();
+		$ent      = $this->module()->entitlements;
+
+		wp_set_current_user( 0 );
+		$bad_token = $ent->login_token( $user_id, $event_id ) . 'x';
+		$this->go_to( \add_query_arg( Entitlements::TOKEN_ARG, $bad_token, $this->module()->room_url( $event_id ) ) );
+
+		$this->module()->room_headers();
+		$html = $this->module()->render_room( $event_id );
+
+		$this->assertStringContainsString( 'anchor-room--locked', $html );
+		$this->assertStringContainsString( 'anchor-room-notice', $html );
+		$this->assertStringContainsString( 'That sign-in link has expired', $html );
+	}
+
+	/** An ordinary logged-out visit (no aek at all) shows the form with no notice. */
+	public function test_logged_out_with_no_token_renders_the_login_form_with_no_notice() {
+		$this->pretty_permalinks();
+		$event_id = $this->event();
+
+		wp_set_current_user( 0 );
+		$this->go_to( $this->module()->room_url( $event_id ) );
+
+		$this->module()->room_headers();
+		$html = $this->module()->render_room( $event_id );
+
+		$this->assertStringContainsString( 'anchor-room--locked', $html );
+		$this->assertStringNotContainsString( 'anchor-room-notice', $html );
 	}
 }

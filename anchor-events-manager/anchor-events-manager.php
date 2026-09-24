@@ -323,6 +323,19 @@ class Module {
     public $entitlements = null;
 
     /**
+     * Request-scoped: set by room_headers() when a sign-in token in the URL
+     * was rejected (invalid or expired), read by render_room()'s logged-out
+     * branch to explain why the visitor is still looking at the sign-in
+     * form. '' the rest of the time. Not a filter default, because the
+     * logged-out branch has no other way to learn a token was even
+     * presented — anchor_events_room_denied_message is a different notice,
+     * for the logged-in-but-not-entitled branch (spec §6.2).
+     *
+     * @var string
+     */
+    private $room_login_notice = '';
+
+    /**
      * Seat lifecycle emails queued for the end of this request, `seat_id => type`
      * ('cancellation' | 'promotion').
      *
@@ -7619,7 +7632,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     /**
      * Private, uncacheable, unindexed — and a parent redirects to itself
      * (its dates each have their own room). Applies room_header_list()'s
-     * decision; carries no logic of its own.
+     * decision, and — since Task 13 — also carries the aek one-click
+     * sign-in branch: it does have logic of its own now, not just the
+     * decision's headers/redirect.
      */
     public function room_headers() {
         if ( ! $this->is_room_request() ) {
@@ -7644,10 +7659,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 \wp_safe_redirect( $this->room_url( $event_id ), 302 );
                 exit;
             }
-            // Invalid or expired: fall through to the sign-in form with a notice.
-            \add_filter( 'anchor_events_room_denied_message', static function ( $message ) {
-                return \__( 'That sign-in link has expired. Sign in below, or ask us for a new link.', 'anchor-schema' );
-            } );
+            // Invalid or expired: fall through to the sign-in form. This
+            // visitor is logged OUT, so anchor_events_room_denied_message
+            // (applied only in render_room()'s logged-IN-but-not-entitled
+            // branch) would never reach them — record it instead, for
+            // render_room()'s logged-out branch to print above the form.
+            $this->room_login_notice = \__( 'That sign-in link has expired. Sign in below, or ask us for a new link.', 'anchor-schema' );
         }
 
         $decision = $this->room_header_list( $event_id );
@@ -9912,12 +9929,29 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $title    = \get_the_title( $event_id );
 
         if ( ! \is_user_logged_in() ) {
+            /**
+             * The notice shown above the sign-in form when a rejected
+             * (invalid or expired) one-click token brought this logged-out
+             * visitor here (spec §6.2). room_headers() is what sets the
+             * value this starts from; '' the rest of the time, which prints
+             * nothing. Kept as its own filter — not
+             * anchor_events_room_denied_message — because that one only
+             * ever runs in the logged-IN-but-not-entitled branch below and
+             * would never reach a logged-out visitor.
+             *
+             * @param string $message
+             * @param int    $event_id
+             */
+            $login_notice = (string) \apply_filters( 'anchor_events_room_login_notice', $this->room_login_notice, $event_id );
+            $notice_html  = $login_notice === '' ? '' : '<p class="anchor-room-notice" role="status">' . \esc_html( $login_notice ) . '</p>';
+
             \ob_start();
             \wp_login_form( [ 'redirect' => $this->room_url( $event_id ), 'echo' => true ] );
             $form = (string) \ob_get_clean();
             return '<div class="anchor-room anchor-room--locked">'
                 . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
                 . '<p class="anchor-room-lede">' . \esc_html__( 'Sign in to join', 'anchor-schema' ) . '</p>'
+                . $notice_html
                 . $form
                 . '<p class="anchor-room-hint">' . \esc_html__( 'Registered but no account? Use the link in your confirmation email.', 'anchor-schema' ) . '</p>'
                 . '</div>';

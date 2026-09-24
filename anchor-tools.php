@@ -61,6 +61,9 @@ if ( ! class_exists( 'Anchor_Asset_Loader' ) ) {
 if ( ! class_exists( 'Anchor_Shared_Assets' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-shared-assets.php';
 }
+if ( ! class_exists( 'Anchor_Video_URL' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-video-url.php';
+}
 if ( ! class_exists( 'Anchor_Monaco' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-monaco.php';
 }

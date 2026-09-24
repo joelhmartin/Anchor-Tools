@@ -2869,12 +2869,15 @@ class Anchor_Gallery_Module {
     }
 
     private function normalize_video_url($url) {
-        if (preg_match('~(?:youtu\.be/|youtube\.com/(?:watch\\?v=|embed/|shorts/|live/))([A-Za-z0-9_-]{6,})~', $url, $matches)) {
+        $parsed = Anchor_Video_URL::parse($url);
+        if (!$parsed) return null;
+
+        if ($parsed['provider'] === 'youtube') {
             return [
                 'provider'       => 'youtube',
-                'id'             => $matches[1],
+                'id'             => $parsed['id'],
                 'thumb'          => '',
-                'fallback_thumb' => 'https://img.youtube.com/vi/' . $matches[1] . '/hqdefault.jpg',
+                'fallback_thumb' => 'https://img.youtube.com/vi/' . $parsed['id'] . '/hqdefault.jpg',
                 'label'          => 'YouTube Video',
                 'raw_url'        => $url,
                 'duration'       => '',
@@ -2882,20 +2885,16 @@ class Anchor_Gallery_Module {
             ];
         }
 
-        if (preg_match('~vimeo\.com/(?:video/)?([0-9]+)~', $url, $matches)) {
-            return [
-                'provider'       => 'vimeo',
-                'id'             => $matches[1],
-                'thumb'          => '',
-                'fallback_thumb' => '',
-                'label'          => 'Vimeo Video',
-                'raw_url'        => $url,
-                'duration'       => '',
-                'channel'        => '',
-            ];
-        }
-
-        return null;
+        return [
+            'provider'       => 'vimeo',
+            'id'             => $parsed['id'],
+            'thumb'          => '',
+            'fallback_thumb' => '',
+            'label'          => 'Vimeo Video',
+            'raw_url'        => $url,
+            'duration'       => '',
+            'channel'        => '',
+        ];
     }
 
     private function hydrate_video_metadata($videos, $thumb_size = 'maxres') {

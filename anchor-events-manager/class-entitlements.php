@@ -393,7 +393,10 @@ class Entitlements {
             return;
         }
         if ( (string) $to === Registrations::STATUS_PENDING ) {
-            return; // Reserved, not entitled. Nothing granted, nothing taken.
+            // Reserved, not entitled — nothing granted, nothing taken, so this
+            // is checked before enabled() on purpose: there is no work here
+            // for the master switch to gate.
+            return;
         }
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         // Inert event (spec §4 preamble): nothing was ever granted, so there is
@@ -401,12 +404,7 @@ class Entitlements {
         if ( ! $this->enabled( $event_id ) ) {
             return;
         }
-        $user_id = (int) \get_post_meta( $seat_id, self::SEAT_USER_META, true );
-        if ( $user_id <= 0 ) {
-            $user    = \get_user_by( 'email', (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) );
-            $user_id = $user ? (int) $user->ID : 0;
-        }
-        $this->maybe_revoke_seat_grant( $event_id, $user_id );
+        $this->maybe_revoke_seat_grant( $event_id, $this->resolve_seat_user( $seat_id ) );
     }
 
     /**
@@ -484,14 +482,30 @@ class Entitlements {
         if ( $event_id <= 0 || ! $this->enabled( $event_id ) ) {
             return false;
         }
-        $user_id = (int) \get_post_meta( $seat_id, self::SEAT_USER_META, true );
-        if ( $user_id <= 0 ) {
-            $user    = \get_user_by( 'email', (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) );
-            $user_id = $user ? (int) $user->ID : 0;
-        }
+        $user_id = $this->resolve_seat_user( $seat_id );
         if ( $user_id <= 0 ) {
             return false;
         }
         return $this->grant( $event_id, $user_id, self::SOURCE_SEAT );
+    }
+
+    /**
+     * The one place a seat resolves to an account.
+     *
+     * Task 8 replaces this one line with ensure_user(), which will also
+     * create an account when none exists yet — until then an existing
+     * account found by email is enough, and no account means no grant.
+     *
+     * @param int $seat_id
+     * @return int User id, or 0 when unresolved.
+     */
+    private function resolve_seat_user( $seat_id ) {
+        $seat_id = (int) $seat_id;
+        $user_id = (int) \get_post_meta( $seat_id, self::SEAT_USER_META, true );
+        if ( $user_id > 0 ) {
+            return $user_id;
+        }
+        $user = \get_user_by( 'email', (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) );
+        return $user ? (int) $user->ID : 0;
     }
 }

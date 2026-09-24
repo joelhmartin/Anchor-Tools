@@ -85,7 +85,12 @@ class Anchor_Speaker_Render {
 		if ( in_array( 'excerpt', $show, true ) ) {
 			$excerpt = get_the_excerpt( $post );
 			if ( trim( (string) $excerpt ) !== '' ) {
-				$html .= '<p class="anchor-speaker__excerpt">' . esc_html( $excerpt ) . '</p>';
+				// get_the_excerpt() is already HTML, not plain text: a manual
+				// excerpt may intentionally contain simple inline markup, the
+				// same way testimonials treats post_content as already-HTML
+				// via wp_kses_post( wpautop( ... ) ) rather than esc_html().
+				// esc_html() would strip that markup down to visible tag text.
+				$html .= '<p class="anchor-speaker__excerpt">' . wp_kses_post( $excerpt ) . '</p>';
 			}
 		}
 

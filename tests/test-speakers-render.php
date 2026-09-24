@@ -19,4 +19,41 @@ class Test_Speakers_Render extends WP_UnitTestCase {
 		$this->assertLessThan( strpos( $html, 'One' ), strpos( $html, 'Two' ) );
 		$this->assertStringNotContainsString( '<a ', $html );
 	}
+
+	/**
+	 * An auto-generated excerpt's trailing "more" text is the literal entity
+	 * "&hellip;", not a raw ellipsis character, so the excerpt is already
+	 * HTML. Asserts it is never double-encoded into visible "&amp;hellip;"
+	 * text (WordPress' esc_html() already guards against this by default,
+	 * so this alone would pass either way; see the second assertion below
+	 * for a case that actually distinguishes wp_kses_post() from esc_html()).
+	 */
+	public function test_auto_excerpt_does_not_double_encode_entities() {
+		$id = self::factory()->post->create( [
+			'post_type'    => 'anchor_speaker',
+			'post_title'   => 'Dr. Long Bio',
+			'post_content' => str_repeat( 'word ', 60 ),
+			'post_excerpt' => '',
+		] );
+		$html = do_shortcode( "[anchor_speakers ids=\"$id\"]" );
+		$this->assertStringContainsString( 'anchor-speaker__excerpt', $html );
+		$this->assertStringNotContainsString( '&amp;hellip;', $html );
+	}
+
+	/**
+	 * A manual excerpt is already HTML and may intentionally contain simple
+	 * inline markup (the same convention testimonials uses for post_content
+	 * via wp_kses_post()). esc_html() would strip that down to visible,
+	 * escaped tag text instead of rendering it; this is the case that
+	 * actually distinguishes the two.
+	 */
+	public function test_manual_excerpt_keeps_allowed_inline_markup() {
+		$id = self::factory()->post->create( [
+			'post_type'    => 'anchor_speaker',
+			'post_title'   => 'Dr. Rich Excerpt',
+			'post_excerpt' => 'Board-certified in <strong>orofacial pain</strong>.',
+		] );
+		$html = do_shortcode( "[anchor_speakers ids=\"$id\"]" );
+		$this->assertStringContainsString( '<strong>orofacial pain</strong>', $html );
+	}
 }

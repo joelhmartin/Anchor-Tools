@@ -74,24 +74,38 @@ class Test_Speakers_Rewrite extends WP_UnitTestCase {
 	 * is a no-op when nothing about the rules has changed, and flushes again
 	 * when the base changes outside the settings page (a direct
 	 * update_option() call, as this test and any programmatic change does).
+	 *
+	 * The signature option alone can't distinguish a true no-op from a
+	 * redundant re-flush that happens to produce the same signature and the
+	 * same rewrite_rules content, so this counts actual flushes via the
+	 * 'generate_rewrite_rules' action, which WP_Rewrite::rewrite_rules()
+	 * fires only when rules are actually (re)built, not on every call.
 	 */
 	public function test_maybe_flush_signature_covers_first_load_and_base_change_outside_settings() {
 		delete_option( Anchor_Speakers_Module::SIGNATURE_OPTION );
 		$module = new Anchor_Speakers_Module();
 
+		$flushes = 0;
+		$counter = function () use ( &$flushes ) { $flushes++; };
+		add_action( 'generate_rewrite_rules', $counter );
+
 		$module->maybe_flush();
 		$first_signature = get_option( Anchor_Speakers_Module::SIGNATURE_OPTION );
 		$this->assertNotFalse( $first_signature );
+		$this->assertGreaterThan( 0, $flushes, 'First load (no stored signature) must flush.' );
 
-		$rules_after_first_flush = get_option( 'rewrite_rules' );
-
+		$flushes = 0;
 		$module->maybe_flush();
 		$this->assertSame( $first_signature, get_option( Anchor_Speakers_Module::SIGNATURE_OPTION ) );
+		$this->assertSame( 0, $flushes, 'An unchanged signature must not flush again.' );
 
 		update_option( 'anchor_speakers_options', [ 'base' => 'faculty', 'archive' => false ], false );
 		$module->register();
+		$flushes = 0;
 		$module->maybe_flush();
 		$this->assertNotSame( $first_signature, get_option( Anchor_Speakers_Module::SIGNATURE_OPTION ) );
-		$this->assertNotSame( $rules_after_first_flush, get_option( 'rewrite_rules' ) );
+		$this->assertGreaterThan( 0, $flushes, 'A base change made outside the settings page must flush again.' );
+
+		remove_action( 'generate_rewrite_rules', $counter );
 	}
 }

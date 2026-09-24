@@ -1203,16 +1203,7 @@ class Registrations {
             return false;
         }
 
-        $identity = [ 'relation' => 'OR' ];
-        if ( $email !== '' ) {
-            $identity[] = [ 'key' => '_anchor_event_email', 'value' => $email, 'compare' => '=' ];
-        }
-        if ( $user_id > 0 ) {
-            // Checked first (spec §3.5): the resolved account is authoritative,
-            // an attendee who changed their email address still matches.
-            $identity[] = [ 'key' => '_anchor_event_user_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
-            $identity[] = [ 'key' => '_anchor_event_customer_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
-        }
+        $identity = $this->identity_meta_query( $user_id, $email );
 
         $q = new \WP_Query( [
             'post_type'      => Module::REG_CPT,
@@ -1228,6 +1219,40 @@ class Registrations {
             ],
         ] );
         return ! empty( $q->posts );
+    }
+
+    /**
+     * The `relation => OR` seat-identity fragment shared by every caller that
+     * asks "which seats belong to this person": an account id, the order's
+     * customer id, or a plain email match. One encoding so a future 4th
+     * identity signal (or a change to how these three relate) never has to
+     * be kept in sync across call sites by hand.
+     *
+     * Either argument may be empty/0 — the fragment simply omits that clause,
+     * matching how user_has_active_seat() has always treated a missing email
+     * or user id (never require what wasn't given).
+     *
+     * @param int    $user_id
+     * @param string $email   Not re-sanitized here — callers are expected to
+     *                        pass an already-trusted address (an existing
+     *                        WP_User's user_email, or user_has_active_seat()'s
+     *                        own sanitize_email() call).
+     * @return array meta_query fragment.
+     */
+    public function identity_meta_query( $user_id, $email ) {
+        $user_id  = (int) $user_id;
+        $email    = (string) $email;
+        $identity = [ 'relation' => 'OR' ];
+        if ( $email !== '' ) {
+            $identity[] = [ 'key' => '_anchor_event_email', 'value' => $email, 'compare' => '=' ];
+        }
+        if ( $user_id > 0 ) {
+            // Checked first (spec §3.5): the resolved account is authoritative,
+            // an attendee who changed their email address still matches.
+            $identity[] = [ 'key' => '_anchor_event_user_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
+            $identity[] = [ 'key' => '_anchor_event_customer_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
+        }
+        return $identity;
     }
 
     /**

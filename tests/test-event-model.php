@@ -543,6 +543,50 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertSame( [], $this->module()->resolved_sessions( $bad )[0]['stream_embed'], 'An unknown host leaves the embed empty.' );
 	}
 
+	/**
+	 * Spec §3.1, amended 2026-09-24: a legacy `virtual=1` event that never had
+	 * `stream_default_modality` stored resolves its default modality to
+	 * `virtual` — so its existing registrants keep the join link they have
+	 * today, rather than being silently denied by a modality field that
+	 * simply predates them.
+	 */
+	public function test_legacy_virtual_flag_bridges_to_virtual_modality_when_nothing_stored() {
+		$event_id = $this->make_event( [
+			'virtual'     => true,
+			'virtual_url' => 'https://us02web.zoom.us/j/123456789',
+		] );
+		$this->assertFalse(
+			metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ),
+			'The fixture must never have stored the field — that absence is the case under test.'
+		);
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertSame( 'virtual', $rows[0]['modality'] );
+	}
+
+	/** The bridge only fires on absence — an explicit in_person choice always wins. */
+	public function test_legacy_virtual_flag_does_not_override_an_explicitly_stored_modality() {
+		$event_id = $this->make_event( [
+			'virtual'                 => true,
+			'virtual_url'             => 'https://us02web.zoom.us/j/123456789',
+			'stream_default_modality' => 'in_person',
+		] );
+		$this->assertTrue( metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ) );
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertSame( 'in_person', $rows[0]['modality'], "The author's explicit choice is never overridden." );
+	}
+
+	/** A non-virtual event with nothing stored still defaults to in_person. */
+	public function test_non_virtual_event_with_nothing_stored_defaults_to_in_person() {
+		$event_id = $this->make_event();
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ) );
+		$this->assertEmpty( $this->module()->get_meta( $event_id )['virtual'] ?? '' );
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertSame( 'in_person', $rows[0]['modality'] );
+	}
+
 	/** Spec §3.1: the legacy fallback reaches EVERY resolved row, multisession included. */
 	public function test_resolved_sessions_multisession_rows_inherit_legacy_fallback() {
 		$event_id = $this->make_event( [

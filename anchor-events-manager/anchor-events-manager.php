@@ -11604,7 +11604,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         $meta       = $this->get_meta( $event_id );
-        $default_mo = $this->sanitize_modality( $meta['stream_default_modality'] ?? '' );
+        $default_mo = $this->default_modality_for( $event_id, $meta );
         $event_embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
         $tz         = $this->event_timezone( $meta );
 
@@ -11667,6 +11667,41 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * The event's default session modality, WITH the legacy `virtual` bridge
+     * resolved (spec §3.1, amended 2026-09-24).
+     *
+     * An event authored before `stream_default_modality` existed only ever
+     * set the legacy `virtual` checkbox, so `stream_default_modality` was
+     * NEVER WRITTEN for it — get_meta_defaults() reads that absence back as
+     * `in_person`, which would silently deny its existing registrants the
+     * join link they have today (a regression, not a fresh default). This is
+     * a NEVER-STORED check, not a value check: metadata_exists() tells
+     * "nobody ever saved this field" apart from "somebody explicitly chose
+     * in_person", so an author who deliberately sets in_person on a virtual-
+     * flagged legacy event (unusual, but their call) is never overridden.
+     *
+     * Deliberately NOT folded into get_meta_defaults(): that method has no
+     * per-post identity to run metadata_exists() against at the point it
+     * assembles the defaults array, and every OTHER reader of
+     * `stream_default_modality` (the authoring UI's pre-filled value, the
+     * save-time forced-on check) wants the raw stored value, not this
+     * read-time bridge. So this lives only where the sessions resolver reads
+     * the default for room/access purposes.
+     *
+     * @param int   $event_id
+     * @param array $meta     get_meta() result for the same event.
+     * @return string in_person|virtual|hybrid
+     */
+    private function default_modality_for( $event_id, array $meta ) {
+        $event_id = (int) $event_id;
+        $key      = $this->meta_key( 'stream_default_modality' );
+        if ( ! \metadata_exists( 'post', $event_id, $key ) && ! empty( $meta['virtual'] ) ) {
+            return 'virtual';
+        }
+        return $this->sanitize_modality( $meta['stream_default_modality'] ?? '' );
+    }
+
+    /**
      * The sessions the ROOM reasons about — always at least one row.
      *
      * A multisession event returns get_sessions(), with every row whose own
@@ -11705,7 +11740,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'start_time' => (string) $meta['start_time'],
             'end_time' => (string) $meta['end_time'],
             'label' => '',
-            'modality' => $this->sanitize_modality( $meta['stream_default_modality'] ?? '' ),
+            'modality' => $this->default_modality_for( $event_id, $meta ),
             'stream_embed' => $event_embed,
             'start_ts' => (int) $meta['start_ts'],
             'end_ts' => (int) $meta['end_ts'],

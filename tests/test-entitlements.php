@@ -506,4 +506,48 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 
 		$this->assertFalse( $allowed );
 	}
+
+	/** The filter is the final say in both directions: it can force true too. */
+	public function test_filter_can_force_true() {
+		// Otherwise-false: a plain event, no seat, no grant, not staff.
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create();
+		$this->assertFalse( $this->ent()->can_access_stream( $event_id, 0, $user_id ), 'Sanity: this case is false unfiltered.' );
+
+		add_filter( 'anchor_events_can_access_stream', '__return_true' );
+		$allowed = $this->ent()->can_access_stream( $event_id, 0, $user_id );
+		remove_filter( 'anchor_events_can_access_stream', '__return_true' );
+
+		$this->assertTrue( $allowed );
+	}
+
+	/**
+	 * Spec §3.1 bridge (amended 2026-09-24): a legacy virtual event with no
+	 * stored `stream_default_modality` still grants the stream to a confirmed
+	 * in-person-tier seat holder when the toggle is on — the session-level
+	 * modality check (branch 3) must not block it just because this event
+	 * predates the new modality field.
+	 */
+	public function test_legacy_virtual_event_grants_stream_via_the_modality_bridge() {
+		$start    = time() + HOUR_IN_SECONDS;
+		$event_id = $this->event( [
+			'access_role_enabled'       => true,
+			'in_person_includes_stream' => true,
+			'timezone'                  => 'UTC',
+			'start_date'                => gmdate( 'Y-m-d', $start ),
+			'start_time'                => gmdate( 'H:i', $start ),
+			'start_ts'                  => $start,
+			'end_ts'                    => $start + 3600,
+			'virtual'                   => true,
+			'virtual_url'               => 'https://us02web.zoom.us/j/123456789',
+			// stream_default_modality deliberately NOT set — the legacy case.
+		] );
+		$tiers = $this->ticket_types()->save( $event_id, [
+			[ 'label' => 'In person', 'price' => '0', 'active' => 1, 'modality' => 'in_person' ],
+		] );
+		$user_id = self::factory()->user->create( [ 'user_email' => 'legacy@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'legacy@example.test', 'ticket_type_id' => $tiers[0]['id'] ] );
+
+		$this->assertTrue( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+	}
 }

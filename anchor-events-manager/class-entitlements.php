@@ -772,12 +772,7 @@ class Entitlements {
                 'relation' => 'AND',
                 [ 'key' => '_anchor_event_id', 'value' => (int) $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
                 [ 'key' => '_anchor_event_reg_status', 'value' => Registrations::STATUS_CONFIRMED, 'compare' => '=' ],
-                [
-                    'relation' => 'OR',
-                    [ 'key' => self::SEAT_USER_META, 'value' => (int) $user_id, 'compare' => '=', 'type' => 'NUMERIC' ],
-                    [ 'key' => '_anchor_event_customer_id', 'value' => (int) $user_id, 'compare' => '=', 'type' => 'NUMERIC' ],
-                    [ 'key' => '_anchor_event_email', 'value' => (string) $user->user_email, 'compare' => '=' ],
-                ],
+                $this->module->registrations->identity_meta_query( (int) $user_id, (string) $user->user_email ),
             ],
         ] );
 

@@ -51,4 +51,47 @@ class Test_Speakers_Rewrite extends WP_UnitTestCase {
 		$this->go_to( '/about-us/our-story/nonexistent/' );
 		$this->assertTrue( is_404() );
 	}
+
+	/**
+	 * A speaker and a child page of the base can legitimately share a slug
+	 * (e.g. a "dr-x" page left over from before the speaker was migrated in).
+	 * The speaker must win: page_fallback()'s single-segment branch only
+	 * hands the request back to the page when no speaker exists at that
+	 * path, so with both existing the request resolves to the speaker.
+	 */
+	public function test_speaker_wins_when_slug_collides_with_sibling_page() {
+		$about   = self::factory()->post->create( [ 'post_type' => 'page', 'post_name' => 'about-us' ] );
+		$speaker = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_name' => 'dr-x', 'post_title' => 'Dr. X' ] );
+		self::factory()->post->create( [ 'post_type' => 'page', 'post_name' => 'dr-x', 'post_parent' => $about ] );
+
+		$this->go_to( '/about-us/dr-x/' );
+		$this->assertTrue( is_singular( 'anchor_speaker' ) );
+		$this->assertSame( $speaker, get_queried_object_id() );
+	}
+
+	/**
+	 * maybe_flush() flushes once (no stored signature yet, i.e. first load),
+	 * is a no-op when nothing about the rules has changed, and flushes again
+	 * when the base changes outside the settings page (a direct
+	 * update_option() call, as this test and any programmatic change does).
+	 */
+	public function test_maybe_flush_signature_covers_first_load_and_base_change_outside_settings() {
+		delete_option( Anchor_Speakers_Module::SIGNATURE_OPTION );
+		$module = new Anchor_Speakers_Module();
+
+		$module->maybe_flush();
+		$first_signature = get_option( Anchor_Speakers_Module::SIGNATURE_OPTION );
+		$this->assertNotFalse( $first_signature );
+
+		$rules_after_first_flush = get_option( 'rewrite_rules' );
+
+		$module->maybe_flush();
+		$this->assertSame( $first_signature, get_option( Anchor_Speakers_Module::SIGNATURE_OPTION ) );
+
+		update_option( 'anchor_speakers_options', [ 'base' => 'faculty', 'archive' => false ], false );
+		$module->register();
+		$module->maybe_flush();
+		$this->assertNotSame( $first_signature, get_option( Anchor_Speakers_Module::SIGNATURE_OPTION ) );
+		$this->assertNotSame( $rules_after_first_flush, get_option( 'rewrite_rules' ) );
+	}
 }

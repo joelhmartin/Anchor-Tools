@@ -6,8 +6,9 @@
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Anchor_Speakers_Module {
-	const CPT    = 'anchor_speaker';
-	const OPTION = 'anchor_speakers_options';
+	const CPT              = 'anchor_speaker';
+	const OPTION           = 'anchor_speakers_options';
+	const SIGNATURE_OPTION = 'anchor_speakers_rules_signature';
 
 	public static function options() {
 		$o = get_option( self::OPTION, [] );
@@ -80,11 +81,27 @@ class Anchor_Speakers_Module {
 		return [ 'pagename' => $base . '/' . $path ];
 	}
 
+	/**
+	 * One-time rewrite flush keyed on a signature of the settings that shape
+	 * the rewrite rules (base + archive flag), rather than a save-triggered
+	 * flag: this also covers the module's first load (no stored signature
+	 * yet) and any base change made outside the settings page (e.g. a
+	 * direct update_option() call, as tests do), not just a settings-page
+	 * save. A settings-page save still flushes here too, since the option
+	 * is already updated by the time this runs on the next request.
+	 */
 	public function maybe_flush() {
-		if ( get_option( 'anchor_speakers_flush' ) ) {
-			flush_rewrite_rules( false );
-			delete_option( 'anchor_speakers_flush' );
+		$signature = self::rules_signature();
+		if ( get_option( self::SIGNATURE_OPTION ) === $signature ) {
+			return;
 		}
+		flush_rewrite_rules( false );
+		update_option( self::SIGNATURE_OPTION, $signature, false );
+	}
+
+	private static function rules_signature() {
+		$o = self::options();
+		return md5( self::base() . '|' . ( $o['archive'] ? '1' : '0' ) );
 	}
 
 	public function settings_menu() {
@@ -95,8 +112,13 @@ class Anchor_Speakers_Module {
 		register_setting( 'anchor_speakers', self::OPTION, [ 'sanitize_callback' => [ $this, 'sanitize' ] ] );
 	}
 
+	/**
+	 * No explicit flush flag here: maybe_flush() on the next 'init' compares
+	 * a signature of the (already-updated) option against what it last
+	 * flushed for, and flushes when they differ. That covers a settings-page
+	 * save the same way it covers any other change to the option.
+	 */
 	public function sanitize( $in ) {
-		update_option( 'anchor_speakers_flush', 1, false );
 		if ( function_exists( 'wp_set_option_autoload' ) ) {
 			wp_set_option_autoload( self::OPTION, false );
 		}

@@ -214,7 +214,7 @@ class Anchor_Testimonials_Module {
 				$post_types[] = $extra;
 			}
 		}
-		$post_types = array_values( array_unique( $post_types ) );
+		$post_types = array_values( array_unique( array_diff( $post_types, [ 'attachment' ] ) ) );
 
 		$query = new WP_Query( [
 			's'              => $search,

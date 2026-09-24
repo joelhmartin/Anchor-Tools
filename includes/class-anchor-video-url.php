@@ -25,13 +25,25 @@ class Anchor_Video_URL {
 			$start = (int) $query['start'];
 		}
 
-		if ( preg_match( '~(?:youtu\.be/|youtube(?:-nocookie)?\.com/(?:embed/|shorts/|live/|v/))([A-Za-z0-9_-]{6,})~', $url, $m ) ) {
+		if ( preg_match( '~(?:youtu\.be/|youtube(?:-nocookie)?\.com/(?:embed/|shorts/|live/|v/|watch\?v=))([A-Za-z0-9_-]{6,})~', $url, $m ) ) {
 			return [ 'provider' => 'youtube', 'id' => $m[1], 'start' => $start ];
 		}
-		if ( preg_match( '~youtube\.com/~', $url ) && ! empty( $query['v'] ) && preg_match( '~^[A-Za-z0-9_-]{6,}$~', $query['v'] ) ) {
-			return [ 'provider' => 'youtube', 'id' => $query['v'], 'start' => $start ];
+		// $query['v'] can carry trailing junk from a malformed/copy-pasted URL
+		// (a stray `?t=5`, a trailing `/`, `)`, `.`, ...) that parse_str() folds
+		// into the value rather than splitting it off; match only the leading
+		// run of id characters instead of requiring the whole value to be
+		// clean, so those still resolve the same id the old gallery regex did.
+		if ( preg_match( '~youtube\.com/~', $url ) && ! empty( $query['v'] ) && preg_match( '~^[A-Za-z0-9_-]{6,}~', $query['v'], $vm ) ) {
+			return [ 'provider' => 'youtube', 'id' => $vm[0], 'start' => $start ];
 		}
-		if ( preg_match( '~vimeo\.com/(?:.*/)?(?:video/)?([0-9]+)(?:[/?#]|$)~', $url, $m ) ) {
+		// Anchor the id with a trailing (?![0-9]) instead of consuming a
+		// leading (?:.*/)? greedily: the greedy form let a second all-digit
+		// path segment (an unlisted-video hash, a review-link id, ...) win
+		// over the actual video id. Only a short, known set of path prefixes
+		// (plus the bare vimeo.com/<id> and player.vimeo.com/video/<id> forms)
+		// are recognized, so the FIRST numeric segment after vimeo.com/ always
+		// wins, exactly like the old `vimeo\.com/(?:video/)?([0-9]+)` regex.
+		if ( preg_match( '~vimeo\.com/(?:(?:video|channels/[^/]+|showcase/[0-9]+/video|groups/[^/]+/videos|album/[0-9]+/video)/)?([0-9]+)(?![0-9])~', $url, $m ) ) {
 			return [ 'provider' => 'vimeo', 'id' => $m[1], 'start' => $start ];
 		}
 		return null;

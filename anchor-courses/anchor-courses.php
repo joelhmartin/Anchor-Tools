@@ -39,6 +39,7 @@ class Module {
 		if ( \is_admin() ) {
 			new Admin\CourseEditor();
 			new Admin\LessonEditor();
+			new Admin\QuizEditor();
 		}
 	}
 

@@ -186,4 +186,14 @@ class Test_Assets extends Anchor_Events_TestCase {
 
 		$this->assertArrayNotHasKey( 'anchor-event-checkout-attendees', wp_scripts()->registered );
 	}
+
+	/** room.js is source, jQuery-IIFE, and ships no ES module syntax. */
+	public function test_room_js_is_source_jquery() {
+		$path = dirname( __DIR__ ) . '/anchor-events-manager/assets/room.js';
+		$this->assertFileExists( $path );
+		$src = file_get_contents( $path );
+		$this->assertStringContainsString( '(jQuery)', $src );
+		$this->assertStringNotContainsString( 'export ', $src );
+		$this->assertStringNotContainsString( 'import ', $src );
+	}
 }

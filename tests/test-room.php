@@ -352,4 +352,43 @@ class Test_Room extends Anchor_Events_TestCase {
 		$head = ob_get_clean();
 		$this->assertStringNotContainsString( 'noindex, nofollow', $head );
 	}
+
+	private function room_request( $event_id ) {
+		$req = new WP_REST_Request( 'GET', '/anchor-events/v1/events/' . $event_id . '/room' );
+		return rest_get_server()->dispatch( $req );
+	}
+
+	public function test_rest_401_logged_out() {
+		do_action( 'rest_api_init' );
+		$event_id = $this->stream_event();
+		wp_set_current_user( 0 );
+		$this->assertSame( 401, $this->room_request( $event_id )->get_status() );
+	}
+
+	public function test_rest_403_not_entitled() {
+		do_action( 'rest_api_init' );
+		$event_id = $this->stream_event();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$res = $this->room_request( $event_id );
+		$this->assertSame( 403, $res->get_status() );
+		$this->assertSame( 'anchor_events_room_denied', $res->as_error()->get_error_code() );
+	}
+
+	public function test_rest_omits_the_embed_outside_the_window_and_includes_it_inside() {
+		do_action( 'rest_api_init' );
+		$event_id = $this->stream_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'rest@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'rest@example.test' ] );
+		wp_set_current_user( $user_id );
+
+		$out = $this->room_request( $event_id )->get_data();
+		$this->assertSame( 'countdown', $out['state'] );
+		$this->assertStringNotContainsString( 'player.vimeo.com', $out['html'] );
+
+		update_post_meta( $event_id, '_anchor_event_start_ts', time() );
+		update_post_meta( $event_id, '_anchor_event_end_ts', time() + 3600 );
+		$out = $this->room_request( $event_id )->get_data();
+		$this->assertSame( 'live', $out['state'] );
+		$this->assertStringContainsString( 'player.vimeo.com/video/77', $out['html'] );
+	}
 }

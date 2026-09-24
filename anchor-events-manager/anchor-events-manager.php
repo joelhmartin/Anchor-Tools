@@ -11,6 +11,9 @@ require_once __DIR__ . '/template-tags.php';
 class Module {
     const CPT = 'event';
 
+    /** REST namespace for this module's routes (spec §5.6). */
+    const REST_NS = 'anchor-events/v1';
+
     /**
      * Base events-management capability on a site with no store (audit REG-D20).
      * Roster::CAP is kept as an alias of this for back-compat.
@@ -449,6 +452,9 @@ class Module {
         \add_action( 'init', [ $this, 'register_meta' ] );
         // The room endpoint (spec §5.1): <event permalink>/live/.
         \add_action( 'init', [ $this, 'register_room_endpoint' ] );
+        // The room's REST endpoint (spec §5.6) — the state block re-decided
+        // server-side, so the embed URL never ships outside its window.
+        \add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
         // Rewrite flush on a signature change — the pattern Anchor Locations
         // uses (anchor-locations.php::maybe_flush()), because this module has
         // no activation hook of its own that survives a PUC upgrade.
@@ -7250,6 +7256,77 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             [ 'anchor-events-frontend' ],
             $this->asset_version( 'anchor-events-manager/assets/room.css' )
         );
+        \wp_enqueue_script(
+            'anchor-events-room',
+            \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/room.js' ),
+            [ 'jquery' ],
+            $this->asset_version( 'anchor-events-manager/assets/room.js' ),
+            true
+        );
+        \wp_localize_script( 'anchor-events-room', 'ANCHOR_EVENTS_ROOM', [
+            'restUrl'     => \rest_url( self::REST_NS . '/events/' ),
+            'nonce'       => \wp_create_nonce( 'wp_rest' ),
+            'eventId'     => (int) \get_the_ID(),
+            'pollSeconds' => 300,
+            'i18n'        => [
+                'refresh' => \__( 'Something went wrong. Refresh the page.', 'anchor-schema' ),
+                'now'     => \__( 'now', 'anchor-schema' ),
+            ],
+        ] );
+    }
+
+    /**
+     * Register this module's REST routes (spec §5.6). Deviation D10: this
+     * module registered none before this task.
+     */
+    public function register_rest_routes() {
+        \register_rest_route( self::REST_NS, '/events/(?P<id>\d+)/room', [
+            'methods'  => 'GET',
+            'args'     => [ 'id' => [ 'required' => true, 'validate_callback' => static function ( $v ) {
+                return \is_numeric( $v ) && (int) $v > 0;
+            } ] ],
+            // Cookie auth only. The room is per-person, so an anonymous or
+            // application-password caller has no business here.
+            'permission_callback' => static function () {
+                return \is_user_logged_in()
+                    ? true
+                    : new \WP_Error( 'rest_forbidden', \__( 'Sign in to join.', 'anchor-schema' ), [ 'status' => 401 ] );
+            },
+            'callback' => [ $this, 'rest_room' ],
+        ] );
+    }
+
+    /**
+     * The room's state block, re-decided server-side. The embed is in the
+     * response ONLY when the window is open — that is the whole reason this
+     * endpoint exists rather than shipping the URL in the page.
+     *
+     * @param \WP_REST_Request $request
+     * @return \WP_REST_Response|\WP_Error
+     */
+    public function rest_room( $request ) {
+        $event_id = (int) $request['id'];
+        // room_url(), the one definition of "has a room": an event with no
+        // stream, one whose switch is off, an external-registration event and
+        // a group parent all have nothing to report, and 404 is the honest
+        // answer for all four. This is what Task 9b's suite asserts for both a
+        // plain event and a switched-off one.
+        if ( \get_post_type( $event_id ) !== self::CPT || $this->room_url( $event_id ) === '' ) {
+            return new \WP_Error( 'anchor_events_room_missing', \__( 'No room for that event.', 'anchor-schema' ), [ 'status' => 404 ] );
+        }
+        $state = Stream_State::for_event( $event_id );
+        if ( ! $this->entitlements || ! $this->entitlements->can_access_stream( $event_id, (int) $state['session_index'], 0 ) ) {
+            return new \WP_Error( 'anchor_events_room_denied', \__( 'This account is not registered for this event.', 'anchor-schema' ), [ 'status' => 403 ] );
+        }
+        $response = new \WP_REST_Response( [
+            'state'         => (string) $state['state'],
+            'session_index' => (int) $state['session_index'],
+            'target_ts'     => (int) $state['target_ts'],
+            'server_now'    => \time(),
+            'html'          => $this->room_state_block( $event_id, $state ),
+        ] );
+        $response->header( 'Cache-Control', 'private, no-store, max-age=0' );
+        return $response;
     }
 
     public function columns( $columns ) {

@@ -394,4 +394,116 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 
 		$this->assertTrue( $this->registrations()->user_has_active_seat( $event_id, $user_id, 'renamed@example.test' ) );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * can_access_stream() — spec §4.5, the one question.
+	 * ------------------------------------------------------------------- */
+
+	/** Build a streamable event with one virtual tier and one in-person tier. */
+	private function stream_event( array $meta = [] ) {
+		$start    = time() + HOUR_IN_SECONDS;
+		$event_id = $this->event( array_merge( [
+			'access_role_enabled' => true,
+			'timezone'   => 'UTC',
+			'start_date' => gmdate( 'Y-m-d', $start ),
+			'start_time' => gmdate( 'H:i', $start ),
+			'start_ts'   => $start,
+			'end_ts'     => $start + 3600,
+			'stream_default_modality' => 'hybrid',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/1', 'raw' => '' ],
+		], $meta ) );
+		$tiers = $this->ticket_types()->save( $event_id, [
+			[ 'label' => 'In person', 'price' => '0', 'active' => 1, 'modality' => 'in_person' ],
+			[ 'label' => 'Livestream', 'price' => '0', 'active' => 1, 'modality' => 'virtual' ],
+		] );
+		return [ $event_id, $tiers[0]['id'], $tiers[1]['id'] ];
+	}
+
+	public function test_logged_out_is_denied() {
+		[ $event_id ] = $this->stream_event();
+		wp_set_current_user( 0 );
+		$this->assertFalse( $this->ent()->can_access_stream( $event_id ) );
+	}
+
+	public function test_staff_always_allowed() {
+		[ $event_id ] = $this->stream_event();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$this->assertTrue( $this->ent()->can_access_stream( $event_id ) );
+	}
+
+	public function test_external_event_denied_even_for_a_holder() {
+		[ $event_id, , $virtual ] = $this->stream_event( [ 'registration_mode' => 'external' ] );
+		$user_id = self::factory()->user->create( [ 'user_email' => 'x@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'x@example.test', 'ticket_type_id' => $virtual ] );
+		$this->assertFalse( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+	}
+
+	/** Step 3 also refuses an event whose master switch is off (spec §4.5). */
+	public function test_switch_off_denies_even_a_role_holder() {
+		[ $event_id, , $virtual ] = $this->stream_event();
+		$user_id = self::factory()->user->create( [ 'user_email' => 'off@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'off@example.test', 'ticket_type_id' => $virtual ] );
+		$this->assertTrue( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+
+		// Turn the switch off behind the event's back (only an operator can do
+		// this; a save cannot). The stale role is no longer a key to anything.
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', false );
+
+		$this->assertFalse( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+	}
+
+	/** A manual grant does not outrank the master switch either. */
+	public function test_switch_off_denies_a_manual_grant() {
+		[ $event_id ] = $this->stream_event();
+		$user_id = self::factory()->user->create();
+		$this->ent()->grant( $event_id, $user_id, 'manual' );
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', false );
+
+		$this->assertFalse( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+	}
+
+	public function test_in_person_session_denies_everyone() {
+		[ $event_id, , $virtual ] = $this->stream_event( [ 'stream_default_modality' => 'in_person' ] );
+		$user_id = self::factory()->user->create( [ 'user_email' => 'y@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'y@example.test', 'ticket_type_id' => $virtual ] );
+		$this->assertFalse( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+	}
+
+	public function test_virtual_tier_allowed() {
+		[ $event_id, , $virtual ] = $this->stream_event();
+		$user_id = self::factory()->user->create( [ 'user_email' => 'v@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'v@example.test', 'ticket_type_id' => $virtual ] );
+		$this->assertTrue( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+	}
+
+	public function test_in_person_tier_follows_the_toggle() {
+		[ $on_id, $in_person_on ] = $this->stream_event( [ 'in_person_includes_stream' => true ] );
+		$a = self::factory()->user->create( [ 'user_email' => 'a2@example.test' ] );
+		$this->make_seat( $on_id, [ 'email' => 'a2@example.test', 'ticket_type_id' => $in_person_on ] );
+		$this->assertTrue( $this->ent()->can_access_stream( $on_id, 0, $a ) );
+
+		[ $off_id, $in_person_off ] = $this->stream_event( [ 'in_person_includes_stream' => false ] );
+		$b = self::factory()->user->create( [ 'user_email' => 'b2@example.test' ] );
+		$this->make_seat( $off_id, [ 'email' => 'b2@example.test', 'ticket_type_id' => $in_person_off ] );
+		$this->assertFalse( $this->ent()->can_access_stream( $off_id, 0, $b ) );
+	}
+
+	public function test_manual_grant_allowed_with_no_seat() {
+		[ $event_id ] = $this->stream_event();
+		$user_id = self::factory()->user->create();
+		$this->ent()->grant( $event_id, $user_id, 'manual' );
+		$this->assertTrue( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
+	}
+
+	public function test_filter_can_veto() {
+		[ $event_id, , $virtual ] = $this->stream_event();
+		$user_id = self::factory()->user->create( [ 'user_email' => 'veto@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'veto@example.test', 'ticket_type_id' => $virtual ] );
+
+		add_filter( 'anchor_events_can_access_stream', '__return_false' );
+		$allowed = $this->ent()->can_access_stream( $event_id, 0, $user_id );
+		remove_filter( 'anchor_events_can_access_stream', '__return_false' );
+
+		$this->assertFalse( $allowed );
+	}
 }

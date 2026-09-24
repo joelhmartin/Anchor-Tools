@@ -9502,8 +9502,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $is_linked = ( $this->woocommerce && $this->woocommerce->event_is_linked( $post_id ) );
 
         if ( empty( $meta['registration_enabled'] ) && ! $is_linked ) {
-            // Informational public event — nothing gated behind the link.
+            // Informational public event — nothing is gated behind the link, so
+            // it stays visible to everyone. DELIBERATELY kept ahead of the
+            // delegation below: can_access_stream() answers false for a
+            // logged-out visitor, and this branch is precisely the case where
+            // that is the wrong answer.
             return true;
+        }
+
+        // Everything else is the ONE access question (spec §4.5), so the event
+        // page's "Join here" and the room can never disagree.
+        if ( $this->entitlements ) {
+            return $this->entitlements->can_access_stream( $post_id, 0, 0 );
         }
 
         if ( Roster::current_user_can_manage() ) {

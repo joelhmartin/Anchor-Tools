@@ -651,4 +651,148 @@ class Entitlements {
         }
         return $candidate;
     }
+
+    /* ---------------------------------------------------------------------
+     * The one question (spec §4.5)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * May this person watch this session's stream?
+     *
+     * Resolution order, first hit wins (spec §4.5):
+     *   1. Roster staff (current user only) — yes.
+     *   2. Not logged in — no.
+     *   3. `enabled()` is false (external registration, group parent, or the
+     *      master switch off), session is in_person, or no embed resolves — no.
+     *   4. A `manual` grant on record — yes.
+     *   5. Holds the role AND a confirmed seat on a `virtual` tier — yes.
+     *   6. Holds the role AND a confirmed `in_person` seat, with the event's
+     *      "in-person registrants also get the stream" toggle on — yes.
+     *   7. Otherwise no.
+     *
+     * @param int $event_id
+     * @param int $session_index Index into Module::resolved_sessions().
+     * @param int $user_id       0 = the current user.
+     * @return bool
+     */
+    public function can_access_stream( $event_id, $session_index = 0, $user_id = 0 ) {
+        $event_id      = (int) $event_id;
+        $session_index = (int) $session_index;
+        $for_current   = ( (int) $user_id === 0 );
+        $user_id       = $for_current ? (int) \get_current_user_id() : (int) $user_id;
+
+        $allowed = $this->resolve_access( $event_id, $session_index, $user_id, $for_current );
+
+        /**
+         * The final say on stream access.
+         *
+         * The courses module uses this to veto ("finish the pre-work first").
+         *
+         * @param bool $allowed
+         * @param int  $event_id
+         * @param int  $session_index
+         * @param int  $user_id
+         */
+        return (bool) \apply_filters( 'anchor_events_can_access_stream', $allowed, $event_id, $session_index, $user_id );
+    }
+
+    /** The unfiltered decision — kept separate so the filter wraps it once. */
+    private function resolve_access( $event_id, $session_index, $user_id, $for_current ) {
+        // 1 — staff. Only meaningful for the CURRENT user: current_user_can()
+        // cannot answer for somebody else without switching user context.
+        if ( $for_current && Roster::current_user_can_manage() ) {
+            return true;
+        }
+        // 2.
+        if ( $user_id <= 0 ) {
+            return false;
+        }
+        // 3 — enabled(), NOT stream_capable(): the stricter of the two, and
+        // checked AHEAD of the manual-grant branch so a standing role on an
+        // event the operator switched off is not a key. The switch defaults
+        // on, so for most events this passes and the two session checks below
+        // do the real work: holding the event role is not stream access, and
+        // an in-person event with no embed refuses everybody but staff.
+        if ( ! $this->enabled( $event_id ) ) {
+            return false;
+        }
+        $sessions = $this->module->resolved_sessions( $event_id );
+        $session  = $sessions[ $session_index ] ?? null;
+        if ( ! \is_array( $session ) ) {
+            return false;
+        }
+        if ( ! \in_array( (string) $session['modality'], Stream_State::STREAMABLE, true ) ) {
+            return false;
+        }
+        if ( empty( $session['stream_embed']['src'] ) ) {
+            return false;
+        }
+        // 4.
+        if ( ( $this->grant_record( $event_id, $user_id )['source'] ?? '' ) === self::SOURCE_MANUAL ) {
+            return true;
+        }
+        // 5 / 6.
+        if ( ! $this->holds_role( $event_id, $user_id ) ) {
+            return false;
+        }
+        $modality = $this->seat_tier_modality( $event_id, $user_id );
+        if ( $modality === 'virtual' ) {
+            return true;
+        }
+        if ( $modality === 'in_person' ) {
+            $meta = $this->module->get_meta( $event_id );
+            return ! empty( $meta['in_person_includes_stream'] );
+        }
+        return false; // Role but no confirmed seat: a stale role is not access.
+    }
+
+    /**
+     * The best tier modality across the user's confirmed seats on an event.
+     *
+     * "Best" because a virtual seat always wins: somebody holding both an
+     * in-person and a livestream ticket is entitled by the livestream one
+     * regardless of the event toggle.
+     *
+     * @param int $event_id
+     * @param int $user_id
+     * @return string in_person|virtual|'' (no confirmed seat).
+     */
+    public function seat_tier_modality( $event_id, $user_id ) {
+        $user = \get_userdata( (int) $user_id );
+        if ( ! $user instanceof \WP_User ) {
+            return '';
+        }
+        $q = new \WP_Query( [
+            'post_type'      => Module::REG_CPT,
+            'post_status'    => 'publish',
+            'fields'         => 'ids',
+            'posts_per_page' => 50,
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                'relation' => 'AND',
+                [ 'key' => '_anchor_event_id', 'value' => (int) $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+                [ 'key' => '_anchor_event_reg_status', 'value' => Registrations::STATUS_CONFIRMED, 'compare' => '=' ],
+                [
+                    'relation' => 'OR',
+                    [ 'key' => self::SEAT_USER_META, 'value' => (int) $user_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+                    [ 'key' => '_anchor_event_customer_id', 'value' => (int) $user_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+                    [ 'key' => '_anchor_event_email', 'value' => (string) $user->user_email, 'compare' => '=' ],
+                ],
+            ],
+        ] );
+
+        $best = '';
+        foreach ( $q->posts as $seat_id ) {
+            $tier_id = (string) \get_post_meta( (int) $seat_id, '_anchor_event_ticket_type_id', true );
+            $tier    = $this->module->ticket_types ? $this->module->ticket_types->find( (int) $event_id, $tier_id ) : null;
+            // A tier with no modality is an in-person tier — the meaning every
+            // pre-upgrade tier already had (spec §3.3).
+            $modality = \is_array( $tier ) ? (string) ( $tier['modality'] ?? 'in_person' ) : 'in_person';
+            if ( $modality === 'virtual' ) {
+                return 'virtual';
+            }
+            $best = 'in_person';
+        }
+        return $best;
+    }
 }

@@ -588,4 +588,26 @@ class Test_Event_Save extends Anchor_Events_TestCase {
 		$html     = $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true );
 		$this->assertStringContainsString( 'type="hidden" name="anchor_event_in_person_includes_stream" value="0"', $html );
 	}
+
+	/**
+	 * Controller ruling (Task 16 fix round 1): an event must never be offered
+	 * its OWN role as a prerequisite for itself — picking it would make the
+	 * event unregisterable for everyone. Another event's role must still be
+	 * offered.
+	 */
+	public function test_prerequisite_picker_excludes_the_events_own_role() {
+		$self_id  = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$other_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+
+		$self_role  = $this->module()->entitlements->role_for( $self_id );
+		$other_role = $this->module()->entitlements->role_for( $other_id );
+
+		$access = $this->module()->render_access_fields( $self_id, $this->module()->get_meta( $self_id ), true );
+
+		$this->assertStringNotContainsString( 'value="' . $self_role . '"', $access );
+		$this->assertStringContainsString( 'value="' . $other_role . '"', $access );
+
+		remove_role( $self_role );
+		remove_role( $other_role );
+	}
 }

@@ -90,7 +90,7 @@
 
     function reindexRows(){
       $rows.find('.anchor-event-session-row').each(function(i){
-        $(this).find('input').each(function(){
+        $(this).find('input, select').each(function(){
           var name = $(this).attr('name');
           if(!name){ return; }
           name = name.replace(/anchor_event_sessions\[\d+\]/, 'anchor_event_sessions[' + i + ']');

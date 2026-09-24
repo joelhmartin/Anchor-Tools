@@ -3276,15 +3276,31 @@ class Module {
      * editable roles, every event role, and every course role — so a past
      * event or a completed course is a one-click prerequisite.
      *
+     * Controller ruling (Task 16 fix round 1): an event must never be offered
+     * its OWN role as a prerequisite for itself — picking it would make the
+     * event unregisterable for everyone, since nobody could hold the role
+     * before they have it. $exclude_event_id, when given, drops that one
+     * event's role (`anchor_event_{$exclude_event_id}`) from the Events
+     * group; every other event's role is still offered.
+     *
+     * @param int $exclude_event_id The event this picker is being rendered
+     *                              for, or 0 to exclude nothing (e.g. a
+     *                              brand-new, not-yet-saved event has no own
+     *                              role to exclude yet).
      * @return array<string,array<string,string>> Group label => slug => name.
      */
-    public function prerequisite_role_choices() {
-        $groups = [
+    public function prerequisite_role_choices( $exclude_event_id = 0 ) {
+        $exclude_event_id = (int) $exclude_event_id;
+        $own_role         = $exclude_event_id > 0 ? 'anchor_event_' . $exclude_event_id : '';
+        $groups           = [
             __( 'Site roles', 'anchor-schema' ) => [],
             __( 'Events', 'anchor-schema' )     => [],
             __( 'Courses', 'anchor-schema' )    => [],
         ];
         foreach ( \wp_roles()->role_names as $slug => $name ) {
+            if ( $own_role !== '' && $slug === $own_role ) {
+                continue;
+            }
             $name = \translate_user_role( $name );
             if ( \strpos( $slug, 'anchor_event_' ) === 0 ) {
                 $groups[ __( 'Events', 'anchor-schema' ) ][ $slug ] = $name;
@@ -3363,7 +3379,7 @@ class Module {
                 <div class="anchor-event-field" style="grid-column:1/-1;">
                     <label for="anchor_event_required_roles"><?php echo esc_html__( 'Prerequisites', 'anchor-schema' ); ?></label>
                     <select id="anchor_event_required_roles" name="anchor_event_required_roles[]" multiple size="8" class="widefat">
-                        <?php foreach ( $this->prerequisite_role_choices() as $group => $roles ) : ?>
+                        <?php foreach ( $this->prerequisite_role_choices( (int) $event_id ) as $group => $roles ) : ?>
                             <optgroup label="<?php echo esc_attr( $group ); ?>">
                                 <?php foreach ( $roles as $slug => $name ) : ?>
                                     <option value="<?php echo esc_attr( $slug ); ?>" <?php selected( in_array( $slug, $selected, true ) ); ?>><?php echo esc_html( $name ); ?></option>

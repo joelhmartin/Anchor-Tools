@@ -23,6 +23,8 @@ class Module {
 
 	private static ?Module $instance = null;
 
+	public Services\EnrollmentService $enrollments;
+
 	public function __construct() {
 		self::$instance = $this;
 
@@ -40,6 +42,15 @@ class Module {
 			new Admin\CourseEditor();
 			new Admin\LessonEditor();
 			new Admin\QuizEditor();
+		}
+
+		$this->enrollments = new Services\EnrollmentService();
+
+		// Daily expiry sweep. Scheduled here rather than on activation because
+		// modules have no activation hook (see Migrations' note).
+		\add_action( Services\EnrollmentService::CRON_HOOK, [ $this->enrollments, 'sweep_expired' ] );
+		if ( ! \wp_next_scheduled( Services\EnrollmentService::CRON_HOOK ) ) {
+			\wp_schedule_event( \time() + HOUR_IN_SECONDS, 'daily', Services\EnrollmentService::CRON_HOOK );
 		}
 	}
 

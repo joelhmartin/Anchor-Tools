@@ -93,6 +93,9 @@ if ( get_option( 'anchor_courses_delete_data_on_uninstall' ) ) {
 			$anchor_courses_role->remove_cap( $anchor_courses_cap );
 		}
 	}
+
+	// Daily expiry sweep (Task 14).
+	wp_clear_scheduled_hook( 'anchor_courses_expire_sweep' );
 }
 
 /*

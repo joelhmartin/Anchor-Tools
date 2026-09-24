@@ -35,6 +35,10 @@ class Module {
 		\add_action( 'init', [ Content\CoursePostType::class, 'register' ] );
 		\add_action( 'init', [ Content\LessonPostType::class, 'register' ] );
 		\add_action( 'init', [ Content\QuizPostType::class, 'register' ] );
+
+		if ( \is_admin() ) {
+			new Admin\CourseEditor();
+		}
 	}
 
 	public static function instance(): ?Module {

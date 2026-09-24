@@ -1,0 +1,20 @@
+/* Anchor Courses - admin screens. */
+.anchor-courses-settings h4 { margin: 1.5em 0 .5em; padding-top: .75em; border-top: 1px solid #dcdcde; }
+.anchor-courses-settings h4:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.anchor-courses-field { margin: 0 0 1em; }
+.anchor-courses-roles { min-width: 24em; }
+.anchor-courses-modules { margin: 0; padding: 0; list-style: none; }
+.anchor-courses-module,
+.anchor-courses-question { border: 1px solid #c3c4c7; background: #fff; margin: 0 0 .75em; padding: .75em; border-radius: 3px; }
+.anchor-courses-module-head { display: flex; gap: .5em; align-items: center; flex-wrap: wrap; }
+.anchor-courses-module-handle,
+.anchor-courses-item-handle { cursor: move; color: #787c82; }
+.anchor-courses-items,
+.anchor-courses-answers,
+.anchor-courses-question-list { margin: .5em 0 0 1.5em; padding: 0; list-style: none; min-height: 2em; }
+.anchor-courses-item,
+.anchor-courses-answer { display: flex; gap: .5em; align-items: center; padding: .35em .5em; background: #f6f7f7; border: 1px solid #dcdcde; margin-bottom: .25em; border-radius: 3px; }
+.anchor-courses-item-type { font-size: 11px; text-transform: uppercase; color: #50575e; }
+.anchor-courses-report td.progress { min-width: 8em; }
+.anchor-courses-bar { background: #dcdcde; height: 8px; border-radius: 4px; overflow: hidden; }
+.anchor-courses-bar span { display: block; height: 100%; background: #2271b1; }

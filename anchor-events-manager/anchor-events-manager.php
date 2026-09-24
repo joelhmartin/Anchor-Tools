@@ -630,6 +630,11 @@ class Module {
         // child once its seats are gone.
         \add_action( 'admin_post_anchor_events_delete_closed_occurrence', [ $this, 'handle_delete_closed_occurrence' ] );
 
+        // Task 19: the console Basics "Event role" panel's Delete role and
+        // Grant-to-current-attendees backfill.
+        \add_action( 'admin_post_anchor_events_delete_role', [ $this, 'handle_delete_role' ] );
+        \add_action( 'admin_post_anchor_events_backfill_role', [ $this, 'handle_backfill_role' ] );
+
         // L14: GDPR personal-data exporter + eraser for attendee PII stored on seats.
         \add_filter( 'wp_privacy_personal_data_exporters', [ $this, 'register_privacy_exporter' ] );
         \add_filter( 'wp_privacy_personal_data_erasers', [ $this, 'register_privacy_eraser' ] );
@@ -3399,6 +3404,146 @@ class Module {
         </div>
         <?php
         return (string) \ob_get_clean();
+    }
+
+    /**
+     * The "Event role" panel on the console's Basics step (spec §7).
+     *
+     * Read-only except for one destructive action, which is why it is a POST
+     * with a nonce and a confirm dialog rather than a link.
+     *
+     * An event whose master switch is off gets ONE line saying so and pointing
+     * at where to change it (spec §4 preamble) — not an empty panel, which
+     * reads as a bug, and not a role slug, which does not exist.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function render_event_role_panel( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || ! $this->entitlements || ! Roster::current_user_can_manage() ) {
+            return '';
+        }
+        if ( ! $this->entitlements->enabled( $event_id ) ) {
+            return '<div class="anchor-event-field anchor-event-role-panel anchor-event-role-panel--off" style="grid-column:1/-1;">'
+                . '<span class="anchor-event-field-heading">' . \esc_html__( 'Event role', 'anchor-schema' ) . '</span>'
+                . '<p class="anchor-event-hint">'
+                . \esc_html__( 'Attendee access is off for this event — turn it on in Access.', 'anchor-schema' )
+                . '</p></div>';
+        }
+        $slug     = $this->entitlements->role_for( $event_id, false );
+        $redirect = \remove_query_arg( 'event_manager_notice' );
+        \ob_start();
+        ?>
+        <div class="anchor-event-field anchor-event-role-panel" style="grid-column:1/-1;">
+            <span class="anchor-event-field-heading"><?php echo esc_html__( 'Event role', 'anchor-schema' ); ?></span>
+            <?php if ( $slug === '' ) : ?>
+                <p class="anchor-event-hint"><?php echo esc_html__( 'No role yet — one is created the first time somebody is granted access.', 'anchor-schema' ); ?></p>
+            <?php else : ?>
+                <p>
+                    <code><?php echo esc_html( $slug ); ?></code> —
+                    <strong><?php echo esc_html( $this->entitlements->role_name( $event_id ) ); ?></strong>
+                    <?php
+                    $members = $this->entitlements->role_members( $event_id );
+                    printf(
+                        /* translators: %d: number of people holding the role. */
+                        esc_html( _n( '· %d holder', '· %d holders', $members, 'anchor-schema' ) ),
+                        (int) $members
+                    );
+                    ?>
+                </p>
+                <p class="anchor-event-hint"><?php echo esc_html__( 'The role is kept after the event runs, so you can keep granting access later. Deleting it removes it from everyone who holds it.', 'anchor-schema' ); ?></p>
+                <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>"
+                      onsubmit="return confirm('<?php echo esc_js( __( 'Delete this event role and remove it from every holder? This cannot be undone.', 'anchor-schema' ) ); ?>');">
+                    <input type="hidden" name="action" value="anchor_events_delete_role" />
+                    <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
+                    <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
+                    <?php \wp_nonce_field( 'anchor_events_delete_role_' . $event_id ); ?>
+                    <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Delete role', 'anchor-schema' ); ?></button>
+                </form>
+            <?php endif; ?>
+
+            <?php
+            /*
+             * The backfill (spec §4.4) is offered whether or not the role
+             * exists yet: the event that most needs it is one that was already
+             * selling when this shipped, which by definition has no role.
+             * Not destructive and idempotent, so no confirm dialog — running
+             * it twice is a no-op, which is the point.
+             */
+            ?>
+            <form method="post" action="<?php echo esc_url( \admin_url( 'admin-post.php' ) ); ?>">
+                <input type="hidden" name="action" value="anchor_events_backfill_role" />
+                <input type="hidden" name="event_id" value="<?php echo (int) $event_id; ?>" />
+                <input type="hidden" name="redirect_to" value="<?php echo esc_url( $redirect ); ?>" />
+                <?php \wp_nonce_field( 'anchor_events_backfill_role_' . $event_id ); ?>
+                <button type="submit" class="anchor-event-button-secondary"><?php echo esc_html__( 'Grant role to current attendees', 'anchor-schema' ); ?></button>
+                <span class="anchor-event-hint"><?php echo esc_html__( 'Gives the role (and an account, where they have none) to everyone with a confirmed seat right now. Safe to run more than once.', 'anchor-schema' ); ?></span>
+            </form>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /** Delete an event role (console Basics panel). */
+    public function handle_delete_role() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        \check_admin_referer( 'anchor_events_delete_role_' . $event_id );
+        if ( ! Roster::current_user_can_manage() || \get_post_type( $event_id ) !== self::CPT ) {
+            \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
+        }
+        $stripped = $this->entitlements ? $this->entitlements->delete_role( $event_id ) : 0;
+        $redirect = isset( $_POST['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_POST['redirect_to'] ) ) : \admin_url();
+        \wp_safe_redirect( \add_query_arg( 'anchor_events_role_deleted', (string) $stripped, $redirect ) );
+        exit;
+    }
+
+    /**
+     * Grant the event role to everyone holding a confirmed seat right now
+     * (spec §4.4 "Backfill").
+     *
+     * Same guard/redirect shape as handle_delete_role(), and the count comes
+     * back through the same query-arg notice mechanism.
+     */
+    public function handle_backfill_role() {
+        $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
+        \check_admin_referer( 'anchor_events_backfill_role_' . $event_id );
+        if ( ! Roster::current_user_can_manage() || \get_post_type( $event_id ) !== self::CPT ) {
+            \wp_die( \esc_html__( 'Unauthorized', 'anchor-schema' ) );
+        }
+        $enabled  = ( $this->entitlements && $this->entitlements->enabled( $event_id ) );
+        $granted  = $enabled ? $this->entitlements->backfill( $event_id ) : 0;
+        $redirect = isset( $_POST['redirect_to'] ) ? \esc_url_raw( \wp_unslash( $_POST['redirect_to'] ) ) : \admin_url();
+        \wp_safe_redirect( \add_query_arg( [
+            'anchor_events_role_backfilled' => (string) $granted,
+            'anchor_events_role_enabled'    => $enabled ? '1' : '0',
+        ], $redirect ) );
+        exit;
+    }
+
+    /**
+     * The wording for a finished backfill.
+     *
+     * Its own method so the notice reader and the test say the same thing —
+     * and so "nothing happened" can say WHY, which is the difference between
+     * a useful button and a mysterious one.
+     *
+     * @param int  $granted
+     * @param bool $enabled Whether the event's access switch was on.
+     * @return string
+     */
+    public function backfill_notice_message( $granted, $enabled ) {
+        if ( ! $enabled ) {
+            return \__( 'Attendee access is off for this event, so nobody was granted the role. Turn it on in Access first.', 'anchor-schema' );
+        }
+        if ( (int) $granted === 0 ) {
+            return \__( 'Everyone with a confirmed seat already has the event role.', 'anchor-schema' );
+        }
+        return \sprintf(
+            /* translators: %d: number of attendees newly granted the event role. */
+            \_n( '%d attendee was given the event role.', '%d attendees were given the event role.', (int) $granted, 'anchor-schema' ),
+            (int) $granted
+        );
     }
 
     /**
@@ -8454,8 +8599,32 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      * group_notice_map(), the same map admin_notices() renders.
      */
     private function render_event_manager_notice() {
+        // The Basics "Event role" panel's two actions (Task 19) redirect with
+        // their own query args rather than folding into the comma-separated
+        // event_manager_notice vocabulary below, because one of them (the
+        // backfill) carries a count that has to be interpolated into the
+        // sentence, not selected from a fixed map.
+        $out = '';
+        if ( isset( $_GET['anchor_events_role_deleted'] ) ) {
+            $stripped = (int) $_GET['anchor_events_role_deleted'];
+            $message  = $stripped > 0
+                ? sprintf(
+                    /* translators: %d: number of people the role was removed from. */
+                    _n( 'Event role deleted. Removed from %d holder.', 'Event role deleted. Removed from %d holders.', $stripped, 'anchor-schema' ),
+                    $stripped
+                )
+                : __( 'There was no role to delete.', 'anchor-schema' );
+            $out .= '<div class="anchor-event-manager-notice is-ok">' . esc_html( $message ) . '</div>';
+        }
+        if ( isset( $_GET['anchor_events_role_backfilled'] ) ) {
+            $granted = (int) $_GET['anchor_events_role_backfilled'];
+            $enabled = isset( $_GET['anchor_events_role_enabled'] ) && (string) $_GET['anchor_events_role_enabled'] !== '0';
+            $class   = $enabled ? 'is-ok' : 'is-warning';
+            $out    .= '<div class="anchor-event-manager-notice ' . esc_attr( $class ) . '">' . esc_html( $this->backfill_notice_message( $granted, $enabled ) ) . '</div>';
+        }
+
         if ( empty( $_GET['event_manager_notice'] ) ) {
-            return '';
+            return $out;
         }
         $map = [
             'saved'   => [ 'ok',  __( 'Event saved.', 'anchor-schema' ) ],
@@ -8475,7 +8644,6 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
 
         $raw = sanitize_text_field( wp_unslash( $_GET['event_manager_notice'] ) );
-        $out = '';
         foreach ( array_unique( array_filter( array_map( 'trim', explode( ',', $raw ) ) ) ) as $notice ) {
             if ( ! isset( $map[ $notice ] ) ) {
                 continue;
@@ -8928,6 +9096,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                             <option value="private" <?php selected( $status, 'private' ); ?>><?php echo esc_html__( 'Private', 'anchor-schema' ); ?></option>
                         </select>
                     </div>
+                    <?php if ( $is_edit ) : ?>
+                        <?php echo $this->render_event_role_panel( $event_id ); ?>
+                    <?php endif; ?>
                 </div>
             </div>
 

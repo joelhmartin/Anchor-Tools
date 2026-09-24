@@ -35,6 +35,8 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 			remove_role( 'anchor_event_' . $event_id );
 		}
 		$this->minted = [];
+		$_POST        = [];
+		$_REQUEST     = [];
 		parent::tear_down();
 	}
 
@@ -550,4 +552,270 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 
 		$this->assertTrue( $this->ent()->can_access_stream( $event_id, 0, $user_id ) );
 	}
+
+	/* -----------------------------------------------------------------
+	 * Console Basics: the "Event role" panel (Task 19)
+	 * --------------------------------------------------------------- */
+
+	/** The Basics panel shows the role, its members, the backfill and Delete. */
+	public function test_event_role_panel() {
+		$event_id = $this->enabled_event( [ 'title' => 'Panel Event' ] );
+		$this->ent()->grant( $event_id, self::factory()->user->create(), 'seat' );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$html = $this->module()->render_event_role_panel( $event_id );
+		$this->assertStringContainsString( 'anchor_event_' . $event_id, $html );
+		$this->assertStringContainsString( 'Event: Panel Event', $html );
+		$this->assertStringContainsString( '1', $html );
+		$this->assertStringContainsString( 'anchor_events_delete_role', $html );
+		$this->assertStringContainsString( 'anchor_events_backfill_role', $html );
+		$this->assertStringContainsString( 'Grant role to current attendees', $html );
+	}
+
+	/**
+	 * An event with no role yet still offers the backfill — that is precisely
+	 * the event that needs it (one that was selling before this shipped).
+	 */
+	public function test_event_role_panel_before_any_grant() {
+		$event_id = $this->enabled_event();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$html = $this->module()->render_event_role_panel( $event_id );
+		$this->assertStringContainsString( 'No role yet', $html );
+		$this->assertStringNotContainsString( 'anchor_events_delete_role', $html );
+		$this->assertStringContainsString( 'anchor_events_backfill_role', $html );
+	}
+
+	/** A switched-off event gets one line pointing at the switch, and nothing else. */
+	public function test_event_role_panel_when_the_switch_is_off() {
+		$event_id = $this->disabled_event(); // The default is TRUE, so say so.
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$html = $this->module()->render_event_role_panel( $event_id );
+
+		$this->assertStringContainsString( 'Attendee access is off for this event', $html );
+		$this->assertStringNotContainsString( 'anchor_events_delete_role', $html );
+		$this->assertStringNotContainsString( 'anchor_events_backfill_role', $html );
+		$this->assertStringNotContainsString( 'anchor_event_' . $event_id, $html, 'No slug is advertised for a role that does not exist.' );
+	}
+
+	/* -----------------------------------------------------------------
+	 * Backfill (spec §4.4, §8 (f))
+	 * --------------------------------------------------------------- */
+
+	/** Every confirmed seat is granted, once, and accounts are created as needed. */
+	public function test_backfill_grants_every_confirmed_seat_once() {
+		// Built switched-OFF so the seats exist without having been granted —
+		// the exact shape of an event that was selling before this shipped.
+		$event_id = $this->disabled_event();
+		$known    = self::factory()->user->create( [ 'user_email' => 'known-bf@example.test' ] );
+		$this->make_seat( $event_id, [ 'name' => 'Known', 'email' => 'known-bf@example.test' ] );
+		$this->make_seat( $event_id, [ 'name' => 'Guest', 'email' => 'guest-bf@example.test', 'seat_index' => 2 ] );
+
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $known ) );
+		$this->assertNull( get_user_by( 'email', 'guest-bf@example.test' ) ?: null );
+
+		// The operator ticks Access back on, then runs the backfill.
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+
+		$this->assertSame( 2, $this->ent()->backfill( $event_id ) );
+
+		$guest = get_user_by( 'email', 'guest-bf@example.test' );
+		$this->assertInstanceOf( 'WP_User', $guest, 'The backfill creates the accounts it needs.' );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $known ) );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, (int) $guest->ID ) );
+		$this->assertSame( 'seat', $this->ent()->grant_record( $event_id, $known )['source'] );
+	}
+
+	/** Idempotent: a second run grants nobody. */
+	public function test_backfill_is_idempotent() {
+		$event_id = $this->enabled_event();
+		$this->make_seat( $event_id, [ 'name' => 'Already', 'email' => 'already-bf@example.test' ] );
+
+		// The seat was born confirmed, so the hook already granted it.
+		$this->assertSame( 0, $this->ent()->backfill( $event_id ) );
+		$this->assertSame( 0, $this->ent()->backfill( $event_id ) );
+	}
+
+	/** Pending, waitlisted and cancelled seats are skipped. */
+	public function test_backfill_skips_seats_that_are_not_confirmed() {
+		$event_id = $this->disabled_event();
+		$this->make_seat( $event_id, [
+			'name'   => 'Pending',
+			'email'  => 'pending-bf@example.test',
+			'status' => \Anchor\Events\Registrations::STATUS_PENDING,
+		] );
+		$cancelled = $this->make_seat( $event_id, [ 'name' => 'Gone', 'email' => 'gone-bf@example.test', 'seat_index' => 2 ] );
+		$this->registrations()->update_status( $cancelled, \Anchor\Events\Registrations::STATUS_CANCELLED );
+
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+
+		$this->assertSame( 0, $this->ent()->backfill( $event_id ) );
+		$this->assertNull( get_user_by( 'email', 'pending-bf@example.test' ) ?: null );
+		$this->assertNull( get_user_by( 'email', 'gone-bf@example.test' ) ?: null );
+	}
+
+	/** It refuses outright when the switch is off, and says so. */
+	public function test_backfill_refuses_when_the_switch_is_off() {
+		$event_id = $this->disabled_event();
+		$this->make_seat( $event_id, [ 'name' => 'Nope', 'email' => 'nope-bf@example.test' ] );
+		$before = count_users()['total_users'];
+
+		$this->assertSame( 0, $this->ent()->backfill( $event_id ) );
+		$this->assertSame( $before, count_users()['total_users'] );
+		$this->assertNull( get_role( 'anchor_event_' . $event_id ) );
+		$this->assertStringContainsString(
+			'Attendee access is off',
+			$this->module()->backfill_notice_message( 0, false ),
+			'The operator is told WHY nothing happened, not just that nothing happened.'
+		);
+	}
+
+	/* -----------------------------------------------------------------
+	 * Handlers: admin-post entry points for Delete role / backfill
+	 *
+	 * wp_die() is intercepted by WP's test suite and thrown as a
+	 * WPDieException instead of terminating the process (same technique as
+	 * Test_Event_Manager_Save), so the nonce/capability/object guards are
+	 * directly testable through the real handler entry points. The success
+	 * paths end in wp_safe_redirect()+exit, so those are driven through the
+	 * wp_redirect trap below (mirrors Test_Roster).
+	 * --------------------------------------------------------------- */
+
+	public function trap_redirect( $location ) {
+		throw new Anchor_Entitlements_Redirect_Signal( (string) $location );
+	}
+
+	public function test_handle_delete_role_dies_on_invalid_nonce() {
+		$event_id = $this->enabled_event();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST = [
+			'event_id' => $event_id,
+			'_wpnonce' => 'invalid-nonce',
+		];
+		$_REQUEST = $_POST;
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_delete_role();
+	}
+
+	public function test_handle_delete_role_dies_for_a_non_manager() {
+		$event_id = $this->enabled_event();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$_POST = [
+			'event_id' => $event_id,
+			'_wpnonce' => wp_create_nonce( 'anchor_events_delete_role_' . $event_id ),
+		];
+		$_REQUEST = $_POST;
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_delete_role();
+	}
+
+	public function test_handle_delete_role_dies_for_a_non_event_post() {
+		$page_id = self::factory()->post->create( [ 'post_type' => 'page' ] );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST = [
+			'event_id' => $page_id,
+			'_wpnonce' => wp_create_nonce( 'anchor_events_delete_role_' . $page_id ),
+		];
+		$_REQUEST = $_POST;
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_delete_role();
+	}
+
+	/** The success path strips every holder and reports the count via redirect. */
+	public function test_handle_delete_role_strips_holders_and_reports_the_count() {
+		$event_id = $this->enabled_event();
+		$this->ent()->grant( $event_id, self::factory()->user->create(), 'seat' );
+		$this->ent()->grant( $event_id, self::factory()->user->create(), 'seat' );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$_POST = [
+			'event_id'    => $event_id,
+			'redirect_to' => 'https://example.org/manager/',
+			'_wpnonce'    => wp_create_nonce( 'anchor_events_delete_role_' . $event_id ),
+		];
+		$_REQUEST = $_POST;
+
+		add_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
+		try {
+			$this->module()->handle_delete_role();
+			$this->fail( 'handle_delete_role() did not redirect.' );
+		} catch ( Anchor_Entitlements_Redirect_Signal $e ) {
+			$this->assertStringContainsString( 'anchor_events_role_deleted=2', $e->getMessage() );
+		} finally {
+			remove_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
+		}
+
+		$this->assertNull( get_role( 'anchor_event_' . $event_id ) );
+	}
+
+	public function test_handle_backfill_role_dies_on_invalid_nonce() {
+		$event_id = $this->enabled_event();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST = [
+			'event_id' => $event_id,
+			'_wpnonce' => 'invalid-nonce',
+		];
+		$_REQUEST = $_POST;
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_backfill_role();
+	}
+
+	public function test_handle_backfill_role_dies_for_a_non_manager() {
+		$event_id = $this->enabled_event();
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$_POST = [
+			'event_id' => $event_id,
+			'_wpnonce' => wp_create_nonce( 'anchor_events_backfill_role_' . $event_id ),
+		];
+		$_REQUEST = $_POST;
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_backfill_role();
+	}
+
+	public function test_handle_backfill_role_dies_for_a_non_event_post() {
+		$page_id = self::factory()->post->create( [ 'post_type' => 'page' ] );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST = [
+			'event_id' => $page_id,
+			'_wpnonce' => wp_create_nonce( 'anchor_events_backfill_role_' . $page_id ),
+		];
+		$_REQUEST = $_POST;
+
+		$this->expectException( WPDieException::class );
+		$this->module()->handle_backfill_role();
+	}
+
+	/** The success path reports the granted count and whether the switch was on. */
+	public function test_handle_backfill_role_reports_the_granted_count() {
+		$event_id = $this->disabled_event();
+		$this->make_seat( $event_id, [ 'name' => 'Bf', 'email' => 'bf-handler@example.test' ] );
+		update_post_meta( $event_id, '_anchor_event_access_role_enabled', true );
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$_POST = [
+			'event_id'    => $event_id,
+			'redirect_to' => 'https://example.org/manager/',
+			'_wpnonce'    => wp_create_nonce( 'anchor_events_backfill_role_' . $event_id ),
+		];
+		$_REQUEST = $_POST;
+
+		add_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
+		try {
+			$this->module()->handle_backfill_role();
+			$this->fail( 'handle_backfill_role() did not redirect.' );
+		} catch ( Anchor_Entitlements_Redirect_Signal $e ) {
+			$this->assertStringContainsString( 'anchor_events_role_backfilled=1', $e->getMessage() );
+			$this->assertStringContainsString( 'anchor_events_role_enabled=1', $e->getMessage() );
+		} finally {
+			remove_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
+		}
+	}
 }
+
+/** Thrown from the wp_redirect filter so the handlers' exit never runs. */
+class Anchor_Entitlements_Redirect_Signal extends \Exception {}

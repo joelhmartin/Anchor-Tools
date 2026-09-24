@@ -507,18 +507,71 @@ class Entitlements {
      * method does its own event lookup only to short-circuit before touching
      * the seat at all when it isn't even a real event.
      *
+     * The return is the truth about the ROLE, not about grant()'s own
+     * "did the record change" signal (which would also fire on a bare
+     * source-metadata rewrite) — backfill() needs "was this person newly
+     * given the role", so it snapshots holds_role() before calling grant().
+     *
      * @param int $seat_id
+     * @return bool True when the role was NEWLY added to the seat's account.
      */
     private function grant_for_seat( $seat_id ) {
         $seat_id  = (int) $seat_id;
         $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
         if ( $event_id <= 0 ) {
-            return;
+            return false;
         }
         $user_id = $this->ensure_user( [ 'id' => $seat_id ] );
-        if ( $user_id > 0 ) {
-            $this->grant( $event_id, $user_id, self::SOURCE_SEAT );
+        if ( $user_id <= 0 ) {
+            return false;
         }
+        $already = $this->holds_role( $event_id, $user_id );
+        $this->grant( $event_id, $user_id, self::SOURCE_SEAT );
+        return ! $already;
+    }
+
+    /**
+     * Give the event role to everyone with a confirmed seat right now
+     * (spec §4.4 "Backfill", §8 (f)).
+     *
+     * This is how an event that was already selling when the feature shipped —
+     * or one whose switch was off for a while — is reconciled with the switch.
+     * Without it, turning access back on would only ever affect future seats,
+     * and the reversible off switch would be a one-way door in practice.
+     *
+     * It is a LOOP OVER SEATS, not a second granting implementation:
+     * grant_for_seat() already resolves or creates the account, writes
+     * _anchor_event_user_id, mints the role, adds it, records the grant and
+     * fires the action, so a backfilled attendee is indistinguishable from one
+     * who registered live. Seats come from Registrations::query_seats(), the
+     * module's existing seat query, rather than a parallel WP_Query that would
+     * have to agree with it forever.
+     *
+     * Idempotent: grant_for_seat() reports whether it actually added the role,
+     * so a second run returns 0 and changes nothing.
+     *
+     * @param int $event_id
+     * @return int How many attendees were NEWLY granted.
+     */
+    public function backfill( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( ! $this->enabled( $event_id ) ) {
+            return 0; // Not a silent no-op: handle_backfill_role() says why.
+        }
+        $result = $this->module->registrations->query_seats( [
+            'event_id' => $event_id,
+            'status'   => Registrations::STATUS_CONFIRMED,
+            'per_page' => -1,
+        ] );
+
+        $granted = 0;
+        foreach ( (array) ( $result['items'] ?? [] ) as $seat ) {
+            $seat_id = (int) ( $seat['id'] ?? 0 );
+            if ( $seat_id > 0 && $this->grant_for_seat( $seat_id ) ) {
+                $granted++;
+            }
+        }
+        return $granted;
     }
 
     /**

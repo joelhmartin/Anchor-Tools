@@ -59,6 +59,12 @@ class Test_Courses_Progress_Api extends Anchor_Courses_TestCase {
 		$this->assertSame( 100.0, anchor_courses_get_progress( $this->user, $this->course )->percent );
 	}
 
+	public function test_the_form_handler_is_wired_to_both_admin_post_hooks() {
+		$actions = new Actions();
+		$this->assertNotFalse( has_action( 'admin_post_anchor_courses_complete_lesson', [ $actions, 'handle_complete_lesson' ] ) );
+		$this->assertNotFalse( has_action( 'admin_post_nopriv_anchor_courses_complete_lesson', [ $actions, 'handle_complete_lesson' ] ) );
+	}
+
 	public function test_the_form_handler_completes_the_lesson_and_redirects() {
 		wp_set_current_user( $this->user );
 		$_POST = [

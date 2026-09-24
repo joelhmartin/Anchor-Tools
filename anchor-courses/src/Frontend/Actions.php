@@ -71,13 +71,14 @@ final class Actions {
 		$course_id = \absint( $_POST['course_id'] ?? $_GET['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
 		$lesson_id = \absint( $_POST['lesson_id'] ?? $_GET['lesson_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
 
-		if ( ! \is_user_logged_in() ) {
-			$this->redirect( 'login_required', $lesson_id );
-		}
-
+		// Nonce first, then identity - the house order for every form handler.
 		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_POST['_wpnonce'] ?? $_GET['_wpnonce'] ?? '' ) ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
 		if ( ! \wp_verify_nonce( $nonce, self::NONCE_COMPLETE . '_' . $lesson_id ) ) {
 			$this->redirect( 'bad_nonce', $lesson_id );
+		}
+
+		if ( ! \is_user_logged_in() ) {
+			$this->redirect( 'login_required', $lesson_id );
 		}
 
 		$result = $this->progress->complete_lesson( \get_current_user_id(), $course_id, $lesson_id );

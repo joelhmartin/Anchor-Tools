@@ -57,8 +57,13 @@ class Module {
 		}
 
 		$this->enrollments = new Services\EnrollmentService();
-		$this->progress    = new Services\ProgressService( $this->enrollments );
-		$this->quizzes     = new Services\QuizService( $this->progress, $this->enrollments );
+
+		// Holding anchor_course_{id} IS enrolment (design spec 3.1). Registered
+		// here, once, so the listener and the service share one instance.
+		Support\Roles::register_listeners( $this->enrollments );
+
+		$this->progress = new Services\ProgressService( $this->enrollments );
+		$this->quizzes  = new Services\QuizService( $this->progress, $this->enrollments );
 
 		// admin-post.php, not wp-admin, so it must be constructed unconditionally
 		// (not inside the is_admin() block above) - the handler runs on requests

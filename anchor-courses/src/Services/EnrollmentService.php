@@ -9,6 +9,7 @@ use Anchor\Courses\Database\EnrollmentRepository;
 use Anchor\Courses\Domain\Enrollment;
 use Anchor\Courses\Support\Clock;
 use Anchor\Courses\Support\Log;
+use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -95,32 +96,19 @@ final class EnrollmentService {
 	 * Prerequisite roles (course-completion or event-attendance slugs) the user
 	 * does not hold, by display name.
 	 *
+	 * Thin wrapper: "which of these role slugs is the user missing, by display
+	 * name" is a role question, not an enrolment one, and `Support\Roles`
+	 * already answers it generically for the Learners tab and the listener's
+	 * own reapply guard. This is the ONE place that decides what "a course's
+	 * prerequisites" means (its `_anchor_course_prerequisites` meta); Roles is
+	 * the one place that decides what "missing" means.
+	 *
 	 * @return string[]
 	 */
 	public function missing_prerequisites( int $user_id, int $course_id ): array {
-		$required = (array) CourseEditor::setting( $course_id, 'prerequisites' );
-		if ( [] === $required ) {
-			return [];
-		}
+		$required = \array_map( 'strval', (array) CourseEditor::setting( $course_id, 'prerequisites' ) );
 
-		$user = \get_userdata( $user_id );
-		if ( ! $user ) {
-			return [];
-		}
-
-		$held    = \array_map( 'strval', (array) $user->roles );
-		$missing = [];
-
-		foreach ( $required as $slug ) {
-			$slug = (string) $slug;
-			if ( \in_array( $slug, $held, true ) ) {
-				continue;
-			}
-			$role      = \wp_roles()->roles[ $slug ] ?? null;
-			$missing[] = $role ? (string) $role['name'] : $slug;
-		}
-
-		return $missing;
+		return Roles::missing( $user_id, $required );
 	}
 
 	/**
@@ -132,6 +120,13 @@ final class EnrollmentService {
 	public function enroll( int $user_id, int $course_id, array $args = [] ) {
 		$existing = EnrollmentRepository::find( $user_id, $course_id );
 		if ( $existing instanceof Enrollment ) {
+			// A row a loss policy actually closed (cancel/expire) must not sit
+			// there closed while the user holds the role again - "holding it IS
+			// enrolment" (design spec 3.1) cuts both ways. `completed` is left
+			// alone: finishing a course is not undone by a role round-trip.
+			if ( \in_array( $existing->status, [ 'cancelled', 'expired' ], true ) ) {
+				return $this->set_status( $user_id, $course_id, 'enrolled' ) ?? $existing;
+			}
 			return $existing;
 		}
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Courses\Support;
 
 use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Services\EnrollmentService;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -27,13 +28,21 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * so the owner can go on granting after the fact; the course editor's Course
  * Role panel is the only thing that removes one.
  *
- * This class does NOT grant or revoke the access role, and does not listen for
- * it being granted - that is Task 20 (`EnrollmentService::enroll( bypass_checks )`
- * on a gain, a role-loss policy on a loss). What it DOES guarantee is that
- * once granted, a course role survives everything except that one delete
- * action - including an admin changing a learner's PRIMARY role, which core
- * `WP_User::set_role()` would otherwise silently strip (see
- * reapply_after_set_role()).
+ * This class also owns the ONE listener that turns a role change into an
+ * enrolment row (Task 20): `register_listeners()` hooks core's `add_user_role`,
+ * `set_user_role` and `remove_user_role`, so a grant from anywhere - the
+ * Learners tab, WooCommerce, WP-CLI, wp-admin's user screen, another plugin -
+ * calls `EnrollmentService::enroll( bypass_checks )`, and a loss runs the
+ * `anchor_courses_role_loss_policy` filter (default `keep`: access outlives
+ * the thing that granted it). `grant_access()`/`revoke_access()` are the
+ * supported way in and out; everything else that merely adds/removes the raw
+ * role is still caught by the listener, just recorded with `source = 'role'`.
+ *
+ * A course role survives everything except a deliberate `delete_role()` call
+ * or a `cancel`/`expire` loss policy - including an admin changing a
+ * learner's PRIMARY role, which core `WP_User::set_role()` would otherwise
+ * silently strip (see reapply_after_set_role(), which now defers to whatever
+ * the loss policy just decided rather than blindly restoring the role).
  */
 final class Roles {
 
@@ -221,6 +230,230 @@ final class Roles {
 	}
 
 	/* ---------------------------------------------------------------------
+	 * Enrolment - the role listener (Task 20)
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * Why the role currently being added was added.
+	 *
+	 * WordPress's role hooks carry no reason (deviation D15), so grant_access()
+	 * parks it here for the length of one add_role() call and the listener -
+	 * which runs INSIDE that call - reads it. Always cleared in a finally, so a
+	 * value can never attach itself to somebody else's grant.
+	 *
+	 * @var array{source:string,source_id:string}|null
+	 */
+	private static ?array $context = null;
+
+	/** @var EnrollmentService|null Set once, by register_listeners(). */
+	private static ?EnrollmentService $enrollments = null;
+
+	/**
+	 * Start listening to WordPress's role changes.
+	 *
+	 * These three core actions are the module's ONE enrolment entry point. A
+	 * purchase, an admin, WP-CLI and the wp-admin user screen all arrive here.
+	 */
+	public static function register_listeners( EnrollmentService $enrollments ): void {
+		self::$enrollments = $enrollments;
+
+		\add_action( 'add_user_role', [ self::class, 'on_role_added' ], 10, 2 );
+		\add_action( 'set_user_role', [ self::class, 'on_set_user_role' ], 10, 3 );
+		\add_action( 'remove_user_role', [ self::class, 'on_role_removed' ], 10, 2 );
+	}
+
+	private static function enrollments(): EnrollmentService {
+		return self::$enrollments ?? ( self::$enrollments = new EnrollmentService() );
+	}
+
+	/**
+	 * Give a user access to a course, and say why.
+	 *
+	 * The supported way to enrol somebody from anywhere. Asks can_enroll()
+	 * first, so an unmet prerequisite refuses the grant rather than letting
+	 * somebody in and hoping - which is what makes prerequisites bind on the
+	 * Learners tab and at the checkout alike.
+	 *
+	 * @param string $source    manual|woocommerce|role|... - recorded on the row.
+	 * @param string $source_id Order id, actor id, whatever identifies it.
+	 * @return true|\WP_Error
+	 */
+	public static function grant_access( int $user_id, int $course_id, string $source = 'manual', string $source_id = '' ) {
+		$user = \get_userdata( $user_id );
+		if ( ! $user instanceof \WP_User ) {
+			return new \WP_Error( 'no_user', \__( 'That user does not exist.', 'anchor-schema' ) );
+		}
+
+		$slug = self::ensure_access_role( $course_id );
+		if ( '' === $slug ) {
+			return new \WP_Error( 'no_course', \__( 'That course has no access role - is it published?', 'anchor-schema' ) );
+		}
+
+		if ( self::user_has( $user_id, $slug ) ) {
+			return true; // Already in (brief 26).
+		}
+
+		$allowed = self::enrollments()->can_enroll( $user_id, $course_id );
+		if ( \is_wp_error( $allowed ) ) {
+			return $allowed;
+		}
+
+		self::$context = [ 'source' => $source, 'source_id' => $source_id ];
+		try {
+			$user->add_role( $slug ); // Fires add_user_role -> on_role_added().
+		} finally {
+			self::$context = null;
+		}
+
+		Log::write( 'access_granted', [ 'user' => $user_id, 'course' => $course_id, 'source' => $source ] );
+
+		/**
+		 * A user just gained access to a course.
+		 *
+		 * @param int    $user_id
+		 * @param int    $course_id
+		 * @param string $source
+		 * @param string $source_id
+		 */
+		\do_action( 'anchor_courses_access_granted', $user_id, $course_id, $source, $source_id );
+
+		return true;
+	}
+
+	/**
+	 * Take access away.
+	 *
+	 * Removes the role; what that means for the enrolment row is decided in one
+	 * place, by the loss policy in on_role_removed(), whoever took it away.
+	 */
+	public static function revoke_access( int $user_id, int $course_id, string $source = 'manual', string $source_id = '' ): bool {
+		$user = \get_userdata( $user_id );
+		$slug = self::access_slug( $course_id );
+
+		if ( ! $user instanceof \WP_User || ! self::user_has( $user_id, $slug ) ) {
+			return false;
+		}
+
+		self::$context = [ 'source' => $source, 'source_id' => $source_id ];
+		try {
+			$user->remove_role( $slug ); // Fires remove_user_role -> on_role_removed().
+		} finally {
+			self::$context = null;
+		}
+
+		Log::write( 'access_revoked', [ 'user' => $user_id, 'course' => $course_id, 'source' => $source ] );
+
+		/**
+		 * A user just lost access to a course.
+		 *
+		 * @param int    $user_id
+		 * @param int    $course_id
+		 * @param string $source
+		 */
+		\do_action( 'anchor_courses_access_revoked', $user_id, $course_id, $source );
+
+		return true;
+	}
+
+	/* ---------------------------------------------------------------------
+	 * The listeners
+	 * ------------------------------------------------------------------- */
+
+	/** Core `add_user_role( $user_id, $role )`. */
+	public static function on_role_added( $user_id, $role ): void {
+		self::enroll_for_role( (int) $user_id, (string) $role );
+	}
+
+	/**
+	 * Core `set_user_role( $user_id, $role, $old_roles )` - the user's roles
+	 * were REPLACED, so this is a gain and a pile of losses at once.
+	 */
+	public static function on_set_user_role( $user_id, $role, $old_roles = [] ): void {
+		$user_id = (int) $user_id;
+		$role    = (string) $role;
+
+		self::enroll_for_role( $user_id, $role );
+
+		foreach ( (array) $old_roles as $lost ) {
+			$lost = (string) $lost;
+			if ( $lost === $role ) {
+				continue;
+			}
+			$course_id = self::is_access_slug( $lost );
+			if ( null !== $course_id ) {
+				self::apply_loss_policy( $user_id, $course_id, $lost );
+			}
+		}
+	}
+
+	/** Core `remove_user_role( $user_id, $role )`. */
+	public static function on_role_removed( $user_id, $role ): void {
+		$course_id = self::is_access_slug( (string) $role );
+		if ( null !== $course_id ) {
+			self::apply_loss_policy( (int) $user_id, $course_id, (string) $role );
+		}
+	}
+
+	/**
+	 * A user now holds this role. If it is an access role, that IS enrolment.
+	 *
+	 * bypass_checks is deliberate: by the time this runs the role is held, and
+	 * refusing here would leave somebody with access and no row - the worst of
+	 * both answers. The gate lives in grant_access(), before the role is added.
+	 */
+	private static function enroll_for_role( int $user_id, string $role ): void {
+		$course_id = self::is_access_slug( $role );
+		if ( null === $course_id || $user_id <= 0 ) {
+			return;
+		}
+
+		$context = self::$context ?? [ 'source' => 'role', 'source_id' => '' ];
+
+		$result = self::enrollments()->enroll(
+			$user_id,
+			$course_id,
+			[
+				'bypass_checks' => true,
+				'source'        => (string) $context['source'],
+				'source_id'     => (string) $context['source_id'],
+			]
+		);
+
+		if ( \is_wp_error( $result ) ) {
+			Log::write( 'role_enroll_failed', [ 'user' => $user_id, 'course' => $course_id, 'code' => $result->get_error_code() ] );
+		}
+	}
+
+	/**
+	 * What losing the access role does to the enrolment.
+	 *
+	 * Default `keep`: access outlives the thing that granted it, and the
+	 * progress rows stay, so re-adding the role resumes the learner exactly
+	 * where they stopped (design spec 3.1).
+	 */
+	public static function apply_loss_policy( int $user_id, int $course_id, string $role ): void {
+		if ( $user_id <= 0 || $course_id <= 0 ) {
+			return;
+		}
+
+		/**
+		 * What happens to an enrolment when its access role is lost.
+		 *
+		 * @param string $policy   keep|expire|cancel. Default 'keep'.
+		 * @param int    $user_id
+		 * @param int    $course_id
+		 * @param string $role
+		 */
+		$policy = (string) \apply_filters( 'anchor_courses_role_loss_policy', 'keep', $user_id, $course_id, $role );
+
+		if ( 'cancel' === $policy ) {
+			self::enrollments()->cancel( $user_id, $course_id );
+		} elseif ( 'expire' === $policy ) {
+			self::enrollments()->expire( $user_id, $course_id );
+		}
+	}
+
+	/* ---------------------------------------------------------------------
 	 * Completion grants
 	 * ------------------------------------------------------------------- */
 
@@ -297,10 +530,20 @@ final class Roles {
 	 * learner an unrelated new primary role would silently un-enrol them and
 	 * erase anything they had completed, which contradicts "holding it IS
 	 * enrolment, and neither role is ever deleted automatically" (design spec
-	 * 3.1). This is a course-role integrity guarantee, not the Task 20
-	 * grant/revoke listener - it never calls EnrollmentService and does not
-	 * care whether the role is being gained or lost, only that a role already
-	 * held does not vanish as a side effect of a different change.
+	 * 3.1).
+	 *
+	 * This runs on the SAME `set_user_role` firing as on_set_user_role() (Task
+	 * 20), which is registered second and so runs after this - but the loss
+	 * policy for a role dropped by set_role() has already been decided by the
+	 * time either listener runs: core's own set_role() fires `remove_user_role`
+	 * for every stripped role, synchronously, BEFORE it fires `set_user_role`
+	 * (see class-wp-user.php), and on_role_removed() is what applies the policy.
+	 * That means for an ACCESS role this method only needs to ask "is the
+	 * enrolment still active?": `keep` (the default) leaves it active, so the
+	 * role is restored exactly as before; a site-configured `cancel`/`expire`
+	 * has already ended it, so this defers rather than fighting that decision
+	 * back on. A COMPLETION role carries no enrolment and is always restored -
+	 * nothing governs its loss.
 	 *
 	 * @param int      $user_id
 	 * @param string   $new_role
@@ -319,10 +562,17 @@ final class Roles {
 
 		$held = \array_map( 'strval', (array) $user->roles );
 		foreach ( $stripped as $slug ) {
-			if ( ! \in_array( $slug, $held, true ) ) {
-				$user->add_role( $slug );
-				Log::write( 'role_reapplied_after_set_role', [ 'user' => $user_id, 'role' => $slug ] );
+			if ( \in_array( $slug, $held, true ) ) {
+				continue;
 			}
+
+			$course_id = self::is_access_slug( $slug );
+			if ( null !== $course_id && ! self::enrollments()->is_enrolled( $user_id, $course_id ) ) {
+				continue; // The loss was intentional (a cancel/expire policy) - do not put it back.
+			}
+
+			$user->add_role( $slug );
+			Log::write( 'role_reapplied_after_set_role', [ 'user' => $user_id, 'role' => $slug ] );
 		}
 	}
 }

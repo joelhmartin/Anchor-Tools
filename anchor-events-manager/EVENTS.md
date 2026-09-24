@@ -332,6 +332,24 @@ WordPress never rewrote, produces) the room is `add_query_arg( 'live', '1',
 $permalink )` instead, since a rewrite endpoint has nothing to append a path
 segment to.
 
+**A pre-existing legacy `virtual` event now qualifies too, with no author
+action.** Two read-time bridges make this automatic: `event_level_embed()`
+resolves a stored `virtual_url` through `Embed::normalize()` as the event's
+stream embed whenever no `stream_embed` is already saved and the URL's host is
+one `Embed::providers()` recognises (Vimeo, YouTube, Zoom, or a site-added
+host) — a Zoom link resolves and then renders in the room as a "Join on Zoom"
+button, exactly like a freshly-authored one. And `default_modality_for()`
+resolves the implicit session's modality to `virtual` whenever
+`stream_default_modality` was **never stored** (`metadata_exists()` false) and
+the legacy `virtual` flag is on — so an event authored before this feature
+existed, that only ever had the old Virtual Event checkbox and a join URL, has
+a real, resolvable stream: `has_stream()` is true, `room_url()` is non-empty
+(access defaults on), and its next confirmation switches from "Join the
+event" to "Join the livestream" pointing at `{room_link}` (see `EMAILS.md`'s
+CTA-order note). An author who explicitly saves `stream_default_modality` as
+`in_person` on such an event overrides the bridge, since that is a deliberate,
+stored choice rather than an absence.
+
 The room is `private, no-store`, carries `X-Robots-Tag: noindex, nofollow` and a
 robots meta tag, and is not in the sitemap (core sitemaps list post permalinks;
 a rewrite endpoint is never enumerated). `Event_Schema` publishes the room URL
@@ -443,6 +461,7 @@ and each ticket tier's `modality` field (`in_person` \| `virtual`, default
 - `backfill( $event_id ): int` — grant the role to every confirmed seat now, creating accounts as needed. Returns how many were newly granted; idempotent; returns 0 when `enabled()` is false. This is how an event that was already selling is reconciled with the switch.
 - `role_for( $event_id, $create = true ): string` / `role_name()` / `role_members()` / `delete_role()`
 - `grant( $event_id, $user_id, $source = 'seat' )` / `revoke( … )` — `$source` is `seat` or `manual`; a manual grant is never downgraded by a seat cancellation.
+- `downgrade_manual_grant_to_seat( $event_id, $user_id ): bool` — the one legitimate manual → seat rewrite, bypassing `grant()`'s "manual outranks seat" guard on purpose. `Roster::revoke_access()` calls it when an operator revokes a manual grant on someone who still independently holds a confirmed seat: the role stays, but the record now reads `seat`, so that seat's own later cancellation can go on to revoke it.
 - `ensure_user( array $seat ): int` — resolve or create the account a seat entitles.
 - `login_token( $user_id, $event_id )` / `verify_login_token( $token, $event_id )` / `room_url_for( $user_id, $event_id )`
 - `meets_prerequisites( $event_id, $user_id = 0 ): bool` / `prerequisite_message( $event_id ): string`

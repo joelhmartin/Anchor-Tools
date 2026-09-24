@@ -402,6 +402,8 @@ class Module {
         // Stream embed normaliser (virtual-events spec §5.4) — static, no
         // instance: it holds no state and hooks nothing.
         require_once $dir . 'class-embed.php';
+        // Room state machine (virtual-events spec §5.3) — pure, static.
+        require_once $dir . 'class-stream-state.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
@@ -11459,6 +11461,27 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $stored;
         }
         return $this->derive_registration_mode( $event_id );
+    }
+
+    /**
+     * May this event hold a hosted stream at all? (spec §2 decision 1)
+     *
+     * Only events registered THROUGH this plugin: we only know who someone is
+     * when we took the registration. External-registration events never get a
+     * room, and neither does a group PARENT — each of its dates has its own.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function stream_capable( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || \get_post_type( $event_id ) !== self::CPT ) {
+            return false;
+        }
+        if ( $this->occurrences && $this->occurrences->is_group_parent( $event_id ) ) {
+            return false;
+        }
+        return \in_array( $this->registration_mode( $event_id ), [ 'wc', 'free' ], true );
     }
 
     /**

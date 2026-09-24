@@ -316,6 +316,9 @@ class Module {
     /** @var Event_Schema|null schema.org/Event JSON-LD data builder (Phase 4, Task 4.1; always loaded, read-only). */
     public $event_schema = null;
 
+    /** @var Entitlements|null Event roles + access (spec §4; always loaded). */
+    public $entitlements = null;
+
     /**
      * Seat lifecycle emails queued for the end of this request, `seat_id => type`
      * ('cancellation' | 'promotion').
@@ -404,6 +407,9 @@ class Module {
         require_once $dir . 'class-embed.php';
         // Room state machine (virtual-events spec §5.3) — pure, static.
         require_once $dir . 'class-stream-state.php';
+        // Event roles / access (virtual-events spec §4) — free + paid, no
+        // WooCommerce dependency.
+        require_once $dir . 'class-entitlements.php';
         $this->registrations = new Registrations( $this );
         // Roster is loaded unconditionally (free + paid) — spec §3 / finding #25.
         $this->roster = new Roster( $this );
@@ -420,6 +426,11 @@ class Module {
         // read-only data projection, no hooks of its own. Front-end emission
         // (wp_head) is a later task.
         $this->event_schema = new Event_Schema( $this );
+
+        // Event roles / access (virtual-events spec §4) — free + paid, no
+        // WooCommerce dependency. Constructed like Registrations/Roster so
+        // $module->entitlements is the one handle every surface uses.
+        $this->entitlements = new Entitlements( $this );
 
         // WC-gated integration loader (spec §3). Loads only when WooCommerce is
         // active; $this->woocommerce stays null otherwise and is never dereferenced.

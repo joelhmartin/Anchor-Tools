@@ -790,4 +790,72 @@ class Entitlements {
         }
         return $best;
     }
+
+    /* ---------------------------------------------------------------------
+     * Prerequisites (spec §4.6)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * Does the viewer hold the roles this event requires?
+     *
+     * Staff bypass — the gate exists to stop the public booking a course they
+     * are not ready for, not to stop the owner adding somebody by hand.
+     *
+     * @param int $event_id
+     * @param int $user_id  0 = the current user.
+     * @return bool True when there is nothing to check.
+     */
+    public function meets_prerequisites( $event_id, $user_id = 0 ) {
+        $meta     = $this->module->get_meta( (int) $event_id );
+        $required = \is_array( $meta['required_roles'] ?? null ) ? $meta['required_roles'] : [];
+        if ( empty( $required ) ) {
+            return true;
+        }
+        $for_current = ( (int) $user_id === 0 );
+        if ( $for_current && Roster::current_user_can_manage() ) {
+            return true;
+        }
+        $user_id = $for_current ? (int) \get_current_user_id() : (int) $user_id;
+        $user    = \get_userdata( $user_id );
+        if ( ! $user instanceof \WP_User ) {
+            return false;
+        }
+        $held = (array) $user->roles;
+        $hits = \count( \array_intersect( $required, $held ) );
+        return ( (string) ( $meta['required_roles_mode'] ?? 'any' ) === 'all' )
+            ? ( $hits === \count( $required ) )
+            : ( $hits > 0 );
+    }
+
+    /**
+     * The refusal wording for a prerequisite-gated event.
+     *
+     * An anonymous visitor gets "Sign in to check eligibility" rather than a
+     * list of role names they cannot act on.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function prerequisite_message( $event_id ) {
+        if ( ! \is_user_logged_in() ) {
+            return \__( 'Sign in to check eligibility for this course.', 'anchor-schema' );
+        }
+        $meta     = $this->module->get_meta( (int) $event_id );
+        $required = \is_array( $meta['required_roles'] ?? null ) ? $meta['required_roles'] : [];
+        $names    = [];
+        $roles    = \wp_roles();
+        foreach ( $required as $slug ) {
+            $names[] = isset( $roles->role_names[ $slug ] )
+                ? \translate_user_role( $roles->role_names[ $slug ] )
+                : $slug;
+        }
+        if ( empty( $names ) ) {
+            return '';
+        }
+        return \sprintf(
+            /* translators: %s: comma-separated list of role names. */
+            \__( 'This course requires %s.', 'anchor-schema' ),
+            \implode( ', ', $names )
+        );
+    }
 }

@@ -947,6 +947,20 @@ class Registrations {
             return 'closed';
         }
 
+        // Prerequisites (spec §4.6). Placed in the single registration
+        // authority so the date picker, the CTA, the storefront row and
+        // WooCommerce::filter_is_purchasable() refuse together instead of each
+        // re-deciding. Guarded on required_roles being non-empty, which is the
+        // default, so every existing event's answer is unchanged — and this is
+        // the one branch that depends on WHO is asking, so keeping it inert for
+        // ungated events keeps the decision cacheable everywhere else.
+        if ( ! empty( $meta['required_roles'] ) ) {
+            $entitlements = $this->module->entitlements ?? null;
+            if ( $entitlements && ! $entitlements->meets_prerequisites( (int) $event_id ) ) {
+                return 'prerequisite';
+            }
+        }
+
         // Compare the registration window in WordPress site-local time — the
         // open/close dates are admin-entered in the site timezone (CodeRabbit).
         $now = \current_time( 'Y-m-d' );

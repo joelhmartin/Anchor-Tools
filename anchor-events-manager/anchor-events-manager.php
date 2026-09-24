@@ -9466,6 +9466,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'registration_success' => __( 'Registration received.', 'anchor-schema' ),
             'registration_waitlisted' => __( 'This event is full — you have been added to the waitlist. We will be in touch if a seat opens up.', 'anchor-schema' ),
             'registration_closed' => __( 'Registration is closed for this event.', 'anchor-schema' ),
+            'registration_prerequisite' => __( 'You are not yet eligible to register for this course.', 'anchor-schema' ),
             'registration_invalid' => __( 'Please complete all required registration fields.', 'anchor-schema' ),
             'registration_error' => __( 'Registration could not be processed. Please try again.', 'anchor-schema' ),
         ];
@@ -9818,6 +9819,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         if ( $status === 'full' ) {
             return '<div class="anchor-event-registration anchor-event-registration-closed">' . esc_html__( 'This event is full.', 'anchor-schema' ) . '</div>';
+        }
+        if ( $status === 'prerequisite' ) {
+            $message = $this->entitlements ? $this->entitlements->prerequisite_message( $post_id ) : '';
+            return '<div class="anchor-event-registration anchor-event-registration-blocked">'
+                . '<p class="anchor-event-notice">' . esc_html( $message ) . '</p>'
+                . ( \is_user_logged_in() ? '' : '<p><a class="anchor-event-button" href="'
+                    . esc_url( \wp_login_url( \get_permalink( $post_id ) ) ) . '">'
+                    . esc_html__( 'Sign in', 'anchor-schema' ) . '</a></p>' )
+                . '</div>';
         }
         $notice = '';
         if ( $status === 'waitlist' ) {
@@ -10228,6 +10238,13 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 ? \__( 'Date passed', 'anchor-schema' )
                 : \__( 'Registration closed', 'anchor-schema' );
         }
+        if ( $state === 'prerequisite' ) {
+            // Same short, badge-style vocabulary as the rest of this hint —
+            // is_bookable() already keeps the CTA beside it on "Details"
+            // (Occurrences::picker_state()), so this is the piece that used to
+            // fall through to "Open"/"N spots left" and contradict it.
+            return \__( 'Prerequisite required', 'anchor-schema' );
+        }
 
         // 'open' — and 'parent', which is now the ONE container state that
         // reaches this line: a group with nothing left to book answers
@@ -10369,6 +10386,17 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $decision = $this->get_registration_status( $event_id, $meta, $party_size, $tier );
         if ( $decision === 'closed' || $decision === 'full' ) {
             \wp_safe_redirect( $this->with_message( $redirect, 'registration_closed' ) );
+            exit;
+        }
+        // Prerequisites (spec §4.6): the form itself already refuses to render
+        // for a signed-out or ineligible visitor (render_registration_form()),
+        // but REG_NONCE is a bare action nonce (see the external-mode guard
+        // above), so a stale or forged POST can still reach here. Without this,
+        // 'prerequisite' matched neither arm above and fell straight through to
+        // claim_seats() — the one path in the whole module that would have
+        // minted a real seat for someone capacity_decision() had just refused.
+        if ( $decision === 'prerequisite' ) {
+            \wp_safe_redirect( $this->with_message( $redirect, 'registration_prerequisite' ) );
             exit;
         }
 
@@ -13092,7 +13120,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $seats   = $this->get_registration_status( $event_id, $meta, 1, $tier );
         $enabled = ! empty( $meta['registration_enabled'] );
 
-        if ( $seats === 'closed' || $seats === 'full' ) {
+        if ( $seats === 'closed' || $seats === 'full' || $seats === 'prerequisite' ) {
             return $seats;
         }
         if ( $seats === Registrations::STATUS_WAITLIST ) {

@@ -1255,7 +1255,7 @@ class WooCommerce {
         // the same authority the storefront rendered from, and it says why.
         $event_state = $this->module->bookability( $event_id );
         if ( ! $this->module->is_bookable( $event_state ) ) {
-            \wp_send_json_error( [ 'messages' => [ $this->bookability_message( $event_state ) ] ] );
+            \wp_send_json_error( [ 'messages' => [ $this->bookability_message( $event_state, '', $event_id ) ] ] );
         }
 
         $meta              = $this->module->get_meta( $event_id );
@@ -1333,7 +1333,7 @@ class WooCommerce {
             // per requested quantity ("2 seats left, 3 asked for" is full).
             $decision = $this->registrations->capacity_decision( $event_id, $meta, $qty, $tier );
             if ( ! $this->module->is_bookable( $decision ) ) {
-                $messages[] = $this->bookability_message( $decision, $label );
+                $messages[] = $this->bookability_message( $decision, $label, $event_id );
                 continue;
             }
 
@@ -1389,9 +1389,10 @@ class WooCommerce {
      *
      * @param string $bookability Non-bookable state from bookability()/capacity_decision().
      * @param string $label       Ticket-tier label, when the answer is about one tier.
+     * @param int    $event_id    The event this answer is about, needed only for 'prerequisite'.
      * @return string
      */
-    private function bookability_message( $bookability, $label = '' ) {
+    private function bookability_message( $bookability, $label = '', $event_id = 0 ) {
         $tier_scoped = ( $label !== '' );
 
         switch ( (string) $bookability ) {
@@ -1400,6 +1401,12 @@ class WooCommerce {
                     /* translators: %s: ticket tier label. */
                     ? \sprintf( \__( '%s is sold out.', 'anchor-schema' ), $label )
                     : \__( 'This event is sold out.', 'anchor-schema' );
+            case 'prerequisite':
+                $entitlements = $this->module->entitlements ?? null;
+                $message      = $entitlements ? $entitlements->prerequisite_message( (int) $event_id ) : '';
+                return $message !== ''
+                    ? $message
+                    : \__( 'You are not yet eligible to register for this course.', 'anchor-schema' );
             case 'parent':
                 return \__( 'Please choose a date before registering.', 'anchor-schema' );
             case 'disabled':

@@ -137,6 +137,12 @@ class Event_Schema {
                 return 'https://schema.org/LimitedAvailability';
             case 'full':
                 return 'https://schema.org/SoldOut';
+            case 'prerequisite':
+                // Eligibility is a policy, not inventory: seats exist, and an
+                // anonymous crawler — the only reader whose markup is ever
+                // cached — is never the one being refused. Keeping InStock here
+                // is what stops the JSON-LD varying by viewer.
+                return 'https://schema.org/InStock';
             default:
                 return null;
         }
@@ -162,7 +168,7 @@ class Event_Schema {
      * @return bool
      */
     private static function omits_offer( $bookability ) {
-        return ! \in_array( (string) $bookability, [ 'open', 'waitlist', 'full', 'disabled' ], true );
+        return ! \in_array( (string) $bookability, [ 'open', 'waitlist', 'full', 'disabled', 'prerequisite' ], true );
     }
 
     /**

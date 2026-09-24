@@ -25,6 +25,7 @@ class Module {
 
 	public Services\EnrollmentService $enrollments;
 	public Services\ProgressService $progress;
+	public Services\QuizService $quizzes;
 
 	public function __construct() {
 		self::$instance = $this;
@@ -47,6 +48,7 @@ class Module {
 
 		$this->enrollments = new Services\EnrollmentService();
 		$this->progress    = new Services\ProgressService( $this->enrollments );
+		$this->quizzes     = new Services\QuizService( $this->progress, $this->enrollments );
 
 		// admin-post.php, not wp-admin, so it must be constructed unconditionally
 		// (not inside the is_admin() block above) - the handler runs on requests

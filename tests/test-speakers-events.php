@@ -15,9 +15,14 @@ class Test_Speakers_Events extends Anchor_Events_TestCase {
 		}
 	}
 
+	/**
+	 * anchor_events_inherited_keys carries UNPREFIXED keys, exactly like
+	 * INHERITED_KEYS itself (meta_key() is the single place that prefixes,
+	 * in Occurrences::inherited_meta_keys()).
+	 */
 	public function test_inherited_keys_filter_includes_speakers() {
 		$keys = apply_filters( 'anchor_events_inherited_keys', \Anchor\Events\Occurrences::INHERITED_KEYS );
-		$this->assertContains( '_anchor_event_speaker_ids', $keys );
+		$this->assertContains( 'speaker_ids', $keys );
 	}
 
 	public function test_schema_performer_added() {
@@ -29,6 +34,36 @@ class Test_Speakers_Events extends Anchor_Events_TestCase {
 		$this->assertSame( 'Person', $node['performer'][0]['@type'] );
 		$this->assertSame( 'Dr. Steven Olmos', $node['performer'][0]['name'] );
 		$this->assertSame( 'Founder', $node['performer'][0]['jobTitle'] );
+	}
+
+	/**
+	 * save() must keep only ids that are published `anchor_speaker` posts
+	 * (post type AND status), preserving submitted order, so a stale/removed
+	 * speaker, a draft, a page id, and a bogus id never reach event meta.
+	 */
+	public function test_save_keeps_only_published_speakers_preserving_order() {
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+
+		$draft_speaker = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_status' => 'draft' ] );
+		$speaker_a     = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_status' => 'publish' ] );
+		$bogus_id      = 999999;
+		$speaker_b     = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_status' => 'publish' ] );
+		$page          = self::factory()->post->create( [ 'post_type' => 'page', 'post_status' => 'publish' ] );
+
+		$event_id = self::factory()->post->create( [ 'post_type' => 'event' ] );
+
+		$_POST = [
+			Anchor_Speaker_Events::NONCE => wp_create_nonce( 'anchor_speaker_events' ),
+			'anchor_event_speaker_ids'   => [ $draft_speaker, $speaker_a, $bogus_id, $speaker_b, $page ],
+		];
+		do_action( 'save_post_' . \Anchor\Events\Module::CPT, $event_id );
+		unset( $_POST );
+
+		$this->assertSame(
+			[ $speaker_a, $speaker_b ],
+			get_post_meta( $event_id, '_anchor_event_speaker_ids', true ),
+			'Only the two published speakers should be kept, in the order they were submitted.'
+		);
 	}
 
 	public function test_child_without_own_list_uses_parent() {

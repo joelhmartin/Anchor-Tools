@@ -20,6 +20,13 @@ class Anchor_Speaker_Events {
 	/** Event meta: ordered speaker post ids linked to the event. */
 	const META_KEY = '_anchor_event_speaker_ids';
 
+	/**
+	 * The UNPREFIXED key added to the anchor_events_inherited_keys filter
+	 * (same convention as every entry in Occurrences::INHERITED_KEYS).
+	 * meta_key( self::INHERITED_KEY ) === self::META_KEY.
+	 */
+	const INHERITED_KEY = 'speaker_ids';
+
 	const NONCE = 'anchor_speaker_events_nonce';
 
 	public function __construct() {
@@ -31,16 +38,17 @@ class Anchor_Speaker_Events {
 	}
 
 	/**
-	 * Adds this module's own already-prefixed meta key to the shared-fact
-	 * allow-list (Occurrences::inherited_keys() only re-prefixes a key that
-	 * isn't already prefixed, so this is safe to add as-is).
+	 * Adds this module's own key to the shared-fact allow-list, unprefixed,
+	 * exactly like every entry already in Occurrences::INHERITED_KEYS.
+	 * Occurrences::inherited_meta_keys() is the single place that prefixes
+	 * it (to self::META_KEY).
 	 *
 	 * @param array $keys
 	 * @return array
 	 */
 	public function inherited_keys( $keys ) {
 		$keys   = (array) $keys;
-		$keys[] = self::META_KEY;
+		$keys[] = self::INHERITED_KEY;
 		return $keys;
 	}
 
@@ -86,6 +94,25 @@ class Anchor_Speaker_Events {
 			return [];
 		}
 		return array_values( array_filter( array_map( 'absint', $raw ) ) );
+	}
+
+	/**
+	 * Filters a list of ids down to the ones that are actually published
+	 * `anchor_speaker` posts, preserving the submitted order. Used at save
+	 * time so a stale/removed speaker, a draft, or an id that never was a
+	 * speaker (a page, a bogus id) never gets written into event meta.
+	 *
+	 * @param int[] $ids
+	 * @return int[]
+	 */
+	private static function published_speaker_ids( array $ids ) {
+		$valid = [];
+		foreach ( $ids as $id ) {
+			if ( get_post_type( $id ) === Anchor_Speakers_Module::CPT && get_post_status( $id ) === 'publish' ) {
+				$valid[] = $id;
+			}
+		}
+		return $valid;
 	}
 
 	/* ------------------------------------------------------------------
@@ -172,6 +199,7 @@ class Anchor_Speaker_Events {
 		$ids = isset( $_POST['anchor_event_speaker_ids'] ) && is_array( $_POST['anchor_event_speaker_ids'] )
 			? self::sanitized_ids( wp_unslash( $_POST['anchor_event_speaker_ids'] ) )
 			: [];
+		$ids = self::published_speaker_ids( $ids );
 
 		if ( empty( $ids ) ) {
 			delete_post_meta( $post_id, self::META_KEY );

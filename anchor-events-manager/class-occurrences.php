@@ -186,15 +186,15 @@ class Occurrences {
      * INHERITED_KEYS, extendable by other modules (e.g. Anchor Speakers).
      *
      * Every other module reads INHERITED_KEYS through this method rather than
-     * the constant directly, so a module that owns its own meta key (already
-     * fully prefixed with `_anchor_event_`, e.g. Anchor Speakers'
-     * `_anchor_event_speaker_ids`) can add itself here without needing to know
-     * the unprefixed-key convention the constant above uses internally.
-     * inherited_meta_keys() below only prefixes an entry that is not already
-     * prefixed, so both forms are safe to filter in.
+     * the constant directly. One contract, same as the constant itself: every
+     * entry is an UNPREFIXED key (`'venue'`, not `'_anchor_event_venue'`), and
+     * `inherited_meta_keys()` below is the single place that adds the
+     * `_anchor_event_` prefix, via `meta_key()`. A module contributing its own
+     * key (e.g. Anchor Speakers adding `'speaker_ids'`, so the stored meta
+     * ends up `_anchor_event_speaker_ids`) follows the exact same convention
+     * as every entry already in the constant.
      *
-     * @return string[] A mix of unprefixed schema keys (from the constant) and
-     *                   already-prefixed meta keys (from other modules).
+     * @return string[] Unprefixed keys.
      */
     private static function inherited_keys() {
         $keys = (array) \apply_filters( 'anchor_events_inherited_keys', self::INHERITED_KEYS );
@@ -1518,10 +1518,7 @@ class Occurrences {
     private function inherited_meta_keys( $parent_id, $child_id ) {
         $keys = [];
         foreach ( self::inherited_keys() as $key ) {
-            // A key filtered in by another module may already be a full,
-            // prefixed meta key (see inherited_keys() above); prefixing it
-            // again would look for a key nobody ever writes.
-            $keys[] = ( \strpos( $key, '_anchor_event_' ) === 0 ) ? $key : $this->module->meta_key( $key );
+            $keys[] = $this->module->meta_key( $key );
         }
 
         $keys = \array_merge( $keys, $this->authored_child_meta_keys() );

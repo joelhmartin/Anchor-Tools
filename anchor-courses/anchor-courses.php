@@ -24,6 +24,7 @@ class Module {
 	private static ?Module $instance = null;
 
 	public Services\EnrollmentService $enrollments;
+	public Services\ProgressService $progress;
 
 	public function __construct() {
 		self::$instance = $this;
@@ -45,6 +46,7 @@ class Module {
 		}
 
 		$this->enrollments = new Services\EnrollmentService();
+		$this->progress    = new Services\ProgressService( $this->enrollments );
 
 		// Daily expiry sweep. Scheduled here rather than on activation because
 		// modules have no activation hook (see Migrations' note).

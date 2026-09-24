@@ -308,6 +308,9 @@ final class CourseEditor {
 		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
 			return;
 		}
+		if ( \wp_is_post_revision( $post_id ) ) {
+			return;
+		}
 		$nonce = isset( $_POST[ self::NONCE ] ) ? \sanitize_text_field( \wp_unslash( (string) $_POST[ self::NONCE ] ) ) : '';
 		if ( '' === $nonce || ! \wp_verify_nonce( $nonce, self::NONCE ) ) {
 			return;
@@ -418,6 +421,9 @@ final class CourseEditor {
 
 	public function save_curriculum( int $post_id ): void {
 		if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+			return;
+		}
+		if ( \wp_is_post_revision( $post_id ) ) {
 			return;
 		}
 		$nonce = isset( $_POST[ self::NONCE ] ) ? \sanitize_text_field( \wp_unslash( (string) $_POST[ self::NONCE ] ) ) : '';

@@ -6,6 +6,7 @@
  */
 
 use Anchor\Courses\Admin\CourseEditor;
+use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Content\Curriculum;
 
 /** @group courses */
@@ -100,5 +101,98 @@ class Test_Courses_Curriculum_Builder extends Anchor_Courses_TestCase {
 		$script = wp_scripts()->registered['anchor-courses-curriculum'] ?? null;
 		$this->assertNotNull( $script, 'The curriculum builder script was not enqueued.' );
 		$this->assertContains( 'jquery-ui-sortable', $script->deps );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Hook wiring: save() at the default priority (10), save_curriculum()
+	 * one tick later (11), so a module/item edit always sees the settings
+	 * save that ran first. Mirrors the convention in
+	 * tests/test-woocommerce-checkout-hook-timing.php.
+	 * ------------------------------------------------------------------- */
+
+	public function test_settings_and_curriculum_saves_are_wired_at_the_documented_priorities() {
+		$editor = new CourseEditor();
+
+		$this->assertSame(
+			10,
+			has_action( 'save_post_' . CoursePostType::CPT, [ $editor, 'save' ] ),
+			'CourseEditor::save() must stay on the default priority so it runs before save_curriculum().'
+		);
+		$this->assertSame(
+			11,
+			has_action( 'save_post_' . CoursePostType::CPT, [ $editor, 'save_curriculum' ] ),
+			'CourseEditor::save_curriculum() must run one tick after save() (priority 11).'
+		);
+	}
+
+	/** Fails if the `save_post_anchor_course` -> save_curriculum() wiring is ever removed. */
+	public function test_curriculum_save_runs_through_the_real_save_post_hook() {
+		new CourseEditor();
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$course = $this->make_course();
+		$lesson = $this->make_lesson();
+
+		$_POST = [
+			CourseEditor::NONCE        => wp_create_nonce( CourseEditor::NONCE ),
+			'anchor_course_curriculum' => wp_slash(
+				wp_json_encode( [ [ 'title' => 'Via hook', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] )
+			),
+		];
+		do_action( 'save_post_' . CoursePostType::CPT, $course, get_post( $course ), true );
+		$_POST = [];
+
+		$modules = Curriculum::get( $course );
+		$this->assertSame( 'Via hook', $modules[0]['title'] ?? null );
+		$this->assertSame( [ $lesson ], array_column( $modules[0]['items'] ?? [], 'id' ) );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Revision guard: WordPress's own update_post_meta()/add_post_meta()
+	 * already redirect a revision's post id to its PARENT
+	 * (wp-includes/post.php: "Make sure meta is added to the post, not a
+	 * revision."). So if save()/save_curriculum() is ever invoked with a
+	 * revision's id - a compatibility shim, a bulk/quick-edit path, or a
+	 * plugin re-dispatching save_post while restoring a revision - the write
+	 * does NOT land harmlessly on the revision row; it silently overwrites
+	 * the REAL course's meta instead. wp_is_post_revision() must bail before
+	 * that happens.
+	 * ------------------------------------------------------------------- */
+
+	public function test_saving_a_revision_id_writes_no_curriculum() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$course = $this->make_course();
+		$lesson = $this->make_lesson();
+		Curriculum::save( $course, [ [ 'title' => 'Keep me', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+
+		$revision_id = wp_save_post_revision( $course );
+		$this->assertIsInt( $revision_id, 'wp_save_post_revision() must return a revision id for this test to be meaningful.' );
+		$this->assertNotSame( 0, $revision_id );
+
+		$this->submit(
+			$revision_id,
+			wp_json_encode( [ [ 'title' => 'Hijacked via revision id', 'items' => [] ] ] )
+		);
+
+		$this->assertSame( 'Keep me', Curriculum::get( $course )[0]['title'], 'A revision id must never overwrite the real course\'s curriculum.' );
+		$this->assertSame( [], Curriculum::get( $revision_id ), 'Nothing may be written against the revision id itself either.' );
+	}
+
+	public function test_saving_a_revision_id_writes_no_settings() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$course = $this->make_course( [ 'instructor' => 'Original' ] );
+
+		$revision_id = wp_save_post_revision( $course );
+		$this->assertIsInt( $revision_id, 'wp_save_post_revision() must return a revision id for this test to be meaningful.' );
+		$this->assertNotSame( 0, $revision_id );
+
+		$_POST = [
+			CourseEditor::NONCE => wp_create_nonce( CourseEditor::NONCE ),
+			'anchor_course'     => [ 'instructor' => 'Hijacked via revision id' ],
+		];
+		( new CourseEditor() )->save( $revision_id );
+		$_POST = [];
+
+		$this->assertSame( 'Original', get_post_meta( $course, '_anchor_course_instructor', true ) );
+		$this->assertSame( '', get_post_meta( $revision_id, '_anchor_course_instructor', true ) );
 	}
 }

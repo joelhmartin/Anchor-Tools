@@ -82,6 +82,17 @@ class Test_Courses_Lesson_Editor extends Anchor_Courses_TestCase {
 	 * CourseEditor.
 	 * ------------------------------------------------------------------- */
 
+	public function test_save_bails_without_a_valid_nonce() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$lesson = $this->make_lesson( [ 'completion_mode' => 'view' ] );
+
+		$_POST = [ 'anchor_lesson' => [ 'completion_mode' => 'manual' ] ];
+		( new LessonEditor() )->save( $lesson );
+		$_POST = [];
+
+		$this->assertSame( 'view', get_post_meta( $lesson, '_anchor_lesson_completion_mode', true ) );
+	}
+
 	public function test_save_is_wired_to_the_save_post_lesson_hook() {
 		$editor = new LessonEditor();
 

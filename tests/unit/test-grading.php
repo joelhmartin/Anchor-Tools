@@ -80,7 +80,7 @@ class Test_Courses_Unit_Grading extends TestCase {
 		$this->assertSame( 4.0, $result['points_possible'] );
 	}
 
-	public function test_a_single_choice_answer_given_as_an_array_takes_the_first_id_only() {
+	public function test_a_single_choice_answer_given_as_a_two_id_array_is_not_an_exact_match() {
 		$result = Grading::grade( $this->questions(), [ 'q1' => [ 'a2', 'a1' ] ] );
 		$this->assertFalse(
 			$result['per_question']['q1']['correct'],

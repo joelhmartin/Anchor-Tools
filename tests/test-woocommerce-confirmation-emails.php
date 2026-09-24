@@ -135,4 +135,72 @@ class Test_WooCommerce_Confirmation_Emails extends Anchor_Events_TestCase {
 		$this->assertTrue( $outcome->is_skipped() );
 		$this->assertSame( 'nothing_to_send', $outcome->reason() );
 	}
+
+	/**
+	 * Fix round 1 (controller ruling on Task 14's flagged concern): the buyer
+	 * confirmation used to tokenise `reset( $seats )['id']` — the first seat
+	 * on the order for this event, regardless of whose it was. On a
+	 * multi-seat order that seat is routinely someone OTHER than the buyer,
+	 * so this could mint a sign-in token for a different attendee's account
+	 * and hand it to the buyer, who would then be signed in as that
+	 * attendee. A sign-in token is an identity: the buyer gets their OWN
+	 * token (only if they hold a confirmed seat themselves), or the plain,
+	 * untokenised room address — never somebody else's.
+	 */
+	public function test_room_link_never_tokenises_a_different_attendees_seat() {
+		$event_id = $this->make_event( [
+			'registration_mode'       => 'free',
+			'access_role_enabled'     => true,
+			'stream_default_modality' => 'virtual',
+			'stream_embed'            => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/8', 'raw' => '' ],
+		] );
+		$order_id = 5001;
+
+		// Seat 1 belongs to a DIFFERENT account than the buyer.
+		$this->make_seat( $event_id, [ 'order_id' => $order_id, 'name' => 'Other Attendee', 'email' => 'other-attendee@example.test' ] );
+		$other_user = get_user_by( 'email', 'other-attendee@example.test' );
+		$this->assertInstanceOf( 'WP_User', $other_user, 'Seat 1 minted its own account.' );
+
+		// The buyer has their own, separate account — created before the
+		// order, guest checkout (no customer_id), matched by billing email.
+		self::factory()->user->create( [ 'user_email' => 'buyer@example.test' ] );
+
+		$order = new WC_Order();
+		$order->set_id( $order_id );
+		$order->set_billing_email( 'buyer@example.test' );
+
+		$captured = [];
+		$capture  = function( $html, $ctx ) use ( &$captured ) {
+			$captured[] = $html;
+			return $html;
+		};
+
+		// --- The buyer holds no seat on this event: no token for anyone. ---
+		add_filter( 'anchor_events_registration_email_html', $capture, 10, 2 );
+		try {
+			$outcome = $this->send_customer_confirmation( $order, $event_id );
+		} finally {
+			remove_filter( 'anchor_events_registration_email_html', $capture, 10 );
+		}
+		$this->assertTrue( $outcome->is_sent(), 'Response: ' . $outcome->reason() );
+		$this->assertNotEmpty( $captured );
+		$html = \end( $captured );
+		$this->assertStringContainsString( 'Join the livestream', $html );
+		$this->assertStringNotContainsString( 'aek=', $html, 'No seat for the buyer means no token, not somebody else\'s.' );
+
+		// --- The buyer now ALSO holds a confirmed seat: they get their OWN token. ---
+		$this->make_seat( $event_id, [ 'order_id' => $order_id, 'name' => 'Buyer', 'email' => 'buyer@example.test', 'seat_index' => 2 ] );
+		$captured = [];
+		add_filter( 'anchor_events_registration_email_html', $capture, 10, 2 );
+		try {
+			$outcome2 = $this->send_customer_confirmation( $order, $event_id );
+		} finally {
+			remove_filter( 'anchor_events_registration_email_html', $capture, 10 );
+		}
+		$this->assertTrue( $outcome2->is_sent(), 'Response: ' . $outcome2->reason() );
+		$html2 = \end( $captured );
+		$this->assertStringContainsString( 'aek=', $html2, 'The buyer holds a confirmed seat now, so they get their own token.' );
+
+		remove_role( 'anchor_event_' . $event_id );
+	}
 }

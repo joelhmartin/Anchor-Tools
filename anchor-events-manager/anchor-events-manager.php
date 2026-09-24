@@ -14640,6 +14640,70 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         return \str_replace( $search, $replace, (string) $template );
     }
 
+    /**
+     * The {room_link} token (Task 14) for ONE recipient — the "who does this
+     * sign-in token belong to" resolution shared by email_tokens() and
+     * build_registration_email_html() (fix round 1: these used to duplicate
+     * the same three steps independently, which is exactly the kind of
+     * drift that lets one of them mint a token for the wrong person).
+     *
+     * A sign-in token is an identity: this method NEVER guesses one. It
+     * returns '' whenever there is no room (room_url() === ''), the
+     * recipient's own status is not CONFIRMED, or no account can be
+     * identified for them — never a token for somebody else's seat.
+     *
+     * $ctx:
+     *   - 'seat'         (array|null) A seat DTO (or a minimal ['id' => N]).
+     *                     Its 'status' is authoritative when present (a
+     *                     seat's own record beats whatever the caller
+     *                     separately tracked); its 'user_id' is used if set,
+     *                     else Entitlements::ensure_user() resolves/creates
+     *                     one FOR THAT SEAT.
+     *   - 'status'       (string) The recipient's status, used only when no
+     *                     'seat' is given.
+     *   - 'room_user_id' (int) A user id the CALLER has already resolved AND
+     *                     verified holds a confirmed seat on this event
+     *                     (Entitlements::has_confirmed_seat()) — used only
+     *                     when no seat is given. This is the WooCommerce
+     *                     buyer-confirmation path: the buyer is not
+     *                     necessarily any particular seat, so the caller
+     *                     identifies and vets them itself before handing the
+     *                     id here. Passing an unvetted id would mint a
+     *                     sign-in token for someone other than its holder.
+     *
+     * @param int   $event_id
+     * @param array $ctx
+     * @return string
+     */
+    private function room_link_for_recipient( $event_id, array $ctx ) {
+        $event_id = (int) $event_id;
+        if ( $event_id <= 0 || $this->room_url( $event_id ) === '' ) {
+            return '';
+        }
+        $seat = isset( $ctx['seat'] ) && is_array( $ctx['seat'] ) ? $ctx['seat'] : null;
+        // A full seat DTO's own 'status' is authoritative when present. A
+        // minimal seat (build_registration_email_html()'s `['id' => N]`, which
+        // carries no status of its own — the caller already resolved one at
+        // the top of that method) falls back to the ctx-level status instead
+        // of reading a missing key as "not confirmed".
+        $status = ( $seat !== null && \array_key_exists( 'status', $seat ) )
+            ? (string) $seat['status']
+            : (string) ( $ctx['status'] ?? '' );
+        if ( $status !== Registrations::STATUS_CONFIRMED ) {
+            return '';
+        }
+        $user_id = 0;
+        if ( $seat ) {
+            $user_id = (int) ( $seat['user_id'] ?? 0 );
+            if ( $user_id <= 0 && ! empty( $seat['id'] ) ) {
+                $user_id = $this->entitlements->ensure_user( $seat );
+            }
+        } else {
+            $user_id = (int) ( $ctx['room_user_id'] ?? 0 );
+        }
+        return $user_id > 0 ? $this->entitlements->room_url_for( $user_id, $event_id ) : '';
+    }
+
     /** Documented token set for all event emails (spec §9). */
     public function email_tokens( array $ctx ) {
         $event_id = (int) ( $ctx['event_id'] ?? 0 );
@@ -14667,26 +14731,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $days_until = ( $start_ts && $start_ts > time() ) ? (string) (int) ceil( ( $start_ts - time() ) / DAY_IN_SECONDS ) : '';
 
-        // The room, tokenised for THIS recipient (spec §6.2). Confirmed seats
-        // only, exactly like {join_link}: a waitlisted person has no seat to
-        // sign in for. {join_link} keeps meaning the raw provider URL so legacy
-        // templates are untouched.
-        //
-        // The room's own predicate (Task 11) is checked HERE rather than
-        // leaning on ensure_user()'s guard: rendering the confirmation for an
-        // event with no room must not so much as look up an account. The
-        // token is the empty string and nothing runs to produce it.
-        $room_link = '';
-        if ( $event_id && $this->room_url( (int) $event_id ) !== ''
-            && ( ! $seat || ( $seat['status'] ?? '' ) === Registrations::STATUS_CONFIRMED ) ) {
-            $seat_user = (int) ( $seat['user_id'] ?? 0 );
-            if ( $seat_user <= 0 && ! empty( $seat['id'] ) ) {
-                $seat_user = $this->entitlements->ensure_user( $seat );
-            }
-            if ( $seat_user > 0 ) {
-                $room_link = $this->entitlements->room_url_for( $seat_user, $event_id );
-            }
-        }
+        // The room, tokenised for THIS recipient (spec §6.2). See
+        // room_link_for_recipient() for the shared resolution rules — {join_link}
+        // keeps meaning the raw provider URL so legacy templates are untouched.
+        $room_link = $this->room_link_for_recipient( $event_id, [ 'seat' => $seat ] );
 
         return [
             'event_title'  => $event_id ? \get_the_title( $event_id ) : \get_bloginfo( 'name' ),
@@ -15417,6 +15465,8 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'cta_url'       => '',
             'type'          => 'confirmation',
             'seat_id'       => 0,
+            'room_user_id'  => 0,
+            'room_link_plain_fallback' => false,
         ] );
 
         $event_id    = (int) $ctx['event_id'];
@@ -15449,16 +15499,27 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             }
         }
 
-        // {room_link}: same confirmed-only gate as {join_link}, plus the room
-        // predicate itself (spec §6.2, Task 11) checked BEFORE any account is
-        // looked up — a plain event's confirmation must create nothing.
-        $room_link = '';
-        if ( $event_id && $status === Registrations::STATUS_CONFIRMED
-            && $this->room_url( (int) $event_id ) !== '' ) {
-            $seat_id = (int) ( $ctx['seat_id'] ?? 0 );
-            $user_id = $seat_id > 0 ? $this->entitlements->ensure_user( [ 'id' => $seat_id ] ) : 0;
-            if ( $user_id > 0 ) {
-                $room_link = $this->entitlements->room_url_for( $user_id, $event_id );
+        // {room_link}: shared per-recipient resolution — see
+        // room_link_for_recipient(). A bare seat_id normalizes to the same
+        // minimal seat shape ensure_user() already re-derives everything
+        // else from (customer_id/email off the seat post itself), so this is
+        // byte-identical to the pre-extraction behaviour for the seat-bearing
+        // send paths (confirmation, reminder).
+        $room_link = $this->room_link_for_recipient( $event_id, [
+            'status'       => $status,
+            'seat'         => ! empty( $ctx['seat_id'] ) ? [ 'id' => (int) $ctx['seat_id'] ] : null,
+            'room_user_id' => (int) ( $ctx['room_user_id'] ?? 0 ),
+        ] );
+        // WooCommerce buyer confirmation only (fix round 1): a sign-in token
+        // is an identity, so a buyer who is not themselves a confirmed
+        // attendee never gets one minted in their name — they get the same
+        // plain, untokenised room address anyone reading the event page
+        // would see, instead of nothing and instead of somebody else's seat.
+        if ( $room_link === '' && ! empty( $ctx['room_link_plain_fallback'] )
+            && $status === Registrations::STATUS_CONFIRMED ) {
+            $plain_room_url = $this->room_url( $event_id );
+            if ( $plain_room_url !== '' ) {
+                $room_link = $plain_room_url;
             }
         }
 

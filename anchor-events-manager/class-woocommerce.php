@@ -4021,6 +4021,28 @@ class WooCommerce {
             $tokens
         );
 
+        // {room_link} (fix round 1): a sign-in token is an identity, and this
+        // confirmation's recipient is the BUYER, not any particular seat on
+        // the order — an order routinely covers seats bought for other
+        // people. Resolving "a" seat id here (as this used to) could mint the
+        // token for one of THOSE attendees and hand it to the buyer, who
+        // would then be signed in as somebody else. Resolve the buyer's own
+        // account instead — the registered customer, or (guest checkout) the
+        // WP user whose email matches the billing email — and only tokenise
+        // for them if they ALSO hold a confirmed seat on this event
+        // (Entitlements::has_confirmed_seat()). A buyer who bought seats for
+        // other people but holds none themselves gets the plain, untokenised
+        // room address (room_link_plain_fallback below) instead of nothing
+        // and instead of somebody else's identity.
+        $buyer_user_id = (int) $order->get_customer_id();
+        if ( $buyer_user_id <= 0 ) {
+            $buyer_wp_user = \get_user_by( 'email', \sanitize_email( $to ) );
+            $buyer_user_id = $buyer_wp_user instanceof \WP_User ? (int) $buyer_wp_user->ID : 0;
+        }
+        $buyer_holds_seat = $buyer_user_id > 0
+            && $this->module->entitlements
+            && $this->module->entitlements->has_confirmed_seat( $event_id, $buyer_user_id );
+
         $ctx = [
             'event_id'      => $event_id,
             'name'          => $buyer,
@@ -4032,15 +4054,8 @@ class WooCommerce {
             'cta_label'     => \__( 'View event details', 'anchor-schema' ),
             'cta_url'       => \get_permalink( $event_id ),
             'type'          => 'confirmation',
-            // {room_link} (Task 14) needs ONE seat id to resolve an account
-            // for. This confirmation can cover several seats on one order, but
-            // build_registration_email_html() only produces a room link when
-            // $ctx['status'] is CONFIRMED — the aggregate above already forces
-            // that to WAITLIST the moment any seat here is waitlisted, so the
-            // seat picked below is only ever used when every seat on this
-            // event is confirmed and any one of their accounts serves the
-            // button (they all resolve the same room).
-            'seat_id'       => (int) ( \reset( $seats )['id'] ?? 0 ),
+            'room_user_id'  => $buyer_holds_seat ? $buyer_user_id : 0,
+            'room_link_plain_fallback' => true,
         ];
         $html = $this->module->build_registration_email_html( $ctx );
         // finding-13 — the order identity keeps two different buyers on the

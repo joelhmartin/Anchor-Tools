@@ -192,6 +192,15 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		wp_update_post( [ 'ID' => $event_id, 'post_title' => 'New Name' ] );
 
 		$this->assertSame( 'Event: New Name', wp_roles()->roles[ $slug ]['name'] );
+
+		// Core's roles option is autoloaded on every request; the rename must
+		// not flip it to autoload=off (final review minor).
+		global $wpdb;
+		$autoload = $wpdb->get_var( $wpdb->prepare(
+			"SELECT autoload FROM {$wpdb->options} WHERE option_name = %s",
+			wp_roles()->role_key
+		) );
+		$this->assertNotContains( $autoload, [ 'no', 'off' ], 'rename_role() must not change the autoload flag of core\'s wp_user_roles.' );
 	}
 
 	/** The role survives the event being trashed. */
@@ -323,14 +332,64 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		$this->assertSame( $user_id, $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) ) );
 	}
 
-	/** Branch 2: an order seat with a customer id. */
+	/**
+	 * Branch 2: an order seat with a customer id resolves to that customer
+	 * when the seat IS the customer's — its email matches the account's,
+	 * compared case-insensitively.
+	 */
 	public function test_ensure_user_uses_order_customer_id() {
 		$event_id = $this->enabled_event();
-		$user_id  = self::factory()->user->create();
-		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'guest@example.test', 'customer_id' => $user_id ] );
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'buyer@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'Buyer@Example.test', 'customer_id' => $user_id ] );
 
 		$this->assertSame( $user_id, $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) ) );
 		$this->assertSame( $user_id, (int) get_post_meta( $seat_id, '_anchor_event_user_id', true ) );
+	}
+
+	/** Branch 2: a seat with no email of its own belongs to the order's customer. */
+	public function test_ensure_user_uses_order_customer_id_for_a_seat_with_no_email() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'buyer2@example.test' ] );
+		// Pending: no lifecycle grant, so ensure_user() below is the first resolution.
+		$seat_id  = $this->make_seat( $event_id, [
+			'email'       => 'placeholder@example.test',
+			'customer_id' => $user_id,
+			'status'      => \Anchor\Events\Registrations::STATUS_PENDING,
+		] );
+		delete_post_meta( $seat_id, '_anchor_event_email' );
+
+		$this->assertSame( $user_id, $this->ent()->ensure_user( [ 'id' => $seat_id ] ) );
+	}
+
+	/**
+	 * Final review C1: an attendee seat on a logged-in buyer's order carries
+	 * the BUYER's customer id, but it is somebody else's seat. It must resolve
+	 * to the attendee's own account (here: a new one), never to the buyer —
+	 * otherwise every attendee email mints the buyer's sign-in token.
+	 */
+	public function test_ensure_user_ignores_a_customer_id_whose_email_differs() {
+		$event_id = $this->enabled_event();
+		$buyer_id = self::factory()->user->create( [ 'user_email' => 'payer@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'colleague@example.test', 'customer_id' => $buyer_id ] );
+
+		$resolved = $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) );
+		$attendee = get_user_by( 'email', 'colleague@example.test' );
+
+		$this->assertInstanceOf( 'WP_User', $attendee, 'The attendee gets their own account.' );
+		$this->assertSame( (int) $attendee->ID, $resolved );
+		$this->assertNotSame( $buyer_id, $resolved );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, (int) $attendee->ID ) );
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $buyer_id ), 'The buyer is not the attendee.' );
+	}
+
+	/** ...and an existing account with the attendee's email wins over the customer id. */
+	public function test_ensure_user_prefers_the_attendee_email_match_over_the_customer_id() {
+		$event_id    = $this->enabled_event();
+		$buyer_id    = self::factory()->user->create( [ 'user_email' => 'payer2@example.test' ] );
+		$attendee_id = self::factory()->user->create( [ 'user_email' => 'known-attendee@example.test' ] );
+		$seat_id     = $this->make_seat( $event_id, [ 'email' => 'known-attendee@example.test', 'customer_id' => $buyer_id ] );
+
+		$this->assertSame( $attendee_id, $this->ent()->ensure_user( $this->registrations()->get_seat( $seat_id ) ) );
 	}
 
 	/** Branch 3: an existing account matched by email. */
@@ -814,6 +873,60 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		} finally {
 			remove_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
 		}
+	}
+
+	/* -----------------------------------------------------------------
+	 * Final review I5: core role changes must not silently revoke access.
+	 * The grant record is the source of truth for re-application.
+	 * --------------------------------------------------------------- */
+
+	/** An admin changing a user's primary role keeps their event role. */
+	public function test_set_role_keeps_a_granted_event_role() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		$this->ent()->grant( $event_id, $user_id, 'seat' );
+
+		( new WP_User( $user_id ) )->set_role( 'editor' );
+
+		$roles = get_userdata( $user_id )->roles;
+		$this->assertContains( 'editor', $roles );
+		$this->assertNotContains( 'subscriber', $roles );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ), 'set_role() must not strip a granted event role.' );
+	}
+
+	/** Only a grant record re-applies — a stray role with no record is left gone. */
+	public function test_set_role_does_not_resurrect_an_unrecorded_event_role() {
+		$event_id = $this->enabled_event();
+		$slug     = $this->ent()->role_for( $event_id );
+		$user_id  = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		( new WP_User( $user_id ) )->add_role( $slug );
+
+		( new WP_User( $user_id ) )->set_role( 'editor' );
+
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $user_id ) );
+	}
+
+	/** A direct remove_role() of a granted event role is put back. */
+	public function test_remove_role_of_a_granted_event_role_is_reapplied() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create();
+		$this->ent()->grant( $event_id, $user_id, 'manual' );
+
+		( new WP_User( $user_id ) )->remove_role( $this->ent()->role_slug( $event_id ) );
+
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ) );
+	}
+
+	/** An explicit revoke() still removes the role — the listener does not re-add it. */
+	public function test_revoke_still_removes_the_role_despite_the_listener() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create();
+		$this->ent()->grant( $event_id, $user_id, 'manual' );
+
+		$this->assertTrue( $this->ent()->revoke( $event_id, $user_id, 'manual' ) );
+
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $user_id ) );
+		$this->assertSame( [], $this->ent()->grant_record( $event_id, $user_id ) );
 	}
 }
 

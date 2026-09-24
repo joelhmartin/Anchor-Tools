@@ -56,6 +56,16 @@ class Entitlements {
         // Task 6 because these handlers did not exist yet.
         \add_action( 'anchor_events_seat_created', [ $this, 'on_seat_created' ], 10, 2 );
         \add_action( 'anchor_events_seat_status_changed', [ $this, 'on_seat_status_changed' ], 10, 4 );
+
+        // Core role changes (final review I5). WP_User::set_role() replaces
+        // EVERY role a user holds, so an admin moving an attendee from
+        // subscriber to customer would silently strip their event roles;
+        // a direct remove_role() of an event role does the same for one.
+        // The grant record is the source of truth, so either is undone for
+        // any event the user still holds a grant for. revoke() clears the
+        // record BEFORE removing the role, so an explicit revoke sticks.
+        \add_action( 'set_user_role', [ $this, 'reapply_granted_roles' ], 10, 1 );
+        \add_action( 'remove_user_role', [ $this, 'on_remove_user_role' ], 10, 2 );
     }
 
     /* ---------------------------------------------------------------------
@@ -161,7 +171,9 @@ class Entitlements {
         if ( isset( $roles->roles[ $slug ] ) && $roles->roles[ $slug ]['name'] !== $name ) {
             $roles->roles[ $slug ]['name'] = $name;
             $roles->role_names[ $slug ]    = $name;
-            \update_option( $roles->role_key, $roles->roles, false );
+            // No autoload argument: this is core's own roles option, which
+            // must stay autoloaded (every request reads it).
+            \update_option( $roles->role_key, $roles->roles );
         }
     }
 
@@ -360,11 +372,9 @@ class Entitlements {
         $slug    = $this->role_slug( $event_id );
         $changed = false;
 
-        if ( \in_array( $slug, (array) $user->roles, true ) ) {
-            $user->remove_role( $slug );
-            $changed = true;
-        }
-
+        // The record goes FIRST: on_remove_user_role() re-applies any event
+        // role that still has a grant record, so removing the role while the
+        // record stood would be undone on the spot.
         $grants = $this->grants_for_user( $user_id );
         if ( isset( $grants[ $event_id ] ) ) {
             unset( $grants[ $event_id ] );
@@ -373,6 +383,11 @@ class Entitlements {
             } else {
                 \update_user_meta( $user_id, self::GRANTS_META, $grants );
             }
+            $changed = true;
+        }
+
+        if ( \in_array( $slug, (array) $user->roles, true ) ) {
+            $user->remove_role( $slug );
             $changed = true;
         }
 
@@ -389,6 +404,64 @@ class Entitlements {
          */
         \do_action( 'anchor_events_access_revoked', $event_id, $user_id, (string) $source );
         return true;
+    }
+
+    /** Re-entrancy guard for the role-change listeners below. */
+    private $reapplying = false;
+
+    /**
+     * `set_user_role` listener: put back every event role the user holds a
+     * grant record for (final review I5).
+     *
+     * Only roles that are (a) still registered and (b) backed by a grant
+     * record come back — a stray `anchor_event_*` role somebody added by
+     * hand with no record is left gone, because the record, not the role,
+     * is what says the user is entitled. Re-adding fires `add_user_role`,
+     * never `set_user_role`, so this cannot recurse; the flag is belt and
+     * braces against a third-party listener that calls set_role() itself.
+     *
+     * @param int $user_id
+     */
+    public function reapply_granted_roles( $user_id ) {
+        $user_id = (int) $user_id;
+        if ( $this->reapplying || $user_id <= 0 ) {
+            return;
+        }
+        $grants = $this->grants_for_user( $user_id );
+        if ( empty( $grants ) ) {
+            return;
+        }
+        $this->reapplying = true;
+        try {
+            $user = new \WP_User( $user_id );
+            if ( ! $user->exists() ) {
+                return;
+            }
+            foreach ( \array_keys( $grants ) as $event_id ) {
+                $slug = $this->role_for( (int) $event_id, false );
+                if ( $slug !== '' && ! \in_array( $slug, (array) $user->roles, true ) ) {
+                    $user->add_role( $slug );
+                }
+            }
+        } finally {
+            $this->reapplying = false;
+        }
+    }
+
+    /**
+     * `remove_user_role` listener: a direct removal of an event role the
+     * user still has a grant record for is undone. revoke() — the one
+     * sanctioned way to take access away — clears the record first, so it
+     * is never fought here.
+     *
+     * @param int    $user_id
+     * @param string $role
+     */
+    public function on_remove_user_role( $user_id, $role ) {
+        if ( \strpos( (string) $role, 'anchor_event_' ) !== 0 ) {
+            return;
+        }
+        $this->reapply_granted_roles( (int) $user_id );
     }
 
     /* ---------------------------------------------------------------------
@@ -614,7 +687,9 @@ class Entitlements {
      *
      * Then four branches, in order:
      *   1. `_anchor_event_user_id` already set and the user still exists.
-     *   2. An order seat with `customer_id > 0`.
+     *   2. An order seat with `customer_id > 0` whose email is empty or IS
+     *      that customer's (case-insensitive) — never a seat naming someone
+     *      else, even on the customer's own order.
      *   3. An existing account with the seat's email.
      *   4. Create one — wc_create_new_customer() when WooCommerce is active, so
      *      My Account works, else wp_insert_user() with the site's default role.
@@ -648,13 +723,26 @@ class Entitlements {
             return $stored;
         }
 
-        // 2 — the order's customer.
+        $email = \sanitize_email( (string) ( $seat['email'] ?? \get_post_meta( $seat_id, '_anchor_event_email', true ) ) );
+
+        // 2 — the order's customer, but ONLY when the seat is the customer's
+        // own: no email of its own, or the customer's email (final review
+        // C1). Every seat on a logged-in buyer's order carries the buyer's
+        // customer id, including the ones bought for colleagues; taking the
+        // id at face value bound all of them to the BUYER, whose sign-in
+        // token then went out in every attendee's email. A seat naming
+        // somebody else falls through to their own account (3) or a new one
+        // (4). Cost: a buyer who attends under a different address gets a
+        // second account — acceptable.
         $customer_id = (int) ( $seat['customer_id'] ?? \get_post_meta( $seat_id, '_anchor_event_customer_id', true ) );
-        if ( $customer_id > 0 && \get_userdata( $customer_id ) ) {
-            return $this->remember_seat_user( $seat_id, $customer_id );
+        if ( $customer_id > 0 ) {
+            $customer = \get_userdata( $customer_id );
+            if ( $customer instanceof \WP_User
+                && ( $email === '' || \strcasecmp( $email, (string) $customer->user_email ) === 0 ) ) {
+                return $this->remember_seat_user( $seat_id, $customer_id );
+            }
         }
 
-        $email = \sanitize_email( (string) ( $seat['email'] ?? \get_post_meta( $seat_id, '_anchor_event_email', true ) ) );
         if ( $email === '' ) {
             return 0;
         }
@@ -1042,11 +1130,12 @@ class Entitlements {
      *
      * @param int $user_id
      * @param int $event_id
-     * @return string '' when the user does not exist.
+     * @return string '' when the user does not exist, or holds elevated
+     *                capabilities (token_refused()).
      */
     public function login_token( $user_id, $event_id ) {
         $user = \get_userdata( (int) $user_id );
-        if ( ! $user instanceof \WP_User ) {
+        if ( ! $user instanceof \WP_User || $this->token_refused( $user ) ) {
             return '';
         }
         $expiry = $this->token_expiry( $event_id );
@@ -1072,14 +1161,35 @@ class Entitlements {
             return 0;
         }
         $user = \get_userdata( $user_id );
-        if ( ! $user instanceof \WP_User ) {
+        if ( ! $user instanceof \WP_User || $this->token_refused( $user ) ) {
             return 0;
         }
         $expected = $this->token_signature( $user_id, (int) $event_id, $expiry, $user->user_pass );
         return \hash_equals( $expected, (string) $signature ) ? $user_id : 0;
     }
 
-    /** The room URL carrying a per-recipient sign-in token. */
+    /**
+     * Accounts a one-click link must never sign in (final review C2).
+     *
+     * A token is a password-less sign-in that travels by email; for an
+     * attendee that is the point, for an account that can edit content or
+     * run the event console it is a standing takeover risk (a forwarded
+     * email, a leaked link). Such users get the plain room URL and sign in
+     * normally. Checked on BOTH sides — minting and verifying — so a token
+     * issued before a promotion to staff stops working the moment the
+     * capability is granted.
+     *
+     * @param \WP_User $user
+     * @return bool
+     */
+    private function token_refused( \WP_User $user ) {
+        return \user_can( $user, 'edit_posts' ) || \user_can( $user, Roster::cap() );
+    }
+
+    /**
+     * The room URL carrying a per-recipient sign-in token — or the plain
+     * room URL when no token may be minted for this user (token_refused()).
+     */
     public function room_url_for( $user_id, $event_id ) {
         $room = $this->module->room_url( (int) $event_id );
         if ( $room === '' ) {

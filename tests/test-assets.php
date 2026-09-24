@@ -196,4 +196,65 @@ class Test_Assets extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'export ', $src );
 		$this->assertStringNotContainsString( 'import ', $src );
 	}
+
+	/**
+	 * Run room.js's poll once in Node against a fake jQuery
+	 * (tests/js/room-poll-harness.js) and report what it did to the block.
+	 */
+	private function run_room_poll( array $attrs, array $response ) {
+		$node = trim( (string) shell_exec( 'command -v node 2>/dev/null' ) );
+		if ( $node === '' ) {
+			$this->markTestSkipped( 'node is not installed.' );
+		}
+		$root = dirname( __DIR__ );
+		$cmd  = escapeshellarg( $node ) . ' ' . escapeshellarg( $root . '/tests/js/room-poll-harness.js' )
+			. ' ' . escapeshellarg( $root . '/anchor-events-manager/assets/room.js' )
+			. ' ' . escapeshellarg( wp_json_encode( [ 'attrs' => $attrs, 'response' => $response ] ) ) . ' 2>&1';
+		$out  = (string) shell_exec( $cmd );
+		$data = json_decode( $out, true );
+		$this->assertIsArray( $data, 'Harness output: ' . $out );
+		return $data;
+	}
+
+	private function live_block( $session = 0 ) {
+		return [ 'data-state' => 'live', 'data-event-id' => '1', 'data-session-index' => (string) $session, 'data-target-ts' => '0', 'data-server-now' => '1000' ];
+	}
+
+	private function room_response( $state, $session, $target = 0 ) {
+		return [
+			'state'         => $state,
+			'session_index' => $session,
+			'target_ts'     => $target,
+			'server_now'    => 2000,
+			'html'          => '<div class="anchor-room-state" data-state="' . $state . '" data-session-index="' . $session . '" data-target-ts="' . $target . '" data-server-now="2000"><iframe></iframe></div>',
+		];
+	}
+
+	/**
+	 * Final review I4: the live poll must NOT replace the block (and so
+	 * reload the player iframe) when nothing changed — it updates the clock
+	 * data in place instead.
+	 */
+	public function test_room_js_live_poll_keeps_the_player_when_nothing_changed() {
+		$result = $this->run_room_poll( $this->live_block( 0 ), $this->room_response( 'live', 0 ) );
+		$this->assertFalse( $result['replaced'], 'An unchanged live poll must not swap the iframe.' );
+		$this->assertSame( '2000', $result['attrs']['data-server-now'] );
+		$this->assertSame( 'live', $result['attrs']['data-state'] );
+	}
+
+	/** ...but a real transition (ended, or the next session) does replace it. */
+	public function test_room_js_live_poll_replaces_on_a_state_or_session_change() {
+		$this->assertTrue( $this->run_room_poll( $this->live_block( 0 ), $this->room_response( 'ended', 0 ) )['replaced'] );
+		$this->assertTrue( $this->run_room_poll( $this->live_block( 0 ), $this->room_response( 'live', 1 ) )['replaced'] );
+	}
+
+	/** The countdown reaching zero still swaps in the live block. */
+	public function test_room_js_countdown_to_live_replaces() {
+		$result = $this->run_room_poll(
+			[ 'data-state' => 'countdown', 'data-event-id' => '1', 'data-session-index' => '0', 'data-target-ts' => '1', 'data-server-now' => '1' ],
+			$this->room_response( 'live', 0 )
+		);
+		$this->assertTrue( $result['replaced'] );
+		$this->assertSame( 'live', $result['attrs']['data-state'] );
+	}
 }

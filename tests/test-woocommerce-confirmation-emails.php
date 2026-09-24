@@ -203,4 +203,123 @@ class Test_WooCommerce_Confirmation_Emails extends Anchor_Events_TestCase {
 
 		remove_role( 'anchor_event_' . $event_id );
 	}
+
+	/* -----------------------------------------------------------------
+	 * Final review C1: attendee seats on a LOGGED-IN buyer's order carry
+	 * the buyer's customer id. Each attendee's email must carry only that
+	 * attendee's own token; the buyer's email never carries an attendee's.
+	 * --------------------------------------------------------------- */
+
+	/** A room event for the C1 tests. */
+	private function room_event() {
+		return $this->make_event( [
+			'registration_mode'       => 'free',
+			'access_role_enabled'     => true,
+			'timezone'                => 'UTC',
+			'start_ts'                => time() + DAY_IN_SECONDS,
+			'end_ts'                  => time() + DAY_IN_SECONDS + 3600,
+			'stream_default_modality' => 'virtual',
+			'stream_embed'            => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/9', 'raw' => '' ],
+		] );
+	}
+
+	/** Every user id the aek tokens in $html verify to (0 for a bad one). */
+	private function token_users( $html, $event_id ) {
+		preg_match_all( '/aek=([A-Za-z0-9.%_-]+)/', (string) $html, $m );
+		$ids = [];
+		foreach ( array_unique( $m[1] ) as $raw ) {
+			$ids[] = $this->module()->entitlements->verify_login_token( rawurldecode( $raw ), $event_id );
+		}
+		return array_values( array_unique( $ids ) );
+	}
+
+	/** Run $send with the rendered-HTML filter up; return the last HTML. */
+	private function capture_html( callable $send ) {
+		$captured = [];
+		$capture  = function ( $html ) use ( &$captured ) {
+			$captured[] = $html;
+			return $html;
+		};
+		add_filter( 'anchor_events_registration_email_html', $capture, 10, 1 );
+		try {
+			$send();
+		} finally {
+			remove_filter( 'anchor_events_registration_email_html', $capture, 10 );
+		}
+		$this->assertNotEmpty( $captured, 'No email HTML was rendered.' );
+		return (string) end( $captured );
+	}
+
+	public function test_a_logged_in_buyers_attendees_each_get_only_their_own_token() {
+		$event_id = $this->room_event();
+		$order_id = 5101;
+		$buyer_id = self::factory()->user->create( [ 'user_email' => 'logged-in-buyer@example.test', 'role' => 'customer' ] );
+
+		// Exactly what the WooCommerce reconcile writes: every seat on the
+		// order carries the order's customer id, whoever the attendee is.
+		$seat_a = $this->make_seat( $event_id, [ 'order_id' => $order_id, 'customer_id' => $buyer_id, 'name' => 'Ada', 'email' => 'ada-attendee@example.test' ] );
+		$seat_b = $this->make_seat( $event_id, [ 'order_id' => $order_id, 'customer_id' => $buyer_id, 'name' => 'Bob', 'email' => 'bob-attendee@example.test', 'seat_index' => 2 ] );
+
+		$ada = get_user_by( 'email', 'ada-attendee@example.test' );
+		$bob = get_user_by( 'email', 'bob-attendee@example.test' );
+		$this->assertInstanceOf( 'WP_User', $ada, 'Seat A resolved to its own account.' );
+		$this->assertInstanceOf( 'WP_User', $bob, 'Seat B resolved to its own account.' );
+		$this->assertSame( (int) $ada->ID, (int) get_post_meta( $seat_a, '_anchor_event_user_id', true ) );
+		$this->assertSame( (int) $bob->ID, (int) get_post_meta( $seat_b, '_anchor_event_user_id', true ) );
+
+		$registrations = $this->module()->registrations;
+		foreach ( [ [ $seat_a, (int) $ada->ID ], [ $seat_b, (int) $bob->ID ] ] as [ $seat_id, $owner ] ) {
+			$seat = $registrations->get_seat( $seat_id );
+
+			$confirmation = $this->capture_html( function () use ( $event_id, $seat, $seat_id ) {
+				$this->module()->send_confirmation_email( $event_id, $seat['name'], $seat['email'], Registrations::STATUS_CONFIRMED, 0, $seat_id );
+			} );
+			$this->assertSame( [ $owner ], $this->token_users( $confirmation, $event_id ), 'The confirmation carries only its own attendee\'s token.' );
+
+			$reminder = $this->capture_html( function () use ( $event_id, $seat ) {
+				$this->module()->send_reminder_email( $seat, $event_id, DAY_IN_SECONDS );
+			} );
+			$this->assertSame( [ $owner ], $this->token_users( $reminder, $event_id ), 'The reminder carries only its own attendee\'s token.' );
+		}
+
+		// The buyer's own confirmation never carries an attendee's token.
+		$order = new WC_Order();
+		$order->set_id( $order_id );
+		$order->set_customer_id( $buyer_id );
+		$order->set_billing_email( 'logged-in-buyer@example.test' );
+		$buyer_html = $this->capture_html( function () use ( $order, $event_id ) {
+			$this->send_customer_confirmation( $order, $event_id );
+		} );
+		$buyer_tokens = $this->token_users( $buyer_html, $event_id );
+		$this->assertNotContains( (int) $ada->ID, $buyer_tokens );
+		$this->assertNotContains( (int) $bob->ID, $buyer_tokens );
+		$this->assertNotContains( 0, $buyer_tokens, 'No unverifiable token either.' );
+
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/**
+	 * Second safeguard: a seat ALREADY bound to the buyer before the fix
+	 * (legacy data) must not mail the buyer's token to the attendee — a
+	 * token is only minted when its account's email is the recipient's.
+	 */
+	public function test_a_seat_bound_to_someone_else_gets_the_plain_room_url() {
+		$event_id = $this->room_event();
+		$buyer_id = self::factory()->user->create( [ 'user_email' => 'legacy-buyer@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [
+			'name'   => 'Cy',
+			'email'  => 'cy-attendee@example.test',
+			'status' => Registrations::STATUS_PENDING,
+		] );
+		update_post_meta( $seat_id, '_anchor_event_user_id', $buyer_id );
+		update_post_meta( $seat_id, '_anchor_event_reg_status', Registrations::STATUS_CONFIRMED );
+
+		$html = $this->capture_html( function () use ( $event_id, $seat_id ) {
+			$this->module()->send_confirmation_email( $event_id, 'Cy', 'cy-attendee@example.test', Registrations::STATUS_CONFIRMED, 0, $seat_id );
+		} );
+		$this->assertStringNotContainsString( 'aek=', $html, 'The buyer\'s token must never reach the attendee.' );
+		$this->assertStringContainsString( esc_url( $this->module()->room_url( $event_id ) ), $html, 'The attendee still gets the plain room URL.' );
+
+		remove_role( 'anchor_event_' . $event_id );
+	}
 }

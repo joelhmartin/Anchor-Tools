@@ -55,7 +55,21 @@
       beforeSend: function (xhr) { xhr.setRequestHeader('X-WP-Nonce', cfg.nonce); }
     }).done(function (res) {
       if (!res || typeof res.html !== 'string') { showError(); return; }
-      $block().replaceWith(res.html);
+      var $el = $block();
+      // Replace the block only when the room actually moved on (a new
+      // state, or the next session). The live poll re-fetches every
+      // pollSeconds while nothing has changed, and swapping the block then
+      // would reload the player iframe — the stream restarting for every
+      // viewer every five minutes. Otherwise just refresh the clock data.
+      var changed = !$el.length ||
+        String(res.state) !== String($el.attr('data-state')) ||
+        String(res.session_index) !== String($el.attr('data-session-index'));
+      if (changed) {
+        $el.replaceWith(res.html);
+      } else {
+        $el.attr('data-target-ts', String(parseInt(res.target_ts, 10) || 0));
+        $el.attr('data-server-now', String(parseInt(res.server_now, 10) || 0));
+      }
       start();
     }).fail(showError);
   }

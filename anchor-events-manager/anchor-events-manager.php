@@ -1514,6 +1514,7 @@ class Module {
             'cta_url'       => $tokens['event_url'],
             'type'          => 'reminder',
             'seat_id'       => (int) ( $seat['id'] ?? 0 ),
+            'recipient_email' => (string) $seat['email'],
         ];
         $html = $this->build_registration_email_html( $ctx );
         // finding-13 — the seat identity keeps two different attendees on the
@@ -3210,6 +3211,13 @@ class Module {
         $embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
         $raw   = (string) ( $embed['raw'] ?? ( $embed['src'] ?? '' ) );
         $room  = $this->room_url( (int) $event_id );
+        // Pre-filled from the RESOLVED default, not the raw stored value
+        // (final review I1): a legacy virtual event has nothing stored, so
+        // the raw read is get_meta_defaults()' in_person — and its first
+        // save posted that back, storing in_person and destroying the
+        // default_modality_for() bridge (no more virtual room). Showing the
+        // value the room actually uses makes a no-change save a no-op.
+        $default_modality = $this->default_modality_for( (int) $event_id, $meta );
 
         \ob_start();
         ?>
@@ -3229,7 +3237,7 @@ class Module {
                             'virtual'   => __( 'Livestream only', 'anchor-schema' ),
                             'hybrid'    => __( 'In person + livestream', 'anchor-schema' ),
                         ] as $key => $label ) : ?>
-                            <option value="<?php echo esc_attr( $key ); ?>" <?php selected( $meta['stream_default_modality'], $key ); ?>><?php echo esc_html( $label ); ?></option>
+                            <option value="<?php echo esc_attr( $key ); ?>" <?php selected( $default_modality, $key ); ?>><?php echo esc_html( $label ); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </div>
@@ -8026,9 +8034,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $event_id = (int) $event_id;
         if ( $this->room_url( $event_id ) === '' ) {
+            // nocache on the redirect too (final review I6): a page cache
+            // must not pin a "no room here" 302 onto an event that later
+            // gains a stream.
             return [
                 'headers'  => [],
-                'nocache'  => false,
+                'nocache'  => true,
                 'redirect' => (string) \get_permalink( $event_id ),
             ];
         }
@@ -8040,6 +8051,68 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'nocache'  => true,
             'redirect' => '',
         ];
+    }
+
+    /**
+     * The `?aek=` one-click sign-in DECISION for a room request, as pure data
+     * — the same split as room_header_list(): room_headers() applies it, and
+     * tests assert it without a real HTTP response.
+     *
+     *   - No token in the URL, not a room request, or no room: nothing.
+     *   - LOGGED OUT with a valid token: sign that user in, then 302 to the
+     *     clean room URL.
+     *   - LOGGED OUT with a bad or expired token: no redirect, a notice for
+     *     the sign-in form.
+     *   - LOGGED IN with any token: 302 to the clean room URL and sign NO
+     *     ONE in — a token never switches an already-signed-in account, and
+     *     the arg is stripped so it never lingers in the address bar, browser
+     *     history, a Referer header or an analytics hit (final review I6).
+     *
+     * Every redirect is uncached (I6): the response to a URL carrying a
+     * sign-in token must never be stored by a page cache or proxy.
+     *
+     * @param int $event_id
+     * @return array{redirect:string,nocache:bool,sign_in:int,notice:string}
+     */
+    public function room_token_decision( $event_id ) {
+        $none = [ 'redirect' => '', 'nocache' => false, 'sign_in' => 0, 'notice' => '' ];
+        if ( ! $this->is_room_request() || empty( $_GET[ Entitlements::TOKEN_ARG ] ) || ! $this->entitlements ) {
+            return $none;
+        }
+        $event_id = (int) $event_id;
+        $room     = $this->room_url( $event_id );
+        if ( $room === '' ) {
+            return $none; // room_header_list() redirects to the event page.
+        }
+        if ( \is_user_logged_in() ) {
+            return [ 'redirect' => $room, 'nocache' => true, 'sign_in' => 0, 'notice' => '' ];
+        }
+        $token   = \sanitize_text_field( \wp_unslash( $_GET[ Entitlements::TOKEN_ARG ] ) );
+        $user_id = $this->entitlements->verify_login_token( $token, $event_id );
+        if ( $user_id > 0 ) {
+            return [ 'redirect' => $room, 'nocache' => true, 'sign_in' => $user_id, 'notice' => '' ];
+        }
+        return [
+            'redirect' => '',
+            'nocache'  => false,
+            'sign_in'  => 0,
+            'notice'   => \__( 'That sign-in link has expired. Sign in below, or ask us for a new link.', 'anchor-schema' ),
+        ];
+    }
+
+    /**
+     * The one way room_headers() leaves: nocache first (guarded — see the
+     * headers_sent() note in room_headers()), then the 302, then exit.
+     *
+     * @param string $url
+     * @param bool   $nocache
+     */
+    private function room_redirect( $url, $nocache ) {
+        if ( $nocache && ! \headers_sent() ) {
+            \nocache_headers();
+        }
+        \wp_safe_redirect( $url, 302 );
+        exit;
     }
 
     /**
@@ -8055,35 +8128,35 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         }
         $event_id = (int) \get_queried_object_id();
 
-        // One-click sign-in (spec §6.2). Only for a LOGGED-OUT visitor — a
-        // token must never silently switch an already-signed-in account —
-        // and it runs BEFORE the roomless/entitlement decision below so a
-        // valid link signs the visitor in and lands them on the clean room
-        // URL rather than being bounced by a guard that has no idea a token
-        // was even presented. The query arg is stripped on that redirect so
-        // it never reaches the browser history, a referrer header, or an
-        // analytics hit.
-        if ( ! \is_user_logged_in() && ! empty( $_GET[ Entitlements::TOKEN_ARG ] ) && $this->entitlements ) {
-            $token   = \sanitize_text_field( \wp_unslash( $_GET[ Entitlements::TOKEN_ARG ] ) );
-            $user_id = $this->entitlements->verify_login_token( $token, $event_id );
-            if ( $user_id > 0 ) {
-                \wp_set_current_user( $user_id );
-                \wp_set_auth_cookie( $user_id, false );
-                \wp_safe_redirect( $this->room_url( $event_id ), 302 );
-                exit;
-            }
+        // One-click sign-in (spec §6.2) — see room_token_decision(). It runs
+        // BEFORE the roomless/entitlement decision below so a valid link
+        // signs the visitor in and lands them on the clean room URL rather
+        // than being bounced by a guard that has no idea a token was even
+        // presented.
+        $token = $this->room_token_decision( $event_id );
+        if ( $token['sign_in'] > 0 ) {
+            $user = \get_userdata( $token['sign_in'] );
+            \wp_set_current_user( $token['sign_in'] );
+            \wp_set_auth_cookie( $token['sign_in'], false );
+            // A token sign-in is a sign-in: session limiters, audit logs and
+            // last-login trackers all listen here (final review minor).
+            \do_action( 'wp_login', $user->user_login, $user );
+        }
+        if ( $token['redirect'] !== '' ) {
+            $this->room_redirect( $token['redirect'], $token['nocache'] );
+        }
+        if ( $token['notice'] !== '' ) {
             // Invalid or expired: fall through to the sign-in form. This
             // visitor is logged OUT, so anchor_events_room_denied_message
             // (applied only in render_room()'s logged-IN-but-not-entitled
             // branch) would never reach them — record it instead, for
             // render_room()'s logged-out branch to print above the form.
-            $this->room_login_notice = \__( 'That sign-in link has expired. Sign in below, or ask us for a new link.', 'anchor-schema' );
+            $this->room_login_notice = $token['notice'];
         }
 
         $decision = $this->room_header_list( $event_id );
         if ( $decision['redirect'] !== '' ) {
-            \wp_safe_redirect( $decision['redirect'], 302 );
-            exit;
+            $this->room_redirect( $decision['redirect'], $decision['nocache'] );
         }
         // headers_sent() guard: under the PHPUnit CLI SAPI (and any other
         // context where output has already started) header()/nocache_headers()
@@ -10304,9 +10377,18 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return true;
         }
 
-        // Everything else is the ONE access question (spec §4.5), so the event
-        // page's "Join here" and the room can never disagree.
-        if ( $this->entitlements ) {
+        // An event WITH a room: the ONE access question (spec §4.5), so the
+        // event page's "Join here" and the room can never disagree.
+        //
+        // An event with NO room keeps the pre-room seat check below (final
+        // review I2). can_access_stream() needs the role, a confirmed seat
+        // and a resolvable embed; delegating unconditionally took the link
+        // away from registrants who predate the role (nobody backfilled
+        // them), from pending seats (which have always seen it), and from
+        // every event whose virtual_url is on a host the embed allowlist
+        // does not know (Teams, Meet, Webex …) — none of which has a room
+        // for the room's answer to agree with in the first place.
+        if ( $this->entitlements && $this->room_url( $post_id ) !== '' ) {
             return $this->entitlements->can_access_stream( $post_id, 0, 0 );
         }
 
@@ -12674,11 +12756,12 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *
      * Deliberately NOT folded into get_meta_defaults(): that method has no
      * per-post identity to run metadata_exists() against at the point it
-     * assembles the defaults array, and every OTHER reader of
-     * `stream_default_modality` (the authoring UI's pre-filled value, the
-     * save-time forced-on check) wants the raw stored value, not this
-     * read-time bridge. So this lives only where the sessions resolver reads
-     * the default for room/access purposes.
+     * assembles the defaults array. The readers are the sessions resolver
+     * (room/access) AND the authoring UI's pre-filled "Default attendance"
+     * select (render_livestream_fields(), final review I1) — the UI must
+     * show the resolved value, or the first save of a legacy virtual event
+     * writes in_person back and ends the bridge. The save-time forced-on
+     * check reads the POSTED value, which that pre-fill now makes right.
      *
      * @param int   $event_id
      * @param array $meta     get_meta() result for the same event.
@@ -14863,6 +14946,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             'cta_url'       => $event_link,
             'type'          => 'confirmation',
             'seat_id'       => (int) $seat_id,
+            'recipient_email' => (string) $email,
         ] );
         // finding-13 — the seat identity keeps two different attendees on the
         // same event from collapsing into one deduped error row.
@@ -15107,6 +15191,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
      *                     identifies and vets them itself before handing the
      *                     id here. Passing an unvetted id would mint a
      *                     sign-in token for someone other than its holder.
+     *   - 'recipient_email' (string) The address this mail is going to.
+     *                     Defaults to the seat's own email. A token is
+     *                     minted ONLY when the resolved account's user_email
+     *                     is this address (case-insensitive) — final review
+     *                     C1's second safeguard: whatever resolved the
+     *                     account (a seat bound before the ensure_user() fix,
+     *                     a caller's room_user_id), the token can only ever
+     *                     reach the inbox of the person it signs in. On a
+     *                     mismatch the recipient gets the plain room URL.
      *
      * @param int   $event_id
      * @param array $ctx
@@ -15138,7 +15231,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         } else {
             $user_id = (int) ( $ctx['room_user_id'] ?? 0 );
         }
-        return $user_id > 0 ? $this->entitlements->room_url_for( $user_id, $event_id ) : '';
+        if ( $user_id <= 0 ) {
+            return '';
+        }
+
+        $recipient = (string) ( $ctx['recipient_email'] ?? '' );
+        if ( $recipient === '' && $seat ) {
+            $recipient = (string) ( $seat['email'] ?? '' );
+            if ( $recipient === '' && ! empty( $seat['id'] ) ) {
+                $recipient = (string) \get_post_meta( (int) $seat['id'], '_anchor_event_email', true );
+            }
+        }
+        $user = \get_userdata( $user_id );
+        if ( ! $user instanceof \WP_User || $recipient === ''
+            || \strcasecmp( \trim( $recipient ), (string) $user->user_email ) !== 0 ) {
+            return $this->room_url( $event_id ); // Never another person's token.
+        }
+        return $this->entitlements->room_url_for( $user_id, $event_id );
     }
 
     /** Documented token set for all event emails (spec §9). */
@@ -15904,6 +16013,7 @@ ANCHOR_EVENTS_EMAIL_SHELL;
             'seat_id'       => 0,
             'room_user_id'  => 0,
             'room_link_plain_fallback' => false,
+            'recipient_email' => '',
         ] );
 
         $event_id    = (int) $ctx['event_id'];
@@ -15943,9 +16053,10 @@ ANCHOR_EVENTS_EMAIL_SHELL;
         // byte-identical to the pre-extraction behaviour for the seat-bearing
         // send paths (confirmation, reminder).
         $room_link = $this->room_link_for_recipient( $event_id, [
-            'status'       => $status,
-            'seat'         => ! empty( $ctx['seat_id'] ) ? [ 'id' => (int) $ctx['seat_id'] ] : null,
-            'room_user_id' => (int) ( $ctx['room_user_id'] ?? 0 ),
+            'status'          => $status,
+            'seat'            => ! empty( $ctx['seat_id'] ) ? [ 'id' => (int) $ctx['seat_id'] ] : null,
+            'room_user_id'    => (int) ( $ctx['room_user_id'] ?? 0 ),
+            'recipient_email' => (string) $ctx['recipient_email'],
         ] );
         // WooCommerce buyer confirmation only (fix round 1): a sign-in token
         // is an identity, so a buyer who is not themselves a confirmed

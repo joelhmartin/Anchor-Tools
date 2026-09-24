@@ -84,6 +84,53 @@ class Test_Login_Token extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * Forge a token exactly as login_token() would, bypassing its refusal —
+	 * what an attacker holding the site secret-derived signature path would
+	 * need, and what verify_login_token() must still reject for staff.
+	 */
+	private function forge_token( $user_id, $event_id ) {
+		$ent    = $this->module()->entitlements;
+		$expiry = $ent->token_expiry( $event_id );
+		$sig    = new \ReflectionMethod( Entitlements::class, 'token_signature' );
+		$sig->setAccessible( true );
+		return $user_id . '.' . $expiry . '.' . $sig->invoke( $ent, $user_id, $event_id, $expiry, get_userdata( $user_id )->user_pass );
+	}
+
+	/**
+	 * Final review C2: a one-click token never signs in an account holding
+	 * elevated capabilities. Staff get no token, the plain room URL, and a
+	 * token forged for them verifies to 0.
+	 *
+	 * @dataProvider staff_roles
+	 */
+	public function test_no_token_for_staff( $role ) {
+		$this->pretty_permalinks();
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create( [ 'role' => $role ] );
+		$ent      = $this->module()->entitlements;
+
+		$this->assertSame( '', $ent->login_token( $user_id, $event_id ), "No token is minted for a {$role}." );
+		$this->assertSame( $this->module()->room_url( $event_id ), $ent->room_url_for( $user_id, $event_id ), "A {$role} gets the plain room URL." );
+		$this->assertSame( 0, $ent->verify_login_token( $this->forge_token( $user_id, $event_id ), $event_id ), "A token forged for a {$role} never verifies." );
+	}
+
+	public function staff_roles() {
+		return [ 'administrator' => [ 'administrator' ], 'shop_manager' => [ 'shop_manager' ], 'editor' => [ 'editor' ] ];
+	}
+
+	/** A subscriber (the attendee shape) still gets a working token. */
+	public function test_a_subscriber_still_gets_a_working_token() {
+		$event_id = $this->event();
+		$user_id  = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+		$ent      = $this->module()->entitlements;
+		$token    = $ent->login_token( $user_id, $event_id );
+
+		$this->assertNotSame( '', $token );
+		$this->assertSame( $token, $this->forge_token( $user_id, $event_id ) );
+		$this->assertSame( $user_id, $ent->verify_login_token( $token, $event_id ) );
+	}
+
+	/**
 	 * Named to avoid starting with "test_room": PHPUnit's --filter is an
 	 * unanchored substring match against "ClassName::methodName", and
 	 * "Test_Room" (the sibling suite's --filter target) matches "test_room"
@@ -163,6 +210,12 @@ class Test_Login_Token extends Anchor_Events_TestCase {
 		$this->go_to( $ent->room_url_for( $user_id, $event_id ) );
 		$this->assertTrue( $this->module()->is_room_request() );
 
+		$logged_in = 0;
+		$on_login  = static function ( $login, $user ) use ( &$logged_in ) {
+			$logged_in = (int) $user->ID;
+		};
+		add_action( 'wp_login', $on_login, 10, 2 );
+
 		$trap = static function ( $location ) {
 			throw new Anchor_Dispatch_Redirected( (string) $location );
 		};
@@ -175,9 +228,11 @@ class Test_Login_Token extends Anchor_Events_TestCase {
 			$this->assertStringNotContainsString( Entitlements::TOKEN_ARG . '=', $e->getMessage() );
 		} finally {
 			remove_filter( 'wp_redirect', $trap );
+			remove_action( 'wp_login', $on_login, 10 );
 		}
 
 		$this->assertSame( $user_id, get_current_user_id(), 'The token owner must now be signed in.' );
+		$this->assertSame( $user_id, $logged_in, 'A token sign-in fires wp_login like any other sign-in.' );
 	}
 
 	/**
@@ -192,10 +247,60 @@ class Test_Login_Token extends Anchor_Events_TestCase {
 		$ent         = $this->module()->entitlements;
 
 		wp_set_current_user( $viewer );
+		$room_url = $this->module()->room_url( $event_id );
 		$this->go_to( $ent->room_url_for( $token_owner, $event_id ) );
-		$this->module()->room_headers();
+
+		// Final review I6: the logged-in visitor is redirected to the CLEAN
+		// room URL (the token must not linger in history/Referer), and the
+		// trap turns a regression's exit into a failure instead of killing
+		// the run.
+		$trap = static function ( $location ) {
+			throw new Anchor_Dispatch_Redirected( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		try {
+			$this->module()->room_headers();
+			$this->fail( 'A logged-in visitor with ?aek= was not redirected to the clean room URL.' );
+		} catch ( Anchor_Dispatch_Redirected $e ) {
+			$this->assertSame( $room_url, $e->getMessage() );
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+		}
 
 		$this->assertSame( $viewer, get_current_user_id(), 'An already-signed-in visitor must never be switched by a token in the URL.' );
+	}
+
+	/**
+	 * Final review I6: both room redirects are uncached. room_token_decision()
+	 * is the data half of room_headers()'s token branch (same split as
+	 * room_header_list()), so the nocache flag is asserted without a real
+	 * HTTP response.
+	 */
+	public function test_the_token_redirect_decision_is_uncached_for_both_visitors() {
+		$this->pretty_permalinks();
+		$event_id = $this->event();
+		$owner    = self::factory()->user->create();
+		$ent      = $this->module()->entitlements;
+		$room_url = $this->module()->room_url( $event_id );
+
+		wp_set_current_user( 0 );
+		$this->go_to( $ent->room_url_for( $owner, $event_id ) );
+		$logged_out = $this->module()->room_token_decision( $event_id );
+		$this->assertSame( $room_url, $logged_out['redirect'] );
+		$this->assertTrue( $logged_out['nocache'] );
+		$this->assertSame( $owner, $logged_out['sign_in'] );
+
+		wp_set_current_user( self::factory()->user->create() );
+		$this->go_to( $ent->room_url_for( $owner, $event_id ) );
+		$logged_in = $this->module()->room_token_decision( $event_id );
+		$this->assertSame( $room_url, $logged_in['redirect'] );
+		$this->assertTrue( $logged_in['nocache'] );
+		$this->assertSame( 0, $logged_in['sign_in'], 'A logged-in visitor is never signed in as somebody else.' );
+
+		wp_set_current_user( 0 );
+		$this->go_to( $room_url );
+		$none = $this->module()->room_token_decision( $event_id );
+		$this->assertSame( '', $none['redirect'], 'No token, nothing to do.' );
 	}
 
 	/**

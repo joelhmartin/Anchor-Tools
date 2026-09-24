@@ -346,20 +346,12 @@ class Test_Inertness extends Anchor_Events_TestCase {
 	}
 
 	/* -----------------------------------------------------------------
-	 * (f) The backfill is asserted in Task 19's Test_Entitlements.
+	 * (f) The backfill — "grants every confirmed seat exactly once" — is
+	 * asserted in Test_Entitlements (test_backfill_grants_every_confirmed_
+	 * seat_once and its siblings), next to Entitlements::backfill() and the
+	 * admin-post handler it exercises. Named here so the §8 checklist reads
+	 * complete in one file; no empty placeholder test stands in for it.
 	 * --------------------------------------------------------------- */
-
-	/**
-	 * Spec §8 (f) — "the backfill action grants every confirmed seat exactly
-	 * once" — lives in Task 19's Test_Entitlements
-	 * (test_backfill_grants_every_confirmed_seat_once and its siblings), next
-	 * to Entitlements::backfill() and the admin-post handler it exercises.
-	 * Named here so the §8 checklist reads complete in one file.
-	 *
-	 * @doesNotPerformAssertions
-	 */
-	public function test_backfill_is_covered_in_test_entitlements() {
-	}
 
 	/** An event that is never stream-capable is out of the feature whatever the switch says. */
 	public function test_external_registration_is_never_in_the_feature() {

@@ -285,7 +285,10 @@ class Test_Room extends Anchor_Events_TestCase {
 
 		$decision = $this->module()->room_header_list( $event_id );
 		$this->assertSame( [], $decision['headers'] );
-		$this->assertFalse( $decision['nocache'] );
+		// Final review I6: the redirect itself is uncached, so a page cache
+		// cannot pin a stale "no room here" 302 onto an event that later
+		// gains a stream.
+		$this->assertTrue( $decision['nocache'] );
 		$this->assertSame( get_permalink( $event_id ), $decision['redirect'] );
 	}
 

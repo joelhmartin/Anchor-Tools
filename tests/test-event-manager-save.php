@@ -500,6 +500,48 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 
 		delete_option( Events_Log::ERROR_OPTION );
 	}
+
+	/** The option the Livestream "Default attendance" select pre-selects. */
+	private function selected_default_modality( $html ) {
+		$this->assertSame( 1, preg_match( '#<select[^>]*name="anchor_event_stream_default_modality"[^>]*>(.*?)</select>#s', $html, $select ), 'The select renders.' );
+		$this->assertSame( 1, preg_match( '#<option value="([a-z_]+)"\s+selected#', $select[1], $opt ), 'One option is pre-selected.' );
+		return $opt[1];
+	}
+
+	/** A pre-modality virtual event: virtual=1, a Vimeo link, NO stored stream_default_modality. */
+	private function legacy_virtual_event() {
+		$event_id = $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => true,
+			'virtual'             => true,
+			'virtual_url'         => 'https://vimeo.com/76979871',
+		] );
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ), 'Sanity: legacy shape.' );
+		$this->assertSame( 'virtual', $this->module()->resolved_sessions( $event_id )[0]['modality'], 'Sanity: the bridge reads it as virtual.' );
+		return $event_id;
+	}
+
+	/** Final review I1, console surface: same shared partial, same round-trip. */
+	public function test_console_first_save_of_a_legacy_virtual_event_keeps_it_virtual() {
+		$event_id = $this->legacy_virtual_event();
+		$selected = $this->selected_default_modality( $this->render_front_end_form( $event_id ) );
+		$this->assertSame( 'virtual', $selected );
+
+		$_POST = [
+			'anchor_event_type'                    => 'single',
+			'anchor_event_registration_mode'       => 'free',
+			'anchor_event_virtual'                 => '1',
+			'anchor_event_virtual_url'             => 'https://vimeo.com/76979871',
+			'anchor_event_stream_embed'            => '',
+			'anchor_event_stream_default_modality' => $selected,
+			'anchor_event_access_role_enabled'     => '1',
+		];
+		$this->call_save_event_manager_fields( $event_id, '2027-07-01', $this->module()->registration_mode( $event_id ) );
+		$_POST = [];
+
+		$this->assertSame( 'virtual', $this->module()->resolved_sessions( $event_id )[0]['modality'] );
+		$this->assertNotSame( '', $this->module()->room_url( $event_id ) );
+	}
 }
 
 /** Thrown from the wp_redirect filter so the handler's exit never runs. */

@@ -4085,6 +4085,7 @@ class WooCommerce {
             'type'          => 'confirmation',
             'room_user_id'  => $buyer_holds_seat ? $buyer_user_id : 0,
             'room_link_plain_fallback' => true,
+            'recipient_email' => (string) $to,
         ];
         $html = $this->module->build_registration_email_html( $ctx );
         // finding-13 — the order identity keeps two different buyers on the

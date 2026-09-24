@@ -348,7 +348,15 @@ a real, resolvable stream: `has_stream()` is true, `room_url()` is non-empty
 event" to "Join the livestream" pointing at `{room_link}` (see `EMAILS.md`'s
 CTA-order note). An author who explicitly saves `stream_default_modality` as
 `in_person` on such an event overrides the bridge, since that is a deliberate,
-stored choice rather than an absence.
+stored choice rather than an absence. The Livestream "Default attendance"
+select pre-fills from `default_modality_for()`, so saving such an event
+without touching the select keeps it `virtual`.
+
+Core role changes do not strip event roles: `WP_User::set_role()` (an admin
+changing someone's primary role) and a direct `remove_role()` of an
+`anchor_event_*` role are undone for every event the user still has a
+`_anchor_event_grants` record for. `Entitlements::revoke()` clears the record
+first, so it remains the one way to take access away.
 
 The room is `private, no-store`, carries `X-Robots-Tag: noindex, nofollow` and a
 robots meta tag, and is not in the sitemap (core sitemaps list post permalinks;
@@ -382,8 +390,20 @@ confirmed seat, accounts created as needed, idempotent) and an explicit
 **Sign-in link:** `Entitlements::room_url_for( $user_id, $event_id )` appends a
 stateless `?aek=` HMAC (user | event | expiry | password fragment), expiring at
 the last session's `end_ts` + 7 days. A logged-out visitor with a valid token is
-signed in and redirected to the clean room URL; the token is never shown in
-admin or logs.
+signed in (firing `wp_login`) and redirected to the clean room URL; a
+logged-in visitor arriving with `?aek=` is redirected to the clean URL and
+never switched; both redirects send no-cache headers. The token is never shown
+in admin or logs. **No token is minted or accepted for staff** — any account
+with `edit_posts` or the events capability (`Roster::cap()`) gets the plain
+room URL and signs in normally. In emails a token is minted only when the
+resolved account's email is the recipient's address; otherwise the recipient
+gets the plain room URL.
+
+**Which account a seat entitles** (`ensure_user()`): the stored
+`_anchor_event_user_id`; else the order's customer **only when the seat email
+is empty or is that customer's** (case-insensitive) — an attendee seat on a
+logged-in buyer's order resolves to the attendee's own account, never the
+buyer's; else an existing account with the seat email; else a new one.
 
 ---
 

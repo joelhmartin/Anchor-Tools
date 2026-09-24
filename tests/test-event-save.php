@@ -610,4 +610,60 @@ class Test_Event_Save extends Anchor_Events_TestCase {
 		remove_role( $self_role );
 		remove_role( $other_role );
 	}
+
+	/** The option the Livestream "Default attendance" select pre-selects. */
+	private function selected_default_modality( $html ) {
+		$this->assertSame( 1, preg_match( '#<select[^>]*name="anchor_event_stream_default_modality"[^>]*>(.*?)</select>#s', $html, $select ), 'The select renders.' );
+		$this->assertSame( 1, preg_match( '#<option value="([a-z_]+)"\s+selected#', $select[1], $opt ), 'One option is pre-selected.' );
+		return $opt[1];
+	}
+
+	/** A pre-modality virtual event: virtual=1, a Vimeo link, NO stored stream_default_modality. */
+	private function legacy_virtual_event() {
+		$event_id = $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => true,
+			'virtual'             => true,
+			'virtual_url'         => 'https://vimeo.com/76979871',
+		] );
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ), 'Sanity: legacy shape.' );
+		$this->assertSame( 'virtual', $this->module()->resolved_sessions( $event_id )[0]['modality'], 'Sanity: the bridge reads it as virtual.' );
+		return $event_id;
+	}
+
+	/**
+	 * Final review I1: the first metabox save of a legacy virtual event must
+	 * not destroy the modality bridge. The select pre-fills from
+	 * default_modality_for() (virtual), so posting the form back unchanged
+	 * stores "virtual", not the raw default "in_person".
+	 */
+	public function test_first_save_of_a_legacy_virtual_event_keeps_it_virtual() {
+		$event_id = $this->legacy_virtual_event();
+		$html     = $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true );
+		$selected = $this->selected_default_modality( $html );
+		$this->assertSame( 'virtual', $selected );
+
+		$_POST = [
+			Module::NONCE                          => wp_create_nonce( Module::NONCE ),
+			'anchor_event_start_date'              => '2027-06-01',
+			'anchor_event_registration_mode'       => 'free',
+			'anchor_event_virtual'                 => '1',
+			'anchor_event_virtual_url'             => 'https://vimeo.com/76979871',
+			'anchor_event_stream_embed'            => '',
+			'anchor_event_stream_default_modality' => $selected,
+			'anchor_event_access_role_enabled'     => '1',
+		];
+		$this->module()->save_meta( $event_id );
+		$_POST = [];
+
+		$this->assertSame( 'virtual', $this->module()->resolved_sessions( $event_id )[0]['modality'], 'Still a virtual room after the save.' );
+		$this->assertNotSame( '', $this->module()->room_url( $event_id ) );
+	}
+
+	/** A NEW event (nothing stored, not virtual) still pre-selects in person. */
+	public function test_a_plain_event_pre_selects_in_person() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$html     = $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true );
+		$this->assertSame( 'in_person', $this->selected_default_modality( $html ) );
+	}
 }

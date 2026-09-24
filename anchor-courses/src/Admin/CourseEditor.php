@@ -172,7 +172,7 @@ final class CourseEditor {
 	 */
 	private function prerequisite_picker( int $course_id ): void {
 		$selected = \array_map( 'strval', (array) self::setting( $course_id, 'prerequisites' ) );
-		$choices  = self::prerequisite_role_choices();
+		$choices  = self::prerequisite_role_choices( $course_id );
 
 		\printf(
 			'<p class="anchor-courses-field"><label for="ac-prerequisites"><strong>%s</strong></label><br />',
@@ -223,13 +223,29 @@ final class CourseEditor {
 	/**
 	 * The roles the prerequisites picker may offer and a save may store.
 	 *
+	 * Controller ruling (Task 8 fix round 1): a course must never be offered -
+	 * or allowed to save - its OWN completion role as a prerequisite. That role
+	 * can never be satisfied by anyone, since it is only granted on completing
+	 * this course, so the course would silently lock itself. $exclude_course_id,
+	 * when given, drops that one course's completion role; every other
+	 * course's is still offered. Mirrors the events module's
+	 * prerequisite_role_choices( $exclude_event_id ).
+	 *
+	 * @param int $exclude_course_id The course this picker/save is for, or 0
+	 *                                to exclude nothing (e.g. a brand-new,
+	 *                                not-yet-saved course has no own role yet).
 	 * @return array<string,array> slug => role definition
 	 */
-	public static function prerequisite_role_choices(): array {
-		$choices = [];
+	public static function prerequisite_role_choices( int $exclude_course_id = 0 ): array {
+		$choices   = [];
+		$own_slug  = $exclude_course_id > 0 ? 'anchor_course_' . $exclude_course_id . '_completed' : '';
 		foreach ( \wp_roles()->roles as $slug => $role ) {
-			if ( self::is_prerequisite_slug( (string) $slug ) ) {
-				$choices[ (string) $slug ] = $role;
+			$slug = (string) $slug;
+			if ( '' !== $own_slug && $slug === $own_slug ) {
+				continue;
+			}
+			if ( self::is_prerequisite_slug( $slug ) ) {
+				$choices[ $slug ] = $role;
 			}
 		}
 		/**
@@ -238,9 +254,10 @@ final class CourseEditor {
 		 * Anything added here is also accepted by the sanitiser, so a site can
 		 * widen the list deliberately - but never by accident.
 		 *
-		 * @param array<string,array> $choices slug => role definition
+		 * @param array<string,array> $choices           slug => role definition
+		 * @param int                 $exclude_course_id The course being edited, or 0.
 		 */
-		return (array) \apply_filters( 'anchor_courses_prerequisite_role_choices', $choices );
+		return (array) \apply_filters( 'anchor_courses_prerequisite_role_choices', $choices, $exclude_course_id );
 	}
 
 	public function save( int $post_id ): void {
@@ -265,15 +282,18 @@ final class CourseEditor {
 			if ( null === $raw ) {
 				continue;
 			}
-			\update_post_meta( $post_id, CoursePostType::meta_key( $key ), self::sanitize_value( $key, $raw ) );
+			\update_post_meta( $post_id, CoursePostType::meta_key( $key ), self::sanitize_value( $key, $raw, $post_id ) );
 		}
 	}
 
 	/**
 	 * @param mixed $value
+	 * @param int   $post_id The course being saved, or 0 outside a save (e.g.
+	 *                       a caller with no course yet). Only 'prerequisites'
+	 *                       uses it, to drop the course's own completion role.
 	 * @return mixed
 	 */
-	public static function sanitize_value( string $key, $value ) {
+	public static function sanitize_value( string $key, $value, int $post_id = 0 ) {
 		$defaults = self::defaults();
 
 		switch ( $key ) {
@@ -287,9 +307,9 @@ final class CourseEditor {
 
 			case 'prerequisites':
 				// Only roles the picker could have offered. A crafted POST naming
-				// `customer` - or this course's own access role - is dropped
+				// `customer` - or this course's own completion role - is dropped
 				// here, not just hidden in the UI.
-				$allowed = \array_keys( self::prerequisite_role_choices() );
+				$allowed = \array_keys( self::prerequisite_role_choices( $post_id ) );
 				return \array_values( \array_filter(
 					\array_map( 'sanitize_key', (array) $value ),
 					static fn( string $slug ): bool => '' !== $slug && \in_array( $slug, $allowed, true )
@@ -303,7 +323,11 @@ final class CourseEditor {
 				return \absint( $value );
 
 			case 'completion_percentage':
-				return \max( 1, \min( 100, \absint( $value ) ) );
+				// Garbage or empty input is not "as little as possible" - it is
+				// unset, so it falls back to the authored default (100), not the
+				// 1-floor a clamp would otherwise produce for absint('nope') === 0.
+				$n = \absint( $value );
+				return $n > 0 ? \max( 1, \min( 100, $n ) ) : $defaults['completion_percentage'];
 
 			case 'certificate_enabled':
 				return '' === $value ? 0 : 1;
@@ -311,7 +335,10 @@ final class CourseEditor {
 			case 'available_from':
 			case 'available_until':
 				$v = \sanitize_text_field( (string) $value );
-				return \preg_match( '/^\d{4}-\d{2}-\d{2}$/', $v ) ? $v : '';
+				if ( 1 !== \preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $v, $m ) ) {
+					return '';
+				}
+				return \checkdate( (int) $m[2], (int) $m[3], (int) $m[1] ) ? $v : '';
 
 			default:
 				return \sanitize_text_field( (string) $value );

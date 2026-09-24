@@ -98,6 +98,94 @@ class Test_Courses_Course_Editor extends Anchor_Courses_TestCase {
 		remove_role( 'anchor_course_77' );
 	}
 
+	/**
+	 * Controller ruling (Task 8 fix round 1): a course must not be offered its
+	 * OWN completion role as a prerequisite - it can never be satisfied, so the
+	 * course would silently lock itself. Every other course's completion role
+	 * is still offered.
+	 */
+	public function test_prerequisite_choices_exclude_the_courses_own_completion_role() {
+		$course_a = $this->make_course();
+		$course_b = $this->make_course();
+		add_role( 'anchor_course_' . $course_a . '_completed', 'Completed: A', [] );
+		add_role( 'anchor_course_' . $course_b . '_completed', 'Completed: B', [] );
+
+		$choices = CourseEditor::prerequisite_role_choices( $course_a );
+
+		$this->assertArrayNotHasKey( 'anchor_course_' . $course_a . '_completed', $choices );
+		$this->assertArrayHasKey( 'anchor_course_' . $course_b . '_completed', $choices );
+
+		remove_role( 'anchor_course_' . $course_a . '_completed' );
+		remove_role( 'anchor_course_' . $course_b . '_completed' );
+	}
+
+	/** The self-exclusion is enforced server-side, not just hidden in the picker. */
+	public function test_save_drops_a_courses_own_completion_role_from_prerequisites() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$course = $this->make_course();
+		add_role( 'anchor_course_' . $course . '_completed', 'Completed: Self', [] );
+		add_role( 'anchor_course_77_completed', 'Completed: Other', [] );
+
+		$this->post_course_settings( $course, [
+			'prerequisites' => [ 'anchor_course_' . $course . '_completed', 'anchor_course_77_completed' ],
+		] );
+
+		$this->assertSame(
+			[ 'anchor_course_77_completed' ],
+			get_post_meta( $course, '_anchor_course_prerequisites', true ),
+			'A crafted POST naming the course\'s own completion role must be dropped server-side.'
+		);
+
+		remove_role( 'anchor_course_' . $course . '_completed' );
+		remove_role( 'anchor_course_77_completed' );
+	}
+
+	/** Fails if the `add_action( 'save_post_' . CPT, ... )` line is ever removed. */
+	public function test_save_runs_through_the_real_save_post_hook() {
+		new CourseEditor();
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$course = $this->make_course();
+
+		$_POST = [
+			CourseEditor::NONCE => wp_create_nonce( CourseEditor::NONCE ),
+			'anchor_course'     => [ 'instructor' => 'Dr Hook' ],
+		];
+		do_action( 'save_post_' . CoursePostType::CPT, $course, get_post( $course ), true );
+		$_POST = [];
+
+		$this->assertSame( 'Dr Hook', get_post_meta( $course, '_anchor_course_instructor', true ) );
+	}
+
+	/** A regex-valid but calendar-invalid date (Feb 30th) is not a real date. */
+	public function test_invalid_calendar_dates_are_discarded() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$course = $this->make_course();
+
+		$this->post_course_settings( $course, [ 'available_from' => '2026-02-30' ] );
+		$this->assertSame( '', get_post_meta( $course, '_anchor_course_available_from', true ) );
+
+		$this->post_course_settings( $course, [ 'available_from' => '2026-02-28' ] );
+		$this->assertSame( '2026-02-28', get_post_meta( $course, '_anchor_course_available_from', true ) );
+	}
+
+	/** Garbage or empty input falls back to the default (100), not the 1-floor. */
+	public function test_completion_percentage_falls_back_to_the_default_not_the_floor() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		$course = $this->make_course();
+
+		$this->post_course_settings( $course, [ 'completion_percentage' => 'nope' ] );
+		$this->assertSame( 100, (int) get_post_meta( $course, '_anchor_course_completion_percentage', true ) );
+
+		$this->post_course_settings( $course, [ 'completion_percentage' => '0' ] );
+		$this->assertSame( 100, (int) get_post_meta( $course, '_anchor_course_completion_percentage', true ) );
+
+		$this->post_course_settings( $course, [ 'completion_percentage' => '150' ] );
+		$this->assertSame( 100, (int) get_post_meta( $course, '_anchor_course_completion_percentage', true ) );
+
+		$this->post_course_settings( $course, [ 'completion_percentage' => '37' ] );
+		$this->assertSame( 37, (int) get_post_meta( $course, '_anchor_course_completion_percentage', true ) );
+	}
+
 	public function test_invalid_enum_values_fall_back_to_the_default() {
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
 		$course = $this->make_course();

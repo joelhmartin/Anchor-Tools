@@ -11,10 +11,7 @@
 
     var cfg = window.anchorCoursesCurriculum || {};
     var S = cfg.strings || {};
-
-    function esc(text) {
-        return $('<div/>').text(text == null ? '' : String(text)).html();
-    }
+    var esc = window.AnchorCoursesAdmin.esc;
 
     function itemMarkup(item) {
         return '' +

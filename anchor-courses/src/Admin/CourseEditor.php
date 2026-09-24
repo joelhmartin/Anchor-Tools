@@ -90,9 +90,16 @@ final class CourseEditor {
 		\wp_enqueue_style( 'anchor-courses-admin', Module::assets_url() . 'admin.css', [], Module::VERSION );
 
 		\wp_enqueue_script(
+			'anchor-courses-admin-common',
+			Module::assets_url() . 'admin-common.js',
+			[ 'jquery' ],
+			Module::VERSION,
+			true
+		);
+		\wp_enqueue_script(
 			'anchor-courses-curriculum',
 			Module::assets_url() . 'admin-curriculum.js',
-			[ 'jquery', 'jquery-ui-sortable' ],
+			[ 'jquery', 'jquery-ui-sortable', 'anchor-courses-admin-common' ],
 			Module::VERSION,
 			true
 		);

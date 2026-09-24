@@ -3,7 +3,9 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Admin;
 
+use Anchor\Courses\Content\Questions;
 use Anchor\Courses\Content\QuizPostType;
+use Anchor\Courses\Module;
 use Anchor\Courses\Support\Capabilities;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -32,6 +34,10 @@ final class QuizEditor {
 	public function __construct() {
 		\add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
 		\add_action( 'save_post_' . QuizPostType::CPT, [ $this, 'save' ] );
+		// One tick after save(), same convention as CourseEditor::save_curriculum()
+		// (progress.md: settings first, structure second).
+		\add_action( 'save_post_' . QuizPostType::CPT, [ $this, 'save_questions' ], 11 );
+		\add_action( 'admin_enqueue_scripts', [ $this, 'assets' ] );
 	}
 
 	public static function defaults(): array {
@@ -110,6 +116,14 @@ final class QuizEditor {
 			'side',
 			'high'
 		);
+		\add_meta_box(
+			'anchor_courses_quiz_questions',
+			\__( 'Questions', 'anchor-schema' ),
+			[ $this, 'render_questions' ],
+			QuizPostType::CPT,
+			'normal',
+			'high'
+		);
 	}
 
 	public function render_settings( \WP_Post $post ): void {
@@ -175,5 +189,91 @@ final class QuizEditor {
 			: [];
 
 		\update_post_meta( $post_id, QuizPostType::meta_key( 'settings' ), self::sanitize_settings( $input ) );
+	}
+
+	public function render_questions( \WP_Post $post ): void {
+		// Reprint the nonce so question saving still works when the settings box
+		// is hidden through Screen Options.
+		\wp_nonce_field( self::NONCE, self::NONCE );
+
+		echo '<div class="anchor-courses-questions">';
+		echo '<ul class="anchor-courses-question-list"></ul>';
+		\printf(
+			'<p><button type="button" class="button anchor-courses-add-question" data-type="single_choice">%s</button> '
+			. '<button type="button" class="button anchor-courses-add-question" data-type="multiple_choice">%s</button> '
+			. '<button type="button" class="button anchor-courses-add-question" data-type="true_false">%s</button></p>',
+			\esc_html__( 'Add single choice', 'anchor-schema' ),
+			\esc_html__( 'Add multiple choice', 'anchor-schema' ),
+			\esc_html__( 'Add true/false', 'anchor-schema' )
+		);
+		\printf(
+			'<input type="hidden" name="anchor_quiz_questions" class="anchor-courses-questions-data" value="%s" />',
+			\esc_attr( (string) \wp_json_encode( Questions::get( (int) $post->ID ) ) )
+		);
+		echo '</div>';
+	}
+
+	/**
+	 * Persist authored questions. Gated through the shared MetaboxSave trait
+	 * (progress.md ruling: this is the fifth of five call sites, and must not
+	 * be a copy of the nonce/cap/autosave/revision check).
+	 */
+	public function save_questions( int $post_id ): void {
+		if ( ! $this->authorized_to_save( $post_id, self::NONCE, Capabilities::cap( 'edit_quizzes' ) ) ) {
+			return;
+		}
+		if ( ! isset( $_POST['anchor_quiz_questions'] ) ) {
+			return;
+		}
+
+		$decoded = \json_decode( \wp_unslash( (string) $_POST['anchor_quiz_questions'] ), true ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+
+		// A decode failure means a broken editor, not "the author deleted every question".
+		if ( ! \is_array( $decoded ) ) {
+			return;
+		}
+
+		Questions::save( $post_id, $decoded );
+	}
+
+	public function assets( string $hook = '' ): void {
+		if ( ! \in_array( $hook, [ 'post.php', 'post-new.php' ], true ) ) {
+			return;
+		}
+		$screen = \get_current_screen();
+		if ( ! $screen || QuizPostType::CPT !== $screen->post_type ) {
+			return;
+		}
+
+		\wp_enqueue_style( 'anchor-courses-admin', Module::assets_url() . 'admin.css', [], Module::VERSION );
+		\wp_enqueue_script(
+			'anchor-courses-admin-common',
+			Module::assets_url() . 'admin-common.js',
+			[ 'jquery' ],
+			Module::VERSION,
+			true
+		);
+		\wp_enqueue_script(
+			'anchor-courses-quiz-admin',
+			Module::assets_url() . 'admin-quiz.js',
+			[ 'jquery', 'jquery-ui-sortable', 'anchor-courses-admin-common' ],
+			Module::VERSION,
+			true
+		);
+		\wp_localize_script(
+			'anchor-courses-quiz-admin',
+			'anchorCoursesQuiz',
+			[
+				'strings' => [
+					'prompt'     => \__( 'Question prompt', 'anchor-schema' ),
+					'points'     => \__( 'Points', 'anchor-schema' ),
+					'answer'     => \__( 'Answer text', 'anchor-schema' ),
+					'correct'    => \__( 'Correct', 'anchor-schema' ),
+					'addAnswer'  => \__( 'Add answer', 'anchor-schema' ),
+					'remove'     => \__( 'Remove', 'anchor-schema' ),
+					'confirmDel' => \__( 'Remove this question?', 'anchor-schema' ),
+				],
+			]
+		);
 	}
 }

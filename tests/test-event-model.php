@@ -416,6 +416,44 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$this->assertSame( 'any', $meta['required_roles_mode'] );
 	}
 
+	/**
+	 * `in_person_includes_stream` is the other default-TRUE boolean in
+	 * get_meta_defaults() (alongside `access_role_enabled`) and shares the
+	 * identical latent bug Task 4 found and fixed for that key: WordPress
+	 * round-trips a stored boolean `false` back as '' on read — the exact
+	 * same read a never-written key returns — so get_meta()'s generic
+	 * defaulting would otherwise resurrect an explicit un-tick as TRUE. This
+	 * proves the fix is value-based (any default-true boolean), not a
+	 * `access_role_enabled`-only special case.
+	 */
+	public function test_unticking_in_person_includes_stream_persists_false() {
+		$event_id = $this->make_event();
+		$this->assertTrue(
+			$this->module()->get_meta( $event_id )['in_person_includes_stream'],
+			'Sanity: the default is TRUE before anything is saved.'
+		);
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST = [
+			'anchor_event_start_date' => '2027-06-01',
+			// Omitted entirely — a real checkbox un-tick posts nothing for this
+			// key today (Task 16 gives it the same hidden `value="0"`
+			// companion access_role_enabled has; until then an absent field is
+			// how "off" is expressed here, same as every other ! empty(...)
+			// checkbox in event_authoring_input()).
+		];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$meta = $this->module()->get_meta( $event_id );
+		$this->assertFalse(
+			$meta['in_person_includes_stream'],
+			'An un-ticked (absent) checkbox must persist as an observable false, not round-trip back to the default.'
+		);
+		$_POST = [];
+	}
+
 	/** A garbage modality falls back; minutes are clamped to >= 0. */
 	public function test_sanitize_modality_and_minutes() {
 		$m = $this->module();

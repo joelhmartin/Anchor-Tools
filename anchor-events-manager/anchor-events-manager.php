@@ -5234,7 +5234,15 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             // access_role_enabled_input() with the real "absent field keeps
             // the stored value" rule.
             'stream_default_modality' => $this->sanitize_modality( $src['anchor_event_stream_default_modality'] ?? '' ),
-            'in_person_includes_stream' => ! empty( $src['anchor_event_in_person_includes_stream'] ),
+            // Stored as an int, not the raw bool ! empty(...) produces: this is
+            // the OTHER default-TRUE boolean in get_meta_defaults() (alongside
+            // access_role_enabled), so it shares that key's exact round-trip
+            // bug — WordPress persists a literal `false` back as '', which
+            // get_meta()'s generic defaulting cannot tell apart from "never
+            // written" and would resurrect as TRUE. `0`/`1` survive the round
+            // trip as the strings '0'/'1'. See get_meta()'s docblock comment
+            // for the value-based (not key-name) guard this depends on.
+            'in_person_includes_stream' => ! empty( $src['anchor_event_in_person_includes_stream'] ) ? 1 : 0,
             'stream_open_before_minutes' => max( 0, (int) ( $src['anchor_event_stream_open_before_minutes'] ?? 15 ) ),
             'stream_close_after_minutes' => max( 0, (int) ( $src['anchor_event_stream_close_after_minutes'] ?? 30 ) ),
             'required_roles_mode' => ( ( $src['anchor_event_required_roles_mode'] ?? '' ) === 'all' ) ? 'all' : 'any',
@@ -5369,7 +5377,10 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return;
         }
         if ( empty( \get_post_meta( $event_id, $this->meta_key( 'access_role_enabled' ), true ) ) ) {
-            \update_post_meta( $event_id, $this->meta_key( 'access_role_enabled' ), true );
+            // Int, not bool — matches how event_authoring_input() stores this
+            // key (see its comment), so every writer of this meta uses the
+            // same on-disk representation.
+            \update_post_meta( $event_id, $this->meta_key( 'access_role_enabled' ), 1 );
         }
     }
 
@@ -11359,16 +11370,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         foreach ( $defaults as $key => $value ) {
             $stored = \get_post_meta( $post_id, $this->meta_key( $key ), true );
             if ( $stored === '' ) {
-                // Task 4 (spec §2 row 8a): `access_role_enabled` is the one
-                // default-TRUE boolean here, so this is the one key where the
-                // '' == "never written" assumption below is unsafe — WordPress
-                // round-trips a stored boolean `false` back as '' too, and
-                // this loop would otherwise resurrect an explicit un-tick as
-                // the default. metadata_exists() tells the two apart by
-                // presence rather than value. Every other default in this
-                // list is falsy, so '' already reads the same as its default
-                // and needs no such check.
-                if ( $key === 'access_role_enabled' && \metadata_exists( 'post', $post_id, $this->meta_key( $key ) ) ) {
+                // Task 4 (spec §2 row 8a): for a boolean whose DEFAULT IS TRUE
+                // (access_role_enabled, in_person_includes_stream — the only
+                // two in this list), '' == "never written" is unsafe: WordPress
+                // round-trips a stored `false` back as '' too, so this loop
+                // would otherwise resurrect an explicit un-tick as the default.
+                // metadata_exists() tells the two apart by presence rather than
+                // value. This is a VALUE check ($value === true), not a
+                // key-name allow-list, so it automatically covers any future
+                // default-true boolean added to get_meta_defaults() without
+                // needing to be told its name. Every default-FALSE boolean
+                // already reads the same via '' as it would via its default,
+                // so it never needs this check.
+                if ( $value === true && \metadata_exists( 'post', $post_id, $this->meta_key( $key ) ) ) {
                     $stored = false;
                 } else {
                     $stored = $value;

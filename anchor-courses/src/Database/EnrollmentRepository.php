@@ -16,6 +16,19 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class EnrollmentRepository {
 
+	/**
+	 * The status column has no CHECK constraint, so the repository is the last
+	 * place an unknown value can be refused before it becomes a corrupt row.
+	 * ProgressRepository::upsert() applies the same rule to its enums.
+	 *
+	 * @throws \InvalidArgumentException
+	 */
+	private static function assert_status( string $status ): void {
+		if ( ! \in_array( $status, Enrollment::STATUSES, true ) ) {
+			throw new \InvalidArgumentException( 'Unknown enrollment status: ' . $status );
+		}
+	}
+
 	private static function table(): string {
 		return Migrations::table( 'enrollments' );
 	}
@@ -52,12 +65,14 @@ final class EnrollmentRepository {
 	public static function insert_ignore( array $data ): ?Enrollment {
 		global $wpdb;
 
-		$now = Clock::now();
+		$now    = Clock::now();
+		$status = (string) ( $data['status'] ?? 'enrolled' );
+		self::assert_status( $status );
 
 		$values = [
 			'user_id'      => (int) ( $data['user_id'] ?? 0 ),
 			'course_id'    => (int) ( $data['course_id'] ?? 0 ),
-			'status'       => (string) ( $data['status'] ?? 'enrolled' ),
+			'status'       => $status,
 			'enrolled_at'  => (string) ( $data['enrolled_at'] ?? $now ),
 			'started_at'   => $data['started_at'] ?? null,
 			'completed_at' => $data['completed_at'] ?? null,
@@ -84,10 +99,21 @@ final class EnrollmentRepository {
 		return self::find( $values['user_id'], $values['course_id'] );
 	}
 
-	/** @param array $data Column => value. `metadata` may be an array. */
+	/** Columns a caller may change after insert; identity columns are never among them. */
+	private const UPDATABLE = [ 'status', 'started_at', 'completed_at', 'expires_at', 'source', 'source_id', 'metadata' ];
+
+	/**
+	 * @param array $data Column => value, limited to self::UPDATABLE (anything else
+	 *                    is dropped). `metadata` may be an array.
+	 * @throws \InvalidArgumentException When `status` is not one of Enrollment::STATUSES.
+	 */
 	public static function update( int $id, array $data ): ?Enrollment {
 		global $wpdb;
 
+		$data = \array_intersect_key( $data, \array_flip( self::UPDATABLE ) );
+		if ( isset( $data['status'] ) ) {
+			self::assert_status( (string) $data['status'] );
+		}
 		if ( isset( $data['metadata'] ) && \is_array( $data['metadata'] ) ) {
 			$data['metadata'] = (string) \wp_json_encode( $data['metadata'] );
 		}

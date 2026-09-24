@@ -113,4 +113,27 @@ class Test_Courses_Enrollment_Repo extends Anchor_Courses_TestCase {
 		$this->assertTrue( $row->is_active() );
 		$this->assertFalse( EnrollmentRepository::update( $row->id, [ 'status' => 'cancelled' ] )->is_active() );
 	}
+
+	public function test_insert_rejects_an_unknown_status() {
+		$this->expectException( InvalidArgumentException::class );
+		EnrollmentRepository::insert_ignore( $this->row( $this->make_learner(), $this->make_course(), [ 'status' => 'bogus' ] ) );
+	}
+
+	public function test_update_rejects_an_unknown_status() {
+		$e = EnrollmentRepository::insert_ignore( $this->row( $this->make_learner(), $this->make_course() ) );
+		$this->expectException( InvalidArgumentException::class );
+		EnrollmentRepository::update( $e->id, [ 'status' => 'bogus' ] );
+	}
+
+	public function test_update_ignores_identity_columns() {
+		$user   = $this->make_learner();
+		$course = $this->make_course();
+		$e      = EnrollmentRepository::insert_ignore( $this->row( $user, $course ) );
+
+		$after = EnrollmentRepository::update( $e->id, [ 'user_id' => 999999, 'course_id' => 999998, 'source' => 'import' ] );
+
+		$this->assertSame( $user, $after->user_id );
+		$this->assertSame( $course, $after->course_id );
+		$this->assertSame( 'import', $after->source );
+	}
 }

@@ -219,4 +219,83 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		$this->assertNotContains( 'anchor_event_' . $event_id, ( new WP_User( $a ) )->roles );
 		$this->assertSame( [], $this->ent()->grants_for_user( $a ) );
 	}
+
+	/** A seat on a switch-off event grants nothing and mints nothing. */
+	public function test_disabled_event_seat_grants_nothing() {
+		$event_id = $this->disabled_event(); // The default is TRUE, so say so.
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'inert@example.test' ] );
+
+		$seat_id = $this->make_seat( $event_id, [ 'email' => 'inert@example.test' ] );
+
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $user_id ) );
+		$this->assertNull( get_role( 'anchor_event_' . $event_id ), 'No role is minted for a switched-off event.' );
+		$this->assertSame( [], $this->ent()->grants_for_user( $user_id ) );
+
+		// And the cancellation half is just as inert — it must not reach
+		// maybe_revoke_seat_grant() and start querying seats either.
+		$this->registrations()->update_status( $seat_id, \Anchor\Events\Registrations::STATUS_CANCELLED );
+		$this->assertSame( [], $this->ent()->grants_for_user( $user_id ) );
+	}
+
+	/** A seat BORN confirmed grants access — create_seat() never transitions. */
+	public function test_seat_created_confirmed_grants() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'ada@example.test' ] );
+
+		$this->make_seat( $event_id, [ 'email' => 'ada@example.test' ] );
+
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ) );
+		$this->assertSame( 'seat', $this->ent()->grant_record( $event_id, $user_id )['source'] );
+	}
+
+	/** A pending seat grants nothing until it is confirmed. */
+	public function test_pending_seat_grants_nothing_then_promotes() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'bob@example.test' ] );
+
+		$seat_id = $this->make_seat( $event_id, [
+			'email'  => 'bob@example.test',
+			'status' => \Anchor\Events\Registrations::STATUS_PENDING,
+		] );
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $user_id ) );
+
+		$this->registrations()->update_status( $seat_id, \Anchor\Events\Registrations::STATUS_CONFIRMED );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ) );
+	}
+
+	/** Cancelling the only confirmed seat revokes. */
+	public function test_cancel_revokes() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'cara@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'cara@example.test' ] );
+
+		$this->registrations()->update_status( $seat_id, \Anchor\Events\Registrations::STATUS_CANCELLED );
+
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $user_id ) );
+	}
+
+	/** A second confirmed seat keeps access alive. */
+	public function test_cancel_with_a_second_confirmed_seat_keeps_access() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'dee@example.test' ] );
+		$first    = $this->make_seat( $event_id, [ 'email' => 'dee@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'dee@example.test', 'seat_index' => 2 ] );
+
+		$this->registrations()->update_status( $first, \Anchor\Events\Registrations::STATUS_CANCELLED );
+
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ) );
+	}
+
+	/** A manual grant survives a seat cancellation. */
+	public function test_cancel_never_strips_a_manual_grant() {
+		$event_id = $this->enabled_event();
+		$user_id  = self::factory()->user->create( [ 'user_email' => 'eve@example.test' ] );
+		$seat_id  = $this->make_seat( $event_id, [ 'email' => 'eve@example.test' ] );
+		$this->ent()->grant( $event_id, $user_id, 'manual' );
+
+		$this->registrations()->update_status( $seat_id, \Anchor\Events\Registrations::STATUS_REFUNDED );
+
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $user_id ) );
+		$this->assertSame( 'manual', $this->ent()->grant_record( $event_id, $user_id )['source'] );
+	}
 }

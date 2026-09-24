@@ -50,6 +50,12 @@ class Entitlements {
         // save_post_event alone) because a quick-edit title change does not run
         // the metabox save; wp_update_post fires this for every path.
         \add_action( 'save_post_' . Module::CPT, [ $this, 'rename_role' ], 10, 2 );
+
+        // Seat lifecycle (spec §4.2): grant on birth-confirmed or promotion to
+        // confirmed, consider revoking on leaving confirmed. Deferred out of
+        // Task 6 because these handlers did not exist yet.
+        \add_action( 'anchor_events_seat_created', [ $this, 'on_seat_created' ], 10, 2 );
+        \add_action( 'anchor_events_seat_status_changed', [ $this, 'on_seat_status_changed' ], 10, 4 );
     }
 
     /* ---------------------------------------------------------------------
@@ -347,5 +353,145 @@ class Entitlements {
          */
         \do_action( 'anchor_events_access_revoked', $event_id, $user_id, (string) $source );
         return true;
+    }
+
+    /* ---------------------------------------------------------------------
+     * Seat lifecycle (spec §4.2)
+     * ------------------------------------------------------------------- */
+
+    /**
+     * A seat was created. Grant when it is born confirmed.
+     *
+     * `pending` grants nothing: a WooCommerce on-hold order and a waitlist seat
+     * are both "maybe". Promotion to confirmed comes through
+     * on_seat_status_changed() and grants normally.
+     *
+     * @param int    $seat_id
+     * @param string $status
+     */
+    public function on_seat_created( $seat_id, $status ) {
+        if ( (string) $status !== Registrations::STATUS_CONFIRMED ) {
+            return;
+        }
+        // grant_for_seat() checks enabled() itself; this hook does no work of
+        // its own beyond the status test, so there is nothing else to guard.
+        $this->grant_for_seat( (int) $seat_id );
+    }
+
+    /**
+     * A seat moved. Grant on entering confirmed; consider revoking on leaving it.
+     *
+     * @param int    $seat_id
+     * @param string $from
+     * @param string $to
+     * @param string $actor
+     */
+    public function on_seat_status_changed( $seat_id, $from, $to, $actor = '' ) {
+        $seat_id = (int) $seat_id;
+        if ( (string) $to === Registrations::STATUS_CONFIRMED ) {
+            $this->grant_for_seat( $seat_id );
+            return;
+        }
+        if ( (string) $to === Registrations::STATUS_PENDING ) {
+            return; // Reserved, not entitled. Nothing granted, nothing taken.
+        }
+        $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
+        // Inert event (spec §4 preamble): nothing was ever granted, so there is
+        // nothing to revoke and no reason to run the seat query below.
+        if ( ! $this->enabled( $event_id ) ) {
+            return;
+        }
+        $user_id = (int) \get_post_meta( $seat_id, self::SEAT_USER_META, true );
+        if ( $user_id <= 0 ) {
+            $user    = \get_user_by( 'email', (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) );
+            $user_id = $user ? (int) $user->ID : 0;
+        }
+        $this->maybe_revoke_seat_grant( $event_id, $user_id );
+    }
+
+    /**
+     * Revoke a SEAT grant only when nothing else entitles the user: no other
+     * confirmed seat on this event, and no manual grant on record.
+     *
+     * @param int $event_id
+     * @param int $user_id
+     */
+    public function maybe_revoke_seat_grant( $event_id, $user_id ) {
+        $event_id = (int) $event_id;
+        $user_id  = (int) $user_id;
+        if ( $event_id <= 0 || $user_id <= 0 || ! $this->enabled( $event_id ) ) {
+            return;
+        }
+        if ( ( $this->grant_record( $event_id, $user_id )['source'] ?? '' ) === self::SOURCE_MANUAL ) {
+            return; // A comp is not undone by a refund.
+        }
+        if ( $this->has_confirmed_seat( $event_id, $user_id ) ) {
+            return; // Another seat still entitles them.
+        }
+        $this->revoke( $event_id, $user_id, self::SOURCE_SEAT );
+    }
+
+    /**
+     * Whether the user holds at least one CONFIRMED seat on the event.
+     *
+     * Deliberately narrower than Registrations::user_has_active_seat(), which
+     * also counts `pending` — a reserved seat is not an entitlement.
+     *
+     * @param int $event_id
+     * @param int $user_id
+     * @return bool
+     */
+    public function has_confirmed_seat( $event_id, $user_id ) {
+        $user = \get_userdata( (int) $user_id );
+        if ( ! $user instanceof \WP_User ) {
+            return false;
+        }
+        $identity = [
+            'relation' => 'OR',
+            [ 'key' => self::SEAT_USER_META, 'value' => (int) $user_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+            [ 'key' => '_anchor_event_customer_id', 'value' => (int) $user_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+            [ 'key' => '_anchor_event_email', 'value' => (string) $user->user_email, 'compare' => '=' ],
+        ];
+        $q = new \WP_Query( [
+            'post_type'      => Module::REG_CPT,
+            'post_status'    => 'publish',
+            'fields'         => 'ids',
+            'posts_per_page' => 1,
+            'no_found_rows'  => true,
+            'meta_query'     => [
+                'relation' => 'AND',
+                [ 'key' => '_anchor_event_id', 'value' => (int) $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
+                [ 'key' => '_anchor_event_reg_status', 'value' => Registrations::STATUS_CONFIRMED, 'compare' => '=' ],
+                $identity,
+            ],
+        ] );
+        return ! empty( $q->posts );
+    }
+
+    /**
+     * Resolve the seat's user and grant. Task 8 replaces the resolution with
+     * ensure_user(); until then an existing account by email is enough.
+     *
+     * @param int $seat_id
+     * @return bool True when the grant actually changed something.
+     */
+    private function grant_for_seat( $seat_id ) {
+        $seat_id  = (int) $seat_id;
+        $event_id = (int) \get_post_meta( $seat_id, '_anchor_event_id', true );
+        // The master switch (spec §4 preamble). An inert event grants nothing,
+        // so it never mints a role — which is what makes "no anchor_event_{id}
+        // in wp_roles()" true for a plain event that ran with 200 attendees.
+        if ( $event_id <= 0 || ! $this->enabled( $event_id ) ) {
+            return false;
+        }
+        $user_id = (int) \get_post_meta( $seat_id, self::SEAT_USER_META, true );
+        if ( $user_id <= 0 ) {
+            $user    = \get_user_by( 'email', (string) \get_post_meta( $seat_id, '_anchor_event_email', true ) );
+            $user_id = $user ? (int) $user->ID : 0;
+        }
+        if ( $user_id <= 0 ) {
+            return false;
+        }
+        return $this->grant( $event_id, $user_id, self::SOURCE_SEAT );
     }
 }

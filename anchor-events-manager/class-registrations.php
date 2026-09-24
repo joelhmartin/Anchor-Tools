@@ -347,6 +347,23 @@ class Registrations {
         }
 
         $this->bust_cache( $event_id );
+
+        /**
+         * A seat was just created.
+         *
+         * The companion to `anchor_events_seat_status_changed`, and NOT a
+         * duplicate of it: a seat is usually BORN in its final status
+         * (a free registration, a comped roster add and a completed-at-checkout
+         * WooCommerce line are all created `confirmed`) and never transitions
+         * at all, so a listener that only watches transitions sees nothing for
+         * the majority of attendees. Fires after every meta write, so a
+         * listener reading the seat back gets the finished record.
+         *
+         * @param int    $seat_id
+         * @param string $status  The status the seat was created in.
+         */
+        \do_action( 'anchor_events_seat_created', (int) $seat_id, (string) $status );
+
         return (int) $seat_id;
     }
 

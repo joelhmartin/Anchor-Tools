@@ -7463,11 +7463,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         if ( $permalink === '' ) {
             return '';
         }
-        // trailingslashit()+'live/' unconditionally (task-11 brief, "Global
-        // constraints") — the endpoint is EP_PERMALINK against the singular
-        // event URL regardless of whether that URL is pretty or a plain
-        // query string; is_room_request() routes on the query var's
-        // presence, not on the URL's shape.
+        // The Global Constraint's trailingslashit()+'live/' form is the
+        // PRETTY-permalink shape of the EP_PERMALINK endpoint. It only works
+        // when the permalink has a path to append the segment to. A plain
+        // permalink (Plain permalink setting, or any CPT URL WordPress never
+        // rewrote) is itself a query string — trailingslashit() on that
+        // yields '?event=slug/live/', which sets no query var at all, so
+        // is_room_request() could never be true for it. add_rewrite_endpoint()
+        // also registers 'live' as a public query var for exactly this case,
+        // so '?event=slug&live=1' resolves the same request the pretty form
+        // does; is_room_request() routes on that var's PRESENCE either way.
+        if ( \strpos( $permalink, '?' ) !== false ) {
+            return \add_query_arg( 'live', '1', $permalink );
+        }
         return \trailingslashit( $permalink ) . 'live/';
     }
 
@@ -7493,27 +7501,65 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * The room-request header/redirect DECISION, as pure data — no header(),
+     * nocache_headers() or exit calls — so it is unit-testable without a real
+     * HTTP response. room_headers() is the thin wrapper that applies it.
+     *
+     * Empty (all defaults, 'redirect' === '') when this isn't a room request
+     * at all — room_headers() has nothing to do on any other page. A non-''
+     * 'redirect' means "302 there instead of rendering": an
+     * external-registration event, a group parent (its dates each have their
+     * own room), an event whose access switch is off, or — the common case
+     * now that the switch defaults on — an ordinary in-person event with no
+     * stream. All four are "this URL is not a page". One predicate for all
+     * of them: room_url() is the definition.
+     *
+     * @param int $event_id
+     * @return array{headers:array<string,string>,nocache:bool,redirect:string}
+     */
+    public function room_header_list( $event_id ) {
+        if ( ! $this->is_room_request() ) {
+            return [ 'headers' => [], 'nocache' => false, 'redirect' => '' ];
+        }
+        $event_id = (int) $event_id;
+        if ( $this->room_url( $event_id ) === '' ) {
+            return [
+                'headers'  => [],
+                'nocache'  => false,
+                'redirect' => (string) \get_permalink( $event_id ),
+            ];
+        }
+        return [
+            'headers' => [
+                'Cache-Control' => 'private, no-store, max-age=0',
+                'X-Robots-Tag'  => 'noindex, nofollow',
+            ],
+            'nocache'  => true,
+            'redirect' => '',
+        ];
+    }
+
+    /**
      * Private, uncacheable, unindexed — and a parent redirects to itself
-     * (its dates each have their own room).
+     * (its dates each have their own room). Applies room_header_list()'s
+     * decision; carries no logic of its own.
      */
     public function room_headers() {
         if ( ! $this->is_room_request() ) {
             return;
         }
         $event_id = (int) \get_queried_object_id();
-        // No room: an external-registration event, a group parent (its dates
-        // each have one), an event whose access switch is off, or — the common
-        // case now that the switch defaults on — an ordinary in-person event
-        // with no stream. All of them are "this URL is not a page", so they
-        // redirect to the event itself rather than rendering an empty room.
-        // One predicate for all four: room_url() is the definition.
-        if ( $this->room_url( $event_id ) === '' ) {
-            \wp_safe_redirect( (string) \get_permalink( $event_id ), 302 );
+        $decision = $this->room_header_list( $event_id );
+        if ( $decision['redirect'] !== '' ) {
+            \wp_safe_redirect( $decision['redirect'], 302 );
             exit;
         }
-        \nocache_headers();
-        \header( 'Cache-Control: private, no-store, max-age=0' );
-        \header( 'X-Robots-Tag: noindex, nofollow', true );
+        if ( $decision['nocache'] ) {
+            \nocache_headers();
+        }
+        foreach ( $decision['headers'] as $name => $value ) {
+            \header( $name . ': ' . $value, true );
+        }
         \add_action( 'wp_head', static function () {
             echo '<meta name="robots" content="noindex, nofollow" />' . "\n";
         }, 1 );
@@ -9742,6 +9788,19 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     /**
+     * The "View the event page" link the room prints in every branch that
+     * has nothing else to show (denied, in-person/UNAVAILABLE, ENDED) —
+     * factored out so the three copies can't drift.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    private function event_page_link( $event_id ) {
+        return '<a class="anchor-event-button-secondary" href="' . \esc_url( (string) \get_permalink( $event_id ) ) . '">'
+            . \esc_html__( 'View the event page', 'anchor-schema' ) . '</a>';
+    }
+
+    /**
      * The room's body. Three branches (spec §5.5): locked-out, denied, entitled.
      *
      * @param int $event_id
@@ -9779,8 +9838,7 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return '<div class="anchor-room anchor-room--denied">'
                 . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
                 . '<p class="anchor-room-lede">' . \wp_kses_post( $message ) . '</p>'
-                . '<p><a class="anchor-event-button-secondary" href="' . \esc_url( (string) \get_permalink( $event_id ) ) . '">'
-                . \esc_html__( 'View the event page', 'anchor-schema' ) . '</a></p>'
+                . '<p>' . $this->event_page_link( $event_id ) . '</p>'
                 . '<p class="anchor-room-hint">' . \esc_html__( 'Registered under a different email? Contact us.', 'anchor-schema' ) . '</p>'
                 . '</div>';
         }
@@ -9831,11 +9889,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             $body = $meta['venue'] !== ''
                 ? '<p class="anchor-room-venue">' . \esc_html( $meta['venue'] ) . '</p>'
                 : '';
-            $body .= '<p><a class="anchor-event-button-secondary" href="' . \esc_url( (string) \get_permalink( $event_id ) ) . '">'
-                . \esc_html__( 'View the event page', 'anchor-schema' ) . '</a></p>';
+            $body .= '<p>' . $this->event_page_link( $event_id ) . '</p>';
         } elseif ( $state_key === Stream_State::ENDED ) {
-            $body = '<p><a class="anchor-event-button-secondary" href="' . \esc_url( (string) \get_permalink( $event_id ) ) . '">'
-                . \esc_html__( 'View the event page', 'anchor-schema' ) . '</a></p>';
+            $body = '<p>' . $this->event_page_link( $event_id ) . '</p>';
         }
 
         return '<div class="anchor-room-state" data-state="' . \esc_attr( $state_key ) . '"'

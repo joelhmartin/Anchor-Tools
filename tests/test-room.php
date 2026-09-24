@@ -24,6 +24,31 @@ class Test_Room extends Anchor_Events_TestCase {
 		parent::tear_down();
 	}
 
+	/**
+	 * Switch to pretty permalinks AND re-run everything that only ever runs
+	 * once, at bootstrap, under whatever structure was active then (Plain,
+	 * in this suite):
+	 *   - register_cpt()'s register_post_type() call only adds the CPT's own
+	 *     permastruct to $wp_rewrite when get_option('permalink_structure')
+	 *     is already non-empty AT REGISTRATION TIME (a WP core guard) — so
+	 *     get_permalink() keeps returning the plain '?event=slug' form until
+	 *     register_cpt() runs again with the new structure in place.
+	 *   - add_rewrite_endpoint() registers 'live' as a public query var on
+	 *     the CURRENT $wp object, and every test's tear_down() resets $wp to
+	 *     a bare instance (abstract-testcase.php), so 'live' must be
+	 *     re-registered in every test that calls go_to() on a room URL —
+	 *     go_to() carries forward whatever $wp->public_query_vars holds at
+	 *     the moment it runs.
+	 * Neither is a production bug: a real request re-fires `init` and
+	 * re-registers both every time.
+	 */
+	private function pretty_permalinks() {
+		$this->set_permalink_structure( '/%postname%/' );
+		$this->module()->register_cpt();
+		$this->module()->register_room_endpoint();
+		flush_rewrite_rules();
+	}
+
 	private function stream_event() {
 		$start    = time() + ( 2 * HOUR_IN_SECONDS );
 		$event_id = $this->make_event( [
@@ -41,11 +66,39 @@ class Test_Room extends Anchor_Events_TestCase {
 		return $event_id;
 	}
 
-	public function test_room_url_is_the_live_endpoint() {
+	/** Pretty permalinks: the room URL is the endpoint's own path segment. */
+	public function test_room_url_is_the_live_endpoint_on_pretty_permalinks() {
+		$this->pretty_permalinks();
+
 		$event_id = $this->stream_event();
 		$this->assertSame(
 			trailingslashit( get_permalink( $event_id ) ) . 'live/',
 			$this->module()->room_url( $event_id )
+		);
+	}
+
+	/**
+	 * Plain permalinks (or any CPT URL WordPress never rewrote) are
+	 * THEMSELVES a query string — trailingslashit()+'live/' on
+	 * '?event=slug' yields '?event=slug/live/', which sets no query var at
+	 * all, so is_room_request() could never be true for it.
+	 * add_rewrite_endpoint() registers 'live' as a public query var for
+	 * exactly this case, so the URL room_url() mints under Plain permalinks
+	 * must itself resolve back to a room request.
+	 */
+	public function test_room_url_uses_the_live_query_var_on_plain_permalinks() {
+		$this->set_permalink_structure( '' );
+		flush_rewrite_rules();
+
+		$event_id = $this->stream_event();
+		$room     = $this->module()->room_url( $event_id );
+		$this->assertStringContainsString( 'live=1', $room );
+
+		$this->module()->register_room_endpoint();
+		$this->go_to( $room );
+		$this->assertTrue(
+			$this->module()->is_room_request(),
+			'The URL room_url() mints must itself satisfy is_room_request().'
 		);
 	}
 
@@ -195,5 +248,108 @@ class Test_Room extends Anchor_Events_TestCase {
 		update_post_meta( $event_id, '_anchor_event_virtual', 1 );
 		$node = $this->module()->event_schema->for_event( $event_id );
 		$this->assertSame( $this->module()->room_url( $event_id ), $node['location']['url'] );
+	}
+
+	/* -----------------------------------------------------------------
+	 * room_header_list() — the pure header/redirect decision, unit-tested
+	 * without a real HTTP response.
+	 * --------------------------------------------------------------- */
+
+	/** A live room request: nocache, the two headers, no redirect. */
+	public function test_room_header_list_for_a_live_room() {
+		$this->pretty_permalinks();
+		$event_id = $this->stream_event();
+
+		$this->go_to( $this->module()->room_url( $event_id ) );
+		$this->assertTrue( $this->module()->is_room_request() );
+
+		$decision = $this->module()->room_header_list( $event_id );
+		$this->assertTrue( $decision['nocache'] );
+		$this->assertSame( 'private, no-store, max-age=0', $decision['headers']['Cache-Control'] );
+		$this->assertSame( 'noindex, nofollow', $decision['headers']['X-Robots-Tag'] );
+		$this->assertSame( '', $decision['redirect'] );
+	}
+
+	/**
+	 * A roomless event's /live/ URL — is_room_request() is structural (the
+	 * query var's presence), so it is true even though room_url() is ''.
+	 * The decision is a redirect to the event page, not a set of headers.
+	 */
+	public function test_room_header_list_for_a_roomless_event() {
+		$this->pretty_permalinks();
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$this->assertSame( '', $this->module()->room_url( $event_id ), 'Sanity: no stream, no room.' );
+
+		$this->go_to( trailingslashit( get_permalink( $event_id ) ) . 'live/' );
+		$this->assertTrue( $this->module()->is_room_request() );
+
+		$decision = $this->module()->room_header_list( $event_id );
+		$this->assertSame( [], $decision['headers'] );
+		$this->assertFalse( $decision['nocache'] );
+		$this->assertSame( get_permalink( $event_id ), $decision['redirect'] );
+	}
+
+	/** Any other page: empty decision, nothing to apply. */
+	public function test_room_header_list_for_a_non_room_request() {
+		$event_id = $this->stream_event();
+		$this->go_to( get_permalink( $event_id ) );
+		$this->assertFalse( $this->module()->is_room_request() );
+
+		$this->assertSame(
+			[ 'headers' => [], 'nocache' => false, 'redirect' => '' ],
+			$this->module()->room_header_list( $event_id )
+		);
+	}
+
+	/* -----------------------------------------------------------------
+	 * room_headers() — the thin wrapper: the redirect it actually issues,
+	 * and the wp_head robots meta it actually prints.
+	 * --------------------------------------------------------------- */
+
+	/** The roomless-event redirect, captured via the wp_redirect filter. */
+	public function test_room_headers_redirects_a_roomless_event() {
+		$this->pretty_permalinks();
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+
+		$this->go_to( trailingslashit( get_permalink( $event_id ) ) . 'live/' );
+
+		$trap = static function ( $location ) {
+			throw new Anchor_Dispatch_Redirected( (string) $location );
+		};
+		add_filter( 'wp_redirect', $trap );
+		try {
+			$this->module()->room_headers();
+			$this->fail( 'A roomless event did not redirect.' );
+		} catch ( Anchor_Dispatch_Redirected $e ) {
+			$this->assertSame( get_permalink( $event_id ), $e->getMessage() );
+		} finally {
+			remove_filter( 'wp_redirect', $trap );
+		}
+	}
+
+	/** The robots meta prints on wp_head for a room request... */
+	public function test_room_headers_prints_robots_meta_for_a_room_request() {
+		$this->pretty_permalinks();
+		$event_id = $this->stream_event();
+
+		$this->go_to( $this->module()->room_url( $event_id ) );
+		$this->module()->room_headers();
+
+		ob_start();
+		do_action( 'wp_head' );
+		$head = ob_get_clean();
+		$this->assertStringContainsString( '<meta name="robots" content="noindex, nofollow" />', $head );
+	}
+
+	/** ...and never for an ordinary page. */
+	public function test_room_headers_prints_nothing_for_a_non_room_request() {
+		$event_id = $this->stream_event();
+		$this->go_to( get_permalink( $event_id ) );
+		$this->module()->room_headers();
+
+		ob_start();
+		do_action( 'wp_head' );
+		$head = ob_get_clean();
+		$this->assertStringNotContainsString( 'noindex, nofollow', $head );
 	}
 }

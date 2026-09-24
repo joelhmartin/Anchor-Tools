@@ -39,10 +39,13 @@ class Anchor_Testimonial_Query {
 
 	public static function find( array $atts, $current_id = 0 ) {
 		$a = wp_parse_args( $atts, self::defaults() );
+		$limit = (int) $a['limit'];
 		$args = [
 			'post_type'      => Anchor_Testimonials_Module::CPT,
 			'post_status'    => 'publish',
-			'posts_per_page' => max( 1, min( 100, (int) $a['limit'] ) ),
+			// <= 0 means "all", same as the speakers module's -1, capped at
+			// 100 same as any other positive limit.
+			'posts_per_page' => $limit <= 0 ? 100 : min( 100, $limit ),
 			'no_found_rows'  => true,
 			'meta_query'     => [],
 			'tax_query'      => [],

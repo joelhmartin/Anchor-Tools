@@ -43,7 +43,7 @@ Renders nothing (and enqueues no assets) when the resolved query is empty.
 | `layout` | `grid`, `slider`, `video-grid` | `grid` (invalid values fall back to `grid`) |
 | `type` | `any`, `video`, `quote` | `any` |
 | `featured` | `1` to limit to featured | `''` (off) |
-| `limit` | int, clamped 1-100 | `12` |
+| `limit` | int, capped at 100; `0` or negative means "all" (capped at 100) | `12` |
 | `columns` | int, clamped 1-4 (grid/slider desktop column count) | `3` |
 | `orderby` | `menu_order` (then date DESC), `date` (DESC), `rand` | `menu_order` |
 | `fallback` | `all` = if `related` resolves to nothing, drop the related scoping and show the plain query instead; anything else = show nothing in that case | `all` |

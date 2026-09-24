@@ -50,4 +50,36 @@ class Test_Testimonials_Query extends WP_UnitTestCase {
 		sort( $expected );
 		$this->assertSame( $expected, $ids );
 	}
+
+	/**
+	 * Final whole-branch review finding 5: `limit <= 0` must mean "all"
+	 * (capped at 100), matching how the speakers module already treats -1,
+	 * instead of clamping -1/0 down to 1 (find()'s previous
+	 * `max( 1, min( 100, (int) $a['limit'] ) )`). Captured via pre_get_posts
+	 * rather than creating 100+ posts.
+	 */
+	public function test_limit_zero_or_negative_means_all_capped_at_100() {
+		$captured = [];
+		$capture  = function ( $query ) use ( &$captured ) {
+			if ( $query->get( 'post_type' ) === Anchor_Testimonials_Module::CPT ) {
+				$captured[] = $query->get( 'posts_per_page' );
+			}
+			return $query;
+		};
+		add_action( 'pre_get_posts', $capture );
+		try {
+			Anchor_Testimonial_Query::find( [ 'limit' => -1 ] );
+			Anchor_Testimonial_Query::find( [ 'limit' => 0 ] );
+			Anchor_Testimonial_Query::find( [ 'limit' => 5 ] );
+			Anchor_Testimonial_Query::find( [ 'limit' => 250 ] );
+		} finally {
+			remove_action( 'pre_get_posts', $capture );
+		}
+
+		$this->assertSame(
+			[ 100, 100, 5, 100 ],
+			$captured,
+			'-1 and 0 must mean "all" capped at 100; a positive limit is still capped at 100; a normal positive limit passes through.'
+		);
+	}
 }

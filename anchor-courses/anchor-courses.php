@@ -54,6 +54,16 @@ class Module {
 		if ( ! \wp_next_scheduled( Services\EnrollmentService::CRON_HOOK ) ) {
 			\wp_schedule_event( \time() + HOUR_IN_SECONDS, 'daily', Services\EnrollmentService::CRON_HOOK );
 		}
+		// Same convention as the events and compliance modules: plugin
+		// deactivation unschedules; uninstall.php clears it again by literal name.
+		if ( \defined( 'ANCHOR_TOOLS_PLUGIN_FILE' ) ) {
+			\register_deactivation_hook( ANCHOR_TOOLS_PLUGIN_FILE, [ self::class, 'on_deactivate' ] );
+		}
+	}
+
+	/** Clear the module's scheduled crons on plugin deactivation. */
+	public static function on_deactivate(): void {
+		\wp_clear_scheduled_hook( Services\EnrollmentService::CRON_HOOK );
 	}
 
 	public static function instance(): ?Module {

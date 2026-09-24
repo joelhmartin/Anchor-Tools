@@ -207,4 +207,18 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 		$this->assertSame( 0, $this->service->sweep_expired() );
 		$this->assertSame( 'enrolled', $this->service->get( $user, $course )->status );
 	}
+
+	/** Events/compliance convention: plugin deactivation unschedules the module's cron. */
+	public function test_deactivation_clears_the_expiry_sweep() {
+		$this->courses();
+		$this->assertNotFalse(
+			\has_action( 'deactivate_' . \plugin_basename( ANCHOR_TOOLS_PLUGIN_FILE ), [ \Anchor\Courses\Module::class, 'on_deactivate' ] ),
+			'The deactivation hook must be registered against the plugin file.'
+		);
+		$this->assertNotFalse( \wp_next_scheduled( EnrollmentService::CRON_HOOK ), 'Precondition: scheduled.' );
+
+		\Anchor\Courses\Module::on_deactivate();
+
+		$this->assertFalse( \wp_next_scheduled( EnrollmentService::CRON_HOOK ) );
+	}
 }

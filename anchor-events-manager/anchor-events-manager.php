@@ -3036,6 +3036,7 @@ class Module {
                         <th><?php echo esc_html__( 'Quota', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Sale start', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Sale end', 'anchor-schema' ); ?></th>
+                        <th><?php echo esc_html__( 'Attendance', 'anchor-schema' ); ?></th>
                         <th><?php echo esc_html__( 'Active', 'anchor-schema' ); ?></th>
                         <th aria-hidden="true"></th>
                     </tr>
@@ -3079,6 +3080,7 @@ class Module {
         $sale_start = $tier['sale_start'] ?? '';
         $sale_end   = $tier['sale_end'] ?? '';
         $active     = $tier ? ! empty( $tier['active'] ) : true;
+        $modality   = ( ( $tier['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person';
 
         \ob_start();
         ?>
@@ -3101,6 +3103,12 @@ class Module {
             </td>
             <td>
                 <input type="date" name="<?php echo esc_attr( $base . '[sale_end]' ); ?>" value="<?php echo esc_attr( $sale_end ); ?>" class="anchor-ticket-sale-end" />
+            </td>
+            <td>
+                <select name="<?php echo esc_attr( $base . '[modality]' ); ?>" class="anchor-ticket-modality">
+                    <option value="in_person" <?php selected( $modality, 'in_person' ); ?>><?php echo esc_html__( 'In person', 'anchor-schema' ); ?></option>
+                    <option value="virtual" <?php selected( $modality, 'virtual' ); ?>><?php echo esc_html__( 'Livestream', 'anchor-schema' ); ?></option>
+                </select>
             </td>
             <td class="anchor-ticket-active-cell">
                 <input type="checkbox" name="<?php echo esc_attr( $base . '[active]' ); ?>" value="1" <?php checked( $active ); ?> class="anchor-ticket-active" />
@@ -3149,9 +3157,230 @@ class Module {
                 <input type="text" name="<?php echo esc_attr( $base . '[label]' ); ?>" value="<?php echo esc_attr( $label ); ?>" class="anchor-session-label" placeholder="<?php echo esc_attr__( 'e.g. Day 1', 'anchor-schema' ); ?>" />
             </td>
             <td>
+                <select name="<?php echo esc_attr( $base . '[modality]' ); ?>" class="anchor-session-modality">
+                    <option value=""><?php echo esc_html__( 'Use event default', 'anchor-schema' ); ?></option>
+                    <option value="in_person" <?php selected( $session['modality'] ?? '', 'in_person' ); ?>><?php echo esc_html__( 'In person', 'anchor-schema' ); ?></option>
+                    <option value="virtual" <?php selected( $session['modality'] ?? '', 'virtual' ); ?>><?php echo esc_html__( 'Livestream only', 'anchor-schema' ); ?></option>
+                    <option value="hybrid" <?php selected( $session['modality'] ?? '', 'hybrid' ); ?>><?php echo esc_html__( 'In person + livestream', 'anchor-schema' ); ?></option>
+                </select>
+            </td>
+            <td>
+                <label class="anchor-session-override-toggle">
+                    <input type="checkbox" class="anchor-session-override" <?php checked( ! empty( $session['stream_embed']['src'] ) ); ?> />
+                    <?php echo esc_html__( 'Use a different stream for this session', 'anchor-schema' ); ?>
+                </label>
+                <input type="text" class="anchor-session-stream widefat" name="<?php echo esc_attr( $base . '[stream_embed]' ); ?>"
+                    value="<?php echo esc_attr( (string) ( $session['stream_embed']['raw'] ?? ( $session['stream_embed']['src'] ?? '' ) ) ); ?>"
+                    <?php echo empty( $session['stream_embed']['src'] ) ? 'hidden' : ''; ?> />
+            </td>
+            <td>
                 <button type="button" class="button-link-delete anchor-event-session-remove" aria-label="<?php echo esc_attr__( 'Remove session', 'anchor-schema' ); ?>">&times;</button>
             </td>
         </tr>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /** Test seam for the private session-row renderer. */
+    public function event_session_row_html_public( $index, $session = null, $template = false ) {
+        return $this->event_session_row_html( $index, $session, $template );
+    }
+
+    /**
+     * The Livestream group, shared by the wp-admin Location section and the
+     * front-end console (spec §7). One renderer, so the two surfaces cannot
+     * drift on field names — the same pattern render_ticket_types_fields()
+     * already uses.
+     *
+     * @param int   $event_id
+     * @param array $meta
+     * @param bool  $admin True for the metabox styling, false for the console.
+     * @return string '' when the event can never hold a stream.
+     */
+    public function render_livestream_fields( $event_id, array $meta, $admin = true ) {
+        if ( $this->registration_mode( (int) $event_id ) === 'external' ) {
+            return '';
+        }
+        $hint  = $admin ? 'description' : 'anchor-event-hint';
+        $embed = \is_array( $meta['stream_embed'] ?? null ) ? $meta['stream_embed'] : [];
+        $raw   = (string) ( $embed['raw'] ?? ( $embed['src'] ?? '' ) );
+        $room  = $this->room_url( (int) $event_id );
+
+        \ob_start();
+        ?>
+        <div class="anchor-event-section anchor-event-livestream" data-step="3">
+            <h3><?php echo esc_html__( 'Livestream', 'anchor-schema' ); ?></h3>
+            <div class="anchor-event-grid">
+                <div class="anchor-event-field" style="grid-column:1/-1;">
+                    <label for="anchor_event_stream_embed"><?php echo esc_html__( 'Stream link or embed code', 'anchor-schema' ); ?></label>
+                    <textarea id="anchor_event_stream_embed" name="anchor_event_stream_embed" rows="3" class="widefat"><?php echo esc_textarea( $raw ); ?></textarea>
+                    <p class="<?php echo esc_attr( $hint ); ?>"><?php echo esc_html__( 'Paste a Vimeo, YouTube or Zoom link, or the provider\'s iframe embed code. Vimeo domain privacy is set on Vimeo — allow this site\'s domain there.', 'anchor-schema' ); ?></p>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_stream_default_modality"><?php echo esc_html__( 'Default attendance', 'anchor-schema' ); ?></label>
+                    <select id="anchor_event_stream_default_modality" name="anchor_event_stream_default_modality">
+                        <?php foreach ( [
+                            'in_person' => __( 'In person', 'anchor-schema' ),
+                            'virtual'   => __( 'Livestream only', 'anchor-schema' ),
+                            'hybrid'    => __( 'In person + livestream', 'anchor-schema' ),
+                        ] as $key => $label ) : ?>
+                            <option value="<?php echo esc_attr( $key ); ?>" <?php selected( $meta['stream_default_modality'], $key ); ?>><?php echo esc_html( $label ); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="anchor-event-field anchor-event-field--check">
+                    <label>
+                        <?php
+                        /*
+                         * Hidden companion (Task 4's review): this is the OTHER
+                         * default-true boolean, so an unticked box needs the
+                         * same "always in the POST" fix as the access switch —
+                         * see render_access_fields() below for the full
+                         * rationale. event_authoring_input() already reads this
+                         * key via ! empty(), so no save-path change is needed:
+                         * PHP's last-wins parsing yields 0 unticked, 1 ticked.
+                         */
+                        ?>
+                        <input type="hidden" name="anchor_event_in_person_includes_stream" value="0" />
+                        <input type="checkbox" id="anchor_event_in_person_includes_stream" name="anchor_event_in_person_includes_stream" value="1" <?php checked( $meta['in_person_includes_stream'] ); ?> />
+                        <?php echo esc_html__( 'In-person registrants also get the stream', 'anchor-schema' ); ?>
+                    </label>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_stream_open_before_minutes"><?php echo esc_html__( 'Open the room (minutes before)', 'anchor-schema' ); ?></label>
+                    <input type="number" min="0" step="1" id="anchor_event_stream_open_before_minutes" name="anchor_event_stream_open_before_minutes" value="<?php echo esc_attr( (int) $meta['stream_open_before_minutes'] ); ?>" />
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_stream_close_after_minutes"><?php echo esc_html__( 'Close the room (minutes after)', 'anchor-schema' ); ?></label>
+                    <input type="number" min="0" step="1" id="anchor_event_stream_close_after_minutes" name="anchor_event_stream_close_after_minutes" value="<?php echo esc_attr( (int) $meta['stream_close_after_minutes'] ); ?>" />
+                </div>
+                <?php /* room_url() needs a resolvable stream as well as the
+                         access switch (Task 11), so the Room URL row appears
+                         the moment a stream is saved and never for an ordinary
+                         in-person event — whose attendees still get the role. */ ?>
+                <?php if ( $room !== '' ) : ?>
+                    <div class="anchor-event-field" style="grid-column:1/-1;">
+                        <span class="anchor-event-field-heading"><?php echo esc_html__( 'Room URL', 'anchor-schema' ); ?></span>
+                        <code><?php echo esc_html( $room ); ?></code>
+                        <a class="<?php echo $admin ? 'button' : 'anchor-event-button-secondary'; ?>" href="<?php echo esc_url( $room ); ?>" target="_blank" rel="noopener"><?php echo esc_html__( 'Open room', 'anchor-schema' ); ?></a>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php
+        return (string) \ob_get_clean();
+    }
+
+    /**
+     * Prerequisite roles the picker offers, grouped (spec §4.6): the site's own
+     * editable roles, every event role, and every course role — so a past
+     * event or a completed course is a one-click prerequisite.
+     *
+     * @return array<string,array<string,string>> Group label => slug => name.
+     */
+    public function prerequisite_role_choices() {
+        $groups = [
+            __( 'Site roles', 'anchor-schema' ) => [],
+            __( 'Events', 'anchor-schema' )     => [],
+            __( 'Courses', 'anchor-schema' )    => [],
+        ];
+        foreach ( \wp_roles()->role_names as $slug => $name ) {
+            $name = \translate_user_role( $name );
+            if ( \strpos( $slug, 'anchor_event_' ) === 0 ) {
+                $groups[ __( 'Events', 'anchor-schema' ) ][ $slug ] = $name;
+            } elseif ( \strpos( $slug, 'anchor_course_' ) === 0 ) {
+                $groups[ __( 'Courses', 'anchor-schema' ) ][ $slug ] = $name;
+            } elseif ( isset( \get_editable_roles()[ $slug ] ) ) {
+                $groups[ __( 'Site roles', 'anchor-schema' ) ][ $slug ] = $name;
+            }
+        }
+        return \array_filter( $groups );
+    }
+
+    /**
+     * The Access section: the master switch, then the prerequisite roles and
+     * their any/all mode. Both surfaces (spec §7).
+     *
+     * @param int   $event_id
+     * @param array $meta
+     * @param bool  $admin
+     * @return string
+     */
+    public function render_access_fields( $event_id, array $meta, $admin = true ) {
+        $selected = \is_array( $meta['required_roles'] ?? null ) ? $meta['required_roles'] : [];
+        $hint     = $admin ? 'description' : 'anchor-event-hint';
+        // A saved stream IS the opt-in (spec §3.1), so with one saved the
+        // switch is shown checked and locked rather than as a control that
+        // appears to do nothing.
+        $locked = ! empty( $meta['stream_embed']['src'] );
+        $on     = $locked || ! empty( $meta['access_role_enabled'] );
+        \ob_start();
+        ?>
+        <div class="anchor-event-section anchor-event-access" data-step="4">
+            <h3><?php echo esc_html__( 'Access', 'anchor-schema' ); ?></h3>
+            <div class="anchor-event-grid">
+                <div class="anchor-event-field anchor-event-field--check" style="grid-column:1/-1;">
+                    <?php
+                    /*
+                     * The hidden companion, ALWAYS rendered, and always first:
+                     * an unticked checkbox posts nothing, so without this the
+                     * save rule (Task 4) cannot tell "the author unticked it"
+                     * from "this form never carried the control" and has to
+                     * treat both as "leave it alone". PHP takes the last value
+                     * for a repeated name, so hidden-then-checkbox yields 1
+                     * when ticked and 0 when not.
+                     *
+                     * When the switch is locked the checkbox is disabled and
+                     * posts nothing at all, so the hidden input carries the 1.
+                     * (Task 4 would force it true from the saved stream
+                     * regardless; this just keeps the POST honest.)
+                     */
+                    ?>
+                    <input type="hidden" name="anchor_event_access_role_enabled" value="<?php echo $locked ? '1' : '0'; ?>" />
+                    <label>
+                        <input type="checkbox" id="anchor_event_access_role_enabled"
+                            <?php echo $locked ? '' : 'name="anchor_event_access_role_enabled"'; ?>
+                            value="1" <?php checked( $on ); ?> <?php disabled( $locked ); ?> />
+                        <?php echo esc_html__( 'Give confirmed attendees an account and the event role', 'anchor-schema' ); ?>
+                    </label>
+                    <p class="<?php echo esc_attr( $hint ); ?>">
+                        <?php echo esc_html__( 'On by default, for every event. Each confirmed attendee gets an account and the role "Event: {title}" — which is what lets the Private File Manager hand out recordings, handouts and certificates to the people who attended, and what unlocks the livestream room if this event has a stream. An in-person event with no stream still grants the role; it simply has no room.', 'anchor-schema' ); ?>
+                    </p>
+                    <p class="<?php echo esc_attr( $hint ); ?>">
+                        <?php echo esc_html__( 'Turning it off stops new attendees being given the role from now on. It never removes anyone who already has it — to do that, delete the event role on the Basics tab. To give the role to people who registered while it was off, use "Grant role to current attendees" there.', 'anchor-schema' ); ?>
+                    </p>
+                    <?php if ( $locked ) : ?>
+                        <p class="<?php echo esc_attr( $hint ); ?>">
+                            <?php echo esc_html__( 'This event has a stream, so attendee access is required and cannot be switched off here — the room would have nobody who could enter it. Remove the stream first if you need to turn it off.', 'anchor-schema' ); ?>
+                        </p>
+                    <?php endif; ?>
+                </div>
+                <div class="anchor-event-field" style="grid-column:1/-1;">
+                    <p class="<?php echo esc_attr( $hint ); ?>">
+                        <?php echo esc_html__( 'Require somebody to have attended an earlier event, or completed a course, before they can register for this one.', 'anchor-schema' ); ?>
+                    </p>
+                </div>
+                <div class="anchor-event-field" style="grid-column:1/-1;">
+                    <label for="anchor_event_required_roles"><?php echo esc_html__( 'Prerequisites', 'anchor-schema' ); ?></label>
+                    <select id="anchor_event_required_roles" name="anchor_event_required_roles[]" multiple size="8" class="widefat">
+                        <?php foreach ( $this->prerequisite_role_choices() as $group => $roles ) : ?>
+                            <optgroup label="<?php echo esc_attr( $group ); ?>">
+                                <?php foreach ( $roles as $slug => $name ) : ?>
+                                    <option value="<?php echo esc_attr( $slug ); ?>" <?php selected( in_array( $slug, $selected, true ) ); ?>><?php echo esc_html( $name ); ?></option>
+                                <?php endforeach; ?>
+                            </optgroup>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="anchor-event-field">
+                    <label for="anchor_event_required_roles_mode"><?php echo esc_html__( 'Require', 'anchor-schema' ); ?></label>
+                    <select id="anchor_event_required_roles_mode" name="anchor_event_required_roles_mode">
+                        <option value="any" <?php selected( $meta['required_roles_mode'], 'any' ); ?>><?php echo esc_html__( 'Any of them', 'anchor-schema' ); ?></option>
+                        <option value="all" <?php selected( $meta['required_roles_mode'], 'all' ); ?>><?php echo esc_html__( 'All of them', 'anchor-schema' ); ?></option>
+                    </select>
+                </div>
+            </div>
+        </div>
         <?php
         return (string) \ob_get_clean();
     }
@@ -3665,6 +3894,8 @@ class Module {
                             <th><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Attendance', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Stream override', 'anchor-schema' ); ?></th>
                             <th aria-hidden="true"></th>
                         </tr>
                     </thead>
@@ -3750,6 +3981,8 @@ class Module {
                 </div>
             </div>
 
+            <?php echo $this->render_livestream_fields( $post->ID, $meta, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+
             <div class="anchor-event-section">
                 <h3><?php echo esc_html__( 'Status', 'anchor-schema' ); ?></h3>
                 <div class="anchor-event-grid">
@@ -3816,6 +4049,8 @@ class Module {
                     </div>
                 </div>
             </div>
+
+            <?php echo $this->render_access_fields( $post->ID, $meta, true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 
             <div class="anchor-event-section anchor-event-conditional" data-when-mode="external">
                 <h3><?php echo esc_html__( 'External Registration', 'anchor-schema' ); ?></h3>
@@ -8757,6 +8992,8 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                             <th><?php echo esc_html__( 'Start time', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'End time', 'anchor-schema' ); ?></th>
                             <th><?php echo esc_html__( 'Label', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Attendance', 'anchor-schema' ); ?></th>
+                            <th><?php echo esc_html__( 'Stream override', 'anchor-schema' ); ?></th>
                             <th aria-hidden="true"></th>
                         </tr>
                     </thead>

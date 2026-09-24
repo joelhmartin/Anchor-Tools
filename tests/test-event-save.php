@@ -486,4 +486,106 @@ class Test_Event_Save extends Anchor_Events_TestCase {
 		$this->assertSame( [], $this->module()->get_meta( $event_id )['stream_embed'] );
 		$_POST = [];
 	}
+
+	/** The metabox renders the Livestream group and the Access picker. */
+	public function test_metabox_renders_livestream_and_access() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$meta     = $this->module()->get_meta( $event_id );
+
+		$html = $this->module()->render_livestream_fields( $event_id, $meta, true );
+		$this->assertStringContainsString( 'name="anchor_event_stream_embed"', $html );
+		$this->assertStringContainsString( 'name="anchor_event_stream_default_modality"', $html );
+		$this->assertStringContainsString( 'name="anchor_event_in_person_includes_stream"', $html );
+		$this->assertStringContainsString( 'name="anchor_event_stream_open_before_minutes"', $html );
+		$this->assertStringContainsString( 'name="anchor_event_stream_close_after_minutes"', $html );
+		// No stream saved yet, so there is no room and no Room URL row —
+		// room_url() needs a resolvable stream as well as the switch (Task 11).
+		$this->assertStringNotContainsString( 'Room URL', $html );
+
+		$access = $this->module()->render_access_fields( $event_id, $meta, true );
+		$this->assertStringContainsString( 'name="anchor_event_access_role_enabled"', $access );
+		$this->assertStringContainsString( 'Give confirmed attendees an account and the event role', $access );
+		// Default CHECKED (spec §3.1) — this is the owner's 2026-09-23 ruling
+		// as the author sees it.
+		$this->assertMatchesRegularExpression(
+			'/<input type="checkbox"[^>]*name="anchor_event_access_role_enabled"[^>]*checked/',
+			$access,
+			'The switch is ticked by default.'
+		);
+		// The hidden companion is what lets an UNTICK be told from an absent
+		// field (Task 4). Without it the checkbox is a one-way switch again.
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="0"', $access );
+		$this->assertStringContainsString( 'never removes anyone who already has it', $access );
+		$this->assertStringNotContainsString( 'disabled', $access, 'With no stream saved the switch is the author\'s to set.' );
+		$this->assertStringContainsString( 'name="anchor_event_required_roles[]"', $access );
+		$this->assertStringContainsString( 'name="anchor_event_required_roles_mode"', $access );
+	}
+
+	/** An event whose operator unticked it renders unticked, and still reversible. */
+	public function test_access_switch_renders_unticked_when_stored_false() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+
+		$access = $this->module()->render_access_fields( $event_id, $this->module()->get_meta( $event_id ), true );
+
+		$this->assertDoesNotMatchRegularExpression(
+			'/<input type="checkbox"[^>]*name="anchor_event_access_role_enabled"[^>]*checked/',
+			$access
+		);
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="0"', $access );
+		$this->assertStringNotContainsString( 'disabled', $access );
+	}
+
+	/** With a stream saved the switch is checked, locked, and still posts a 1. */
+	public function test_access_switch_is_locked_once_a_stream_is_saved() {
+		$event_id = $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => true,
+			'stream_embed'        => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/5', 'raw' => '' ],
+		] );
+
+		$access = $this->module()->render_access_fields( $event_id, $this->module()->get_meta( $event_id ), true );
+
+		$this->assertStringContainsString( 'disabled', $access );
+		// The hidden companion carries 1 here, because a disabled checkbox
+		// posts nothing at all.
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="1"', $access );
+		$this->assertStringContainsString( 'Remove the stream first', $access );
+
+		// And the Livestream group now shows the room, because there is one.
+		// esc_html()-wrapped: the room URL is displayed in a <code> tag, and
+		// the plain-permalink form this test suite defaults to contains a
+		// literal '&' that render_livestream_fields() escapes to '&amp;'
+		// (matching this suite's own convention elsewhere, e.g.
+		// tests/test-timestamps.php, of wrapping an expected URL in esc_url()/
+		// esc_html() when comparing against already-escaped markup).
+		$stream = $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true );
+		$this->assertStringContainsString( 'Room URL', $stream );
+		$this->assertStringContainsString( esc_html( $this->module()->room_url( $event_id ) ), $stream );
+		remove_role( 'anchor_event_' . $event_id );
+	}
+
+	/** An external event gets no Livestream group at all. */
+	public function test_external_event_has_no_livestream_group() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'external' ] );
+		$this->assertSame( '', $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true ) );
+	}
+
+	/** The session row carries a modality select and a stream override. */
+	public function test_session_row_has_modality_and_override() {
+		$html = $this->module()->event_session_row_html_public( 0, null, true );
+		$this->assertStringContainsString( 'anchor_event_sessions[__INDEX__][modality]', $html );
+		$this->assertStringContainsString( 'anchor_event_sessions[__INDEX__][stream_embed]', $html );
+	}
+
+	/**
+	 * Carried from Task 4's review: in_person_includes_stream is the OTHER
+	 * default-true boolean, so it needs the same hidden value="0" companion
+	 * as the access switch — an unticked box must post something, not rely
+	 * on "absent = off".
+	 */
+	public function test_in_person_includes_stream_has_hidden_companion() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$html     = $this->module()->render_livestream_fields( $event_id, $this->module()->get_meta( $event_id ), true );
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_in_person_includes_stream" value="0"', $html );
+	}
 }

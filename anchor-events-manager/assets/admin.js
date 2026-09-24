@@ -320,6 +320,13 @@
     });
   }
 
+  // Session "use a different stream" toggle (virtual-events spec §7).
+  $(document).on('change', '.anchor-session-override', function () {
+    var $input = $(this).closest('td').find('.anchor-session-stream');
+    $input.prop('hidden', !this.checked);
+    if (!this.checked) { $input.val(''); }
+  });
+
   $(document).ready(function(){
     toggleAllDay();
     toggleVirtual();

@@ -134,6 +134,48 @@ class Roster {
     }
 
     /* ---------------------------------------------------------------------
+     * Access (spec §8 "Switch semantics")
+     * ------------------------------------------------------------------- */
+
+    /**
+     * How a seat's holder stands on this event's role.
+     *
+     * Four values, and `off` is not a fourth flavour of "no":
+     *   - `off`    — the event's `access_role_enabled` is false (or it was
+     *                never in the feature: external registration, a group
+     *                parent), so the whole thing does not apply. The Access
+     *                column is not rendered at all (Task 18); saying "No"
+     *                would invite an operator to click Grant on an event that
+     *                is not granting.
+     *   - `yes`    — holds the role, granted by a seat.
+     *   - `manual` — holds the role, granted by hand; a cancellation cannot
+     *                take it away.
+     *   - `no`     — the event is on and this person does not hold the role.
+     *
+     * NOTE the default is ON (spec §3.1), so `off` is the exception now, not
+     * the rule: most events answer yes/manual/no.
+     *
+     * @param int   $event_id
+     * @param array $seat Registrations::get_seat() DTO.
+     * @return string off|yes|manual|no
+     */
+    public function access_state( $event_id, array $seat ) {
+        $ent = $this->module->entitlements;
+        if ( ! $ent || ! $ent->enabled( (int) $event_id ) ) {
+            return 'off';
+        }
+        $user_id = (int) ( $seat['user_id'] ?? 0 );
+        if ( $user_id <= 0 ) {
+            $user    = \get_user_by( 'email', (string) ( $seat['email'] ?? '' ) );
+            $user_id = $user ? (int) $user->ID : 0;
+        }
+        if ( $user_id <= 0 || ! $ent->holds_role( (int) $event_id, $user_id ) ) {
+            return 'no';
+        }
+        return ( ( $ent->grant_record( (int) $event_id, $user_id )['source'] ?? '' ) === 'manual' ) ? 'manual' : 'yes';
+    }
+
+    /* ---------------------------------------------------------------------
      * Menu + URLs
      * ------------------------------------------------------------------- */
 

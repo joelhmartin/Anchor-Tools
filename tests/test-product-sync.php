@@ -370,4 +370,18 @@ class Test_Product_Sync extends Anchor_Events_TestCase {
 			'The synced variation must use the SAME default label Ticket_Types itself falls back to.'
 		);
 	}
+
+	/** The managed variation carries the tier's modality. */
+	public function test_variation_carries_modality() {
+		$this->require_wc();
+		$event_id = $this->make_event();
+		$tiers    = $this->ticket_types()->save( $event_id, [
+			[ 'label' => 'Livestream', 'price' => '99', 'active' => 1, 'modality' => 'virtual' ],
+		] );
+		$this->product_sync()->sync_event( $event_id );
+
+		$variation_id = $this->product_sync()->variation_for_tier( $event_id, $tiers[0]['id'] );
+		$this->assertGreaterThan( 0, $variation_id );
+		$this->assertSame( 'virtual', wc_get_product( $variation_id )->get_meta( '_anchor_evt_modality' ) );
+	}
 }

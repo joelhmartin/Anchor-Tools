@@ -1820,14 +1820,18 @@ class WooCommerce {
         foreach ( $lines as $cart_item_key => $line ) {
             // P4 — tier-label the block heading (presentational). Resolve the tier
             // from the line's managed variation; fall back to the event title.
-            $heading   = (string) $line['event_title'];
-            $tier_label = '';
+            $heading        = (string) $line['event_title'];
+            $tier_label     = '';
+            $modality_label = '';
             if ( $this->module->product_sync && (int) $line['variation_id'] > 0 && $this->module->ticket_types ) {
                 $resolved = $this->module->product_sync->tier_for_variation( (int) $line['variation_id'] );
                 if ( ! empty( $resolved['tier_id'] ) ) {
                     $tier = $this->module->ticket_types->find( (int) $line['event_id'], (string) $resolved['tier_id'] );
-                    if ( $tier && (string) ( $tier['label'] ?? '' ) !== '' ) {
-                        $tier_label = (string) $tier['label'];
+                    if ( $tier ) {
+                        if ( (string) ( $tier['label'] ?? '' ) !== '' ) {
+                            $tier_label = (string) $tier['label'];
+                        }
+                        $modality_label = Ticket_Types::modality_label( $tier['modality'] ?? 'in_person' );
                     }
                 }
             }
@@ -1837,6 +1841,14 @@ class WooCommerce {
                     \__( '%1$s — %2$s', 'anchor-schema' ),
                     $line['event_title'],
                     $tier_label
+                );
+            }
+            if ( $modality_label !== '' ) {
+                $heading = \sprintf(
+                    /* translators: 1: existing heading (event title, optionally + tier label), 2: modality label (In-person/Livestream). */
+                    \__( '%1$s (%2$s)', 'anchor-schema' ),
+                    $heading,
+                    $modality_label
                 );
             }
             echo '<fieldset class="anchor-event-attendee-line" data-cart-item="' . \esc_attr( $cart_item_key ) . '">';
@@ -2200,6 +2212,23 @@ class WooCommerce {
         // plugin or theme. Only the event id needs a snapshot, because THAT is
         // the fact a re-link/un-link can actually change out from under the line.
         $item->update_meta_data( '_anchor_event_id', $event_id );
+
+        // Visible order-item meta line (no leading underscore, so it shows on
+        // the order screen and the confirmation emails alongside the ticket
+        // tier's own attribute meta) — same tier resolution as the attendee
+        // capture heading, so the two can never disagree.
+        if ( $this->module->product_sync && $variation_id > 0 && $this->module->ticket_types ) {
+            $resolved = $this->module->product_sync->tier_for_variation( $variation_id );
+            if ( ! empty( $resolved['tier_id'] ) ) {
+                $tier = $this->module->ticket_types->find( $event_id, (string) $resolved['tier_id'] );
+                if ( $tier ) {
+                    $item->update_meta_data(
+                        \__( 'Attendance', 'anchor-schema' ),
+                        Ticket_Types::modality_label( $tier['modality'] ?? 'in_person' )
+                    );
+                }
+            }
+        }
     }
 
     /**

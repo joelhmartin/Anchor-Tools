@@ -48,6 +48,19 @@ class Ticket_Types {
         return \__( 'Registration', 'anchor-schema' );
     }
 
+    /**
+     * The shopper-facing name for a tier modality — used on the attendee
+     * capture block, the storefront row and the order line item.
+     *
+     * @param string $modality
+     * @return string
+     */
+    public static function modality_label( $modality ) {
+        return ( (string) $modality === 'virtual' )
+            ? \__( 'Livestream', 'anchor-schema' )
+            : \__( 'In-person', 'anchor-schema' );
+    }
+
     /** @var Module */
     private $module;
 
@@ -158,6 +171,11 @@ class Ticket_Types {
                 'sale_end'        => $sale_end,
                 'active'          => $active,
                 'wc_variation_id' => $wc_variation_id,
+                // A tier is a PRICE, so it is one way in or the other — never
+                // `hybrid`, which is an event-level statement ("both exist").
+                // An absent value is `in_person`: the meaning every
+                // pre-upgrade tier already had (spec §3.3).
+                'modality'        => ( ( $row['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person',
             ];
 
             $clean[] = $tier;
@@ -296,6 +314,7 @@ class Ticket_Types {
             'sale_end'        => '',
             'active'          => true,
             'wc_variation_id' => 0,
+            'modality'        => 'in_person',
         ];
     }
 
@@ -328,6 +347,11 @@ class Ticket_Types {
             'sale_end'        => isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '',
             'active'          => ! empty( $row['active'] ),
             'wc_variation_id' => isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0,
+            // A tier is a PRICE, so it is one way in or the other — never
+            // `hybrid`, which is an event-level statement ("both exist"). An
+            // absent value is `in_person`: the meaning every pre-upgrade tier
+            // already had (spec §3.3).
+            'modality'        => ( ( $row['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person',
         ];
     }
 

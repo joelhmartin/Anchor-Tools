@@ -33,6 +33,11 @@
   }
 
   function showError() {
+    // A failure here means the room is no longer trustworthy — stop BOTH
+    // loops so a dead REST call isn't retried every pollSeconds forever
+    // after the visitor was already told to refresh.
+    if (timer) { window.clearInterval(timer); timer = null; }
+    if (poll) { window.clearInterval(poll); poll = null; }
     var $el = $block();
     if (!$el.length || $el.find('.anchor-room-error').length) { return; }
     $el.append(

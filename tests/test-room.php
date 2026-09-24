@@ -374,6 +374,23 @@ class Test_Room extends Anchor_Events_TestCase {
 		$this->assertSame( 'anchor_events_room_denied', $res->as_error()->get_error_code() );
 	}
 
+	/**
+	 * A roomless event (enabled, but no stream — same shape as
+	 * test_plain_event_has_no_room()) must 404 for a signed-in, non-entitled
+	 * visitor rather than 403: the endpoint must not reveal a room exists at
+	 * all for an event that has none.
+	 */
+	public function test_rest_404_before_403_for_a_roomless_event() {
+		do_action( 'rest_api_init' );
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$this->assertSame( '', $this->module()->room_url( $event_id ), 'Sanity: this event has no room.' );
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'subscriber' ] ) );
+		$res = $this->room_request( $event_id );
+		$this->assertSame( 404, $res->get_status() );
+		$this->assertSame( 'anchor_events_room_missing', $res->as_error()->get_error_code() );
+	}
+
 	public function test_rest_omits_the_embed_outside_the_window_and_includes_it_inside() {
 		do_action( 'rest_api_init' );
 		$event_id = $this->stream_event();
@@ -381,14 +398,18 @@ class Test_Room extends Anchor_Events_TestCase {
 		$this->make_seat( $event_id, [ 'email' => 'rest@example.test' ] );
 		wp_set_current_user( $user_id );
 
-		$out = $this->room_request( $event_id )->get_data();
+		$res = $this->room_request( $event_id );
+		$out = $res->get_data();
 		$this->assertSame( 'countdown', $out['state'] );
 		$this->assertStringNotContainsString( 'player.vimeo.com', $out['html'] );
 
 		update_post_meta( $event_id, '_anchor_event_start_ts', time() );
 		update_post_meta( $event_id, '_anchor_event_end_ts', time() + 3600 );
-		$out = $this->room_request( $event_id )->get_data();
+		$res     = $this->room_request( $event_id );
+		$out     = $res->get_data();
+		$headers = $res->get_headers();
 		$this->assertSame( 'live', $out['state'] );
 		$this->assertStringContainsString( 'player.vimeo.com/video/77', $out['html'] );
+		$this->assertSame( 'private, no-store, max-age=0', $headers['Cache-Control'] );
 	}
 }

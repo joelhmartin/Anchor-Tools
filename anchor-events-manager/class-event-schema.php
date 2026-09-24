@@ -600,10 +600,16 @@ class Event_Schema {
 
         $virtual_node = null;
         if ( $virtual ) {
-            $virtual_node = [
-                '@type' => 'VirtualLocation',
-                'url'   => ! empty( $meta['virtual_url'] ) ? (string) $meta['virtual_url'] : (string) \get_permalink( $event_id ),
-            ];
+            // The room is the canonical place to attend (spec §5.2), so that is
+            // what the markup names. Robots keep it out of results; schema is
+            // allowed to point at it. Falls back to the legacy virtual_url, then
+            // the event page, for events with no room — which now includes
+            // every event whose access switch is off, so the markup a plain
+            // legacy virtual event emits is byte-identical to today's.
+            $room = $this->module->room_url( $event_id );
+            $url  = $room !== '' ? $room
+                : ( ! empty( $meta['virtual_url'] ) ? (string) $meta['virtual_url'] : (string) \get_permalink( $event_id ) );
+            $virtual_node = [ '@type' => 'VirtualLocation', 'url' => $url ];
         }
 
         if ( $virtual && $place ) {

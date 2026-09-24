@@ -447,6 +447,13 @@ class Module {
         \add_action( 'init', [ $this, 'register_taxonomies' ] );
         \add_action( 'init', [ $this, 'register_registration_cpt' ] );
         \add_action( 'init', [ $this, 'register_meta' ] );
+        // The room endpoint (spec §5.1): <event permalink>/live/.
+        \add_action( 'init', [ $this, 'register_room_endpoint' ] );
+        // Rewrite flush on a signature change — the pattern Anchor Locations
+        // uses (anchor-locations.php::maybe_flush()), because this module has
+        // no activation hook of its own that survives a PUC upgrade.
+        \add_action( 'init', [ $this, 'maybe_flush_rewrites' ], 99 );
+        \add_action( 'template_redirect', [ $this, 'room_headers' ], 1 );
 
         \add_action( 'add_meta_boxes', [ $this, 'add_metaboxes' ] );
         \add_action( 'save_post_' . self::CPT, [ $this, 'save_meta' ] );
@@ -7234,11 +7241,23 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $this->assets_enqueued = true;
     }
 
+    /** Room-only assets. Enqueued from templates/live-event.php. */
+    public function enqueue_room_assets() {
+        $this->enqueue_frontend_assets();
+        \wp_enqueue_style(
+            'anchor-events-room',
+            \Anchor_Asset_Loader::url( 'anchor-events-manager/assets/room.css' ),
+            [ 'anchor-events-frontend' ],
+            $this->asset_version( 'anchor-events-manager/assets/room.css' )
+        );
+    }
+
     public function columns( $columns ) {
         $columns['anchor_event_start'] = __( 'Start Date', 'anchor-schema' );
         $columns['anchor_event_status'] = __( 'Status', 'anchor-schema' );
         $columns['anchor_event_venue'] = __( 'Venue', 'anchor-schema' );
         $columns['anchor_event_capacity'] = __( 'Capacity', 'anchor-schema' );
+        $columns['anchor_event_live'] = __( 'Live', 'anchor-schema' );
         return $columns;
     }
 
@@ -7256,6 +7275,36 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
                 break;
             case 'anchor_event_capacity':
                 echo esc_html( $meta['capacity'] ? $meta['capacity'] : '-' );
+                break;
+            case 'anchor_event_live':
+                // room_url(), not enabled(): since the switch defaults on,
+                // enabled() is true for nearly every event in this list and
+                // would put a state on every in-person row. The column is
+                // about the ROOM, so it asks the one question that means
+                // "there is a room", and Stream_State is never asked about an
+                // event that has none.
+                if ( $this->room_url( $post_id ) === '' ) {
+                    echo '&mdash;';
+                    break;
+                }
+                $state = Stream_State::for_event( $post_id );
+                $label = [
+                    Stream_State::UNAVAILABLE => __( 'in person', 'anchor-schema' ),
+                    Stream_State::PENDING     => __( 'no stream yet', 'anchor-schema' ),
+                    Stream_State::LIVE        => __( 'LIVE', 'anchor-schema' ),
+                    Stream_State::ENDED       => __( 'ended', 'anchor-schema' ),
+                ][ $state['state'] ] ?? '';
+                if ( in_array( $state['state'], [ Stream_State::COUNTDOWN, Stream_State::BETWEEN ], true ) ) {
+                    $label = sprintf(
+                        /* translators: %s: human time difference, e.g. "3 days". */
+                        __( 'countdown in %s', 'anchor-schema' ),
+                        human_time_diff( time(), (int) $state['target_ts'] )
+                    );
+                }
+                $room = $this->room_url( $post_id );
+                echo $room !== ''
+                    ? '<a href="' . esc_url( $room ) . '">' . esc_html( $label ) . '</a>'
+                    : esc_html( $label );
                 break;
         }
     }
@@ -7332,6 +7381,9 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
     }
 
     public function template_include( $template ) {
+        if ( $this->is_room_request() ) {
+            return $this->locate_template( 'live-event.php' );
+        }
         if ( \is_singular( self::CPT ) ) {
             return $this->locate_template( 'single-event.php' );
         }
@@ -7342,6 +7394,129 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
             return $this->locate_template( 'taxonomy-event_series.php' );
         }
         return $template;
+    }
+
+    /** Register the room endpoint. EP_PERMALINK = singular post URLs only. */
+    public function register_room_endpoint() {
+        \add_rewrite_endpoint( 'live', EP_PERMALINK );
+    }
+
+    /**
+     * Flush rewrites when the room endpoint's signature changes.
+     *
+     * Same shape as Anchor_Locations::maybe_flush(): a stored signature, no
+     * activation hook (Plugin Update Checker upgrades never fire one), and a
+     * non-hard flush so .htaccess is left alone.
+     */
+    public function maybe_flush_rewrites() {
+        $sig = 'live|v1|' . ( $this->get_settings()['event_slug'] ?? '' );
+        if ( \get_option( 'anchor_events_rw_sig' ) !== $sig ) {
+            $this->register_room_endpoint();
+            \flush_rewrite_rules( false );
+            \update_option( 'anchor_events_rw_sig', $sig, false );
+        }
+    }
+
+    /**
+     * Is this request the room? Checked on the QUERY VAR's PRESENCE, not its
+     * value: an endpoint with no trailing value resolves to '' and
+     * get_query_var('live') cannot tell that from "absent".
+     *
+     * @return bool
+     */
+    public function is_room_request() {
+        global $wp_query;
+        return \is_singular( self::CPT )
+            && $wp_query instanceof \WP_Query
+            && \array_key_exists( 'live', (array) $wp_query->query_vars );
+    }
+
+    /**
+     * The room URL for an event, or '' when the event has no room.
+     *
+     * TWO conditions, and both are load-bearing since the switch's default
+     * became true (spec §4 preamble):
+     *   - Entitlements::enabled() — the event is in the access feature at all
+     *     (registration mode wc/free, not a group parent, switch on);
+     *   - has_stream() — something actually resolves to watch.
+     * A plain in-person event passes the first and fails the second: its
+     * attendees hold the event role and there is no room.
+     *
+     * '' is how every caller learns that — the metabox prints no Room URL, the
+     * Live column prints a dash, the REST endpoint 404s, Event_Schema falls
+     * back to virtual_url or the permalink, and room_url_for() mints no
+     * sign-in token. This method is THE definition of "has a room"; no caller
+     * re-derives it.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function room_url( $event_id ) {
+        $event_id = (int) $event_id;
+        if ( ! $this->entitlements || ! $this->entitlements->enabled( $event_id ) ) {
+            return '';
+        }
+        if ( ! $this->has_stream( $event_id ) ) {
+            return '';
+        }
+        $permalink = (string) \get_permalink( $event_id );
+        if ( $permalink === '' ) {
+            return '';
+        }
+        // trailingslashit()+'live/' unconditionally (task-11 brief, "Global
+        // constraints") — the endpoint is EP_PERMALINK against the singular
+        // event URL regardless of whether that URL is pretty or a plain
+        // query string; is_room_request() routes on the query var's
+        // presence, not on the URL's shape.
+        return \trailingslashit( $permalink ) . 'live/';
+    }
+
+    /**
+     * Does any of this event's sessions resolve to a stream to watch?
+     *
+     * The second half of "has a room". Kept separate from enabled() because
+     * the two answer different questions and the default-true switch made
+     * that difference load-bearing (spec §4 preamble): a plain in-person
+     * event IS enabled — its attendees hold the event role — and still has
+     * nothing to show at /live/.
+     *
+     * @param int $event_id
+     * @return bool
+     */
+    public function has_stream( $event_id ) {
+        foreach ( $this->resolved_sessions( (int) $event_id ) as $row ) {
+            if ( ! empty( $row['stream_embed']['src'] ) ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Private, uncacheable, unindexed — and a parent redirects to itself
+     * (its dates each have their own room).
+     */
+    public function room_headers() {
+        if ( ! $this->is_room_request() ) {
+            return;
+        }
+        $event_id = (int) \get_queried_object_id();
+        // No room: an external-registration event, a group parent (its dates
+        // each have one), an event whose access switch is off, or — the common
+        // case now that the switch defaults on — an ordinary in-person event
+        // with no stream. All of them are "this URL is not a page", so they
+        // redirect to the event itself rather than rendering an empty room.
+        // One predicate for all four: room_url() is the definition.
+        if ( $this->room_url( $event_id ) === '' ) {
+            \wp_safe_redirect( (string) \get_permalink( $event_id ), 302 );
+            exit;
+        }
+        \nocache_headers();
+        \header( 'Cache-Control: private, no-store, max-age=0' );
+        \header( 'X-Robots-Tag: noindex, nofollow', true );
+        \add_action( 'wp_head', static function () {
+            echo '<meta name="robots" content="noindex, nofollow" />' . "\n";
+        }, 1 );
     }
 
     private function locate_template( $file ) {
@@ -9564,6 +9739,150 @@ __( 'Your registration for <strong>{event_title}</strong> on {event_date} has be
         $output .= $rendered_content;
 
         return $output;
+    }
+
+    /**
+     * The room's body. Three branches (spec §5.5): locked-out, denied, entitled.
+     *
+     * @param int $event_id
+     * @return string
+     */
+    public function render_room( $event_id ) {
+        $event_id = (int) $event_id;
+        $title    = \get_the_title( $event_id );
+
+        if ( ! \is_user_logged_in() ) {
+            \ob_start();
+            \wp_login_form( [ 'redirect' => $this->room_url( $event_id ), 'echo' => true ] );
+            $form = (string) \ob_get_clean();
+            return '<div class="anchor-room anchor-room--locked">'
+                . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
+                . '<p class="anchor-room-lede">' . \esc_html__( 'Sign in to join', 'anchor-schema' ) . '</p>'
+                . $form
+                . '<p class="anchor-room-hint">' . \esc_html__( 'Registered but no account? Use the link in your confirmation email.', 'anchor-schema' ) . '</p>'
+                . '</div>';
+        }
+
+        $state = Stream_State::for_event( $event_id );
+        if ( ! $this->entitlements || ! $this->entitlements->can_access_stream( $event_id, (int) $state['session_index'], 0 ) ) {
+            $default = \__( "This account isn't registered for this event.", 'anchor-schema' );
+            /**
+             * The wording shown to a signed-in visitor with no entitlement.
+             *
+             * @param string $message
+             * @param int    $event_id
+             */
+            $message = (string) \apply_filters( 'anchor_events_room_denied_message', $default, $event_id );
+            // wp_kses_post(), not esc_html(): a filter is free to hand back a
+            // short HTML fragment (e.g. a link), and esc_html() would also
+            // entity-encode a plain apostrophe in the default copy above.
+            return '<div class="anchor-room anchor-room--denied">'
+                . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
+                . '<p class="anchor-room-lede">' . \wp_kses_post( $message ) . '</p>'
+                . '<p><a class="anchor-event-button-secondary" href="' . \esc_url( (string) \get_permalink( $event_id ) ) . '">'
+                . \esc_html__( 'View the event page', 'anchor-schema' ) . '</a></p>'
+                . '<p class="anchor-room-hint">' . \esc_html__( 'Registered under a different email? Contact us.', 'anchor-schema' ) . '</p>'
+                . '</div>';
+        }
+
+        $staff = '';
+        if ( Roster::current_user_can_manage() ) {
+            $staff = '<p class="anchor-room-staff">'
+                . '<a href="' . \esc_url( \add_query_arg( 'anchor_room_preview', '1', $this->room_url( $event_id ) ) ) . '">'
+                . \esc_html__( 'Preview as attendee', 'anchor-schema' ) . '</a> · '
+                . '<a href="' . \esc_url( $this->roster->roster_url( $event_id ) ) . '">'
+                . \esc_html__( 'Open event console', 'anchor-schema' ) . '</a></p>';
+        }
+
+        return '<div class="anchor-room anchor-room--open">'
+            . '<h1 class="anchor-room-title">' . \esc_html( $title ) . '</h1>'
+            . $this->room_state_block( $event_id, $state )
+            . $this->render_room_schedule( $event_id, $state )
+            . $staff
+            . '</div>';
+    }
+
+    /**
+     * The one block the REST endpoint re-renders (spec §5.6). Carries the
+     * countdown's target and the server clock so room.js can correct for skew.
+     *
+     * @param int   $event_id
+     * @param array $state Stream_State result.
+     * @return string
+     */
+    public function room_state_block( $event_id, array $state ) {
+        $copy = [
+            Stream_State::UNAVAILABLE => \__( 'This event is in person.', 'anchor-schema' ),
+            Stream_State::PENDING     => \__( 'Stream details will appear here before the session.', 'anchor-schema' ),
+            Stream_State::COUNTDOWN   => \__( "You're registered. The stream opens in", 'anchor-schema' ),
+            Stream_State::LIVE        => \__( 'Live now', 'anchor-schema' ),
+            Stream_State::BETWEEN     => \__( 'This session has ended. The next one starts in', 'anchor-schema' ),
+            Stream_State::ENDED       => \__( 'This session has ended.', 'anchor-schema' ),
+        ];
+        $state_key = (string) $state['state'];
+
+        $body = '';
+        if ( $state_key === Stream_State::LIVE && ! empty( $state['embed'] ) ) {
+            $body = Embed::render( (array) $state['embed'], (string) \get_the_title( $event_id ) );
+        } elseif ( \in_array( $state_key, [ Stream_State::COUNTDOWN, Stream_State::BETWEEN ], true ) ) {
+            $body = '<p class="anchor-room-countdown" role="timer" aria-live="polite"></p>';
+        } elseif ( $state_key === Stream_State::UNAVAILABLE ) {
+            $meta = $this->get_meta( $event_id );
+            $body = $meta['venue'] !== ''
+                ? '<p class="anchor-room-venue">' . \esc_html( $meta['venue'] ) . '</p>'
+                : '';
+            $body .= '<p><a class="anchor-event-button-secondary" href="' . \esc_url( (string) \get_permalink( $event_id ) ) . '">'
+                . \esc_html__( 'View the event page', 'anchor-schema' ) . '</a></p>';
+        } elseif ( $state_key === Stream_State::ENDED ) {
+            $body = '<p><a class="anchor-event-button-secondary" href="' . \esc_url( (string) \get_permalink( $event_id ) ) . '">'
+                . \esc_html__( 'View the event page', 'anchor-schema' ) . '</a></p>';
+        }
+
+        return '<div class="anchor-room-state" data-state="' . \esc_attr( $state_key ) . '"'
+            . ' data-event-id="' . (int) $event_id . '"'
+            . ' data-session-index="' . (int) $state['session_index'] . '"'
+            . ' data-target-ts="' . (int) $state['target_ts'] . '"'
+            . ' data-server-now="' . (int) \time() . '">'
+            . '<p class="anchor-room-status">' . \esc_html( $copy[ $state_key ] ?? '' ) . '</p>'
+            . $body
+            . '</div>';
+    }
+
+    /**
+     * The schedule list: each session's label, local time in the event's zone,
+     * and a modality badge. The live one is marked.
+     *
+     * @param int   $event_id
+     * @param array $state
+     * @return string
+     */
+    private function render_room_schedule( $event_id, array $state ) {
+        $sessions = $this->resolved_sessions( $event_id );
+        if ( \count( $sessions ) < 1 ) {
+            return '';
+        }
+        $meta   = $this->get_meta( $event_id );
+        $tz     = $this->event_timezone( $meta );
+        $badges = [
+            'in_person' => \__( 'In person', 'anchor-schema' ),
+            'virtual'   => \__( 'Livestream', 'anchor-schema' ),
+            'hybrid'    => \__( 'In person + livestream', 'anchor-schema' ),
+        ];
+
+        $out = '<ol class="anchor-room-schedule">';
+        foreach ( $sessions as $i => $row ) {
+            $is_live = ( (string) $state['state'] === Stream_State::LIVE && (int) $state['session_index'] === (int) $i );
+            $when    = $row['start_ts']
+                ? \wp_date( \get_option( 'date_format' ) . ' ' . \get_option( 'time_format' ), (int) $row['start_ts'], $tz )
+                : '';
+            $out .= '<li class="anchor-room-session' . ( $is_live ? ' is-live' : '' ) . '">'
+                . '<span class="anchor-room-session-label">' . \esc_html( $row['label'] !== '' ? $row['label'] : \get_the_title( $event_id ) ) . '</span> '
+                . '<time datetime="' . \esc_attr( \gmdate( 'c', (int) $row['start_ts'] ) ) . '">' . \esc_html( $when ) . '</time> '
+                . '<span class="anchor-room-badge anchor-room-badge--' . \esc_attr( $row['modality'] ) . '">'
+                . \esc_html( $badges[ $row['modality'] ] ?? '' ) . '</span>'
+                . '</li>';
+        }
+        return $out . '</ol>';
     }
 
     /**

@@ -60,14 +60,9 @@ class Test_Inertness extends Anchor_Events_TestCase {
 		return $this->plain_event( $mode, [ 'access_role_enabled' => false ] );
 	}
 
-	/**
-	 * room_url() arrives in Task 11. Before it exists there is no room, which
-	 * is the same '' this suite asserts after it exists.
-	 */
+	/** Module::room_url(), landed in Task 11. */
 	private function room_url( $event_id ) {
-		return method_exists( $this->module(), 'room_url' )
-			? (string) $this->module()->room_url( (int) $event_id )
-			: '';
+		return (string) $this->module()->room_url( (int) $event_id );
 	}
 
 	/* -----------------------------------------------------------------
@@ -285,18 +280,7 @@ class Test_Inertness extends Anchor_Events_TestCase {
 		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'] );
 		$this->assertTrue( $this->module()->entitlements->enabled( $event_id ) );
 
-		// room_url() arrives in Task 11. Unlike the stream-less events above
-		// (where '' is correct on both sides of that task), a real room here
-		// is a POSITIVE claim this suite cannot make about a method that does
-		// not exist yet — so this one assertion is skipped until Task 11,
-		// rather than forced through the '' the private helper stands in
-		// with. Everything else in this test (the switch itself flipping
-		// back on) is asserted unconditionally above.
-		if ( method_exists( $this->module(), 'room_url' ) ) {
-			$this->assertNotSame( '', $this->room_url( $event_id ), 'A stream is what creates the room.' );
-		} else {
-			$this->markTestIncomplete( 'Module::room_url() lands in Task 11.' );
-		}
+		$this->assertNotSame( '', $this->room_url( $event_id ), 'A stream is what creates the room.' );
 	}
 
 	/** Spec §8 (e), flip 2: a virtual/hybrid SESSION forces it on, with no embed anywhere. */

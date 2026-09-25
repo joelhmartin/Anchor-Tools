@@ -45,7 +45,6 @@ final class EnrollmentManager {
 		Notices::register( 'repaired', Notices::TYPE_SUCCESS, \__( 'Completion repaired: credits, certificate, completion role and notifications are all in place.', 'anchor-schema' ) );
 		Notices::register( 'repair_incomplete', Notices::TYPE_ERROR, \__( 'Some completion steps still failed. Check the log and try again.', 'anchor-schema' ) );
 		Notices::register( 'repair_not_completed', Notices::TYPE_ERROR, \__( 'There is nothing to repair: this learner has not completed the course.', 'anchor-schema' ) );
-		Notices::register( 'repair_not_tracked', Notices::TYPE_ERROR, \__( 'This completion has no recorded effect state to verify (it predates tracking, or the last attempt to record it failed) - credits, certificate, completion role and notifications were not just confirmed present.', 'anchor-schema' ) );
 	}
 
 	/**
@@ -166,17 +165,17 @@ final class EnrollmentManager {
 				if ( ! $module->completion->is_complete( $user_id, $course_id ) ) {
 					Notices::redirect( 'repair_not_completed', $target );
 				}
+				// CodeRabbit PR #32 (audit F02 re-review): a completed row
+				// with no tracked effect state - predating tracking, or a
+				// previous tracking write that failed - is no longer treated
+				// as "nothing to verify". complete() now re-runs the
+				// idempotent effects for exactly that row (run_effects()'s
+				// `$untracked` branch), so this call always has a real
+				// chance to create what was actually missing; the
+				// `repair_not_tracked` shape it used to report can no longer
+				// occur through this path.
 				$module->completion->complete( $user_id, $course_id );
-				$effects = $module->completion->effects( $user_id, $course_id );
-				if ( [] === $effects ) {
-					// Audit F02 re-review: a completed row with no tracked
-					// effect state at all - either it predates tracking, or
-					// the tracking write itself just failed (complete()
-					// logged `completion_effects_untracked`) - is not the
-					// same as "verified in place". Say so distinctly rather
-					// than claim `repaired`.
-					Notices::redirect( 'repair_not_tracked', $target );
-				}
+				$effects     = $module->completion->effects( $user_id, $course_id );
 				$outstanding = \array_intersect( $effects, [ CompletionService::EFFECT_PENDING, CompletionService::EFFECT_FAILED ] );
 				Notices::redirect( [] === $outstanding ? 'repaired' : 'repair_incomplete', $target );
 				break;

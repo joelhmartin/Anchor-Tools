@@ -235,13 +235,15 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 	}
 
 	/**
-	 * Re-review (Low): a failed write of that tracking record must not look
-	 * like success from the outside either. The transition and every
-	 * effect's real side effect still happen (separate queries) - only the
-	 * bookkeeping write is broken here - so the row ends up completed with a
-	 * real credit/certificate/role/hook, but `effects()` reports nothing: the
-	 * same "untracked" shape as a row that predates tracking, and the admin
-	 * Repair action must say so (`repair_not_tracked`), not claim `repaired`.
+	 * CodeRabbit PR #32 (audit F02 re-review): a failed write of the tracking
+	 * record must not permanently strand the row it describes. The
+	 * transition and every effect's real side effect still happen (separate
+	 * queries) - only the bookkeeping write is broken here - so the row ends
+	 * up completed with a real credit/certificate/role/hook, but `effects()`
+	 * reports nothing until a repair (with writes healthy) re-runs the
+	 * idempotent effects and durably records them: `repaired`, not a
+	 * distinct "nothing to verify" outcome, and no duplicate credit,
+	 * certificate or role, and no second hook fire.
 	 */
 	public function test_a_failed_effects_metadata_write_leaves_the_row_untracked_but_still_completes_it() {
 		$this->break_queries( '/^UPDATE `?\S*anchor_courses_enrollments`? SET `metadata`/' );
@@ -255,7 +257,17 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		$this->assertTrue( Roles::user_has( $this->user, Roles::completion_slug( $this->course ) ) );
 		$this->assertSame( 1, $this->fired['course'], 'The hook still fired for real.' );
 
-		$this->assertStringContainsString( 'anchor_courses_admin_notice=repair_not_tracked', $this->post_repair() );
+		// Repair now runs with a healthy database: the idempotent effects
+		// re-run (no-ops - the row already has a credit, certificate and
+		// role) and this time land durably, so this reports `repaired`.
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=repaired', $this->post_repair() );
+		$this->assertSame( 1, count( CreditRepository::for_course( $this->course ) ), 'No duplicate credit from the re-run.' );
+		$this->assertSame( 1, $this->fired['course'], 'The hook is never re-fired for an untracked row.' );
+		$this->assertSame(
+			[ 'credit' => 'done', 'certificate' => 'done', 'completion_role' => 'done', 'hook' => 'n/a' ],
+			$this->effects(),
+			'The repair now records real state - the hook as n/a, since it is never re-run for an untracked row.'
+		);
 	}
 
 	/* --- award() / issue(): not-applicable (null + reason) vs failed (WP_Error) --- */
@@ -332,18 +344,30 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 	}
 
 	/**
-	 * Re-review (Low): a row completed before effect tracking existed at all
-	 * (never went through run_effects(), so metadata has no
-	 * completion_effects key) is complete but has nothing to verify. Repair
-	 * must say so distinctly - `repair_not_tracked` - rather than claim
-	 * `repaired`, which would wrongly imply credit/certificate/role/hook were
-	 * just confirmed present.
+	 * CodeRabbit PR #32 (audit F02 re-review): a row completed before effect
+	 * tracking existed at all (never went through run_effects(), so metadata
+	 * has no completion_effects key, and none of credit/certificate/role
+	 * were ever created either) has an UNKNOWN outcome, not a done one.
+	 * Repair now re-runs the idempotent effects for real - creating the
+	 * credit, certificate and role this row never got - and reports
+	 * `repaired`, without ever firing the completion hook for a row that
+	 * never went through the fresh pipeline.
 	 */
 	public function test_the_repair_action_reports_untracked_for_a_row_that_predates_effect_tracking() {
 		$enrollment = $this->enrollments->get( $this->user, $this->course );
 		EnrollmentRepository::complete( $enrollment->id, '2026-01-01 00:00:00' );
 		$this->assertSame( [], $this->completion->effects( $this->user, $this->course ), 'Precondition: nothing was ever tracked.' );
+		$this->assertNull( CreditRepository::find( $this->user, $this->course ), 'Precondition: no credit was ever created for this row.' );
 
-		$this->assertStringContainsString( 'anchor_courses_admin_notice=repair_not_tracked', $this->post_repair() );
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=repaired', $this->post_repair() );
+
+		$this->assertNotNull( CreditRepository::find( $this->user, $this->course ), 'The repair created the credit this row never got.' );
+		$this->assertNotNull( CertificateRepository::find( $this->user, $this->course ) );
+		$this->assertTrue( Roles::user_has( $this->user, Roles::completion_slug( $this->course ) ) );
+		$this->assertSame( 0, $this->fired['course'], 'The hook is never re-run for a row that never went through the fresh pipeline.' );
+		$this->assertSame(
+			[ 'credit' => 'done', 'certificate' => 'done', 'completion_role' => 'done', 'hook' => 'n/a' ],
+			$this->completion->effects( $this->user, $this->course )
+		);
 	}
 }

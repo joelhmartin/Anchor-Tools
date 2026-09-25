@@ -175,6 +175,42 @@ class Test_Courses_Lesson_Quiz_Dependency extends Anchor_Courses_TestCase {
 		);
 	}
 
+	/**
+	 * CodeRabbit PR #32 (audit F04 re-review): the deadlock only exists when
+	 * the LESSON precedes its quiz (`[L, X, Q]`) - a required item X between
+	 * them then waits on the lesson (sequential gating), the quiz waits on
+	 * X, and the lesson waits on the quiz: nobody can move. The mirror order
+	 * (`[Q, X, L]`) has no cycle: the quiz opens with the earlier items
+	 * regardless of what sits between it and its lesson, and passing it
+	 * completes the lesson directly - so it must never be flagged.
+	 */
+	public function test_item_between_only_deadlocks_when_the_lesson_precedes_its_quiz() {
+		$quiz_lq = $this->quiz();
+		$x1      = $this->make_lesson();
+		$l_lq    = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $quiz_lq ] );
+
+		$quiz_ql = $this->quiz();
+		$x2      = $this->make_lesson();
+		$l_ql    = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $quiz_ql ] );
+
+		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [
+			// [L, X, Q]: X waits on L, Q waits on X, L waits on Q - deadlock.
+			[ 'type' => 'lesson', 'id' => $l_lq ],
+			[ 'type' => 'lesson', 'id' => $x1 ],
+			[ 'type' => 'quiz', 'id' => $quiz_lq ],
+			// [Q, X, L]: Q opens with the earlier items; passing it completes L - fine.
+			[ 'type' => 'quiz', 'id' => $quiz_ql ],
+			[ 'type' => 'lesson', 'id' => $x2 ],
+			[ 'type' => 'lesson', 'id' => $l_ql ],
+		] ] ] );
+
+		$this->assertSame(
+			[ [ 'lesson_id' => $l_lq, 'quiz_id' => $quiz_lq, 'problem' => 'item_between' ] ],
+			ProgressService::quiz_link_problems( $this->course ),
+			'[L, X, Q] deadlocks and is flagged; [Q, X, L] is not.'
+		);
+	}
+
 	/** The `item_between` check only applies under sequential progression - free progression never gates on order. */
 	public function test_a_gap_between_lesson_and_quiz_is_not_flagged_under_free_progression() {
 		$free   = $this->make_course( [ 'progression_mode' => 'free' ] );

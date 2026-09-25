@@ -179,8 +179,19 @@ one." for an enrolled learner locked by progression.
   unsettled, and is `done` only once linked to the credit. A throwing
   `anchor_courses_course_completed` consumer marks `hook` failed and the
   action is fired again on repair; once `done` it never fires again.
-  `CompletionService::effects( $user_id, $course_id )` reads the state; a row
-  completed before tracking has none and is never re-run.
+  `CompletionService::effects( $user_id, $course_id )` reads the state.
+  **An untracked completed row - no `completion_effects` at all, whether it
+  predates tracking or the tracking write itself failed - has an UNKNOWN
+  outcome, not a done one** (CodeRabbit PR #32, audit F02 re-review):
+  `run_effects()` treats it like a fresh transition and re-runs the
+  idempotent effects (credit, certificate, completion role) so one that
+  genuinely never landed still gets created, but never re-runs the hook
+  (not idempotent; may already have fired once with nothing recorded to
+  prove it). The admin **Repair completion** action therefore always has a
+  real chance to fix an untracked row and reports `repaired` /
+  `repair_incomplete` accordingly; the earlier `repair_not_tracked` code (a
+  distinct "nothing could be determined" outcome) can no longer occur
+  through this path and was removed.
 - **The effect-tracking write is itself checked** (re-review, audit F02):
   `CompletionService::save_effects()` returns `false` and `Log::write()`s
   `completion_effects_save_failed` when `EnrollmentRepository::update()`
@@ -189,10 +200,7 @@ one." for an enrolled learner locked by progression.
   successful save. The failure never blocks the effects themselves (credit,
   certificate, role, hook are separate writes and still run for real); it
   only means their outcome was not durably recorded, logged again from
-  `complete()` as `completion_effects_untracked`. The admin **Repair
-  completion** action reports this shape - and a row that predates tracking
-  entirely - as its own code, `repair_not_tracked`, distinct from `repaired`:
-  neither one just confirmed anything present.
+  `complete()` as `completion_effects_untracked`.
 - **CE credit / certificate outcomes:** `CreditService::award()` and
   `CertificateService::issue()` return the row, `null` for not-applicable
   (reason in `last_skip_reason()`: `not_a_course`, `no_user`, `no_credits` /
@@ -360,7 +368,7 @@ Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 |---|---|
 | `admin-post.php?action=anchor_courses_complete_lesson` (also nopriv) | `Frontend\Actions` - "Mark complete"; redirects with `anchor_courses_notice` |
 | `admin-post.php?action=anchor_courses_add_learner` / `anchor_courses_revoke_access` | `Admin\LearnerReports` (nonce `anchor_courses_learners_{course}`, cap `enrollments`) |
-| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset`, `complete`, `uncomplete`, `repair` (re-run failed completion effects; notices `repaired`, `repair_incomplete`, `repair_not_completed`, `repair_not_tracked` - nothing tracked to verify: predates tracking, or the last tracking write failed) |
+| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset`, `complete`, `uncomplete`, `repair` (re-run failed/untracked completion effects; notices `repaired`, `repair_incomplete`, `repair_not_completed`) |
 | `admin-post.php?action=anchor_courses_delete_role` | `Admin\CourseEditor` (cap `manage`) |
 | `admin-ajax.php?action=anchor_courses_search_items` / `anchor_courses_create_item` | curriculum builder |
 | `/certificate/{token}/` | `Frontend\CertificatePage` - public verification page (query var `anchor_certificate`, noindex) |

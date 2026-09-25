@@ -48,8 +48,14 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * effect is idempotent on re-run: award()/issue() return the existing row,
  * the role grant is a no-op when held, and the hook - the one effect that
  * is not naturally idempotent - is re-fired only while it is not `done`.
- * A completed row with no `completion_effects` at all predates this and is
- * treated as fully done: nothing is re-run for historical completions.
+ * A completed row with no `completion_effects` at all (CodeRabbit PR #32,
+ * audit F02 re-review) has an UNKNOWN outcome, not a done one: it predates
+ * tracking, or the tracking write itself failed while the effects ran for
+ * real. Either way, `run_effects()` treats it like a fresh transition and
+ * re-runs the idempotent effects (credit, certificate, completion role) so
+ * one that genuinely never landed still gets created - but it never re-runs
+ * the hook, which is not idempotent and may already have fired once for
+ * this row with nothing recorded to prove it.
  * Repair is not itself serialised: two simultaneous repairs of a failed
  * hook could both fire it (the credit/certificate/role effects stay single
  * via their unique keys and idempotency).
@@ -169,25 +175,43 @@ final class CompletionService {
 	 * @return bool False when any `save_effects()` write in this call failed
 	 *              (re-review, audit F02): the effects themselves still ran -
 	 *              this only means their outcome was not durably recorded, so
-	 *              the row can look completed with no tracked state (the same
-	 *              shape as one that predates tracking, which the admin
-	 *              Repair action reports as `repair_not_tracked`).
+	 *              the row can look completed with no tracked state. That
+	 *              shape - and a row that predates tracking entirely - is
+	 *              handled by the `$untracked` branch below, not treated as
+	 *              "nothing to do" (CodeRabbit PR #32).
 	 */
 	private function run_effects( Enrollment $enrollment, bool $fresh ): bool {
-		$state = $fresh
-			? \array_fill_keys( self::EFFECTS, self::EFFECT_PENDING )
-			: (array) ( $enrollment->metadata[ self::EFFECTS_META ] ?? [] );
+		$stored = (array) ( $enrollment->metadata[ self::EFFECTS_META ] ?? [] );
+
+		// An untracked completed row's real outcome is UNKNOWN, not done: it
+		// predates tracking, or the previous call's save_effects() failed
+		// while the effects themselves still ran. Treat it like a fresh
+		// transition - so award()/issue()/grant_completed() get a real
+		// chance to create what may genuinely be missing - except the hook,
+		// which is never re-run here: it is not idempotent, and an untracked
+		// row may already have fired it once with nothing recorded to prove
+		// it (CodeRabbit PR #32, audit F02 re-review).
+		$untracked = ! $fresh && [] === $stored;
+
+		if ( $fresh || $untracked ) {
+			$state = \array_fill_keys( self::EFFECTS, self::EFFECT_PENDING );
+			if ( $untracked ) {
+				$state['hook'] = self::EFFECT_NA;
+			}
+		} else {
+			$state = $stored;
+		}
 
 		$todo = \array_values( \array_filter(
 			self::EFFECTS,
 			static fn ( string $effect ): bool => \in_array( $state[ $effect ] ?? '', [ self::EFFECT_PENDING, self::EFFECT_FAILED ], true )
 		) );
 		if ( [] === $todo ) {
-			return true; // Nothing outstanding - or a row completed before tracking existed.
+			return true; // Nothing outstanding.
 		}
 
 		$tracked = true;
-		if ( $fresh ) {
+		if ( $fresh || $untracked ) {
 			$tracked = $this->save_effects( $enrollment->id, $state );
 		}
 

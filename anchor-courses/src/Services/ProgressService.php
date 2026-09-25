@@ -284,7 +284,16 @@ final class ProgressService {
 			$position = $quiz_id > 0 ? Curriculum::position( $course_id, $quiz_id, 'quiz' ) : -1;
 			if ( $position < 0 ) {
 				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'quiz_absent' ];
-			} elseif ( $sequential && self::required_item_between( $items, (int) $item['index'], $position ) ) {
+			} elseif (
+				$sequential
+				// CodeRabbit PR #32: only when the LESSON precedes its quiz.
+				// A quiz placed before its lesson opens with the earlier
+				// items regardless of what sits between them - nothing gates
+				// it on the lesson - so an intervening required item there is
+				// not a deadlock (see the class docblock above).
+				&& (int) $item['index'] < $position
+				&& self::required_item_between( $items, (int) $item['index'], $position )
+			) {
 				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'item_between' ];
 			}
 		}

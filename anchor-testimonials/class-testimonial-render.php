@@ -48,9 +48,9 @@ class Anchor_Testimonial_Render {
 
 		if ( $layout === 'slider' ) {
 			$html .= '<div class="anchor-testimonials__controls">';
-			$html .= '<button type="button" class="anchor-testimonials__prev" aria-label="' . esc_attr__( 'Previous', 'anchor-schema' ) . '"></button>';
+			$html .= '<button type="button" class="anchor-testimonials__prev" aria-label="' . esc_attr__( 'Previous', 'anchor-schema' ) . '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="15,6 9,12 15,18"></polyline></svg></button>';
 			$html .= '<div class="anchor-testimonials__dots"></div>';
-			$html .= '<button type="button" class="anchor-testimonials__next" aria-label="' . esc_attr__( 'Next', 'anchor-schema' ) . '"></button>';
+			$html .= '<button type="button" class="anchor-testimonials__next" aria-label="' . esc_attr__( 'Next', 'anchor-schema' ) . '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="9,6 15,12 9,18"></polyline></svg></button>';
 			$html .= '</div>';
 		}
 

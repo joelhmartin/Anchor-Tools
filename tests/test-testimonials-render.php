@@ -21,6 +21,26 @@ class Test_Testimonials_Render extends WP_UnitTestCase {
 	}
 
 	/**
+	 * PR #28 review finding E: the slider prev/next buttons had no text or
+	 * icon content, so sighted visitors could not identify them. They must
+	 * carry a visible (but aria-hidden) glyph while keeping the accessible
+	 * aria-label.
+	 */
+	public function test_slider_controls_have_visible_glyphs_and_accessible_labels() {
+		self::factory()->post->create( [ 'post_type' => 'anchor_testimonial', 'post_content' => 'Q' ] );
+		$html = do_shortcode( '[anchor_testimonials layout="slider"]' );
+
+		$this->assertMatchesRegularExpression(
+			'~<button type="button" class="anchor-testimonials__prev" aria-label="Previous"><svg[^>]*aria-hidden="true"[^>]*>.*?</svg></button>~s',
+			$html
+		);
+		$this->assertMatchesRegularExpression(
+			'~<button type="button" class="anchor-testimonials__next" aria-label="Next"><svg[^>]*aria-hidden="true"[^>]*>.*?</svg></button>~s',
+			$html
+		);
+	}
+
+	/**
 	 * Final whole-branch review finding 10: video-grid renders only the media
 	 * button + name (no quote, no photo, no meta, no rating). A quote-only
 	 * testimonial has no video and so no media button, and would render as an

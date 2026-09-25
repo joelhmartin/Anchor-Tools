@@ -295,6 +295,7 @@ class Module {
                 <p><?php echo \esc_html__( 'Add the shortcode below to any page or post to render the store locator.', 'anchor-schema' ); ?></p>
                 <p><code>[anchor_store_locator]</code></p>
                 <p class="description"><?php echo \esc_html__( 'Stores must be published to appear in the locator results.', 'anchor-schema' ); ?></p>
+                <p class="description"><?php echo \esc_html__( 'Add card="compact" for a small blurb card (title, owner, "View location") instead of the full photo card, e.g.', 'anchor-schema' ); ?> <code>[anchor_store_locator card="compact"]</code></p>
             </div>
 
             <div class="anchor-store-panel">
@@ -619,7 +620,15 @@ class Module {
         exit;
     }
 
-    public function shortcode() {
+    public function shortcode( $atts = [] ) {
+        $atts = \shortcode_atts( [
+            'card' => 'full',
+        ], $atts, 'anchor_store_locator' );
+
+        // Only "compact" is recognised; anything else (including the
+        // default) renders today's full card so existing sites don't change.
+        $card_mode = ( \sanitize_key( $atts['card'] ) === 'compact' ) ? 'compact' : 'full';
+
         $this->enqueue_frontend_assets();
 
         if ( ! $this->get_google_api_key() ) {
@@ -628,7 +637,9 @@ class Module {
 
         $radii = [ 25, 50, 100, 250, 500 ];
 
-        $output = '<div class="anchor-store-locator" data-anchor-store-locator>';
+        $results_class = 'anchor-store-results' . ( 'compact' === $card_mode ? ' anchor-store-results--compact' : '' );
+
+        $output = '<div class="anchor-store-locator" data-anchor-store-locator data-anchor-store-card="' . \esc_attr( $card_mode ) . '">';
         $output .= '<div class="anchor-store-controls">';
         $output .= '<label class="screen-reader-text" for="anchor-store-search">' . \esc_html__( 'Search location', 'anchor-schema' ) . '</label>';
         $output .= '<input id="anchor-store-search" class="anchor-store-search" type="text" placeholder="' . \esc_attr__( 'Search by city, ZIP, or address', 'anchor-schema' ) . '" aria-label="' . \esc_attr__( 'Search by city, ZIP, or address', 'anchor-schema' ) . '" data-anchor-store-search />';
@@ -646,7 +657,7 @@ class Module {
         $output .= '<div class="anchor-store-name-results" data-anchor-store-name-results style="display:none;"></div>';
         $output .= '</div>';
         $output .= '<div class="anchor-store-map" data-anchor-store-map aria-label="' . \esc_attr__( 'Store locations map', 'anchor-schema' ) . '"></div>';
-        $output .= '<div class="anchor-store-results" data-anchor-store-results aria-live="polite"></div>';
+        $output .= '<div class="' . \esc_attr( $results_class ) . '" data-anchor-store-results aria-live="polite"></div>';
         $output .= '</div>';
 
         return $output;
@@ -789,6 +800,7 @@ class Module {
                 'permalink' => \esc_url_raw( \get_permalink( $post ) ),
                 'excerpt' => \wp_strip_all_tags( \get_the_excerpt( $post ) ),
                 'image' => \esc_url_raw( \get_the_post_thumbnail_url( $post, 'medium' ) ),
+                'owner' => \sanitize_text_field( \get_post_meta( $post->ID, '_anchor_store_owner', true ) ),
             ];
         }
 

@@ -1,0 +1,213 @@
+/*
+ * [anchor_testimonials] front-end styles. Layout only, driven by the custom
+ * properties the renderer sets inline on .anchor-testimonials:
+ *   --at-cols        number of columns (grid / video-grid)
+ *   --at-gap         gap between cards (default 24px)
+ *   --at-card-bg     card background (default #fff)
+ *   --at-card-radius card corner radius (default 12px)
+ *   --at-accent      play icon / rating color (default currentColor)
+ *   --at-arrow-size  slider prev/next button diameter (default 36px)
+ *   --at-arrow-bg    slider prev/next button background (default --at-card-bg)
+ *   --at-arrow-fg    slider prev/next icon color (default --at-accent)
+ *
+ * Slider arrows render in a row flanking the dots (.anchor-testimonials__controls:
+ * prev, dots, next, centered below the track) rather than overlaid on the
+ * track edges, so they never sit on top of card content at any viewport.
+ *
+ * Slider layout reuses assets/shared/anchor-carousel.css's .anchor-carousel__track
+ * rules (the renderer adds that class to the track alongside
+ * .anchor-testimonials__track), mapping --at-cols/--at-gap into the shared
+ * component's own --anchor-carousel-cols/--anchor-carousel-gap variables so
+ * there is a single source of truth for column count and spacing.
+ */
+
+.anchor-testimonials__viewport {
+	overflow: hidden;
+}
+
+.anchor-testimonials--grid .anchor-testimonials__track,
+.anchor-testimonials--video-grid .anchor-testimonials__track {
+	display: grid;
+	grid-template-columns: repeat( var( --at-cols, 3 ), minmax( 0, 1fr ) );
+	gap: var( --at-gap, 24px );
+}
+
+@media ( max-width: 1023px ) {
+	.anchor-testimonials--grid .anchor-testimonials__track,
+	.anchor-testimonials--video-grid .anchor-testimonials__track {
+		grid-template-columns: repeat( min( var( --at-cols, 3 ), 2 ), minmax( 0, 1fr ) );
+	}
+}
+
+@media ( max-width: 767px ) {
+	.anchor-testimonials--grid .anchor-testimonials__track,
+	.anchor-testimonials--video-grid .anchor-testimonials__track {
+		grid-template-columns: 1fr;
+	}
+}
+
+.anchor-testimonials--slider .anchor-testimonials__track {
+	--anchor-carousel-cols: var( --at-cols, 3 );
+	--anchor-carousel-gap: var( --at-gap, 24px );
+}
+
+/* Same breakpoints as the grid layout above, and the same column counts
+ * testimonials.js's AnchorCarousel.init() cols option computes
+ * (tablet: min(--at-cols,2), mobile: 1), otherwise the JS advances by a
+ * tablet/mobile-sized card while the CSS still lays out desktop-width
+ * columns, and next/prev no longer matches what is visible. */
+@media ( max-width: 1023px ) {
+	.anchor-testimonials--slider .anchor-testimonials__track {
+		--anchor-carousel-cols: min( var( --at-cols, 3 ), 2 );
+	}
+}
+
+@media ( max-width: 767px ) {
+	.anchor-testimonials--slider .anchor-testimonials__track {
+		--anchor-carousel-cols: 1;
+	}
+}
+
+.anchor-testimonial {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+	background: var( --at-card-bg, #fff );
+	border-radius: var( --at-card-radius, 12px );
+	overflow: hidden;
+}
+
+.anchor-testimonial__media {
+	display: block;
+	position: relative;
+	width: 100%;
+	aspect-ratio: 16 / 9;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: pointer;
+}
+
+.anchor-testimonial__media img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.anchor-testimonial__play {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	width: 56px;
+	height: 56px;
+	transform: translate( -50%, -50% );
+	border-radius: 50%;
+	background: var( --at-accent, currentColor );
+	opacity: 0.85;
+}
+
+.anchor-testimonial__play::before {
+	content: '';
+	position: absolute;
+	top: 50%;
+	left: 55%;
+	width: 0;
+	height: 0;
+	transform: translate( -50%, -50% );
+	border-style: solid;
+	border-width: 10px 0 10px 16px;
+	border-color: transparent transparent transparent #fff;
+}
+
+.anchor-testimonial__quote {
+	margin: 0;
+	padding: 16px 16px 0;
+}
+
+.anchor-testimonial__person {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 8px;
+	padding: 16px;
+	margin-top: auto;
+}
+
+.anchor-testimonial__photo {
+	width: 40px;
+	height: 40px;
+	border-radius: 50%;
+	object-fit: cover;
+}
+
+.anchor-testimonial__name {
+	font-weight: 600;
+}
+
+.anchor-testimonial__meta {
+	opacity: 0.7;
+}
+
+.anchor-testimonial__rating {
+	margin-left: auto;
+	color: var( --at-accent, currentColor );
+}
+
+.anchor-testimonials__controls {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	margin-top: 16px;
+}
+
+.anchor-testimonials__prev,
+.anchor-testimonials__next {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: var( --at-arrow-size, 36px );
+	height: var( --at-arrow-size, 36px );
+	border: 0;
+	border-radius: 50%;
+	background: var( --at-arrow-bg, var( --at-card-bg, #fff ) );
+	color: var( --at-arrow-fg, var( --at-accent, currentColor ) );
+	cursor: pointer;
+}
+
+.anchor-testimonials__prev svg,
+.anchor-testimonials__next svg {
+	width: 45%;
+	height: 45%;
+}
+
+.anchor-testimonials__prev:disabled,
+.anchor-testimonials__next:disabled {
+	opacity: 0.35;
+	cursor: default;
+	pointer-events: none;
+}
+
+.anchor-testimonials__dots {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.anchor-testimonials__dot {
+	width: 8px;
+	height: 8px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: var( --at-accent, currentColor );
+	opacity: 0.35;
+	cursor: pointer;
+}
+
+.anchor-testimonials__dot.active {
+	opacity: 1;
+}

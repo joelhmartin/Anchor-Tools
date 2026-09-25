@@ -58,6 +58,12 @@ if ( class_exists( Dotenv::class ) && file_exists( ANCHOR_TOOLS_PLUGIN_DIR . '.e
 if ( ! class_exists( 'Anchor_Asset_Loader' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-asset-loader.php';
 }
+if ( ! class_exists( 'Anchor_Shared_Assets' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-shared-assets.php';
+}
+if ( ! class_exists( 'Anchor_Video_URL' ) ) {
+    require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-video-url.php';
+}
 if ( ! class_exists( 'Anchor_Monaco' ) ) {
     require_once ANCHOR_TOOLS_PLUGIN_DIR . 'includes/class-anchor-monaco.php';
 }
@@ -199,6 +205,18 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'description' => __( 'Manage events, calendars, and registrations.', 'anchor-schema' ),
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-events-manager/anchor-events-manager.php',
                 'class'       => '\\Anchor\\Events\\Module',
+            ],
+            'testimonials' => [
+                'label'       => __( 'Anchor Testimonials', 'anchor-schema' ),
+                'description' => __( 'Authored patient and professional testimonials (quotes and videos) with audience and related-page scoping.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-testimonials/anchor-testimonials.php',
+                'class'       => 'Anchor_Testimonials_Module',
+            ],
+            'speakers' => [
+                'label'       => __( 'Anchor Speakers', 'anchor-schema' ),
+                'description' => __( 'Speaker/faculty CPT with a configurable URL base and optional Events linkage.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-speakers/anchor-speakers.php',
+                'class'       => 'Anchor_Speakers_Module',
             ],
             'store_locator' => [
                 'label'       => __( 'Anchor Store Locator', 'anchor-schema' ),

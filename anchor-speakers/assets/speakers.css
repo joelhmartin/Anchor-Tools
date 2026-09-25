@@ -1,0 +1,257 @@
+/*
+ * [anchor_speakers] front-end styles. Layout only, driven by the custom
+ * properties the renderer sets inline on .anchor-speakers (grid/list/compact
+ * only - avatars layout takes no inline style, see below):
+ *   --as-cols          number of columns (grid layout)
+ *   --as-gap           gap between cards (default 24px)
+ *   --as-photo-radius  speaker photo corner radius (default 50%, a circle)
+ *
+ * Theme-overridable, not set inline:
+ *   --as-avatar-size            avatars layout: each headshot's diameter (default 40px)
+ *   --as-avatar-overlap         avatars layout: how far each avatar tucks under
+ *                               the previous one (default 12px)
+ *   --as-avatar-ring            avatars layout: the ring/border color separating
+ *                               overlapping avatars (default #fff)
+ *   --as-avatar-placeholder-bg  a photo-less speaker's initial placeholder
+ *                               background, avatars AND list layouts
+ *                               (default rgba(0,0,0,.08))
+ *   --as-avatar-placeholder-fg  that placeholder's text color, avatars AND
+ *                               list layouts (default rgba(0,0,0,.5))
+ *   --as-cta-color              list layout: the trailing "View" link color
+ *                               (default currentColor)
+ *   --as-list-border            list layout: the hairline row divider color
+ *                               (default rgba(0,0,0,.08))
+ *   --as-title-color            list layout: the role/title line color
+ *                               (default rgba(0,0,0,.6))
+ *   --as-name-size              list layout: the name line's font size
+ *                               (default 1.05em)
+ *   --as-photo-gap              list layout: the gap between the photo and
+ *                               the text/CTA columns (default 16px)
+ *
+ * The single-speaker fallback template (templates/single-anchor_speaker.php)
+ * uses the separate .anchor-speaker-single block below, unrelated to the
+ * shortcode's grid/list/compact/avatars layouts.
+ */
+
+.anchor-speakers--grid {
+	display: grid;
+	grid-template-columns: repeat( var( --as-cols, 3 ), minmax( 0, 1fr ) );
+	gap: var( --as-gap, 24px );
+}
+
+@media ( max-width: 1023px ) {
+	.anchor-speakers--grid {
+		grid-template-columns: repeat( 2, minmax( 0, 1fr ) );
+	}
+}
+
+@media ( max-width: 767px ) {
+	.anchor-speakers--grid {
+		grid-template-columns: 1fr;
+	}
+}
+
+/*
+ * .anchor-speaker sets flex-direction:column (below) with nothing here to
+ * override it, so list cards stayed vertical instead of the row layout this
+ * modifier intends. Grid instead: a fixed photo | body | CTA column layout.
+ *
+ * Owner feedback round 2: this used to give the photo and CTA
+ * `grid-row: 1 / -1` so they'd span however many implicit rows the loose
+ * text children (name, title, location, excerpt, each its own grid item)
+ * produced - but that let the row spread out to match the photo's height
+ * (or vice versa) with a wide, uneven gap between the name and title lines,
+ * and depended on each text child's own margin for spacing, which a
+ * theme's heading/paragraph margins could widen or override outright.
+ * list_card() in class-speaker-render.php now wraps all of that text in one
+ * `.anchor-speaker__body` element, so the grid only ever has ONE row (photo
+ * | body | CTA, three grid items total) - `align-items: center` centers
+ * them against each other directly, and the compact line spacing inside
+ * body comes from its own flex `gap`, not from child margins.
+ *
+ * Owner feedback round 3: the photo column used to be conditional on a
+ * `.anchor-speaker__photo` element actually existing, so a speaker with no
+ * featured image had no photo column at all and its text shifted left out
+ * of alignment with every other row. list_card() now always renders
+ * `.anchor-speaker__photo` (a real photo, or the shared initial-letter
+ * placeholder otherwise), so the three-column template below is
+ * unconditional - every row keeps the same photo column.
+ */
+.anchor-speakers--list .anchor-speaker {
+	display: grid;
+	grid-template-columns: 64px minmax( 0, 1fr ) auto;
+	align-items: center;
+	column-gap: var( --as-photo-gap, 16px );
+	padding: 16px 0;
+	border-bottom: 1px solid var( --as-list-border, rgba( 0, 0, 0, 0.08 ) );
+}
+
+.anchor-speakers--list .anchor-speaker:last-child {
+	border-bottom: 0;
+}
+
+.anchor-speakers--list .anchor-speaker__photo {
+	grid-column: 1;
+}
+
+.anchor-speakers--list .anchor-speaker__body {
+	grid-column: 2;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 4px;
+	min-width: 0;
+}
+
+.anchor-speakers--list .anchor-speaker__body > * {
+	margin: 0;
+}
+
+/*
+ * .anchor-speaker__cta alone is enough here: the list layout's PHP always
+ * emits __cta together with __link on the same element (never __link
+ * alone), so matching both classes separately would be redundant.
+ */
+.anchor-speakers--list .anchor-speaker > .anchor-speaker__cta {
+	grid-column: 3;
+	justify-self: end;
+}
+
+.anchor-speakers--list .anchor-speaker__name {
+	font-size: var( --as-name-size, 1.05em );
+	line-height: 1.3;
+}
+
+.anchor-speakers--list .anchor-speaker__name .anchor-speaker__credentials {
+	font-weight: inherit;
+}
+
+/*
+ * The role line: title when a speaker has one, else their credentials as a
+ * fallback (list_card() reuses this same class for both, so a credentials
+ * fallback is never styled any differently from a normal title line - a
+ * plain line of body text, not the inline "name, credentials" treatment).
+ */
+.anchor-speakers--list .anchor-speaker__title {
+	color: var( --as-title-color, rgba( 0, 0, 0, 0.6 ) );
+	font-size: 1em;
+	font-weight: 400;
+	line-height: 1.3;
+}
+
+.anchor-speakers--list .anchor-speaker__cta {
+	color: var( --as-cta-color, currentColor );
+	font-weight: 600;
+	white-space: nowrap;
+	text-decoration: none;
+}
+
+.anchor-speakers--list .anchor-speaker__cta:hover,
+.anchor-speakers--list .anchor-speaker__cta:focus-visible {
+	text-decoration: underline;
+}
+
+.anchor-speakers--list .anchor-speaker__photo,
+.anchor-speakers--list .anchor-speaker__photo img {
+	width: 64px;
+}
+
+.anchor-speakers--compact {
+	display: grid;
+	grid-template-columns: repeat( var( --as-cols, 3 ), minmax( 0, 1fr ) );
+	gap: calc( var( --as-gap, 24px ) / 2 );
+}
+
+/*
+ * layout="avatars": a compact overlapping stack of circular headshots
+ * (no names, per the brief). Flex row with a negative margin-left on every
+ * avatar after the first pulls each one under the previous one by
+ * --as-avatar-overlap; the ring (a solid border matching the page
+ * background by default) is what makes the overlap read as a stack
+ * instead of tiles touching edge to edge. Later avatars stack visually on
+ * top via source order (later flex children paint after earlier ones).
+ */
+.anchor-speakers--avatars {
+	display: flex;
+	align-items: center;
+}
+
+.anchor-speaker-avatar {
+	display: block;
+	flex: 0 0 auto;
+	width: var( --as-avatar-size, 40px );
+	height: var( --as-avatar-size, 40px );
+	border-radius: 50%;
+}
+
+.anchor-speaker-avatar:not( :first-child ) {
+	margin-left: calc( -1 * var( --as-avatar-overlap, 12px ) );
+}
+
+.anchor-speaker-avatar__img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: 50%;
+	box-sizing: border-box;
+}
+
+/*
+ * The ring border exists to separate overlapping avatars in the "avatars"
+ * layout's stack, so it's scoped there rather than living on the shared
+ * .anchor-speaker-avatar__img rule above: list_card() reuses that same
+ * class for its no-photo placeholder (see photo_placeholder() in
+ * class-speaker-render.php), and an unscoped border would draw a ring
+ * around a photo-less list row's placeholder that its photo-having
+ * neighbors, styled by the plain .anchor-speaker__photo rules further
+ * down, never get.
+ */
+.anchor-speakers--avatars .anchor-speaker-avatar__img {
+	border: 2px solid var( --as-avatar-ring, #fff );
+}
+
+.anchor-speaker-avatar__img--placeholder {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var( --as-avatar-placeholder-bg, rgba( 0, 0, 0, 0.08 ) );
+	color: var( --as-avatar-placeholder-fg, rgba( 0, 0, 0, 0.5 ) );
+	font-size: 0.85em;
+	font-weight: 600;
+	text-transform: uppercase;
+}
+
+.anchor-speaker {
+	display: flex;
+	flex-direction: column;
+}
+
+.anchor-speaker__photo,
+.anchor-speaker__photo img {
+	display: block;
+	width: 100%;
+	aspect-ratio: 1 / 1;
+	object-fit: cover;
+	border-radius: var( --as-photo-radius, 50% );
+}
+
+.anchor-speaker__name {
+	margin: 0.5em 0 0;
+}
+
+.anchor-speaker__credentials,
+.anchor-speaker__title,
+.anchor-speaker__location,
+.anchor-speaker__excerpt {
+	margin: 0.25em 0;
+}
+
+.anchor-speaker__link {
+	margin-top: 0.5em;
+}
+
+.anchor-speaker-single__photo img {
+	max-width: 320px;
+	border-radius: var( --as-photo-radius, 50% );
+}

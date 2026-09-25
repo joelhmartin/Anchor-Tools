@@ -78,11 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true}}'
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"testimonials":true,"courses":true}}'
 if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
   wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events + Gallery + Compliance + Courses modules enabled."
+log "Events + Gallery + Compliance + Testimonials + Courses modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.
@@ -512,6 +512,185 @@ GALLERY_PAGE_ID="$(wp eval '
 log "Gallery page #${GALLERY_PAGE_ID}"
 
 # ---------------------------------------------------------------------------
+# Carousel-layout gallery fixture (shared carousel E2E, e2e/shared-carousel.spec.js).
+# Five video items, carousel layout, 3 desktop columns, dots on. Same idiom as
+# the lightbox fixture above, reusing the module's own sample YouTube ids so
+# no extra binary fixtures are needed.
+# ---------------------------------------------------------------------------
+GALLERY_CAROUSEL_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "anchor_video_gallery", "name" => "avg-e2e-carousel", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "anchor_video_gallery",
+      "post_title"  => "AVG E2E Carousel",
+      "post_name"   => "avg-e2e-carousel",
+      "post_status" => "publish",
+  ] );
+  $video_ids = [ "dQw4w9WgXcQ", "jNQXAC9IVRw", "9bZkp7q19f0", "kJQP7kiw5Fk", "RgKAFK5djSk" ];
+  $items = [];
+  foreach ( $video_ids as $i => $vid ) {
+      $items[] = [ "type" => "video", "url" => "https://www.youtube.com/watch?v=$vid", "title" => "Carousel Video " . ( $i + 1 ), "caption" => "Caption " . ( $i + 1 ), "categories" => [] ];
+  }
+  update_post_meta( $id, "avg_videos", $items );
+  update_post_meta( $id, "avg_layout", "carousel" );
+  update_post_meta( $id, "avg_popup_style", "lightbox" );
+  update_post_meta( $id, "avg_pagination_enabled", 0 );
+  update_post_meta( $id, "avg_columns_desktop", 3 );
+  update_post_meta( $id, "avg_slider_dots", 1 );
+  echo (int) $id;
+')"
+log "Carousel gallery #${GALLERY_CAROUSEL_ID}"
+
+GALLERY_CAROUSEL_PAGE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "page", "name" => "avg-e2e-gallery-carousel", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "AVG E2E Gallery Carousel",
+      "post_name"   => "avg-e2e-gallery-carousel",
+      "post_status" => "publish",
+  ] );
+  wp_update_post( [ "ID" => $id, "post_content" => "[anchor_video_gallery id=\"'"${GALLERY_CAROUSEL_ID}"'\"]" ] );
+  echo (int) $id;
+')"
+log "Carousel gallery page #${GALLERY_CAROUSEL_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
+# Slider-layout (native scroll, scroll-snap) gallery fixture (shared carousel
+# E2E, e2e/shared-carousel.spec.js). avg_layout="slider" is the module's
+# default layout and the only one whose track scrolls natively via
+# overflow-x/scroll-snap rather than a JS-driven transform - this fixture
+# exists specifically to prove touch-action: pan-y and the Pointer Events
+# drag handling in assets/shared/anchor-carousel.js never apply to it (both
+# are gated to mode === 'carousel'), so native horizontal touch scrolling
+# stays intact. Six items and a narrow 3-column desktop width so the track is
+# wider than its viewport and actually has somewhere to scroll to.
+# ---------------------------------------------------------------------------
+GALLERY_SLIDER_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "anchor_video_gallery", "name" => "avg-e2e-slider", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "anchor_video_gallery",
+      "post_title"  => "AVG E2E Slider",
+      "post_name"   => "avg-e2e-slider",
+      "post_status" => "publish",
+  ] );
+  $video_ids = [ "dQw4w9WgXcQ", "jNQXAC9IVRw", "9bZkp7q19f0", "kJQP7kiw5Fk", "RgKAFK5djSk", "astISOttCQ0" ];
+  $items = [];
+  foreach ( $video_ids as $i => $vid ) {
+      $items[] = [ "type" => "video", "url" => "https://www.youtube.com/watch?v=$vid", "title" => "Slider Video " . ( $i + 1 ), "caption" => "Caption " . ( $i + 1 ), "categories" => [] ];
+  }
+  update_post_meta( $id, "avg_videos", $items );
+  update_post_meta( $id, "avg_layout", "slider" );
+  update_post_meta( $id, "avg_popup_style", "lightbox" );
+  update_post_meta( $id, "avg_pagination_enabled", 0 );
+  update_post_meta( $id, "avg_columns_desktop", 3 );
+  echo (int) $id;
+')"
+log "Slider gallery #${GALLERY_SLIDER_ID}"
+
+GALLERY_SLIDER_PAGE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "page", "name" => "avg-e2e-gallery-slider", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "AVG E2E Gallery Slider",
+      "post_name"   => "avg-e2e-gallery-slider",
+      "post_status" => "publish",
+  ] );
+  wp_update_post( [ "ID" => $id, "post_content" => "[anchor_video_gallery id=\"'"${GALLERY_SLIDER_ID}"'\"]" ] );
+  echo (int) $id;
+')"
+log "Slider gallery page #${GALLERY_SLIDER_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
+# Gallery-layout (feature_gallery preset: big featured tile + thumbnail
+# strip) fixture with popup_style="inline" (e2e/gallery-inline.spec.js).
+# Regression fixture for the "gallery" layout + "inline" popup style, which
+# used to throw (openInline() looked for .avg-track, which only the slider
+# layout renders) instead of playing the clicked video in place of the
+# featured tile. Three video items, same idiom as the fixtures above.
+# ---------------------------------------------------------------------------
+GALLERY_INLINE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "anchor_video_gallery", "name" => "avg-e2e-gallery-inline", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "anchor_video_gallery",
+      "post_title"  => "AVG E2E Gallery Inline",
+      "post_name"   => "avg-e2e-gallery-inline",
+      "post_status" => "publish",
+  ] );
+  $video_ids = [ "dQw4w9WgXcQ", "jNQXAC9IVRw", "9bZkp7q19f0" ];
+  $items = [];
+  foreach ( $video_ids as $i => $vid ) {
+      $items[] = [ "type" => "video", "url" => "https://www.youtube.com/watch?v=$vid", "title" => "Gallery Inline Video " . ( $i + 1 ), "caption" => "Caption " . ( $i + 1 ), "categories" => [] ];
+  }
+  update_post_meta( $id, "avg_videos", $items );
+  update_post_meta( $id, "avg_layout", "gallery" );
+  update_post_meta( $id, "avg_popup_style", "inline" );
+  update_post_meta( $id, "avg_pagination_enabled", 0 );
+  echo (int) $id;
+')"
+log "Gallery-inline gallery #${GALLERY_INLINE_ID}"
+
+GALLERY_INLINE_PAGE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "page", "name" => "avg-e2e-gallery-inline", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "AVG E2E Gallery Inline",
+      "post_name"   => "avg-e2e-gallery-inline",
+      "post_status" => "publish",
+  ] );
+  wp_update_post( [ "ID" => $id, "post_content" => "[anchor_video_gallery id=\"'"${GALLERY_INLINE_ID}"'\"]" ] );
+  echo (int) $id;
+')"
+log "Gallery-inline page #${GALLERY_INLINE_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
+# Testimonials fixture (grid/slider E2E, e2e/testimonials.spec.js).
+# Four testimonials (2 with YouTube video URLs, 2 quote-only) on a page with
+# [anchor_testimonials layout="slider"]. Anchor_Testimonial_Meta::save() is
+# called directly so the video URLs get the module's own YouTube parsing and
+# thumbnail resolution (no HTTP call needed, unlike Vimeo). Idempotent, same
+# idiom as the gallery fixtures above.
+# ---------------------------------------------------------------------------
+TESTIMONIAL_IDS="$(wp eval '
+  $defs = [
+      // The video URL for testimonial 1 carries a start time (t=42s) so
+      // e2e/testimonials.spec.js can assert data-start round-trips into the
+      // shared lightbox iframe src (final whole-branch review finding 6).
+      [ "title" => "E2E Testimonial 1", "slug" => "e2e-testimonial-1", "name" => "Jane Doe",    "meta" => "Patient, Denver", "content" => "Life changing care.", "video" => "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s" ],
+      [ "title" => "E2E Testimonial 2", "slug" => "e2e-testimonial-2", "name" => "John Smith",  "meta" => "Patient, Austin", "content" => "Highly recommend.",   "video" => "https://www.youtube.com/watch?v=jNQXAC9IVRw" ],
+      [ "title" => "E2E Testimonial 3", "slug" => "e2e-testimonial-3", "name" => "Alex Rivera", "meta" => "Patient, Miami",  "content" => "Wonderful team.",      "video" => "" ],
+      [ "title" => "E2E Testimonial 4", "slug" => "e2e-testimonial-4", "name" => "Priya Patel", "meta" => "Patient, Tampa",  "content" => "Great results.",       "video" => "" ],
+  ];
+  $ids = [];
+  foreach ( $defs as $d ) {
+      $existing = get_posts( [ "post_type" => "anchor_testimonial", "name" => $d["slug"], "posts_per_page" => 1, "fields" => "ids", "post_status" => "any" ] );
+      $id = $existing ? (int) $existing[0] : wp_insert_post( [
+          "post_type"    => "anchor_testimonial",
+          "post_title"   => $d["title"],
+          "post_name"    => $d["slug"],
+          "post_content" => $d["content"],
+          "post_status"  => "publish",
+      ] );
+      wp_update_post( [ "ID" => $id, "post_status" => "publish", "post_content" => $d["content"] ] );
+      Anchor_Testimonial_Meta::save( $id, [ "person_name" => $d["name"], "person_meta" => $d["meta"], "video_url" => $d["video"] ] );
+      $ids[] = $id;
+  }
+  echo implode( ",", $ids );
+')"
+log "Testimonials: ${TESTIMONIAL_IDS}"
+
+TESTIMONIALS_SLIDER_PAGE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "page", "name" => "at-e2e-slider", "posts_per_page" => 1, "fields" => "ids", "post_status" => "any" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "AT E2E Testimonials Slider",
+      "post_name"   => "at-e2e-slider",
+      "post_status" => "publish",
+  ] );
+  wp_update_post( [ "ID" => $id, "post_status" => "publish", "post_content" => "[anchor_testimonials layout=\"slider\"]" ] );
+  echo (int) $id;
+')"
+log "Testimonials slider page #${TESTIMONIALS_SLIDER_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
 # Compliance fixture (consent banner / script blocker E2E).
 # One published page carrying: a known third-party iframe (YouTube embed —
 # gated as `marketing` by the built-in service registry), the
@@ -833,9 +1012,12 @@ EXT_EMBED_EVENT_URL="$(wp eval 'echo get_permalink('"${EXT_EMBED_EVENT_ID}"');')
 OFFERING_EVENT_URL="$(wp eval 'echo get_permalink('"${OFFERING_EVENT_ID}"');')"
 RECURRING_EVENT_URL="$(wp eval 'echo get_permalink('"${RECURRING_EVENT_ID}"');')"
 GALLERY_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_PAGE_ID}"');')"
+GALLERY_CAROUSEL_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"');')"
+GALLERY_INLINE_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_INLINE_PAGE_ID}"');')"
 COMPLIANCE_PAGE_URL="$(wp eval 'echo get_permalink('"${COMPLIANCE_PAGE_ID}"');')"
+TESTIMONIALS_SLIDER_PAGE_URL="$(wp eval 'echo get_permalink('"${TESTIMONIALS_SLIDER_PAGE_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"'),"courses_course_id"=>(int)'"${COURSES_COURSE_ID}"',"courses_course_url"=>get_permalink('"${COURSES_COURSE_ID}"'),"courses_lesson_url"=>get_permalink('"${COURSES_LESSON_ID}"'),"courses_quiz_id"=>(int)'"${COURSES_QUIZ_ID}"',"courses_learner_user"=>"courses-learner","courses_learner_pass"=>"courses-pass"], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"galleryCarouselUrl"=>get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"'),"gallerySliderUrl"=>get_permalink('"${GALLERY_SLIDER_PAGE_ID}"'),"galleryInlineUrl"=>get_permalink('"${GALLERY_INLINE_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"'),"testimonialsSliderUrl"=>get_permalink('"${TESTIMONIALS_SLIDER_PAGE_ID}"'),"courses_course_id"=>(int)'"${COURSES_COURSE_ID}"',"courses_course_url"=>get_permalink('"${COURSES_COURSE_ID}"'),"courses_lesson_url"=>get_permalink('"${COURSES_LESSON_ID}"'),"courses_quiz_id"=>(int)'"${COURSES_QUIZ_ID}"',"courses_learner_user"=>"courses-learner","courses_learner_pass"=>"courses-pass"], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Multisession event URL: ${MULTI_EVENT_URL}"
@@ -844,7 +1026,10 @@ log "External (embed) event URL: ${EXT_EMBED_EVENT_URL}"
 log "Offering event URL: ${OFFERING_EVENT_URL}"
 log "Recurring event URL: ${RECURRING_EVENT_URL}"
 log "Gallery page URL: ${GALLERY_PAGE_URL}"
+log "Carousel gallery page URL: ${GALLERY_CAROUSEL_PAGE_URL}"
+log "Gallery-inline page URL: ${GALLERY_INLINE_PAGE_URL}"
 log "Compliance page URL: ${COMPLIANCE_PAGE_URL}"
+log "Testimonials slider page URL: ${TESTIMONIALS_SLIDER_PAGE_URL}"
 log "Courses page URL: $(wp eval 'echo get_permalink('"${COURSES_COURSE_ID}"');')"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 

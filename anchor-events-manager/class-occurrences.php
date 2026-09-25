@@ -203,6 +203,25 @@ class Occurrences {
     ];
 
     /**
+     * INHERITED_KEYS, extendable by other modules (e.g. Anchor Speakers).
+     *
+     * Every other module reads INHERITED_KEYS through this method rather than
+     * the constant directly. One contract, same as the constant itself: every
+     * entry is an UNPREFIXED key (`'venue'`, not `'_anchor_event_venue'`), and
+     * `inherited_meta_keys()` below is the single place that adds the
+     * `_anchor_event_` prefix, via `meta_key()`. A module contributing its own
+     * key (e.g. Anchor Speakers adding `'speaker_ids'`, so the stored meta
+     * ends up `_anchor_event_speaker_ids`) follows the exact same convention
+     * as every entry already in the constant.
+     *
+     * @return string[] Unprefixed keys.
+     */
+    private static function inherited_keys() {
+        $keys = (array) \apply_filters( 'anchor_events_inherited_keys', self::INHERITED_KEYS );
+        return array_values( array_unique( array_filter( $keys, 'is_string' ) ) );
+    }
+
+    /**
      * The `_anchor_event_` suffixes of the per-event email overrides, one set
      * per EMAIL_TEMPLATE_TYPES entry. Assembled in inherited_meta_keys() from
      * the module's own type list rather than written out, so a fifth email
@@ -1518,7 +1537,7 @@ class Occurrences {
      */
     private function inherited_meta_keys( $parent_id, $child_id ) {
         $keys = [];
-        foreach ( self::INHERITED_KEYS as $key ) {
+        foreach ( self::inherited_keys() as $key ) {
             $keys[] = $this->module->meta_key( $key );
         }
 

@@ -1,50 +1,34 @@
 (function() {
   'use strict';
 
-  // ============================================================================
-  // Video URL Builders
-  // ============================================================================
-
-  function buildYouTubeSrc(id, autoplay) {
-    var params = new URLSearchParams({
-      autoplay: autoplay ? '1' : '0',
-      playsinline: '1',
-      rel: '0',
-      modestbranding: '1'
-    });
-    return 'https://www.youtube.com/embed/' + encodeURIComponent(id) + '?' + params.toString();
-  }
-
-  function buildVimeoSrc(id, autoplay) {
-    var params = new URLSearchParams({
-      autoplay: autoplay ? '1' : '0',
-      byline: '0',
-      title: '0',
-      portrait: '0',
-      dnt: '1'
-    });
-    return 'https://player.vimeo.com/video/' + encodeURIComponent(id) + '?' + params.toString();
-  }
-
-  function getVideoSrc(provider, id, autoplay) {
-    if (provider === 'youtube') {
-      return buildYouTubeSrc(id, autoplay);
+  // Shared lightbox (assets/shared/anchor-lightbox.js), enqueued as a
+  // dependency of this script. Video URL building, the lightbox modal, and
+  // the shared popup-option helper live there now; other popup styles below
+  // (theater, side panel, inline, legacy) call the same shared helpers.
+  //
+  // Defensive: if a page enqueues this script without its anchor-lightbox
+  // dependency (a wiring bug, not the normal path), fall back to no-op stubs
+  // instead of throwing here and aborting the rest of this IIFE, which would
+  // silently skip window.AnchorVideoGallery below and every gallery on the
+  // page.
+  var LB = window.AnchorLightbox;
+  if (!LB) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('Anchor Gallery: window.AnchorLightbox is missing (anchor-lightbox dependency not enqueued), lightbox/popup features are disabled on this page.');
     }
-    if (provider === 'vimeo') {
-      return buildVimeoSrc(id, autoplay);
-    }
-    return '';
+    LB = {
+      open: function() {},
+      close: function() {},
+      isOpen: function() { return false; },
+      getVideoSrc: function() { return ''; },
+      getDirectUrl: function() { return ''; },
+      applyPopupOptions: function() {}
+    };
   }
-
-  function getDirectUrl(provider, id) {
-    if (provider === 'youtube') {
-      return 'https://www.youtube.com/watch?v=' + encodeURIComponent(id);
-    }
-    if (provider === 'vimeo') {
-      return 'https://vimeo.com/' + encodeURIComponent(id);
-    }
-    return '';
-  }
+  var getVideoSrc = LB.getVideoSrc;
+  var getDirectUrl = LB.getDirectUrl;
+  var applyPopupOptions = LB.applyPopupOptions;
+  function openLightbox(seq, i, opts) { LB.open(seq, i, opts); }
 
   // ============================================================================
   // Lightbox Sequence Collection
@@ -108,194 +92,6 @@
       items.push(readTile(nodes[i]));
     }
     return { items: items, startIndex: startIndex };
-  }
-
-  // ============================================================================
-  // Popup: Lightbox Modal
-  // ============================================================================
-
-  var lightboxModal = null;
-  var lbState = { items: [], index: 0, opts: {}, autoplay: false, origin: null };
-
-  function getLightboxModal() {
-    if (lightboxModal) return lightboxModal;
-
-    var modal = document.createElement('div');
-    modal.className = 'avg-modal';
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
-    modal.hidden = true;
-
-    modal.innerHTML = [
-      '<div class="avg-modal-backdrop" data-close></div>',
-      '<div class="avg-modal-dialog">',
-      '  <button type="button" class="avg-modal-close" aria-label="Close" data-close>&times;</button>',
-      '  <button type="button" class="avg-modal-nav avg-modal-prev" aria-label="Previous item" data-prev>&#8249;</button>',
-      '  <div class="avg-modal-frame" data-frame></div>',
-      '  <button type="button" class="avg-modal-nav avg-modal-next" aria-label="Next item" data-next>&#8250;</button>',
-      '  <div class="avg-modal-counter" aria-live="polite"></div>',
-      '</div>'
-    ].join('');
-
-    document.body.appendChild(modal);
-    lightboxModal = modal;
-
-    modal.addEventListener('click', function(e) {
-      if (e.target.closest('[data-prev]')) { renderLightboxItem(lbState.index - 1); return; }
-      if (e.target.closest('[data-next]')) { renderLightboxItem(lbState.index + 1); return; }
-      if (e.target.hasAttribute('data-close')) closeLightbox();
-    });
-
-    // Mirrors the carousel track's proven gesture handling (40px threshold,
-    // bail out when vertical movement dominates so page scroll still works).
-    (function initModalSwipe() {
-      var dialog = modal.querySelector('.avg-modal-dialog');
-      if (!dialog) return;
-      var startX = 0, startY = 0, deltaX = 0, swiping = false;
-      var threshold = 40;
-
-      dialog.addEventListener('touchstart', function(e) {
-        if (e.touches.length !== 1) { swiping = false; return; }
-        startX = e.touches[0].clientX;
-        startY = e.touches[0].clientY;
-        deltaX = 0;
-        swiping = true;
-      }, { passive: true });
-
-      dialog.addEventListener('touchmove', function(e) {
-        if (!swiping) return;
-        deltaX = e.touches[0].clientX - startX;
-        var deltaY = e.touches[0].clientY - startY;
-        if (Math.abs(deltaY) > Math.abs(deltaX)) swiping = false;
-      }, { passive: true });
-
-      dialog.addEventListener('touchend', function() {
-        if (!swiping) return;
-        swiping = false;
-        if (Math.abs(deltaX) > threshold) {
-          renderLightboxItem(lbState.index + (deltaX < 0 ? 1 : -1));
-        }
-      }, { passive: true });
-    })();
-
-    return modal;
-  }
-
-  function applyPopupOptions(dialog, frame, opts) {
-    if (!dialog) return;
-    // Reset previous overrides.
-    dialog.style.maxWidth = '';
-    if (frame) frame.style.aspectRatio = '';
-    var caption = dialog.querySelector('.avg-popup-caption');
-    if (caption) caption.remove();
-    if (!opts) return;
-    if (opts.maxWidth) dialog.style.maxWidth = opts.maxWidth;
-    if (opts.aspect && frame) {
-      // 'auto' means leave default. Map "16:9" -> "16 / 9".
-      frame.style.aspectRatio = opts.aspect.replace(':', ' / ');
-    }
-    if (opts.caption) {
-      var cap = document.createElement('div');
-      cap.className = 'avg-popup-caption';
-      cap.textContent = opts.caption;
-      dialog.appendChild(cap);
-    }
-  }
-
-  function updateLightboxNav() {
-    var modal = getLightboxModal();
-    var total = lbState.items.length;
-    var prev = modal.querySelector('[data-prev]');
-    var next = modal.querySelector('[data-next]');
-    var counter = modal.querySelector('.avg-modal-counter');
-    // A single-item gallery has nothing to navigate.
-    if (prev) prev.hidden = total < 2;
-    if (next) next.hidden = total < 2;
-    if (counter) {
-      counter.hidden = total < 2;
-      counter.textContent = (lbState.index + 1) + ' / ' + total;
-    }
-  }
-
-  // The ONE render path. Every entry point — click, arrow, key, swipe — goes
-  // through here, and the first thing it does is destroy the current frame.
-  // Because playback is a raw autoplay iframe, that teardown IS the video stop.
-  function renderLightboxItem(index) {
-    var total = lbState.items.length;
-    if (!total) return;
-
-    var modal = getLightboxModal();
-    var dialog = modal.querySelector('.avg-modal-dialog');
-    var frame = modal.querySelector('[data-frame]');
-
-    // Wrap around at both ends.
-    index = ((index % total) + total) % total;
-    lbState.index = index;
-    var item = lbState.items[index];
-
-    frame.innerHTML = '';
-    dialog.classList.remove('avg-modal-image', 'avg-modal-html');
-
-    if (item.type === 'image') {
-      dialog.classList.add('avg-modal-image');
-      // Built via the DOM, not string concatenation — the URL and alt text are
-      // never interpolated into markup.
-      var img = document.createElement('img');
-      img.src = item.fullUrl;
-      img.alt = item.alt || '';
-      frame.appendChild(img);
-    } else if (item.type === 'html') {
-      dialog.classList.add('avg-modal-html');
-      // Server-side wp_kses_post output, cloned from the tile.
-      frame.innerHTML = item.html;
-    } else {
-      var src = getVideoSrc(item.provider, item.videoId, lbState.autoplay);
-      frame.innerHTML = '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>';
-    }
-
-    applyPopupOptions(dialog, frame, {
-      maxWidth: lbState.opts.maxWidth,
-      aspect: item.type === 'video' ? lbState.opts.aspect : '',
-      caption: (lbState.opts.showCaption && item.caption) ? item.caption : ''
-    });
-
-    updateLightboxNav();
-  }
-
-  function openLightbox(sequence, startIndex, opts) {
-    // Close any other open popups first (cross-module coordination).
-    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: getLightboxModal() } }));
-
-    var modal = getLightboxModal();
-    lbState.items = sequence || [];
-    lbState.opts = opts || {};
-    lbState.autoplay = !!(opts && opts.autoplay);
-    // The caller knows which tile was activated; don't infer it from focus.
-    lbState.origin = (opts && opts.origin) || document.activeElement;
-
-    renderLightboxItem(startIndex || 0);
-    modal.hidden = false;
-    document.body.style.overflow = 'hidden';
-
-    var closeBtn = modal.querySelector('.avg-modal-close');
-    if (closeBtn) closeBtn.focus();
-  }
-
-  function closeLightbox() {
-    if (!lightboxModal) return;
-    var frame = lightboxModal.querySelector('[data-frame]');
-    if (frame) frame.innerHTML = '';
-    var dialog = lightboxModal.querySelector('.avg-modal-dialog');
-    if (dialog) dialog.classList.remove('avg-modal-image', 'avg-modal-html');
-    lightboxModal.hidden = true;
-    document.body.style.overflow = '';
-
-    // Return focus to the tile that opened us.
-    if (lbState.origin && typeof lbState.origin.focus === 'function') {
-      lbState.origin.focus();
-    }
-    lbState.origin = null;
-    lbState.items = [];
   }
 
   // ============================================================================
@@ -451,6 +247,21 @@
   var currentInlineTile = null;
 
   function openInline(gallery, tile, provider, id, autoplay, opts) {
+    // The `gallery` layout (feature_gallery preset: big featured tile plus
+    // thumbnail strip) has no `.avg-track`; only the slider layout renders
+    // one (anchor-gallery.php's render_gallery() track markup), so the
+    // track.insertBefore() below has nothing to attach to and throws. That
+    // layout plays the embed in place of the featured tile itself instead;
+    // see playGalleryFeatured() below.
+    if (gallery.getAttribute('data-layout') === 'gallery') {
+      // `opts` (popup max-width/aspect/caption) is intentionally not passed
+      // through: the featured tile is a fixed play surface sized by the
+      // module's own --avg-featured-ratio CSS var, not a free-floating
+      // popup, so those options don't apply here.
+      playGalleryFeatured(gallery, tile);
+      return;
+    }
+
     // Close any other open popups first (cross-module coordination)
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: null } }));
 
@@ -495,19 +306,82 @@
   }
 
   function closeInline() {
-    if (!currentInlineGallery) return;
+    if (currentInlineGallery) {
+      var player = currentInlineGallery.querySelector('.avg-inline-player');
+      if (player) {
+        player.remove();
+      }
 
-    var player = currentInlineGallery.querySelector('.avg-inline-player');
-    if (player) {
-      player.remove();
+      if (currentInlineTile) {
+        currentInlineTile.classList.remove('avg-inline-expanded');
+      }
+
+      currentInlineGallery = null;
+      currentInlineTile = null;
     }
 
-    if (currentInlineTile) {
-      currentInlineTile.classList.remove('avg-inline-expanded');
+    // Also tears down the gallery-layout featured player, if one is playing.
+    restoreGalleryFeaturedThumb();
+  }
+
+  // ============================================================================
+  // Popup: Inline Expand, Gallery Layout ("Featured + Thumbs")
+  // ============================================================================
+
+  // The `.avg-gallery-featured` tile's own `.avg-thumb` is the play surface:
+  // its innerHTML (poster image, play button, duration badge) is swapped for
+  // an iframe, then restored on close/switch. Tracked so closeInline() (the
+  // Escape handler and the cross-module anchor-close-popups listener already
+  // call it) and setFeatured() (clicking a different thumb) can tear the
+  // current iframe down before anything else happens.
+  var galleryFeaturedThumbEl = null;
+
+  function restoreGalleryFeaturedThumb() {
+    if (!galleryFeaturedThumbEl) return;
+    if (galleryFeaturedThumbEl._avgSavedHtml !== undefined) {
+      galleryFeaturedThumbEl.innerHTML = galleryFeaturedThumbEl._avgSavedHtml;
+      delete galleryFeaturedThumbEl._avgSavedHtml;
+    }
+    galleryFeaturedThumbEl.classList.remove('avg-gallery-featured-playing');
+    galleryFeaturedThumbEl = null;
+  }
+
+  // `featured` is the `.avg-tile.avg-gallery-featured` element; its
+  // data-provider/data-video-id are the source of truth (set server-side for
+  // the first item, kept current by setFeatured() below on every thumb
+  // click), so this reads them directly rather than taking them as params.
+  function playGalleryFeatured(gallery, featured) {
+    var thumb = featured && featured.querySelector('.avg-thumb');
+    if (!thumb) return;
+
+    var provider = featured.getAttribute('data-provider');
+    var videoId = featured.getAttribute('data-video-id');
+    if (!provider || !videoId) return;
+
+    // Close any other open popups first (cross-module coordination), then
+    // tear down any previously playing featured iframe (switching video).
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: null } }));
+    restoreGalleryFeaturedThumb();
+
+    var autoplay = gallery.getAttribute('data-autoplay') === '1';
+    var src = getVideoSrc(provider, videoId, autoplay);
+
+    thumb._avgSavedHtml = thumb.innerHTML;
+    thumb.classList.add('avg-gallery-featured-playing');
+    thumb.innerHTML = [
+      '<button type="button" class="avg-inline-close avg-gallery-featured-close" aria-label="Close">&times;</button>',
+      '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>'
+    ].join('');
+
+    var closeBtn = thumb.querySelector('.avg-gallery-featured-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        restoreGalleryFeaturedThumb();
+      });
     }
 
-    currentInlineGallery = null;
-    currentInlineTile = null;
+    galleryFeaturedThumbEl = thumb;
   }
 
   // ============================================================================
@@ -515,47 +389,10 @@
   // ============================================================================
 
   window.addEventListener('keydown', function(e) {
-    // Arrow navigation only while the lightbox is actually open.
-    if (lightboxModal && !lightboxModal.hidden) {
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        renderLightboxItem(lbState.index - 1);
-        return;
-      }
-      if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        renderLightboxItem(lbState.index + 1);
-        return;
-      }
-    }
-
-    // Trap Tab focus inside the open lightbox so it can't wander to the page
-    // behind the backdrop.
-    if (e.key === 'Tab' && lightboxModal && !lightboxModal.hidden) {
-      var focusables = [];
-      var candidates = lightboxModal.querySelectorAll('button, [href], iframe, input, select, textarea, [tabindex]:not([tabindex="-1"])');
-      for (var i = 0; i < candidates.length; i++) {
-        if (!candidates[i].hidden && candidates[i].offsetParent !== null) {
-          focusables.push(candidates[i]);
-        }
-      }
-      if (!focusables.length) return;
-
-      var first = focusables[0];
-      var last = focusables[focusables.length - 1];
-
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-      return;
-    }
-
+    // Arrow navigation and Tab focus-trap for the lightbox now live in
+    // assets/shared/anchor-lightbox.js, which owns its own keydown listener.
     if (e.key === 'Escape') {
-      closeLightbox();
+      // The shared lightbox handles its own Escape via its own listener.
       closeTheater();
       closeSidePanel();
       closeInline();
@@ -575,10 +412,7 @@
 
   document.addEventListener('anchor-close-popups', function(e) {
     var except = e.detail && e.detail.except;
-    // Close lightbox if not the excepted element
-    if (lightboxModal && lightboxModal !== except && !lightboxModal.hidden) {
-      closeLightbox();
-    }
+    // Lightbox closing on this event is handled by the shared lightbox file.
     // Close theater if not the excepted element
     if (theaterEl && theaterEl !== except && !theaterEl.hidden) {
       closeTheater();
@@ -685,242 +519,49 @@
   // Slider/Carousel Navigation
   // ============================================================================
 
+  // Thin adapter over the shared carousel engine
+  // (assets/shared/anchor-carousel.js, enqueued as a dependency of this
+  // script). Reads the gallery's avg-* markup and data-* attributes and
+  // translates them into the generic cfg shape the shared engine expects.
   function initSliderNavigation(gallery) {
     var layout = gallery.getAttribute('data-layout');
     if (layout !== 'slider' && layout !== 'carousel') return;
 
-    var track = gallery.querySelector('.avg-track');
-    var prevBtn = gallery.querySelector('.avg-nav-prev');
-    var nextBtn = gallery.querySelector('.avg-nav-next');
-    var tiles = gallery.querySelectorAll('.avg-tile');
-
-    if (!track || tiles.length === 0) return;
-
-    var currentIndex = 0;
-    var loopEnabled = gallery.getAttribute('data-loop') === '1';
-    var centerMode = gallery.getAttribute('data-center') === '1';
-
-    /* -- Responsive visible count ------------------------------------ */
-
-    function getVisibleCount() {
-      var cols = parseInt(gallery.getAttribute('data-cols-desktop')) || 3;
-      var colsTablet = parseInt(gallery.getAttribute('data-cols-tablet')) || Math.min(cols, 2);
-      var colsMobile = parseInt(gallery.getAttribute('data-cols-mobile')) || 1;
-      // Measure the gallery container, not the window — so the builder's
-      // device-toolbar (which resizes the preview frame, not the window)
-      // produces a faithful preview. Breakpoints match the frontend CSS:
-      // mobile <=767, tablet <=1023, desktop above.
-      var width = gallery.offsetWidth || gallery.getBoundingClientRect().width || window.innerWidth;
-      if (width <= 767) return colsMobile;
-      if (width <= 1023) return colsTablet;
-      return cols;
-    }
-
-    /* -- Carousel transform update ----------------------------------- */
-
-    function updateCarousel() {
-      if (layout !== 'carousel') return;
-
-      var visibleCount = getVisibleCount();
-      var tileWidth = tiles[0].offsetWidth;
-      var gap = parseInt(getComputedStyle(gallery).getPropertyValue('--avg-gap')) || 16;
-      var step = tileWidth + gap;
-      var offset = currentIndex * step;
-
-      // Center mode: shift so the active slide(s) sit in the middle
-      if (centerMode && tiles.length > visibleCount) {
-        var containerWidth = gallery.offsetWidth;
-        var groupWidth = visibleCount * tileWidth + (visibleCount - 1) * gap;
-        var centerShift = (containerWidth - groupWidth) / 2;
-        offset = currentIndex * step - centerShift;
-        if (offset < 0) offset = 0;
+    // Defensive: a page that enqueues this script without its
+    // anchor-carousel dependency (a wiring bug, not the normal path) would
+    // otherwise throw here and abort the caller's loop over every gallery on
+    // the page. Warn and skip this gallery instead.
+    if (!window.AnchorCarousel) {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('Anchor Gallery: window.AnchorCarousel is missing (anchor-carousel dependency not enqueued), slider/carousel navigation is disabled for this gallery.');
       }
-
-      track.style.transform = 'translateX(-' + offset + 'px)';
-
-      // Update active / inactive states
-      tiles.forEach(function(tile, i) {
-        tile.classList.toggle('active', i >= currentIndex && i < currentIndex + visibleCount);
-      });
-
-      // Update arrow states (loop = never disabled)
-      if (loopEnabled) {
-        if (prevBtn) prevBtn.disabled = false;
-        if (nextBtn) nextBtn.disabled = false;
-      } else {
-        if (prevBtn) prevBtn.disabled = currentIndex === 0;
-        if (nextBtn) nextBtn.disabled = currentIndex >= tiles.length - visibleCount;
-      }
-
-      // Sync dots
-      updateDots();
+      return;
     }
 
-    /* -- Slide navigation -------------------------------------------- */
+    var cols = parseInt(gallery.getAttribute('data-cols-desktop'), 10) || 3;
 
-    function goToSlide(index) {
-      var visibleCount = getVisibleCount();
-      var maxIndex = tiles.length - visibleCount;
-
-      if (loopEnabled) {
-        if (index > maxIndex) index = 0;
-        else if (index < 0) index = maxIndex;
-      } else {
-        index = Math.max(0, Math.min(maxIndex, index));
-      }
-
-      currentIndex = index;
-      updateCarousel();
-    }
-
-    var slidesToScroll = parseInt(gallery.getAttribute('data-slides-to-scroll'), 10) || 1;
-    if (slidesToScroll < 1) slidesToScroll = 1;
-
-    function scrollSlider(direction) {
-      if (layout === 'slider') {
-        var tileWidth = tiles[0].offsetWidth;
-        var gap = parseInt(getComputedStyle(gallery).getPropertyValue('--avg-gap')) || 16;
-        var scrollAmount = (tileWidth + gap) * direction * slidesToScroll;
-        track.scrollBy({ left: scrollAmount, behavior: 'smooth' });
-      } else {
-        goToSlide(currentIndex + direction * slidesToScroll);
-      }
-    }
-
-    if (prevBtn) {
-      prevBtn.addEventListener('click', function() { scrollSlider(-1); });
-    }
-
-    if (nextBtn) {
-      nextBtn.addEventListener('click', function() { scrollSlider(1); });
-    }
-
-    /* -- Dots navigation (one dot per slide) ------------------------- */
-
-    var dotsContainer = gallery.querySelector('.avg-dots');
-    var dots = [];
-
-    function buildDots() {
-      if (!dotsContainer || layout !== 'carousel') return;
-      dotsContainer.innerHTML = '';
-      dots = [];
-
-      for (var i = 0; i < tiles.length; i++) {
-        var dot = document.createElement('button');
-        dot.className = 'avg-dot' + (i === currentIndex ? ' active' : '');
-        dot.setAttribute('aria-label', 'Go to slide ' + (i + 1));
-        dot.setAttribute('data-index', i);
-        dots.push(dot);
-        dotsContainer.appendChild(dot);
-      }
-
-      dotsContainer.addEventListener('click', function(e) {
-        var d = e.target.closest('.avg-dot');
-        if (!d) return;
-        goToSlide(parseInt(d.getAttribute('data-index')));
-      });
-    }
-
-    function updateDots() {
-      for (var i = 0; i < dots.length; i++) {
-        dots[i].classList.toggle('active', i === currentIndex);
-      }
-    }
-
-    /* -- Touch / swipe support --------------------------------------- */
-
-    (function initTouch() {
-      var startX = 0, startY = 0, deltaX = 0, swiping = false;
-      var threshold = 40;
-
-      track.addEventListener('touchstart', function(e) {
-        startX = e.touches[0].clientX;
-        startY = e.touches[0].clientY;
-        deltaX = 0;
-        swiping = true;
-      }, { passive: true });
-
-      track.addEventListener('touchmove', function(e) {
-        if (!swiping) return;
-        deltaX = e.touches[0].clientX - startX;
-        var deltaY = e.touches[0].clientY - startY;
-        // If vertical scroll is dominant, release the swipe
-        if (Math.abs(deltaY) > Math.abs(deltaX)) { swiping = false; return; }
-        if (layout === 'carousel') e.preventDefault();
-      }, { passive: false });
-
-      track.addEventListener('touchend', function() {
-        if (!swiping) return;
-        swiping = false;
-        if (Math.abs(deltaX) > threshold) {
-          scrollSlider(deltaX < 0 ? 1 : -1);
-        }
-      }, { passive: true });
-    })();
-
-    /* -- Keyboard navigation ----------------------------------------- */
-
-    gallery.setAttribute('tabindex', '0');
-    gallery.addEventListener('keydown', function(e) {
-      if (e.key === 'ArrowLeft') { e.preventDefault(); scrollSlider(-1); }
-      if (e.key === 'ArrowRight') { e.preventDefault(); scrollSlider(1); }
-    });
-
-    /* -- Initialize carousel ----------------------------------------- */
-
-    if (layout === 'carousel') {
-      buildDots();
-      updateCarousel();
-
-      var resizeTimer;
-      var scheduleUpdate = function() {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(updateCarousel, 100);
-      };
-      window.addEventListener('resize', scheduleUpdate);
-
-      // Observe the gallery container so the builder's device-toolbar
-      // (which only resizes the preview frame, not the window) triggers
-      // a re-measure.
-      if (typeof ResizeObserver !== 'undefined') {
-        var ro = new ResizeObserver(scheduleUpdate);
-        ro.observe(gallery);
-      }
-    }
-
-    /* -- Autoplay with pause/resume ---------------------------------- */
-
-    var autoplayEnabled = gallery.getAttribute('data-slider-autoplay') === '1';
-    var autoplaySpeed = parseInt(gallery.getAttribute('data-autoplay-speed')) || 5000;
-
-    if (autoplayEnabled && layout === 'carousel') {
-      var autoplayInterval = null;
+    window.AnchorCarousel.init(gallery, {
+      track: gallery.querySelector('.avg-track'),
+      items: gallery.querySelectorAll('.avg-tile'),
+      prev: gallery.querySelector('.avg-nav-prev'),
+      next: gallery.querySelector('.avg-nav-next'),
+      dotsContainer: gallery.querySelector('.avg-dots'),
+      dotClass: 'avg-dot',
+      mode: layout,
+      loop: gallery.getAttribute('data-loop') === '1',
+      center: gallery.getAttribute('data-center') === '1',
+      cols: {
+        desktop: cols,
+        tablet: parseInt(gallery.getAttribute('data-cols-tablet'), 10) || Math.min(cols, 2),
+        mobile: parseInt(gallery.getAttribute('data-cols-mobile'), 10) || 1
+      },
+      slidesToScroll: Math.max(1, parseInt(gallery.getAttribute('data-slides-to-scroll'), 10) || 1),
+      gapVar: '--avg-gap',
+      autoplay: gallery.getAttribute('data-slider-autoplay') === '1',
+      autoplaySpeed: parseInt(gallery.getAttribute('data-autoplay-speed'), 10) || 5000,
       // data-pause-on-hover defaults to '1' when missing for backwards compat.
-      var pauseHoverAttr = gallery.getAttribute('data-pause-on-hover');
-      var pauseOnHover = pauseHoverAttr === null ? true : pauseHoverAttr === '1';
-
-      function startAutoplay() {
-        stopAutoplay();
-        autoplayInterval = setInterval(function() {
-          goToSlide(currentIndex + slidesToScroll);
-        }, autoplaySpeed);
-      }
-
-      function stopAutoplay() {
-        if (autoplayInterval) { clearInterval(autoplayInterval); autoplayInterval = null; }
-      }
-
-      startAutoplay();
-
-      if (pauseOnHover) {
-        gallery.addEventListener('mouseenter', stopAutoplay);
-        gallery.addEventListener('mouseleave', startAutoplay);
-      }
-      gallery.addEventListener('touchstart', stopAutoplay, { passive: true });
-      gallery.addEventListener('touchend', function() {
-        setTimeout(startAutoplay, 3000);
-      }, { passive: true });
-    }
+      pauseOnHover: gallery.getAttribute('data-pause-on-hover') !== '0'
+    });
   }
 
   // ============================================================================
@@ -950,6 +591,11 @@
     function setFeatured(index) {
       var thumb = thumbs[index];
       if (!thumb) return;
+
+      // If an inline embed is currently playing in the featured tile, tear
+      // it down first -- the updates below target .avg-thumb-img/.avg-play/
+      // .avg-duration, which the iframe swap replaced.
+      restoreGalleryFeaturedThumb();
 
       // Update active strip state
       thumbs.forEach(function(t) { t.classList.remove('active'); });
@@ -1012,6 +658,13 @@
 
       // Scroll active thumb into view within the strip
       thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+
+      // popup_style="inline" plays in place of the featured tile (see
+      // playGalleryFeatured() above) -- swap straight to the newly selected
+      // video/thumb without requiring a second click on the featured tile.
+      if (type !== 'image' && gallery.getAttribute('data-popup') === 'inline') {
+        playGalleryFeatured(gallery, featured);
+      }
     }
 
     // Thumbnail clicks

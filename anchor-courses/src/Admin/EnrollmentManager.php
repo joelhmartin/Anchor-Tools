@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Courses\Admin;
 
 use Anchor\Courses\Module;
+use Anchor\Courses\Services\CompletionService;
 use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -19,13 +20,15 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  *
  * `complete`/`uncomplete` go through Services\CompletionService, the
  * once-only pipeline; `reset` through ProgressService::reset_course(). Every
- * refusal is reported as its own notice code, never as success.
+ * refusal is reported as its own notice code, never as success. `repair`
+ * (audit F02) is CompletionService::complete() on an already-completed row:
+ * it re-runs only the completion effects left pending or failed.
  */
 final class EnrollmentManager {
 
 	public const NONCE = 'anchor_courses_enrollment_nonce';
 
-	public const ACTIONS = [ 'cancel', 'reset', 'complete', 'uncomplete' ];
+	public const ACTIONS = [ 'cancel', 'reset', 'complete', 'uncomplete', 'repair' ];
 
 	public function __construct() {
 		\add_action( 'admin_post_anchor_courses_manage_enrollment', [ $this, 'handle_action' ] );
@@ -39,6 +42,9 @@ final class EnrollmentManager {
 		Notices::register( 'completed', Notices::TYPE_SUCCESS, \__( 'Course marked complete.', 'anchor-schema' ) );
 		Notices::register( 'uncompleted', Notices::TYPE_SUCCESS, \__( 'Completion undone. Credits and certificates were kept.', 'anchor-schema' ) );
 		Notices::register( 'complete_failed', Notices::TYPE_ERROR, \__( 'The course could not be marked complete: the learner has no current access to it.', 'anchor-schema' ) );
+		Notices::register( 'repaired', Notices::TYPE_SUCCESS, \__( 'Completion repaired: credits, certificate, completion role and notifications are all in place.', 'anchor-schema' ) );
+		Notices::register( 'repair_incomplete', Notices::TYPE_ERROR, \__( 'Some completion steps still failed. Check the log and try again.', 'anchor-schema' ) );
+		Notices::register( 'repair_not_completed', Notices::TYPE_ERROR, \__( 'There is nothing to repair: this learner has not completed the course.', 'anchor-schema' ) );
 	}
 
 	/**
@@ -74,6 +80,7 @@ final class EnrollmentManager {
 			'reset'      => \__( 'Reset progress', 'anchor-schema' ),
 			'complete'   => \__( 'Mark complete', 'anchor-schema' ),
 			'uncomplete' => \__( 'Undo completion', 'anchor-schema' ),
+			'repair'     => \__( 'Repair completion (re-run failed steps)', 'anchor-schema' ),
 		];
 		foreach ( $labels as $value => $label ) {
 			\printf( '<option value="%s">%s</option>', \esc_attr( $value ), \esc_html( $label ) );
@@ -152,6 +159,18 @@ final class EnrollmentManager {
 			case 'uncomplete':
 				$module->completion->uncomplete( $user_id, $course_id );
 				Notices::redirect( 'uncompleted', $target );
+				break;
+
+			case 'repair':
+				if ( ! $module->completion->is_complete( $user_id, $course_id ) ) {
+					Notices::redirect( 'repair_not_completed', $target );
+				}
+				$module->completion->complete( $user_id, $course_id );
+				$outstanding = \array_intersect(
+					$module->completion->effects( $user_id, $course_id ),
+					[ CompletionService::EFFECT_PENDING, CompletionService::EFFECT_FAILED ]
+				);
+				Notices::redirect( [] === $outstanding ? 'repaired' : 'repair_incomplete', $target );
 				break;
 		}
 	}

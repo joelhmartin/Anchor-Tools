@@ -36,8 +36,23 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * result - including a row a concurrent caller just inserted (Task 27
  * review). That double-fire can only happen if two callers reach `award()`/
  * `issue()` for the same (user, course) at the same time, and the pipeline
- * gate above prevents exactly that for course completion. Their signatures
- * are unchanged.
+ * gate above prevents exactly that for course completion.
+ *
+ * Effects are tracked one by one (audit F02). Right after the flip the
+ * enrolment's metadata gets `completion_effects` =
+ * `{ credit, certificate, completion_role, hook }`, each `pending`, and each
+ * effect then records `done`, `failed` or (credit/certificate only) `n/a`.
+ * `complete()` on a row that is ALREADY completed re-runs exactly the effects
+ * still `pending` or `failed` - the ordinary retry (the next lesson/quiz
+ * record, the admin "Repair completion" action) is the repair path. Every
+ * effect is idempotent on re-run: award()/issue() return the existing row,
+ * the role grant is a no-op when held, and the hook - the one effect that
+ * is not naturally idempotent - is re-fired only while it is not `done`.
+ * A completed row with no `completion_effects` at all predates this and is
+ * treated as fully done: nothing is re-run for historical completions.
+ * Repair is not itself serialised: two simultaneous repairs of a failed
+ * hook could both fire it (the credit/certificate/role effects stay single
+ * via their unique keys and idempotency).
  */
 final class CompletionService {
 
@@ -62,10 +77,37 @@ final class CompletionService {
 		return $this->progress->get_course_progress( $user_id, $course_id )->complete;
 	}
 
+	/** Enrolment metadata key holding the per-effect state. */
+	public const EFFECTS_META = 'completion_effects';
+
+	/** The tracked effects, in pipeline order. */
+	public const EFFECTS = [ 'credit', 'certificate', 'completion_role', 'hook' ];
+
+	public const EFFECT_PENDING = 'pending';
+	public const EFFECT_DONE    = 'done';
+	public const EFFECT_FAILED  = 'failed';
+	public const EFFECT_NA      = 'n/a';
+
 	/**
-	 * Run the completion pipeline.
+	 * The per-effect completion state for this learner and course.
 	 *
-	 * @return bool True only for the call that performed the transition.
+	 * @return array<string,string> effect => pending|done|failed|n/a; [] when the
+	 *                              row is not completed or predates tracking.
+	 */
+	public function effects( int $user_id, int $course_id ): array {
+		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
+		if ( ! $enrollment instanceof Enrollment || ! $enrollment->is_complete() ) {
+			return [];
+		}
+		$stored = $enrollment->metadata[ self::EFFECTS_META ] ?? [];
+		return \is_array( $stored ) ? \array_map( 'strval', $stored ) : [];
+	}
+
+	/**
+	 * Run the completion pipeline - or, on a row already completed, repair it.
+	 *
+	 * @return bool True only for the call that performed the transition. A
+	 *              repair returns false; read effects() for its outcome.
 	 */
 	public function complete( int $user_id, int $course_id ): bool {
 		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
@@ -73,7 +115,11 @@ final class CompletionService {
 			return false;
 		}
 		if ( $enrollment->is_complete() ) {
-			return false; // Cheap short-circuit; see class docblock for what actually guards this.
+			// Not a second transition (see class docblock for what guards
+			// that) - but any effect the first run left pending or failed is
+			// re-run now (audit F02).
+			$this->run_effects( $enrollment, false );
+			return false;
 		}
 		// Only a learner who is enrolled RIGHT NOW can complete (final review
 		// C1): an active row is not enough. Under the default `keep` loss
@@ -106,41 +152,127 @@ final class CompletionService {
 		/** This action is documented in EnrollmentService::set_status(). */
 		\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $from, 'completed' );
 
-		// Order matters (brief 12 step 3): the certificate links to the credit
-		// record, and CertificateService::issue() only links a credit that
-		// already exists - so credits are awarded first.
-		$credit      = $this->credits->award( $user_id, $course_id );
-		$certificate = $this->certificates->issue( $user_id, $course_id );
-
-		// Wire the link explicitly (ruling R-credit-link) rather than relying
-		// solely on CertificateService's own fallback: re-read the credit in
-		// case issue() already attached it, and attach here if not.
-		if ( $credit instanceof Credit && $certificate instanceof Certificate ) {
-			$credit = CreditRepository::find( $user_id, $course_id ) ?? $credit;
-			if ( 0 === $credit->certificate_id ) {
-				CreditRepository::attach_certificate( $credit->id, $certificate->id );
-			}
-		}
-
-		// Mint (lazily) and grant the COMPLETION role. This is the slug another
-		// course or an event lists as a prerequisite (design spec 3.1). It is a
-		// different role from the access role the learner already holds, and
-		// granting it never touches their enrolment - Support\Roles' listener
-		// matches the access slug only.
-		Roles::grant_completed( $user_id, $course_id );
-
-		Log::write( 'course_completed', [ 'user' => $user_id, 'course' => $course_id ] );
-
-		/**
-		 * Fires once, when a learner completes a course.
-		 *
-		 * @param int        $user_id
-		 * @param int        $course_id
-		 * @param Enrollment $updated
-		 */
-		\do_action( 'anchor_courses_course_completed', $user_id, $course_id, $updated );
+		$this->run_effects( $updated, true );
 
 		return true;
+	}
+
+	/**
+	 * Run every effect that is not yet done (all of them on a fresh
+	 * transition), recording each outcome as it lands so a crash mid-way
+	 * leaves the rest `pending` for the next call.
+	 */
+	private function run_effects( Enrollment $enrollment, bool $fresh ): void {
+		$state = $fresh
+			? \array_fill_keys( self::EFFECTS, self::EFFECT_PENDING )
+			: (array) ( $enrollment->metadata[ self::EFFECTS_META ] ?? [] );
+
+		$todo = \array_values( \array_filter(
+			self::EFFECTS,
+			static fn ( string $effect ): bool => \in_array( $state[ $effect ] ?? '', [ self::EFFECT_PENDING, self::EFFECT_FAILED ], true )
+		) );
+		if ( [] === $todo ) {
+			return; // Nothing outstanding - or a row completed before tracking existed.
+		}
+		if ( $fresh ) {
+			$this->save_effects( $enrollment->id, $state );
+		}
+
+		$user_id   = $enrollment->user_id;
+		$course_id = $enrollment->course_id;
+		foreach ( $todo as $effect ) {
+			// The certificate snapshots and links the awarded credit, so it
+			// waits (stays pending) until the credit effect is settled - a
+			// certificate issued past a failed credit would vouch for 0 CE
+			// credits for good.
+			if ( 'certificate' === $effect && ! \in_array( $state['credit'] ?? '', [ self::EFFECT_DONE, self::EFFECT_NA ], true ) ) {
+				continue;
+			}
+			try {
+				$outcome = $this->run_effect( $effect, $user_id, $course_id );
+			} catch ( \Throwable $e ) {
+				$outcome = self::EFFECT_FAILED;
+			}
+			if ( self::EFFECT_FAILED === $outcome ) {
+				Log::write( 'completion_effect_failed', [ 'user' => $user_id, 'course' => $course_id, 'effect' => $effect ] );
+			}
+			$state[ $effect ] = $outcome;
+			$this->save_effects( $enrollment->id, $state );
+		}
+	}
+
+	/** @return string done|failed|n/a */
+	private function run_effect( string $effect, int $user_id, int $course_id ): string {
+		switch ( $effect ) {
+			case 'credit':
+				$credit = $this->credits->award( $user_id, $course_id );
+				if ( $credit instanceof Credit ) {
+					return self::EFFECT_DONE;
+				}
+				return null === $credit ? self::EFFECT_NA : self::EFFECT_FAILED;
+
+			case 'certificate':
+				// Order matters (brief 12 step 3): the certificate links to the
+				// credit record, and issue() only links a credit that already
+				// exists - so credits are awarded first.
+				$certificate = $this->certificates->issue( $user_id, $course_id );
+				if ( null === $certificate ) {
+					return self::EFFECT_NA;
+				}
+				if ( ! $certificate instanceof Certificate ) {
+					return self::EFFECT_FAILED;
+				}
+				// Wire the link explicitly (ruling R-credit-link) rather than
+				// relying solely on issue()'s own fallback, and VERIFY it: an
+				// unlinked certificate is an unfinished effect.
+				$credit = CreditRepository::find( $user_id, $course_id );
+				if ( $credit instanceof Credit && $credit->certificate_id !== $certificate->id ) {
+					if ( 0 !== $credit->certificate_id ) {
+						return self::EFFECT_DONE; // Linked to another certificate on purpose - not ours to rewrite.
+					}
+					$linked = CreditRepository::attach_certificate( $credit->id, $certificate->id );
+					if ( ! $linked instanceof Credit || $linked->certificate_id !== $certificate->id ) {
+						return self::EFFECT_FAILED;
+					}
+				}
+				return self::EFFECT_DONE;
+
+			case 'completion_role':
+				// Mint (lazily) and grant the COMPLETION role. This is the slug
+				// another course or an event lists as a prerequisite (design
+				// spec 3.1). It is a different role from the access role the
+				// learner already holds, and granting it never touches their
+				// enrolment - Support\Roles' listener matches the access slug only.
+				Roles::grant_completed( $user_id, $course_id );
+				return Roles::user_has( $user_id, Roles::completion_slug( $course_id ) ) ? self::EFFECT_DONE : self::EFFECT_FAILED;
+
+			case 'hook':
+				$enrollment = EnrollmentRepository::find( $user_id, $course_id );
+				Log::write( 'course_completed', [ 'user' => $user_id, 'course' => $course_id ] );
+
+				/**
+				 * Fires once, when a learner completes a course. If a consumer
+				 * throws, the effect is recorded `failed` and the action is
+				 * fired again by the next complete() call (the repair path),
+				 * so a consumer must tolerate being called again after it
+				 * or a sibling threw.
+				 *
+				 * @param int        $user_id
+				 * @param int        $course_id
+				 * @param Enrollment $enrollment
+				 */
+				\do_action( 'anchor_courses_course_completed', $user_id, $course_id, $enrollment );
+				return self::EFFECT_DONE;
+		}
+		return self::EFFECT_FAILED;
+	}
+
+	/** Merge the effect state into the row's metadata. */
+	private function save_effects( int $enrollment_id, array $state ): void {
+		$current  = EnrollmentRepository::find_by_id( $enrollment_id );
+		$metadata = $current instanceof Enrollment ? $current->metadata : [];
+		$metadata[ self::EFFECTS_META ] = $state;
+		EnrollmentRepository::update( $enrollment_id, [ 'metadata' => $metadata ] );
 	}
 
 	/**

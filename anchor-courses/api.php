@@ -29,14 +29,15 @@ function _anchor_courses_module() {
  * Record a CE credit award (brief section 15).
  *
  * Idempotent per (user, course): a second call returns the existing record.
- * Returns null (not WP_Error) when there is nothing to award - a non-course,
- * a non-existent user, a zero amount, or the module not loaded yet are all
- * the same non-outcome.
+ * Returns null when there is nothing to award - a non-course, a non-existent
+ * user, a zero amount, or the module not loaded yet are all the same
+ * non-outcome - and WP_Error `credit_insert_failed` when a credit was due but
+ * could not be saved (audit F02).
  *
  * @param int   $user_id
  * @param int   $course_id
  * @param float $credits
- * @return \Anchor\Courses\Domain\Credit|null
+ * @return \Anchor\Courses\Domain\Credit|\WP_Error|null
  */
 function anchor_courses_award_ce_credit( $user_id, $course_id, $credits ) {
 	$module = _anchor_courses_module();

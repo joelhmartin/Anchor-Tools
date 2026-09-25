@@ -35,7 +35,7 @@ the module has booted.
 | `anchor_courses_enroll_user( $user_id, $course_id, array $args = [] )` | `Domain\Enrollment\|WP_Error` | Grants the access role via `Roles::grant_access()` (so prerequisites and publish state are enforced). `$args`: `source` (default `api`), `source_id`. |
 | `anchor_courses_complete_lesson( $user_id, $course_id, $lesson_id )` | `Domain\Progress\|WP_Error` | Idempotent; subject to enrolment and progression. Completing the last required item runs the completion pipeline. |
 | `anchor_courses_get_progress( $user_id, $course_id )` | `Domain\CourseProgress\|WP_Error` | `percent`, `completed_required`, `total_required`, `complete`, `completed_item_keys`. |
-| `anchor_courses_award_ce_credit( $user_id, $course_id, $credits )` | `Domain\Credit\|null` | Idempotent per (user, course); `null` when there is nothing to award. |
+| `anchor_courses_award_ce_credit( $user_id, $course_id, $credits )` | `Domain\Credit\|WP_Error\|null` | Idempotent per (user, course); `null` when there is nothing to award; `WP_Error('credit_insert_failed')` when a credit was due but could not be saved. |
 
 ## Roles and enrolment (`Support\Roles`)
 
@@ -160,9 +160,28 @@ one." for an enrolled learner locked by progression.
 
 - **Completion pipeline** (`CompletionService::complete()`): requires
   `is_enrolled()`, then an atomic `status <> 'completed'` UPDATE, then credit
-  award, certificate issue, completion role, `anchor_courses_course_completed`.
-  Exactly once per (user, course). `uncomplete()` reopens the row
-  (`in_progress`); credits, certificate and completion role are kept.
+  award, certificate issue (+ credit link), completion role,
+  `anchor_courses_course_completed`. The transition happens exactly once per
+  (user, course). `uncomplete()` reopens the row (`in_progress`); credits,
+  certificate and completion role are kept.
+- **Completion effects are tracked and repaired** (audit F02): the enrolment's
+  `metadata.completion_effects` = `{ credit, certificate, completion_role, hook }`,
+  each `pending` → `done` / `failed` / `n/a` (credit: nothing to award;
+  certificate: disabled). `complete()` on an already-completed row re-runs
+  only the `pending`/`failed` effects and returns `false` - so the next
+  progress record, or the admin **Repair completion** action, is the repair
+  path. Each is idempotent (existing credit/certificate rows are returned, the
+  role grant is a no-op when held); the certificate waits while the credit is
+  unsettled, and is `done` only once linked to the credit. A throwing
+  `anchor_courses_course_completed` consumer marks `hook` failed and the
+  action is fired again on repair; once `done` it never fires again.
+  `CompletionService::effects( $user_id, $course_id )` reads the state; a row
+  completed before tracking has none and is never re-run.
+- **CE credit / certificate outcomes:** `CreditService::award()` and
+  `CertificateService::issue()` return the row, `null` for not-applicable
+  (reason in `last_skip_reason()`: `not_a_course`, `no_user`, `no_credits` /
+  `certificates_disabled`), or `WP_Error` (`credit_insert_failed` /
+  `certificate_insert_failed`) when the row was due but not written.
 - **Quiz submit** is atomic: the attempt is claimed with a conditional
   `in_progress -> submitted` (or `-> expired`) UPDATE before grading, so
   concurrent submits grade once. A learner-initiated submit/answer from somebody
@@ -193,7 +212,7 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_quiz_submitted` | `QuizAttempt $attempt, $user_id, $quiz_id, $course_id` | an attempt was graded |
 | `anchor_courses_quiz_passed` / `anchor_courses_quiz_failed` | same | after `_submitted`, by outcome |
 | `anchor_courses_quiz_expired` | same | a timed attempt closed by the `expire` policy (nothing graded) |
-| `anchor_courses_course_completed` | `$user_id, $course_id, Enrollment $enrollment` | once per (user, course) |
+| `anchor_courses_course_completed` | `$user_id, $course_id, Enrollment $enrollment` | once per completion; fired again on repair only if a consumer threw (`completion_effects.hook = failed`) |
 | `anchor_courses_ce_credit_awarded` | `$user_id, $course_id, Credit $credit` | a credit record was created |
 | `anchor_courses_certificate_issued` | `$user_id, $course_id, Certificate $certificate` | a certificate was created |
 | `anchor_courses_curriculum_saved` | `$course_id, array $modules` | `Curriculum::save()` |
@@ -260,7 +279,7 @@ Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 |---|---|
 | `admin-post.php?action=anchor_courses_complete_lesson` (also nopriv) | `Frontend\Actions` - "Mark complete"; redirects with `anchor_courses_notice` |
 | `admin-post.php?action=anchor_courses_add_learner` / `anchor_courses_revoke_access` | `Admin\LearnerReports` (nonce `anchor_courses_learners_{course}`, cap `enrollments`) |
-| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset`, `complete`, `uncomplete` |
+| `admin-post.php?action=anchor_courses_manage_enrollment` | `Admin\EnrollmentManager` - `cancel`, `reset`, `complete`, `uncomplete`, `repair` (re-run failed completion effects; notices `repaired`, `repair_incomplete`, `repair_not_completed`) |
 | `admin-post.php?action=anchor_courses_delete_role` | `Admin\CourseEditor` (cap `manage`) |
 | `admin-ajax.php?action=anchor_courses_search_items` / `anchor_courses_create_item` | curriculum builder |
 | `/certificate/{token}/` | `Frontend\CertificatePage` - public verification page (query var `anchor_certificate`, noindex) |

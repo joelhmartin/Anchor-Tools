@@ -137,6 +137,16 @@ class Event_Schema {
                 return 'https://schema.org/LimitedAvailability';
             case 'full':
                 return 'https://schema.org/SoldOut';
+            case 'prerequisite':
+                // Registrations::capacity_decision() only ever returns
+                // 'prerequisite' in place of an 'open'/'waitlist' inventory
+                // decision (Task 10 fix round 1 ranking) — it never overrides
+                // 'closed'/'full', which stay exactly that for everyone. So by
+                // the time this case is reached, seats genuinely exist; the
+                // refusal is a fact about the current viewer's eligibility, not
+                // about inventory, and JSON-LD availability must not vary by
+                // who — or what crawler — is looking.
+                return 'https://schema.org/InStock';
             default:
                 return null;
         }
@@ -162,7 +172,7 @@ class Event_Schema {
      * @return bool
      */
     private static function omits_offer( $bookability ) {
-        return ! \in_array( (string) $bookability, [ 'open', 'waitlist', 'full', 'disabled' ], true );
+        return ! \in_array( (string) $bookability, [ 'open', 'waitlist', 'full', 'disabled', 'prerequisite' ], true );
     }
 
     /**
@@ -590,10 +600,21 @@ class Event_Schema {
 
         $virtual_node = null;
         if ( $virtual ) {
-            $virtual_node = [
-                '@type' => 'VirtualLocation',
-                'url'   => ! empty( $meta['virtual_url'] ) ? (string) $meta['virtual_url'] : (string) \get_permalink( $event_id ),
-            ];
+            // The room is the canonical place to attend (spec §5.2), so that is
+            // what the markup names. Robots keep it out of results; schema is
+            // allowed to point at it. NOTE this changes existing markup: a
+            // legacy virtual event whose virtual_url is a Vimeo/YouTube/Zoom
+            // link gets a room automatically (the event_level_embed()
+            // virtual_url fallback, with the access switch defaulting on), so
+            // its VirtualLocation.url becomes the room URL on deploy. Falls
+            // back to the legacy virtual_url, then the event page, only for
+            // events with NO room — a host the embed allowlist does not know
+            // (Teams, Meet …), or the access switch turned off — and those
+            // emit the same markup as before.
+            $room = $this->module->room_url( $event_id );
+            $url  = $room !== '' ? $room
+                : ( ! empty( $meta['virtual_url'] ) ? (string) $meta['virtual_url'] : (string) \get_permalink( $event_id ) );
+            $virtual_node = [ '@type' => 'VirtualLocation', 'url' => $url ];
         }
 
         if ( $virtual && $place ) {

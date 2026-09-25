@@ -1,0 +1,26 @@
+/* Anchor Courses - certificate page and print stylesheet (Task 30, brief 13).
+ * Linked directly from templates/certificate.php's own <head> - this page is
+ * a standalone document served outside the normal wp_head()/wp_enqueue_scripts
+ * pipeline (Frontend\CertificatePage::maybe_render() exits before either
+ * fires), so Frontend\Assets never touches this stylesheet. */
+.anchor-certificate-page { margin: 0; padding: 2rem 1rem; background: #f4f4f5; font-family: Georgia, "Times New Roman", serif; color: #1a1a1a; }
+.anchor-certificate { max-width: 60rem; margin: 0 auto; padding: 3.5rem 3rem; background: #fff; border: 2px solid #1a1a1a; text-align: center; }
+.anchor-certificate-eyebrow { margin: 0; font-size: .8rem; letter-spacing: .3em; text-transform: uppercase; }
+.anchor-certificate-site { margin: .25rem 0 2.5rem; font-size: 1rem; letter-spacing: .1em; text-transform: uppercase; }
+.anchor-certificate-presented { margin: 1.25rem 0 .25rem; font-size: .95rem; font-style: italic; }
+.anchor-certificate-learner { margin: 0; font-size: 2.5rem; line-height: 1.2; }
+.anchor-certificate-course { margin: 0 0 2rem; font-size: 1.6rem; line-height: 1.3; }
+.anchor-certificate-details { display: grid; grid-template-columns: auto auto; gap: .35rem 1.5rem; justify-content: center; margin: 0 0 2.5rem; text-align: left; font-family: system-ui, -apple-system, sans-serif; font-size: .9rem; }
+.anchor-certificate-details dt { font-weight: 600; }
+.anchor-certificate-details dd { margin: 0; }
+.anchor-certificate-number { font-variant-numeric: tabular-nums; letter-spacing: .05em; }
+.anchor-certificate-provider-number { opacity: .7; }
+.anchor-certificate-footer { border-top: 1px solid #d4d4d8; padding-top: 1.25rem; font-family: system-ui, -apple-system, sans-serif; font-size: .8rem; }
+.anchor-certificate-verify span { display: block; word-break: break-all; opacity: .8; }
+
+@media print {
+	.anchor-certificate-page { background: #fff; padding: 0; }
+	.anchor-certificate { border-width: 1px; padding: 2rem; }
+	.no-print { display: none !important; }
+	@page { size: landscape; margin: 1cm; }
+}

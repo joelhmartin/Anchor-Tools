@@ -59,5 +59,60 @@ $wpdb->query(
 ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 /*
- * ── (next module with persistent artifacts goes here) ────────────────────
+ * -- Anchor Courses ------------------------------------------------------
+ * Learner history (enrolments, progress, quiz attempts, CE credits,
+ * certificates) is the site's record of what people earned. It is NOT dropped
+ * by default, even on delete - brief rule 9 and design spec section 4. A site
+ * that genuinely wants it gone sets the opt-in flag first:
+ *
+ *   update_option( 'anchor_courses_delete_data_on_uninstall', 1, false );
+ *
+ * Options, the minted capabilities, every anchor_course_* role and the
+ * _anchor_course_grants user meta go with the tables, never before them.
+ */
+if ( get_option( 'anchor_courses_delete_data_on_uninstall' ) ) {
+	require_once __DIR__ . '/anchor-courses/uninstall-tables.php';
+	anchor_courses_drop_tables( $wpdb );
+
+	delete_option( 'anchor_courses_db_version' );
+	delete_option( 'anchor_courses_delete_data_on_uninstall' );
+	// The /certificate/{token}/ rewrite's self-healing flush marker (Task 30).
+	delete_option( 'anchor_courses_rewrite_version' );
+
+	// The eight minted capabilities live in wp_user_roles; strip them from
+	// every role. Literal names: no plugin classes are loaded here.
+	$anchor_courses_caps = array(
+		'manage_anchor_courses', 'edit_anchor_courses', 'edit_anchor_lessons',
+		'edit_anchor_quizzes', 'view_anchor_course_reports', 'manage_anchor_enrollments',
+		'manage_anchor_credits', 'manage_anchor_certificates',
+	);
+	$anchor_courses_roles = wp_roles();
+	foreach ( array_keys( $anchor_courses_roles->roles ) as $anchor_courses_role_slug ) {
+		$anchor_courses_role = get_role( $anchor_courses_role_slug );
+		if ( ! $anchor_courses_role instanceof WP_Role ) {
+			continue;
+		}
+		foreach ( $anchor_courses_caps as $anchor_courses_cap ) {
+			$anchor_courses_role->remove_cap( $anchor_courses_cap );
+		}
+	}
+
+	// Every minted course role - access `anchor_course_{id}` and completion
+	// `anchor_course_{id}_completed` - and the per-user grants map
+	// (Support\Roles::GRANTS_META). Literal pattern and key: no plugin
+	// classes are loaded here. remove_role() strips the definition; users
+	// who held one simply stop matching it.
+	foreach ( array_keys( wp_roles()->roles ) as $anchor_courses_role_slug ) {
+		if ( preg_match( '/^anchor_course_\d+(?:_completed)?$/', (string) $anchor_courses_role_slug ) ) {
+			remove_role( (string) $anchor_courses_role_slug );
+		}
+	}
+	delete_metadata( 'user', 0, '_anchor_course_grants', '', true );
+
+	// Daily expiry sweep (Task 14).
+	wp_clear_scheduled_hook( 'anchor_courses_expire_sweep' );
+}
+
+/*
+ * -- (next module with persistent artifacts goes here) -------------------
  */

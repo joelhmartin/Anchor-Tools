@@ -322,4 +322,29 @@ class Test_Ticket_Types extends Anchor_Events_TestCase {
 
 		$this->assertSame( $saved[1]['id'], $this->ticket_types()->primary_id( $event_id ) );
 	}
+
+	/** Every tier carries a modality; a missing or bad one is in_person. */
+	public function test_tier_modality_defaults_and_clamps() {
+		$event_id = $this->make_event();
+		$tiers    = $this->ticket_types()->save( $event_id, [
+			[ 'label' => 'GA', 'price' => '0', 'active' => 1 ],
+			[ 'label' => 'Stream', 'price' => '0', 'active' => 1, 'modality' => 'virtual' ],
+			[ 'label' => 'Odd', 'price' => '0', 'active' => 1, 'modality' => 'hybrid' ],
+		] );
+
+		$this->assertSame( 'in_person', $tiers[0]['modality'], 'A tier with no modality keeps the previous meaning.' );
+		$this->assertSame( 'virtual', $tiers[1]['modality'] );
+		$this->assertSame( 'in_person', $tiers[2]['modality'], 'A tier is never hybrid — that is an event-level statement.' );
+	}
+
+	/** The implicit primary tier is in_person. */
+	public function test_implicit_primary_modality() {
+		$event_id = $this->make_event( [ 'price' => '50' ] );
+		$this->assertSame( 'in_person', $this->ticket_types()->get( $event_id )[0]['modality'] );
+	}
+
+	public function test_modality_labels() {
+		$this->assertSame( 'In-person', \Anchor\Events\Ticket_Types::modality_label( 'in_person' ) );
+		$this->assertSame( 'Livestream', \Anchor\Events\Ticket_Types::modality_label( 'virtual' ) );
+	}
 }

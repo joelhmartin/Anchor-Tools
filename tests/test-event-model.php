@@ -255,15 +255,17 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 		$sessions = $this->module()->get_sessions( $event_id );
 
 		$this->assertCount( 1, $sessions );
-		$this->assertSame(
-			[
-				'date'       => '2026-08-01',
-				'start_time' => '09:00',
-				'end_time'   => '10:00',
-				'label'      => 'Day 1',
-			],
-			$sessions[0]
-		);
+		$this->assertSame( '2026-08-01', $sessions[0]['date'] );
+		$this->assertSame( '09:00', $sessions[0]['start_time'] );
+		$this->assertSame( '10:00', $sessions[0]['end_time'] );
+		$this->assertSame( 'Day 1', $sessions[0]['label'] );
+		// Additive fields (Task 2): unset modality/embed resolve to the event's
+		// own defaults, and the row gets real timestamps in the event's zone.
+		$this->assertSame( 'in_person', $sessions[0]['modality'] );
+		$this->assertSame( [], $sessions[0]['stream_embed'] );
+		$tz = $this->module()->event_timezone( $this->module()->get_meta( $event_id ) );
+		$this->assertSame( $this->module()->to_timestamp( '2026-08-01', '09:00', $tz ), $sessions[0]['start_ts'] );
+		$this->assertSame( $this->module()->to_timestamp( '2026-08-01', '10:00', $tz ), $sessions[0]['end_ts'] );
 	}
 
 	/**
@@ -394,5 +396,221 @@ class Test_Event_Model extends Anchor_Events_TestCase {
 
 		$this->assertStringContainsString( '<mark class="highlight">Sale!</mark>', $sanitized, 'Tag added via the anchor_events_embed_allowed_html filter must survive.' );
 		$this->assertStringNotContainsString( '<script', $sanitized );
+	}
+
+	/** New stream keys default to previous behaviour. */
+	public function test_stream_meta_defaults() {
+		$event_id = $this->make_event();
+		$meta     = $this->module()->get_meta( $event_id );
+
+		// The master switch (spec §2 row 8a / §3.1).
+		$this->assertArrayHasKey( 'access_role_enabled', $meta );
+		$this->assertTrue( $meta['access_role_enabled'], 'Every plugin-registered event grants the role by default (owner decision 2026-09-23).' );
+
+		$this->assertSame( [], $meta['stream_embed'] );
+		$this->assertSame( 'in_person', $meta['stream_default_modality'] );
+		$this->assertTrue( $meta['in_person_includes_stream'] );
+		$this->assertSame( 15, $meta['stream_open_before_minutes'] );
+		$this->assertSame( 30, $meta['stream_close_after_minutes'] );
+		$this->assertSame( [], $meta['required_roles'] );
+		$this->assertSame( 'any', $meta['required_roles_mode'] );
+	}
+
+	/**
+	 * `in_person_includes_stream` is the other default-TRUE boolean in
+	 * get_meta_defaults() (alongside `access_role_enabled`) and shares the
+	 * identical latent bug Task 4 found and fixed for that key: WordPress
+	 * round-trips a stored boolean `false` back as '' on read — the exact
+	 * same read a never-written key returns — so get_meta()'s generic
+	 * defaulting would otherwise resurrect an explicit un-tick as TRUE. This
+	 * proves the fix is value-based (any default-true boolean), not a
+	 * `access_role_enabled`-only special case.
+	 */
+	public function test_unticking_in_person_includes_stream_persists_false() {
+		$event_id = $this->make_event();
+		$this->assertTrue(
+			$this->module()->get_meta( $event_id )['in_person_includes_stream'],
+			'Sanity: the default is TRUE before anything is saved.'
+		);
+
+		wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+		$_POST = [
+			'anchor_event_start_date' => '2027-06-01',
+			// Omitted entirely — a real checkbox un-tick posts nothing for this
+			// key today (Task 16 gives it the same hidden `value="0"`
+			// companion access_role_enabled has; until then an absent field is
+			// how "off" is expressed here, same as every other ! empty(...)
+			// checkbox in event_authoring_input()).
+		];
+		$_POST[ \Anchor\Events\Module::NONCE ] = wp_create_nonce( \Anchor\Events\Module::NONCE );
+
+		$this->module()->save_meta( $event_id );
+
+		$meta = $this->module()->get_meta( $event_id );
+		$this->assertFalse(
+			$meta['in_person_includes_stream'],
+			'An un-ticked (absent) checkbox must persist as an observable false, not round-trip back to the default.'
+		);
+		$_POST = [];
+	}
+
+	/** A garbage modality falls back; minutes are clamped to >= 0. */
+	public function test_sanitize_modality_and_minutes() {
+		$m = $this->module();
+		$this->assertSame( 'hybrid', $m->sanitize_modality( 'hybrid' ) );
+		$this->assertSame( 'in_person', $m->sanitize_modality( '<script>' ) );
+		$this->assertSame( 'virtual', $m->sanitize_modality( '', 'virtual' ) );
+		$this->assertSame( [ 'anchor_event_12', 'subscriber' ], $m->sanitize_role_slugs( [ 'anchor_event_12', 'Subscriber', '' ] ) );
+	}
+
+	/** Session rows resolve modality from the event default and get timestamps. */
+	public function test_sessions_resolve_modality_and_timestamps() {
+		$event_id = $this->make_event( [
+			'type'                    => 'multisession',
+			'timezone'                => 'UTC',
+			'stream_default_modality' => 'hybrid',
+			'sessions'                => [
+				[ 'date' => '2027-03-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 1' ],
+				[ 'date' => '2027-03-02', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 2', 'modality' => 'in_person' ],
+			],
+		] );
+
+		$rows = $this->module()->get_sessions( $event_id );
+		$this->assertCount( 2, $rows );
+		$this->assertSame( 'hybrid', $rows[0]['modality'], 'An empty row modality inherits the event default.' );
+		$this->assertSame( 'in_person', $rows[1]['modality'] );
+		$this->assertSame( strtotime( '2027-03-01 09:00:00 UTC' ), $rows[0]['start_ts'] );
+		$this->assertSame( strtotime( '2027-03-01 11:00:00 UTC' ), $rows[0]['end_ts'] );
+	}
+
+	/** A session row with no times saved gets the 00:00/23:59 day-span default. */
+	public function test_sessions_default_empty_times_to_full_day_span() {
+		$event_id = $this->make_event( [
+			'type'     => 'multisession',
+			'timezone' => 'UTC',
+			'sessions' => [
+				[ 'date' => '2027-05-01', 'start_time' => '', 'end_time' => '', 'label' => 'No times' ],
+			],
+		] );
+
+		$rows = $this->module()->get_sessions( $event_id );
+		$this->assertCount( 1, $rows );
+		$this->assertSame( strtotime( '2027-05-01 00:00:00 UTC' ), $rows[0]['start_ts'] );
+		$this->assertSame( strtotime( '2027-05-01 23:59:00 UTC' ), $rows[0]['end_ts'] );
+	}
+
+	/** A single event resolves to exactly one implicit session spanning its own bounds. */
+	public function test_resolved_sessions_single_event_implicit_row() {
+		$event_id = $this->make_event( [
+			'type'       => 'single',
+			'timezone'   => 'UTC',
+			'start_date' => '2027-04-10',
+			'start_time' => '14:00',
+			'end_date'   => '2027-04-10',
+			'end_time'   => '16:00',
+			'start_ts'   => strtotime( '2027-04-10 14:00:00 UTC' ),
+			'end_ts'     => strtotime( '2027-04-10 16:00:00 UTC' ),
+			'stream_default_modality' => 'virtual',
+		] );
+
+		$this->assertSame( [], $this->module()->get_sessions( $event_id ), 'get_sessions() stays empty for a single event.' );
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertCount( 1, $rows );
+		$this->assertSame( 'virtual', $rows[0]['modality'] );
+		$this->assertSame( strtotime( '2027-04-10 14:00:00 UTC' ), $rows[0]['start_ts'] );
+		$this->assertSame( strtotime( '2027-04-10 16:00:00 UTC' ), $rows[0]['end_ts'] );
+	}
+
+	/** Spec §3.1: a legacy virtual_url is the fallback embed input. */
+	public function test_resolved_sessions_fall_back_to_legacy_virtual_url() {
+		$event_id = $this->make_event( [
+			'virtual'     => true,
+			'virtual_url' => 'https://us02web.zoom.us/j/123456789',
+		] );
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertSame( 'zoom', $rows[0]['stream_embed']['provider'] );
+		$this->assertSame( 'link', $rows[0]['stream_embed']['kind'] );
+
+		$saved = $this->make_event( [
+			'virtual'      => true,
+			'virtual_url'  => 'https://us02web.zoom.us/j/123456789',
+			'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/5', 'raw' => '' ],
+		] );
+		$this->assertSame( 'vimeo', $this->module()->resolved_sessions( $saved )[0]['stream_embed']['provider'], 'A saved embed always wins over the legacy URL.' );
+
+		$bad = $this->make_event( [ 'virtual' => true, 'virtual_url' => 'https://example.invalid/room' ] );
+		$this->assertSame( [], $this->module()->resolved_sessions( $bad )[0]['stream_embed'], 'An unknown host leaves the embed empty.' );
+	}
+
+	/**
+	 * Spec §3.1, amended 2026-09-24: a legacy `virtual=1` event that never had
+	 * `stream_default_modality` stored resolves its default modality to
+	 * `virtual` — so its existing registrants keep the join link they have
+	 * today, rather than being silently denied by a modality field that
+	 * simply predates them.
+	 */
+	public function test_legacy_virtual_flag_bridges_to_virtual_modality_when_nothing_stored() {
+		$event_id = $this->make_event( [
+			'virtual'     => true,
+			'virtual_url' => 'https://us02web.zoom.us/j/123456789',
+		] );
+		$this->assertFalse(
+			metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ),
+			'The fixture must never have stored the field — that absence is the case under test.'
+		);
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertSame( 'virtual', $rows[0]['modality'] );
+	}
+
+	/** The bridge only fires on absence — an explicit in_person choice always wins. */
+	public function test_legacy_virtual_flag_does_not_override_an_explicitly_stored_modality() {
+		$event_id = $this->make_event( [
+			'virtual'                 => true,
+			'virtual_url'             => 'https://us02web.zoom.us/j/123456789',
+			'stream_default_modality' => 'in_person',
+		] );
+		$this->assertTrue( metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ) );
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertSame( 'in_person', $rows[0]['modality'], "The author's explicit choice is never overridden." );
+	}
+
+	/** A non-virtual event with nothing stored still defaults to in_person. */
+	public function test_non_virtual_event_with_nothing_stored_defaults_to_in_person() {
+		$event_id = $this->make_event();
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ) );
+		$this->assertEmpty( $this->module()->get_meta( $event_id )['virtual'] ?? '' );
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertSame( 'in_person', $rows[0]['modality'] );
+	}
+
+	/** Spec §3.1: the legacy fallback reaches EVERY resolved row, multisession included. */
+	public function test_resolved_sessions_multisession_rows_inherit_legacy_fallback() {
+		$event_id = $this->make_event( [
+			'type'        => 'multisession',
+			'timezone'    => 'UTC',
+			'virtual'     => true,
+			'virtual_url' => 'https://us02web.zoom.us/j/123456789',
+			'sessions'    => [
+				[ 'date' => '2027-06-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 1' ],
+				[ 'date' => '2027-06-02', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 2' ],
+				[
+					'date' => '2027-06-03',
+					'start_time' => '09:00',
+					'end_time' => '11:00',
+					'label' => 'Day 3',
+					'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/9', 'raw' => '' ],
+				],
+			],
+		] );
+
+		$rows = $this->module()->resolved_sessions( $event_id );
+		$this->assertCount( 3, $rows );
+		$this->assertSame( 'zoom', $rows[0]['stream_embed']['provider'], 'A row with no override inherits the legacy virtual_url fallback.' );
+		$this->assertSame( 'zoom', $rows[1]['stream_embed']['provider'] );
+		$this->assertSame( 'vimeo', $rows[2]['stream_embed']['provider'], 'A row with its own saved embed keeps it.' );
 	}
 }

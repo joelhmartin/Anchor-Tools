@@ -326,6 +326,12 @@ if ( ! function_exists( 'anchor_tools_get_available_modules' ) ) {
                 'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-compliance/anchor-compliance.php',
                 'class'       => 'Anchor_Compliance_Module',
             ],
+            'courses' => [
+                'label'       => __( 'Anchor Courses', 'anchor-schema' ),
+                'description' => __( 'Courses, lessons, quizzes, progress, CE credits, and certificates.', 'anchor-schema' ),
+                'path'        => ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-courses/anchor-courses.php',
+                'class'       => '\\Anchor\\Courses\\Module',
+            ],
         ];
     }
 }

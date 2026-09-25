@@ -37,6 +37,9 @@ class Product_Sync {
     /** Variation meta: the stable tier id this variation maps to. */
     const VARIATION_TIER_META = '_anchor_evt_tier_id';
 
+    /** Variation meta: the tier's modality ('in_person'|'virtual'). */
+    const VARIATION_MODALITY_META = '_anchor_evt_modality';
+
     /** Custom product attribute name used to vary the managed product. */
     const ATTRIBUTE_NAME = 'Ticket';
 
@@ -663,6 +666,7 @@ class Product_Sync {
                     'price'     => (float) $tier['price'],
                     'label'     => $label,
                     'option'    => $option,
+                    'modality'  => (string) $tier['modality'],
                 ];
             }
 
@@ -685,6 +689,13 @@ class Product_Sync {
                         'price'     => (float) $variation->get_regular_price(),
                         'label'     => (string) $variation->get_description(),
                         'option'    => $option,
+                        // Freeze modality from the existing variation, same as
+                        // price/label above — the tier itself is gone/inactive
+                        // so there is no live $tier['modality'] to read, and
+                        // write_variation() defaulting a missing key to
+                        // 'in_person' would otherwise silently flip a virtual
+                        // seat back to in_person on the very next sync.
+                        'modality'  => (string) $variation->get_meta( self::VARIATION_MODALITY_META ) ?: 'in_person',
                     ];
                 } else {
                     $variation->delete( true );
@@ -806,7 +817,7 @@ class Product_Sync {
      * changed (idempotency). Returns the variation id.
      *
      * @param int   $product_id
-     * @param array $spec    [tier_id,variation,active,price,label,option]
+     * @param array $spec    [tier_id,variation,active,price,label,option,modality]
      * @param bool  $mutated Set true (by reference) when this write changed data.
      * @return int
      */
@@ -824,6 +835,13 @@ class Product_Sync {
         // Tier id meta (stable identity).
         if ( (string) $variation->get_meta( self::VARIATION_TIER_META ) !== (string) $spec['tier_id'] ) {
             $variation->update_meta_data( self::VARIATION_TIER_META, (string) $spec['tier_id'] );
+            $dirty = true;
+        }
+
+        // Modality, so the order line and the attendee capture can say
+        // "Livestream ticket" without re-reading the event's tiers.
+        if ( (string) $variation->get_meta( self::VARIATION_MODALITY_META ) !== (string) ( $spec['modality'] ?? 'in_person' ) ) {
+            $variation->update_meta_data( self::VARIATION_MODALITY_META, (string) ( $spec['modality'] ?? 'in_person' ) );
             $dirty = true;
         }
 

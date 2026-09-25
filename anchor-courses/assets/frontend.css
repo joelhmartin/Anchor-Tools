@@ -1,0 +1,26 @@
+/* Anchor Courses - front end. Theme-agnostic: spacing and state, no brand colours. */
+.anchor-courses-list { list-style: none; margin: 0 0 1.5rem; padding: 0; }
+.anchor-courses-list-item { padding: .5rem 0; border-bottom: 1px solid rgba(0,0,0,.08); }
+.anchor-courses-credits { font-size: .85em; opacity: .75; }
+.anchor-course-meta { display: flex; flex-wrap: wrap; gap: 1rem; margin: .5rem 0 1rem; font-size: .9em; opacity: .8; }
+.anchor-course-curriculum { list-style: none; margin: 0 0 1.5rem; padding: 0; }
+.anchor-course-module { margin: 0 0 1.25rem; }
+.anchor-course-items { list-style: none; margin: .25rem 0 0; padding: 0; }
+.anchor-course-item { padding: .35rem 0; }
+.anchor-course-item.is-complete::before { content: "\2713"; margin-right: .5rem; }
+.anchor-course-item.is-locked { opacity: .5; }
+.anchor-course-optional { margin-left: .5rem; font-size: .8em; opacity: .7; }
+.anchor-courses-progress { margin: 1rem 0; }
+.anchor-courses-bar { background: rgba(0,0,0,.1); height: 10px; border-radius: 5px; overflow: hidden; }
+.anchor-courses-bar span { display: block; height: 100%; background: currentColor; }
+.anchor-courses-progress-label { margin: .35rem 0 0; font-size: .85em; }
+.anchor-courses-notice { padding: .75rem 1rem; margin: 0 0 1rem; border-left: 3px solid currentColor; background: rgba(0,0,0,.04); }
+.anchor-courses-button { display: inline-block; padding: .6rem 1.2rem; cursor: pointer; }
+.anchor-course-cta--ask { margin: 1rem 0; opacity: .85; }
+.anchor-lesson-breadcrumb { font-size: .85em; margin: 0 0 1rem; }
+.anchor-lesson-breadcrumb-sep { margin: 0 .4rem; opacity: .5; }
+.anchor-lesson-nav { display: flex; justify-content: space-between; margin: 1.5rem 0; }
+.anchor-courses-dashboard-list { list-style: none; margin: 0; padding: 0; }
+.anchor-courses-dashboard-item { display: flex; gap: 1rem; align-items: baseline; padding: .5rem 0; border-bottom: 1px solid rgba(0,0,0,.08); }
+.anchor-courses-status { font-size: .8em; text-transform: uppercase; opacity: .7; }
+.anchor-courses-percent { margin-left: auto; font-variant-numeric: tabular-nums; }

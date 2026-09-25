@@ -73,6 +73,18 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 	}
 
 	/**
+	 * Render the private front-end manager form via Reflection (Task 17 —
+	 * same pattern Test_Group_Authoring_Save uses to prove the Location/
+	 * Registration sections actually call the shared partials, not just
+	 * that the partials themselves render correctly in isolation).
+	 */
+	private function render_front_end_form( $event_id ) {
+		$method = new ReflectionMethod( Module::class, 'render_event_manager_form' );
+		$method->setAccessible( true );
+		return $method->invoke( $this->module(), $event_id );
+	}
+
+	/**
 	 * Build a valid $_POST payload for save_event_manager_fields(), covering
 	 * just the six fields this task brought to parity. Field names are
 	 * IDENTICAL to the metabox's (anchor_event_type, anchor_event_sessions[n][...],
@@ -127,6 +139,10 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 				'start_time' => '09:00',
 				'end_time' => '10:00',
 				'label' => 'Day 1',
+				// Additive fields (Task 2): unposted modality/embed persist as
+				// empty — '' means "inherit the event default", resolved on read.
+				'modality' => '',
+				'stream_embed' => [],
 			],
 			$stored[0]
 		);
@@ -228,6 +244,128 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 		$template = get_post_meta( $event_id, '_anchor_event_email_tpl_confirmation', true );
 		$this->assertStringContainsString( 'Custom {event_title}', $template );
 		$this->assertStringNotContainsString( '<script', $template );
+	}
+
+	/* ------------------------------------------------------------------
+	 * Task 17 — console parity: the front-end console renders and saves the
+	 * SAME Livestream/Access partials (Module::render_livestream_fields() /
+	 * render_access_fields(), Task 16) as the wp-admin metabox. The save
+	 * side needed no change (event_authoring_input() already takes
+	 * $post_id, forwarded here since Task 4) — this is a render-parity plus
+	 * regression guard for the console surface specifically.
+	 * ------------------------------------------------------------------ */
+
+	/** The console saves the livestream and access fields identically to the metabox. */
+	public function test_console_saves_livestream_and_access() {
+		add_role( 'anchor_course_intro', 'Course: Intro', [] );
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+
+		$_POST = [
+			'anchor_event_type'                       => 'single',
+			'anchor_event_registration_mode'          => 'free',
+			'anchor_event_stream_embed'                => 'https://vimeo.com/31337',
+			'anchor_event_stream_default_modality'     => 'hybrid',
+			'anchor_event_in_person_includes_stream'   => '1',
+			'anchor_event_stream_open_before_minutes'  => '20',
+			'anchor_event_stream_close_after_minutes'  => '45',
+			'anchor_event_required_roles'              => [ 'anchor_course_intro' ],
+			'anchor_event_required_roles_mode'         => 'all',
+		];
+		$fallback = $this->module()->registration_mode( $event_id );
+		$this->call_save_event_manager_fields( $event_id, '2027-07-01', $fallback );
+
+		$meta = $this->module()->get_meta( $event_id );
+		$this->assertSame( 'https://player.vimeo.com/video/31337', $meta['stream_embed']['src'] );
+		$this->assertTrue( $meta['access_role_enabled'], 'The console save flips the switch the same way the metabox does — a saved stream forces it on.' );
+		$this->assertSame( 'hybrid', $meta['stream_default_modality'] );
+		$this->assertSame( 20, $meta['stream_open_before_minutes'] );
+		$this->assertSame( 45, $meta['stream_close_after_minutes'] );
+		$this->assertSame( [ 'anchor_course_intro' ], $meta['required_roles'] );
+		$this->assertSame( 'all', $meta['required_roles_mode'] );
+		remove_role( 'anchor_course_intro' );
+	}
+
+	/** The console form prints the same field names as the metabox (same shared partials, $admin = false). */
+	public function test_console_form_renders_the_same_fields() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$meta     = $this->module()->get_meta( $event_id );
+		$this->assertStringContainsString(
+			'name="anchor_event_stream_embed"',
+			$this->module()->render_livestream_fields( $event_id, $meta, false )
+		);
+		$console_access = $this->module()->render_access_fields( $event_id, $meta, false );
+		$this->assertStringContainsString( 'name="anchor_event_access_role_enabled"', $console_access );
+		// The hidden companion has to be on the CONSOLE form too, or a console
+		// save silently becomes "field absent" and the switch is one-way there
+		// (Task 4). Same renderer, so this is a regression guard.
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="0"', $console_access );
+	}
+
+	/**
+	 * Proves the WIRING, not just the partials: the full console form (as
+	 * rendered by render_event_manager_form(), Location + Registration
+	 * sections) actually includes both shared partials — not merely that
+	 * render_livestream_fields()/render_access_fields() work when called
+	 * directly, which the test above already covers.
+	 */
+	public function test_console_form_includes_livestream_and_access_sections() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$html     = $this->render_front_end_form( $event_id );
+
+		$this->assertStringContainsString( 'anchor-event-livestream', $html, 'The Livestream partial must be wired into the console form.' );
+		$this->assertStringContainsString( 'name="anchor_event_stream_embed"', $html );
+		$this->assertStringContainsString( 'anchor-event-access', $html, 'The Access partial must be wired into the console form.' );
+		$this->assertStringContainsString( 'type="hidden" name="anchor_event_access_role_enabled" value="0"', $html );
+
+		// Location precedes Livestream, and Registration precedes Access —
+		// mirrors the metabox's own section order (Task 17 brief).
+		$this->assertLessThan(
+			strpos( $html, 'anchor-event-livestream' ),
+			strpos( $html, '>Location<' ),
+			'Livestream must render after Location, matching the metabox.'
+		);
+		$this->assertLessThan(
+			strpos( $html, 'anchor-event-access' ),
+			strpos( $html, '>Registration<' ),
+			'Access must render after Registration, matching the metabox.'
+		);
+	}
+
+	/** The console can untick the switch, and it persists — same rule as the metabox. */
+	public function test_console_can_untick_the_access_switch() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free' ] );
+		$this->assertTrue( $this->module()->get_meta( $event_id )['access_role_enabled'], 'On by default.' );
+
+		// What the hidden companion posts when the box is unticked.
+		$_POST    = [ 'anchor_event_access_role_enabled' => '0' ];
+		$fallback = $this->module()->registration_mode( $event_id );
+		$this->call_save_event_manager_fields( $event_id, '2027-07-01', $fallback );
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
+	}
+
+	/** And tick it back on for an in-person event whose handouts are role-gated. */
+	public function test_console_can_tick_the_access_switch_back_on() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+
+		$_POST    = [ 'anchor_event_access_role_enabled' => '1' ];
+		$fallback = $this->module()->registration_mode( $event_id );
+		$this->call_save_event_manager_fields( $event_id, '2027-07-01', $fallback );
+
+		$meta = $this->module()->get_meta( $event_id );
+		$this->assertTrue( $meta['access_role_enabled'] );
+		$this->assertSame( [], $meta['stream_embed'], 'No stream — the file manager gates the handouts.' );
+	}
+
+	/** A console save that never rendered the Access section leaves it alone. */
+	public function test_console_save_without_the_access_field_keeps_the_stored_value() {
+		$event_id = $this->make_event( [ 'registration_mode' => 'free', 'access_role_enabled' => false ] );
+
+		$_POST    = [];
+		$fallback = $this->module()->registration_mode( $event_id );
+		$this->call_save_event_manager_fields( $event_id, '2027-07-01', $fallback );
+
+		$this->assertFalse( $this->module()->get_meta( $event_id )['access_role_enabled'] );
 	}
 
 	/**
@@ -361,6 +499,48 @@ class Test_Event_Manager_Save extends Anchor_Events_TestCase {
 		$this->assertContains( 'lostpass_reset_denied', $this->logged_codes() );
 
 		delete_option( Events_Log::ERROR_OPTION );
+	}
+
+	/** The option the Livestream "Default attendance" select pre-selects. */
+	private function selected_default_modality( $html ) {
+		$this->assertSame( 1, preg_match( '#<select[^>]*name="anchor_event_stream_default_modality"[^>]*>(.*?)</select>#s', $html, $select ), 'The select renders.' );
+		$this->assertSame( 1, preg_match( '#<option value="([a-z_]+)"\s+selected#', $select[1], $opt ), 'One option is pre-selected.' );
+		return $opt[1];
+	}
+
+	/** A pre-modality virtual event: virtual=1, a Vimeo link, NO stored stream_default_modality. */
+	private function legacy_virtual_event() {
+		$event_id = $this->make_event( [
+			'registration_mode'   => 'free',
+			'access_role_enabled' => true,
+			'virtual'             => true,
+			'virtual_url'         => 'https://vimeo.com/76979871',
+		] );
+		$this->assertFalse( metadata_exists( 'post', $event_id, '_anchor_event_stream_default_modality' ), 'Sanity: legacy shape.' );
+		$this->assertSame( 'virtual', $this->module()->resolved_sessions( $event_id )[0]['modality'], 'Sanity: the bridge reads it as virtual.' );
+		return $event_id;
+	}
+
+	/** Final review I1, console surface: same shared partial, same round-trip. */
+	public function test_console_first_save_of_a_legacy_virtual_event_keeps_it_virtual() {
+		$event_id = $this->legacy_virtual_event();
+		$selected = $this->selected_default_modality( $this->render_front_end_form( $event_id ) );
+		$this->assertSame( 'virtual', $selected );
+
+		$_POST = [
+			'anchor_event_type'                    => 'single',
+			'anchor_event_registration_mode'       => 'free',
+			'anchor_event_virtual'                 => '1',
+			'anchor_event_virtual_url'             => 'https://vimeo.com/76979871',
+			'anchor_event_stream_embed'            => '',
+			'anchor_event_stream_default_modality' => $selected,
+			'anchor_event_access_role_enabled'     => '1',
+		];
+		$this->call_save_event_manager_fields( $event_id, '2027-07-01', $this->module()->registration_mode( $event_id ) );
+		$_POST = [];
+
+		$this->assertSame( 'virtual', $this->module()->resolved_sessions( $event_id )[0]['modality'] );
+		$this->assertNotSame( '', $this->module()->room_url( $event_id ) );
 	}
 }
 

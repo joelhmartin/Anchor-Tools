@@ -331,6 +331,10 @@ class Registrations {
             '_anchor_event_product_id'    => max( 0, (int) ( $args['product_id'] ?? 0 ) ),
             '_anchor_event_variation_id'  => max( 0, (int) ( $args['variation_id'] ?? 0 ) ),
             '_anchor_event_customer_id'   => max( 0, (int) ( $args['customer_id'] ?? 0 ) ),
+            // The account this seat ENTITLES, as distinct from the WooCommerce
+            // order's customer above (0 = guest). Resolved by
+            // Entitlements::ensure_user() on every path — free, manual, paid.
+            '_anchor_event_user_id'       => max( 0, (int) ( $args['user_id'] ?? 0 ) ),
             '_anchor_event_seat_index'    => max( 1, (int) ( $args['seat_index'] ?? 1 ) ),
             '_anchor_event_history'       => [
                 [ 'status' => $status, 'time' => \time(), 'note' => $note, 'actor' => $actor ],
@@ -347,6 +351,23 @@ class Registrations {
         }
 
         $this->bust_cache( $event_id );
+
+        /**
+         * A seat was just created.
+         *
+         * The companion to `anchor_events_seat_status_changed`, and NOT a
+         * duplicate of it: a seat is usually BORN in its final status
+         * (a free registration, a comped roster add and a completed-at-checkout
+         * WooCommerce line are all created `confirmed`) and never transitions
+         * at all, so a listener that only watches transitions sees nothing for
+         * the majority of attendees. Fires after every meta write, so a
+         * listener reading the seat back gets the finished record.
+         *
+         * @param int    $seat_id
+         * @param string $status  The status the seat was created in.
+         */
+        \do_action( 'anchor_events_seat_created', (int) $seat_id, (string) $status );
+
         return (int) $seat_id;
     }
 
@@ -902,13 +923,64 @@ class Registrations {
      * Test_Capacity::test_capacity_decision_* — including the waitlist one,
      * which asserts the seat status by name.
      *
+     * Prerequisites (spec §4.6) rank BELOW every viewer-independent inventory
+     * outcome and ABOVE only `open`/`waitlist` (controller ruling, Task 10 fix
+     * round 1): `closed`/`full` are inventory truths — the event has finished,
+     * its window hasn't opened, or its seats are gone — and are exactly as
+     * true for an ineligible visitor as for anyone else, so JSON-LD
+     * availability (which Event_Schema::availability_for() maps straight from
+     * this decision) must never vary by who is asking. `prerequisite` is a
+     * fact about THIS viewer, so it can only ever downgrade an outcome that
+     * would otherwise have let them register — it never overrides a decision
+     * everybody already gets. Computed last, against the inventory decision
+     * inventory_decision() already reached, rather than checked first.
+     *
      * @param int        $event_id
      * @param array      $meta      Event meta (capacity, waitlist, window).
      * @param int        $requested Seats requested.
      * @param array|null $tier      Optional normalized tier (needs 'id' + 'quota').
-     * @return string open|closed|full|waitlist
+     * @return string open|closed|full|waitlist|prerequisite
      */
     public function capacity_decision( $event_id, $meta, $requested = 1, $tier = null ) {
+        $decision = $this->inventory_decision( $event_id, $meta, $requested, $tier );
+
+        // Prerequisites (spec §4.6). Placed in the single registration
+        // authority so the date picker, the CTA, the storefront row and
+        // WooCommerce::filter_is_purchasable() refuse together instead of each
+        // re-deciding. Guarded on required_roles being non-empty, which is the
+        // default, so every existing event's answer is unchanged — and this is
+        // the one branch that depends on WHO is asking, so keeping it inert for
+        // ungated events (and behind the inventory decision for gated ones)
+        // keeps the rest of the decision viewer-independent and cacheable.
+        // Only reachable when the inventory decision would otherwise have let
+        // this viewer through (see the ranking note above) — a closed or full
+        // event stays closed or full for everybody.
+        if (
+            \in_array( $decision, [ 'open', self::STATUS_WAITLIST ], true )
+            && ! empty( $meta['required_roles'] )
+        ) {
+            $entitlements = $this->module->entitlements ?? null;
+            if ( $entitlements && ! $entitlements->meets_prerequisites( (int) $event_id ) ) {
+                return 'prerequisite';
+            }
+        }
+
+        return $decision;
+    }
+
+    /**
+     * The viewer-independent half of capacity_decision() — window, sold-out
+     * flag, event/tier capacity. Split out so capacity_decision() can compute
+     * it once and rank the (viewer-dependent) prerequisite check against the
+     * result, rather than the two being interleaved in one pass.
+     *
+     * @param int        $event_id
+     * @param array      $meta
+     * @param int        $requested
+     * @param array|null $tier
+     * @return string open|closed|full|waitlist
+     */
+    private function inventory_decision( $event_id, $meta, $requested = 1, $tier = null ) {
         // MODEL-D5: an event that has already finished is never bookable, and
         // this is the FIRST branch so no amount of remaining room can outvote
         // it. Without it an occurrence with registration_enabled=1, no
@@ -1182,13 +1254,7 @@ class Registrations {
             return false;
         }
 
-        $identity = [ 'relation' => 'OR' ];
-        if ( $email !== '' ) {
-            $identity[] = [ 'key' => '_anchor_event_email', 'value' => $email, 'compare' => '=' ];
-        }
-        if ( $user_id > 0 ) {
-            $identity[] = [ 'key' => '_anchor_event_customer_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
-        }
+        $identity = $this->identity_meta_query( $user_id, $email );
 
         $q = new \WP_Query( [
             'post_type'      => Module::REG_CPT,
@@ -1204,6 +1270,52 @@ class Registrations {
             ],
         ] );
         return ! empty( $q->posts );
+    }
+
+    /**
+     * The `relation => OR` seat-identity fragment shared by every caller that
+     * asks "which seats belong to this person": an account id, the order's
+     * customer id, or a plain email match. One encoding so a future 4th
+     * identity signal (or a change to how these three relate) never has to
+     * be kept in sync across call sites by hand.
+     *
+     * Either argument may be empty/0 — the fragment simply omits that clause,
+     * matching how user_has_active_seat() has always treated a missing email
+     * or user id (never require what wasn't given).
+     *
+     * @param int    $user_id
+     * @param string $email   Not re-sanitized here — callers are expected to
+     *                        pass an already-trusted address (an existing
+     *                        WP_User's user_email, or user_has_active_seat()'s
+     *                        own sanitize_email() call).
+     * @param bool   $include_customer Whether to also match the WooCommerce
+     *                        order's buyer/customer id (default true — the
+     *                        behavior EMAILS.md documents for
+     *                        has_confirmed_seat() and the existing behavior
+     *                        of user_has_active_seat()). Pass false for an
+     *                        OWNER-ONLY match: the buyer's customer id is
+     *                        stamped on every seat in the order, including
+     *                        seats bought FOR someone else, so a caller that
+     *                        must resolve a specific attendee's own seat (not
+     *                        "any seat the buyer paid for") needs this off.
+     * @return array meta_query fragment.
+     */
+    public function identity_meta_query( $user_id, $email, $include_customer = true ) {
+        $user_id  = (int) $user_id;
+        $email    = (string) $email;
+        $identity = [ 'relation' => 'OR' ];
+        if ( $email !== '' ) {
+            $identity[] = [ 'key' => '_anchor_event_email', 'value' => $email, 'compare' => '=' ];
+        }
+        if ( $user_id > 0 ) {
+            // Checked first (spec §3.5): the resolved account is authoritative,
+            // an attendee who changed their email address still matches.
+            $identity[] = [ 'key' => '_anchor_event_user_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
+            if ( $include_customer ) {
+                $identity[] = [ 'key' => '_anchor_event_customer_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
+            }
+        }
+        return $identity;
     }
 
     /**
@@ -1591,6 +1703,7 @@ class Registrations {
             'product_id'    => (int) $g( '_anchor_event_product_id' ),
             'variation_id'  => (int) $g( '_anchor_event_variation_id' ),
             'customer_id'   => (int) $g( '_anchor_event_customer_id' ),
+            'user_id'       => (int) $g( '_anchor_event_user_id' ),
             'seat_index'    => (int) $g( '_anchor_event_seat_index' ),
             // Pre-tier seats have no meta — default to the primary tier id.
             'ticket_type_id' => (string) ( $g( '_anchor_event_ticket_type_id' ) ?: 'primary' ),

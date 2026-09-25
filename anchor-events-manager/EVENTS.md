@@ -266,6 +266,147 @@ key for an answer whose question has been deleted.
 
 ---
 
+## Hosted livestream room
+
+### Every event grants a role; only some have a room
+
+`access_role_enabled` (default **true**, owner decision 2026-09-23) is the
+master switch. While it is **on** — which is every plugin-registered event
+unless somebody turned it off — each confirmed attendee gets an account and the
+capability-less role `anchor_event_{id}` ("Event: {title}"), whether they
+attend in person or over a stream. That is the point of it: the Private File
+Manager hands out recordings, handouts and certificates **by role**, so the
+role is how "attended this" is written down.
+
+**The role is not the room.** A room exists only when the event also has a
+resolvable stream, and that is `Module::room_url( $event_id ) !== ''` — the one
+expression every room surface asks. For an ordinary in-person event:
+`room_url()` is `''`, `/live/` redirects to the event page, the events list
+shows `—` in the Live column, `{room_link}` is `''`, the email CTA is the one
+it has always been, and `can_access_stream()` is false for everybody but staff.
+Its roster still shows the Access column, because its attendees really do hold
+the role.
+
+While the switch is **off**:
+
+- no attendee account is created, on any path — free registration, comped
+  roster add, or WooCommerce checkout;
+- no `anchor_event_{id}` role is minted, so `wp_roles()` is untouched;
+- there is no room, no `{room_link}` and no changed email;
+- the roster shows no Access column, and the Basics tab shows one line saying
+  access is off.
+
+`Entitlements::enabled( $event_id )` is that check in code —
+`Module::stream_capable( $event_id ) && access_role_enabled` — and every entry
+point asks it first: `grant_for_seat()`, `ensure_user()`, both seat hooks,
+`maybe_revoke_seat_grant()`, `can_access_stream()`, `backfill()`, the roster's
+Access surfaces. `stream_capable()` is the weaker, unchanged predicate ("could
+this event ever hold a room": registration mode `wc`/`free`, not a group
+parent). `tests/test-inertness.php` is the standing proof of all of it.
+
+**Turning it off is a real, reversible operator act, and it looks forward
+only.** Un-tick **Access → "Give confirmed attendees an account and the event
+role"** and no *future* attendee is granted. Nobody who already holds the role
+loses it — the only thing that removes holders is **Delete role** on the
+console's Basics tab, which strips it from everyone. Tick it back on and use
+**Grant role to current attendees** (Basics tab) to catch up the people who
+registered in between; that backfill is idempotent, so running it twice is a
+no-op.
+
+Three saves force the switch back on, because a stream is useless without the
+role: storing a non-empty `stream_embed`, a `virtual`/`hybrid` session (or
+`stream_default_modality`), or a `virtual` ticket tier. With a stream saved,
+the Access checkbox renders checked and disabled. A save whose form did not
+carry the field at all — a programmatic write, a partial update — leaves the
+stored value exactly as it is, in either direction.
+
+### The room itself
+
+Every event registered **through this plugin** (`registration_mode` `wc` or `free`;
+never `external`, never a group parent) **that has a resolvable stream and its
+access switch on** has a private room
+at `<event permalink>/live/` — an `add_rewrite_endpoint( 'live', EP_PERMALINK )`
+endpoint, so it is a URL on the event, not a second post. On a plain
+permalink (the query-string shape a Plain permalink setting, or any CPT URL
+WordPress never rewrote, produces) the room is `add_query_arg( 'live', '1',
+$permalink )` instead, since a rewrite endpoint has nothing to append a path
+segment to.
+
+**A pre-existing legacy `virtual` event now qualifies too, with no author
+action.** Two read-time bridges make this automatic: `event_level_embed()`
+resolves a stored `virtual_url` through `Embed::normalize()` as the event's
+stream embed whenever no `stream_embed` is already saved and the URL's host is
+one `Embed::providers()` recognises (Vimeo, YouTube, Zoom, or a site-added
+host) — a Zoom link resolves and then renders in the room as a "Join on Zoom"
+button, exactly like a freshly-authored one. And `default_modality_for()`
+resolves the implicit session's modality to `virtual` whenever
+`stream_default_modality` was **never stored** (`metadata_exists()` false) and
+the legacy `virtual` flag is on — so an event authored before this feature
+existed, that only ever had the old Virtual Event checkbox and a join URL, has
+a real, resolvable stream: `has_stream()` is true, `room_url()` is non-empty
+(access defaults on), and its next confirmation switches from "Join the
+event" to "Join the livestream" pointing at `{room_link}` (see `EMAILS.md`'s
+CTA-order note). An author who explicitly saves `stream_default_modality` as
+`in_person` on such an event overrides the bridge, since that is a deliberate,
+stored choice rather than an absence. The Livestream "Default attendance"
+select pre-fills from `default_modality_for()`, so saving such an event
+without touching the select keeps it `virtual`.
+
+Core role changes do not strip event roles: `WP_User::set_role()` (an admin
+changing someone's primary role) and a direct `remove_role()` of an
+`anchor_event_*` role are undone for every event the user still has a
+`_anchor_event_grants` record for. `Entitlements::revoke()` clears the record
+first, so it remains the one way to take access away.
+
+The room is `private, no-store`, carries `X-Robots-Tag: noindex, nofollow` and a
+robots meta tag, and is not in the sitemap (core sitemaps list post permalinks;
+a rewrite endpoint is never enumerated). `Event_Schema` publishes the room URL
+as the `VirtualLocation.url` — schema points at it, robots keep it out of
+results. `Module::room_header_list( $event_id )` is the pure header/redirect
+decision as data (no `header()`/`exit`) — `room_headers()` just applies it.
+
+**States** (`Anchor\Events\Stream_State`, a pure function of the resolved
+sessions, the two window widths and the clock): `unavailable`, `pending`,
+`countdown`, `live`, `between`, `ended`. The embed is in the markup **only**
+during `live`.
+
+**Template:** `templates/live-event.php`, overridable by a theme at
+`events/live-event.php` or `live-event.php`. The body is
+`Module::render_room( $event_id )`, which renders one of: sign-in form (logged
+out), denial (logged in, not entitled), or the state block + schedule.
+
+**Refresh:** `assets/room.js` ticks the countdown, corrects for client clock
+skew from `data-server-now`, and calls
+`GET /wp-json/anchor-events/v1/events/{id}/room` when the target passes — and
+every 5 minutes while `live`. 401 logged out, 403 not entitled.
+
+**Access** is a capability-less WordPress role `anchor_event_{id}`
+("Event: {title}"), minted lazily on the first grant, renamed with the title,
+and **never deleted automatically** — trashing the event leaves it. The console's
+Basics step has **Grant role to current attendees** (the backfill: every
+confirmed seat, accounts created as needed, idempotent) and an explicit
+**Delete role** action.
+
+**Sign-in link:** `Entitlements::room_url_for( $user_id, $event_id )` appends a
+stateless `?aek=` HMAC (user | event | expiry | password fragment), expiring at
+the last session's `end_ts` + 7 days. A logged-out visitor with a valid token is
+signed in (firing `wp_login`) and redirected to the clean room URL; a
+logged-in visitor arriving with `?aek=` is redirected to the clean URL and
+never switched; both redirects send no-cache headers. The token is never shown
+in admin or logs. **No token is minted or accepted for staff** — any account
+with `edit_posts` or the events capability (`Roster::cap()`) gets the plain
+room URL and signs in normally. In emails a token is minted only when the
+resolved account's email is the recipient's address; otherwise the recipient
+gets the plain room URL.
+
+**Which account a seat entitles** (`ensure_user()`): the stored
+`_anchor_event_user_id`; else the order's customer **only when the seat email
+is empty or is that customer's** (case-insensitive) — an attendee seat on a
+logged-in buyer's order resolves to the attendee's own account, never the
+buyer's; else an existing account with the seat email; else a new one.
+
+---
+
 ## Key Meta Keys
 
 All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
@@ -288,6 +429,24 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 | `external_display_price` | string | External-mode display-only price text |
 | `organizer_email` | string | Per-event roster-digest recipient override |
 | `roster_sent` | int | Scheduled-roster idempotency marker (unix ts, 0 = not sent) |
+| `access_role_enabled` | bool | **The master switch for everything in "Hosted livestream room" below. Default `true`.** On: every confirmed attendee gets an account and the `anchor_event_{id}` role, in person or not, because event materials are handed out by role. Off: the event mints no role, creates no accounts, has no room, emits no `{room_link}` and shows no Access column. A **real, reversible checkbox** — un-ticking stops *future* grants and never removes an existing holder (that is **Delete role**); **Grant role to current attendees** on the Basics tab re-grants after it is switched back on. A save whose form did not carry the field leaves the stored value alone. Forced back to `true` by any save that stores a non-empty `stream_embed`, a `virtual`/`hybrid` session (or `stream_default_modality`), or a `virtual` tier. **Not the same as "has a room"** — that is `Module::room_url() !== ''`, which is this *and* a resolvable stream. Inherited. |
+| `stream_embed` | array | Normalised stream `{provider, kind, src, raw}` — output of `Embed::normalize()`, never raw HTML. Saving a non-empty value forces `virtual=1` **and** `access_role_enabled=1`. Inherited by occurrence children. |
+| `stream_default_modality` | string | `in_person` \| `virtual` \| `hybrid` — the seed for new session rows and new tiers. Inherited. |
+| `in_person_includes_stream` | bool | "In-person registrants also get the stream". Default `true`. Inherited. |
+| `stream_open_before_minutes` | int | Room switches countdown → player this many minutes before a session starts. Default `15`. Inherited. |
+| `stream_close_after_minutes` | int | Room keeps the player this long after a session's `end_ts`. Default `30`. Inherited. |
+| `required_roles` | string[] | Prerequisite role slugs — checked inside `Registrations::capacity_decision()`. Inherited. |
+| `required_roles_mode` | string | `any` \| `all`. Inherited. |
+| `sessions[].modality` | string | Per-session `in_person` \| `virtual` \| `hybrid`; empty inherits `stream_default_modality`. |
+| `sessions[].stream_embed` | array | Per-session stream override; empty inherits the event's. |
+
+Two more keys carry the same feature but live off the event post: the seat
+(`Module::REG_CPT`) meta `_anchor_event_user_id` (int) — the account a seat
+entitles, resolved by `Entitlements::ensure_user()`; distinct from
+`_anchor_event_customer_id` (the WooCommerce order's customer, `0` = guest) —
+and each ticket tier's `modality` field (`in_person` \| `virtual`, default
+`in_person`), mirrored onto the tier's managed WooCommerce variation as
+`_anchor_evt_modality` (`Product_Sync::VARIATION_MODALITY_META`).
 
 ---
 
@@ -310,6 +469,26 @@ All prefixed `_anchor_event_` (via `Module::meta_key( $key )`).
 - `compute_email_schedule( int $event_id ): array` — read-only upcoming reminder/roster schedule (see `EMAILS.md`).
 - `event_type( $event_id )`, `registration_mode( $event_id )`, `get_meta( $event_id )`, `meta_key( $key )`, `get_sessions( $event_id )`.
 - `get_labels( $event_id )`, `get_label( $event_id, $key )`, `labels_vocabulary()` — see "Event Labels" below.
+- `room_url( $event_id ): string` — **the one definition of "this event has a room"**: `''` unless the access switch is on AND a stream resolves. Every room surface asks this, not `enabled()`.
+- `has_stream( $event_id ): bool` — does any resolved session carry an embed?
+- `render_room( $event_id ): string`, `room_state_block( $event_id, array $state ): string`
+- `resolved_sessions( $event_id ): array` — always at least one row (a single event resolves to one implicit session).
+- `stream_capable( $event_id ): bool`
+
+**`Anchor\Events\Entitlements`** (`$module->entitlements`)
+- `enabled( $event_id ): bool` — `stream_capable() && access_role_enabled`. The master switch every other entry point checks first; `true` for nearly every event, because the switch defaults on. `false` means this event is not in the feature and every code path returns its pre-feature answer. **Not "has a room"** — that is `Module::room_url() !== ''`.
+- `can_access_stream( $event_id, $session_index = 0, $user_id = 0 ): bool` — the one access question. Needs a resolvable stream as well as the role, so holding `anchor_event_{id}` on a plain event is not stream access.
+- `backfill( $event_id ): int` — grant the role to every confirmed seat now, creating accounts as needed. Returns how many were newly granted; idempotent; returns 0 when `enabled()` is false. This is how an event that was already selling is reconciled with the switch.
+- `role_for( $event_id, $create = true ): string` / `role_name()` / `role_members()` / `delete_role()`
+- `grant( $event_id, $user_id, $source = 'seat' )` / `revoke( … )` — `$source` is `seat` or `manual`; a manual grant is never downgraded by a seat cancellation.
+- `downgrade_manual_grant_to_seat( $event_id, $user_id ): bool` — the one legitimate manual → seat rewrite, bypassing `grant()`'s "manual outranks seat" guard on purpose. `Roster::revoke_access()` calls it when an operator revokes a manual grant on someone who still independently holds a confirmed seat: the role stays, but the record now reads `seat`, so that seat's own later cancellation can go on to revoke it.
+- `ensure_user( array $seat ): int` — resolve or create the account a seat entitles.
+- `login_token( $user_id, $event_id )` / `verify_login_token( $token, $event_id )` / `room_url_for( $user_id, $event_id )`
+- `meets_prerequisites( $event_id, $user_id = 0 ): bool` / `prerequisite_message( $event_id ): string`
+
+**`Anchor\Events\Stream_State`** — `for_event( $event_id, $now = 0 )`, `decide( $sessions, $open_before, $close_after, $now, $capable )`.
+
+**`Anchor\Events\Embed`** — `normalize( $input )` (array or `WP_Error`), `render( array $embed, $title )`, `providers()`.
 
 ---
 
@@ -470,3 +649,24 @@ has an enabled, manually-configured `Event`-typed schema item for the same post
 | `anchor_events_capability` | `$cap, $wc_active` | The single capability every roster / export / resend / console surface resolves. Default: `manage_woocommerce` on a WooCommerce site, else `edit_others_posts`. A non-string or empty return is ignored. |
 | `anchor_events_schema_node` | `$node, $event_id` | RENDER-D10. Fires at the end of `Event_Schema::assemble_node()`, so it runs on EVERY node it builds (single events, group children, and both the multisession/group-parent header nodes), before `subEvent` is attached to a parent. Return the (possibly decorated) node array. Used by the DEKA theme (`deka-structured-data.php`) to add `performer` from linked speakers, tie `organizer` to a site `@id`, and fall back an `image`; that snippet also recurses over `$node['subEvent']` itself, which is what still reaches a multisession event's per-session stubs (those are built as raw arrays, not through `assemble_node()`, so this filter never sees them directly). Also used by the Anchor Speakers module (Task 10, `anchor-speakers/class-speaker-events.php`, loaded only when this module is active) to append `performer` entries (`@type`, `name`, `url`, optional `image`/`jobTitle`) from the event's linked speakers, resolved via `Anchor_Speakers_Module::event_speaker_ids()` (which falls back to the group parent's speakers when an occurrence child has none of its own), onto any `performer` a theme already added. |
 | `anchor_events_emit_canonical` | `$emit, $seo_plugin_active` | RENDER-D21. Whether `output_canonical_url()` — a fallback for a `?anchor_events_month=` calendar URL — should print its own `<link rel="canonical">`. Default: `! $seo_plugin_active`, i.e. `false` (stay silent) whenever Yoast, Rank Math, All in One SEO or SEOPress is detected active, since each of those already emits/filters its own canonical for the same URL; `true` otherwise. Return `true` to force this module's tag even alongside a detected SEO plugin, or `false` to always suppress it. |
+| `anchor_events_can_access_stream` | `$allowed, $event_id, $session_index, $user_id` | The final say on room access. The courses module vetoes here ("finish the pre-work first"). |
+| `anchor_events_embed_providers` | `$providers` | The stream provider table — `slug => { hosts[], kind: iframe\|link, transform }`. Add a host to allow it. |
+| `anchor_events_create_account` | `$create, $event_id, $email` | Return `false` to stop the module creating accounts for registrants who have none. Since the access switch defaults on, this is the site-wide way to say "do not make accounts for my attendees"; opting out means those guests hold no event role and get no room access. |
+| `anchor_events_room_denied_message` | `$message, $event_id` | The wording a signed-in but unentitled visitor sees in the room. |
+| `anchor_events_room_login_notice` | `$message, $event_id` | The notice shown above the sign-in form when an invalid/expired one-click `?aek=` link brought a logged-out visitor to the room. |
+| `anchor_events_stream_now` | `$now, $event_id` | The instant `Stream_State` reasons about. Exists for end-to-end tests; filtering it in production lies to the room. |
+
+---
+
+## Actions
+
+| Action | Args | When |
+|---|---|---|
+| `anchor_events_seat_created` | `$seat_id, $status` | A seat was created, after every meta write. The companion to `anchor_events_seat_status_changed`, and not a duplicate: a seat is usually BORN in its final status and never transitions. |
+| `anchor_events_seat_status_changed` | `$seat_id, $from, $to, $actor` | An actual status transition only — a same-status note-only call never fires it. |
+| `anchor_events_access_granted` | `$event_id, $user_id, $source` | A user gained the event role. `$source` is `seat` or `manual`. |
+| `anchor_events_access_revoked` | `$event_id, $user_id, $source` | A user lost the event role. |
+
+Both access actions fire from the backfill too — it grants through the same
+`grant_for_seat()` path a live registration uses, so a backfilled attendee is
+indistinguishable from one who registered normally.

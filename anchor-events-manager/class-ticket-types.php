@@ -48,6 +48,19 @@ class Ticket_Types {
         return \__( 'Registration', 'anchor-schema' );
     }
 
+    /**
+     * The shopper-facing name for a tier modality — used on the attendee
+     * capture block, the storefront row and the order line item.
+     *
+     * @param string $modality
+     * @return string
+     */
+    public static function modality_label( $modality ) {
+        return ( (string) $modality === 'virtual' )
+            ? \__( 'Livestream', 'anchor-schema' )
+            : \__( 'In-person', 'anchor-schema' );
+    }
+
     /** @var Module */
     private $module;
 
@@ -158,6 +171,7 @@ class Ticket_Types {
                 'sale_end'        => $sale_end,
                 'active'          => $active,
                 'wc_variation_id' => $wc_variation_id,
+                'modality'        => $this->clamp_modality( $row ),
             ];
 
             $clean[] = $tier;
@@ -177,6 +191,18 @@ class Ticket_Types {
         // Module::persist_event_authoring()'s docblock for the contract. The
         // RETURNED rows stay unslashed: they are the literal values.
         \update_post_meta( $event_id, self::META_KEY, \wp_slash( $clean ) );
+
+        // A livestream tier opts the event in (spec §3.1). Reads the POSTED
+        // rows rather than $clean so it is correct before AND after Task 15
+        // teaches normalize() about `modality`; only `virtual` counts, because
+        // a tier is never `hybrid` — that is an event-level statement (§3.3).
+        foreach ( $raw as $row ) {
+            if ( \is_array( $row ) && (string) ( $row['modality'] ?? '' ) === 'virtual' ) {
+                $this->module->enable_access_role( $event_id, 'virtual_tier' );
+                break;
+            }
+        }
+
         return $clean;
     }
 
@@ -284,6 +310,7 @@ class Ticket_Types {
             'sale_end'        => '',
             'active'          => true,
             'wc_variation_id' => 0,
+            'modality'        => 'in_person',
         ];
     }
 
@@ -316,7 +343,23 @@ class Ticket_Types {
             'sale_end'        => isset( $row['sale_end'] ) ? $this->sanitize_date( (string) $row['sale_end'] ) : '',
             'active'          => ! empty( $row['active'] ),
             'wc_variation_id' => isset( $row['wc_variation_id'] ) ? \max( 0, (int) $row['wc_variation_id'] ) : 0,
+            'modality'        => $this->clamp_modality( $row ),
         ];
+    }
+
+    /**
+     * Clamp a raw row's `modality` to the two values a tier can be.
+     *
+     * A tier is a PRICE, so it is one way in or the other — never `hybrid`,
+     * which is an event-level statement ("both exist"). An absent or invalid
+     * value is `in_person`: the meaning every pre-upgrade tier already had
+     * (spec §3.3). Shared by save()/normalize() so the two can't drift.
+     *
+     * @param array $row
+     * @return string
+     */
+    private function clamp_modality( array $row ) {
+        return ( ( $row['modality'] ?? '' ) === 'virtual' ) ? 'virtual' : 'in_person';
     }
 
     /**

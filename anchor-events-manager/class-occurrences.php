@@ -163,6 +163,26 @@ class Occurrences {
         'address_country',
         'virtual',
         'virtual_url',
+        // Hosted livestream (virtual-events spec §3.4). Shared facts about the
+        // OFFERING — every date streams the same way unless the author says
+        // otherwise on the parent. Inheritance is symmetric (a value cleared on
+        // the parent is cleared on its dates), which is why the second test
+        // asserts the parent re-asserts the stream: a per-date override lives
+        // in the DATE's own session row, not in a key the parent also owns.
+        //
+        // access_role_enabled is inherited for the same reason: "this offering
+        // gives attendees an account and a role" is a fact about the offering,
+        // and every date must agree with it or half an offering's attendees
+        // would silently get no room. Each date still mints its OWN role
+        // (spec §4.1) — inheriting the switch is not sharing the role.
+        'access_role_enabled',
+        'stream_embed',
+        'stream_default_modality',
+        'in_person_includes_stream',
+        'stream_open_before_minutes',
+        'stream_close_after_minutes',
+        'required_roles',
+        'required_roles_mode',
         'registration_open',
         'registration_close',
         'waitlist',

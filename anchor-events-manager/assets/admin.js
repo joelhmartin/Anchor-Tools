@@ -90,7 +90,7 @@
 
     function reindexRows(){
       $rows.find('.anchor-event-session-row').each(function(i){
-        $(this).find('input').each(function(){
+        $(this).find('input, select').each(function(){
           var name = $(this).attr('name');
           if(!name){ return; }
           name = name.replace(/anchor_event_sessions\[\d+\]/, 'anchor_event_sessions[' + i + ']');
@@ -319,6 +319,13 @@
       syncInput();
     });
   }
+
+  // Session "use a different stream" toggle (virtual-events spec §7).
+  $(document).on('change', '.anchor-session-override', function () {
+    var $input = $(this).closest('td').find('.anchor-session-stream');
+    $input.prop('hidden', !this.checked);
+    if (!this.checked) { $input.val(''); }
+  });
 
   $(document).ready(function(){
     toggleAllDay();

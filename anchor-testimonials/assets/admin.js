@@ -51,7 +51,7 @@
 			return;
 		}
 		items.forEach(function(item){
-			var $row = $('<div class="anchor-testimonial-result" tabindex="0"></div>');
+			var $row = $('<button type="button" class="anchor-testimonial-result"></button>');
 			$row.text(item.title + ' ');
 			$row.append($('<span class="anchor-testimonial-result-type"></span>').text('(' + item.type_label + ')'));
 			$row.attr('data-id', item.id);
@@ -63,13 +63,22 @@
 
 	function searchRelated(term){
 		if (!cfg.ajaxUrl) return;
+		// A slower earlier request can resolve after a newer one, or after
+		// the term has been cleared; only render a response for the term
+		// still in the search box when it arrives, so stale results never
+		// overwrite an in-flight or already-cleared search.
+		function isStillCurrent(){
+			return $('#at_related_search').val() === term;
+		}
 		$.get(cfg.ajaxUrl, {
 			action: 'anchor_testimonials_search_posts',
 			nonce: cfg.nonce,
 			s: term
 		}).done(function(resp){
+			if (!isStillCurrent()) return;
 			renderResults(Array.isArray(resp) ? resp : []);
 		}).fail(function(){
+			if (!isStillCurrent()) return;
 			renderResults([]);
 		});
 	}

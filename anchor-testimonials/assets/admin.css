@@ -24,9 +24,15 @@
 }
 
 .anchor-testimonial-result {
+	display: block;
+	width: 100%;
 	padding: 6px 8px;
-	cursor: pointer;
+	border: 0;
 	border-bottom: 1px solid #f0f0f1;
+	background: none;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
 }
 
 .anchor-testimonial-result:last-child {

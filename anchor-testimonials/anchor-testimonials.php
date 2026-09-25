@@ -203,10 +203,20 @@ class Anchor_Testimonials_Module {
 	 * front-end assets when there is something to render.
 	 */
 	public function shortcode( $atts ) {
+		$raw = is_array( $atts ) ? $atts : [];
+
 		$atts = shortcode_atts( array_merge( Anchor_Testimonial_Query::defaults(), [
 			'layout'  => 'grid',
 			'columns' => 3,
 		] ), $atts, 'anchor_testimonials' );
+
+		// video-grid renders only the media button + name (no quote, no
+		// photo, no meta, no rating); a quote-only testimonial has no video
+		// and would render as an effectively empty card. Default `type` to
+		// `video` for this layout unless the shortcode set it explicitly.
+		if ( $atts['layout'] === 'video-grid' && ! array_key_exists( 'type', $raw ) ) {
+			$atts['type'] = 'video';
+		}
 
 		$posts = Anchor_Testimonial_Query::find( $atts, get_queried_object_id() );
 		if ( empty( $posts ) ) {

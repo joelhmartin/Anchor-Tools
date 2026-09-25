@@ -19,4 +19,30 @@ class Test_Testimonials_Render extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'anchor-testimonials__controls', $html );
 		$this->assertStringContainsString( '--at-cols:2', $html );
 	}
+
+	/**
+	 * Final whole-branch review finding 10: video-grid renders only the media
+	 * button + name (no quote, no photo, no meta, no rating). A quote-only
+	 * testimonial has no video and so no media button, and would render as an
+	 * effectively empty card unless `type` defaults to `video` for this
+	 * layout when the shortcode doesn't specify one explicitly.
+	 */
+	public function test_video_grid_defaults_type_to_video_excluding_quote_only_testimonials() {
+		$video_id = self::factory()->post->create( [ 'post_type' => 'anchor_testimonial' ] );
+		Anchor_Testimonial_Meta::save( $video_id, [ 'person_name' => 'Video Person', 'video_url' => 'https://youtu.be/dwr8S2iOfs8' ] );
+		$quote_id = self::factory()->post->create( [ 'post_type' => 'anchor_testimonial', 'post_content' => 'Quote only.' ] );
+		Anchor_Testimonial_Meta::save( $quote_id, [ 'person_name' => 'Quote Person' ] );
+
+		$html = do_shortcode( '[anchor_testimonials layout="video-grid"]' );
+		$this->assertStringContainsString( 'Video Person', $html );
+		$this->assertStringNotContainsString(
+			'Quote Person',
+			$html,
+			'A quote-only testimonial renders as an empty card in video-grid; the default type must exclude it.'
+		);
+
+		// An explicit type attribute still overrides the video-grid default.
+		$html_any = do_shortcode( '[anchor_testimonials layout="video-grid" type="any"]' );
+		$this->assertStringContainsString( 'Quote Person', $html_any, 'An explicit type attribute must override the video-grid default.' );
+	}
 }

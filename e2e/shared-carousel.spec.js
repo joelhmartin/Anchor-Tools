@@ -96,3 +96,63 @@ test('carousel with fewer items than visible columns clamps maxIndex to zero', a
     expect(value).not.toMatch(/--/);
   }
 });
+
+/**
+ * Fix round 1 finding: mode === 'slider' (the gallery module's default
+ * layout - a native-scroll, scroll-snap track, unlike mode === 'carousel'
+ * above which is a JS-driven transform) must keep native horizontal touch
+ * scrolling untouched. assets/shared/anchor-carousel.js used to set
+ * touch-action: pan-y on every track regardless of mode, which blocked the
+ * browser's own horizontal panning on a slider-layout gallery; the Pointer
+ * Events drag handling and that touch-action override are now gated to
+ * mode === 'carousel' only.
+ *
+ * FIXTURE: bin/e2e-seed.sh publishes one gallery (layout=slider, 6 video
+ * items, 3 desktop columns) on a page, and writes gallerySliderUrl into
+ * e2e/.seed.json. Run `npm run env:seed` before this spec.
+ */
+test.describe('native slider mode (touch)', () => {
+  test.use({ hasTouch: true, viewport: { width: 1280, height: 900 } });
+
+  test('the slider track keeps the browser default touch-action (no pan-y override)', async ({ page }) => {
+    await page.goto(seed.gallerySliderUrl);
+    await acceptConsentBanner(page);
+
+    const track = page.locator('.avg-track').first();
+    await expect(track).toBeVisible();
+    const touchAction = await track.evaluate((el) => getComputedStyle(el).touchAction);
+    expect(touchAction).not.toBe('pan-y');
+  });
+
+  test('a horizontal touch swipe scrolls the native slider track', async ({ page, context }) => {
+    await page.goto(seed.gallerySliderUrl);
+    await acceptConsentBanner(page);
+
+    const track = page.locator('.avg-track').first();
+    await expect(track).toBeVisible();
+    const box = await track.boundingBox();
+    const y = box.y + box.height / 2;
+    // Swipe within the interior tile content, well clear of the
+    // .avg-nav-prev/.avg-nav-next overlay buttons that sit right at the
+    // track's left/right edges - a touch that starts on one of those
+    // buttons doesn't produce a scroll gesture (confirmed while writing
+    // this test: elementFromPoint at a near-edge x resolved to
+    // .avg-nav-next, not track content, and scrollLeft never moved).
+    const startX = box.x + box.width * 0.75;
+    const endX = box.x + box.width * 0.25;
+
+    const before = await track.evaluate((el) => el.scrollLeft);
+
+    // Real, OS-level-equivalent touch input (not a synthetic DOM TouchEvent
+    // dispatch, which native overflow-x scrolling ignores - only trusted
+    // input drives the browser's own scroll physics) via the CDP protocol,
+    // which hasTouch: true makes Chromium treat as genuine touch.
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: startX, y }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: (startX + endX) / 2, y }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: endX, y }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+
+    await expect.poll(() => track.evaluate((el) => el.scrollLeft)).not.toBe(before);
+  });
+});

@@ -7,13 +7,21 @@
  *   --as-photo-radius  speaker photo corner radius (default 50%, a circle)
  *
  * Theme-overridable, not set inline:
- *   --as-avatar-size     avatars layout: each headshot's diameter (default 40px)
- *   --as-avatar-overlap  avatars layout: how far each avatar tucks under the
- *                        previous one (default 12px)
- *   --as-avatar-ring     avatars layout: the ring/border color separating
- *                        overlapping avatars (default #fff)
- *   --as-cta-color       list layout: the trailing "View" link color
- *                        (default currentColor)
+ *   --as-avatar-size            avatars layout: each headshot's diameter (default 40px)
+ *   --as-avatar-overlap         avatars layout: how far each avatar tucks under
+ *                               the previous one (default 12px)
+ *   --as-avatar-ring            avatars layout: the ring/border color separating
+ *                               overlapping avatars (default #fff)
+ *   --as-avatar-placeholder-bg  avatars layout: a photo-less speaker's initial
+ *                               placeholder background (default rgba(0,0,0,.08))
+ *   --as-avatar-placeholder-fg  avatars layout: that placeholder's text color
+ *                               (default rgba(0,0,0,.5))
+ *   --as-cta-color              list layout: the trailing "View" link color
+ *                               (default currentColor)
+ *   --as-list-border            list layout: the hairline row divider color
+ *                               (default rgba(0,0,0,.08))
+ *   --as-title-color            list layout: the role/title line color
+ *                               (default rgba(0,0,0,.6))
  *
  * The single-speaker fallback template (templates/single-anchor_speaker.php)
  * uses the separate .anchor-speaker-single block below, unrelated to the
@@ -56,7 +64,7 @@
 	align-items: center;
 	column-gap: var( --as-gap, 24px );
 	padding: 16px 0;
-	border-bottom: 1px solid rgba( 0, 0, 0, 0.08 );
+	border-bottom: 1px solid var( --as-list-border, rgba( 0, 0, 0, 0.08 ) );
 }
 
 .anchor-speakers--list .anchor-speaker:last-child {
@@ -67,7 +75,11 @@
 	grid-column: 1;
 }
 
-.anchor-speakers--list .anchor-speaker > .anchor-speaker__link,
+/*
+ * .anchor-speaker__cta alone is enough here: the list layout's PHP always
+ * emits __cta together with __link on the same element (never __link
+ * alone), so matching both classes separately would be redundant.
+ */
 .anchor-speakers--list .anchor-speaker > .anchor-speaker__cta {
 	grid-column: 2;
 	grid-row: 1 / -1;
@@ -89,7 +101,6 @@
 	align-self: center;
 }
 
-.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__link,
 .anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__cta {
 	grid-column: 3;
 }
@@ -105,7 +116,7 @@
 }
 
 .anchor-speakers--list .anchor-speaker__title {
-	color: rgba( 0, 0, 0, 0.6 );
+	color: var( --as-title-color, rgba( 0, 0, 0, 0.6 ) );
 	margin: 0.25em 0 0;
 }
 
@@ -178,8 +189,8 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: rgba( 0, 0, 0, 0.08 );
-	color: rgba( 0, 0, 0, 0.5 );
+	background: var( --as-avatar-placeholder-bg, rgba( 0, 0, 0, 0.08 ) );
+	color: var( --as-avatar-placeholder-fg, rgba( 0, 0, 0, 0.5 ) );
 	font-size: 0.85em;
 	font-weight: 600;
 	text-transform: uppercase;

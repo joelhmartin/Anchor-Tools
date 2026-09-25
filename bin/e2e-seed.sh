@@ -502,6 +502,52 @@ GALLERY_CAROUSEL_PAGE_ID="$(wp eval '
 log "Carousel gallery page #${GALLERY_CAROUSEL_PAGE_ID}"
 
 # ---------------------------------------------------------------------------
+# Slider-layout (native scroll, scroll-snap) gallery fixture (shared carousel
+# E2E, e2e/shared-carousel.spec.js). avg_layout="slider" is the module's
+# default layout and the only one whose track scrolls natively via
+# overflow-x/scroll-snap rather than a JS-driven transform - this fixture
+# exists specifically to prove touch-action: pan-y and the Pointer Events
+# drag handling in assets/shared/anchor-carousel.js never apply to it (both
+# are gated to mode === 'carousel'), so native horizontal touch scrolling
+# stays intact. Six items and a narrow 3-column desktop width so the track is
+# wider than its viewport and actually has somewhere to scroll to.
+# ---------------------------------------------------------------------------
+GALLERY_SLIDER_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "anchor_video_gallery", "name" => "avg-e2e-slider", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "anchor_video_gallery",
+      "post_title"  => "AVG E2E Slider",
+      "post_name"   => "avg-e2e-slider",
+      "post_status" => "publish",
+  ] );
+  $video_ids = [ "dQw4w9WgXcQ", "jNQXAC9IVRw", "9bZkp7q19f0", "kJQP7kiw5Fk", "RgKAFK5djSk", "astISOttCQ0" ];
+  $items = [];
+  foreach ( $video_ids as $i => $vid ) {
+      $items[] = [ "type" => "video", "url" => "https://www.youtube.com/watch?v=$vid", "title" => "Slider Video " . ( $i + 1 ), "caption" => "Caption " . ( $i + 1 ), "categories" => [] ];
+  }
+  update_post_meta( $id, "avg_videos", $items );
+  update_post_meta( $id, "avg_layout", "slider" );
+  update_post_meta( $id, "avg_popup_style", "lightbox" );
+  update_post_meta( $id, "avg_pagination_enabled", 0 );
+  update_post_meta( $id, "avg_columns_desktop", 3 );
+  echo (int) $id;
+')"
+log "Slider gallery #${GALLERY_SLIDER_ID}"
+
+GALLERY_SLIDER_PAGE_ID="$(wp eval '
+  $existing = get_posts( [ "post_type" => "page", "name" => "avg-e2e-gallery-slider", "posts_per_page" => 1, "fields" => "ids" ] );
+  $id = $existing ? (int) $existing[0] : wp_insert_post( [
+      "post_type"   => "page",
+      "post_title"  => "AVG E2E Gallery Slider",
+      "post_name"   => "avg-e2e-gallery-slider",
+      "post_status" => "publish",
+  ] );
+  wp_update_post( [ "ID" => $id, "post_content" => "[anchor_video_gallery id=\"'"${GALLERY_SLIDER_ID}"'\"]" ] );
+  echo (int) $id;
+')"
+log "Slider gallery page #${GALLERY_SLIDER_PAGE_ID}"
+
+# ---------------------------------------------------------------------------
 # Testimonials fixture (grid/slider E2E, e2e/testimonials.spec.js).
 # Four testimonials (2 with YouTube video URLs, 2 quote-only) on a page with
 # [anchor_testimonials layout="slider"]. Anchor_Testimonial_Meta::save() is
@@ -594,7 +640,7 @@ GALLERY_CAROUSEL_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_CAROUSEL_PA
 COMPLIANCE_PAGE_URL="$(wp eval 'echo get_permalink('"${COMPLIANCE_PAGE_ID}"');')"
 TESTIMONIALS_SLIDER_PAGE_URL="$(wp eval 'echo get_permalink('"${TESTIMONIALS_SLIDER_PAGE_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"galleryCarouselUrl"=>get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"'),"testimonialsSliderUrl"=>get_permalink('"${TESTIMONIALS_SLIDER_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"galleryCarouselUrl"=>get_permalink('"${GALLERY_CAROUSEL_PAGE_ID}"'),"gallerySliderUrl"=>get_permalink('"${GALLERY_SLIDER_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"'),"testimonialsSliderUrl"=>get_permalink('"${TESTIMONIALS_SLIDER_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Multisession event URL: ${MULTI_EVENT_URL}"

@@ -110,9 +110,13 @@ Theme-overridable, read by `assets/speakers.css` with fallback defaults, not set
 | `--as-gap` | `24px` | Grid/list gap |
 | `--as-photo-radius` | `50%` (a circle) | Speaker photo corner radius, on both the card photo and the single-template photo |
 | `--as-cta-color` | `currentColor` | List layout's trailing "View" link color |
+| `--as-list-border` | `rgba(0,0,0,.08)` | List layout's hairline row divider |
+| `--as-title-color` | `rgba(0,0,0,.6)` | List layout's role/title line color |
 | `--as-avatar-size` | `40px` | Avatars layout: each headshot's diameter |
 | `--as-avatar-overlap` | `12px` | Avatars layout: how far each avatar tucks under the previous one |
 | `--as-avatar-ring` | `#fff` | Avatars layout: the ring/border color separating overlapping avatars |
+| `--as-avatar-placeholder-bg` | `rgba(0,0,0,.08)` | Avatars layout: a photo-less speaker's initial placeholder background |
+| `--as-avatar-placeholder-fg` | `rgba(0,0,0,.5)` | Avatars layout: that placeholder's text color |
 
 `layout=list` lays cards out as a CSS grid row (photo at a fixed 64px, per the row design above) instead of a grid of cards. `layout=compact` is the same grid as `grid` at half the gap. `layout=avatars` is a flex row of overlapping circles, not a grid at all.
 

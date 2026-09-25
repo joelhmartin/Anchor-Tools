@@ -161,6 +161,59 @@ test.describe('mouse drag (shared carousel Pointer Events)', () => {
 		await page.locator('.anchor-testimonial__media').first().click();
 		await expect(page.locator('.avg-modal')).toBeVisible();
 	});
+
+	test('a drag that ends outside the track does not leave stale click suppression armed', async ({ page }) => {
+		// pointerup listens on `document` (not `track`), so a drag whose
+		// release happens past the track's right edge never fires a `click`
+		// on the track at all - the old once:true suppression listener would
+		// stay armed forever in that case and swallow the NEXT, unrelated
+		// click on the track instead. Drags past the threshold outside the
+		// track, waits past the 300ms suppression window, then makes a fresh,
+		// ordinary click; it must still open the lightbox.
+		const track = page.locator('.anchor-testimonials__track').first();
+		const box = await track.boundingBox();
+		const y = box.y + box.height / 2;
+		const startX = box.x + box.width - 20;
+		const endX = box.x + box.width + 300;
+
+		await page.evaluate(
+			({ startX, endX, y }) => {
+				const trackEl = document.querySelector('.anchor-testimonials__track');
+				const fire = (target, type, x) =>
+					target.dispatchEvent(
+						new PointerEvent(type, {
+							bubbles: true,
+							cancelable: true,
+							pointerId: 1,
+							pointerType: 'mouse',
+							button: 0,
+							clientX: x,
+							clientY: y,
+						})
+					);
+				fire(trackEl, 'pointerdown', startX);
+				fire(document, 'pointermove', startX - 80);
+				// Release happens on document, past the track's right edge -
+				// exactly what a real drag that leaves the track looks like.
+				fire(document, 'pointerup', endX);
+			},
+			{ startX, endX, y }
+		);
+
+		await page.waitForTimeout(400);
+
+		// The drag above advanced the carousel by exactly one slide, so the
+		// first card in DOM order is now clipped out of the
+		// (overflow: hidden) viewport - CSS transforms move it off-screen,
+		// which Playwright's :visible pseudo-class does not account for (it
+		// only checks computed display/visibility and box size, not
+		// clipping by an ancestor), so it would still resolve to the
+		// now-offscreen first card. Target the card that slid into view
+		// instead (DOM index 1, confirmed via a manual elementFromPoint
+		// check while diagnosing this).
+		await page.locator('.anchor-testimonial__media').nth(1).click();
+		await expect(page.locator('.avg-modal')).toBeVisible();
+	});
 });
 
 test.describe('mobile viewport (390px)', () => {

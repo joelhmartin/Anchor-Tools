@@ -171,7 +171,7 @@ class Test_Speakers_Render extends WP_UnitTestCase {
 
 		$html = do_shortcode( '[anchor_speakers layout="avatars" featured="1" limit="3"]' );
 
-		$this->assertSame( 3, substr_count( $html, 'anchor-speaker-avatar__img--placeholder' ) );
+		$this->assertSame( 3, substr_count( $html, 'class="anchor-speaker-avatar"' ) );
 		$this->assertStringNotContainsString( 'Not Featured', $html );
 	}
 

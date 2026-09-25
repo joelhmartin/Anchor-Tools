@@ -169,16 +169,25 @@
       }
     }
 
-    /* -- Drag / swipe support (Pointer Events) --------------------------- */
+    /* -- Drag / swipe support (Pointer Events, carousel mode only) ------- */
     //
     // A single Pointer Events implementation drives both mouse drag
     // (desktop) and touch swipe, replacing the previous touch-only handler
-    // so there is one code path instead of two. touch-action: pan-y on the
-    // track lets the browser keep handling vertical scrolling natively (a
-    // swipe that turns out to be a vertical scroll is abandoned rather than
-    // fought), and a drag that crosses the threshold suppresses the click
-    // event the browser fires on release, so a link or video button inside
-    // the dragged slide doesn't also activate.
+    // so there is one code path instead of two. It only applies in
+    // mode === 'carousel' (a JS-driven transform track): mode === 'slider'
+    // is the gallery's native-scroll, scroll-snap layout, which already
+    // handles horizontal touch panning itself via the browser's own
+    // overflow-x scrolling - setting touch-action here or attaching pointer
+    // listeners would only get in that native behavior's way (touch-action:
+    // pan-y previously did exactly that, breaking horizontal touch scroll
+    // on every slider-layout gallery).
+    //
+    // touch-action: pan-y on the track lets the browser keep handling
+    // vertical scrolling natively (a swipe that turns out to be a vertical
+    // scroll is abandoned rather than fought), and a drag that crosses the
+    // threshold suppresses the click event the browser fires on release, so
+    // a link or video button inside the dragged slide doesn't also
+    // activate.
     //
     // A drag only STARTS on the track (pointerdown listener below), but
     // pointermove/pointerup/pointercancel listen on `document`, gated by the
@@ -191,18 +200,32 @@
     // testimonials.js, `.avg-tile` in the gallery), since the click's target
     // becomes the track itself instead of the tapped/clicked descendant.
 
-    track.style.touchAction = 'pan-y';
+    if (mode === 'carousel') {
+      track.style.touchAction = 'pan-y';
+    }
 
     (function initDrag() {
+      if (mode !== 'carousel') return;
+
       var startX = 0, startY = 0, deltaX = 0, dragging = false, activePointerId = null;
       var threshold = 40;
+      var dragEndedAt = 0;
+      // How long after a drag ends its trailing click stays suppressed.
+      // Because pointerup listens on `document` (not `track`, see above), a
+      // drag that ends outside the track's bounds never fires a `click` on
+      // `track` at all, so a once:true listener registered per-drag would
+      // stay armed indefinitely and swallow the NEXT, unrelated click on the
+      // track instead. A permanently-attached listener gated by a short time
+      // window fixes that: it only suppresses a click that follows a real
+      // drag closely enough to be that drag's own trailing click.
+      var SUPPRESS_WINDOW_MS = 300;
 
-      function suppressNextClick() {
-        on(track, 'click', function(e) {
+      on(track, 'click', function(e) {
+        if (Date.now() - dragEndedAt < SUPPRESS_WINDOW_MS) {
           e.preventDefault();
           e.stopPropagation();
-        }, { capture: true, once: true });
-      }
+        }
+      }, { capture: true });
 
       on(track, 'pointerdown', function(e) {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -220,14 +243,14 @@
         // If vertical scroll is dominant, release the drag back to native
         // scrolling instead of fighting it.
         if (Math.abs(deltaY) > Math.abs(deltaX)) { dragging = false; return; }
-        if (mode === 'carousel') e.preventDefault();
+        e.preventDefault();
       }, { passive: false });
 
       function endDrag(e) {
         if (!dragging || e.pointerId !== activePointerId) return;
         dragging = false;
         if (Math.abs(deltaX) > threshold) {
-          suppressNextClick();
+          dragEndedAt = Date.now();
           scrollSlider(deltaX < 0 ? 1 : -1);
         }
       }

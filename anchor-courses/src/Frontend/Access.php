@@ -64,36 +64,113 @@ final class Access {
 	}
 
 	/**
+	 * The query arg every lesson link the templates emit carries: the course
+	 * the learner came from (final review I2). A lesson may sit in more than
+	 * one course, and this is what tells the page which one it is being read
+	 * in.
+	 */
+	public const COURSE_ARG = 'course';
+
+	/** Why a lesson body is withheld (lesson_denial()). */
+	public const DENIED_NOT_ENROLLED = 'not_enrolled';
+	public const DENIED_LOCKED       = 'locked';
+
+	/** A lesson's permalink, carrying the course it is being read in. */
+	public static function lesson_url( int $lesson_id, int $course_id ): string {
+		$url = (string) \get_permalink( $lesson_id );
+		return $course_id > 0 ? \add_query_arg( self::COURSE_ARG, $course_id, $url ) : $url;
+	}
+
+	/**
+	 * Which course a learner is reading this lesson in, or 0 when no
+	 * published course lists it.
+	 *
+	 * The ONE resolver every lesson surface uses (ContentGuard, render_lesson,
+	 * can_view_lesson), in this order (final review I2 - reverses the T7
+	 * "lowest id wins" rule for access decisions):
+	 *
+	 *   1. the explicit course on the URL (COURSE_ARG), if that published
+	 *      course really lists the lesson - a value naming anything else is
+	 *      ignored, never trusted;
+	 *   2. the lowest-id published course the user is enrolled in;
+	 *   3. the lowest-id published course.
+	 *
+	 * Draft/pending/private courses are never candidates
+	 * (Curriculum::courses_for_item()).
+	 */
+	public static function course_for_lesson( int $lesson_id, int $user_id = 0 ): int {
+		$courses = Curriculum::courses_for_item( $lesson_id, 'lesson' );
+		if ( [] === $courses ) {
+			return 0;
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification -- a read that only selects among courses already listing this lesson.
+		$requested = \absint( \wp_unslash( $_GET[ self::COURSE_ARG ] ?? 0 ) );
+		if ( $requested > 0 && \in_array( $requested, $courses, true ) ) {
+			return $requested;
+		}
+
+		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
+		$module  = Module::instance();
+		if ( $user_id > 0 && $module instanceof Module ) {
+			foreach ( $courses as $course_id ) {
+				if ( $module->enrollments->is_enrolled( $user_id, $course_id ) ) {
+					return $course_id;
+				}
+			}
+		}
+
+		return $courses[0];
+	}
+
+	/**
 	 * Whether $user_id may see a lesson's real body right now.
 	 *
 	 * The single authority `Frontend\ContentGuard` calls to enforce the
 	 * lesson gate on `the_content`/`the_excerpt`/`get_the_excerpt` - so a
 	 * feed, a search excerpt or a stray theme loop over `anchor_lesson`
-	 * refuses on exactly the same terms as the page itself. It delegates to
-	 * `ProgressService::is_item_available()` (Task 18 review fix round,
-	 * ruling (b)) rather than re-deriving enrolment/progression rules here:
-	 * that method is already the sole authority the course/lesson templates
-	 * and `Shortcodes::render_lesson()` consult for the same question.
+	 * refuses on exactly the same terms as the page itself.
 	 *
 	 * @param int $lesson_id
 	 * @param int $user_id   Defaults to the current user.
 	 */
 	public static function can_view_lesson( int $lesson_id, int $user_id = 0 ): bool {
+		return '' === self::lesson_denial( $lesson_id, $user_id );
+	}
+
+	/**
+	 * Why $user_id may NOT see a lesson's body: '' (they may),
+	 * DENIED_NOT_ENROLLED or DENIED_LOCKED.
+	 *
+	 * Anyone who can edit the lesson (its author, an editor, an admin)
+	 * always may - that is the preview (final review I4). Everyone else goes
+	 * through `ProgressService::is_item_available()` against the course
+	 * course_for_lesson() resolves, the same authority the templates and
+	 * `Shortcodes::render_lesson()` consult, including its
+	 * `anchor_courses_can_access_lesson` filter. A refusal is "locked" only
+	 * for somebody actually enrolled in that course; for anyone else it is
+	 * "not enrolled", so nobody is told to finish lessons they cannot open.
+	 */
+	public static function lesson_denial( int $lesson_id, int $user_id = 0 ): string {
 		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
 		if ( $user_id <= 0 ) {
-			return false;
+			return self::DENIED_NOT_ENROLLED;
 		}
 
-		$module = Module::instance();
-		if ( ! $module instanceof Module ) {
-			return false;
+		if ( \user_can( $user_id, 'edit_post', $lesson_id ) ) {
+			return '';
 		}
 
-		$course_id = Curriculum::course_for_item( $lesson_id, 'lesson' );
-		if ( $course_id <= 0 ) {
-			return false;
+		$module    = Module::instance();
+		$course_id = self::course_for_lesson( $lesson_id, $user_id );
+		if ( ! $module instanceof Module || $course_id <= 0 ) {
+			return self::DENIED_NOT_ENROLLED;
 		}
 
-		return $module->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' );
+		if ( $module->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' ) ) {
+			return '';
+		}
+
+		return $module->enrollments->is_enrolled( $user_id, $course_id ) ? self::DENIED_LOCKED : self::DENIED_NOT_ENROLLED;
 	}
 }

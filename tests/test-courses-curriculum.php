@@ -77,6 +77,31 @@ class Test_Courses_Curriculum extends Anchor_Courses_TestCase {
 	 * that happens `course_for_item()` must resolve deterministically to the
 	 * lowest course id - not to whichever course happened to save last.
 	 */
+	/** Final review I2: a draft, pending or private course never owns an item. */
+	public function test_course_for_item_ignores_unpublished_courses() {
+		$lesson = $this->make_lesson();
+		foreach ( [ 'draft', 'pending', 'private' ] as $status ) {
+			$c = self::factory()->post->create( [ 'post_type' => 'anchor_course', 'post_status' => $status ] );
+			Curriculum::save( $c, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+		}
+		$this->assertSame( 0, Curriculum::course_for_item( $lesson, 'lesson' ) );
+
+		$published = $this->make_course();
+		Curriculum::save( $published, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+		$this->assertSame( $published, Curriculum::course_for_item( $lesson, 'lesson' ) );
+		$this->assertSame( [ $published ], Curriculum::courses_for_item( $lesson, 'lesson' ) );
+	}
+
+	/** The per-request memo must not serve a stale curriculum after a save. */
+	public function test_items_reflect_a_save_made_after_they_were_read() {
+		$lesson = $this->make_lesson();
+		$this->assertFalse( Curriculum::contains( $this->course, $lesson, 'lesson' ) );
+		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+		$this->assertTrue( Curriculum::contains( $this->course, $lesson, 'lesson' ) );
+		delete_post_meta( $this->course, Curriculum::META );
+		$this->assertFalse( Curriculum::contains( $this->course, $lesson, 'lesson' ) );
+	}
+
 	public function test_course_for_item_resolves_to_the_lowest_course_id_when_shared() {
 		$lower_course  = $this->course;
 		$higher_course = $this->make_course( [], 'Higher Course' );

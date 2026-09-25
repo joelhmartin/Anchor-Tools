@@ -81,16 +81,55 @@ final class Curriculum {
 		return $clean;
 	}
 
+	/**
+	 * Per-request memo of get(), keyed by course id (final review I2): one
+	 * lesson view resolves its course, checks progression and builds Next/
+	 * Prev, and each of those walks the curriculum - without this the same
+	 * meta is re-read and re-sanitised a dozen times per page. Invalidated by
+	 * any write to the META key (see register_cache_invalidation()), so a
+	 * save in the same request is never served stale.
+	 *
+	 * @var array<int,array>
+	 */
+	private static array $memo = [];
+
+	/** Hooked once by the Module: drop a course's memo whenever its curriculum meta changes. */
+	public static function register_cache_invalidation(): void {
+		foreach ( [ 'added_post_meta', 'updated_post_meta', 'deleted_post_meta' ] as $hook ) {
+			\add_action( $hook, [ self::class, 'on_meta_write' ], 10, 3 );
+		}
+	}
+
+	/**
+	 * @param int|int[] $meta_ids
+	 * @param int       $object_id
+	 * @param string    $meta_key
+	 */
+	public static function on_meta_write( $meta_ids, $object_id, $meta_key ): void {
+		if ( self::META === $meta_key ) {
+			unset( self::$memo[ (int) $object_id ] );
+		}
+	}
+
+	/** Forget every memoised curriculum. */
+	public static function flush_memo(): void {
+		self::$memo = [];
+	}
+
 	/** @return array Canonical modules for a course (empty when unauthored). */
 	public static function get( int $course_id ): array {
-		$stored = \get_post_meta( $course_id, self::META, true );
-		return \is_array( $stored ) ? self::sanitize( $stored ) : [];
+		if ( ! isset( self::$memo[ $course_id ] ) ) {
+			$stored                     = \get_post_meta( $course_id, self::META, true );
+			self::$memo[ $course_id ] = \is_array( $stored ) ? self::sanitize( $stored ) : [];
+		}
+		return self::$memo[ $course_id ];
 	}
 
 	/** Persist and return the canonical modules actually stored. */
 	public static function save( int $course_id, array $modules ): array {
 		$clean = self::sanitize( $modules );
 		\update_post_meta( $course_id, self::META, $clean );
+		unset( self::$memo[ $course_id ] ); // update_post_meta() is a no-op (no hook) when nothing changed.
 		\do_action( 'anchor_courses_curriculum_saved', $course_id, $clean );
 		return $clean;
 	}
@@ -144,24 +183,21 @@ final class Curriculum {
 	}
 
 	/**
-	 * The course that lists this item, or 0.
+	 * Every PUBLISHED course whose curriculum lists this item, lowest id first.
 	 *
-	 * Scans every course's curriculum meta directly via `get_posts()` with
-	 * `meta_key` (rather than loading each course through `get()` twice), so
-	 * courses with no curriculum meta at all are excluded from the candidate
-	 * list before `contains()` walks their items.
+	 * Draft, pending and private courses are never candidates (final review
+	 * I2): a leftover draft copy of a course used to win the lowest-id
+	 * tie-break and lock the published course's learners out. Sharing an
+	 * item between courses is allowed; which one a LEARNER is evaluated
+	 * against is decided by Frontend\Access::course_for_lesson(), not here.
 	 *
-	 * Nothing enforces that an item belongs to only one course's curriculum,
-	 * so sharing is possible. When an item is shared by several courses this
-	 * resolves to the LOWEST course id, deterministically, by ordering the
-	 * candidate query by `ID ASC`: sharing is allowed, but the owner used for
-	 * progress purposes is always the same one, regardless of save order.
+	 * @return int[]
 	 */
-	public static function course_for_item( int $item_id, string $type ): int {
+	public static function courses_for_item( int $item_id, string $type ): array {
 		$courses = \get_posts(
 			[
 				'post_type'      => CoursePostType::CPT,
-				'post_status'    => [ 'publish', 'draft', 'private', 'pending' ],
+				'post_status'    => 'publish',
 				'fields'         => 'ids',
 				'posts_per_page' => -1,
 				'no_found_rows'  => true,
@@ -171,12 +207,25 @@ final class Curriculum {
 			]
 		);
 
+		$owners = [];
 		foreach ( $courses as $course_id ) {
 			if ( self::contains( (int) $course_id, $item_id, $type ) ) {
-				return (int) $course_id;
+				$owners[] = (int) $course_id;
 			}
 		}
+		return $owners;
+	}
 
-		return 0;
+	/**
+	 * The lowest-id published course that lists this item, or 0.
+	 *
+	 * Content-only answer, with no learner in view: used where there is no
+	 * course context and no user to ask about (a quiz rendered outside its
+	 * course). For a lesson a learner is viewing use
+	 * Frontend\Access::course_for_lesson(), which prefers the course on the
+	 * URL and then the one the learner is enrolled in.
+	 */
+	public static function course_for_item( int $item_id, string $type ): int {
+		return self::courses_for_item( $item_id, $type )[0] ?? 0;
 	}
 }

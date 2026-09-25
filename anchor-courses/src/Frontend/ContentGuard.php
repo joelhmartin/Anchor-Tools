@@ -41,14 +41,16 @@ final class ContentGuard {
 		\add_filter( 'the_content', [ self::class, 'filter_content' ] );
 		\add_filter( 'the_excerpt', [ self::class, 'filter_excerpt' ] );
 		\add_filter( 'get_the_excerpt', [ self::class, 'filter_excerpt' ], 10, 2 );
+		\add_filter( 'wp_sitemaps_post_types', [ self::class, 'exclude_lessons_from_sitemap' ] );
 	}
 
-	public static function filter_content( string $content ): string {
-		return self::guard( $content, null );
+	/** Null-tolerant: a plugin or theme can hand `the_content` a null. */
+	public static function filter_content( ?string $content ): string {
+		return self::guard( (string) $content, null );
 	}
 
-	public static function filter_excerpt( string $excerpt, ?\WP_Post $post = null ): string {
-		return self::guard( $excerpt, $post );
+	public static function filter_excerpt( ?string $excerpt, ?\WP_Post $post = null ): string {
+		return self::guard( (string) $excerpt, $post );
 	}
 
 	private static function guard( string $output, ?\WP_Post $post ): string {
@@ -61,21 +63,59 @@ final class ContentGuard {
 			return $output;
 		}
 
-		if ( Access::can_view_lesson( (int) $post->ID ) ) {
+		$denial = Access::lesson_denial( (int) $post->ID );
+		if ( '' === $denial ) {
 			return $output;
 		}
 
 		self::$active = true;
-		$notice        = self::notice();
+		$notice        = self::notice( (int) $post->ID, $denial );
 		self::$active = false;
 
 		return $notice;
 	}
 
-	/** Same wording the template used before this guard existed. */
-	private static function notice(): string {
+	/**
+	 * Two honest messages (final review I4): somebody enrolled but not there
+	 * yet is told to finish the earlier lessons; anybody else is told they
+	 * are not enrolled, followed by the course's access call to action
+	 * (Access::cta() - the `anchor_courses_no_access_message` text, or the
+	 * link an integration supplied through `anchor_courses_access_cta`).
+	 */
+	private static function notice( int $lesson_id, string $denial ): string {
+		if ( Access::DENIED_LOCKED === $denial ) {
+			return '<p class="anchor-courses-notice">'
+				. \esc_html__( 'Finish the earlier lessons to unlock this one.', 'anchor-schema' )
+				. '</p>';
+		}
+
+		$user_id   = (int) \get_current_user_id();
+		$course_id = Access::course_for_lesson( $lesson_id, $user_id );
+		$cta       = $course_id > 0 ? Access::cta( $course_id, $user_id ) : [ 'url' => '', 'label' => '', 'message' => '' ];
+
+		$follow = '';
+		if ( '' !== $cta['url'] ) {
+			$follow = ' <a class="anchor-courses-button" href="' . \esc_url( $cta['url'] ) . '">' . \esc_html( $cta['label'] ) . '</a>';
+		} elseif ( '' !== $cta['message'] ) {
+			$follow = ' ' . \esc_html( $cta['message'] );
+		}
+
 		return '<p class="anchor-courses-notice">'
-			. \esc_html__( 'Finish the earlier lessons to unlock this one.', 'anchor-schema' )
+			. \esc_html__( 'You are not enrolled in this course.', 'anchor-schema' )
+			. $follow
 			. '</p>';
+	}
+
+	/**
+	 * `wp_sitemaps_post_types`: lessons are gated content, so they never go
+	 * in the core sitemap - every URL there would render the access notice.
+	 *
+	 * @param array<string,\WP_Post_Type> $post_types
+	 */
+	public static function exclude_lessons_from_sitemap( $post_types ) {
+		if ( \is_array( $post_types ) ) {
+			unset( $post_types[ LessonPostType::CPT ] );
+		}
+		return $post_types;
 	}
 }

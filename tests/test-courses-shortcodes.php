@@ -226,7 +226,7 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 
 		$html = Module::instance()->shortcodes->render_lesson( $this->lesson );
 
-		$this->assertStringContainsString( 'Finish the earlier lessons to unlock this one.', $html );
+		$this->assertStringContainsString( 'You are not enrolled in this course.', $html );
 		$this->assertStringNotContainsString( '<form', $html );
 		$this->assertStringNotContainsString( Actions::NONCE_COMPLETE, $html );
 	}
@@ -238,7 +238,7 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 
 		$html = Module::instance()->shortcodes->render_lesson( $this->lesson );
 
-		$this->assertStringContainsString( 'Finish the earlier lessons to unlock this one.', $html );
+		$this->assertStringContainsString( 'You are not enrolled in this course.', $html );
 		$this->assertStringNotContainsString( '<form', $html );
 		$this->assertStringNotContainsString( Actions::NONCE_COMPLETE, $html );
 	}
@@ -275,7 +275,9 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 		);
 
 		wp_set_current_user( $this->user );
-		( new EnrollmentService() )->enroll( $this->user, $course );
+		// Through the one door: a row without the access role is not
+		// enrolment, and would (rightly) read "not enrolled", not "locked".
+		Roles::grant_access( $this->user, $course );
 		global $post;
 		$post = get_post( $second );
 

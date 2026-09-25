@@ -43,6 +43,7 @@ class Module {
 		\add_action( 'init', [ Content\CoursePostType::class, 'register' ] );
 		\add_action( 'init', [ Content\LessonPostType::class, 'register' ] );
 		\add_action( 'init', [ Content\QuizPostType::class, 'register' ] );
+		Content\Curriculum::register_cache_invalidation();
 
 		// Mint the access role on publish and keep both names on the title
 		// (design spec 3.1). Priority 20: after CourseEditor::save() has run, so
@@ -95,6 +96,9 @@ class Module {
 		new Frontend\Actions( $this->progress );
 
 		new Frontend\Templates();
+		// The lesson-body gate on the_content/the_excerpt (and the sitemap
+		// exclusion) - on every request, front end or not.
+		Frontend\ContentGuard::register();
 		new Frontend\Assets();
 		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments, $this->credits, $this->certificates );
 

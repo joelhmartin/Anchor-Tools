@@ -228,19 +228,32 @@ final class Shortcodes {
 		return (string) \ob_get_clean();
 	}
 
-	/** Rendered by single-lesson.php; not a public shortcode. */
+	/**
+	 * Rendered by single-lesson.php; not a public shortcode.
+	 *
+	 * The course is resolved by Access::course_for_lesson() - the course on
+	 * the URL, else the one the learner is enrolled in (final review I2) -
+	 * the same answer ContentGuard reaches for the body.
+	 */
 	public function render_lesson( int $lesson_id ): string {
-		$course_id = Curriculum::course_for_item( $lesson_id, 'lesson' );
 		$user_id   = \get_current_user_id();
+		$course_id = Access::course_for_lesson( $lesson_id, $user_id );
 
 		if ( $course_id <= 0 ) {
 			return '';
 		}
 
-		$items    = Curriculum::items( $course_id );
-		$position = Curriculum::position( $course_id, $lesson_id, 'lesson' );
-		$previous = $position > 0 ? (int) $items[ $position - 1 ]['id'] : 0;
-		$next     = isset( $items[ $position + 1 ] ) ? (int) $items[ $position + 1 ]['id'] : 0;
+		// Next/Prev walk LESSONS only: a quiz has no URL of its own (it
+		// renders inside the course page), so linking to one would 404.
+		$lessons  = \array_values(
+			\array_map(
+				static fn( array $item ): int => (int) $item['id'],
+				\array_filter( Curriculum::items( $course_id ), static fn( array $item ): bool => 'lesson' === $item['type'] )
+			)
+		);
+		$position = (int) \array_search( $lesson_id, $lessons, true );
+		$previous = $position > 0 ? $lessons[ $position - 1 ] : 0;
+		$next     = $lessons[ $position + 1 ] ?? 0;
 
 		$available = $user_id > 0 && $this->progress->is_item_available( $user_id, $course_id, $lesson_id, 'lesson' );
 		if ( $available ) {

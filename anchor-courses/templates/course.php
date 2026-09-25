@@ -73,7 +73,7 @@ $notice = Actions::notice();
 						?>
 						<li class="anchor-course-item anchor-course-item--<?php echo esc_attr( $item['type'] ); ?><?php echo $done ? ' is-complete' : ''; ?><?php echo $available ? '' : ' is-locked'; ?>">
 							<?php if ( $available && 'lesson' === $item['type'] ) : ?>
-								<a href="<?php echo esc_url( (string) get_permalink( (int) $item['id'] ) ); ?>"><?php echo esc_html( get_the_title( (int) $item['id'] ) ); ?></a>
+								<a href="<?php echo esc_url( Access::lesson_url( (int) $item['id'], (int) $course_id ) ); ?>"><?php echo esc_html( get_the_title( (int) $item['id'] ) ); ?></a>
 							<?php else : ?>
 								<span><?php echo esc_html( get_the_title( (int) $item['id'] ) ); ?></span>
 							<?php endif; ?>

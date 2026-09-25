@@ -203,6 +203,25 @@ class Test_Courses_Certificate_Page extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( 'frontend.js', $html );
 	}
 
+	/**
+	 * The standalone certificate document had no heading at all (pre-gate
+	 * cleanup round). Exactly one <h1> - there is nothing else on the page
+	 * that should outrank it - and no heading level skipped underneath it
+	 * (the document has no other headings, so there is nothing to descend to).
+	 */
+	public function test_the_certificate_page_has_exactly_one_h1_and_no_heading_gap() {
+		$certificate = $this->certificates->issue( $this->user, $this->course );
+
+		$html = $this->certificates->render( $certificate );
+
+		$this->assertSame( 1, substr_count( $html, '<h1' ), 'Exactly one <h1> on the standalone document.' );
+		$this->assertStringContainsString( 'Certificate of Completion', $html );
+		\preg_match( '/<h1[^>]*>(.*?)<\/h1>/s', $html, $m );
+		$this->assertNotEmpty( $m, 'The <h1> must actually wrap content.' );
+		$this->assertStringContainsString( 'Certificate of Completion', $m[1] );
+		$this->assertSame( 0, substr_count( $html, '<h2' ) + substr_count( $html, '<h3' ), 'No deeper heading exists to skip down to.' );
+	}
+
 	public function test_the_certificate_page_escapes_a_hostile_course_title() {
 		$nasty       = $this->make_course( [ 'certificate_enabled' => 1 ], '<script>alert(1)</script>' );
 		$certificate = $this->certificates->issue( $this->user, $nasty );

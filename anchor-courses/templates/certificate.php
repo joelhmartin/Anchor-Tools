@@ -29,7 +29,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 <body class="anchor-certificate-page">
 	<main class="anchor-certificate">
 		<header class="anchor-certificate-header">
-			<p class="anchor-certificate-eyebrow"><?php esc_html_e( 'Certificate of Completion', 'anchor-schema' ); ?></p>
+			<h1 class="anchor-certificate-eyebrow"><?php esc_html_e( 'Certificate of Completion', 'anchor-schema' ); ?></h1>
 			<p class="anchor-certificate-site"><?php echo esc_html( get_bloginfo( 'name' ) ); ?></p>
 		</header>
 

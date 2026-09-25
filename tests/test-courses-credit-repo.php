@@ -140,4 +140,28 @@ class Test_Courses_Credit_Repo extends Anchor_Courses_TestCase {
 		$this->assertSame( 5.5, CreditRepository::total_for_user( $user ) );
 		$this->assertSame( 0.0, CreditRepository::total_for_user( $this->make_learner() ) );
 	}
+
+	/** Task 31 N+1 ruling: one query for a whole page of user ids, keyed by user_id. */
+	public function test_for_users_in_course_batches_a_page_of_learners() {
+		$course  = $this->make_course();
+		$withA   = $this->make_learner();
+		$withB   = $this->make_learner();
+		$without = $this->make_learner();
+
+		CreditRepository::insert_ignore( $this->row( $withA, $course, [ 'credits' => 2.0 ] ) );
+		CreditRepository::insert_ignore( $this->row( $withB, $course, [ 'credits' => 4.0 ] ) );
+		// A credit in a DIFFERENT course must not leak into this course's map.
+		CreditRepository::insert_ignore( $this->row( $withA, $this->make_course(), [ 'credits' => 99.0 ] ) );
+
+		$map = CreditRepository::for_users_in_course( [ $withA, $withB, $without ], $course );
+
+		$this->assertCount( 2, $map );
+		$this->assertSame( 2.0, $map[ $withA ]->credits );
+		$this->assertSame( 4.0, $map[ $withB ]->credits );
+		$this->assertArrayNotHasKey( $without, $map );
+	}
+
+	public function test_for_users_in_course_with_no_user_ids_makes_no_query() {
+		$this->assertSame( [], CreditRepository::for_users_in_course( [], $this->make_course() ) );
+	}
 }

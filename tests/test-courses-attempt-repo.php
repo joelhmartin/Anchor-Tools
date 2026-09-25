@@ -177,4 +177,38 @@ class Test_Courses_Attempt_Repo extends Anchor_Courses_TestCase {
 
 		$this->assertNull( QuizAttemptRepository::find( $attempt->id )->submitted_at );
 	}
+
+	/** Task 31 N+1 ruling: one query for a whole page of user ids, keyed by user_id, highest score wins. */
+	public function test_best_scores_for_users_in_course_batches_a_page_of_learners() {
+		$withA   = $this->user;
+		$withB   = $this->make_learner();
+		$without = $this->make_learner();
+
+		$first = $this->create();
+		QuizAttemptRepository::update( $first->id, [ 'status' => 'graded', 'score' => 60.0 ] );
+		$retake = $this->create(); // Same user+quiz - a legitimate retake, attempt_number 2.
+		QuizAttemptRepository::update( $retake->id, [ 'status' => 'graded', 'score' => 90.0 ] );
+
+		$other = QuizAttemptRepository::create(
+			[ 'user_id' => $withB, 'course_id' => $this->course, 'quiz_id' => $this->quiz, 'points_possible' => 10.0 ]
+		);
+		QuizAttemptRepository::update( $other->id, [ 'status' => 'graded', 'score' => 75.0 ] );
+
+		// A scored attempt in a DIFFERENT course must not leak into this course's map.
+		$other_course = $this->make_course();
+		$elsewhere    = QuizAttemptRepository::create(
+			[ 'user_id' => $withA, 'course_id' => $other_course, 'quiz_id' => $this->make_quiz(), 'points_possible' => 10.0 ]
+		);
+		QuizAttemptRepository::update( $elsewhere->id, [ 'status' => 'graded', 'score' => 100.0 ] );
+
+		$map = QuizAttemptRepository::best_scores_for_users_in_course( [ $withA, $withB, $without ], $this->course );
+
+		$this->assertSame( 90.0, $map[ $withA ] );
+		$this->assertSame( 75.0, $map[ $withB ] );
+		$this->assertArrayNotHasKey( $without, $map );
+	}
+
+	public function test_best_scores_for_users_in_course_with_no_user_ids_makes_no_query() {
+		$this->assertSame( [], QuizAttemptRepository::best_scores_for_users_in_course( [], $this->course ) );
+	}
 }

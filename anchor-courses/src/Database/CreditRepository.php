@@ -124,6 +124,38 @@ final class CreditRepository {
 		return \array_map( [ Credit::class, 'from_row' ], (array) $rows );
 	}
 
+	/**
+	 * The credit rows for a page of learners in one course, keyed by user_id -
+	 * one query for the whole page rather than one find() per row (Task 31 N+1
+	 * ruling). A user id with no credit row is simply absent from the result.
+	 *
+	 * @param int[] $user_ids
+	 * @return array<int,Credit>
+	 */
+	public static function for_users_in_course( array $user_ids, int $course_id ): array {
+		$user_ids = \array_values( \array_unique( \array_map( 'intval', $user_ids ) ) );
+		if ( [] === $user_ids ) {
+			return [];
+		}
+
+		global $wpdb;
+		$placeholders = \implode( ', ', \array_fill( 0, \count( $user_ids ), '%d' ) );
+		$rows         = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM ' . self::table() . " WHERE course_id = %d AND user_id IN ({$placeholders})", // phpcs:ignore WordPress.DB.PreparedSQL
+				\array_merge( [ $course_id ], $user_ids )
+			),
+			ARRAY_A
+		);
+
+		$out = [];
+		foreach ( (array) $rows as $row ) {
+			$credit                  = Credit::from_row( $row );
+			$out[ $credit->user_id ] = $credit;
+		}
+		return $out;
+	}
+
 	public static function total_for_user( int $user_id ): float {
 		global $wpdb;
 		return (float) $wpdb->get_var(

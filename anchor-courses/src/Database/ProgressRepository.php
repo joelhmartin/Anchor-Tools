@@ -169,4 +169,37 @@ final class ProgressRepository {
 			)
 		);
 	}
+
+	/**
+	 * Latest updated_at per user in this course, for a page of learners, keyed
+	 * by user_id - one query for the whole page rather than one last_activity()
+	 * call per row (Task 31 N+1 ruling). A user id with no progress row at all
+	 * is simply absent from the result.
+	 *
+	 * @param int[] $user_ids
+	 * @return array<int,string>
+	 */
+	public static function last_activity_for_users( array $user_ids, int $course_id ): array {
+		$user_ids = \array_values( \array_unique( \array_map( 'intval', $user_ids ) ) );
+		if ( [] === $user_ids ) {
+			return [];
+		}
+
+		global $wpdb;
+		$placeholders = \implode( ', ', \array_fill( 0, \count( $user_ids ), '%d' ) );
+		$rows         = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT user_id, MAX(updated_at) AS last_activity FROM ' . self::table()
+				. " WHERE course_id = %d AND user_id IN ({$placeholders}) GROUP BY user_id", // phpcs:ignore WordPress.DB.PreparedSQL
+				\array_merge( [ $course_id ], $user_ids )
+			),
+			ARRAY_A
+		);
+
+		$out = [];
+		foreach ( (array) $rows as $row ) {
+			$out[ (int) $row['user_id'] ] = (string) $row['last_activity'];
+		}
+		return $out;
+	}
 }

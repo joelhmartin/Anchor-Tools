@@ -175,4 +175,28 @@ class Test_Courses_Progress_Repo extends Anchor_Courses_TestCase {
 
 		$this->assertSame( 1.0, $p->metadata['best_score'] );
 	}
+
+	/** Task 31 N+1 ruling: one query for a whole page of user ids, keyed by user_id. */
+	public function test_last_activity_for_users_batches_a_page_of_learners() {
+		$course  = $this->make_course();
+		$withA   = $this->make_learner();
+		$withB   = $this->make_learner();
+		$without = $this->make_learner();
+
+		ProgressRepository::upsert( [ 'user_id' => $withA, 'course_id' => $course, 'item_id' => 1, 'item_type' => 'lesson', 'status' => 'completed' ] );
+		ProgressRepository::upsert( [ 'user_id' => $withB, 'course_id' => $course, 'item_id' => 1, 'item_type' => 'lesson', 'status' => 'in_progress' ] );
+		// A progress row in a DIFFERENT course must not leak into this course's map.
+		ProgressRepository::upsert( [ 'user_id' => $withA, 'course_id' => $this->make_course(), 'item_id' => 1, 'item_type' => 'lesson', 'status' => 'completed' ] );
+
+		$map = ProgressRepository::last_activity_for_users( [ $withA, $withB, $without ], $course );
+
+		$this->assertCount( 2, $map );
+		$this->assertNotSame( '', $map[ $withA ] );
+		$this->assertNotSame( '', $map[ $withB ] );
+		$this->assertArrayNotHasKey( $without, $map );
+	}
+
+	public function test_last_activity_for_users_with_no_user_ids_makes_no_query() {
+		$this->assertSame( [], ProgressRepository::last_activity_for_users( [], $this->make_course() ) );
+	}
 }

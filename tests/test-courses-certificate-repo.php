@@ -134,4 +134,31 @@ class Test_Courses_Certificate_Repo extends Anchor_Courses_TestCase {
 	public function test_find_returns_null_when_no_row_exists_for_the_pair() {
 		$this->assertNull( CertificateRepository::find( $this->user, $this->make_course() ) );
 	}
+
+	/** Task 31 N+1 ruling: one query for a whole page of user ids, keyed by user_id. */
+	public function test_for_users_in_course_batches_a_page_of_learners() {
+		$withA   = $this->user;
+		$withB   = $this->make_learner();
+		$without = $this->make_learner();
+
+		$a = $this->insert( [ 'user_id' => $withA, 'verification_token' => Uuid::v4() ] );
+		$b = CertificateRepository::insert_ignore(
+			[ 'user_id' => $withB, 'course_id' => $this->course, 'verification_token' => Uuid::v4() ]
+		);
+		// A certificate in a DIFFERENT course must not leak into this course's map.
+		CertificateRepository::insert_ignore(
+			[ 'user_id' => $withA, 'course_id' => $this->make_course(), 'verification_token' => Uuid::v4() ]
+		);
+
+		$map = CertificateRepository::for_users_in_course( [ $withA, $withB, $without ], $this->course );
+
+		$this->assertCount( 2, $map );
+		$this->assertSame( $a->certificate_number, $map[ $withA ]->certificate_number );
+		$this->assertSame( $b->certificate_number, $map[ $withB ]->certificate_number );
+		$this->assertArrayNotHasKey( $without, $map );
+	}
+
+	public function test_for_users_in_course_with_no_user_ids_makes_no_query() {
+		$this->assertSame( [], CertificateRepository::for_users_in_course( [], $this->course ) );
+	}
 }

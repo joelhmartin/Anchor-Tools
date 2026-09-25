@@ -187,4 +187,40 @@ final class QuizAttemptRepository {
 		);
 		return \array_map( [ QuizAttempt::class, 'from_row' ], (array) $rows );
 	}
+
+	/**
+	 * The highest recorded score per user across every quiz in one course, for
+	 * a page of learners, keyed by user_id - one query for the whole page
+	 * rather than scanning for_user_course() per row (Task 31 N+1 ruling).
+	 * Same "any attempt with a recorded score" rule for_user_course() callers
+	 * already use - no status filter, since an attempt can carry a score
+	 * before it is marked 'graded'. A user id with no scored attempt is
+	 * simply absent from the result.
+	 *
+	 * @param int[] $user_ids
+	 * @return array<int,float>
+	 */
+	public static function best_scores_for_users_in_course( array $user_ids, int $course_id ): array {
+		$user_ids = \array_values( \array_unique( \array_map( 'intval', $user_ids ) ) );
+		if ( [] === $user_ids ) {
+			return [];
+		}
+
+		global $wpdb;
+		$placeholders = \implode( ', ', \array_fill( 0, \count( $user_ids ), '%d' ) );
+		$rows         = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT user_id, MAX(score) AS best_score FROM ' . self::table()
+				. " WHERE course_id = %d AND score IS NOT NULL AND user_id IN ({$placeholders}) GROUP BY user_id", // phpcs:ignore WordPress.DB.PreparedSQL
+				\array_merge( [ $course_id ], $user_ids )
+			),
+			ARRAY_A
+		);
+
+		$out = [];
+		foreach ( (array) $rows as $row ) {
+			$out[ (int) $row['user_id'] ] = (float) $row['best_score'];
+		}
+		return $out;
+	}
 }

@@ -36,9 +36,15 @@ test('gallery carousel advances with next and dots via shared carousel', async (
  * column count (e.g. 2 items, 3 desktop columns), maxIndex went negative;
  * pressing "previous" before any forward navigation in loop mode set
  * currentIndex to that negative maxIndex, producing an invalid transform
- * string (a literal double minus sign) that the browser silently refuses to
- * apply, leaving the track's inline transform never set. Builds a minimal
- * carousel entirely in-page (no fixture needed) via the already-loaded
+ * string (a literal double minus sign, e.g. "translateX(--316px)"). The
+ * browser's CSSOM silently refuses to apply an invalid value and keeps
+ * whatever was there before, which happens to look the same
+ * ("translateX(0px)", left over from init()'s own currentIndex=0 render) as
+ * the fixed, clamped result would - so reading the applied style back can't
+ * tell the two apart. This instead intercepts every raw string assigned to
+ * track.style.transform and asserts none of them is the invalid,
+ * double-minus form, which does distinguish them. Builds a minimal carousel
+ * entirely in-page (no fixture needed) via the already-loaded
  * window.AnchorCarousel global, so this runs against any page in the suite
  * that loads the shared carousel script.
  */
@@ -47,9 +53,11 @@ test('carousel with fewer items than visible columns clamps maxIndex to zero', a
   await page.goto(seed.galleryCarouselUrl);
   await acceptConsentBanner(page);
 
-  const transform = await page.evaluate(() => {
+  const assignedTransforms = await page.evaluate(() => {
     const root = document.createElement('div');
-    root.style.width = '900px';
+    // > 1023px so getVisibleCount() picks the desktop bucket (3 columns);
+    // 2 items < 3 columns is what makes items.length - visibleCount negative.
+    root.style.width = '1100px';
     root.style.setProperty('--avg-gap', '16px');
     const track = document.createElement('div');
     root.appendChild(track);
@@ -62,6 +70,14 @@ test('carousel with fewer items than visible columns clamps maxIndex to zero', a
       return item;
     });
 
+    const seen = [];
+    let raw = '';
+    Object.defineProperty(track.style, 'transform', {
+      configurable: true,
+      get() { return raw; },
+      set(v) { seen.push(v); raw = v; },
+    });
+
     const api = window.AnchorCarousel.init(root, {
       track,
       items,
@@ -71,10 +87,12 @@ test('carousel with fewer items than visible columns clamps maxIndex to zero', a
     });
 
     api.prev();
-    const result = track.style.transform;
     root.remove();
-    return result;
+    return seen;
   });
 
-  expect(transform).toBe('translateX(-0px)');
+  expect(assignedTransforms.length).toBeGreaterThan(0);
+  for (const value of assignedTransforms) {
+    expect(value).not.toMatch(/--/);
+  }
 });

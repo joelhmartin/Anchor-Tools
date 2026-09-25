@@ -73,7 +73,18 @@ final class QuizController {
 				'args'                => [
 					'id'          => [ 'required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint' ],
 					'question_id' => [ 'required' => true, 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field' ],
-					'value'       => [ 'required' => true ],
+					// A single id (string) or several (array) - either way,
+					// bounded (Task 26 review, IMPORTANT): a request naming
+					// more than 50 ids for one question is malformed, not
+					// merely wasteful, and is rejected here before it ever
+					// reaches QuizService (which further reduces whatever
+					// gets through to the question's own real answer ids).
+					'value'       => [
+						'required' => true,
+						'type'     => [ 'string', 'array' ],
+						'items'    => [ 'type' => 'string' ],
+						'maxItems' => 50,
+					],
 				],
 			]
 		);
@@ -88,8 +99,22 @@ final class QuizController {
 				'args'                => [
 					'id'      => [ 'required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint' ],
 					// object, not array: question_id => value is a map, and a
-					// bare JSON array would collapse string keys.
-					'answers' => [ 'required' => false, 'type' => 'object', 'default' => [] ],
+					// bare JSON array would collapse string keys. Each
+					// property gets the same string|string[]-of-at-most-50
+					// constraint as the single-answer route above (Task 26
+					// review, IMPORTANT) via 'additionalProperties', so an
+					// oversized submit body is rejected the same way an
+					// oversized answer body is.
+					'answers' => [
+						'required'             => false,
+						'type'                 => 'object',
+						'default'              => [],
+						'additionalProperties' => [
+							'type'     => [ 'string', 'array' ],
+							'items'    => [ 'type' => 'string' ],
+							'maxItems' => 50,
+						],
+					],
 				],
 			]
 		);
@@ -213,14 +238,18 @@ final class QuizController {
 	private function payload( QuizAttempt $attempt, bool $with_questions ): array {
 		$settings     = $this->quizzes->settings( $attempt->quiz_id );
 		$show_correct = 1 === (int) $settings['show_correct_answers'];
+		$show_score   = 1 === (int) $settings['show_score'];
 
 		$out = [
-			'attempt'            => $attempt->for_learner( $show_correct ),
+			// $show_score also gates for_learner()'s own score/points_earned/
+			// passed fields (Task 26 review, MINOR) - not just the 'show_score'
+			// flag below, which is presentational for a caller that keeps them.
+			'attempt'            => $attempt->for_learner( $show_correct, $show_score ),
 			'deadline'           => $this->quizzes->deadline( $attempt ),
 			'server_now'         => Clock::timestamp(),
 			'attempts_remaining' => $this->quizzes->attempts_remaining( $attempt->user_id, $attempt->quiz_id ),
 			'retry_available_at' => $this->quizzes->retry_available_at( $attempt->user_id, $attempt->quiz_id ),
-			'show_score'         => 1 === (int) $settings['show_score'],
+			'show_score'         => $show_score,
 		];
 
 		if ( $with_questions ) {

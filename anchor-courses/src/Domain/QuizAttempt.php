@@ -71,10 +71,14 @@ final class QuizAttempt {
 	 * `answers` are the learner's own, so they are safe. `grading_data` holds
 	 * per-question correctness (and may embed correct-answer ids) and is
 	 * withheld unless the caller says the quiz allows showing correct answers
-	 * AND the attempt is graded (brief 25, rule 8). `to_array()` below is NOT
-	 * safe for a learner-facing response - it always includes grading_data.
+	 * AND the attempt is graded (brief 25, rule 8). `score`/`points_earned`/
+	 * `passed` are withheld the same way when the quiz's own `show_score`
+	 * setting is off (Task 26 review, MINOR) - a quiz that hides the score
+	 * must not leak it in the response body just because the client-side
+	 * template happens not to print it. `to_array()` below is NOT safe for a
+	 * learner-facing response - it always includes everything.
 	 */
-	public function for_learner( bool $show_correct ): array {
+	public function for_learner( bool $show_correct, bool $show_score = true ): array {
 		// metadata holds the pinned time_limit_seconds/on_timer_expiry (brief
 		// T24 ruling R3) - internal timer bookkeeping, never learner-facing.
 		$out = [
@@ -83,14 +87,17 @@ final class QuizAttempt {
 			'course_id'       => $this->course_id,
 			'attempt_number'  => $this->attempt_number,
 			'status'          => $this->status,
-			'score'           => $this->score,
-			'points_earned'   => $this->points_earned,
 			'points_possible' => $this->points_possible,
-			'passed'          => $this->passed,
 			'started_at'      => $this->started_at,
 			'submitted_at'    => $this->submitted_at,
 			'answers'         => $this->answers,
 		];
+
+		if ( $show_score ) {
+			$out['score']         = $this->score;
+			$out['points_earned'] = $this->points_earned;
+			$out['passed']        = $this->passed;
+		}
 
 		if ( $show_correct && $this->is_graded() ) {
 			$out['grading_data'] = $this->grading_data;

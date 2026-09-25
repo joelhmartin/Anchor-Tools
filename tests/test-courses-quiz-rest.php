@@ -71,14 +71,20 @@ class Test_Courses_Quiz_Rest extends Anchor_Courses_TestCase {
 		return $this->server->dispatch( $request );
 	}
 
-	/** Recursively assert that no array key anywhere in $data is 'correct' or 'correct_ids'. */
+	/**
+	 * Recursively assert that no array key anywhere in $data is one of the
+	 * names a grading-adjacent field might plausibly carry (Task 26 review,
+	 * MINOR: the walk previously only checked 'correct'/'correct_ids', and
+	 * only on the start/graded-hidden responses - this now covers every
+	 * shape the payload can take across all four routes).
+	 */
 	private function assertNoCorrectKeyAnywhere( $data, string $path = '$' ): void {
 		if ( ! is_array( $data ) ) {
 			return;
 		}
+		$forbidden = [ 'correct', 'correct_ids', 'grading_data', 'explanation', 'is_correct' ];
 		foreach ( $data as $key => $value ) {
-			$this->assertNotSame( 'correct', $key, "Found a 'correct' key at {$path}.{$key}" );
-			$this->assertNotSame( 'correct_ids', $key, "Found a 'correct_ids' key at {$path}.{$key}" );
+			$this->assertNotContains( $key, $forbidden, "Found a forbidden key '{$key}' at {$path}.{$key}" );
 			$this->assertNoCorrectKeyAnywhere( $value, "{$path}.{$key}" );
 		}
 	}
@@ -110,6 +116,66 @@ class Test_Courses_Quiz_Rest extends Anchor_Courses_TestCase {
 	public function test_starting_an_attempt_requires_login() {
 		wp_set_current_user( 0 );
 		$this->assertSame( 401, $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_status() );
+	}
+
+	/**
+	 * Task 26 review, MINOR: only /attempts (start) had a 401-for-logged-out
+	 * test - read/answer/submit all share the same require_login
+	 * permission_callback, but that was never independently exercised.
+	 */
+	public function test_reading_an_attempt_requires_login() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		wp_set_current_user( 0 );
+		$this->assertSame( 401, $this->request( 'GET', "/quiz-attempts/{$attempt_id}" )->get_status() );
+	}
+
+	public function test_answering_requires_login() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		wp_set_current_user( 0 );
+		$response = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/answer", [ 'question_id' => $this->q1, 'value' => 'a2' ] );
+		$this->assertSame( 401, $response->get_status() );
+	}
+
+	public function test_submitting_requires_login() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		wp_set_current_user( 0 );
+		$this->assertSame( 401, $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [] )->get_status() );
+	}
+
+	public function test_the_answer_response_never_contains_a_grading_style_key() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$response = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/answer", [ 'question_id' => $this->q1, 'value' => 'a2' ] );
+
+		$this->assertNoCorrectKeyAnywhere( $response->get_data() );
+	}
+
+	/** An open (ungraded) attempt can never carry grading_data - is_graded() is false. */
+	public function test_a_read_while_open_never_contains_a_grading_style_key() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$response = $this->request( 'GET', "/quiz-attempts/{$attempt_id}" );
+
+		$this->assertSame( 'in_progress', $response->get_data()['attempt']['status'] );
+		$this->assertNoCorrectKeyAnywhere( $response->get_data() );
+	}
+
+	public function test_a_submit_with_show_correct_off_never_contains_a_grading_style_key() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'show_correct_answers' => 0 ] );
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$submitted = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [ 'answers' => [ $this->q1 => 'a2', $this->q2 => 'b1' ] ] );
+
+		$this->assertNoCorrectKeyAnywhere( $submitted->get_data() );
 	}
 
 	public function test_a_learner_can_start_an_attempt() {
@@ -292,5 +358,129 @@ class Test_Courses_Quiz_Rest extends Anchor_Courses_TestCase {
 
 		$this->assertSame( 200, $response->get_status() );
 		$this->assertSame( 0.0, $response->get_data()['attempt']['score'] );
+	}
+
+	/**
+	 * Task 26 review, CRITICAL. save_answer() used to check only is_open(),
+	 * never the deadline, so a late POST /answer was accepted (200) and
+	 * stored - and a subsequent auto_submit graded that late answer as if it
+	 * had arrived in time. This must fail on the pre-fix code: the late POST
+	 * has to be refused (409, attempt_closed) BEFORE it ever lands in
+	 * $attempt->answers, so the eventual submit() grades only what was saved
+	 * inside the window.
+	 */
+	public function test_an_answer_after_the_deadline_is_refused_and_only_in_window_answers_are_graded() {
+		update_post_meta(
+			$this->quiz,
+			'_anchor_quiz_settings',
+			[ 'passing_score' => 80, 'time_limit_seconds' => 60, 'on_timer_expiry' => 'auto_submit' ]
+		);
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-06-01 09:00:00 UTC' ) );
+		wp_set_current_user( $this->user );
+
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		// Saved INSIDE the 60-second window - the only answer allowed to count.
+		$in_window = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/answer", [ 'question_id' => $this->q1, 'value' => 'a2' ] );
+		$this->assertSame( 200, $in_window->get_status() );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-06-01 09:02:00 UTC' ) ); // deadline was 09:01:00.
+
+		$late = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/answer", [ 'question_id' => $this->q2, 'value' => 'b1' ] );
+		$this->assertSame( 409, $late->get_status(), 'A late answer must be refused, not accepted.' );
+		$this->assertSame( 'attempt_closed', $late->get_data()['code'] );
+
+		$submitted = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [] );
+
+		$this->assertSame( 200, $submitted->get_status() );
+		// Only q1 (saved before the deadline) is graded - 1 of 2 points, not
+		// the 2 of 2 the late q2 answer would have produced.
+		$this->assertSame( 50.0, $submitted->get_data()['attempt']['score'] );
+		$this->assertFalse( $submitted->get_data()['attempt']['passed'] );
+	}
+
+	public function test_an_oversized_answer_value_is_rejected_before_it_reaches_the_service() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$flood    = array_map( 'strval', range( 1, 51 ) ); // one over the 50-item schema ceiling.
+		$response = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/answer", [ 'question_id' => $this->q1, 'value' => $flood ] );
+
+		$this->assertSame( 400, $response->get_status() );
+	}
+
+	public function test_an_oversized_submit_answers_value_is_rejected_before_it_reaches_the_service() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$flood    = array_map( 'strval', range( 1, 51 ) );
+		$response = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [ 'answers' => [ $this->q1 => $flood ] ] );
+
+		$this->assertSame( 400, $response->get_status() );
+	}
+
+	/**
+	 * Task 26 review, IMPORTANT: within the schema's own 50-item ceiling, the
+	 * service must still reduce a garbage id list to only the ids that
+	 * actually belong to the question (Grading::normalize_answer()'s new
+	 * $valid_ids parameter) - the schema cap alone is not the fix.
+	 */
+	public function test_garbage_ids_within_the_size_limit_are_reduced_to_only_the_real_answer_ids() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$garbage = array_merge( array_map( 'strval', range( 1, 49 ) ), [ 'a2' ] ); // 50 ids, one real.
+		$saved   = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/answer", [ 'question_id' => $this->q1, 'value' => $garbage ] );
+		$this->assertSame( 200, $saved->get_status() );
+
+		$read = $this->request( 'GET', "/quiz-attempts/{$attempt_id}" );
+		$this->assertSame( [ 'a2' ], $read->get_data()['attempt']['answers'][ $this->q1 ] );
+	}
+
+	/** Task 26 review, MINOR. */
+	public function test_score_points_earned_and_passed_are_withheld_when_show_score_is_off() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'show_score' => 0 ] );
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$submitted = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [ 'answers' => [ $this->q1 => 'a2', $this->q2 => 'b1' ] ] );
+
+		$this->assertSame( 200, $submitted->get_status() );
+		$this->assertArrayNotHasKey( 'score', $submitted->get_data()['attempt'] );
+		$this->assertArrayNotHasKey( 'points_earned', $submitted->get_data()['attempt'] );
+		$this->assertArrayNotHasKey( 'passed', $submitted->get_data()['attempt'] );
+		$this->assertFalse( $submitted->get_data()['show_score'] );
+	}
+
+	/** The flip side of the above is real, not just always-off (mirrors show_correct_answers coverage). */
+	public function test_score_points_earned_and_passed_are_present_when_show_score_is_on() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$submitted = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [ 'answers' => [ $this->q1 => 'a2', $this->q2 => 'b1' ] ] );
+
+		$this->assertArrayHasKey( 'score', $submitted->get_data()['attempt'] );
+		$this->assertArrayHasKey( 'points_earned', $submitted->get_data()['attempt'] );
+		$this->assertArrayHasKey( 'passed', $submitted->get_data()['attempt'] );
+		$this->assertTrue( $submitted->get_data()['show_score'] );
+	}
+
+	/**
+	 * Task 26 review, MINOR (rule 6): a question key genuinely absent from
+	 * the submit body - not present with an empty value - must be graded from
+	 * what was already saved, not treated as a clear.
+	 */
+	public function test_a_partial_submit_body_keeps_the_previously_saved_answer_for_the_missing_key() {
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		$this->request( 'POST', "/quiz-attempts/{$attempt_id}/answer", [ 'question_id' => $this->q1, 'value' => 'a2' ] );
+
+		// q1 has no key at all in this body - only q2 is submitted.
+		$submitted = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [ 'answers' => [ $this->q2 => 'b1' ] ] );
+
+		$this->assertSame( 200, $submitted->get_status() );
+		$this->assertSame( 100.0, $submitted->get_data()['attempt']['score'], 'A missing key must keep the saved answer, not clear it.' );
 	}
 }

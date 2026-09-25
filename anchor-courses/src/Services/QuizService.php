@@ -280,19 +280,38 @@ final class QuizService {
 			return new \WP_Error( 'attempt_closed', \__( 'This attempt is already finished.', 'anchor-schema' ) );
 		}
 
-		$type = '';
-		foreach ( Questions::get( $attempt->quiz_id ) as $question ) {
-			if ( (string) $question['id'] === $question_id ) {
-				$type = (string) $question['type'];
+		// The window closes HERE, not at the next submit() (Task 26 review,
+		// CRITICAL): submit()'s own late-handling only protects the $answers
+		// argument passed to IT - it was never a guard on save_answer(), so a
+		// late POST /answer was landing straight in $attempt->answers and a
+		// subsequent auto_submit graded it as if it had arrived in time. A
+		// late save is refused outright and the attempt is closed right now,
+		// via the pinned deadline/policy (enforce_timer() -> submit()), so
+		// only what was saved inside the window is ever graded.
+		$deadline = $this->deadline( $attempt );
+		if ( $deadline > 0 && Clock::timestamp() > $deadline ) {
+			$this->enforce_timer( $attempt );
+			return new \WP_Error( 'attempt_closed', \__( 'The time limit for this attempt has passed.', 'anchor-schema' ) );
+		}
+
+		$question = null;
+		foreach ( Questions::get( $attempt->quiz_id ) as $candidate ) {
+			if ( (string) $candidate['id'] === $question_id ) {
+				$question = $candidate;
 				break;
 			}
 		}
-		if ( '' === $type ) {
+		if ( null === $question ) {
 			return new \WP_Error( 'unknown_question', \__( 'That question is not part of this quiz.', 'anchor-schema' ) );
 		}
 
+		// Only ids that are actually on this question may ever be stored
+		// (Task 26 review, IMPORTANT): a garbage/oversized payload is reduced
+		// to the intersection with the question's real answer ids, and
+		// single_choice/true_false keep at most one (Grading::normalize_answer()).
+		$valid_ids               = \array_column( (array) $question['answers'], 'id' );
 		$answers                 = $attempt->answers;
-		$answers[ $question_id ] = Grading::normalize_answer( $type, $value );
+		$answers[ $question_id ] = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
 
 		QuizAttemptRepository::update( $attempt_id, [ 'answers' => $answers ] );
 
@@ -366,18 +385,24 @@ final class QuizService {
 
 		// In-window: merge the submitted answers over what was saved.
 		// Late + auto_submit: grade ONLY what was saved before the deadline.
+		// Starting from what was already saved (not an empty array) is what
+		// makes a missing key in $answers mean "keep the saved answer" rather
+		// than "clear it" (Task 26 review, rule 6): only a question the
+		// client actually sent a key for is touched below.
 		$final_answers = $attempt->answers;
 		if ( ! $late ) {
 			$questions_by_id = [];
 			foreach ( Questions::get( $attempt->quiz_id ) as $question ) {
-				$questions_by_id[ (string) $question['id'] ] = (string) $question['type'];
+				$questions_by_id[ (string) $question['id'] ] = $question;
 			}
 			foreach ( $answers as $question_id => $value ) {
 				$question_id = (string) $question_id;
 				if ( ! isset( $questions_by_id[ $question_id ] ) ) {
 					continue;
 				}
-				$final_answers[ $question_id ] = Grading::normalize_answer( $questions_by_id[ $question_id ], $value );
+				$question                      = $questions_by_id[ $question_id ];
+				$valid_ids                     = \array_column( (array) $question['answers'], 'id' );
+				$final_answers[ $question_id ] = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
 			}
 		}
 

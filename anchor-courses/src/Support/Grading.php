@@ -25,10 +25,24 @@ final class Grading {
 	 * Scalars become a one-element list; arrays are filtered and sorted so that
 	 * answer ORDER never affects a multiple-choice comparison.
 	 *
-	 * @param mixed $value
+	 * @param mixed    $value
+	 * @param string[] $valid_ids Answer ids that actually belong to this
+	 *                            question. Left empty (the default), this is
+	 *                            plain normalisation with no filtering - the
+	 *                            shape `grade()` itself relies on when
+	 *                            re-normalising an already-stored answer for
+	 *                            an exact-set comparison. Given a non-empty
+	 *                            list (the storage-layer callers,
+	 *                            QuizService::save_answer()/submit() - Task 26
+	 *                            review, IMPORTANT), anything not in it is
+	 *                            discarded outright: a 1000-id garbage payload
+	 *                            collapses to whatever subset is real, and a
+	 *                            single_choice/true_false question is capped
+	 *                            to the first (submission-order) id that
+	 *                            survives that filter, never more than one.
 	 * @return string[]
 	 */
-	public static function normalize_answer( string $type, $value ): array {
+	public static function normalize_answer( string $type, $value, array $valid_ids = [] ): array {
 		if ( null === $value ) {
 			return [];
 		}
@@ -45,6 +59,15 @@ final class Grading {
 		);
 
 		$ids = \array_values( \array_unique( $ids ) );
+
+		if ( [] !== $valid_ids ) {
+			$ids = \array_values( \array_intersect( $ids, $valid_ids ) );
+		}
+
+		if ( [] !== $valid_ids && \in_array( $type, [ 'single_choice', 'true_false' ], true ) && \count( $ids ) > 1 ) {
+			$ids = [ $ids[0] ];
+		}
+
 		\sort( $ids, SORT_STRING );
 
 		return $ids;

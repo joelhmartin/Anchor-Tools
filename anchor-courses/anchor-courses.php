@@ -26,6 +26,7 @@ class Module {
 	public Services\EnrollmentService $enrollments;
 	public Services\ProgressService $progress;
 	public Services\QuizService $quizzes;
+	public Services\CertificateService $certificates;
 	public Frontend\Shortcodes $shortcodes;
 
 	public function __construct() {
@@ -64,6 +65,14 @@ class Module {
 
 		$this->progress = new Services\ProgressService( $this->enrollments );
 		$this->quizzes  = new Services\QuizService( $this->progress, $this->enrollments );
+
+		// Task 27 (CE credits, `$this->credits`) lands from a sibling worktree
+		// and is joined with this file separately (progress ledger, Task
+		// 27/28 dispatch note) - CertificateService works standalone via
+		// class_exists() guards until then. FOLLOW-UP for that join: nothing
+		// to wire here, `$this->credits` is not a CertificateService
+		// dependency (see the class docblock).
+		$this->certificates = new Services\CertificateService();
 
 		// The quiz REST surface (Task 26). Routes::__construct() only hooks
 		// rest_api_init; nothing else needs this instance, so it is not kept.

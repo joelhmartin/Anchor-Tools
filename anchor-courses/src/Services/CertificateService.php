@@ -1,0 +1,178 @@
+<?php
+declare(strict_types=1);
+
+namespace Anchor\Courses\Services;
+
+use Anchor\Courses\Admin\CourseEditor;
+use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Database\CertificateRepository;
+use Anchor\Courses\Database\CreditRepository;
+use Anchor\Courses\Domain\Certificate;
+use Anchor\Courses\Domain\Credit;
+use Anchor\Courses\Frontend\Templates;
+use Anchor\Courses\Support\Clock;
+use Anchor\Courses\Support\Log;
+use Anchor\Courses\Support\Uuid;
+
+if ( ! \defined( 'ABSPATH' ) ) { exit; }
+
+/**
+ * Certificates (brief 13).
+ *
+ * Phase 1 is an HTML page with a print stylesheet and a public verification
+ * route (Task 30); `file_path` is deliberately left empty so that adding PDF
+ * generation later needs no schema change (design spec 1).
+ *
+ * `Database\CreditRepository` / `Domain\Credit` (Task 27) are built in a
+ * sibling worktree and are not yet present in every checkout of this module
+ * - every reference to them here is behind a `class_exists()` guard so this
+ * class works standalone before the join and needs no change after it. The
+ * seam: once Task 27 lands, `issue()` links a matching CE credit to the new
+ * certificate, and `template_data()` prefers the learner's actual awarded
+ * `credits` value over the course's configured default. Neither is required
+ * for a certificate to be issued or rendered.
+ */
+final class CertificateService {
+
+	/**
+	 * AC-{YYYY}-{8-digit zero-padded id}. Pure.
+	 *
+	 * The id comes from the table's own AUTO_INCREMENT, never a counter
+	 * option, so two simultaneous issues cannot collide (design spec 4).
+	 */
+	public static function format_number( int $id, int $year ): string {
+		return \sprintf( 'AC-%04d-%08d', $year, $id );
+	}
+
+	/**
+	 * Issue (or return) the certificate for this learner and course.
+	 *
+	 * Null when the course, the user, or `certificate_enabled` say no
+	 * certificate should exist; otherwise idempotent (brief rule 7 / D13):
+	 * a second call for the same user+course returns the existing row,
+	 * never mints a second one.
+	 */
+	public function issue( int $user_id, int $course_id ): ?Certificate {
+		if ( CoursePostType::CPT !== \get_post_type( $course_id ) || ! \get_userdata( $user_id ) ) {
+			return null;
+		}
+		if ( 1 !== (int) CourseEditor::setting( $course_id, 'certificate_enabled' ) ) {
+			return null;
+		}
+
+		$existing = CertificateRepository::find( $user_id, $course_id );
+		if ( $existing instanceof Certificate ) {
+			return $existing;
+		}
+
+		$expires_days = (int) CourseEditor::setting( $course_id, 'ce_expires_days' );
+
+		$certificate = CertificateRepository::insert_ignore(
+			[
+				'user_id'            => $user_id,
+				'course_id'          => $course_id,
+				'issued_at'          => Clock::now(),
+				'expires_at'         => $expires_days > 0 ? Clock::offset( $expires_days * DAY_IN_SECONDS ) : null,
+				'verification_token' => Uuid::v4(),
+				'metadata'           => [ 'template' => (string) CourseEditor::setting( $course_id, 'certificate_template' ) ],
+			]
+		);
+
+		if ( ! $certificate instanceof Certificate ) {
+			return null;
+		}
+
+		// Two-write numbering (deviation D14): the id is only known after
+		// insert. A row this call did not create (a concurrent winner already
+		// holds it) already carries its real number, so this is skipped.
+		if ( 0 === \strpos( $certificate->certificate_number, 'PENDING-' ) ) {
+			$numbered = CertificateRepository::set_number(
+				$certificate->id,
+				self::format_number( $certificate->id, (int) \gmdate( 'Y', Clock::timestamp() ) )
+			);
+			if ( $numbered instanceof Certificate ) {
+				$certificate = $numbered;
+			}
+		}
+
+		// Link a matching CE credit to this certificate when Task 27's tables
+		// exist and a credit row is already there (brief 12 step 3).
+		if ( \class_exists( CreditRepository::class ) ) {
+			$credit = CreditRepository::find( $user_id, $course_id );
+			if ( $credit instanceof Credit && 0 === $credit->certificate_id ) {
+				CreditRepository::attach_certificate( $credit->id, $certificate->id );
+			}
+		}
+
+		Log::write( 'certificate_issued', [ 'user' => $user_id, 'course' => $course_id, 'number' => $certificate->certificate_number ] );
+
+		/**
+		 * Fires once, when a certificate is issued.
+		 *
+		 * @param int         $user_id
+		 * @param int         $course_id
+		 * @param Certificate $certificate
+		 */
+		\do_action( 'anchor_courses_certificate_issued', $user_id, $course_id, $certificate );
+
+		return $certificate;
+	}
+
+	public function get( int $user_id, int $course_id ): ?Certificate {
+		return CertificateRepository::find( $user_id, $course_id );
+	}
+
+	public function get_by_token( string $token ): ?Certificate {
+		return CertificateRepository::find_by_token( $token );
+	}
+
+	/** @return Certificate[] */
+	public function for_user( int $user_id ): array {
+		return CertificateRepository::for_user( $user_id );
+	}
+
+	/** The brief section 13 template variables, plus the verification URL. */
+	public function template_data( Certificate $certificate ): array {
+		$user = \get_userdata( $certificate->user_id );
+
+		$ce_credits = (float) CourseEditor::setting( $certificate->course_id, 'ce_credits' );
+
+		// The learner's actual awarded credit (Task 27) can differ from the
+		// course's configured default; prefer it when it exists.
+		if ( \class_exists( CreditRepository::class ) ) {
+			$credit = CreditRepository::find( $certificate->user_id, $certificate->course_id );
+			if ( $credit instanceof Credit ) {
+				$ce_credits = $credit->credits;
+			}
+		}
+
+		$data = [
+			'learner_name'       => $user ? (string) $user->display_name : '',
+			'course_name'        => (string) \get_the_title( $certificate->course_id ),
+			'completion_date'    => $certificate->issued_at,
+			'ce_credits'         => $ce_credits,
+			'certificate_number' => $certificate->certificate_number,
+			'instructor_name'    => (string) CourseEditor::setting( $certificate->course_id, 'instructor' ),
+			'provider_name'      => (string) CourseEditor::setting( $certificate->course_id, 'ce_provider_name' ),
+			'provider_number'    => (string) CourseEditor::setting( $certificate->course_id, 'ce_provider_number' ),
+			'expiration_date'    => (string) ( $certificate->expires_at ?? '' ),
+			'verification_url'   => $certificate->url(),
+		];
+
+		/**
+		 * Filter the certificate template variables.
+		 *
+		 * @param array       $data
+		 * @param Certificate $certificate
+		 */
+		return (array) \apply_filters( 'anchor_courses_certificate_data', $data, $certificate );
+	}
+
+	/** Render the HTML certificate. All values are escaped in the template. */
+	public function render( Certificate $certificate ): string {
+		return Templates::render(
+			'certificate',
+			[ 'certificate' => $certificate, 'data' => $this->template_data( $certificate ) ]
+		);
+	}
+}

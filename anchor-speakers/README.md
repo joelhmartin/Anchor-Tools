@@ -102,8 +102,14 @@ A compact overlapping stack of circular headshots only - no names, credentials o
 ```html
 <div class="anchor-speakers anchor-speakers--list" style="--as-cols:{columns};">
   <article class="anchor-speaker">
-    <!-- photo, only if a thumbnail is set; wrapped in <a> when link=1, else <span> -->
+    <!-- always present, wrapped in <a> when link=1, else <span> -->
     <a class="anchor-speaker__photo" href="{permalink}"><!-- medium-size thumbnail, loading=lazy --></a>
+    <!-- a speaker with no thumbnail gets the same initial-letter placeholder
+         layout="avatars" uses instead of the <img>, so the photo column
+         never disappears and every row stays aligned: -->
+    <a class="anchor-speaker__photo" href="{permalink}">
+      <span class="anchor-speaker-avatar__img anchor-speaker-avatar__img--placeholder" aria-hidden="true">{first letter of name}</span>
+    </a>
     <div class="anchor-speaker__body">
       <h3 class="anchor-speaker__name">
         <a href="{permalink}">{name}</a> <!-- <a> only when link=1 -->
@@ -120,6 +126,8 @@ A compact overlapping stack of circular headshots only - no names, credentials o
 ```
 
 All non-photo, non-CTA content is wrapped in one `.anchor-speaker__body` element (`Anchor_Speaker_Render::list_card()`), unlike the `grid`/`compact` contract where each field is its own sibling of `article`. This matters for two reasons: it collapses the row to a single CSS grid row (photo | body | CTA, three grid items - see the CSS custom properties section below for why that fixed a real layout bug), and the ~4px line spacing between body's children comes from its own flex `gap` rather than each child's own margin, which is immune to a theme's own heading/paragraph margins.
+
+Unlike `grid`/`compact` (where the photo is entirely omitted for a speaker with no thumbnail), `list` **always** renders `.anchor-speaker__photo`: a fixed 64px photo column keeps every row's text aligned to the same starting position regardless of whether any individual speaker has a photo. `Anchor_Speaker_Render::photo_placeholder( $name )` is the one shared implementation of "no photo, show an initial" behind both this and the `avatars` layout's own placeholder (same `anchor-speaker-avatar__img`/`anchor-speaker-avatar__img--placeholder` classes, so `--as-avatar-placeholder-bg`/`--as-avatar-placeholder-fg` theme it in both places at once).
 
 **The role line** (`.anchor-speaker__title`, second line of `body`) prefers the speaker's title; when a speaker has no title, their credentials become the role line instead **using the same `.anchor-speaker__title` class** (so a credentials fallback is a plain line of body text, styled identically to a normal title - never a monospace/badge treatment). Credentials appear in exactly one place per card, never both: inline after the name (`.anchor-speaker__credentials`, only when the speaker has both credentials and a title, so the role line below is the title) or as the role line itself (only when there is no title). A speaker with neither a title nor credentials just has no second line.
 

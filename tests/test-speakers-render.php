@@ -272,4 +272,54 @@ class Test_Speakers_Render extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'View profile', $html );
 		$this->assertStringNotContainsString( 'anchor-speaker__cta', $html );
 	}
+
+	/**
+	 * Owner feedback round 3: a speaker with no featured image used to have
+	 * no .anchor-speaker__photo element at all in layout="list", so that
+	 * row's text shifted left out of alignment with every other row. It
+	 * must now get the same initial-letter placeholder circle the avatars
+	 * layout uses, inside the same .anchor-speaker__photo slot every other
+	 * row has.
+	 */
+	public function test_list_layout_renders_placeholder_photo_when_no_thumbnail() {
+		$id = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_title' => 'Dr. June Williamson' ] );
+
+		$html = do_shortcode( '[anchor_speakers layout="list"]' );
+
+		$this->assertMatchesRegularExpression(
+			'~<a class="anchor-speaker__photo" href="[^"]*"><span class="anchor-speaker-avatar__img anchor-speaker-avatar__img--placeholder" aria-hidden="true">D</span></a>~',
+			$html
+		);
+	}
+
+	/**
+	 * The placeholder is one shared implementation, not two: the exact same
+	 * markup (classes and initial letter) renders for the same photo-less
+	 * speaker under both layout="avatars" and layout="list".
+	 */
+	public function test_avatars_and_list_placeholder_share_one_implementation() {
+		self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_title' => 'Zoe Placeholder' ] );
+
+		$avatars_html = do_shortcode( '[anchor_speakers layout="avatars"]' );
+		$list_html    = do_shortcode( '[anchor_speakers layout="list"]' );
+
+		$placeholder = '<span class="anchor-speaker-avatar__img anchor-speaker-avatar__img--placeholder" aria-hidden="true">Z</span>';
+		$this->assertStringContainsString( $placeholder, $avatars_html );
+		$this->assertStringContainsString( $placeholder, $list_html );
+	}
+
+	/**
+	 * The placeholder fix must not regress the real-photo path: a speaker
+	 * with a thumbnail still gets their actual photo, not the placeholder.
+	 */
+	public function test_list_layout_uses_real_photo_when_thumbnail_is_set() {
+		$id = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_title' => 'Dr. Has Photo' ] );
+		$attachment_id = self::factory()->attachment->create_object( [ 'file' => 'headshot.jpg', 'post_parent' => 0, 'post_mime_type' => 'image/jpeg', 'post_type' => 'attachment' ] );
+		set_post_thumbnail( $id, $attachment_id );
+
+		$html = do_shortcode( '[anchor_speakers layout="list"]' );
+
+		$this->assertMatchesRegularExpression( '~<a class="anchor-speaker__photo" href="[^"]*"><img[^>]*></a>~', $html );
+		$this->assertStringNotContainsString( 'anchor-speaker-avatar__img--placeholder', $html );
+	}
 }

@@ -53,10 +53,7 @@
 /*
  * .anchor-speaker sets flex-direction:column (below) with nothing here to
  * override it, so list cards stayed vertical instead of the row layout this
- * modifier intends. Grid instead: a single body column when the card has no
- * photo (nothing to sit beside), a photo column only when a
- * .anchor-speaker__photo child actually exists (so a photo-less card never
- * gets a blank first column), and a trailing CTA column.
+ * modifier intends. Grid instead: a fixed photo | body | CTA column layout.
  *
  * Owner feedback round 2: this used to give the photo and CTA
  * `grid-row: 1 / -1` so they'd span however many implicit rows the loose
@@ -70,10 +67,18 @@
  * | body | CTA, three grid items total) - `align-items: center` centers
  * them against each other directly, and the compact line spacing inside
  * body comes from its own flex `gap`, not from child margins.
+ *
+ * Owner feedback round 3: the photo column used to be conditional on a
+ * `.anchor-speaker__photo` element actually existing, so a speaker with no
+ * featured image had no photo column at all and its text shifted left out
+ * of alignment with every other row. list_card() now always renders
+ * `.anchor-speaker__photo` (a real photo, or the shared initial-letter
+ * placeholder otherwise), so the three-column template below is
+ * unconditional - every row keeps the same photo column.
  */
 .anchor-speakers--list .anchor-speaker {
 	display: grid;
-	grid-template-columns: minmax( 0, 1fr ) auto;
+	grid-template-columns: 64px minmax( 0, 1fr ) auto;
 	align-items: center;
 	column-gap: var( --as-photo-gap, 16px );
 	padding: 16px 0;
@@ -84,8 +89,12 @@
 	border-bottom: 0;
 }
 
-.anchor-speakers--list .anchor-speaker__body {
+.anchor-speakers--list .anchor-speaker__photo {
 	grid-column: 1;
+}
+
+.anchor-speakers--list .anchor-speaker__body {
+	grid-column: 2;
 	display: flex;
 	flex-direction: column;
 	justify-content: center;
@@ -103,24 +112,8 @@
  * alone), so matching both classes separately would be redundant.
  */
 .anchor-speakers--list .anchor-speaker > .anchor-speaker__cta {
-	grid-column: 2;
-	justify-self: end;
-}
-
-.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) {
-	grid-template-columns: 64px minmax( 0, 1fr ) auto;
-}
-
-.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__photo {
-	grid-column: 1;
-}
-
-.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__body {
-	grid-column: 2;
-}
-
-.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__cta {
 	grid-column: 3;
+	justify-self: end;
 }
 
 .anchor-speakers--list .anchor-speaker__name {

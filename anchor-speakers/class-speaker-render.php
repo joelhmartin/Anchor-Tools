@@ -82,20 +82,33 @@ class Anchor_Speaker_Render {
 			}
 			$html .= '>';
 
-			if ( $has_photo ) {
-				$html .= get_the_post_thumbnail( $post->ID, 'thumbnail', [
+			$html .= $has_photo
+				? get_the_post_thumbnail( $post->ID, 'thumbnail', [
 					'class'   => 'anchor-speaker-avatar__img',
 					'alt'     => $name,
 					'loading' => 'lazy',
-				] );
-			} else {
-				$initial = function_exists( 'mb_substr' ) ? mb_substr( $name, 0, 1 ) : substr( $name, 0, 1 );
-				$html   .= '<span class="anchor-speaker-avatar__img anchor-speaker-avatar__img--placeholder" aria-hidden="true">' . esc_html( $initial ) . '</span>';
-			}
+				] )
+				: self::photo_placeholder( $name );
 
 			$html .= '</' . $tag . '>';
 		}
 		return $html;
+	}
+
+	/**
+	 * The initial-letter placeholder circle shown when a speaker has no
+	 * photo. Shared by `layout="avatars"` and `layout="list"` - the two
+	 * layouts that always keep a photo/avatar slot in the row even without
+	 * a real photo, so a photo-less speaker doesn't shift out of alignment
+	 * with the rest - so there is one implementation of "no photo, show an
+	 * initial" rather than two. Reuses the avatars layout's own classes
+	 * (`anchor-speaker-avatar__img`, `anchor-speaker-avatar__img--placeholder`)
+	 * and therefore its `--as-avatar-placeholder-bg`/`--as-avatar-placeholder-fg`
+	 * custom properties, regardless of which layout's wrapper it ends up in.
+	 */
+	private static function photo_placeholder( $name ) {
+		$initial = function_exists( 'mb_substr' ) ? mb_substr( $name, 0, 1 ) : substr( $name, 0, 1 );
+		return '<span class="anchor-speaker-avatar__img anchor-speaker-avatar__img--placeholder" aria-hidden="true">' . esc_html( $initial ) . '</span>';
 	}
 
 	private static function card( WP_Post $post, array $show, $link ) {
@@ -170,6 +183,14 @@ class Anchor_Speaker_Render {
 	 * card: inline after the name (only when a title also exists, so the
 	 * role line beneath it is the title) or as the role line itself (only
 	 * when there is no title) - never both, which would repeat them.
+	 *
+	 * The photo column always renders, even for a speaker with no featured
+	 * image (owner feedback round 3): a real photo, or the shared
+	 * `photo_placeholder()` initial-letter circle otherwise. Without that,
+	 * a photo-less speaker had no `.anchor-speaker__photo` element at all,
+	 * so the CSS's `:has( > .anchor-speaker__photo )` column never matched
+	 * and that one row's text shifted left out of alignment with every
+	 * other row.
 	 */
 	private static function list_card( WP_Post $post, array $show, $link ) {
 		$meta      = Anchor_Speaker_Meta::get( $post->ID );
@@ -183,13 +204,13 @@ class Anchor_Speaker_Render {
 
 		$html = '<article class="anchor-speaker">';
 
-		if ( has_post_thumbnail( $post->ID ) ) {
-			$img = get_the_post_thumbnail( $post->ID, 'medium', [ 'loading' => 'lazy' ] );
-			if ( $link ) {
-				$html .= '<a class="anchor-speaker__photo" href="' . esc_url( $permalink ) . '">' . $img . '</a>';
-			} else {
-				$html .= '<span class="anchor-speaker__photo">' . $img . '</span>';
-			}
+		$photo_inner = has_post_thumbnail( $post->ID )
+			? get_the_post_thumbnail( $post->ID, 'medium', [ 'loading' => 'lazy' ] )
+			: self::photo_placeholder( $name );
+		if ( $link ) {
+			$html .= '<a class="anchor-speaker__photo" href="' . esc_url( $permalink ) . '">' . $photo_inner . '</a>';
+		} else {
+			$html .= '<span class="anchor-speaker__photo">' . $photo_inner . '</span>';
 		}
 
 		$html .= '<div class="anchor-speaker__body">';

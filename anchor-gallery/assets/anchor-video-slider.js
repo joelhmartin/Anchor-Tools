@@ -254,6 +254,10 @@
     // layout plays the embed in place of the featured tile itself instead;
     // see playGalleryFeatured() below.
     if (gallery.getAttribute('data-layout') === 'gallery') {
+      // `opts` (popup max-width/aspect/caption) is intentionally not passed
+      // through: the featured tile is a fixed play surface sized by the
+      // module's own --avg-featured-ratio CSS var, not a free-floating
+      // popup, so those options don't apply here.
       playGalleryFeatured(gallery, tile);
       return;
     }

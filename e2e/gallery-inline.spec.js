@@ -28,15 +28,15 @@ let seed;
 
 test.beforeAll(() => {
   if (!fs.existsSync(SEED_PATH)) {
-    throw new Error('Missing e2e/.seed.json — run `npm run env:seed` first.');
+    throw new Error('Missing e2e/.seed.json, run `npm run env:seed` first.');
   }
   seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf8'));
   if (!seed.galleryInlineUrl) {
-    throw new Error('Seed has no galleryInlineUrl — re-run `npm run env:seed`.');
+    throw new Error('Seed has no galleryInlineUrl, re-run `npm run env:seed`.');
   }
 });
 
-// Clicks tiles, so the CMP gate must be settled first — see
+// Clicks tiles, so the CMP gate must be settled first, see
 // e2e/helpers/consent.js. Pinned to strict posture so a local run reproduces
 // CI rather than getting the non-blocking relaxed notice.
 test.use({ timezoneId: STRICT_POSTURE_TIMEZONE });

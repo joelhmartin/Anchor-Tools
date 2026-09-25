@@ -65,6 +65,10 @@ class Module {
 		$this->progress = new Services\ProgressService( $this->enrollments );
 		$this->quizzes  = new Services\QuizService( $this->progress, $this->enrollments );
 
+		// The quiz REST surface (Task 26). Routes::__construct() only hooks
+		// rest_api_init; nothing else needs this instance, so it is not kept.
+		new Rest\Routes( new Rest\QuizController( $this->quizzes ) );
+
 		// admin-post.php, not wp-admin, so it must be constructed unconditionally
 		// (not inside the is_admin() block above) - the handler runs on requests
 		// from the front end too.

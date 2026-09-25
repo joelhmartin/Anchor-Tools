@@ -170,16 +170,34 @@ final class EnrollmentRepository {
 
 		return (int) $wpdb->query(
 			$wpdb->prepare(
-				'UPDATE ' . self::table() . "
-				 SET status = 'expired', updated_at = %s
-				 WHERE status IN ('enrolled', 'in_progress')
-				   AND expires_at IS NOT NULL
-				   AND expires_at <> %s
-				   AND expires_at <= %s",
+				'UPDATE ' . self::table() . " SET status = 'expired', updated_at = %s WHERE " . self::DUE_WHERE,
 				$now,
 				Clock::ZERO_DATE,
 				$now
 			)
 		);
 	}
+
+	/**
+	 * The rows expire_due( $now ) is about to flip - same predicate, read first
+	 * so the sweep knows whose access role to take away.
+	 *
+	 * @return Enrollment[]
+	 */
+	public static function due_for_expiry( string $now ): array {
+		global $wpdb;
+
+		$rows = $wpdb->get_results(
+			$wpdb->prepare( 'SELECT * FROM ' . self::table() . ' WHERE ' . self::DUE_WHERE, Clock::ZERO_DATE, $now ),
+			ARRAY_A
+		);
+
+		return \array_map( [ Enrollment::class, 'from_row' ], (array) $rows );
+	}
+
+	/** Shared by expire_due() and due_for_expiry(); placeholders: zero-date, now. */
+	private const DUE_WHERE = "status IN ('enrolled', 'in_progress')
+		   AND expires_at IS NOT NULL
+		   AND expires_at <> %s
+		   AND expires_at <= %s";
 }

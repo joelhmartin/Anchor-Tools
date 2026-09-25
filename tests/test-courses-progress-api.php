@@ -27,7 +27,8 @@ class Test_Courses_Progress_Api extends Anchor_Courses_TestCase {
 		$this->course = $this->make_course( [ 'progression_mode' => 'free' ] );
 		$this->lesson = $this->make_lesson();
 		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $this->lesson ] ] ] ] );
-		( new EnrollmentService() )->enroll( $this->user, $this->course );
+		// Through the one door: is_enrolled() needs the row AND the access role.
+		\Anchor\Courses\Support\Roles::grant_access( $this->user, $this->course );
 
 		add_filter( 'wp_redirect', [ $this, 'trap_redirect' ] );
 	}

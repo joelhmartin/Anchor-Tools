@@ -111,8 +111,12 @@ final class EnrollmentService {
 		return Roles::missing( $user_id, $required );
 	}
 
+	/** Statuses a re-grant brings back to life (reactivate()). */
+	public const CLOSED_STATUSES = [ 'cancelled', 'expired' ];
+
 	/**
-	 * Enrol a user. Idempotent: an existing row is returned untouched.
+	 * Enrol a user. Idempotent: an existing ACTIVE or COMPLETED row is returned
+	 * untouched; a CLOSED one (cancelled/expired) is reactivated.
 	 *
 	 * @param array $args source, source_id, metadata, bypass_checks.
 	 * @return Enrollment|\WP_Error
@@ -120,12 +124,12 @@ final class EnrollmentService {
 	public function enroll( int $user_id, int $course_id, array $args = [] ) {
 		$existing = EnrollmentRepository::find( $user_id, $course_id );
 		if ( $existing instanceof Enrollment ) {
-			// A row a loss policy actually closed (cancel/expire) must not sit
-			// there closed while the user holds the role again - "holding it IS
-			// enrolment" (design spec 3.1) cuts both ways. `completed` is left
-			// alone: finishing a course is not undone by a role round-trip.
-			if ( \in_array( $existing->status, [ 'cancelled', 'expired' ], true ) ) {
-				return $this->set_status( $user_id, $course_id, 'enrolled' ) ?? $existing;
+			// A row that was closed (cancel/expire policy, the expiry sweep) must
+			// not sit there closed while the user holds the role again - "holding
+			// it IS enrolment" (design spec 3.1) cuts both ways. `completed` is
+			// left alone: finishing a course is not undone by a role round-trip.
+			if ( \in_array( $existing->status, self::CLOSED_STATUSES, true ) ) {
+				return $this->reactivate( $existing );
 			}
 			return $existing;
 		}
@@ -140,15 +144,13 @@ final class EnrollmentService {
 			return new \WP_Error( 'no_course', \__( 'That course does not exist.', 'anchor-schema' ) );
 		}
 
-		$expiration_days = (int) CourseEditor::setting( $course_id, 'expiration_days' );
-
 		$enrollment = EnrollmentRepository::insert_ignore(
 			[
 				'user_id'     => $user_id,
 				'course_id'   => $course_id,
 				'status'      => 'enrolled',
 				'enrolled_at' => Clock::now(),
-				'expires_at'  => $expiration_days > 0 ? Clock::offset( $expiration_days * DAY_IN_SECONDS ) : null,
+				'expires_at'  => $this->expires_at_from_now( $course_id ),
 				'source'      => (string) ( $args['source'] ?? 'manual' ),
 				'source_id'   => (string) ( $args['source_id'] ?? '' ),
 				'metadata'    => (array) ( $args['metadata'] ?? [] ),
@@ -173,13 +175,55 @@ final class EnrollmentService {
 		return $enrollment;
 	}
 
+	/**
+	 * Bring a closed row back (Task 20 fix round, R3).
+	 *
+	 * A learner who had started resumes as `in_progress`, one who never opened
+	 * anything as `enrolled`. The access window restarts from now - keeping the
+	 * old expires_at would have the next daily sweep close the row again.
+	 * Fires `anchor_courses_enrollment_status_changed`, never
+	 * `anchor_courses_enrolled`, which stays a true one-time event.
+	 */
+	private function reactivate( Enrollment $existing ): Enrollment {
+		$status  = null !== $existing->started_at ? 'in_progress' : 'enrolled';
+		$updated = EnrollmentRepository::update(
+			$existing->id,
+			[ 'status' => $status, 'expires_at' => $this->expires_at_from_now( $existing->course_id ) ]
+		);
+
+		Log::write( 'enrollment_reactivated', [ 'user' => $existing->user_id, 'course' => $existing->course_id, 'from' => $existing->status ] );
+
+		/** This action is documented in set_status(). */
+		\do_action( 'anchor_courses_enrollment_status_changed', $existing->user_id, $existing->course_id, $existing->status, $status );
+
+		return $updated ?? $existing;
+	}
+
+	/** The course's access window measured from now, or null when it never expires. */
+	private function expires_at_from_now( int $course_id ): ?string {
+		$days = (int) CourseEditor::setting( $course_id, 'expiration_days' );
+		return $days > 0 ? Clock::offset( $days * DAY_IN_SECONDS ) : null;
+	}
+
 	public function get( int $user_id, int $course_id ): ?Enrollment {
 		return EnrollmentRepository::find( $user_id, $course_id );
 	}
 
+	/**
+	 * May this learner use the course right now?
+	 *
+	 * BOTH halves are required (Task 20 fix round, R1): an active row AND the
+	 * `anchor_course_{id}` access role. The role is the door - revoking it
+	 * shuts access under every loss policy, including the default `keep`,
+	 * which only preserves the row (and so the learner's progress) for a
+	 * later re-grant. The row is the record - a role held over a closed row
+	 * (cancelled/expired/completed) does not re-open the course by itself.
+	 */
 	public function is_enrolled( int $user_id, int $course_id ): bool {
 		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
-		return $enrollment instanceof Enrollment && $enrollment->is_active();
+		return $enrollment instanceof Enrollment
+			&& $enrollment->is_active()
+			&& Roles::user_has( $user_id, Roles::access_slug( $course_id ) );
 	}
 
 	/** Mark the course started. No-op (returns the row) if it already was. */
@@ -242,8 +286,24 @@ final class EnrollmentService {
 		return $this->set_status( $user_id, $course_id, 'expired' );
 	}
 
-	/** Daily sweep. @return int rows flipped to expired. */
+	/**
+	 * Daily sweep. @return int rows flipped to expired.
+	 *
+	 * Expired means no access, so every learner whose row the sweep closes
+	 * also loses the access role (R2). The role goes AFTER the row is closed,
+	 * through Roles::remove_for_closed_row(), which tells the role listener
+	 * the row has already been decided so the loss policy is not consulted a
+	 * second time.
+	 */
 	public function sweep_expired(): int {
-		return EnrollmentRepository::expire_due( Clock::now() );
+		$now     = Clock::now();
+		$due     = EnrollmentRepository::due_for_expiry( $now );
+		$flipped = EnrollmentRepository::expire_due( $now );
+
+		foreach ( $due as $enrollment ) {
+			Roles::remove_for_closed_row( $enrollment->user_id, $enrollment->course_id, 'expiry' );
+		}
+
+		return $flipped;
 	}
 }

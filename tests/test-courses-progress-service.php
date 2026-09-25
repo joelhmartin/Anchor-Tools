@@ -42,7 +42,8 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 			] ] ]
 		);
 
-		$this->enrollments->enroll( $this->user, $this->course );
+		// Through the one door: is_enrolled() needs the row AND the access role.
+		\Anchor\Courses\Support\Roles::grant_access( $this->user, $this->course );
 	}
 
 	public function tear_down() {
@@ -129,7 +130,7 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 		$lesson = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $quiz ], 'Gated' );
 		$course = $this->make_course( [ 'progression_mode' => 'free' ] );
 		Curriculum::save( $course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
-		$this->enrollments->enroll( $this->user, $course );
+		\Anchor\Courses\Support\Roles::grant_access( $this->user, $course );
 
 		$refused = $this->progress->complete_lesson( $this->user, $course, $lesson );
 
@@ -152,7 +153,7 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 		$lesson = $this->make_lesson( [ 'completion_mode' => 'view' ], 'Viewable' );
 		$course = $this->make_course( [ 'progression_mode' => 'free' ] );
 		Curriculum::save( $course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
-		$this->enrollments->enroll( $this->user, $course );
+		\Anchor\Courses\Support\Roles::grant_access( $this->user, $course );
 
 		$this->progress->start_lesson( $this->user, $course, $lesson );
 

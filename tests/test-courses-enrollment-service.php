@@ -142,7 +142,8 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 	public function test_is_enrolled_is_false_for_cancelled_and_expired() {
 		$user   = $this->make_learner();
 		$course = $this->make_course();
-		$this->service->enroll( $user, $course );
+		// is_enrolled() needs the row AND the access role (Task 20 fix round, R1).
+		\Anchor\Courses\Support\Roles::grant_access( $user, $course );
 		$this->assertTrue( $this->service->is_enrolled( $user, $course ) );
 
 		$this->service->cancel( $user, $course );

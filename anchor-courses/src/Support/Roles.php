@@ -241,7 +241,7 @@ final class Roles {
 	 * which runs INSIDE that call - reads it. Always cleared in a finally, so a
 	 * value can never attach itself to somebody else's grant.
 	 *
-	 * @var array{source:string,source_id:string}|null
+	 * @var array{source:string,source_id:string,row_closed?:bool}|null
 	 */
 	private static ?array $context = null;
 
@@ -264,6 +264,42 @@ final class Roles {
 
 	private static function enrollments(): EnrollmentService {
 		return self::$enrollments ?? ( self::$enrollments = new EnrollmentService() );
+	}
+
+	/**
+	 * Run $fn with the grant context set, and ALWAYS clear it afterwards.
+	 *
+	 * The one writer of self::$context (deviation D15). `$extra` carries flags
+	 * for the listener, e.g. `row_closed` from remove_for_closed_row().
+	 */
+	private static function with_context( string $source, string $source_id, callable $fn, array $extra = [] ): void {
+		$outer         = self::$context; // Restored, not nulled: a nested call must not wipe its caller's.
+		self::$context = [ 'source' => $source, 'source_id' => $source_id ] + $extra;
+		try {
+			$fn();
+		} finally {
+			self::$context = $outer;
+		}
+	}
+
+	/**
+	 * Take the access role from somebody whose row is ALREADY closed.
+	 *
+	 * The expiry sweep's half of "expired means no access" (R2): the row has
+	 * been decided, so the remove_user_role listener must neither consult the
+	 * loss policy nor change the row a second time. "Roles are never deleted
+	 * automatically" is about role DEFINITIONS; a user's holding follows the row.
+	 */
+	public static function remove_for_closed_row( int $user_id, int $course_id, string $source ): void {
+		$user = \get_userdata( $user_id );
+		$slug = self::access_slug( $course_id );
+		if ( ! $user instanceof \WP_User || ! self::user_has( $user_id, $slug ) ) {
+			return;
+		}
+
+		self::with_context( $source, '', static fn() => $user->remove_role( $slug ), [ 'row_closed' => true ] );
+
+		Log::write( 'access_role_removed_for_closed_row', [ 'user' => $user_id, 'course' => $course_id, 'source' => $source ] );
 	}
 
 	/**
@@ -290,7 +326,13 @@ final class Roles {
 		}
 
 		if ( self::user_has( $user_id, $slug ) ) {
-			return true; // Already in (brief 26).
+			// Already in (brief 26) - but the row may have been closed out from
+			// under the role (a direct cancel()/expire(), a legacy expired row).
+			// Run the listener's enrol step anyway: an active row is returned
+			// untouched, a closed one is reactivated (R2). No add_user_role
+			// fires, so nothing else happens and no action is repeated.
+			self::with_context( $source, $source_id, static fn() => self::enroll_for_role( $user_id, $slug ) );
+			return true;
 		}
 
 		$allowed = self::enrollments()->can_enroll( $user_id, $course_id );
@@ -298,12 +340,8 @@ final class Roles {
 			return $allowed;
 		}
 
-		self::$context = [ 'source' => $source, 'source_id' => $source_id ];
-		try {
-			$user->add_role( $slug ); // Fires add_user_role -> on_role_added().
-		} finally {
-			self::$context = null;
-		}
+		// Fires add_user_role -> on_role_added() inside the context.
+		self::with_context( $source, $source_id, static fn() => $user->add_role( $slug ) );
 
 		Log::write( 'access_granted', [ 'user' => $user_id, 'course' => $course_id, 'source' => $source ] );
 
@@ -334,12 +372,8 @@ final class Roles {
 			return false;
 		}
 
-		self::$context = [ 'source' => $source, 'source_id' => $source_id ];
-		try {
-			$user->remove_role( $slug ); // Fires remove_user_role -> on_role_removed().
-		} finally {
-			self::$context = null;
-		}
+		// Fires remove_user_role -> on_role_removed() inside the context.
+		self::with_context( $source, $source_id, static fn() => $user->remove_role( $slug ) );
 
 		Log::write( 'access_revoked', [ 'user' => $user_id, 'course' => $course_id, 'source' => $source ] );
 
@@ -389,9 +423,13 @@ final class Roles {
 	/** Core `remove_user_role( $user_id, $role )`. */
 	public static function on_role_removed( $user_id, $role ): void {
 		$course_id = self::is_access_slug( (string) $role );
-		if ( null !== $course_id ) {
-			self::apply_loss_policy( (int) $user_id, $course_id, (string) $role );
+		if ( null === $course_id ) {
+			return;
 		}
+		if ( ! empty( self::$context['row_closed'] ) ) {
+			return; // remove_for_closed_row(): the row is already decided.
+		}
+		self::apply_loss_policy( (int) $user_id, $course_id, (string) $role );
 	}
 
 	/**
@@ -433,6 +471,13 @@ final class Roles {
 	 */
 	public static function apply_loss_policy( int $user_id, int $course_id, string $role ): void {
 		if ( $user_id <= 0 || $course_id <= 0 ) {
+			return;
+		}
+
+		// Only an ACTIVE row has anything to decide. A completed row keeps its
+		// history whatever the policy says; a closed one is already closed.
+		$enrollment = self::enrollments()->get( $user_id, $course_id );
+		if ( null === $enrollment || ! $enrollment->is_active() ) {
 			return;
 		}
 
@@ -538,11 +583,11 @@ final class Roles {
 	 * time either listener runs: core's own set_role() fires `remove_user_role`
 	 * for every stripped role, synchronously, BEFORE it fires `set_user_role`
 	 * (see class-wp-user.php), and on_role_removed() is what applies the policy.
-	 * That means for an ACCESS role this method only needs to ask "is the
-	 * enrolment still active?": `keep` (the default) leaves it active, so the
-	 * role is restored exactly as before; a site-configured `cancel`/`expire`
-	 * has already ended it, so this defers rather than fighting that decision
-	 * back on. A COMPLETION role carries no enrolment and is always restored -
+	 * That means for an ACCESS role this method only needs to read the row's
+	 * status: `keep` (the default) leaves it active, and a completed row is
+	 * never touched by a policy, so the role is restored exactly as before;
+	 * a site-configured `cancel`/`expire` has already closed it, so this
+	 * defers rather than fighting that decision back on. A COMPLETION role carries no enrolment and is always restored -
 	 * nothing governs its loss.
 	 *
 	 * @param int      $user_id
@@ -566,9 +611,16 @@ final class Roles {
 				continue;
 			}
 
+			// Read the ROW, not is_enrolled(): the role is already gone by now,
+			// so is_enrolled() is false for everybody (R1). Only a row the loss
+			// policy just closed stays stripped; active and completed learners
+			// (and a holder with no row yet) get the role back.
 			$course_id = self::is_access_slug( $slug );
-			if ( null !== $course_id && ! self::enrollments()->is_enrolled( $user_id, $course_id ) ) {
-				continue; // The loss was intentional (a cancel/expire policy) - do not put it back.
+			if ( null !== $course_id ) {
+				$enrollment = self::enrollments()->get( $user_id, $course_id );
+				if ( null !== $enrollment && \in_array( $enrollment->status, EnrollmentService::CLOSED_STATUSES, true ) ) {
+					continue; // The loss was intentional (a cancel/expire policy) - do not put it back.
+				}
 			}
 
 			$user->add_role( $slug );

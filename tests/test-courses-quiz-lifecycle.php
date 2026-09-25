@@ -37,7 +37,8 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 		);
 
 		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'quiz', 'id' => $this->quiz ] ] ] ] );
-		( new EnrollmentService() )->enroll( $this->user, $this->course );
+		// Through the one door: is_enrolled() needs the row AND the access role.
+		\Anchor\Courses\Support\Roles::grant_access( $this->user, $this->course );
 	}
 
 	public function tear_down() {

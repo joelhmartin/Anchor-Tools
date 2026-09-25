@@ -50,6 +50,24 @@ class Test_Courses_Progress_Api extends Anchor_Courses_TestCase {
 		$this->assertSame( 'completed', $result->status );
 	}
 
+	/**
+	 * Final review I1: api.php used to build bare services (a ProgressService
+	 * with no completion pipeline), so finishing the last item through the
+	 * public API never completed the course. It must use the module's own.
+	 */
+	public function test_completing_the_last_item_through_the_api_completes_the_course() {
+		$course = $this->make_course( [ 'completion_mode' => 'all_required_items', 'certificate_enabled' => 1, 'progression_mode' => 'free' ] );
+		$lesson = $this->make_lesson( [ 'completion_mode' => 'manual', 'required' => 1 ] );
+		Curriculum::save( $course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+		$user = $this->make_learner();
+		\Anchor\Courses\Support\Roles::grant_access( $user, $course, 'manual' );
+
+		anchor_courses_complete_lesson( $user, $course, $lesson );
+
+		$this->assertSame( 'completed', $this->courses()->enrollments->get( $user, $course )->status, 'The API path must run the completion pipeline.' );
+		$this->assertNotNull( \Anchor\Courses\Database\CertificateRepository::find( $user, $course ) );
+	}
+
 	public function test_get_progress_api_returns_a_course_progress() {
 		$before = anchor_courses_get_progress( $this->user, $this->course );
 		$this->assertInstanceOf( CourseProgress::class, $before );

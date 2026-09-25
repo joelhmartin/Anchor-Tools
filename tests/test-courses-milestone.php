@@ -145,10 +145,13 @@ class Test_Courses_Milestone extends Anchor_Courses_TestCase {
 		$this->assertTrue( Roles::user_has( $user, Roles::completion_slug( $course ) ) );
 
 		// --- Re-running everything changes nothing (brief 26) -------------
+		// Only through the public surfaces - completion is never driven by
+		// hand here (final review I1): the API must reach the pipeline itself.
+		$completed_events = did_action( 'anchor_courses_course_completed' );
 		Roles::grant_access( $user, $course, 'manual' );
 		anchor_courses_enroll_user( $user, $course );
 		anchor_courses_complete_lesson( $user, $course, $lesson );
-		$module->completion->complete( $user, $course );
+		$this->assertSame( $completed_events, did_action( 'anchor_courses_course_completed' ), 'Re-running the API must not complete twice.' );
 
 		$this->assertCount( 1, CreditRepository::for_user( $user ) );
 		$this->assertCount( 1, CertificateRepository::for_user( $user ) );
@@ -192,10 +195,10 @@ class Test_Courses_Milestone extends Anchor_Courses_TestCase {
 		// A wrong verification token shows nothing.
 		$this->assertNull( ( new \Anchor\Courses\Services\CertificateService() )->get_by_token( 'not-a-real-token' ) );
 
-		// A second completion call is a no-op (already proven above by the
-		// unchanged credit/certificate counts), and complete() itself reports
-		// no transition on the repeat call.
-		$this->assertFalse( $module->completion->complete( $user, $course ) );
+		// A second completion is a no-op (already proven above by the
+		// unchanged credit/certificate counts and the single
+		// anchor_courses_course_completed firing).
+		$this->assertSame( $completed_events, did_action( 'anchor_courses_course_completed' ) );
 
 		remove_role( Roles::access_slug( $course ) );
 		remove_role( Roles::completion_slug( $course ) );

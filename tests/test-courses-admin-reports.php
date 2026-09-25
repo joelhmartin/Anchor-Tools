@@ -272,11 +272,11 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 	}
 
 	/**
-	 * Services\CompletionService has not joined this branch (see the rows()
-	 * test above) - 'complete' falls back to driving the enrolment status
-	 * directly through EnrollmentService, per the class's own docblock.
+	 * The manual "complete" override runs the REAL once-only pipeline
+	 * (Services\CompletionService), not a bare status write: the completion
+	 * role, the CE credit and the certificate must all appear.
 	 */
-	public function test_complete_marks_the_enrollment_complete_without_a_completion_service() {
+	public function test_complete_runs_the_completion_pipeline() {
 		Roles::grant_access( $this->learner, $this->course, 'manual' );
 
 		wp_set_current_user( $this->admin );
@@ -287,6 +287,8 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		$this->assertStringContainsString( 'anchor_courses_admin_notice=completed', $redirect );
 		$this->assertSame( 'completed', ( new EnrollmentService() )->get( $this->learner, $this->course )->status );
 		$this->assertTrue( Roles::user_has( $this->learner, Roles::access_slug( $this->course ) ) );
+		$this->assertTrue( Roles::user_has( $this->learner, Roles::completion_slug( $this->course ) ), 'pipeline grants the completion role' );
+		$this->assertNotNull( \Anchor\Courses\Database\CreditRepository::find( $this->learner, $this->course ), 'pipeline awards the credit' );
 	}
 
 	public function test_uncomplete_reopens_the_enrollment() {
@@ -299,7 +301,8 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		);
 
 		$this->assertStringContainsString( 'anchor_courses_admin_notice=uncompleted', $redirect );
-		$this->assertSame( 'enrolled', ( new EnrollmentService() )->get( $this->learner, $this->course )->status );
+		// CompletionService::uncomplete() reopens to in_progress (the work had started), never to bare enrolled.
+		$this->assertSame( 'in_progress', ( new EnrollmentService() )->get( $this->learner, $this->course )->status );
 	}
 
 	/* ----- Notices -------------------------------------------------------- */

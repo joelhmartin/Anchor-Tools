@@ -128,6 +128,11 @@
         var courseId = $root.data('course');
         var attemptId = 0;
         var timerHandle = null;
+        // Re-review (Low): once a submit (timer-fired or manual) has started
+        // draining the save queue, a further submit trigger or answer change
+        // must not race the grade - only a FAILED submit clears this, so a
+        // learner can retry.
+        var submitting = false;
         var saves = createSaveQueue(function (qid, values, done) {
             api('quiz-attempts/' + attemptId + '/answer', 'POST', { question_id: qid, value: values, course_id: courseId })
                 .done(function () { done(true); })
@@ -224,17 +229,27 @@
 
         // Save each answer as it changes, so an expired timer still has them.
         // Through the serialised queue (audit F06), never a free-running
-        // request per click.
+        // request per click. Ignored once a submit is under way (re-review) -
+        // disabling the inputs below already stops `change` from firing; the
+        // `submitting` check is a second guard against any change that still
+        // reaches here (e.g. a checkbox toggled via script or before the
+        // disabled attribute takes effect in the DOM).
         $root.on('change', '.anchor-quiz-answers input', function () {
-            if (!attemptId) { return; }
+            if (!attemptId || submitting) { return; }
             var $q = $(this).closest('.anchor-quiz-question');
             saves.save($q.data('question'), $q.find('input:checked').map(function () { return this.value; }).get());
         });
 
         $root.on('submit', '.anchor-quiz-form', function (e) {
             e.preventDefault();
-            if (!attemptId) { return; }
+            // Both the timer (via `.trigger('submit')`) and the learner's own
+            // click reach this same handler - `submitting` makes a second
+            // trigger while the first is still draining/grading a no-op,
+            // rather than a second in-flight submit request (re-review).
+            if (!attemptId || submitting) { return; }
+            submitting = true;
             $(this).find('button[type="submit"]').prop('disabled', true);
+            $root.find('.anchor-quiz-answers input').prop('disabled', true);
 
             // Let queued/in-flight saves finish first so none of them races
             // the grade. Submit sends the whole answer map regardless, so a
@@ -249,7 +264,12 @@
                 api('quiz-attempts/' + attemptId + '/submit', 'POST', { answers: answers, course_id: courseId })
                     .done(renderResult)
                     .fail(function (xhr) {
+                        // Only a FAILED submit clears the flag - a successful
+                        // one hides the form in renderResult(), so there is
+                        // nothing left to guard.
+                        submitting = false;
                         $root.find('.anchor-quiz-form button[type="submit"]').prop('disabled', false);
+                        $root.find('.anchor-quiz-answers input').prop('disabled', false);
                         var msg = (xhr && xhr.responseJSON && xhr.responseJSON.message) || S.error;
                         $root.find('.anchor-quiz-result').prop('hidden', false).text(msg);
                     });

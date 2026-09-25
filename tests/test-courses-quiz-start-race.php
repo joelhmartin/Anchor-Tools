@@ -127,6 +127,29 @@ class Test_Courses_Quiz_Start_Race extends Anchor_Courses_TestCase {
 		$this->assertSame( 1, $this->quizzes->attempts_used( $this->user, $this->quiz, $this->course ) );
 	}
 
+	/**
+	 * Re-review (Low): MySQL named locks are server-wide, not scoped by
+	 * database - two WordPress installs sharing one MySQL server (or two
+	 * subsites of one multisite, which share the server but not the table
+	 * prefix) must not contend for the same lock just because a learner,
+	 * course and quiz happen to have the same ids on both.
+	 */
+	public function test_the_lock_name_is_scoped_to_this_site() {
+		global $wpdb;
+		$original_prefix = $wpdb->prefix;
+
+		$here = QuizService::attempt_lock_name( $this->user, $this->course, $this->quiz );
+
+		$wpdb->prefix = $original_prefix . '_another_site_';
+		$there        = QuizService::attempt_lock_name( $this->user, $this->course, $this->quiz );
+
+		$wpdb->prefix = $original_prefix;
+
+		$this->assertNotSame( $here, $there, 'Two sites sharing a MySQL server must not collide on the same lock name.' );
+		$this->assertLessThanOrEqual( 64, \strlen( $here ), 'MySQL lock names are at most 64 characters.' );
+		$this->assertLessThanOrEqual( 64, \strlen( $there ), 'MySQL lock names are at most 64 characters.' );
+	}
+
 	/** A parallel request holding the lock (a second MySQL session) makes this one wait, then back off cleanly. */
 	public function test_start_takes_the_named_lock_and_backs_off_with_a_conflict() {
 		$this->other = new mysqli();

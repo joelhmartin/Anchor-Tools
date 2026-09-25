@@ -115,10 +115,17 @@ final class QuizService {
 
 	/**
 	 * The MySQL named-lock key for one learner's starts at one quiz in one
-	 * course (audit F07). MySQL lock names are at most 64 characters.
+	 * course (audit F07). `GET_LOCK()` names are server-wide, not scoped by
+	 * database, so two WordPress installs sharing one MySQL server - or two
+	 * subsites of one multisite, which share the server but not the table
+	 * prefix - are folded into the key (re-review): otherwise they would
+	 * contend for the same lock whenever a learner, course and quiz happen to
+	 * share ids across sites. MySQL lock names are at most 64 characters.
 	 */
 	public static function attempt_lock_name( int $user_id, int $course_id, int $quiz_id ): string {
-		$name = 'anchor_courses_attempt_' . $user_id . '_' . $course_id . '_' . $quiz_id;
+		global $wpdb;
+		$site = \md5( DB_NAME . $wpdb->prefix );
+		$name = 'anchor_courses_attempt_' . $site . '_' . $user_id . '_' . $course_id . '_' . $quiz_id;
 		return \strlen( $name ) <= 64 ? $name : 'anchor_courses_attempt_' . \md5( $name );
 	}
 

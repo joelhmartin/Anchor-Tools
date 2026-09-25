@@ -216,7 +216,11 @@ one." for an enrolled learner locked by progression.
   MySQL named lock `QuizService::attempt_lock_name( $user, $course, $quiz )`
   (`GET_LOCK`, `anchor_courses_attempt_lock_timeout` seconds, default 5) around
   the preflight and the create, released in `finally`; a caller that cannot get
-  it receives `WP_Error('attempt_busy')` (REST 409). As a database-level
+  it receives `WP_Error('attempt_busy')` (REST 409). The lock name folds in
+  `md5( DB_NAME . $wpdb->prefix )` (re-review) - `GET_LOCK()` is server-wide,
+  not scoped by database, so two sites sharing a MySQL server (or two
+  subsites of one multisite) never contend over the same key just because a
+  learner, course and quiz share ids; still at most 64 characters. As a database-level
   backstop, `QuizAttemptRepository::create()` inserts only while no attempt is
   open for (user, course, quiz) and fewer than `max_attempts` counted attempts
   exist; nothing inserted resolves to the open attempt, or to

@@ -287,6 +287,22 @@ final class EnrollmentService {
 	}
 
 	/**
+	 * Cancel every ACTIVE row a user has - their account is going away.
+	 * Completed and already-closed rows are history and are left alone.
+	 *
+	 * @return int Rows cancelled.
+	 */
+	public function cancel_all_for_user( int $user_id ): int {
+		$cancelled = 0;
+		foreach ( EnrollmentRepository::for_user( $user_id, Enrollment::ACTIVE_STATUSES ) as $enrollment ) {
+			if ( null !== $this->cancel( $user_id, $enrollment->course_id ) ) {
+				$cancelled++;
+			}
+		}
+		return $cancelled;
+	}
+
+	/**
 	 * Daily sweep. @return int rows flipped to expired.
 	 *
 	 * Expired means no access, so every learner whose row the sweep closes

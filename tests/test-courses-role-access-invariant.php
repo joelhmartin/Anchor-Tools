@@ -149,6 +149,7 @@ class Test_Courses_Role_Access_Invariant extends Anchor_Courses_TestCase {
 		$this->assertFalse( Roles::user_has( $this->user, $this->slug() ), 'Expired means no access - the role goes.' );
 		$this->assertSame( 'expired', $this->enrollments->get( $this->user, $this->course )->status, 'Not re-closed as cancelled.' );
 		$this->assertSame( 0, $policy_calls, 'The row is already closed; the loss policy has nothing to decide.' );
+		$this->assertSame( [], Roles::grant_record( $this->user, $this->course ) );
 	}
 
 	/** Also R3: the reactivated row gets a fresh expires_at, not the swept one. */
@@ -226,5 +227,163 @@ class Test_Courses_Role_Access_Invariant extends Anchor_Courses_TestCase {
 		Roles::grant_access( $this->user, $this->course, 'manual' );
 
 		$this->assertNull( $this->enrollments->get( $this->user, $this->course )->expires_at );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * R4 - the source reaches the policy; the grants map
+	 * ------------------------------------------------------------------- */
+
+	public function test_the_loss_policy_filter_receives_the_revoke_source() {
+		$seen = [];
+		add_filter(
+			'anchor_courses_role_loss_policy',
+			static function ( $policy, $u, $c, $role, $source, $source_id ) use ( &$seen ) {
+				$seen[] = [ $source, $source_id ];
+				return $policy;
+			},
+			10,
+			6
+		);
+
+		Roles::grant_access( $this->user, $this->course, 'woocommerce', '4242' );
+		Roles::revoke_access( $this->user, $this->course, 'woocommerce', '4242' );
+
+		get_userdata( $this->user )->add_role( $this->slug() );
+		get_userdata( $this->user )->remove_role( $this->slug() );
+
+		$this->assertSame( [ [ 'woocommerce', '4242' ], [ 'role', '' ] ], $seen );
+	}
+
+	public function test_grant_writes_and_revoke_clears_the_grants_record() {
+		$this->freeze( '2026-02-02 10:00:00 UTC' );
+		Roles::grant_access( $this->user, $this->course, 'woocommerce', '4242' );
+
+		$this->assertSame(
+			[ 'source' => 'woocommerce', 'source_id' => '4242', 'granted_at' => '2026-02-02 10:00:00' ],
+			Roles::grant_record( $this->user, $this->course )
+		);
+		$this->assertArrayHasKey( $this->course, get_user_meta( $this->user, Roles::GRANTS_META, true ) );
+
+		Roles::revoke_access( $this->user, $this->course, 'woocommerce', '4242' );
+
+		$this->assertSame( [], Roles::grant_record( $this->user, $this->course ) );
+	}
+
+	public function test_a_raw_add_role_is_recorded_with_the_role_source() {
+		get_userdata( $this->user )->add_role( $this->slug() );
+
+		$this->assertSame( 'role', Roles::grant_record( $this->user, $this->course )['source'] ?? null );
+	}
+
+	/** Task 27's contract: a manual grant outranks a purchase and is never downgraded. */
+	public function test_a_manual_grant_upgrades_the_record_and_is_never_downgraded() {
+		Roles::grant_access( $this->user, $this->course, 'woocommerce', '4242' );
+		Roles::grant_access( $this->user, $this->course, 'manual', '1' );
+		$this->assertSame( 'manual', Roles::grant_record( $this->user, $this->course )['source'] );
+
+		Roles::grant_access( $this->user, $this->course, 'woocommerce', '5555' );
+		$this->assertSame( 'manual', Roles::grant_record( $this->user, $this->course )['source'] );
+		$this->assertSame( '1', Roles::grant_record( $this->user, $this->course )['source_id'] );
+	}
+
+	/** set_role strips then restores the role; the record must come back unchanged. */
+	public function test_the_grants_record_survives_a_primary_role_change() {
+		$this->freeze( '2026-02-02 10:00:00 UTC' );
+		Roles::grant_access( $this->user, $this->course, 'woocommerce', '4242' );
+		$before = Roles::grant_record( $this->user, $this->course );
+
+		$this->freeze( '2026-04-04 10:00:00 UTC' );
+		wp_update_user( [ 'ID' => $this->user, 'role' => 'editor' ] );
+
+		$this->assertSame( $before, Roles::grant_record( $this->user, $this->course ) );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * R5 - deleted users, removal from a site, one policy call per role
+	 * ------------------------------------------------------------------- */
+
+	public function test_deleting_the_user_cancels_their_active_rows() {
+		require_once ABSPATH . 'wp-admin/includes/user.php';
+		$second = $this->make_course( [], 'Second' );
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		Roles::grant_access( $this->user, $second, 'manual' );
+		$this->enrollments->set_status( $this->user, $second, 'completed' );
+
+		wp_delete_user( $this->user );
+
+		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+		$this->assertSame( 'completed', $this->enrollments->get( $this->user, $second )->status, 'History is not rewritten.' );
+	}
+
+	public function test_removal_from_the_site_runs_the_loss_policy() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		$sources = [];
+		add_filter(
+			'anchor_courses_role_loss_policy',
+			static function ( $policy, $u, $c, $role, $source ) use ( &$sources ) {
+				$sources[] = $source;
+				return 'cancel';
+			},
+			10,
+			5
+		);
+
+		// Multisite core fires this before it deletes the user's capabilities
+		// for the site - no remove_user_role follows.
+		do_action( 'remove_user_from_blog', $this->user, get_current_blog_id(), 0 );
+
+		$this->assertSame( [ 'removed_from_site' ], $sources );
+		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+		$this->assertSame( [], Roles::grant_record( $this->user, $this->course ) );
+	}
+
+	public function test_the_new_listeners_are_wired() {
+		$this->assertNotFalse( has_action( 'deleted_user', [ Roles::class, 'on_user_deleted' ] ) );
+		$this->assertNotFalse( has_action( 'remove_user_from_blog', [ Roles::class, 'on_removed_from_site' ] ) );
+	}
+
+	/**
+	 * The set_role/keep path is the one that re-enters enroll() (reapply puts
+	 * the role back -> add_user_role -> enroll). Nothing may fire twice.
+	 */
+	public function test_set_role_under_keep_consults_the_policy_once_and_fires_nothing() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+
+		$policy = 0;
+		$fired  = [ 'enrolled' => 0, 'status' => 0, 'granted' => 0 ];
+		add_filter(
+			'anchor_courses_role_loss_policy',
+			static function ( $p ) use ( &$policy ) {
+				$policy++;
+				return $p;
+			}
+		);
+		add_action( 'anchor_courses_enrolled', function () use ( &$fired ) { $fired['enrolled']++; } );
+		add_action( 'anchor_courses_enrollment_status_changed', function () use ( &$fired ) { $fired['status']++; } );
+		add_action( 'anchor_courses_access_granted', function () use ( &$fired ) { $fired['granted']++; } );
+
+		wp_update_user( [ 'ID' => $this->user, 'role' => 'editor' ] );
+
+		$this->assertSame( 1, $policy, 'One lost role, one policy decision.' );
+		$this->assertSame( [ 'enrolled' => 0, 'status' => 0, 'granted' => 0 ], $fired );
+		$this->assertTrue( Roles::user_has( $this->user, $this->slug() ) );
+		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ) );
+	}
+
+	public function test_set_role_under_cancel_consults_the_policy_once() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		$policy = 0;
+		add_filter(
+			'anchor_courses_role_loss_policy',
+			static function () use ( &$policy ) {
+				$policy++;
+				return 'cancel';
+			}
+		);
+
+		wp_update_user( [ 'ID' => $this->user, 'role' => 'editor' ] );
+
+		$this->assertSame( 1, $policy );
+		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
 	}
 }

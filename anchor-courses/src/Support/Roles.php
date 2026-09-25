@@ -49,6 +49,25 @@ final class Roles {
 	public const ACCESS_PREFIX    = 'anchor_course_';
 	public const COMPLETED_SUFFIX = '_completed';
 
+	/**
+	 * User meta: WHY somebody holds each course's access role.
+	 *
+	 * [ course_id => [ 'source' => string, 'source_id' => string, 'granted_at' => 'Y-m-d H:i:s' UTC ] ]
+	 *
+	 * Mirrors the events module's `_anchor_event_grants`. Written whenever the
+	 * access role is gained (whatever added it - raw role adds record
+	 * `source = 'role'`), cleared whenever it is lost. The enrolment row keeps
+	 * the FIRST source forever; this map says why access is held NOW.
+	 *
+	 * Contract for revokers (Task 27's refund path): read grant_record() before
+	 * revoke_access() and leave a `manual` grant in place - an operator's comp
+	 * outranks a purchase. A manual grant upgrades any other record and is
+	 * never downgraded by a later non-manual grant.
+	 *
+	 * Caveat: plain user meta is network-wide on multisite, like the events map.
+	 */
+	public const GRANTS_META = '_anchor_course_grants';
+
 	/* ---------------------------------------------------------------------
 	 * Slugs and names
 	 * ------------------------------------------------------------------- */
@@ -241,9 +260,18 @@ final class Roles {
 	 * which runs INSIDE that call - reads it. Always cleared in a finally, so a
 	 * value can never attach itself to somebody else's grant.
 	 *
-	 * @var array{source:string,source_id:string,row_closed?:bool}|null
+	 * @var array{source:string,source_id:string,row_closed?:bool,granted_at?:string}|null
 	 */
 	private static ?array $context = null;
+
+	/**
+	 * Grant records cleared by a role loss in THIS request, so
+	 * reapply_after_set_role() can put the record back with the role (a
+	 * primary-role change strips then restores it; the record must survive).
+	 *
+	 * @var array<int,array<int,array{source:string,source_id:string,granted_at:string}>>
+	 */
+	private static array $lost_grants = [];
 
 	/** @var EnrollmentService|null Set once, by register_listeners(). */
 	private static ?EnrollmentService $enrollments = null;
@@ -260,6 +288,10 @@ final class Roles {
 		\add_action( 'add_user_role', [ self::class, 'on_role_added' ], 10, 2 );
 		\add_action( 'set_user_role', [ self::class, 'on_set_user_role' ], 10, 3 );
 		\add_action( 'remove_user_role', [ self::class, 'on_role_removed' ], 10, 2 );
+
+		// Two ways to lose every role with no remove_user_role at all (R5).
+		\add_action( 'deleted_user', [ self::class, 'on_user_deleted' ], 10, 1 );
+		\add_action( 'remove_user_from_blog', [ self::class, 'on_removed_from_site' ], 10, 2 );
 	}
 
 	private static function enrollments(): EnrollmentService {
@@ -399,37 +431,76 @@ final class Roles {
 	}
 
 	/**
-	 * Core `set_user_role( $user_id, $role, $old_roles )` - the user's roles
-	 * were REPLACED, so this is a gain and a pile of losses at once.
+	 * Core `set_user_role( $user_id, $role, $old_roles )` - the GAIN half only.
+	 *
+	 * The losses are NOT handled here: core WP_User::set_role() (the only
+	 * thing that fires set_user_role) has already fired `remove_user_role`
+	 * for every stripped role, and on_role_removed() ran the loss policy for
+	 * each - once. Running it again here would consult the policy twice per
+	 * role (R5). The gain is idempotent with the add_user_role set_role also
+	 * fires, and is kept for anything that fires set_user_role directly.
 	 */
 	public static function on_set_user_role( $user_id, $role, $old_roles = [] ): void {
-		$user_id = (int) $user_id;
-		$role    = (string) $role;
-
-		self::enroll_for_role( $user_id, $role );
-
-		foreach ( (array) $old_roles as $lost ) {
-			$lost = (string) $lost;
-			if ( $lost === $role ) {
-				continue;
-			}
-			$course_id = self::is_access_slug( $lost );
-			if ( null !== $course_id ) {
-				self::apply_loss_policy( $user_id, $course_id, $lost );
-			}
-		}
+		self::enroll_for_role( (int) $user_id, (string) $role );
 	}
 
 	/** Core `remove_user_role( $user_id, $role )`. */
 	public static function on_role_removed( $user_id, $role ): void {
 		$course_id = self::is_access_slug( (string) $role );
-		if ( null === $course_id ) {
+		if ( null !== $course_id ) {
+			self::lose_access( (int) $user_id, $course_id, (string) $role );
+		}
+	}
+
+	/**
+	 * Core `deleted_user( $id )`: the account is gone, so its active rows are
+	 * cancelled (R5). Completed and already-closed rows are history and stay.
+	 */
+	public static function on_user_deleted( $user_id ): void {
+		$user_id = (int) $user_id;
+		if ( $user_id <= 0 ) {
 			return;
 		}
+		$cancelled = self::enrollments()->cancel_all_for_user( $user_id );
+		if ( $cancelled > 0 ) {
+			Log::write( 'enrollments_cancelled', [ 'user' => $user_id, 'rows' => $cancelled, 'source' => 'user_deleted' ] );
+		}
+	}
+
+	/**
+	 * Multisite core `remove_user_from_blog( $user_id, $blog_id )`: fired
+	 * (already switched to that site) just before the user's capabilities
+	 * there are deleted - no remove_user_role follows, so each access role
+	 * they held is lost here, through the same loss path, with source
+	 * `removed_from_site`.
+	 */
+	public static function on_removed_from_site( $user_id, $blog_id = 0 ): void {
+		$user = \get_userdata( (int) $user_id );
+		if ( ! $user instanceof \WP_User ) {
+			return;
+		}
+		foreach ( \array_map( 'strval', (array) $user->roles ) as $role ) {
+			$course_id = self::is_access_slug( $role );
+			if ( null !== $course_id ) {
+				self::with_context( 'removed_from_site', '', static fn() => self::lose_access( $user->ID, $course_id, $role ) );
+			}
+		}
+	}
+
+	/**
+	 * The ONE place an access-role loss is handled: forget why it was held,
+	 * then (unless the row is already decided) let the loss policy rule.
+	 */
+	private static function lose_access( int $user_id, int $course_id, string $role ): void {
+		$record = self::clear_grant( $user_id, $course_id );
+		if ( [] !== $record ) {
+			self::$lost_grants[ $user_id ][ $course_id ] = $record;
+		}
+
 		if ( ! empty( self::$context['row_closed'] ) ) {
 			return; // remove_for_closed_row(): the row is already decided.
 		}
-		self::apply_loss_policy( (int) $user_id, $course_id, (string) $role );
+		self::apply_loss_policy( $user_id, $course_id, $role );
 	}
 
 	/**
@@ -460,6 +531,70 @@ final class Roles {
 		if ( \is_wp_error( $result ) ) {
 			Log::write( 'role_enroll_failed', [ 'user' => $user_id, 'course' => $course_id, 'code' => $result->get_error_code() ] );
 		}
+
+		self::record_grant(
+			$user_id,
+			$course_id,
+			(string) $context['source'],
+			(string) $context['source_id'],
+			isset( $context['granted_at'] ) ? (string) $context['granted_at'] : null
+		);
+	}
+
+	/* ---------------------------------------------------------------------
+	 * The grants map (GRANTS_META)
+	 * ------------------------------------------------------------------- */
+
+	/** @return array<int,array{source:string,source_id:string,granted_at:string}> */
+	public static function grants_for_user( int $user_id ): array {
+		$stored = \get_user_meta( $user_id, self::GRANTS_META, true );
+		return \is_array( $stored ) ? $stored : [];
+	}
+
+	/** @return array{source:string,source_id:string,granted_at:string}|array Empty when no record. */
+	public static function grant_record( int $user_id, int $course_id ): array {
+		return self::grants_for_user( $user_id )[ $course_id ] ?? [];
+	}
+
+	/**
+	 * Write why the access role is held. No record -> write; an existing
+	 * record is kept (first reason wins, its granted_at survives) EXCEPT that
+	 * a `manual` grant upgrades a non-manual one. Never downgrades.
+	 *
+	 * @param string|null $granted_at Carried over when a record is restored.
+	 */
+	private static function record_grant( int $user_id, int $course_id, string $source, string $source_id, ?string $granted_at = null ): void {
+		$grants   = self::grants_for_user( $user_id );
+		$existing = $grants[ $course_id ] ?? null;
+
+		$upgrade = null !== $existing && 'manual' === $source && 'manual' !== ( $existing['source'] ?? '' );
+		if ( null !== $existing && ! $upgrade ) {
+			return;
+		}
+
+		$grants[ $course_id ] = [
+			'source'     => $source,
+			'source_id'  => $source_id,
+			'granted_at' => $granted_at ?? Clock::now(),
+		];
+		\update_user_meta( $user_id, self::GRANTS_META, $grants );
+	}
+
+	/** @return array The record that was removed, or [] when there was none. */
+	private static function clear_grant( int $user_id, int $course_id ): array {
+		$grants = self::grants_for_user( $user_id );
+		if ( ! isset( $grants[ $course_id ] ) ) {
+			return [];
+		}
+		$record = (array) $grants[ $course_id ];
+		unset( $grants[ $course_id ] );
+
+		if ( [] === $grants ) {
+			\delete_user_meta( $user_id, self::GRANTS_META );
+		} else {
+			\update_user_meta( $user_id, self::GRANTS_META, $grants );
+		}
+		return $record;
 	}
 
 	/**
@@ -484,12 +619,27 @@ final class Roles {
 		/**
 		 * What happens to an enrolment when its access role is lost.
 		 *
-		 * @param string $policy   keep|expire|cancel. Default 'keep'.
+		 * `$source`/`$source_id` say who took it away (R4): whatever
+		 * revoke_access() was given, `removed_from_site` for a multisite
+		 * removal, or `role`/'' when a raw remove_role() gave no reason.
+		 *
+		 * @param string $policy    keep|expire|cancel. Default 'keep'.
 		 * @param int    $user_id
 		 * @param int    $course_id
 		 * @param string $role
+		 * @param string $source
+		 * @param string $source_id
 		 */
-		$policy = (string) \apply_filters( 'anchor_courses_role_loss_policy', 'keep', $user_id, $course_id, $role );
+		$context = self::$context ?? [ 'source' => 'role', 'source_id' => '' ];
+		$policy  = (string) \apply_filters(
+			'anchor_courses_role_loss_policy',
+			'keep',
+			$user_id,
+			$course_id,
+			$role,
+			(string) $context['source'],
+			(string) $context['source_id']
+		);
 
 		if ( 'cancel' === $policy ) {
 			self::enrollments()->cancel( $user_id, $course_id );
@@ -623,7 +773,19 @@ final class Roles {
 				}
 			}
 
-			$user->add_role( $slug );
+			$record = null !== $course_id ? ( self::$lost_grants[ $user_id ][ $course_id ] ?? null ) : null;
+			if ( null !== $record ) {
+				// Put the grant record back exactly as it was (source, id, time).
+				unset( self::$lost_grants[ $user_id ][ $course_id ] );
+				self::with_context(
+					(string) ( $record['source'] ?? 'role' ),
+					(string) ( $record['source_id'] ?? '' ),
+					static fn() => $user->add_role( $slug ),
+					[ 'granted_at' => (string) ( $record['granted_at'] ?? '' ) ]
+				);
+			} else {
+				$user->add_role( $slug );
+			}
 			Log::write( 'role_reapplied_after_set_role', [ 'user' => $user_id, 'role' => $slug ] );
 		}
 	}

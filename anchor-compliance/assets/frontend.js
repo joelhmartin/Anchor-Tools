@@ -1625,7 +1625,9 @@
 	 * sibling modules build their YouTube/Vimeo iframes in the browser
 	 * instead and therefore bypass it entirely:
 	 *
-	 *   anchor-gallery/assets/anchor-video-slider.js:15
+	 *   assets/shared/anchor-lightbox.js:193 (the gallery module's
+	 *     lightbox/popup styles all build their iframe through this shared
+	 *     helper now, not their own markup)
 	 *   anchor-social-feed/assets/anchor-social-feed.js:12
 	 *   anchor-universal-popups/assets/frontend.js:163
 	 *

@@ -130,13 +130,26 @@ class Test_Courses_Lesson_Quiz_Dependency extends Anchor_Courses_TestCase {
 
 	/* --- curriculum-save warning -------------------------------------------- */
 
-	public function test_quiz_link_problems_names_misplaced_and_missing_quizzes() {
+	/**
+	 * Audit F04 re-review: a quiz placed immediately before its lesson is NOT
+	 * a problem (it opens with the earlier items and completes the lesson via
+	 * `complete_gated_lessons()` when passed - see
+	 * `test_a_required_lesson_its_quiz_and_the_next_lesson_are_completable()`
+	 * and the reverse-order sibling below). The real deadlock is a REQUIRED
+	 * item strictly between the lesson and its quiz: in sequential mode that
+	 * item waits on the lesson, the quiz waits on that item, and the lesson
+	 * waits on the quiz.
+	 */
+	public function test_quiz_link_problems_names_a_deadlocking_gap_and_a_missing_quiz() {
 		$before  = $this->quiz();
 		$missing = $this->quiz();
 		$good    = $this->quiz();
+		$gapped  = $this->quiz();
 		$l1      = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $before ] );
 		$l2      = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $missing ] );
 		$l3      = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $good ] );
+		$l4      = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $gapped ] );
+		$between = $this->make_lesson();
 		$opt     = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $missing ] );
 		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [
 			[ 'type' => 'quiz', 'id' => $before ],
@@ -144,18 +157,37 @@ class Test_Courses_Lesson_Quiz_Dependency extends Anchor_Courses_TestCase {
 			[ 'type' => 'lesson', 'id' => $l2 ],
 			[ 'type' => 'lesson', 'id' => $l3 ],
 			[ 'type' => 'quiz', 'id' => $good ],
+			[ 'type' => 'lesson', 'id' => $l4 ],
+			[ 'type' => 'lesson', 'id' => $between ],
+			[ 'type' => 'quiz', 'id' => $gapped ],
 			[ 'type' => 'lesson', 'id' => $opt, 'required' => false ],
 		] ] ] );
 
 		$problems = ProgressService::quiz_link_problems( $this->course );
 		$this->assertSame(
 			[
-				[ 'lesson_id' => $l1, 'quiz_id' => $before, 'problem' => 'quiz_before_lesson' ],
 				[ 'lesson_id' => $l2, 'quiz_id' => $missing, 'problem' => 'quiz_absent' ],
+				[ 'lesson_id' => $l4, 'quiz_id' => $gapped, 'problem' => 'item_between' ],
 			],
 			$problems,
-			'Only required quiz_pass lessons are checked; a correctly placed quiz is fine.'
+			'A quiz immediately before its lesson works and is not flagged; a required item ' .
+			'strictly between a lesson and its quiz deadlocks and is flagged; a correctly placed quiz is fine.'
 		);
+	}
+
+	/** The `item_between` check only applies under sequential progression - free progression never gates on order. */
+	public function test_a_gap_between_lesson_and_quiz_is_not_flagged_under_free_progression() {
+		$free   = $this->make_course( [ 'progression_mode' => 'free' ] );
+		$quiz   = $this->quiz();
+		$lesson = $this->make_lesson( [ 'completion_mode' => 'quiz_pass', 'quiz_id' => $quiz ] );
+		$other  = $this->make_lesson();
+		Curriculum::save( $free, [ [ 'title' => 'M', 'items' => [
+			[ 'type' => 'lesson', 'id' => $lesson ],
+			[ 'type' => 'lesson', 'id' => $other ],
+			[ 'type' => 'quiz', 'id' => $quiz ],
+		] ] ] );
+
+		$this->assertSame( [], ProgressService::quiz_link_problems( $free ) );
 	}
 
 	public function test_saving_a_curriculum_with_a_quiz_link_problem_redirects_with_a_warning() {

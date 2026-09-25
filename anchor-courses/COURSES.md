@@ -222,14 +222,21 @@ one." for an enrolled learner locked by progression.
   `quiz.js` keeps one save in flight, coalesces queued changes per question,
   shows a save-error line (`.anchor-quiz-save-status`), and submit waits for
   the queue to drain.
-- **A lesson and its quiz** (audit F04): under sequential progression a quiz
-  is not blocked by its parent lesson - an earlier required lesson whose
-  `completion_mode` is `quiz_pass` with this quiz as `quiz_id`
+- **A lesson and its quiz** (audit F04, re-review): under sequential
+  progression a quiz is not blocked by its parent lesson - an earlier required
+  lesson whose `completion_mode` is `quiz_pass` with this quiz as `quiz_id`
   (`ProgressService::lesson_completes_by_quiz()`). The quiz opens exactly when
-  that lesson does; every other earlier required item still gates it. Saving a
-  curriculum in which a required `quiz_pass` lesson's quiz is absent or placed
-  before the lesson (`ProgressService::quiz_link_problems()`) saves anyway and
-  redirects with the `curriculum_quiz_link` warning notice.
+  that lesson does; every other earlier required item still gates it. A quiz
+  placed BEFORE its lesson also works (it opens with the earlier items, and
+  passing it completes the lesson via `QuizService::complete_gated_lessons()`)
+  and is not a problem. The real deadlock is a REQUIRED item strictly between
+  the lesson and its quiz: that item waits on the lesson, the quiz waits on
+  that item, and the lesson waits on the quiz - none of the three can ever
+  finish. Saving a curriculum in which a required `quiz_pass` lesson's quiz is
+  absent from the course, or (sequential mode only) has a required item
+  between it and its lesson (`ProgressService::quiz_link_problems()`, problems
+  `quiz_absent` / `item_between`), saves anyway and redirects with the
+  `curriculum_quiz_link` warning notice.
 - **Attempts belong to a course** (audit F05): a quiz may be shared by several
   courses, and every attempt lifecycle read - `open_attempt()`,
   `count_for_quiz()`, `last_for_quiz()`, `best_for_quiz()` and the service's

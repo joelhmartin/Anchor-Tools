@@ -247,16 +247,32 @@ final class ProgressService {
 
 	/**
 	 * Required `quiz_pass` lessons whose quiz a learner could never reach in
-	 * this course (audit F04): the quiz is absent from the curriculum
-	 * (`quiz_absent`) or placed before the lesson (`quiz_before_lesson`).
-	 * Both leave the lesson uncompletable. Surfaced as a warning when the
-	 * curriculum is saved (Admin\CourseEditor::save_curriculum()).
+	 * this course (audit F04, re-review): the quiz is absent from the
+	 * curriculum (`quiz_absent`), or - sequential progression only - a
+	 * required item sits strictly between the lesson and its quiz
+	 * (`item_between`), which is a genuine deadlock: that item waits for the
+	 * lesson (sequential gating), the quiz waits for that item (same gating,
+	 * since the "skip the parent lesson" exception in is_item_available()
+	 * only ever excuses the lesson itself), and the lesson waits for the quiz
+	 * (`quiz_pass`). Neither can ever finish.
+	 *
+	 * A quiz placed BEFORE its lesson, with nothing required between them, is
+	 * not a problem: the quiz opens with the earlier items (nothing gates it
+	 * on the lesson), and passing it completes the lesson directly via
+	 * `QuizService::complete_gated_lessons()` - so this is deliberately not
+	 * reported, unlike the prior revision of this method.
+	 *
+	 * Surfaced as a warning when the curriculum is saved
+	 * (Admin\CourseEditor::save_curriculum()).
 	 *
 	 * @return array<int,array{lesson_id:int,quiz_id:int,problem:string}>
 	 */
 	public static function quiz_link_problems( int $course_id ): array {
-		$problems = [];
-		foreach ( Curriculum::items( $course_id ) as $item ) {
+		$problems   = [];
+		$items      = Curriculum::items( $course_id );
+		$sequential = 'sequential' === (string) CourseEditor::setting( $course_id, 'progression_mode' );
+
+		foreach ( $items as $item ) {
 			if ( 'lesson' !== $item['type'] || ! $item['required'] ) {
 				continue;
 			}
@@ -268,11 +284,23 @@ final class ProgressService {
 			$position = $quiz_id > 0 ? Curriculum::position( $course_id, $quiz_id, 'quiz' ) : -1;
 			if ( $position < 0 ) {
 				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'quiz_absent' ];
-			} elseif ( $position < (int) $item['index'] ) {
-				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'quiz_before_lesson' ];
+			} elseif ( $sequential && self::required_item_between( $items, (int) $item['index'], $position ) ) {
+				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'item_between' ];
 			}
 		}
 		return $problems;
+	}
+
+	/** Any required curriculum item strictly between two flattened positions? */
+	private static function required_item_between( array $items, int $position_a, int $position_b ): bool {
+		$low  = \min( $position_a, $position_b );
+		$high = \max( $position_a, $position_b );
+		foreach ( $items as $item ) {
+			if ( $item['required'] && (int) $item['index'] > $low && (int) $item['index'] < $high ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Has the lesson's quiz been passed already? */

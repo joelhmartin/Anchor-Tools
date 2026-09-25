@@ -174,7 +174,7 @@ final class Notices {
 
 		// Admin\CourseEditor::save_curriculum() (audit F04) - a warning, the
 		// curriculum itself was saved.
-		self::register( 'curriculum_quiz_link', self::TYPE_ERROR, \__( 'Curriculum saved, but a required lesson set to "Complete when its quiz passes" has that quiz missing from this course or placed before the lesson. Learners cannot finish it - add the quiz after its lesson.', 'anchor-schema' ) );
+		self::register( 'curriculum_quiz_link', self::TYPE_ERROR, \__( 'Curriculum saved, but a required lesson set to "Complete when its quiz passes" has that quiz missing from this course, or a required item sits between the lesson and its quiz, so neither can be finished. Move the quiz so nothing required sits between it and its lesson, or add it to the course.', 'anchor-schema' ) );
 		self::register( 'forbidden', self::TYPE_ERROR, \__( 'You are not allowed to do that.', 'anchor-schema' ) );
 		self::register( 'error', self::TYPE_ERROR, \__( 'That action could not be completed.', 'anchor-schema' ) );
 

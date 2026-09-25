@@ -80,9 +80,9 @@ Renders nothing (and enqueues no assets) when the resolved query is empty.
   </div>
   <!-- slider layout only -->
   <div class="anchor-testimonials__controls">
-    <button type="button" class="anchor-testimonials__prev" aria-label="Previous"></button>
+    <button type="button" class="anchor-testimonials__prev" aria-label="Previous"><svg aria-hidden="true">…</svg></button>
     <div class="anchor-testimonials__dots"></div>
-    <button type="button" class="anchor-testimonials__next" aria-label="Next"></button>
+    <button type="button" class="anchor-testimonials__next" aria-label="Next"><svg aria-hidden="true">…</svg></button>
   </div>
 </div>
 ```

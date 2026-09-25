@@ -89,6 +89,8 @@ Renders nothing (and enqueues no assets) when the resolved query is empty.
 
 A card without a video gets `anchor-testimonial--quote` and skips the media button entirely (no empty button, no broken poster). `video-grid` layout renders only the media button and the person's name for every card, regardless of quote/photo/meta/rating content.
 
+`layout=video-grid` always forces `type=video` (the query only returns posts with a video), even when the shortcode sets `type` explicitly (`type="quote"` or `type="any"` included): a quote-only card in video-grid would otherwise show only the person's name with no quote and no media button, since video-grid never renders the quote. To mix video and quote-only testimonials in one block, use `layout=grid` or `layout=slider` instead.
+
 ## CSS custom properties
 
 Set inline by the renderer: `--at-cols` (column count), `--at-gap` (`24px`).

@@ -46,8 +46,14 @@ class Test_Testimonials_Render extends WP_UnitTestCase {
 	 * testimonial has no video and so no media button, and would render as an
 	 * effectively empty card unless `type` defaults to `video` for this
 	 * layout when the shortcode doesn't specify one explicitly.
+	 *
+	 * PR #28 review finding I: an explicit `type` attribute (e.g.
+	 * `type="quote"` or `type="any"`) used to override that default, which
+	 * let a quote-only testimonial reach video-grid where it rendered only
+	 * the person's name (no quote, since video-grid never shows one).
+	 * `type` is now forced to `video` for this layout unconditionally.
 	 */
-	public function test_video_grid_defaults_type_to_video_excluding_quote_only_testimonials() {
+	public function test_video_grid_always_excludes_quote_only_testimonials_regardless_of_type() {
 		$video_id = self::factory()->post->create( [ 'post_type' => 'anchor_testimonial' ] );
 		Anchor_Testimonial_Meta::save( $video_id, [ 'person_name' => 'Video Person', 'video_url' => 'https://youtu.be/dwr8S2iOfs8' ] );
 		$quote_id = self::factory()->post->create( [ 'post_type' => 'anchor_testimonial', 'post_content' => 'Quote only.' ] );
@@ -61,8 +67,13 @@ class Test_Testimonials_Render extends WP_UnitTestCase {
 			'A quote-only testimonial renders as an empty card in video-grid; the default type must exclude it.'
 		);
 
-		// An explicit type attribute still overrides the video-grid default.
+		// An explicit type attribute must NOT override the video-grid
+		// filter: video-grid is always a video grid.
 		$html_any = do_shortcode( '[anchor_testimonials layout="video-grid" type="any"]' );
-		$this->assertStringContainsString( 'Quote Person', $html_any, 'An explicit type attribute must override the video-grid default.' );
+		$this->assertStringNotContainsString( 'Quote Person', $html_any, 'An explicit type attribute must not override the video-grid filter.' );
+
+		$html_quote = do_shortcode( '[anchor_testimonials layout="video-grid" type="quote"]' );
+		$this->assertStringContainsString( 'Video Person', $html_quote, 'type="quote" is still forced to video in video-grid, so the video testimonial renders.' );
+		$this->assertStringNotContainsString( 'Quote Person', $html_quote, 'type="quote" must not surface a quote-only testimonial in video-grid.' );
 	}
 }

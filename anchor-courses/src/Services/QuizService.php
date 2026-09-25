@@ -32,6 +32,13 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class QuizService {
 
+	/**
+	 * How long a `submitted` claim may stand before it is treated as orphaned
+	 * by a crashed request and re-opened (audit F03). Grading is one request;
+	 * five minutes is far past any real one.
+	 */
+	public const STALE_CLAIM_SECONDS = 300;
+
 	public function __construct(
 		private ?ProgressService $progress = null,
 		private ?EnrollmentService $enrollments = null
@@ -73,6 +80,10 @@ final class QuizService {
 		if ( ! $this->progress->is_item_available( $user_id, $course_id, $quiz_id, 'quiz' ) ) {
 			return new \WP_Error( 'locked', \__( 'Finish the earlier items first.', 'anchor-schema' ) );
 		}
+
+		// A claim orphaned by a crashed submit is this learner's open attempt
+		// again (audit F03) - recovered here too, not only by the daily sweep.
+		$this->reopen_stale_claims( $user_id, $quiz_id );
 
 		// An attempt already open always resumes, whatever the allowance says.
 		if ( QuizAttemptRepository::open_attempt( $user_id, $quiz_id ) instanceof QuizAttempt ) {
@@ -512,11 +523,17 @@ final class QuizService {
 			]
 		);
 
-		if ( ! $saved instanceof QuizAttempt ) {
-			// Release the claim so the attempt is not stuck in `submitted`
-			// (counted, never graded, invisible to the sweep).
+		// Only a grade that is durably SAVED may move progress or fire the
+		// outcome hooks (audit F03). update() returns null on a database
+		// error; a row that reads back as anything but `graded` is the same
+		// failure. Release the claim so the attempt is not stuck in
+		// `submitted` (counted, never graded, invisible to the sweep) - the
+		// learner's retry grades it; a crash before this line is recovered by
+		// reopen_stale_claims().
+		if ( ! $saved instanceof QuizAttempt || ! $saved->is_graded() ) {
 			QuizAttemptRepository::transition( $attempt->id, 'submitted', 'in_progress' );
-			return new \WP_Error( 'save_failed', \__( 'The attempt could not be graded.', 'anchor-schema' ) );
+			Log::write( 'quiz_grade_save_failed', [ 'attempt' => $attempt->id ] );
+			return new \WP_Error( 'save_failed', \__( 'The attempt could not be graded. Please submit again.', 'anchor-schema' ) );
 		}
 
 		$this->progress->record_item(
@@ -596,6 +613,21 @@ final class QuizService {
 	}
 
 	/**
+	 * Re-open `submitted` claims older than STALE_CLAIM_SECONDS (audit F03).
+	 *
+	 * @param int $user_id 0 = everyone (the daily sweep).
+	 * @param int $quiz_id 0 = every quiz.
+	 * @return int Attempts re-opened.
+	 */
+	public function reopen_stale_claims( int $user_id = 0, int $quiz_id = 0 ): int {
+		return QuizAttemptRepository::reopen_stale_submitted(
+			Clock::offset( -self::STALE_CLAIM_SECONDS ),
+			$user_id,
+			$quiz_id
+		);
+	}
+
+	/**
 	 * Close out timed attempts whose window has passed but whose learner never
 	 * came back.
 	 *
@@ -603,6 +635,10 @@ final class QuizService {
 	 */
 	public function sweep_expired_attempts(): int {
 		global $wpdb;
+
+		// Orphaned claims first, so a re-opened timed attempt is also closed
+		// by the timer pass below if its window has passed.
+		$this->reopen_stale_claims();
 
 		$rows = $wpdb->get_results(
 			'SELECT * FROM ' . Migrations::table( 'quiz_attempts' ) . " WHERE status = 'in_progress'", // phpcs:ignore WordPress.DB.PreparedSQL

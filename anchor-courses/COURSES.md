@@ -186,6 +186,16 @@ one." for an enrolled learner locked by progression.
   `in_progress -> submitted` (or `-> expired`) UPDATE before grading, so
   concurrent submits grade once. A learner-initiated submit/answer from somebody
   no longer enrolled is refused (`not_enrolled`).
+- **A grade counts only once it is saved** (audit F03):
+  `QuizAttemptRepository::update()` returns `null` when `$wpdb->update()`
+  reports an error (a 0-row no-change update is still a success). `submit()`
+  moves progress and fires `_submitted`/`_passed`/`_failed` only when the
+  re-read row is `graded`; otherwise it releases the claim
+  (`submitted -> in_progress`) and returns `WP_Error('save_failed')` (REST 503,
+  safe to retry). A `submitted` claim older than
+  `QuizService::STALE_CLAIM_SECONDS` (300) was orphaned by a crashed request
+  and is re-opened, answers intact, by `QuizService::reopen_stale_claims()` -
+  run by the daily sweep and by the learner's own next start.
 - **Best attempt counts:** a completed item is never downgraded by a later failed
   attempt; a repeat pass keeps the original `completed_at`.
 - **Admin reset** (`ProgressService::reset_course()`): deletes progress rows,
@@ -269,7 +279,8 @@ Service errors map through `Routes::error_response()`:
 403 `not_enrolled`, `locked`, `not_in_course`, `course_closed`,
 `missing_prerequisite`, `no_attempts_remaining`, `retry_delay`,
 `attempt_not_yours`; 404 `no_attempt`, `no_course`, `no_user`; 409
-`attempt_closed`, `no_questions`; 400 `unknown_question` and anything unlisted.
+`attempt_closed`, `no_questions`; 503 `save_failed` (retry); 400
+`unknown_question` and anything unlisted.
 Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 `show_score` is off, grading data only with `show_correct_answers`).
 
@@ -312,8 +323,9 @@ attempt `in_progress`, `submitted`, `graded`, `expired`, `abandoned`
 
 `anchor_courses_expire_sweep` (daily, scheduled on load, cleared on plugin
 deactivation): `EnrollmentService::sweep_expired()` flips due rows to `expired`
-and removes the access role; `QuizService::sweep_expired_attempts()` applies the
-timer policy to timed attempts left open past their deadline.
+and removes the access role; `QuizService::sweep_expired_attempts()` re-opens
+stale `submitted` claims, then applies the timer policy to timed attempts left
+open past their deadline.
 
 ## Uninstall
 

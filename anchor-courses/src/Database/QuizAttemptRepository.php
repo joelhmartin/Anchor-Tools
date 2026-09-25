@@ -96,6 +96,12 @@ final class QuizAttemptRepository {
 	/**
 	 * @param array $data Column => value, limited to self::UPDATABLE (anything else
 	 *                    is dropped). `answers` / `grading_data` may be arrays.
+	 * @return QuizAttempt|null The row as it now stands, or NULL when the
+	 *                          database reported an error (audit F03):
+	 *                          `$wpdb->update()` returning false is a failed
+	 *                          write, and handing back a fresh read of the
+	 *                          unchanged row would make it look like success.
+	 *                          A 0-row "nothing changed" update is a success.
 	 * @throws \InvalidArgumentException When `status` is not one of QuizAttempt::STATUSES.
 	 */
 	public static function update( int $id, array $data ): ?QuizAttempt {
@@ -114,9 +120,41 @@ final class QuizAttemptRepository {
 		}
 		$data['updated_at'] = Clock::now();
 
-		$wpdb->update( self::table(), $data, [ 'id' => $id ] );
+		if ( false === $wpdb->update( self::table(), $data, [ 'id' => $id ] ) ) {
+			return null;
+		}
 
 		return self::find( $id );
+	}
+
+	/**
+	 * Re-open `submitted` claims older than $cutoff (audit F03).
+	 *
+	 * `submitted` only ever exists between QuizService::submit()'s atomic
+	 * claim and its grading write; a row still there long after was orphaned
+	 * by a process that died in between. Re-opening puts it back where the
+	 * learner (or the timer sweep) can finish it - the stored answers are
+	 * untouched. The claim time is `updated_at`, which transition() stamps.
+	 *
+	 * @param int $user_id 0 = every learner (the sweep); otherwise only theirs.
+	 * @param int $quiz_id 0 = every quiz.
+	 * @return int Attempts re-opened.
+	 */
+	public static function reopen_stale_submitted( string $cutoff, int $user_id = 0, int $quiz_id = 0 ): int {
+		global $wpdb;
+
+		$sql    = 'UPDATE ' . self::table() . " SET status = 'in_progress', updated_at = %s WHERE status = 'submitted' AND updated_at < %s";
+		$params = [ Clock::now(), $cutoff ];
+		if ( $user_id > 0 ) {
+			$sql     .= ' AND user_id = %d';
+			$params[] = $user_id;
+		}
+		if ( $quiz_id > 0 ) {
+			$sql     .= ' AND quiz_id = %d';
+			$params[] = $quiz_id;
+		}
+
+		return (int) $wpdb->query( $wpdb->prepare( $sql, $params ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 	}
 
 	/**

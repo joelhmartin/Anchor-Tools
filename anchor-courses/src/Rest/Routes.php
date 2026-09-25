@@ -98,8 +98,10 @@ final class Routes {
 	 * missing_prerequisite, no_attempts_remaining, retry_delay,
 	 * attempt_not_yours); 404 for "that id does not exist" (no_attempt,
 	 * no_course, no_user); 409 for a state conflict on an otherwise-valid
-	 * request (attempt_closed, no_questions); 400 for a malformed request
-	 * (unknown_question) and the fallback for anything unlisted.
+	 * request (attempt_closed, no_questions); 503 for a write the server
+	 * could not persist, safe to retry (save_failed - audit F03); 400 for a
+	 * malformed request (unknown_question) and the fallback for anything
+	 * unlisted.
 	 */
 	public static function error_response( \WP_Error $error, int $status = 400 ): \WP_REST_Response {
 		$map = [
@@ -117,6 +119,7 @@ final class Routes {
 			'no_user'               => 404,
 			'unknown_question'      => 400,
 			'no_questions'          => 409,
+			'save_failed'           => 503,
 		];
 
 		$code = (string) $error->get_error_code();

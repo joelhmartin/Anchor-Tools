@@ -1288,9 +1288,19 @@ class Registrations {
      *                        pass an already-trusted address (an existing
      *                        WP_User's user_email, or user_has_active_seat()'s
      *                        own sanitize_email() call).
+     * @param bool   $include_customer Whether to also match the WooCommerce
+     *                        order's buyer/customer id (default true — the
+     *                        behavior EMAILS.md documents for
+     *                        has_confirmed_seat() and the existing behavior
+     *                        of user_has_active_seat()). Pass false for an
+     *                        OWNER-ONLY match: the buyer's customer id is
+     *                        stamped on every seat in the order, including
+     *                        seats bought FOR someone else, so a caller that
+     *                        must resolve a specific attendee's own seat (not
+     *                        "any seat the buyer paid for") needs this off.
      * @return array meta_query fragment.
      */
-    public function identity_meta_query( $user_id, $email ) {
+    public function identity_meta_query( $user_id, $email, $include_customer = true ) {
         $user_id  = (int) $user_id;
         $email    = (string) $email;
         $identity = [ 'relation' => 'OR' ];
@@ -1301,7 +1311,9 @@ class Registrations {
             // Checked first (spec §3.5): the resolved account is authoritative,
             // an attendee who changed their email address still matches.
             $identity[] = [ 'key' => '_anchor_event_user_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
-            $identity[] = [ 'key' => '_anchor_event_customer_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
+            if ( $include_customer ) {
+                $identity[] = [ 'key' => '_anchor_event_customer_id', 'value' => $user_id, 'compare' => '=', 'type' => 'NUMERIC' ];
+            }
         }
         return $identity;
     }

@@ -1066,7 +1066,23 @@ class Roster {
     public function handle_revoke() {
         $event_id = isset( $_POST['event_id'] ) ? (int) \wp_unslash( $_POST['event_id'] ) : 0;
         $this->guard( 'anchor_roster_edit_' . $event_id );
-        $user_id = isset( $_POST['user_id'] ) ? (int) \wp_unslash( $_POST['user_id'] ) : 0;
+        // Resolve the user server-side from the seat, the same way
+        // handle_grant() does — never trust a posted user_id. access_state()
+        // can resolve a user by email fallback when the seat has no stored
+        // _anchor_event_user_id, and the column then offers "Revoke" for a
+        // user this form's posted user_id (always 0 in that case) cannot
+        // reach; a raw 0 makes revoke_access() a silent no-op that still
+        // reports success-shaped "did not hold access".
+        $seat_id = isset( $_POST['seat_id'] ) ? (int) \wp_unslash( $_POST['seat_id'] ) : 0;
+        if ( ! self::seat_belongs_to_event( $seat_id, $event_id ) ) {
+            $this->redirect( $event_id, 'error', \__( 'That seat is not on this event.', 'anchor-schema' ), 'invalid' );
+        }
+        $seat    = (array) $this->registrations->get_seat( $seat_id );
+        $user_id = (int) ( $seat['user_id'] ?? 0 );
+        if ( $user_id <= 0 ) {
+            $user    = \get_user_by( 'email', (string) ( $seat['email'] ?? '' ) );
+            $user_id = $user ? (int) $user->ID : 0;
+        }
         $result  = $this->revoke_access( $event_id, $user_id );
         $message = [
             'revoked'   => \__( 'Access revoked.', 'anchor-schema' ),

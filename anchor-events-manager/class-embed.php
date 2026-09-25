@@ -56,10 +56,10 @@ class Embed {
                     $id = '';
                     if ( \preg_match( '#^/(?:embed|live|v|shorts)/([A-Za-z0-9_-]{6,})#', $path, $m ) ) {
                         $id = $m[1];
-                    } elseif ( \preg_match( '#^/([A-Za-z0-9_-]{6,})$#', $path, $m ) ) {
-                        $id = $m[1]; // youtu.be/<id>
                     } elseif ( ! empty( $query['v'] ) ) {
                         $id = \preg_replace( '/[^A-Za-z0-9_-]/', '', (string) $query['v'] );
+                    } elseif ( \preg_match( '#^/([A-Za-z0-9_-]{11})$#', $path, $m ) ) {
+                        $id = $m[1]; // youtu.be/<id> — YouTube ids are 11 chars.
                     }
                     return $id === '' ? '' : 'https://www.youtube-nocookie.com/embed/' . $id;
                 },

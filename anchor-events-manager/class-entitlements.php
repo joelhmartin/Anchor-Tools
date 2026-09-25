@@ -295,7 +295,7 @@ class Entitlements {
             $user->add_role( $slug );
         }
 
-        $grants[ $event_id ] = [
+        $grants[ $event_id ] = $downgrade ? $existing : [
             'source' => $incoming_source,
             'at'     => \time(),
             'by'     => (int) \get_current_user_id(),
@@ -988,7 +988,10 @@ class Entitlements {
                 'relation' => 'AND',
                 [ 'key' => '_anchor_event_id', 'value' => (int) $event_id, 'compare' => '=', 'type' => 'NUMERIC' ],
                 [ 'key' => '_anchor_event_reg_status', 'value' => Registrations::STATUS_CONFIRMED, 'compare' => '=' ],
-                $this->module->registrations->identity_meta_query( (int) $user_id, (string) $user->user_email ),
+                // Owner-only (no customer_id): the buyer's customer id is on
+                // every seat in their order, including a colleague's — this
+                // must resolve THIS user's own seat, not the buyer's order.
+                $this->module->registrations->identity_meta_query( (int) $user_id, (string) $user->user_email, false ),
             ],
         ] );
 
@@ -997,8 +1000,23 @@ class Entitlements {
             $tier_id = (string) \get_post_meta( (int) $seat_id, '_anchor_event_ticket_type_id', true );
             $tier    = $this->module->ticket_types ? $this->module->ticket_types->find( (int) $event_id, $tier_id ) : null;
             // A tier with no modality is an in-person tier — the meaning every
-            // pre-upgrade tier already had (spec §3.3).
-            $modality = \is_array( $tier ) ? (string) ( $tier['modality'] ?? 'in_person' ) : 'in_person';
+            // pre-upgrade tier already had (spec §3.3). When the tier itself
+            // has been removed, Product_Sync freezes the modality on the
+            // variation before it goes; read that rather than defaulting a
+            // retired virtual tier's seats back to in_person.
+            if ( \is_array( $tier ) ) {
+                $modality = (string) ( $tier['modality'] ?? 'in_person' );
+            } else {
+                // Product_Sync::VARIATION_MODALITY_META, read by string: this
+                // class is documented "no WooCommerce dependency", and
+                // class-product-sync.php is only required when WooCommerce is
+                // active (anchor-events-manager.php), so it may be unloaded
+                // here even though the seat's variation_id survives WC being
+                // deactivated later.
+                $vid      = (int) \get_post_meta( (int) $seat_id, '_anchor_event_variation_id', true );
+                $frozen   = $vid > 0 ? (string) \get_post_meta( $vid, '_anchor_evt_modality', true ) : '';
+                $modality = $frozen !== '' ? $frozen : 'in_person';
+            }
             if ( $modality === 'virtual' ) {
                 return 'virtual';
             }

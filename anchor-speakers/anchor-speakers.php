@@ -130,14 +130,48 @@ class Anchor_Speakers_Module {
 	 * direct update_option() call, as tests do), not just a settings-page
 	 * save. A settings-page save still flushes here too, since the option
 	 * is already updated by the time this runs on the next request.
+	 *
+	 * The signature match alone isn't enough: it only proves the settings
+	 * haven't changed since the last flush, not that the stored
+	 * rewrite_rules option still actually contains this CPT's rule. Toggling
+	 * the module off and back on, or any other flush (a Permalinks save, a
+	 * different plugin) that runs while it's off, can drop the speaker rule
+	 * from the cached rules without ever changing the signature, which would
+	 * otherwise 404 every speaker URL until something else flushes. So a
+	 * matching signature still checks that the rule is present before
+	 * skipping the flush, cheaply: it does not flush on every request,
+	 * only when the stored rules are missing the rule.
 	 */
 	public function maybe_flush() {
 		$signature = self::rules_signature();
-		if ( get_option( self::SIGNATURE_OPTION ) === $signature ) {
+		if ( get_option( self::SIGNATURE_OPTION ) === $signature && self::rules_present() ) {
 			return;
 		}
 		flush_rewrite_rules( false );
 		update_option( self::SIGNATURE_OPTION, $signature, false );
+	}
+
+	/**
+	 * Whether the currently stored rewrite_rules option already contains a
+	 * rule for this CPT. Plain permalinks store no rewrite_rules option at
+	 * all (nothing to check), and a missing/non-array option means WP will
+	 * regenerate the rules lazily on demand, so both count as "present" to
+	 * avoid flushing on every request in either case.
+	 */
+	private static function rules_present() {
+		if ( ! get_option( 'permalink_structure' ) ) {
+			return true;
+		}
+		$rules = get_option( 'rewrite_rules' );
+		if ( ! is_array( $rules ) ) {
+			return true;
+		}
+		foreach ( $rules as $query ) {
+			if ( strpos( (string) $query, self::CPT . '=' ) !== false ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static function rules_signature() {

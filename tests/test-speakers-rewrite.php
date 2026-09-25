@@ -143,4 +143,48 @@ class Test_Speakers_Rewrite extends WP_UnitTestCase {
 
 		remove_action( 'generate_rewrite_rules', $counter );
 	}
+
+	/**
+	 * PR #28 review finding D: a matching signature alone must not skip the
+	 * flush when the stored rewrite_rules option no longer actually contains
+	 * this CPT's rule (e.g. the module was toggled off then on, or some
+	 * other flush ran while it was off and dropped the rule without
+	 * touching the signature). maybe_flush() must still flush in that case,
+	 * and must still be a no-op once the rule is present again (it must not
+	 * flush on every request).
+	 */
+	public function test_maybe_flush_also_flushes_when_signature_matches_but_rule_is_missing() {
+		delete_option( Anchor_Speakers_Module::SIGNATURE_OPTION );
+		$module = new Anchor_Speakers_Module();
+
+		$flushes = 0;
+		$counter = function () use ( &$flushes ) { $flushes++; };
+		add_action( 'generate_rewrite_rules', $counter );
+
+		// First load: flushes once and stores a signature with the rule present.
+		$module->maybe_flush();
+		$signature = get_option( Anchor_Speakers_Module::SIGNATURE_OPTION );
+
+		// Simulate an external flush (e.g. the module toggled off then on, or
+		// a Permalinks save/another plugin flushing while it was off) that
+		// dropped the speaker rule without changing anything the signature
+		// covers.
+		$rules = get_option( 'rewrite_rules' );
+		$rules = array_filter( $rules, function ( $query ) {
+			return strpos( (string) $query, Anchor_Speakers_Module::CPT . '=' ) === false;
+		} );
+		update_option( 'rewrite_rules', $rules );
+
+		$flushes = 0;
+		$module->maybe_flush();
+		$this->assertGreaterThan( 0, $flushes, 'A matching signature with the rule missing from stored rewrite_rules must still flush.' );
+		$this->assertSame( $signature, get_option( Anchor_Speakers_Module::SIGNATURE_OPTION ), 'The signature itself has not changed, only the stored rules.' );
+
+		// Rule is present again now: a further call must be a no-op.
+		$flushes = 0;
+		$module->maybe_flush();
+		$this->assertSame( 0, $flushes, 'Once the rule is present again, maybe_flush() must not flush on every request.' );
+
+		remove_action( 'generate_rewrite_rules', $counter );
+	}
 }

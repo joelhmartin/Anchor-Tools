@@ -187,4 +187,41 @@ class Test_Speakers_Rewrite extends WP_UnitTestCase {
 
 		remove_action( 'generate_rewrite_rules', $counter );
 	}
+
+	/**
+	 * PR #28 review finding H: locate_template() only finds .php templates,
+	 * so on a block theme it always reports "no template", and this filter
+	 * would otherwise replace the theme's own single.html/
+	 * single-anchor_speaker.html block template with the PHP fallback (which
+	 * calls get_header()/get_footer(), falling back to the deprecated
+	 * theme-compat header/footer a block theme has none of).
+	 */
+	public function test_single_template_skips_php_fallback_on_block_theme() {
+		$speaker = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_name' => 'dr-block' ] );
+		$module  = new Anchor_Speakers_Module();
+		$module->register();
+		$this->go_to( get_permalink( $speaker ) );
+
+		switch_theme( 'twentytwentyfour' );
+		$this->assertTrue( wp_is_block_theme(), 'Precondition: twentytwentyfour must be a block theme in this test env.' );
+
+		$this->assertSame( 'dummy-template.php', $module->single_template( 'dummy-template.php' ), 'A block theme must keep its own template, not the PHP fallback.' );
+	}
+
+	/**
+	 * Regression companion to the block-theme test above: a classic theme
+	 * (this test env's default, which installs no theme directory and so
+	 * has no block-templates dir either) must keep getting the PHP
+	 * fallback when it has no single-anchor_speaker.php of its own.
+	 */
+	public function test_single_template_still_uses_php_fallback_on_classic_theme() {
+		$speaker = self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_name' => 'dr-classic' ] );
+		$module  = new Anchor_Speakers_Module();
+		$module->register();
+		$this->go_to( get_permalink( $speaker ) );
+
+		$this->assertFalse( wp_is_block_theme(), 'Precondition: this test env\'s default theme must not be a block theme.' );
+
+		$this->assertStringContainsString( 'templates/single-anchor_speaker.php', $module->single_template( 'dummy-template.php' ) );
+	}
 }

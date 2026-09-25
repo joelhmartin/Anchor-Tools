@@ -219,10 +219,15 @@ class Anchor_Speakers_Module {
 
 	/**
 	 * Ships a minimal fallback template only when the active theme has no
-	 * single-anchor_speaker.php of its own.
+	 * single-anchor_speaker.php of its own, and only on classic themes.
+	 * locate_template() only finds .php templates, so on a block theme this
+	 * would always report "no template" and replace the theme's own
+	 * single.html/single-anchor_speaker.html block template with this PHP
+	 * fallback, which calls get_header()/get_footer() and falls back to the
+	 * deprecated theme-compat header/footer a block theme has none of.
 	 */
 	public function single_template( $template ) {
-		if ( get_post_type() === self::CPT ) {
+		if ( get_post_type() === self::CPT && ! ( function_exists( 'wp_is_block_theme' ) && wp_is_block_theme() ) ) {
 			$theme_template = locate_template( 'single-anchor_speaker.php' );
 			if ( ! $theme_template ) {
 				return __DIR__ . '/templates/single-anchor_speaker.php';

@@ -128,6 +128,10 @@ invalidated on any write to that meta key.
 **Lesson** (`Admin\LessonEditor::setting()`): `completion_mode` `manual`
 (`view`, `quiz_pass`), `required` `1`, `quiz_id` `0`, `type` `content`
 (`live_session`), `event_id` `0`, `session_index` `0`, `require_prior_items` `0`.
+The three live-session fields are **not wired yet** (plan Phase 5 - the
+live-session adapter and the stream prerequisite veto): the lesson editor shows
+them disabled under "Not active until the live-session adapter ships (plan
+Phase 5)", and hidden mirrors keep the stored values across a save.
 
 **Quiz** (`_anchor_quiz_settings`, `Admin\QuizEditor::settings()`): `passing_score`
 `80` (1-100), `max_attempts` `0` (unlimited, max 1000), `time_limit_seconds` `0`

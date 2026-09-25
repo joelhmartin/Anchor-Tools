@@ -101,20 +101,49 @@ final class LessonEditor {
 			\esc_html__( 'Required for course completion', 'anchor-schema' )
 		);
 
+		$this->render_live_session_fields( $id );
+	}
+
+	/**
+	 * The live-session fields, shown DISABLED with an inline notice (audit UI
+	 * item): nothing reads them yet - the live-session adapter and the
+	 * stream prerequisite veto are plan Phase 5 - so an enabled "Block stream
+	 * access" checkbox would promise protection that does not exist.
+	 *
+	 * The stored values still round-trip: disabled inputs are never posted,
+	 * so each value also rides in a hidden input of the same name and
+	 * save() writes it back unchanged (a programmatic save can still set
+	 * them). When Phase 5 ships, drop the hidden mirrors and `disabled`.
+	 */
+	private function render_live_session_fields( int $id ): void {
+		$event_id      = (int) self::setting( $id, 'event_id' );
+		$session_index = (int) self::setting( $id, 'session_index' );
+		$require_prior = 1 === (int) self::setting( $id, 'require_prior_items' );
+
 		echo '<h4>' . \esc_html__( 'Live session', 'anchor-schema' ) . '</h4>';
+		echo '<p class="description anchor-courses-inactive-notice"><em>'
+			. \esc_html__( 'Not active until the live-session adapter ships (plan Phase 5). These settings are kept but do not affect access yet.', 'anchor-schema' )
+			. '</em></p>';
+
+		\printf( '<input type="hidden" name="anchor_lesson[event_id]" value="%d" />', $event_id );
+		\printf( '<input type="hidden" name="anchor_lesson[session_index]" value="%d" />', $session_index );
+		if ( $require_prior ) {
+			echo '<input type="hidden" name="anchor_lesson[require_prior_items]" value="1" />';
+		}
+
 		\printf(
-			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[event_id]" value="%d" class="small-text" /></label></p>',
+			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[event_id]" value="%d" class="small-text" disabled="disabled" /></label></p>',
 			\esc_html__( 'Event ID', 'anchor-schema' ),
-			(int) self::setting( $id, 'event_id' )
+			$event_id
 		);
 		\printf(
-			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[session_index]" value="%d" class="small-text" /></label></p>',
+			'<p><label>%s<br /><input type="number" min="0" name="anchor_lesson[session_index]" value="%d" class="small-text" disabled="disabled" /></label></p>',
 			\esc_html__( 'Session index', 'anchor-schema' ),
-			(int) self::setting( $id, 'session_index' )
+			$session_index
 		);
 		\printf(
-			'<p><label><input type="checkbox" name="anchor_lesson[require_prior_items]" value="1"%s /> %s</label></p>',
-			\checked( (int) self::setting( $id, 'require_prior_items' ), 1, false ),
+			'<p><label><input type="checkbox" name="anchor_lesson[require_prior_items]" value="1"%s disabled="disabled" /> %s</label></p>',
+			\checked( $require_prior, true, false ),
 			\esc_html__( 'Block stream access until earlier items are complete', 'anchor-schema' )
 		);
 	}

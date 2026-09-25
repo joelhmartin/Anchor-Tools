@@ -41,11 +41,34 @@
     return div.innerHTML;
   }
 
-  function createCard(loc, distance){
+  function createCard(loc, distance, mode){
+    var compact = mode === 'compact';
     var article = document.createElement('article');
-    article.className = 'anchor-store-card';
+    article.className = 'anchor-store-card' + (compact ? ' anchor-store-card--compact' : '');
     article.setAttribute('tabindex', '0');
     article.dataset.storeId = loc.id;
+
+    if(compact){
+      var compactTitle = document.createElement('h3');
+      compactTitle.className = 'anchor-store-card-title';
+      compactTitle.textContent = loc.title || '';
+      article.appendChild(compactTitle);
+
+      if(loc.owner){
+        var owner = document.createElement('div');
+        owner.className = 'anchor-store-card-owner';
+        owner.textContent = loc.owner;
+        article.appendChild(owner);
+      }
+
+      var compactCta = document.createElement('a');
+      compactCta.className = 'anchor-store-link';
+      compactCta.href = loc.permalink;
+      compactCta.textContent = 'View location';
+      article.appendChild(compactCta);
+
+      return article;
+    }
 
     var header = document.createElement('div');
     header.className = 'anchor-store-card-header';
@@ -127,6 +150,7 @@
     var radiusSelect = root.querySelector('[data-anchor-store-radius]');
     var nameSearchInput = root.querySelector('[data-anchor-store-name-search]');
     var nameResultsEl = root.querySelector('[data-anchor-store-name-results]');
+    var cardMode = root.getAttribute('data-anchor-store-card') === 'compact' ? 'compact' : 'full';
 
     if(!mapEl || !listEl){ return; }
 
@@ -192,7 +216,7 @@
       }
 
       results.forEach(function(item){
-        var card = createCard(item.data, item.distance);
+        var card = createCard(item.data, item.distance, cardMode);
         card.addEventListener('click', function(){
           var marker = markers[item.data.id];
           if(marker){

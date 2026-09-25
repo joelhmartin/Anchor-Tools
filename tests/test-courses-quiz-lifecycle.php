@@ -9,7 +9,6 @@ use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\Questions;
 use Anchor\Courses\Database\QuizAttemptRepository;
 use Anchor\Courses\Domain\QuizAttempt;
-use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\QuizService;
 
 /** @group courses */
@@ -198,7 +197,7 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 		$this->assertSame( 0, $this->quizzes->deadline( $attempt ), 'Untimed was pinned at start; a later edit must not retroactively time this attempt.' );
 
 		$second_learner = $this->make_learner();
-		( new EnrollmentService() )->enroll( $second_learner, $this->course );
+		\Anchor\Courses\Support\Roles::grant_access( $second_learner, $this->course );
 		$timed = $this->quizzes->start_attempt( $second_learner, $this->quiz, $this->course );
 		$this->assertSame( strtotime( '2026-05-01 10:10:00 UTC' ), $this->quizzes->deadline( $timed ), 'A NEW attempt started after the edit pins the new limit.' );
 	}

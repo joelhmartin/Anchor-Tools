@@ -11,6 +11,7 @@ use Anchor\Courses\Frontend\Templates;
 use Anchor\Courses\Module;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
+use Anchor\Courses\Support\Roles;
 
 /** @group courses */
 class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
@@ -102,7 +103,7 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 	/** An enrolled learner is offered neither: they get on with the course. */
 	public function test_an_enrolled_learner_sees_no_access_cta() {
 		wp_set_current_user( $this->user );
-		( new EnrollmentService() )->enroll( $this->user, $this->course );
+		Roles::grant_access( $this->user, $this->course );
 
 		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
 
@@ -143,7 +144,7 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 
 	public function test_progress_shortcode_reflects_completion() {
 		wp_set_current_user( $this->user );
-		( new EnrollmentService() )->enroll( $this->user, $this->course );
+		Roles::grant_access( $this->user, $this->course );
 
 		$before = do_shortcode( '[anchor_course_progress course_id="' . $this->course . '"]' );
 		$this->assertStringContainsString( '0%', $before );
@@ -244,7 +245,7 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 
 	public function test_render_lesson_for_an_enrolled_available_lesson_shows_the_body_and_the_complete_form() {
 		wp_set_current_user( $this->user );
-		( new EnrollmentService() )->enroll( $this->user, $this->course );
+		Roles::grant_access( $this->user, $this->course );
 		wp_update_post( [ 'ID' => $this->lesson, 'post_content' => 'Real lesson body text.', 'post_excerpt' => '' ] );
 		global $post;
 		$post = get_post( $this->lesson );

@@ -10,9 +10,9 @@ use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\Questions;
 use Anchor\Courses\Database\QuizAttemptRepository;
 use Anchor\Courses\Domain\QuizAttempt;
-use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Services\QuizService;
+use Anchor\Courses\Support\Roles;
 
 /** @group courses */
 class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
@@ -47,7 +47,7 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 		$this->q2 = $saved[1]['id'];
 
 		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'quiz', 'id' => $this->quiz ] ] ] ] );
-		( new EnrollmentService() )->enroll( $this->user, $this->course );
+		Roles::grant_access( $this->user, $this->course );
 	}
 
 	public function tear_down() {

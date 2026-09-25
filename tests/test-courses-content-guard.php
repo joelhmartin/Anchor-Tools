@@ -22,7 +22,7 @@ use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\LessonPostType;
 use Anchor\Courses\Content\QuizPostType;
 use Anchor\Courses\Frontend\Access;
-use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Support\Roles;
 
 /** @group courses */
 class Test_Courses_Content_Guard extends Anchor_Courses_TestCase {
@@ -75,7 +75,7 @@ class Test_Courses_Content_Guard extends Anchor_Courses_TestCase {
 	public function test_the_content_filter_passes_the_body_for_an_enrolled_user() {
 		$user = $this->make_learner();
 		wp_set_current_user( $user );
-		( new EnrollmentService() )->enroll( $user, $this->course );
+		Roles::grant_access( $user, $this->course );
 
 		global $post;
 		$post = get_post( $this->lesson );
@@ -98,7 +98,7 @@ class Test_Courses_Content_Guard extends Anchor_Courses_TestCase {
 	public function test_the_excerpt_filter_passes_the_body_for_an_enrolled_user() {
 		$user = $this->make_learner();
 		wp_set_current_user( $user );
-		( new EnrollmentService() )->enroll( $user, $this->course );
+		Roles::grant_access( $user, $this->course );
 
 		global $post;
 		$post = get_post( $this->lesson );
@@ -123,7 +123,7 @@ class Test_Courses_Content_Guard extends Anchor_Courses_TestCase {
 
 		$this->assertFalse( Access::can_view_lesson( $this->lesson, $user ) );
 
-		( new EnrollmentService() )->enroll( $user, $this->course );
+		Roles::grant_access( $user, $this->course );
 
 		$this->assertTrue( Access::can_view_lesson( $this->lesson, $user ) );
 	}

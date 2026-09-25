@@ -19,9 +19,14 @@ class Anchor_Video_URL {
 		$start = 0;
 		$query = [];
 		parse_str( (string) wp_parse_url( $url, PHP_URL_QUERY ), $query );
-		if ( isset( $query['t'] ) ) {
+		// parse_str() turns a repeated query key such as `t[]=5` or `v[]=abc`
+		// into an array value; is_scalar()/is_string() guard every use below
+		// so a malformed/copy-pasted URL with that shape never reaches
+		// preg_match() (a TypeError on PHP 8.1+) or gets cast to the literal
+		// string "Array".
+		if ( isset( $query['t'] ) && is_scalar( $query['t'] ) ) {
 			$start = self::seconds( $query['t'] );
-		} elseif ( isset( $query['start'] ) ) {
+		} elseif ( isset( $query['start'] ) && is_scalar( $query['start'] ) ) {
 			$start = (int) $query['start'];
 		}
 
@@ -33,7 +38,7 @@ class Anchor_Video_URL {
 		// into the value rather than splitting it off; match only the leading
 		// run of id characters instead of requiring the whole value to be
 		// clean, so those still resolve the same id the old gallery regex did.
-		if ( preg_match( '~youtube\.com/~', $url ) && ! empty( $query['v'] ) && preg_match( '~^[A-Za-z0-9_-]{6,}~', $query['v'], $vm ) ) {
+		if ( preg_match( '~youtube\.com/~', $url ) && ! empty( $query['v'] ) && is_string( $query['v'] ) && preg_match( '~^[A-Za-z0-9_-]{6,}~', $query['v'], $vm ) ) {
 			return [ 'provider' => 'youtube', 'id' => $vm[0], 'start' => $start ];
 		}
 		// Anchor the id with a trailing (?![0-9]) instead of consuming a

@@ -56,6 +56,40 @@ class Test_Video_URL extends WP_UnitTestCase {
 	}
 
 	/**
+	 * PR #28 review finding C: parse_str() turns a repeated query key such as
+	 * `v[]=abc` into an array. Without an is_string() guard, that array
+	 * reaches preg_match() as the subject and throws a TypeError on PHP
+	 * 8.1+, which normalize_video_url() now calling parse() on every gallery
+	 * render would turn into a fatal error for the whole page instead of
+	 * just dropping one malformed item.
+	 */
+	public function test_array_valued_v_query_param_does_not_fatal() {
+		$this->assertNull( Anchor_Video_URL::parse( 'https://www.youtube.com/foo?v[]=abcdefg' ) );
+	}
+
+	/**
+	 * PR #28 review finding C, the `t`/`start` half: an array-valued `t`
+	 * (`t[]=5`) must not reach seconds() (which would cast the array to the
+	 * literal string "Array" and raise a PHP warning); the video id itself
+	 * must still resolve.
+	 */
+	public function test_array_valued_t_query_param_does_not_fatal_and_id_still_resolves() {
+		$r = Anchor_Video_URL::parse( 'https://www.youtube.com/watch?v=bBSSR2F69A0&t[]=5' );
+		$this->assertSame( 'youtube', $r['provider'] );
+		$this->assertSame( 'bBSSR2F69A0', $r['id'] );
+		$this->assertSame( 0, $r['start'] );
+	}
+
+	/**
+	 * Same as above for the `start` fallback param.
+	 */
+	public function test_array_valued_start_query_param_does_not_fatal() {
+		$r = Anchor_Video_URL::parse( 'https://www.youtube.com/watch?v=bBSSR2F69A0&start[]=5' );
+		$this->assertSame( 'youtube', $r['provider'] );
+		$this->assertSame( 0, $r['start'] );
+	}
+
+	/**
 	 * vimeo.com/event/<id> never matched the OLD regex either (no `video/`
 	 * prefix and no digits immediately after `vimeo.com/`), so the new parser
 	 * must keep rejecting it too, and this is a case the finding calls out

@@ -69,11 +69,12 @@ final class Assets {
 				'restUrl' => \esc_url_raw( \rest_url( 'anchor-courses/v1/' ) ),
 				'nonce'   => \wp_create_nonce( 'wp_rest' ),
 				'strings' => [
-					'submit' => \__( 'Submit quiz', 'anchor-schema' ),
-					'passed' => \__( 'Passed.', 'anchor-schema' ),
-					'failed' => \__( 'Not passed.', 'anchor-schema' ),
-					'timeUp' => \__( 'Time is up - submitting your saved answers.', 'anchor-schema' ),
-					'error'  => \__( 'Something went wrong. Please refresh and try again.', 'anchor-schema' ),
+					'submit'    => \__( 'Submit quiz', 'anchor-schema' ),
+					'passed'    => \__( 'Passed.', 'anchor-schema' ),
+					'failed'    => \__( 'Not passed.', 'anchor-schema' ),
+					'submitted' => \__( 'Quiz submitted.', 'anchor-schema' ),
+					'timeUp'    => \__( 'Time is up - submitting your saved answers.', 'anchor-schema' ),
+					'error'     => \__( 'Something went wrong. Please refresh and try again.', 'anchor-schema' ),
 				],
 			]
 		);

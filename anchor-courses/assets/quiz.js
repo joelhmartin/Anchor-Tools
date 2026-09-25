@@ -108,9 +108,14 @@
 
         function renderResult(data) {
             var a = data.attempt || {};
-            var text = a.passed ? (S.passed || '') : (S.failed || '');
-            if (data.show_score && a.score !== null && typeof a.score !== 'undefined') {
-                text += ' ' + a.score + '%';
+            var text;
+            if (!data.show_score) {
+                text = S.submitted || '';
+            } else {
+                text = a.passed ? (S.passed || '') : (S.failed || '');
+                if (a.score !== null && typeof a.score !== 'undefined') {
+                    text += ' ' + a.score + '%';
+                }
             }
             $root.find('.anchor-quiz-form').prop('hidden', true).empty();
             $root.find('.anchor-quiz-timer').prop('hidden', true);
@@ -161,6 +166,7 @@
             api('quiz-attempts/' + attemptId + '/submit', 'POST', { answers: answers })
                 .done(renderResult)
                 .fail(function () {
+                    $root.find('.anchor-quiz-form button[type="submit"]').prop('disabled', false);
                     $root.find('.anchor-quiz-result').prop('hidden', false).text(S.error);
                 });
         });

@@ -247,6 +247,17 @@
   var currentInlineTile = null;
 
   function openInline(gallery, tile, provider, id, autoplay, opts) {
+    // The `gallery` layout (feature_gallery preset: big featured tile plus
+    // thumbnail strip) has no `.avg-track`; only the slider layout renders
+    // one (anchor-gallery.php's render_gallery() track markup), so the
+    // track.insertBefore() below has nothing to attach to and throws. That
+    // layout plays the embed in place of the featured tile itself instead;
+    // see playGalleryFeatured() below.
+    if (gallery.getAttribute('data-layout') === 'gallery') {
+      playGalleryFeatured(gallery, tile);
+      return;
+    }
+
     // Close any other open popups first (cross-module coordination)
     document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: null } }));
 
@@ -291,19 +302,82 @@
   }
 
   function closeInline() {
-    if (!currentInlineGallery) return;
+    if (currentInlineGallery) {
+      var player = currentInlineGallery.querySelector('.avg-inline-player');
+      if (player) {
+        player.remove();
+      }
 
-    var player = currentInlineGallery.querySelector('.avg-inline-player');
-    if (player) {
-      player.remove();
+      if (currentInlineTile) {
+        currentInlineTile.classList.remove('avg-inline-expanded');
+      }
+
+      currentInlineGallery = null;
+      currentInlineTile = null;
     }
 
-    if (currentInlineTile) {
-      currentInlineTile.classList.remove('avg-inline-expanded');
+    // Also tears down the gallery-layout featured player, if one is playing.
+    restoreGalleryFeaturedThumb();
+  }
+
+  // ============================================================================
+  // Popup: Inline Expand, Gallery Layout ("Featured + Thumbs")
+  // ============================================================================
+
+  // The `.avg-gallery-featured` tile's own `.avg-thumb` is the play surface:
+  // its innerHTML (poster image, play button, duration badge) is swapped for
+  // an iframe, then restored on close/switch. Tracked so closeInline() (the
+  // Escape handler and the cross-module anchor-close-popups listener already
+  // call it) and setFeatured() (clicking a different thumb) can tear the
+  // current iframe down before anything else happens.
+  var galleryFeaturedThumbEl = null;
+
+  function restoreGalleryFeaturedThumb() {
+    if (!galleryFeaturedThumbEl) return;
+    if (galleryFeaturedThumbEl._avgSavedHtml !== undefined) {
+      galleryFeaturedThumbEl.innerHTML = galleryFeaturedThumbEl._avgSavedHtml;
+      delete galleryFeaturedThumbEl._avgSavedHtml;
+    }
+    galleryFeaturedThumbEl.classList.remove('avg-gallery-featured-playing');
+    galleryFeaturedThumbEl = null;
+  }
+
+  // `featured` is the `.avg-tile.avg-gallery-featured` element; its
+  // data-provider/data-video-id are the source of truth (set server-side for
+  // the first item, kept current by setFeatured() below on every thumb
+  // click), so this reads them directly rather than taking them as params.
+  function playGalleryFeatured(gallery, featured) {
+    var thumb = featured && featured.querySelector('.avg-thumb');
+    if (!thumb) return;
+
+    var provider = featured.getAttribute('data-provider');
+    var videoId = featured.getAttribute('data-video-id');
+    if (!provider || !videoId) return;
+
+    // Close any other open popups first (cross-module coordination), then
+    // tear down any previously playing featured iframe (switching video).
+    document.dispatchEvent(new CustomEvent('anchor-close-popups', { detail: { except: null } }));
+    restoreGalleryFeaturedThumb();
+
+    var autoplay = gallery.getAttribute('data-autoplay') === '1';
+    var src = getVideoSrc(provider, videoId, autoplay);
+
+    thumb._avgSavedHtml = thumb.innerHTML;
+    thumb.classList.add('avg-gallery-featured-playing');
+    thumb.innerHTML = [
+      '<button type="button" class="avg-inline-close avg-gallery-featured-close" aria-label="Close">&times;</button>',
+      '<iframe src="' + src + '" allow="autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>'
+    ].join('');
+
+    var closeBtn = thumb.querySelector('.avg-gallery-featured-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        restoreGalleryFeaturedThumb();
+      });
     }
 
-    currentInlineGallery = null;
-    currentInlineTile = null;
+    galleryFeaturedThumbEl = thumb;
   }
 
   // ============================================================================
@@ -514,6 +588,11 @@
       var thumb = thumbs[index];
       if (!thumb) return;
 
+      // If an inline embed is currently playing in the featured tile, tear
+      // it down first -- the updates below target .avg-thumb-img/.avg-play/
+      // .avg-duration, which the iframe swap replaced.
+      restoreGalleryFeaturedThumb();
+
       // Update active strip state
       thumbs.forEach(function(t) { t.classList.remove('active'); });
       thumb.classList.add('active');
@@ -575,6 +654,13 @@
 
       // Scroll active thumb into view within the strip
       thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+
+      // popup_style="inline" plays in place of the featured tile (see
+      // playGalleryFeatured() above) -- swap straight to the newly selected
+      // video/thumb without requiring a second click on the featured tile.
+      if (type !== 'image' && gallery.getAttribute('data-popup') === 'inline') {
+        playGalleryFeatured(gallery, featured);
+      }
     }
 
     // Thumbnail clicks

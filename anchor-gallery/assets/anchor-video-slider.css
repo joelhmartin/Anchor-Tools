@@ -740,6 +740,22 @@
   overflow: hidden;
 }
 
+/* popup_style="inline": the embed replaces this tile's media in place
+   (see playGalleryFeatured() in anchor-video-slider.js). .avg-thumb is
+   already position:relative/overflow:hidden with the featured aspect
+   ratio above, so the iframe just needs to fill it. */
+.avg-gallery-featured .avg-thumb.avg-gallery-featured-playing {
+  background: #000;
+}
+
+.avg-gallery-featured .avg-thumb.avg-gallery-featured-playing iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
 .avg-gallery-featured .avg-play svg {
   width: 72px;
   height: 72px;

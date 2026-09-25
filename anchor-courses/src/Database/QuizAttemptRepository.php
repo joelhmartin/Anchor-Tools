@@ -147,6 +147,26 @@ final class QuizAttemptRepository {
 		);
 	}
 
+	/**
+	 * Void every counted attempt a learner has in one course (admin reset,
+	 * final review I6). `abandoned` is not in COUNTED_STATUSES, so the
+	 * max_attempts allowance is fully restored; the rows stay as history.
+	 *
+	 * @return int Attempts voided.
+	 */
+	public static function abandon_for_course( int $user_id, int $course_id ): int {
+		global $wpdb;
+
+		$placeholders = \implode( ', ', \array_fill( 0, \count( self::COUNTED_STATUSES ), '%s' ) );
+
+		return (int) $wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . self::table() . " SET status = 'abandoned', updated_at = %s WHERE user_id = %d AND course_id = %d AND status IN ({$placeholders})", // phpcs:ignore WordPress.DB.PreparedSQL
+				\array_merge( [ Clock::now(), $user_id, $course_id ], self::COUNTED_STATUSES )
+			)
+		);
+	}
+
 	public static function last_for_quiz( int $user_id, int $quiz_id ): ?QuizAttempt {
 		global $wpdb;
 		$row = $wpdb->get_row(

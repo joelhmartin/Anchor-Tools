@@ -7,6 +7,7 @@ use Anchor\Courses\Admin\CourseEditor;
 use Anchor\Courses\Admin\LessonEditor;
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Database\ProgressRepository;
+use Anchor\Courses\Database\QuizAttemptRepository;
 use Anchor\Courses\Domain\CourseProgress;
 use Anchor\Courses\Domain\Progress;
 use Anchor\Courses\Support\Clock;
@@ -240,11 +241,14 @@ final class ProgressService {
 	 * Write one item's state. The single write path used by both the lesson
 	 * flow and the quiz service.
 	 *
-	 * A retake's 'in_progress' bookkeeping write (QuizService::start_attempt())
-	 * must never regress an item a learner has already completed - only a real
-	 * graded outcome ('completed'/'failed') may replace a completed row (Task
-	 * 24 review, ruling R2). Guarded here since this is the one write path both
-	 * callers share.
+	 * A completed item is never downgraded (final review I5, amending Task 24
+	 * ruling R2): neither a retake's 'in_progress' bookkeeping write
+	 * (QuizService::start_attempt()) nor a later FAILED attempt may replace a
+	 * completed row - the best attempt counts, so the items after it stay
+	 * unlocked. A repeat 'completed' write (a second pass) refreshes the row's
+	 * metadata but keeps the original completed_at. Guarded here since this
+	 * is the one write path both callers share; an admin reset deletes the
+	 * rows outright (reset_course()) rather than writing over them.
 	 */
 	public function record_item(
 		int $user_id,
@@ -260,8 +264,11 @@ final class ProgressService {
 
 		$existing = ProgressRepository::find( $user_id, $course_id, $item_id, $item_type );
 
-		if ( 'in_progress' === $status && $existing instanceof Progress && $existing->is_complete() ) {
-			return $existing;
+		if ( $existing instanceof Progress && $existing->is_complete() ) {
+			if ( 'completed' !== $status ) {
+				return $existing;
+			}
+			$extra['completed_at'] = $extra['completed_at'] ?? $existing->completed_at;
 		}
 
 		$now  = Clock::now();
@@ -287,6 +294,21 @@ final class ProgressService {
 		}
 
 		return ProgressRepository::upsert( $data );
+	}
+
+	/**
+	 * Start a learner over on one course (the admin "Reset progress" action).
+	 *
+	 * Deletes every progress row, voids every quiz attempt as `abandoned` (a
+	 * non-counted status, so max_attempts is fully restored while the history
+	 * stays on record - final review I6), and returns the enrolment to
+	 * `enrolled` with no started_at. Credits, certificates and the completion
+	 * role are records of something that happened and are left alone.
+	 */
+	public function reset_course( int $user_id, int $course_id ): void {
+		ProgressRepository::delete_for_course( $user_id, $course_id );
+		QuizAttemptRepository::abandon_for_course( $user_id, $course_id );
+		$this->enrollments->restart( $user_id, $course_id );
 	}
 
 	/**

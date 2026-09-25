@@ -299,4 +299,44 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 		$this->assertSame( 1, $fired, 'No second quiz_started firing for a collision that never inserted.' );
 		$this->assertSame( $winner->id, QuizAttemptRepository::open_attempt( $this->user, $this->quiz )->id );
 	}
+
+	/**
+	 * Final review I5 (amends T24 R2): a failed retake after a pass must not
+	 * downgrade the completed quiz item - best attempt counts - so the items
+	 * after it stay unlocked and completed_at is untouched.
+	 */
+	public function test_a_failed_retake_after_a_pass_never_downgrades_the_quiz_item() {
+		$m      = $this->courses();
+		$course = $this->make_course( [ 'progression_mode' => 'sequential', 'completion_mode' => 'all_required_items' ] );
+		$quiz   = $this->make_quiz( [ 'settings' => [ 'passing_score' => 80, 'max_attempts' => 0 ] ] );
+		$qs     = Questions::save( $quiz, [ [ 'type' => 'single_choice', 'prompt' => 'P', 'points' => 1,
+			'answers' => [ [ 'id' => 'a1', 'text' => 'W', 'correct' => false ], [ 'id' => 'a2', 'text' => 'R', 'correct' => true ] ] ] ] );
+		$q       = (string) $qs[0]['id'];
+		$first   = $this->make_lesson( [ 'completion_mode' => 'manual', 'required' => 1 ] );
+		$after   = $this->make_lesson( [ 'completion_mode' => 'manual', 'required' => 1 ] );
+		Curriculum::save( $course, [ [ 'title' => 'M', 'items' => [
+			[ 'type' => 'lesson', 'id' => $first ], [ 'type' => 'quiz', 'id' => $quiz ], [ 'type' => 'lesson', 'id' => $after ],
+		] ] ] );
+		$user = $this->make_learner();
+		Roles::grant_access( $user, $course, 'manual' );
+		$m->progress->complete_lesson( $user, $course, $first );
+
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		$pass = $m->quizzes->start_attempt( $user, $quiz, $course );
+		$m->quizzes->submit( $pass->id, [ $q => 'a2' ], $user );
+		$this->assertTrue( $m->progress->is_item_available( $user, $course, $after, 'lesson' ) );
+		$completed_at = \Anchor\Courses\Database\ProgressRepository::find( $user, $course, $quiz, 'quiz' )->completed_at;
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-02 10:00:00 UTC' ) );
+		$retake = $m->quizzes->start_attempt( $user, $quiz, $course );
+		$this->assertNotWPError( $retake );
+		$failed = $m->quizzes->submit( $retake->id, [ $q => 'a1' ], $user );
+		$this->assertFalse( $failed->passed );
+
+		$row = \Anchor\Courses\Database\ProgressRepository::find( $user, $course, $quiz, 'quiz' );
+		$this->assertSame( 'completed', $row->status, 'A failed retake must not downgrade a passed quiz.' );
+		$this->assertSame( $completed_at, $row->completed_at, 'completed_at is the first pass, not the retake.' );
+		$this->assertTrue( $m->progress->is_item_available( $user, $course, $after, 'lesson' ), 'The next lesson must stay unlocked.' );
+	}
 }

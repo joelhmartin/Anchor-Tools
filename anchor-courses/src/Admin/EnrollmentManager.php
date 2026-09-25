@@ -130,8 +130,7 @@ final class EnrollmentManager {
 				break;
 
 			case 'reset':
-				ProgressRepository::delete_for_course( $user_id, $course_id );
-				$enrollments->set_status( $user_id, $course_id, 'enrolled' );
+				( $module ? $module->progress : new \Anchor\Courses\Services\ProgressService( $enrollments ) )->reset_course( $user_id, $course_id );
 				$this->redirect( 'reset', $course_id );
 				break;
 

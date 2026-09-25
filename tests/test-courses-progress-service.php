@@ -100,13 +100,16 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 		$this->assertContains( 'lesson:' . $this->l1, $this->progress->get_completed_items( $this->user, $this->course ) );
 	}
 
-	/** A genuine graded outcome (completed/failed) may still overwrite a completed row. */
-	public function test_record_item_still_allows_a_real_outcome_to_replace_completed() {
+	/**
+	 * Final review I5 reverses T24 R2's fail branch: a later 'failed' outcome
+	 * never replaces a completed row either - the best attempt counts.
+	 */
+	public function test_record_item_never_downgrades_a_completed_row_to_failed() {
 		$this->progress->record_item( $this->user, $this->course, $this->l1, 'lesson', 'completed' );
 
 		$after = $this->progress->record_item( $this->user, $this->course, $this->l1, 'lesson', 'failed' );
 
-		$this->assertSame( 'failed', $after->status );
+		$this->assertSame( 'completed', $after->status );
 	}
 
 	public function test_optional_items_do_not_reduce_the_percentage() {

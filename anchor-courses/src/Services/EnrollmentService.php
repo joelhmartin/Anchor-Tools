@@ -279,6 +279,31 @@ final class EnrollmentService {
 		return $updated;
 	}
 
+	/**
+	 * Return a row to "never opened": status `enrolled`, started_at cleared,
+	 * so the next item opened fires anchor_courses_course_started again.
+	 * Used by ProgressService::reset_course(). completed_at is cleared too -
+	 * credits/certificates are separate records and stay.
+	 */
+	public function restart( int $user_id, int $course_id ): ?Enrollment {
+		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
+		if ( ! $enrollment instanceof Enrollment ) {
+			return null;
+		}
+
+		$updated = EnrollmentRepository::update(
+			$enrollment->id,
+			[ 'status' => 'enrolled', 'started_at' => null, 'completed_at' => null ]
+		);
+
+		if ( 'enrolled' !== $enrollment->status ) {
+			/** This action is documented in set_status(). */
+			\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $enrollment->status, 'enrolled' );
+		}
+
+		return $updated;
+	}
+
 	public function set_status( int $user_id, int $course_id, string $status ): ?Enrollment {
 		if ( ! \in_array( $status, Enrollment::STATUSES, true ) ) {
 			return null;

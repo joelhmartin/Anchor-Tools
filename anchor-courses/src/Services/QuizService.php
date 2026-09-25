@@ -191,7 +191,9 @@ final class QuizService {
 		}
 
 		$last = QuizAttemptRepository::last_for_quiz( $user_id, $quiz_id );
-		if ( ! $last instanceof QuizAttempt || null === $last->submitted_at ) {
+		// An attempt voided by an admin reset (`abandoned`) imposes no delay:
+		// the reset is a fresh start (final review I6).
+		if ( ! $last instanceof QuizAttempt || null === $last->submitted_at || 'abandoned' === $last->status ) {
 			return 0;
 		}
 

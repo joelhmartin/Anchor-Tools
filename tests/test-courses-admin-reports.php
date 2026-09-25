@@ -256,6 +256,35 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		$this->assertTrue( ( new EnrollmentService() )->is_enrolled( $this->learner, $this->course ) );
 	}
 
+	/**
+	 * Final review I6: reset used to delete progress rows only, leaving the
+	 * attempts (and started_at) behind - with max_attempts=1 the learner was
+	 * reset into a quiz they could never take again.
+	 */
+	public function test_reset_voids_the_attempts_and_clears_started_at() {
+		$quiz = $this->make_quiz( [ 'settings' => [ 'passing_score' => 80, 'max_attempts' => 1 ] ] );
+		$qs   = \Anchor\Courses\Content\Questions::save( $quiz, [ [ 'type' => 'single_choice', 'prompt' => 'P', 'points' => 1,
+			'answers' => [ [ 'id' => 'a1', 'text' => 'W', 'correct' => false ], [ 'id' => 'a2', 'text' => 'R', 'correct' => true ] ] ] ] );
+		Curriculum::save( $this->course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'quiz', 'id' => $quiz ] ] ] ] );
+		Roles::grant_access( $this->learner, $this->course, 'manual' );
+		$m       = $this->courses();
+		$attempt = $m->quizzes->start_attempt( $this->learner, $quiz, $this->course );
+		$m->quizzes->submit( $attempt->id, [ (string) $qs[0]['id'] => 'a1' ], $this->learner );
+		$this->assertWPError( $m->quizzes->can_start( $this->learner, $quiz, $this->course ), 'Precondition: the one attempt is used.' );
+
+		wp_set_current_user( $this->admin );
+		$redirect = $this->post_enrollment_action(
+			[ 'anchor_courses_action' => 'reset', 'user_id' => (string) $this->learner ]
+		);
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=reset', $redirect );
+		$this->assertTrue( $m->quizzes->can_start( $this->learner, $quiz, $this->course ), 'A reset learner must be able to retake.' );
+		$this->assertSame( 'abandoned', $m->quizzes->get_attempt( $attempt->id )->status, 'The attempt is voided, not deleted.' );
+		$enrollment = $m->enrollments->get( $this->learner, $this->course );
+		$this->assertSame( 'enrolled', $enrollment->status );
+		$this->assertNull( $enrollment->started_at );
+	}
+
 	/** Cancel takes the access role away too, whatever the loss policy says. */
 	public function test_cancel_revokes_the_role_and_cancels_the_row() {
 		Roles::grant_access( $this->learner, $this->course, 'manual' );

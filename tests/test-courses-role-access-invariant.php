@@ -261,6 +261,7 @@ class Test_Courses_Role_Access_Invariant extends Anchor_Courses_TestCase {
 
 		get_userdata( $this->user )->add_role( $this->slug() );
 		get_userdata( $this->user )->remove_role( $this->slug() );
+		Roles::resolve_pending_losses(); // Context-less: queued until shutdown (final review I8).
 
 		$this->assertSame( [ [ 'woocommerce', '4242' ], [ 'role', '' ] ], $seen );
 	}
@@ -355,9 +356,11 @@ class Test_Courses_Role_Access_Invariant extends Anchor_Courses_TestCase {
 
 	/**
 	 * The set_role/keep path is the one that re-enters enroll() (reapply puts
-	 * the role back -> add_user_role -> enroll). Nothing may fire twice.
+	 * the role back -> add_user_role -> enroll). Nothing may fire twice, and
+	 * since final review I8 the policy is not consulted at all: the stripped
+	 * role is re-applied, so its queued loss is dropped.
 	 */
-	public function test_set_role_under_keep_consults_the_policy_once_and_fires_nothing() {
+	public function test_set_role_under_keep_consults_no_policy_and_fires_nothing() {
 		Roles::grant_access( $this->user, $this->course, 'manual' );
 
 		$policy = 0;
@@ -375,13 +378,14 @@ class Test_Courses_Role_Access_Invariant extends Anchor_Courses_TestCase {
 
 		wp_update_user( [ 'ID' => $this->user, 'role' => 'editor' ] );
 
-		$this->assertSame( 1, $policy, 'One lost role, one policy decision.' );
+		$this->assertSame( 0, $policy, 'set_role churn is not a loss: the role comes straight back.' );
 		$this->assertSame( [ 'enrolled' => 0, 'status' => 0, 'granted' => 0 ], $fired );
 		$this->assertTrue( Roles::user_has( $this->user, $this->slug() ) );
 		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ) );
 	}
 
-	public function test_set_role_under_cancel_consults_the_policy_once() {
+	/** Final review I8: a primary-role change under `cancel` is not a cancellation. */
+	public function test_set_role_under_cancel_consults_no_policy_and_cancels_nothing() {
 		Roles::grant_access( $this->user, $this->course, 'manual' );
 		$policy = 0;
 		add_filter(
@@ -393,8 +397,10 @@ class Test_Courses_Role_Access_Invariant extends Anchor_Courses_TestCase {
 		);
 
 		wp_update_user( [ 'ID' => $this->user, 'role' => 'editor' ] );
+		Roles::resolve_pending_losses();
 
-		$this->assertSame( 1, $policy );
-		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+		$this->assertSame( 0, $policy );
+		$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $this->course )->status );
+		$this->assertTrue( Roles::user_has( $this->user, $this->slug() ) );
 	}
 }

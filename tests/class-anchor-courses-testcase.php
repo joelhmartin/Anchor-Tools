@@ -25,6 +25,14 @@ abstract class Anchor_Courses_TestCase extends WP_UnitTestCase {
 			}
 		}
 		$this->minted_courses = [];
+		// Context-less role losses queue for shutdown (Support\Roles, final
+		// review I8); a test that never resolves them must not hand them to
+		// the next test - or to the process's own shutdown.
+		if ( property_exists( \Anchor\Courses\Support\Roles::class, 'pending_losses' ) ) {
+			$pending = new ReflectionProperty( \Anchor\Courses\Support\Roles::class, 'pending_losses' );
+			$pending->setAccessible( true );
+			$pending->setValue( null, [] );
+		}
 		parent::tear_down();
 	}
 

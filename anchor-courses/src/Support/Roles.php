@@ -38,11 +38,13 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * supported way in and out; everything else that merely adds/removes the raw
  * role is still caught by the listener, just recorded with `source = 'role'`.
  *
- * A course role survives everything except a deliberate `delete_role()` call
- * or a `cancel`/`expire` loss policy - including an admin changing a
- * learner's PRIMARY role, which core `WP_User::set_role()` would otherwise
- * silently strip (see reapply_after_set_role(), which now defers to whatever
- * the loss policy just decided rather than blindly restoring the role).
+ * A course role survives everything except a deliberate removal (revoke,
+ * `delete_role()`, a raw remove_role()) - including an admin changing a
+ * learner's PRIMARY role or simply saving their profile, which core
+ * `WP_User::set_role()` would otherwise silently strip: a loss that arrives
+ * with no reason attached is queued, and reapply_after_set_role() puts the
+ * role back and drops it (final review I8); a raw removal with no set_role
+ * behind it is resolved through the loss policy at shutdown.
  */
 final class Roles {
 
@@ -230,7 +232,9 @@ final class Roles {
 		foreach ( $holders as $user_id ) {
 			$user = \get_userdata( (int) $user_id );
 			if ( $user instanceof \WP_User ) {
-				$user->remove_role( $slug );
+				// A deliberate operator action, so it carries a reason and the
+				// loss policy applies at once rather than queueing (I8).
+				self::with_context( 'role_deleted', '', static fn() => $user->remove_role( $slug ) );
 			}
 		}
 
@@ -272,6 +276,24 @@ final class Roles {
 	 * @var array<int,array<int,array{source:string,source_id:string,granted_at:string}>>
 	 */
 	private static array $lost_grants = [];
+
+	/**
+	 * Context-less access-role losses waiting to be resolved (final review
+	 * I8), [ user_id => [ course_id => role slug ] ].
+	 *
+	 * Core `WP_User::set_role()` fires `remove_user_role` for EVERY role it
+	 * strips - even on an ordinary profile save that keeps the same primary
+	 * role - so a loss that arrives with no reason attached (no grant context:
+	 * not revoke_access(), not a multisite removal, not the expiry sweep) is
+	 * not trusted as a loss yet. It waits here until either the
+	 * `set_user_role` listener resolves it (reapply_after_set_role(): role
+	 * re-applied -> dropped; not re-applied -> the loss policy runs) or, for a
+	 * raw remove_role() with no set_role behind it, `shutdown` does
+	 * (resolve_pending_losses()).
+	 *
+	 * @var array<int,array<int,string>>
+	 */
+	private static array $pending_losses = [];
 
 	/** @var EnrollmentService|null Set once, by register_listeners(). */
 	private static ?EnrollmentService $enrollments = null;
@@ -435,10 +457,11 @@ final class Roles {
 	 *
 	 * The losses are NOT handled here: core WP_User::set_role() (the only
 	 * thing that fires set_user_role) has already fired `remove_user_role`
-	 * for every stripped role, and on_role_removed() ran the loss policy for
-	 * each - once. Running it again here would consult the policy twice per
-	 * role (R5). The gain is idempotent with the add_user_role set_role also
-	 * fires, and is kept for anything that fires set_user_role directly.
+	 * for every stripped role, on_role_removed() queued each context-less
+	 * one, and reapply_after_set_role() (same hook, registered first)
+	 * settles that queue. The gain is idempotent with the add_user_role
+	 * set_role also fires, and is kept for anything that fires set_user_role
+	 * directly.
 	 */
 	public static function on_set_user_role( $user_id, $role, $old_roles = [] ): void {
 		self::enroll_for_role( (int) $user_id, (string) $role );
@@ -500,7 +523,57 @@ final class Roles {
 		if ( ! empty( self::$context['row_closed'] ) ) {
 			return; // remove_for_closed_row(): the row is already decided.
 		}
+
+		// No reason given: possibly set_role() churn, not a real loss. Queue
+		// it; set_user_role or shutdown decides (see $pending_losses).
+		if ( null === self::$context ) {
+			self::$pending_losses[ $user_id ][ $course_id ] = $role;
+			if ( false === \has_action( 'shutdown', [ self::class, 'resolve_pending_losses' ] ) ) {
+				\add_action( 'shutdown', [ self::class, 'resolve_pending_losses' ] );
+			}
+			return;
+		}
+
 		self::apply_loss_policy( $user_id, $course_id, $role );
+	}
+
+	/**
+	 * `shutdown`: every context-less loss still queued is a real one (a raw
+	 * remove_role() - WP-CLI, another plugin - with no set_role behind it),
+	 * so the loss policy runs now, with source `role`. A role that came back
+	 * in the meantime cancels its queued loss. Public so a test (or a
+	 * long-running CLI command) can resolve without waiting for shutdown.
+	 */
+	public static function resolve_pending_losses(): void {
+		$pending              = self::$pending_losses;
+		self::$pending_losses = [];
+
+		foreach ( $pending as $user_id => $courses ) {
+			foreach ( $courses as $course_id => $role ) {
+				if ( self::user_has( (int) $user_id, $role ) ) {
+					continue;
+				}
+				self::apply_loss_policy( (int) $user_id, (int) $course_id, $role );
+			}
+		}
+	}
+
+	/**
+	 * Settle one queued loss from the set_user_role listener: dropped when
+	 * the role was re-applied, the loss policy when it was not.
+	 */
+	private static function settle_pending_loss( int $user_id, int $course_id, bool $reapplied ): void {
+		if ( ! isset( self::$pending_losses[ $user_id ][ $course_id ] ) ) {
+			return;
+		}
+		$role = self::$pending_losses[ $user_id ][ $course_id ];
+		unset( self::$pending_losses[ $user_id ][ $course_id ] );
+		if ( [] === self::$pending_losses[ $user_id ] ) {
+			unset( self::$pending_losses[ $user_id ] );
+		}
+		if ( ! $reapplied ) {
+			self::apply_loss_policy( $user_id, $course_id, $role );
+		}
 	}
 
 	/**
@@ -716,35 +789,36 @@ final class Roles {
 
 	/**
 	 * `set_user_role`: re-apply any course role a user held before an
-	 * UNRELATED primary-role change stripped it.
+	 * UNRELATED primary-role change stripped it, and settle the queued loss.
 	 *
 	 * Core `WP_User::set_role()` (the single-role setter wp-admin's user list
-	 * "Change role to..." bulk action, and the user-edit screen, both call)
-	 * REPLACES the user's entire roles array rather than adding to it - unlike
-	 * `add_role()`/`remove_role()`, which are additive. Without this, giving a
-	 * learner an unrelated new primary role would silently un-enrol them and
-	 * erase anything they had completed, which contradicts "holding it IS
-	 * enrolment, and neither role is ever deleted automatically" (design spec
-	 * 3.1).
+	 * "Change role to..." bulk action, and the user-edit screen on every
+	 * profile save, both call) REPLACES the user's entire roles array rather
+	 * than adding to it - unlike `add_role()`/`remove_role()`, which are
+	 * additive. Without this, giving a learner a new primary role (or just
+	 * saving their profile) would silently un-enrol them, which contradicts
+	 * "holding it IS enrolment, and neither role is ever deleted
+	 * automatically" (design spec 3.1).
 	 *
-	 * This runs on the SAME `set_user_role` firing as on_set_user_role() (Task
-	 * 20), which is registered second and so runs after this - but the loss
-	 * policy for a role dropped by set_role() has already been decided by the
-	 * time either listener runs: core's own set_role() fires `remove_user_role`
-	 * for every stripped role, synchronously, BEFORE it fires `set_user_role`
-	 * (see class-wp-user.php), and on_role_removed() is what applies the policy.
-	 * That means for an ACCESS role this method only needs to read the row's
-	 * status: `keep` (the default) leaves it active, and a completed row is
-	 * never touched by a policy, so the role is restored exactly as before;
-	 * a site-configured `cancel`/`expire` has already closed it, so this
-	 * defers rather than fighting that decision back on. A COMPLETION role carries no enrolment and is always restored -
-	 * nothing governs its loss.
+	 * By the time this runs, core has already fired `remove_user_role` for
+	 * every stripped role and on_role_removed() QUEUED each access-role loss
+	 * (no grant context - final review I8) instead of applying the loss
+	 * policy. This method resolves that queue: a role it puts back is not a
+	 * loss, so its queued entry is dropped and the policy is never consulted
+	 * - under `cancel`/`expire` as much as under `keep`. The only access role
+	 * it does NOT put back is one over a row that was already closed before
+	 * the save; that loss is settled through the policy (a no-op for a
+	 * closed row). A COMPLETION role carries no enrolment and is always
+	 * restored - nothing governs its loss.
+	 *
+	 * Registered on `set_user_role` in Module::__construct(), BEFORE
+	 * register_listeners() adds on_set_user_role(), so it runs first.
 	 *
 	 * @param int      $user_id
 	 * @param string   $new_role
 	 * @param string[] $old_roles The roles the user held a moment ago.
 	 */
-	public static function reapply_after_set_role( int $user_id, string $new_role, array $old_roles ): void {
+	public static function reapply_after_set_role( int $user_id, string $new_role, array $old_roles = [] ): void {
 		$stripped = \array_values( \array_filter( \array_map( 'strval', $old_roles ), [ self::class, 'is_course_role_slug' ] ) );
 		if ( [] === $stripped ) {
 			return;
@@ -757,19 +831,24 @@ final class Roles {
 
 		$held = \array_map( 'strval', (array) $user->roles );
 		foreach ( $stripped as $slug ) {
+			$course_id = self::is_access_slug( $slug );
+
 			if ( \in_array( $slug, $held, true ) ) {
+				if ( null !== $course_id ) {
+					self::settle_pending_loss( $user_id, $course_id, true );
+				}
 				continue;
 			}
 
 			// Read the ROW, not is_enrolled(): the role is already gone by now,
-			// so is_enrolled() is false for everybody (R1). Only a row the loss
-			// policy just closed stays stripped; active and completed learners
+			// so is_enrolled() is false for everybody (R1). A row that was
+			// already closed stays stripped; active and completed learners
 			// (and a holder with no row yet) get the role back.
-			$course_id = self::is_access_slug( $slug );
 			if ( null !== $course_id ) {
 				$enrollment = self::enrollments()->get( $user_id, $course_id );
 				if ( null !== $enrollment && \in_array( $enrollment->status, EnrollmentService::CLOSED_STATUSES, true ) ) {
-					continue; // The loss was intentional (a cancel/expire policy) - do not put it back.
+					self::settle_pending_loss( $user_id, $course_id, false );
+					continue;
 				}
 			}
 
@@ -785,6 +864,9 @@ final class Roles {
 				);
 			} else {
 				$user->add_role( $slug );
+			}
+			if ( null !== $course_id ) {
+				self::settle_pending_loss( $user_id, $course_id, true );
 			}
 			Log::write( 'role_reapplied_after_set_role', [ 'user' => $user_id, 'role' => $slug ] );
 		}

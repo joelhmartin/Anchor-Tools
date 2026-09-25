@@ -167,6 +167,9 @@ class Test_Courses_Role_Enrolment extends Anchor_Courses_TestCase {
 
 		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'expire', 10, 4 );
 		get_user_by( 'id', $this->user )->remove_role( Roles::access_slug( $this->course ) );
+		// A context-less raw removal is queued (final review I8) and resolved
+		// at shutdown - resolved here directly.
+		Roles::resolve_pending_losses();
 		$this->assertSame( 'expired', $this->enrollments->get( $this->user, $this->course )->status );
 	}
 
@@ -203,47 +206,88 @@ class Test_Courses_Role_Enrolment extends Anchor_Courses_TestCase {
 		$this->assertSame( 'enrolled', $enrollment->status, 'Holding the role again must read back as enrolled.' );
 	}
 
-	/** set_user_role drops every other role, so the loss half must see it too. */
-	public function test_set_user_role_applies_the_loss_policy_to_what_it_replaced() {
+	/* ---------------------------------------------------------------------
+	 * Final review I8 - set_role churn is not a loss
+	 *
+	 * Core WP_User::set_role() fires remove_user_role for EVERY role it strips,
+	 * even when the primary role is unchanged - so an ordinary admin profile
+	 * save used to run a non-`keep` loss policy on every course the learner
+	 * held. Context-less losses are now queued and resolved by the
+	 * set_user_role listener (role re-applied -> dropped) or at shutdown.
+	 * ------------------------------------------------------------------- */
+
+	public function test_a_profile_save_with_the_same_primary_role_keeps_every_enrolment_under_cancel() {
+		$second = $this->make_course( [], 'Second' );
 		Roles::grant_access( $this->user, $this->course, 'manual' );
+		Roles::grant_access( $this->user, $second, 'manual' );
 		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
 
 		wp_update_user( [ 'ID' => $this->user, 'role' => 'subscriber' ] );
+		Roles::resolve_pending_losses(); // Nothing may be left for shutdown to cancel either.
 
-		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+		foreach ( [ $this->course, $second ] as $course ) {
+			$this->assertTrue( Roles::user_has( $this->user, Roles::access_slug( $course ) ) );
+			$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $course )->status );
+			$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $course ) );
+		}
 	}
 
-	/**
-	 * The set_role fight: Task 19's reapply_after_set_role() defensively puts a
-	 * stripped course role back so an UNRELATED primary-role change never looks
-	 * like un-enrolment. Task 20's loss policy can now end a row on purpose. The
-	 * two must not fight - a `cancel`/`expire` policy has to win, but the
-	 * default `keep` must still resume the learner exactly as before.
-	 */
+	public function test_changing_the_primary_role_keeps_every_enrolment_under_cancel() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
+
+		wp_update_user( [ 'ID' => $this->user, 'role' => 'customer' ] );
+		Roles::resolve_pending_losses();
+
+		$this->assertTrue( Roles::user_has( $this->user, Roles::access_slug( $this->course ) ) );
+		$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $this->course )->status );
+	}
+
+	/** Under the default policy the role and the row survive exactly as before. */
 	public function test_set_user_role_keeps_the_role_and_enrolment_active_under_the_default_policy() {
 		Roles::grant_access( $this->user, $this->course, 'manual' );
 
 		wp_update_user( [ 'ID' => $this->user, 'role' => 'customer' ] );
 
-		$this->assertTrue(
-			Roles::user_has( $this->user, Roles::access_slug( $this->course ) ),
-			'The default keep policy must survive the reapply/loss-policy race: the role must still be held.'
-		);
+		$this->assertTrue( Roles::user_has( $this->user, Roles::access_slug( $this->course ) ) );
 		$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $this->course )->status );
 	}
 
-	/** With `cancel` in effect, the loss policy must win: reapply must not fight it back on. */
-	public function test_set_user_role_does_not_let_reapply_undo_a_cancel_policy() {
+	/** An explicit revoke carries a reason, so the policy still applies at once. */
+	public function test_an_explicit_revoke_under_cancel_still_cancels_immediately() {
 		Roles::grant_access( $this->user, $this->course, 'manual' );
 		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
 
-		wp_update_user( [ 'ID' => $this->user, 'role' => 'customer' ] );
+		Roles::revoke_access( $this->user, $this->course, 'admin' );
 
-		$this->assertFalse(
-			Roles::user_has( $this->user, Roles::access_slug( $this->course ) ),
-			'A cancel policy must stick - reapply_after_set_role must not put the role back.'
-		);
 		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+	}
+
+	/** A raw remove_role() with no set_role behind it is a real loss - resolved at shutdown. */
+	public function test_a_raw_remove_role_under_cancel_cancels_once_the_queue_resolves() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
+
+		get_user_by( 'id', $this->user )->remove_role( Roles::access_slug( $this->course ) );
+		$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $this->course )->status, 'Queued, not applied yet.' );
+		$this->assertNotFalse( has_action( 'shutdown', [ Roles::class, 'resolve_pending_losses' ] ) );
+
+		Roles::resolve_pending_losses();
+
+		$this->assertSame( 'cancelled', $this->enrollments->get( $this->user, $this->course )->status );
+	}
+
+	/** A queued loss whose role came back before shutdown is dropped. */
+	public function test_a_queued_loss_is_dropped_when_the_role_comes_back() {
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		add_filter( 'anchor_courses_role_loss_policy', static fn() => 'cancel', 10, 4 );
+
+		$user = get_user_by( 'id', $this->user );
+		$user->remove_role( Roles::access_slug( $this->course ) );
+		$user->add_role( Roles::access_slug( $this->course ) );
+		Roles::resolve_pending_losses();
+
+		$this->assertSame( 'enrolled', $this->enrollments->get( $this->user, $this->course )->status );
 	}
 
 	/** Deleting the role strips every holder, and each loss runs the policy. */

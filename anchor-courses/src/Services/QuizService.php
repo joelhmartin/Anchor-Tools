@@ -513,6 +513,9 @@ final class QuizService {
 		);
 
 		if ( ! $saved instanceof QuizAttempt ) {
+			// Release the claim so the attempt is not stuck in `submitted`
+			// (counted, never graded, invisible to the sweep).
+			QuizAttemptRepository::transition( $attempt->id, 'submitted', 'in_progress' );
 			return new \WP_Error( 'save_failed', \__( 'The attempt could not be graded.', 'anchor-schema' ) );
 		}
 

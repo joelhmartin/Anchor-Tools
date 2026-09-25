@@ -163,6 +163,31 @@ class Test_Courses_Role_Access_Invariant extends Anchor_Courses_TestCase {
 		$this->assertSame( [], Roles::grant_record( $this->user, $this->course ) );
 	}
 
+	/** Access to an UNFINISHED course ends at expires_at itself, not at the next sweep. */
+	public function test_an_active_row_past_its_expiry_is_not_enrolled_before_the_sweep_runs() {
+		update_post_meta( $this->course, '_anchor_course_expiration_days', '1' );
+		$this->freeze( '2026-01-01 00:00:00 UTC' );
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ) );
+
+		$this->freeze( '2026-01-03 00:00:00 UTC' );
+		$this->assertFalse( $this->enrollments->is_enrolled( $this->user, $this->course ), 'past expires_at, no sweep yet: still no access.' );
+	}
+
+	/** Completion ends the work, not the access: expiry never applies to a completed row (final re-review finding 1). */
+	public function test_a_completed_learner_keeps_access_after_the_expiry_date_and_the_sweep() {
+		update_post_meta( $this->course, '_anchor_course_expiration_days', '1' );
+		$this->freeze( '2026-01-01 00:00:00 UTC' );
+		Roles::grant_access( $this->user, $this->course, 'manual' );
+		$this->enrollments->set_status( $this->user, $this->course, 'completed' );
+
+		$this->freeze( '2026-01-05 00:00:00 UTC' );
+		$this->assertSame( 0, $this->enrollments->sweep_expired(), 'the sweep never expires a completed row' );
+		$this->assertSame( 'completed', $this->enrollments->get( $this->user, $this->course )->status );
+		$this->assertTrue( Roles::user_has( $this->user, $this->slug() ) );
+		$this->assertTrue( $this->enrollments->is_enrolled( $this->user, $this->course ), 'a completed learner can still open the lessons' );
+	}
+
 	/** Also R3: the reactivated row gets a fresh expires_at, not the swept one. */
 	public function test_re_granting_after_the_sweep_reactivates_the_row_with_a_fresh_expiry() {
 		update_post_meta( $this->course, '_anchor_course_expiration_days', '10' );

@@ -106,15 +106,23 @@ final class Access {
 
 		// phpcs:ignore WordPress.Security.NonceVerification -- a read that only selects among courses already listing this lesson.
 		$requested = \absint( \wp_unslash( $_GET[ self::COURSE_ARG ] ?? 0 ) );
-		if ( $requested > 0 && \in_array( $requested, $courses, true ) ) {
+		$user_id   = $user_id > 0 ? $user_id : (int) \get_current_user_id();
+		$module    = Module::instance();
+		$enrolled  = static fn( int $course_id ): bool => $user_id > 0
+			&& $module instanceof Module
+			&& $module->enrollments->is_enrolled( $user_id, $course_id );
+
+		// The link's course wins when it lists the lesson AND the visitor is
+		// enrolled in it (or is nobody in particular); a learner who is only
+		// enrolled elsewhere falls through to their own course rather than
+		// being shown another course's call to action.
+		if ( $requested > 0 && \in_array( $requested, $courses, true ) && ( 0 === $user_id || $enrolled( $requested ) ) ) {
 			return $requested;
 		}
 
-		$user_id = $user_id > 0 ? $user_id : (int) \get_current_user_id();
-		$module  = Module::instance();
 		if ( $user_id > 0 && $module instanceof Module ) {
 			foreach ( $courses as $course_id ) {
-				if ( $module->enrollments->is_enrolled( $user_id, $course_id ) ) {
+				if ( $enrolled( $course_id ) ) {
 					return $course_id;
 				}
 			}

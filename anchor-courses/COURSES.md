@@ -65,8 +65,10 @@ Each course owns two capability-less roles.
   A `manual` grant upgrades any other record and is never downgraded.
   `Roles::grant_record()` reads it.
 - **`is_enrolled()`** requires all of: an active (`enrolled`/`in_progress`) or
-  `completed` row, the access role, and `expires_at` not yet passed. Access ends at
-  `expires_at`; the daily sweep then flips the row to `expired` and removes the role.
+  `completed` row, the access role, and - for active rows only - `expires_at` not
+  yet passed. Access to an unfinished course ends at `expires_at`; the daily sweep
+  then flips the row to `expired` and removes the role. A `completed` row is never
+  expired: completion ends the work, not the access.
 - **Primary-role changes:** `WP_User::set_role()` strips every role, including on an
   ordinary profile save. A role loss that arrives with no reason (no grant
   context) is **queued**, not applied. `Roles::reapply_after_set_role()` (on

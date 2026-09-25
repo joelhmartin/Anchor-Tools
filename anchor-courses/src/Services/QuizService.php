@@ -255,13 +255,26 @@ final class QuizService {
 	/**
 	 * Store one answer on an open attempt.
 	 *
-	 * @param mixed $value Answer id, or an array of ids.
+	 * @param mixed    $value             Answer id, or an array of ids.
+	 * @param int|null $expected_user_id  Defence in depth (Task 26 review, REST
+	 *                                    ownership ruling): when given, the
+	 *                                    attempt must belong to this user or the
+	 *                                    call is refused before anything else
+	 *                                    runs. The REST controller passes the
+	 *                                    current user here in addition to its own
+	 *                                    `owns_attempt()` permission check. Left
+	 *                                    null (the default) for every
+	 *                                    system/cron caller, which is
+	 *                                    deliberately user-agnostic.
 	 * @return true|\WP_Error
 	 */
-	public function save_answer( int $attempt_id, string $question_id, $value ) {
+	public function save_answer( int $attempt_id, string $question_id, $value, ?int $expected_user_id = null ) {
 		$attempt = QuizAttemptRepository::find( $attempt_id );
 		if ( ! $attempt instanceof QuizAttempt ) {
 			return new \WP_Error( 'no_attempt', \__( 'That attempt does not exist.', 'anchor-schema' ) );
+		}
+		if ( null !== $expected_user_id && $expected_user_id !== $attempt->user_id ) {
+			return new \WP_Error( 'attempt_not_yours', \__( 'That attempt belongs to someone else.', 'anchor-schema' ) );
 		}
 		if ( ! $attempt->is_open() ) {
 			return new \WP_Error( 'attempt_closed', \__( 'This attempt is already finished.', 'anchor-schema' ) );
@@ -297,15 +310,35 @@ final class QuizService {
 	 * Both the deadline and the on_timer_expiry policy come from the attempt's
 	 * pinned metadata, never the quiz's live settings (ruling R3).
 	 *
-	 * @param array $answers question_id => answer id | id[] (merged over saved
-	 *                       answers; ignored entirely on a late auto_submit -
-	 *                       only what was saved inside the window is graded).
+	 * @param array    $answers          question_id => answer id | id[] (merged
+	 *                                   over saved answers; ignored entirely on
+	 *                                   a late auto_submit - only what was saved
+	 *                                   inside the window is graded).
+	 * @param int|null $expected_user_id Defence in depth (Task 26 review, REST
+	 *                                   ownership ruling): when given, the
+	 *                                   attempt must belong to this user or the
+	 *                                   call is refused before anything else
+	 *                                   runs - including before the idempotent
+	 *                                   "already closed" short-circuit below, so
+	 *                                   a stranger guessing a graded attempt's id
+	 *                                   still gets refused rather than a read of
+	 *                                   someone else's result. The REST
+	 *                                   controller passes the current user here
+	 *                                   in addition to its own `owns_attempt()`
+	 *                                   permission check. Left null (the
+	 *                                   default) for every system/cron caller
+	 *                                   (`enforce_timer()`,
+	 *                                   `sweep_expired_attempts()`), which is
+	 *                                   deliberately user-agnostic.
 	 * @return QuizAttempt|\WP_Error
 	 */
-	public function submit( int $attempt_id, array $answers = [] ) {
+	public function submit( int $attempt_id, array $answers = [], ?int $expected_user_id = null ) {
 		$attempt = QuizAttemptRepository::find( $attempt_id );
 		if ( ! $attempt instanceof QuizAttempt ) {
 			return new \WP_Error( 'no_attempt', \__( 'That attempt does not exist.', 'anchor-schema' ) );
+		}
+		if ( null !== $expected_user_id && $expected_user_id !== $attempt->user_id ) {
+			return new \WP_Error( 'attempt_not_yours', \__( 'That attempt belongs to someone else.', 'anchor-schema' ) );
 		}
 		if ( ! $attempt->is_open() ) {
 			return $attempt; // Already graded / expired: nothing to do, nothing to fire.

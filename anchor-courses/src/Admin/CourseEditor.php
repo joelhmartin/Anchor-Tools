@@ -590,26 +590,20 @@ final class CourseEditor {
 		$course_id = \absint( $_POST['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
 		$slug      = \sanitize_key( \wp_unslash( (string) ( $_POST['role'] ?? '' ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
 
-		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
-		if ( ! \wp_verify_nonce( $nonce, 'anchor_courses_delete_role_' . $course_id )
-			|| ! \current_user_can( Capabilities::cap( 'manage' ) ) ) {
-			$this->redirect_to_course( $course_id, 'forbidden' );
+		// A bad nonce and a missing capability both read `forbidden` here.
+		if ( ! Notices::authorise( 'anchor_courses_delete_role_' . $course_id, 'manage' ) ) {
+			Notices::redirect( 'forbidden', Notices::course_url( $course_id ) );
 		}
 
 		// Only this course's own two roles, so a crafted POST cannot delete
 		// `administrator`.
 		$allowed = [ Roles::access_slug( $course_id ), Roles::completion_slug( $course_id ) ];
 		if ( ! \in_array( $slug, $allowed, true ) ) {
-			$this->redirect_to_course( $course_id, 'error' );
+			Notices::redirect( 'error', Notices::course_url( $course_id ) );
 		}
 
 		Roles::delete_role( $slug );
 
-		$this->redirect_to_course( $course_id, 'role_deleted' );
-	}
-
-	private function redirect_to_course( int $course_id, string $code ): void {
-		\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', $code, (string) \get_edit_post_link( $course_id, 'raw' ) ) );
-		exit;
+		Notices::redirect( 'role_deleted', Notices::course_url( $course_id ) );
 	}
 }

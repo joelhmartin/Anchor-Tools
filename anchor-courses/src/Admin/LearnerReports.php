@@ -345,26 +345,20 @@ final class LearnerReports {
 		$this->redirect( $course_id, $revoked ? 'access_revoked' : 'revoke_failed' );
 	}
 
-	/** Nonce + capability, or redirect and stop. @return int The course id. */
+	/** Nonce + capability (Notices::authorisation_error()), or redirect and stop. @return int The course id. */
 	private function authorise(): int {
 		$course_id = \absint( $_POST['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
 
-		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
-		if ( ! \wp_verify_nonce( $nonce, self::NONCE . '_' . $course_id ) ) {
-			$this->redirect( $course_id, 'bad_nonce' );
-		}
-		if ( ! Capabilities::current_user_can( 'enrollments' ) ) {
-			$this->redirect( $course_id, 'forbidden' );
+		$refusal = Notices::authorisation_error( self::NONCE . '_' . $course_id, 'enrollments' );
+		if ( '' !== $refusal ) {
+			$this->redirect( $course_id, $refusal );
 		}
 
 		return $course_id;
 	}
 
 	private function redirect( int $course_id, string $code ): void {
-		$target = $course_id > 0 ? (string) \get_edit_post_link( $course_id, 'raw' ) : \admin_url();
-
-		\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', \sanitize_key( $code ), $target ) );
-		exit;
+		Notices::redirect( $code, Notices::course_url( $course_id ) );
 	}
 
 	/**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Courses\Admin;
 
 use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Support\Capabilities;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
@@ -21,15 +22,16 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * and a handler that wants its own code calls register() rather than
  * inventing its own admin_notices hook.
  *
- * CourseEditor and LearnerReports are Task 31's READ-ONLY files - their
- * handlers keep redirecting exactly as they already did. Their existing
- * codes are registered from here, not from there, so neither class needs an
- * edit at all; EnrollmentManager, which this task DOES own, registers its own
- * codes into this registry from its constructor, which is what the "handlers
- * register into it" design actually looks like for a handler written after
- * this class exists.
+ * CourseEditor's and LearnerReports' codes are registered from here;
+ * EnrollmentManager registers its own from its constructor. All three
+ * handlers authorise and redirect through the two helpers below
+ * (authorisation_error()/authorise() and redirect() - final review I10),
+ * so the nonce -> capability -> redirect-with-code sequence exists once.
  */
 final class Notices {
+
+	/** The query arg every redirect carries its notice code in. */
+	public const QUERY_ARG = 'anchor_courses_admin_notice';
 
 	public const TYPE_SUCCESS = 'success';
 	public const TYPE_ERROR   = 'error';
@@ -68,6 +70,55 @@ final class Notices {
 		];
 	}
 
+	/**
+	 * Why the current admin-post request may NOT proceed: '' when it may,
+	 * `bad_nonce` when `_wpnonce` does not verify for $nonce_action, or
+	 * `forbidden` when the current user lacks Capabilities::cap( $cap_key ).
+	 * Nonce first, then capability - the house order for every handler.
+	 *
+	 * The one nonce -> capability check CourseEditor, LearnerReports and
+	 * EnrollmentManager share (final review I10); each decides which code to
+	 * redirect with (CourseEditor reports both as `forbidden`).
+	 */
+	public static function authorisation_error( string $nonce_action, string $cap_key ): string {
+		// phpcs:ignore WordPress.Security.NonceVerification -- this IS the verification.
+		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
+		if ( ! \wp_verify_nonce( $nonce, $nonce_action ) ) {
+			return 'bad_nonce';
+		}
+		if ( ! Capabilities::current_user_can( $cap_key ) ) {
+			return 'forbidden';
+		}
+		return '';
+	}
+
+	/** True when authorisation_error() finds nothing wrong. */
+	public static function authorise( string $nonce_action, string $cap_key ): bool {
+		return '' === self::authorisation_error( $nonce_action, $cap_key );
+	}
+
+	/**
+	 * Redirect to $target_url carrying a notice code, and stop.
+	 *
+	 * The code is whitelisted against the registry: anything unregistered
+	 * (a WP_Error code a filter invented, say) is sent as `error`, so a
+	 * redirect never carries a code render() would silently ignore.
+	 */
+	public static function redirect( string $code, string $target_url ): void {
+		self::register_defaults();
+		$code = \sanitize_key( $code );
+		if ( ! isset( self::$registry[ $code ] ) ) {
+			$code = 'error';
+		}
+		\wp_safe_redirect( \add_query_arg( self::QUERY_ARG, $code, '' !== $target_url ? $target_url : \admin_url() ) );
+		exit;
+	}
+
+	/** The edit screen of a course, or the dashboard when there is none - where every handler lands. */
+	public static function course_url( int $course_id ): string {
+		return $course_id > 0 ? (string) \get_edit_post_link( $course_id, 'raw' ) : \admin_url();
+	}
+
 	/** Read the code off the current request and print its notice, if any. */
 	public function render(): void {
 		self::register_defaults();
@@ -77,7 +128,7 @@ final class Notices {
 		}
 
 		// phpcs:ignore WordPress.Security.NonceVerification -- a read, not a state change; the value only ever selects one of a fixed set of canned messages.
-		$code = \sanitize_key( \wp_unslash( (string) ( $_GET['anchor_courses_admin_notice'] ?? '' ) ) );
+		$code = \sanitize_key( \wp_unslash( (string) ( $_GET[ self::QUERY_ARG ] ?? '' ) ) );
 		if ( '' === $code || ! isset( self::$registry[ $code ] ) ) {
 			return; // Unknown (or absent) codes print nothing.
 		}

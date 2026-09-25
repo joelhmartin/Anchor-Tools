@@ -285,6 +285,71 @@ class Test_Courses_Admin_Reports extends Anchor_Courses_TestCase {
 		$this->assertNull( $enrollment->started_at );
 	}
 
+	/**
+	 * Minor from the final review: "complete" must report a refusal, not
+	 * claim success. A learner with an unmet prerequisite cannot be granted
+	 * access, so they cannot be marked complete either.
+	 */
+	public function test_complete_reports_a_refused_grant_instead_of_success() {
+		add_role( 'anchor_course_999_completed', 'Completed: prereq', [] );
+		update_post_meta( $this->course, '_anchor_course_prerequisites', [ 'anchor_course_999_completed' ] );
+
+		wp_set_current_user( $this->admin );
+		$redirect = $this->post_enrollment_action(
+			[ 'anchor_courses_action' => 'complete', 'user_id' => (string) $this->learner ]
+		);
+		remove_role( 'anchor_course_999_completed' );
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=missing_prerequisite', $redirect );
+		$this->assertStringNotContainsString( 'anchor_courses_admin_notice=completed', $redirect );
+		$this->assertNull( ( new EnrollmentService() )->get( $this->learner, $this->course ) );
+	}
+
+	/** A pipeline refusal (e.g. no longer enrolled after the grant) reports complete_failed. */
+	public function test_complete_reports_a_refused_completion() {
+		Roles::grant_access( $this->learner, $this->course, 'manual' );
+		// Make is_enrolled() false while grant_access() still succeeds: an
+		// expired window (expires_at in the past) is exactly that state.
+		global $wpdb;
+		$wpdb->update(
+			\Anchor\Courses\Database\Migrations::table( 'enrollments' ),
+			[ 'expires_at' => '2000-01-01 00:00:00' ],
+			[ 'user_id' => $this->learner, 'course_id' => $this->course ]
+		);
+
+		wp_set_current_user( $this->admin );
+		$redirect = $this->post_enrollment_action(
+			[ 'anchor_courses_action' => 'complete', 'user_id' => (string) $this->learner ]
+		);
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=complete_failed', $redirect );
+		$this->assertNotSame( 'completed', ( new EnrollmentService() )->get( $this->learner, $this->course )->status );
+	}
+
+	/** Admin\Notices::redirect() only ever sends a registered code. */
+	public function test_notices_redirect_whitelists_the_code() {
+		try {
+			Notices::redirect( 'not-a-registered-code', admin_url() );
+		} catch ( Anchor_Courses_Admin_Redirected $e ) {
+			$this->assertStringContainsString( 'anchor_courses_admin_notice=error', $e->getMessage() );
+			return;
+		}
+		$this->fail( 'Expected a redirect.' );
+	}
+
+	public function test_notices_authorisation_reports_nonce_then_capability() {
+		$_REQUEST = [ '_wpnonce' => 'bogus' ];
+		wp_set_current_user( $this->admin );
+		$this->assertSame( 'bad_nonce', Notices::authorisation_error( 'some_action', 'enrollments' ) );
+
+		$_REQUEST = [ '_wpnonce' => wp_create_nonce( 'some_action' ) ];
+		$this->assertSame( '', Notices::authorisation_error( 'some_action', 'enrollments' ) );
+
+		wp_set_current_user( $this->learner );
+		$_REQUEST = [ '_wpnonce' => wp_create_nonce( 'some_action' ) ];
+		$this->assertSame( 'forbidden', Notices::authorisation_error( 'some_action', 'enrollments' ) );
+	}
+
 	/** Cancel takes the access role away too, whatever the loss policy says. */
 	public function test_cancel_revokes_the_role_and_cancels_the_row() {
 		Roles::grant_access( $this->learner, $this->course, 'manual' );

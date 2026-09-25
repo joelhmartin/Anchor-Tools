@@ -3,11 +3,7 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Admin;
 
-use Anchor\Courses\Database\ProgressRepository;
 use Anchor\Courses\Module;
-use Anchor\Courses\Services\CompletionService;
-use Anchor\Courses\Services\EnrollmentService;
-use Anchor\Courses\Support\Capabilities;
 use Anchor\Courses\Support\Roles;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
@@ -21,17 +17,9 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * ways to enrol from one screen would be two chances to skip the prerequisite
  * check - `ACTIONS` deliberately has no `enroll`.
  *
- * `complete` and `uncomplete` prefer Services\CompletionService when it is
- * available: `Module::$completion` is read with `isset()` first, the same
- * forward-reference shape ProgressService/CertificateService already use in
- * this module for a sibling task's class before it has joined the branch.
- * Per the progress ledger ("T31 needs 21+27+28", not 29), CompletionService
- * (Task 29) has NOT joined this worktree yet, so both verbs fall back to
- * driving the enrolment status directly through EnrollmentService - never the
- * repository (ROLES ARE ENROLMENT ruling: a status change that is not an
- * access change goes through the service, not Database\EnrollmentRepository).
- * Once Task 29 lands, `Module::$completion` starts existing and this class
- * needs no change to pick it up.
+ * `complete`/`uncomplete` go through Services\CompletionService, the
+ * once-only pipeline; `reset` through ProgressService::reset_course(). Every
+ * refusal is reported as its own notice code, never as success.
  */
 final class EnrollmentManager {
 
@@ -50,6 +38,7 @@ final class EnrollmentManager {
 		Notices::register( 'reset', Notices::TYPE_SUCCESS, \__( 'Progress reset.', 'anchor-schema' ) );
 		Notices::register( 'completed', Notices::TYPE_SUCCESS, \__( 'Course marked complete.', 'anchor-schema' ) );
 		Notices::register( 'uncompleted', Notices::TYPE_SUCCESS, \__( 'Completion undone. Credits and certificates were kept.', 'anchor-schema' ) );
+		Notices::register( 'complete_failed', Notices::TYPE_ERROR, \__( 'The course could not be marked complete: the learner has no current access to it.', 'anchor-schema' ) );
 	}
 
 	public function render_form( int $course_id ): void {
@@ -90,33 +79,23 @@ final class EnrollmentManager {
 		$course_id = \absint( $_POST['course_id'] ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification
 		$user_id   = \absint( $_POST['user_id'] ?? 0 );   // phpcs:ignore WordPress.Security.NonceVerification
 		$action    = \sanitize_key( \wp_unslash( (string) ( $_POST['anchor_courses_action'] ?? '' ) ) ); // phpcs:ignore WordPress.Security.NonceVerification
+		$target    = Notices::course_url( $course_id );
 
-		$nonce = \sanitize_text_field( \wp_unslash( (string) ( $_REQUEST['_wpnonce'] ?? '' ) ) );
-		if ( ! \wp_verify_nonce( $nonce, self::NONCE . '_' . $course_id ) ) {
-			$this->redirect( 'bad_nonce', $course_id );
-		}
-		if ( ! Capabilities::current_user_can( 'enrollments' ) ) {
-			$this->redirect( 'forbidden', $course_id );
+		$refusal = Notices::authorisation_error( self::NONCE . '_' . $course_id, 'enrollments' );
+		if ( '' !== $refusal ) {
+			Notices::redirect( $refusal, $target );
 		}
 		if ( $user_id <= 0 || ! \get_userdata( $user_id ) ) {
-			$this->redirect( 'no_user', $course_id );
+			Notices::redirect( 'no_user', $target );
 		}
 		if ( ! \in_array( $action, self::ACTIONS, true ) ) {
-			$this->redirect( 'error', $course_id );
+			Notices::redirect( 'error', $target );
 		}
 
-		$module      = Module::instance();
-		$enrollments = $module ? $module->enrollments : new EnrollmentService();
-
-		// isset() first: Module::$completion does not exist as a property at
-		// all until Task 29 lands, and evaluating it directly (without isset)
-		// would be an undefined-property read. instanceof against a class
-		// that does not exist yet simply evaluates false - it does not fatal
-		// (the same tolerance ProgressService::recalculate_course() already
-		// relies on).
-		$completion = ( $module && isset( $module->completion ) && $module->completion instanceof CompletionService )
-			? $module->completion
-			: null;
+		$module = Module::instance();
+		if ( ! $module instanceof Module ) {
+			Notices::redirect( 'error', $target );
+		}
 
 		switch ( $action ) {
 			case 'cancel':
@@ -125,53 +104,40 @@ final class EnrollmentManager {
 				// loss means, and there is nothing incidental about an operator
 				// choosing "Cancel enrolment".
 				Roles::revoke_access( $user_id, $course_id, 'admin' );
-				$enrollments->cancel( $user_id, $course_id );
-				$this->redirect( 'cancelled', $course_id );
+				$module->enrollments->cancel( $user_id, $course_id );
+				Notices::redirect( 'cancelled', $target );
 				break;
 
 			case 'reset':
-				( $module ? $module->progress : new \Anchor\Courses\Services\ProgressService( $enrollments ) )->reset_course( $user_id, $course_id );
-				$this->redirect( 'reset', $course_id );
+				$module->progress->reset_course( $user_id, $course_id );
+				Notices::redirect( 'reset', $target );
 				break;
 
 			case 'complete':
 				// Marking someone complete implies they had access. Grant the
-				// role (idempotent); the listener creates the enrolment row.
-				Roles::grant_access( $user_id, $course_id, 'manual' );
-
-				if ( null !== $completion ) {
-					// Force the transition even when items are outstanding: an
-					// admin saying "complete" is the manual completion mode.
-					\add_filter( 'anchor_courses_course_completion_status', '__return_true', 99 );
-					$completion->complete( $user_id, $course_id );
-					\remove_filter( 'anchor_courses_course_completion_status', '__return_true', 99 );
-				} else {
-					// CompletionService has not joined this branch yet - drive
-					// the enrolment status directly so the action still works.
-					// Credits/certificates are the completion pipeline's job
-					// once it lands; this fallback never touches either table.
-					$enrollments->set_status( $user_id, $course_id, 'completed' );
+				// role (idempotent); the listener creates the enrolment row. A
+				// refused grant (unmet prerequisite, unpublished course) is
+				// reported as its own code - never as "completed".
+				$granted = Roles::grant_access( $user_id, $course_id, 'manual' );
+				if ( \is_wp_error( $granted ) ) {
+					Notices::redirect( (string) $granted->get_error_code(), $target );
 				}
-				$this->redirect( 'completed', $course_id );
+
+				// Force the transition even when items are outstanding: an
+				// admin saying "complete" is the manual completion mode.
+				\add_filter( 'anchor_courses_course_completion_status', '__return_true', 99 );
+				$module->completion->complete( $user_id, $course_id );
+				\remove_filter( 'anchor_courses_course_completion_status', '__return_true', 99 );
+
+				// complete() is false both for a refusal and for "already
+				// complete"; only the first is a failure.
+				Notices::redirect( $module->completion->is_complete( $user_id, $course_id ) ? 'completed' : 'complete_failed', $target );
 				break;
 
 			case 'uncomplete':
-				if ( null !== $completion ) {
-					$completion->uncomplete( $user_id, $course_id );
-				} else {
-					$enrollments->set_status( $user_id, $course_id, 'enrolled' );
-				}
-				$this->redirect( 'uncompleted', $course_id );
+				$module->completion->uncomplete( $user_id, $course_id );
+				Notices::redirect( 'uncompleted', $target );
 				break;
 		}
-	}
-
-	private function redirect( string $code, int $course_id ): void {
-		$target = $course_id > 0
-			? (string) \get_edit_post_link( $course_id, 'raw' )
-			: \admin_url();
-
-		\wp_safe_redirect( \add_query_arg( 'anchor_courses_admin_notice', $code, $target ) );
-		exit;
 	}
 }

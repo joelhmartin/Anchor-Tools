@@ -85,6 +85,30 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 		$this->assertSame( 50.0, $this->progress->get_course_progress( $this->user, $this->course )->percent );
 	}
 
+	/**
+	 * Task 24 review, ruling R2: record_item() is the single write path for
+	 * both the lesson flow and the quiz service (QuizService::start_attempt()
+	 * calls it with 'in_progress' on every retake). A retake's bookkeeping
+	 * write must never regress an already-completed row.
+	 */
+	public function test_record_item_never_downgrades_a_completed_row_to_in_progress() {
+		$this->progress->record_item( $this->user, $this->course, $this->l1, 'lesson', 'completed' );
+
+		$after = $this->progress->record_item( $this->user, $this->course, $this->l1, 'lesson', 'in_progress' );
+
+		$this->assertSame( 'completed', $after->status );
+		$this->assertContains( 'lesson:' . $this->l1, $this->progress->get_completed_items( $this->user, $this->course ) );
+	}
+
+	/** A genuine graded outcome (completed/failed) may still overwrite a completed row. */
+	public function test_record_item_still_allows_a_real_outcome_to_replace_completed() {
+		$this->progress->record_item( $this->user, $this->course, $this->l1, 'lesson', 'completed' );
+
+		$after = $this->progress->record_item( $this->user, $this->course, $this->l1, 'lesson', 'failed' );
+
+		$this->assertSame( 'failed', $after->status );
+	}
+
 	public function test_optional_items_do_not_reduce_the_percentage() {
 		$this->progress->complete_lesson( $this->user, $this->course, $this->l1 );
 		$this->progress->complete_lesson( $this->user, $this->course, $this->l2 );

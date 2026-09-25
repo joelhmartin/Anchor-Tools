@@ -239,6 +239,12 @@ final class ProgressService {
 	/**
 	 * Write one item's state. The single write path used by both the lesson
 	 * flow and the quiz service.
+	 *
+	 * A retake's 'in_progress' bookkeeping write (QuizService::start_attempt())
+	 * must never regress an item a learner has already completed - only a real
+	 * graded outcome ('completed'/'failed') may replace a completed row (Task
+	 * 24 review, ruling R2). Guarded here since this is the one write path both
+	 * callers share.
 	 */
 	public function record_item(
 		int $user_id,
@@ -250,6 +256,12 @@ final class ProgressService {
 	): ?Progress {
 		if ( ! \in_array( $status, Progress::STATUSES, true ) ) {
 			return null;
+		}
+
+		$existing = ProgressRepository::find( $user_id, $course_id, $item_id, $item_type );
+
+		if ( 'in_progress' === $status && $existing instanceof Progress && $existing->is_complete() ) {
+			return $existing;
 		}
 
 		$now  = Clock::now();
@@ -270,7 +282,6 @@ final class ProgressService {
 			$data['completed_at'] = $now;
 		}
 
-		$existing = ProgressRepository::find( $user_id, $course_id, $item_id, $item_type );
 		if ( ! $existing instanceof Progress ) {
 			$data['started_at'] = $data['started_at'] ?? $now;
 		}

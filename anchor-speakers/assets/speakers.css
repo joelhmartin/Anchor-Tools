@@ -28,11 +28,38 @@
 	}
 }
 
+/*
+ * .anchor-speaker sets flex-direction:column (below) with nothing here to
+ * override it, so list cards stayed vertical instead of the row layout this
+ * modifier intends. Grid instead: a single column when the card has no
+ * photo (nothing to sit beside), and a 96px photo column + content column
+ * only when a .anchor-speaker__photo child actually exists, so a
+ * photo-less card never gets a blank first column.
+ */
 .anchor-speakers--list .anchor-speaker {
-	display: flex;
+	display: grid;
+	grid-template-columns: 1fr;
 	align-items: flex-start;
-	gap: var( --as-gap, 24px );
+	column-gap: var( --as-gap, 24px );
+	align-content: start;
 	margin-bottom: var( --as-gap, 24px );
+}
+
+.anchor-speakers--list .anchor-speaker > * {
+	grid-column: 1;
+}
+
+.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) {
+	grid-template-columns: 96px minmax( 0, 1fr );
+}
+
+.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > * {
+	grid-column: 2;
+}
+
+.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__photo {
+	grid-column: 1;
+	grid-row: 1 / span 6;
 }
 
 .anchor-speakers--compact {
@@ -58,7 +85,6 @@
 .anchor-speakers--list .anchor-speaker__photo,
 .anchor-speakers--list .anchor-speaker__photo img {
 	width: 96px;
-	flex: 0 0 auto;
 }
 
 .anchor-speaker__name {

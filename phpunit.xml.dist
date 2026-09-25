@@ -25,6 +25,13 @@
     <testsuites>
         <testsuite name="anchor-events">
             <directory prefix="test-" suffix=".php">./tests</directory>
+            <!--
+                ./tests/unit holds the WordPress-FREE Anchor Courses unit suite
+                (phpunit-unit.xml.dist). The directory element above recurses,
+                so without this exclude those files would be loaded under the
+                WordPress bootstrap and fail on redeclared function shims.
+            -->
+            <exclude>./tests/unit</exclude>
         </testsuite>
     </testsuites>
 </phpunit>

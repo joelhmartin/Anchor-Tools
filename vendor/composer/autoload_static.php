@@ -32,6 +32,10 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
         array (
             'Dotenv\\' => 7,
         ),
+        'A' => 
+        array (
+            'Anchor\\Courses\\' => 15,
+        ),
     );
 
     public static $prefixDirsPsr4 = array (
@@ -58,6 +62,10 @@ class ComposerStaticInit0e804ae17d9ad1e82b53ed25f432fe64
         'Dotenv\\' => 
         array (
             0 => __DIR__ . '/..' . '/vlucas/phpdotenv/src',
+        ),
+        'Anchor\\Courses\\' => 
+        array (
+            0 => __DIR__ . '/../..' . '/anchor-courses/src',
         ),
     );
 

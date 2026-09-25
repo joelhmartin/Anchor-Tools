@@ -11,6 +11,23 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 // Functions are added by Tasks 14, 17 and 27.
 
 /**
+ * Record a CE credit award (brief section 15).
+ *
+ * Idempotent per (user, course): a second call returns the existing record.
+ * Returns null (not WP_Error) when there is nothing to award - a non-course,
+ * a non-existent user, or a zero amount are all the same non-outcome.
+ *
+ * @param int   $user_id
+ * @param int   $course_id
+ * @param float $credits
+ * @return \Anchor\Courses\Domain\Credit|null
+ */
+function anchor_courses_award_ce_credit( $user_id, $course_id, $credits ) {
+	return ( new \Anchor\Courses\Services\CreditService() )
+		->award( (int) $user_id, (int) $course_id, (float) $credits );
+}
+
+/**
  * Enrol a user in a course (brief section 15).
  *
  * Holding the course's access role IS enrolment (spec 3.1), so this grants the

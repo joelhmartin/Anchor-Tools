@@ -27,6 +27,7 @@ class Module {
 	public Services\ProgressService $progress;
 	public Services\QuizService $quizzes;
 	public Services\CertificateService $certificates;
+	public Services\CreditService $credits;
 	public Frontend\Shortcodes $shortcodes;
 
 	public function __construct() {
@@ -65,6 +66,7 @@ class Module {
 
 		$this->progress = new Services\ProgressService( $this->enrollments );
 		$this->quizzes  = new Services\QuizService( $this->progress, $this->enrollments );
+		$this->credits  = new Services\CreditService();
 
 		// Task 27 (CE credits, `$this->credits`) lands from a sibling worktree
 		// and is joined with this file separately (progress ledger, Task

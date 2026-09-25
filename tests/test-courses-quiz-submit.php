@@ -297,7 +297,7 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 
 		$this->assertNull( $collided, 'A genuine unique-key collision must signal null, not silently resolve to a row.' );
 		$this->assertSame( 1, $fired, 'No second quiz_started firing for a collision that never inserted.' );
-		$this->assertSame( $winner->id, QuizAttemptRepository::open_attempt( $this->user, $this->quiz )->id );
+		$this->assertSame( $winner->id, QuizAttemptRepository::open_attempt( $this->user, $this->quiz, $this->course )->id );
 	}
 
 	/**

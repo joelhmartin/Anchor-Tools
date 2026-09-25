@@ -12,13 +12,19 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
 /**
  * All SQL for wp_anchor_courses_quiz_attempts.
  *
+ * Every lifecycle read is scoped to (user, quiz, COURSE) (audit F05): a quiz
+ * may be shared by several courses, and an attempt belongs to the course it
+ * was started in - its open/closed state, its number, the allowance it uses,
+ * its retry delay and its best score never leak into another course.
+ *
  * create() allocates attempt_number with a single INSERT ... SELECT MAX()+1
- * against UNIQUE (user_id, quiz_id, attempt_number). Two simultaneous starts
- * therefore produce one row and one rejected duplicate rather than two
- * attempts numbered the same (brief 26) - create() returns null on that
- * collision (Task 24 review, ruling R1) rather than silently resolving it;
- * the caller (QuizService::start_attempt()) is the one place that decides
- * what a null means, by calling open_attempt() for the winner's row.
+ * against UNIQUE (user_id, course_id, quiz_id, attempt_number) (Migrations
+ * 1.3.0). Two simultaneous starts therefore produce one row and one rejected
+ * duplicate rather than two attempts numbered the same (brief 26) - create()
+ * returns null on that collision (Task 24 review, ruling R1) rather than
+ * silently resolving it; the caller (QuizService::start_attempt()) is the one
+ * place that decides what a null means, by calling open_attempt() for the
+ * winner's row.
  */
 final class QuizAttemptRepository {
 
@@ -75,7 +81,7 @@ final class QuizAttemptRepository {
 				"INSERT IGNORE INTO {$table}
 				 (user_id, course_id, quiz_id, attempt_number, status, points_possible, started_at, answers, grading_data, metadata, created_at, updated_at)
 				 SELECT %d, %d, %d, COALESCE(MAX(a.attempt_number), 0) + 1, 'in_progress', %f, %s, '[]', '[]', %s, %s, %s
-				 FROM {$table} a WHERE a.user_id = %d AND a.quiz_id = %d", // phpcs:ignore WordPress.DB.PreparedSQL
+				 FROM {$table} a WHERE a.user_id = %d AND a.course_id = %d AND a.quiz_id = %d", // phpcs:ignore WordPress.DB.PreparedSQL
 				$user_id,
 				$course_id,
 				$quiz_id,
@@ -85,6 +91,7 @@ final class QuizAttemptRepository {
 				$now,
 				$now,
 				$user_id,
+				$course_id,
 				$quiz_id
 			)
 		);
@@ -137,10 +144,11 @@ final class QuizAttemptRepository {
 	 * untouched. The claim time is `updated_at`, which transition() stamps.
 	 *
 	 * @param int $user_id 0 = every learner (the sweep); otherwise only theirs.
-	 * @param int $quiz_id 0 = every quiz.
+	 * @param int $quiz_id   0 = every quiz.
+	 * @param int $course_id 0 = every course.
 	 * @return int Attempts re-opened.
 	 */
-	public static function reopen_stale_submitted( string $cutoff, int $user_id = 0, int $quiz_id = 0 ): int {
+	public static function reopen_stale_submitted( string $cutoff, int $user_id = 0, int $quiz_id = 0, int $course_id = 0 ): int {
 		global $wpdb;
 
 		$sql    = 'UPDATE ' . self::table() . " SET status = 'in_progress', updated_at = %s WHERE status = 'submitted' AND updated_at < %s";
@@ -152,6 +160,10 @@ final class QuizAttemptRepository {
 		if ( $quiz_id > 0 ) {
 			$sql     .= ' AND quiz_id = %d';
 			$params[] = $quiz_id;
+		}
+		if ( $course_id > 0 ) {
+			$sql     .= ' AND course_id = %d';
+			$params[] = $course_id;
 		}
 
 		return (int) $wpdb->query( $wpdb->prepare( $sql, $params ) ); // phpcs:ignore WordPress.DB.PreparedSQL
@@ -184,13 +196,14 @@ final class QuizAttemptRepository {
 		return 1 === (int) $wpdb->rows_affected;
 	}
 
-	public static function open_attempt( int $user_id, int $quiz_id ): ?QuizAttempt {
+	public static function open_attempt( int $user_id, int $quiz_id, int $course_id ): ?QuizAttempt {
 		global $wpdb;
 		$row = $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT * FROM ' . self::table() . " WHERE user_id = %d AND quiz_id = %d AND status = 'in_progress'
+				'SELECT * FROM ' . self::table() . " WHERE user_id = %d AND course_id = %d AND quiz_id = %d AND status = 'in_progress'
 				 ORDER BY attempt_number DESC LIMIT 1",
 				$user_id,
+				$course_id,
 				$quiz_id
 			),
 			ARRAY_A
@@ -199,15 +212,15 @@ final class QuizAttemptRepository {
 	}
 
 	/** Attempts that count against max_attempts (abandoned rows do not). */
-	public static function count_for_quiz( int $user_id, int $quiz_id ): int {
+	public static function count_for_quiz( int $user_id, int $quiz_id, int $course_id ): int {
 		global $wpdb;
 
 		$placeholders = \implode( ', ', \array_fill( 0, \count( self::COUNTED_STATUSES ), '%s' ) );
 
 		return (int) $wpdb->get_var(
 			$wpdb->prepare(
-				'SELECT COUNT(*) FROM ' . self::table() . " WHERE user_id = %d AND quiz_id = %d AND status IN ({$placeholders})", // phpcs:ignore WordPress.DB.PreparedSQL
-				\array_merge( [ $user_id, $quiz_id ], self::COUNTED_STATUSES )
+				'SELECT COUNT(*) FROM ' . self::table() . " WHERE user_id = %d AND course_id = %d AND quiz_id = %d AND status IN ({$placeholders})", // phpcs:ignore WordPress.DB.PreparedSQL
+				\array_merge( [ $user_id, $course_id, $quiz_id ], self::COUNTED_STATUSES )
 			)
 		);
 	}
@@ -232,12 +245,13 @@ final class QuizAttemptRepository {
 		);
 	}
 
-	public static function last_for_quiz( int $user_id, int $quiz_id ): ?QuizAttempt {
+	public static function last_for_quiz( int $user_id, int $quiz_id, int $course_id ): ?QuizAttempt {
 		global $wpdb;
 		$row = $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT * FROM ' . self::table() . ' WHERE user_id = %d AND quiz_id = %d ORDER BY attempt_number DESC LIMIT 1',
+				'SELECT * FROM ' . self::table() . ' WHERE user_id = %d AND course_id = %d AND quiz_id = %d ORDER BY attempt_number DESC LIMIT 1',
 				$user_id,
+				$course_id,
 				$quiz_id
 			),
 			ARRAY_A
@@ -245,13 +259,14 @@ final class QuizAttemptRepository {
 		return \is_array( $row ) ? QuizAttempt::from_row( $row ) : null;
 	}
 
-	public static function best_for_quiz( int $user_id, int $quiz_id ): ?QuizAttempt {
+	public static function best_for_quiz( int $user_id, int $quiz_id, int $course_id ): ?QuizAttempt {
 		global $wpdb;
 		$row = $wpdb->get_row(
 			$wpdb->prepare(
-				'SELECT * FROM ' . self::table() . " WHERE user_id = %d AND quiz_id = %d AND status = 'graded'
+				'SELECT * FROM ' . self::table() . " WHERE user_id = %d AND course_id = %d AND quiz_id = %d AND status = 'graded'
 				 ORDER BY score DESC, attempt_number DESC LIMIT 1",
 				$user_id,
+				$course_id,
 				$quiz_id
 			),
 			ARRAY_A

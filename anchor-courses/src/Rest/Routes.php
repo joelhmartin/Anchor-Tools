@@ -98,28 +98,30 @@ final class Routes {
 	 * missing_prerequisite, no_attempts_remaining, retry_delay,
 	 * attempt_not_yours); 404 for "that id does not exist" (no_attempt,
 	 * no_course, no_user); 409 for a state conflict on an otherwise-valid
-	 * request (attempt_closed, no_questions); 503 for a write the server
+	 * request (attempt_closed, no_questions, attempt_course_mismatch - audit
+	 * F05); 503 for a write the server
 	 * could not persist, safe to retry (save_failed - audit F03); 400 for a
 	 * malformed request (unknown_question) and the fallback for anything
 	 * unlisted.
 	 */
 	public static function error_response( \WP_Error $error, int $status = 400 ): \WP_REST_Response {
 		$map = [
-			'not_enrolled'          => 403,
-			'locked'                => 403,
-			'not_in_course'         => 403,
-			'course_closed'         => 403,
-			'missing_prerequisite'  => 403,
-			'no_attempts_remaining' => 403,
-			'retry_delay'           => 403,
-			'attempt_not_yours'     => 403,
-			'attempt_closed'        => 409,
-			'no_attempt'            => 404,
-			'no_course'             => 404,
-			'no_user'               => 404,
-			'unknown_question'      => 400,
-			'no_questions'          => 409,
-			'save_failed'           => 503,
+			'not_enrolled'            => 403,
+			'locked'                  => 403,
+			'not_in_course'           => 403,
+			'course_closed'           => 403,
+			'missing_prerequisite'    => 403,
+			'no_attempts_remaining'   => 403,
+			'retry_delay'             => 403,
+			'attempt_not_yours'       => 403,
+			'attempt_closed'          => 409,
+			'no_attempt'              => 404,
+			'no_course'               => 404,
+			'no_user'                 => 404,
+			'unknown_question'        => 400,
+			'no_questions'            => 409,
+			'save_failed'             => 503,
+			'attempt_course_mismatch' => 409,
 		];
 
 		$code = (string) $error->get_error_code();

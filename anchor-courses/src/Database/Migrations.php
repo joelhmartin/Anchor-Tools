@@ -18,7 +18,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class Migrations {
 
-	public const DB_VERSION = '1.2.0';
+	public const DB_VERSION = '1.3.0';
 	public const OPTION     = 'anchor_courses_db_version';
 
 	public const TABLES = [ 'enrollments', 'progress', 'quiz_attempts', 'ce_credits', 'certificates' ];
@@ -52,6 +52,10 @@ final class Migrations {
 
 		if ( \version_compare( $from, '1.2.0', '<' ) ) {
 			self::migrate_1_2_0();
+		}
+
+		if ( \version_compare( $from, '1.3.0', '<' ) ) {
+			self::migrate_1_3_0();
 		}
 
 		\update_option( self::OPTION, self::DB_VERSION, false );
@@ -109,6 +113,11 @@ final class Migrations {
 			) {$charset};"
 		);
 
+		// The attempt-number key is declared in its 1.3.0 form (course-scoped,
+		// audit F05) here and in migrate_1_1_0() for the same replay-safety
+		// reason as verification_token below: a replay of the original
+		// `user_quiz_attempt (user_id,quiz_id,attempt_number)` against a
+		// migrated table would ADD that stricter key back.
 		\dbDelta(
 			"CREATE TABLE " . self::table( 'quiz_attempts' ) . " (
 				id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -129,7 +138,7 @@ final class Migrations {
 				created_at DATETIME NOT NULL,
 				updated_at DATETIME NOT NULL,
 				PRIMARY KEY  (id),
-				UNIQUE KEY user_quiz_attempt (user_id,quiz_id,attempt_number),
+				UNIQUE KEY user_course_quiz_attempt (user_id,course_id,quiz_id,attempt_number),
 				KEY quiz_status (quiz_id,status),
 				KEY user_course (user_id,course_id)
 			) {$charset};"
@@ -227,7 +236,7 @@ final class Migrations {
 				created_at DATETIME NOT NULL,
 				updated_at DATETIME NOT NULL,
 				PRIMARY KEY  (id),
-				UNIQUE KEY user_quiz_attempt (user_id,quiz_id,attempt_number),
+				UNIQUE KEY user_course_quiz_attempt (user_id,course_id,quiz_id,attempt_number),
 				KEY quiz_status (quiz_id,status),
 				KEY user_course (user_id,course_id)
 			) {$charset};"
@@ -280,6 +289,57 @@ final class Migrations {
 				UNIQUE KEY user_course (user_id,course_id),
 				UNIQUE KEY certificate_number (certificate_number),
 				UNIQUE KEY verification_token (verification_token)
+			) {$charset};"
+		);
+	}
+
+	/**
+	 * 1.3.0 - quiz_attempts is scoped to the course (audit F05): the unique
+	 * attempt-number key becomes (user_id, course_id, quiz_id,
+	 * attempt_number), so the same learner's attempts at a quiz shared by
+	 * two courses are numbered - and counted - per course.
+	 *
+	 * Same technique as migrate_1_2_0(): dbDelta never drops an index, so the
+	 * old `user_quiz_attempt` key is dropped explicitly before the full
+	 * definition is re-issued. Existing rows cannot violate the new key (it
+	 * is a superset of the old one's columns). Do not reformat the SQL below.
+	 */
+	private static function migrate_1_3_0(): void {
+		global $wpdb;
+		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+		$table    = self::table( 'quiz_attempts' );
+		$existing = $wpdb->get_row( "SHOW INDEX FROM {$table} WHERE Key_name = 'user_quiz_attempt'", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+		if ( \is_array( $existing ) ) {
+			$wpdb->query( "ALTER TABLE {$table} DROP INDEX user_quiz_attempt" ); // phpcs:ignore WordPress.DB.PreparedSQL
+		}
+
+		$charset = $wpdb->get_charset_collate();
+
+		\dbDelta(
+			"CREATE TABLE " . self::table( 'quiz_attempts' ) . " (
+				id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+				user_id BIGINT UNSIGNED NOT NULL,
+				course_id BIGINT UNSIGNED NOT NULL,
+				quiz_id BIGINT UNSIGNED NOT NULL,
+				attempt_number INT UNSIGNED NOT NULL,
+				status VARCHAR(30) NOT NULL,
+				score DECIMAL(6,2) NULL,
+				points_earned DECIMAL(8,2) NULL,
+				points_possible DECIMAL(8,2) NULL,
+				passed TINYINT(1) NOT NULL DEFAULT 0,
+				started_at DATETIME NOT NULL,
+				submitted_at DATETIME NULL,
+				duration_seconds INT UNSIGNED NULL,
+				answers LONGTEXT NULL,
+				grading_data LONGTEXT NULL,
+				metadata LONGTEXT NULL,
+				created_at DATETIME NOT NULL,
+				updated_at DATETIME NOT NULL,
+				PRIMARY KEY  (id),
+				UNIQUE KEY user_course_quiz_attempt (user_id,course_id,quiz_id,attempt_number),
+				KEY quiz_status (quiz_id,status),
+				KEY user_course (user_id,course_id)
 			) {$charset};"
 		);
 	}

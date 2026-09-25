@@ -204,6 +204,14 @@ one." for an enrolled learner locked by progression.
   curriculum in which a required `quiz_pass` lesson's quiz is absent or placed
   before the lesson (`ProgressService::quiz_link_problems()`) saves anyway and
   redirects with the `curriculum_quiz_link` warning notice.
+- **Attempts belong to a course** (audit F05): a quiz may be shared by several
+  courses, and every attempt lifecycle read - `open_attempt()`,
+  `count_for_quiz()`, `last_for_quiz()`, `best_for_quiz()` and the service's
+  `attempts_used()`, `attempts_remaining()`, `retry_available_at()`,
+  `best_attempt()` - takes `( $user_id, $quiz_id, $course_id )`. An open,
+  exhausted, delayed, reset or passed attempt in one course never changes
+  another course's lifecycle; `start_attempt()` never resumes another course's
+  attempt. Cross-course credit, if ever wanted, must be an explicit policy.
 - **Best attempt counts:** a completed item is never downgraded by a later failed
   attempt; a repeat pass keeps the original `completed_at`.
 - **Admin reset** (`ProgressService::reset_course()`): deletes progress rows,
@@ -278,16 +286,19 @@ All routes require a signed-in user (`Routes::require_login`, 401 otherwise).
 | Method | Route | Args | Success |
 |---|---|---|---|
 | POST | `/quizzes/{id}/attempts` | `course_id` (required) | 201, attempt + questions |
-| GET | `/quiz-attempts/{id}` | - | 200, attempt (questions while open); applies the timer first |
-| POST | `/quiz-attempts/{id}/answer` | `question_id`, `value` (string or up to 50 strings) | 200 `{saved:true}` |
-| POST | `/quiz-attempts/{id}/submit` | `answers` (object, question_id => value) | 200, graded attempt |
+| GET | `/quiz-attempts/{id}` | `course_id` (optional) | 200, attempt (questions while open); applies the timer first |
+| POST | `/quiz-attempts/{id}/answer` | `question_id`, `value` (string or up to 50 strings), `course_id` (optional) | 200 `{saved:true}` |
+| POST | `/quiz-attempts/{id}/submit` | `answers` (object, question_id => value), `course_id` (optional) | 200, graded attempt |
 
-Attempt routes check ownership first (`no_attempt` 404, `attempt_not_yours` 403).
+Attempt routes check ownership first (`no_attempt` 404, `attempt_not_yours` 403),
+then course context (audit F05): the attempt row's `course_id` is authoritative,
+and a request naming a different `course_id` is refused 409
+`attempt_course_mismatch` (quiz.js always sends the course it rendered).
 Service errors map through `Routes::error_response()`:
 403 `not_enrolled`, `locked`, `not_in_course`, `course_closed`,
 `missing_prerequisite`, `no_attempts_remaining`, `retry_delay`,
 `attempt_not_yours`; 404 `no_attempt`, `no_course`, `no_user`; 409
-`attempt_closed`, `no_questions`; 503 `save_failed` (retry); 400
+`attempt_closed`, `no_questions`, `attempt_course_mismatch`; 503 `save_failed` (retry); 400
 `unknown_question` and anything unlisted.
 Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 `show_score` is off, grading data only with `show_correct_answers`).
@@ -311,7 +322,7 @@ codes registered with `Notices::register()` (anything else becomes `error`).
 
 Five tables, prefix `{$wpdb->prefix}anchor_courses_`: `enrollments`
 (UNIQUE user+course), `progress` (UNIQUE user+course+item+type),
-`quiz_attempts` (UNIQUE user+quiz+attempt_number), `ce_credits` (UNIQUE
+`quiz_attempts` (UNIQUE user+course+quiz+attempt_number), `ce_credits` (UNIQUE
 user+course), `certificates` (UNIQUE user+course, certificate_number,
 verification_token). Version option `anchor_courses_db_version`, run from the
 Module constructor and `admin_init`.
@@ -321,6 +332,7 @@ Module constructor and `admin_init`.
 | 1.0.0 | initial schema; capabilities granted |
 | 1.1.0 | `quiz_attempts.metadata` (pinned timer settings) |
 | 1.2.0 | `certificates.verification_token` becomes UNIQUE |
+| 1.3.0 | `quiz_attempts` unique key becomes `user_course_quiz_attempt` (user, course, quiz, attempt_number) - audit F05 |
 
 Statuses: enrolment `enrolled`, `in_progress`, `completed`, `expired`,
 `cancelled`; progress `not_started`, `in_progress`, `completed`, `failed`;

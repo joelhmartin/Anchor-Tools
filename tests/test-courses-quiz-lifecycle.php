@@ -66,7 +66,7 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 		$second = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
 
 		$this->assertSame( $first->id, $second->id );
-		$this->assertSame( 1, $this->quizzes->attempts_used( $this->user, $this->quiz ) );
+		$this->assertSame( 1, $this->quizzes->attempts_used( $this->user, $this->quiz, $this->course ) );
 	}
 
 	public function test_max_attempts_is_enforced() {
@@ -79,7 +79,7 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 
 		$this->assertWPError( $refused );
 		$this->assertSame( 'no_attempts_remaining', $refused->get_error_code() );
-		$this->assertSame( 0, $this->quizzes->attempts_remaining( $this->user, $this->quiz ) );
+		$this->assertSame( 0, $this->quizzes->attempts_remaining( $this->user, $this->quiz, $this->course ) );
 	}
 
 	public function test_zero_max_attempts_means_unlimited() {
@@ -91,7 +91,7 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 			QuizAttemptRepository::update( $attempt->id, [ 'status' => 'graded', 'score' => 0.0 ] );
 		}
 
-		$this->assertSame( -1, $this->quizzes->attempts_remaining( $this->user, $this->quiz ) );
+		$this->assertSame( -1, $this->quizzes->attempts_remaining( $this->user, $this->quiz, $this->course ) );
 	}
 
 	/**
@@ -106,7 +106,7 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 		$high = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
 		QuizAttemptRepository::update( $high->id, [ 'status' => 'graded', 'score' => 1.0 ] );
 
-		$best = $this->quizzes->best_attempt( $this->user, $this->quiz );
+		$best = $this->quizzes->best_attempt( $this->user, $this->quiz, $this->course );
 
 		$this->assertInstanceOf( QuizAttempt::class, $best );
 		$this->assertSame( $high->id, $best->id );
@@ -114,7 +114,7 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 
 	/** No graded attempt yet: nothing to report as "best". */
 	public function test_best_attempt_is_null_with_no_graded_attempt() {
-		$this->assertNull( $this->quizzes->best_attempt( $this->user, $this->quiz ) );
+		$this->assertNull( $this->quizzes->best_attempt( $this->user, $this->quiz, $this->course ) );
 	}
 
 	public function test_retry_delay_blocks_an_immediate_second_attempt() {
@@ -129,7 +129,7 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 
 		$refused = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
 		$this->assertSame( 'retry_delay', $refused->get_error_code() );
-		$this->assertSame( strtotime( '2026-05-01 11:05:00 UTC' ), $this->quizzes->retry_available_at( $this->user, $this->quiz ) );
+		$this->assertSame( strtotime( '2026-05-01 11:05:00 UTC' ), $this->quizzes->retry_available_at( $this->user, $this->quiz, $this->course ) );
 
 		remove_all_filters( 'anchor_courses_now' );
 		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 11:06:00 UTC' ) );

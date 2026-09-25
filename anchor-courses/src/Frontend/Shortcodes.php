@@ -321,8 +321,8 @@ final class Shortcodes {
 				'course_id'          => $course_id,
 				'user_id'            => $user_id,
 				'can_start'          => $module->quizzes->can_start( $user_id, $quiz_id, $course_id ),
-				'attempts_remaining' => $module->quizzes->attempts_remaining( $user_id, $quiz_id ),
-				'best'               => $module->quizzes->best_attempt( $user_id, $quiz_id ),
+				'attempts_remaining' => $module->quizzes->attempts_remaining( $user_id, $quiz_id, $course_id ),
+				'best'               => $module->quizzes->best_attempt( $user_id, $quiz_id, $course_id ),
 				// Gate the "Best score" line the same way the REST payload
 				// gates score/points_earned/passed (Task 26 review, MINOR).
 				'show_score'         => 1 === (int) $module->quizzes->settings( $quiz_id )['show_score'],

@@ -149,7 +149,7 @@
             var $q = $(this).closest('.anchor-quiz-question');
             var qid = $q.data('question');
             var values = $q.find('input:checked').map(function () { return this.value; }).get();
-            api('quiz-attempts/' + attemptId + '/answer', 'POST', { question_id: qid, value: values });
+            api('quiz-attempts/' + attemptId + '/answer', 'POST', { question_id: qid, value: values, course_id: courseId });
         });
 
         $root.on('submit', '.anchor-quiz-form', function (e) {
@@ -163,7 +163,7 @@
                 answers[$q.data('question')] = $q.find('input:checked').map(function () { return this.value; }).get();
             });
 
-            api('quiz-attempts/' + attemptId + '/submit', 'POST', { answers: answers })
+            api('quiz-attempts/' + attemptId + '/submit', 'POST', { answers: answers, course_id: courseId })
                 .done(renderResult)
                 .fail(function () {
                     $root.find('.anchor-quiz-form button[type="submit"]').prop('disabled', false);

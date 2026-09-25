@@ -59,7 +59,11 @@ final class QuizController {
 				'methods'             => 'GET',
 				'permission_callback' => [ Routes::class, 'require_login' ],
 				'callback'            => [ $this, 'read' ],
-				'args'                => [ 'id' => [ 'required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint' ] ],
+				'args'                => [
+					'id'        => [ 'required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint' ],
+					// Optional course context (audit F05) - see owned_attempt().
+					'course_id' => [ 'required' => false, 'type' => 'integer', 'sanitize_callback' => 'absint', 'default' => 0 ],
+				],
 			]
 		);
 
@@ -72,6 +76,7 @@ final class QuizController {
 				'callback'            => [ $this, 'answer' ],
 				'args'                => [
 					'id'          => [ 'required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint' ],
+					'course_id'   => [ 'required' => false, 'type' => 'integer', 'sanitize_callback' => 'absint', 'default' => 0 ],
 					'question_id' => [ 'required' => true, 'type' => 'string', 'sanitize_callback' => 'sanitize_text_field' ],
 					// A single id (string) or several (array) - either way,
 					// bounded (Task 26 review, IMPORTANT): a request naming
@@ -97,7 +102,8 @@ final class QuizController {
 				'permission_callback' => [ Routes::class, 'require_login' ],
 				'callback'            => [ $this, 'submit' ],
 				'args'                => [
-					'id'      => [ 'required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint' ],
+					'id'        => [ 'required' => true, 'type' => 'integer', 'sanitize_callback' => 'absint' ],
+					'course_id' => [ 'required' => false, 'type' => 'integer', 'sanitize_callback' => 'absint', 'default' => 0 ],
 					// object, not array: question_id => value is a map, and a
 					// bare JSON array would collapse string keys. Each
 					// property gets the same string|string[]-of-at-most-50
@@ -136,7 +142,7 @@ final class QuizController {
 	}
 
 	public function read( \WP_REST_Request $request ): \WP_REST_Response {
-		$attempt = $this->owned_attempt( (int) $request['id'] );
+		$attempt = $this->owned_attempt( (int) $request['id'], (int) $request['course_id'] );
 		if ( $attempt instanceof \WP_REST_Response ) {
 			return $attempt;
 		}
@@ -150,7 +156,7 @@ final class QuizController {
 	}
 
 	public function answer( \WP_REST_Request $request ): \WP_REST_Response {
-		$attempt = $this->owned_attempt( (int) $request['id'] );
+		$attempt = $this->owned_attempt( (int) $request['id'], (int) $request['course_id'] );
 		if ( $attempt instanceof \WP_REST_Response ) {
 			return $attempt;
 		}
@@ -174,7 +180,7 @@ final class QuizController {
 	}
 
 	public function submit( \WP_REST_Request $request ): \WP_REST_Response {
-		$attempt = $this->owned_attempt( (int) $request['id'] );
+		$attempt = $this->owned_attempt( (int) $request['id'], (int) $request['course_id'] );
 		if ( $attempt instanceof \WP_REST_Response ) {
 			return $attempt;
 		}
@@ -203,9 +209,16 @@ final class QuizController {
 	 * this method specifically) rather than re-deriving the same comparison
 	 * inline.
 	 *
+	 * Course context (audit F05): the attempt row's own course_id is
+	 * authoritative after start. A client that names a course (quiz.js always
+	 * sends the one it rendered the quiz for) and names a DIFFERENT one is
+	 * refused with 409 `attempt_course_mismatch` rather than having its
+	 * answers or grade silently recorded against the other course.
+	 *
+	 * @param int $course_id 0 = the caller named none.
 	 * @return QuizAttempt|\WP_REST_Response
 	 */
-	private function owned_attempt( int $attempt_id ) {
+	private function owned_attempt( int $attempt_id, int $course_id = 0 ) {
 		$attempt = $this->quizzes->get_attempt( $attempt_id );
 		if ( ! $attempt instanceof QuizAttempt ) {
 			return new \WP_REST_Response(
@@ -217,6 +230,11 @@ final class QuizController {
 			return new \WP_REST_Response(
 				[ 'code' => 'attempt_not_yours', 'message' => \__( 'That attempt belongs to someone else.', 'anchor-schema' ) ],
 				403
+			);
+		}
+		if ( $course_id > 0 && $course_id !== $attempt->course_id ) {
+			return Routes::error_response(
+				new \WP_Error( 'attempt_course_mismatch', \__( 'That attempt belongs to a different course.', 'anchor-schema' ) )
 			);
 		}
 		return $attempt;
@@ -247,8 +265,8 @@ final class QuizController {
 			'attempt'            => $attempt->for_learner( $show_correct, $show_score ),
 			'deadline'           => $this->quizzes->deadline( $attempt ),
 			'server_now'         => Clock::timestamp(),
-			'attempts_remaining' => $this->quizzes->attempts_remaining( $attempt->user_id, $attempt->quiz_id ),
-			'retry_available_at' => $this->quizzes->retry_available_at( $attempt->user_id, $attempt->quiz_id ),
+			'attempts_remaining' => $this->quizzes->attempts_remaining( $attempt->user_id, $attempt->quiz_id, $attempt->course_id ),
+			'retry_available_at' => $this->quizzes->retry_available_at( $attempt->user_id, $attempt->quiz_id, $attempt->course_id ),
 			'show_score'         => $show_score,
 		];
 

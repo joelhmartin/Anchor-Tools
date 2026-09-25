@@ -83,18 +83,19 @@ final class QuizService {
 
 		// A claim orphaned by a crashed submit is this learner's open attempt
 		// again (audit F03) - recovered here too, not only by the daily sweep.
-		$this->reopen_stale_claims( $user_id, $quiz_id );
+		$this->reopen_stale_claims( $user_id, $quiz_id, $course_id );
 
-		// An attempt already open always resumes, whatever the allowance says.
-		if ( QuizAttemptRepository::open_attempt( $user_id, $quiz_id ) instanceof QuizAttempt ) {
+		// An attempt already open IN THIS COURSE always resumes, whatever the
+		// allowance says (audit F05: another course's open attempt is not it).
+		if ( QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id ) instanceof QuizAttempt ) {
 			return true;
 		}
 
-		if ( 0 === $this->attempts_remaining( $user_id, $quiz_id ) ) {
+		if ( 0 === $this->attempts_remaining( $user_id, $quiz_id, $course_id ) ) {
 			return new \WP_Error( 'no_attempts_remaining', \__( 'You have used all your attempts.', 'anchor-schema' ) );
 		}
 
-		$retry_at = $this->retry_available_at( $user_id, $quiz_id );
+		$retry_at = $this->retry_available_at( $user_id, $quiz_id, $course_id );
 		if ( $retry_at > Clock::timestamp() ) {
 			return new \WP_Error(
 				'retry_delay',
@@ -120,9 +121,13 @@ final class QuizService {
 			return $allowed;
 		}
 
-		$open = QuizAttemptRepository::open_attempt( $user_id, $quiz_id );
+		$open = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
 		if ( $open instanceof QuizAttempt ) {
-			return $open;
+			// Scoped by the query; asserted anyway so no future change to the
+			// lookup can hand course B a course-A attempt (audit F05).
+			return $open->course_id === $course_id
+				? $open
+				: new \WP_Error( 'attempt_course_mismatch', \__( 'That attempt belongs to a different course.', 'anchor-schema' ) );
 		}
 
 		$settings = $this->settings( $quiz_id );
@@ -150,7 +155,7 @@ final class QuizService {
 		// like the ordinary resume path.
 		$created = $attempt instanceof QuizAttempt;
 		if ( ! $created ) {
-			$attempt = QuizAttemptRepository::open_attempt( $user_id, $quiz_id );
+			$attempt = QuizAttemptRepository::open_attempt( $user_id, $quiz_id, $course_id );
 		}
 
 		if ( ! $attempt instanceof QuizAttempt ) {
@@ -181,27 +186,28 @@ final class QuizService {
 		return $attempt;
 	}
 
-	public function attempts_used( int $user_id, int $quiz_id ): int {
-		return QuizAttemptRepository::count_for_quiz( $user_id, $quiz_id );
+	/** Attempts counted against max_attempts in THIS course (audit F05). */
+	public function attempts_used( int $user_id, int $quiz_id, int $course_id ): int {
+		return QuizAttemptRepository::count_for_quiz( $user_id, $quiz_id, $course_id );
 	}
 
-	/** @return int Remaining attempts, or -1 for unlimited (max_attempts === 0, brief 8.1). */
-	public function attempts_remaining( int $user_id, int $quiz_id ): int {
+	/** @return int Remaining attempts in this course, or -1 for unlimited (max_attempts === 0, brief 8.1). */
+	public function attempts_remaining( int $user_id, int $quiz_id, int $course_id ): int {
 		$max = (int) $this->settings( $quiz_id )['max_attempts'];
 		if ( $max <= 0 ) {
 			return -1;
 		}
-		return \max( 0, $max - $this->attempts_used( $user_id, $quiz_id ) );
+		return \max( 0, $max - $this->attempts_used( $user_id, $quiz_id, $course_id ) );
 	}
 
-	/** Unix timestamp when the next attempt unlocks; 0 when it already has. */
-	public function retry_available_at( int $user_id, int $quiz_id ): int {
+	/** Unix timestamp when the next attempt in this course unlocks; 0 when it already has. */
+	public function retry_available_at( int $user_id, int $quiz_id, int $course_id ): int {
 		$delay = (int) $this->settings( $quiz_id )['retry_delay_seconds'];
 		if ( $delay <= 0 ) {
 			return 0;
 		}
 
-		$last = QuizAttemptRepository::last_for_quiz( $user_id, $quiz_id );
+		$last = QuizAttemptRepository::last_for_quiz( $user_id, $quiz_id, $course_id );
 		// An attempt voided by an admin reset (`abandoned`) imposes no delay:
 		// the reset is a fresh start (final review I6).
 		if ( ! $last instanceof QuizAttempt || null === $last->submitted_at || 'abandoned' === $last->status ) {
@@ -216,15 +222,15 @@ final class QuizService {
 	}
 
 	/**
-	 * The learner's best (highest-scoring, graded) attempt at this quiz, or
-	 * null if none is graded yet.
+	 * The learner's best (highest-scoring, graded) attempt at this quiz in
+	 * this course, or null if none is graded yet.
 	 *
 	 * Thin wrapper over QuizAttemptRepository::best_for_quiz() (closes the
 	 * second Task 18 layering-exception call site - pre-gate cleanup round:
 	 * Frontend\Shortcodes::render_quiz() read the repository directly).
 	 */
-	public function best_attempt( int $user_id, int $quiz_id ): ?QuizAttempt {
-		return QuizAttemptRepository::best_for_quiz( $user_id, $quiz_id );
+	public function best_attempt( int $user_id, int $quiz_id, int $course_id ): ?QuizAttempt {
+		return QuizAttemptRepository::best_for_quiz( $user_id, $quiz_id, $course_id );
 	}
 
 	public function owns_attempt( int $user_id, int $attempt_id ): bool {
@@ -615,15 +621,17 @@ final class QuizService {
 	/**
 	 * Re-open `submitted` claims older than STALE_CLAIM_SECONDS (audit F03).
 	 *
-	 * @param int $user_id 0 = everyone (the daily sweep).
-	 * @param int $quiz_id 0 = every quiz.
+	 * @param int $user_id   0 = everyone (the daily sweep).
+	 * @param int $quiz_id   0 = every quiz.
+	 * @param int $course_id 0 = every course.
 	 * @return int Attempts re-opened.
 	 */
-	public function reopen_stale_claims( int $user_id = 0, int $quiz_id = 0 ): int {
+	public function reopen_stale_claims( int $user_id = 0, int $quiz_id = 0, int $course_id = 0 ): int {
 		return QuizAttemptRepository::reopen_stale_submitted(
 			Clock::offset( -self::STALE_CLAIM_SECONDS ),
 			$user_id,
-			$quiz_id
+			$quiz_id,
+			$course_id
 		);
 	}
 

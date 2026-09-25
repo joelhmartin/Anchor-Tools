@@ -288,6 +288,10 @@ final class QuizService {
 		if ( null !== $expected_user_id && $expected_user_id !== $attempt->user_id ) {
 			return new \WP_Error( 'attempt_not_yours', \__( 'That attempt belongs to someone else.', 'anchor-schema' ) );
 		}
+		$not_enrolled = $this->refuse_unenrolled( $attempt, $expected_user_id );
+		if ( null !== $not_enrolled ) {
+			return $not_enrolled;
+		}
 		if ( ! $attempt->is_open() ) {
 			return new \WP_Error( 'attempt_closed', \__( 'This attempt is already finished.', 'anchor-schema' ) );
 		}
@@ -328,6 +332,23 @@ final class QuizService {
 		QuizAttemptRepository::update( $attempt_id, [ 'answers' => $answers ] );
 
 		return true;
+	}
+
+	/**
+	 * A learner acting on their own attempt must still be enrolled in its
+	 * course (final review C1): the attempt was opened while they had access,
+	 * but a revoke, a cancel or an expiry since then closes the door on
+	 * answering and submitting too. Only learner-initiated calls (an
+	 * `$expected_user_id` was given - the REST controller) are refused; a
+	 * system caller (timer sweep) may still close the attempt, and
+	 * CompletionService::complete() independently refuses to award anything
+	 * to somebody who is not enrolled.
+	 */
+	private function refuse_unenrolled( QuizAttempt $attempt, ?int $expected_user_id ): ?\WP_Error {
+		if ( null === $expected_user_id || $this->enrollments->is_enrolled( $attempt->user_id, $attempt->course_id ) ) {
+			return null;
+		}
+		return new \WP_Error( 'not_enrolled', \__( 'You are not enrolled in this course.', 'anchor-schema' ) );
 	}
 
 	/**
@@ -373,6 +394,10 @@ final class QuizService {
 		}
 		if ( ! $attempt->is_open() ) {
 			return $attempt; // Already graded / expired: nothing to do, nothing to fire.
+		}
+		$not_enrolled = $this->refuse_unenrolled( $attempt, $expected_user_id );
+		if ( null !== $not_enrolled ) {
+			return $not_enrolled;
 		}
 
 		$settings = $this->settings( $attempt->quiz_id );

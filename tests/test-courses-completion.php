@@ -254,4 +254,80 @@ class Test_Courses_Completion extends Anchor_Courses_TestCase {
 
 		$this->assertSame( $module->completion, $property->getValue( $module->progress ) );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Final review C1 - a revoked learner must never complete
+	 * ------------------------------------------------------------------- */
+
+	/** A one-question quiz (a2 is right) as the course's only item. @return array{int,int,string} course, quiz, question id */
+	private function one_quiz_course( array $quiz_settings ): array {
+		$course = $this->make_course( [ 'completion_mode' => 'all_required_items', 'certificate_enabled' => 1, 'progression_mode' => 'free' ] );
+		$quiz   = $this->make_quiz( [ 'settings' => $quiz_settings ], 'Q' );
+		$qs     = \Anchor\Courses\Content\Questions::save(
+			$quiz,
+			[ [ 'type' => 'single_choice', 'prompt' => 'P', 'points' => 1,
+				'answers' => [ [ 'id' => 'a1', 'text' => 'W', 'correct' => false ], [ 'id' => 'a2', 'text' => 'R', 'correct' => true ] ] ] ]
+		);
+		Curriculum::save( $course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'quiz', 'id' => $quiz ] ] ] ] );
+		return [ $course, $quiz, (string) $qs[0]['id'] ];
+	}
+
+	/**
+	 * Review probe: under the default `keep` policy the row stays active, so
+	 * the old row-only check let a revoked learner with an open attempt submit,
+	 * pass, and walk away with credit, certificate and the completion role.
+	 */
+	public function test_a_revoked_learner_with_an_open_attempt_cannot_submit_their_way_to_completion() {
+		$m = $this->courses();
+		[ $course, $quiz, $q ] = $this->one_quiz_course( [ 'passing_score' => 80, 'max_attempts' => 0 ] );
+		$user = $this->make_learner();
+		Roles::grant_access( $user, $course, 'manual' );
+		$attempt = $m->quizzes->start_attempt( $user, $quiz, $course );
+		Roles::revoke_access( $user, $course, 'manual' );
+		$this->assertFalse( $m->enrollments->is_enrolled( $user, $course ) );
+
+		$result = $m->quizzes->submit( $attempt->id, [ $q => 'a2' ], $user );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'not_enrolled', $result->get_error_code() );
+		$this->assertTrue( $m->quizzes->get_attempt( $attempt->id )->is_open(), 'A refused submit grades nothing.' );
+		$this->assertNull( CertificateRepository::find( $user, $course ), 'A revoked learner must not get a certificate.' );
+		$this->assertNull( CreditRepository::find( $user, $course ), 'A revoked learner must not get credit.' );
+		$this->assertNotSame( 'completed', $m->enrollments->get( $user, $course )->status );
+		$this->assertFalse( Roles::user_has( $user, Roles::completion_slug( $course ) ) );
+	}
+
+	public function test_a_revoked_learner_cannot_save_answers_on_an_open_attempt() {
+		$m = $this->courses();
+		[ $course, $quiz, $q ] = $this->one_quiz_course( [ 'passing_score' => 80, 'max_attempts' => 0 ] );
+		$user = $this->make_learner();
+		Roles::grant_access( $user, $course, 'manual' );
+		$attempt = $m->quizzes->start_attempt( $user, $quiz, $course );
+		Roles::revoke_access( $user, $course, 'manual' );
+
+		$result = $m->quizzes->save_answer( $attempt->id, $q, 'a2', $user );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'not_enrolled', $result->get_error_code() );
+		$this->assertSame( [], $m->quizzes->get_attempt( $attempt->id )->answers );
+	}
+
+	/**
+	 * A system caller (cron timer, no expected user) still closes the attempt,
+	 * but the completion pipeline itself refuses a learner who is no longer
+	 * enrolled: the grade is recorded, nothing is awarded.
+	 */
+	public function test_complete_refuses_a_learner_who_is_no_longer_enrolled() {
+		Roles::revoke_access( $this->user, $this->course, 'manual' );
+		$row = $this->enrollments->get( $this->user, $this->course );
+		$this->assertTrue( $row->is_active(), 'Precondition: keep leaves the row active.' );
+
+		add_filter( 'anchor_courses_course_completion_status', '__return_true', 99 );
+		$completed = $this->completion->complete( $this->user, $this->course );
+		remove_filter( 'anchor_courses_course_completion_status', '__return_true', 99 );
+
+		$this->assertFalse( $completed );
+		$this->assertNull( CertificateRepository::find( $this->user, $this->course ) );
+		$this->assertNotSame( 'completed', $this->enrollments->get( $this->user, $this->course )->status );
+	}
 }

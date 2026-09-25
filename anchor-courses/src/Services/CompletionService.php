@@ -75,11 +75,14 @@ final class CompletionService {
 		if ( $enrollment->is_complete() ) {
 			return false; // Cheap short-circuit; see class docblock for what actually guards this.
 		}
-		// Only an active enrolment can complete. A learner cancelled or expired
-		// mid-attempt reaches here through QuizService::submit(), which does not
-		// re-check enrolment; without this line a closed row would flip straight
-		// to completed and mint credit, certificate and role for a revoked user.
-		if ( ! $enrollment->is_active() ) {
+		// Only a learner who is enrolled RIGHT NOW can complete (final review
+		// C1): an active row is not enough. Under the default `keep` loss
+		// policy a revoked learner's row stays active, so the row alone would
+		// let a system caller (the quiz timer sweep grading an attempt opened
+		// before the revoke) mint credit, certificate and completion role for
+		// somebody who no longer holds the access role. is_enrolled() checks
+		// the row, the role and expires_at together.
+		if ( ! $enrollment->is_active() || ! $this->enrollments->is_enrolled( $user_id, $course_id ) ) {
 			return false;
 		}
 		if ( ! $this->evaluate( $user_id, $course_id ) ) {

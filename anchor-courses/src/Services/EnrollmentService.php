@@ -236,12 +236,20 @@ final class EnrollmentService {
 	 * (cancelled/expired) does not re-open the course by itself. A completed
 	 * learner is still enrolled: completion ends the work, not the access,
 	 * so they can revisit every lesson for as long as they hold the role.
+	 *
+	 * A row past its `expires_at` is not enrolment either, even before the
+	 * daily sweep flips it to `expired` (final review ruling): access ends at
+	 * the expiry instant, the sweep only tidies the row and the role up.
 	 */
 	public function is_enrolled( int $user_id, int $course_id ): bool {
 		$enrollment = EnrollmentRepository::find( $user_id, $course_id );
-		return $enrollment instanceof Enrollment
-			&& ( $enrollment->is_active() || $enrollment->is_complete() )
-			&& Roles::user_has( $user_id, Roles::access_slug( $course_id ) );
+		if ( ! $enrollment instanceof Enrollment || ! ( $enrollment->is_active() || $enrollment->is_complete() ) ) {
+			return false;
+		}
+		if ( null !== $enrollment->expires_at && Clock::to_timestamp( $enrollment->expires_at ) <= Clock::timestamp() ) {
+			return false;
+		}
+		return Roles::user_has( $user_id, Roles::access_slug( $course_id ) );
 	}
 
 	/** Mark the course started. No-op (returns the row) if it already was. */

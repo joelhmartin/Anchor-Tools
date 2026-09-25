@@ -171,6 +171,25 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 		$this->assertFalse( $this->service->is_enrolled( $user, $course ) );
 	}
 
+	/**
+	 * Final review ruling (C1): access ends AT expiry, not at the next daily
+	 * sweep - is_enrolled() reads expires_at itself.
+	 */
+	public function test_is_enrolled_is_false_once_expires_at_has_passed_even_before_the_sweep() {
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-01-01 00:00:00 UTC' ) );
+		$user   = $this->make_learner();
+		$course = $this->make_course( [ 'expiration_days' => '1' ] );
+		\Anchor\Courses\Support\Roles::grant_access( $user, $course );
+		$this->assertTrue( $this->service->is_enrolled( $user, $course ) );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-01-02 00:00:01 UTC' ) );
+
+		$this->assertSame( 'enrolled', $this->service->get( $user, $course )->status, 'Precondition: the sweep has not run.' );
+		$this->assertFalse( $this->service->is_enrolled( $user, $course ) );
+		remove_all_filters( 'anchor_courses_now' );
+	}
+
 	public function test_sweep_expired_flips_due_rows() {
 		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-01-01 00:00:00 UTC' ) );
 		$user   = $this->make_learner();

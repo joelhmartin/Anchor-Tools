@@ -503,4 +503,76 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 			'credit stays claimed; certificate - which depends on it - is put back to pending rather than left running for something it never got to do.'
 		);
 	}
+
+	/* --- Codex P1 + CodeRabbit, PR #32 re-review: the admin Repair action must not report success too eagerly --- */
+
+	/**
+	 * A fresh `running` claim (a pipeline that has not been idle long enough
+	 * to count as crashed - see EFFECTS_RUNNING_STALE_SECONDS) is neither
+	 * `pending` nor `failed`, so the old check
+	 * (`array_intersect($effects, [pending, failed]) === []`) reported
+	 * `repaired` for a row where `certificate`/`completion_role`/`hook` were
+	 * all still unconfirmed `running` claims from a pipeline that may not
+	 * even be this process. The fix must never report success until every
+	 * one of the four tracked effects reads back `done` or `n/a` - and must
+	 * not disturb the fresh claim to get there (that is `run_effects()`'s
+	 * job, guarded by the staleness window, not this admin action's).
+	 */
+	public function test_repair_reports_incomplete_for_a_fresh_running_claim_and_leaves_the_map_untouched() {
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		EnrollmentRepository::complete( $enrollment->id, gmdate( 'Y-m-d H:i:s' ) );
+		$seed = [
+			'credit'          => CompletionService::EFFECT_DONE,
+			'certificate'     => CompletionService::EFFECT_RUNNING,
+			'completion_role' => CompletionService::EFFECT_RUNNING,
+			'hook'            => CompletionService::EFFECT_RUNNING,
+		];
+		EnrollmentRepository::update(
+			$enrollment->id,
+			[
+				'metadata' => [
+					CompletionService::EFFECTS_META         => $seed,
+					CompletionService::EFFECTS_CLAIMED_META => gmdate( 'Y-m-d H:i:s', time() - 10 ),
+				],
+			]
+		);
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=repair_incomplete', $this->post_repair() );
+		$this->assertSame( $seed, $this->effects(), 'A fresh claim is left exactly as it was - not reset to pending, not reported done.' );
+		$this->assertNull( CreditRepository::find( $this->user, $this->course ) );
+		$this->assertSame( [ 'credit' => 0, 'certificate' => 0, 'course' => 0 ], $this->fired, 'Nothing re-ran while the claim is still fresh.' );
+	}
+
+	/**
+	 * The counterpart: once the same shape of claim is stale (older than
+	 * EFFECTS_RUNNING_STALE_SECONDS), the admin Repair action re-runs it for
+	 * real and - now that every effect actually lands - reports `repaired`,
+	 * not `repair_incomplete`.
+	 */
+	public function test_repair_reports_repaired_after_a_stale_running_claim_is_re_run() {
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		EnrollmentRepository::complete( $enrollment->id, gmdate( 'Y-m-d H:i:s' ) );
+		EnrollmentRepository::update(
+			$enrollment->id,
+			[
+				'metadata' => [
+					CompletionService::EFFECTS_META         => [
+						'credit'          => CompletionService::EFFECT_RUNNING,
+						'certificate'     => CompletionService::EFFECT_PENDING,
+						'completion_role' => CompletionService::EFFECT_DONE,
+						'hook'            => CompletionService::EFFECT_DONE,
+					],
+					CompletionService::EFFECTS_CLAIMED_META => gmdate( 'Y-m-d H:i:s', time() - CompletionService::EFFECTS_RUNNING_STALE_SECONDS - 1 ),
+				],
+			]
+		);
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=repaired', $this->post_repair() );
+		$this->assertSame(
+			[ 'credit' => 'done', 'certificate' => 'done', 'completion_role' => 'done', 'hook' => 'done' ],
+			$this->effects()
+		);
+		$this->assertNotNull( CreditRepository::find( $this->user, $this->course ) );
+		$this->assertNotNull( CertificateRepository::find( $this->user, $this->course ) );
+	}
 }

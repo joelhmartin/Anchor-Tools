@@ -22,7 +22,12 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * once-only pipeline; `reset` through ProgressService::reset_course(). Every
  * refusal is reported as its own notice code, never as success. `repair`
  * (audit F02) is CompletionService::complete() on an already-completed row:
- * it re-runs only the completion effects left pending or failed.
+ * it re-runs only the completion effects left pending or failed. Its OWN
+ * success is reported only once every tracked effect reads back `done`/`n/a`
+ * (Codex P1 + CodeRabbit, PR #32 re-review) - not merely "nothing pending or
+ * failed", which a fresh `running` claim or an empty (lock-busy) map also
+ * satisfy without anything actually being confirmed. Anything short of that
+ * is `repair_incomplete`, never `repaired`.
  */
 final class EnrollmentManager {
 
@@ -43,7 +48,7 @@ final class EnrollmentManager {
 		Notices::register( 'uncompleted', Notices::TYPE_SUCCESS, \__( 'Completion undone. Credits and certificates were kept.', 'anchor-schema' ) );
 		Notices::register( 'complete_failed', Notices::TYPE_ERROR, \__( 'The course could not be marked complete: the learner has no current access to it.', 'anchor-schema' ) );
 		Notices::register( 'repaired', Notices::TYPE_SUCCESS, \__( 'Completion repaired: credits, certificate, completion role and notifications are all in place.', 'anchor-schema' ) );
-		Notices::register( 'repair_incomplete', Notices::TYPE_ERROR, \__( 'Some completion steps still failed. Check the log and try again.', 'anchor-schema' ) );
+		Notices::register( 'repair_incomplete', Notices::TYPE_ERROR, \__( 'Completion is not fully confirmed yet - a step failed, or is still finishing from a moment ago. Check the log, then try the repair again in a few minutes.', 'anchor-schema' ) );
 		Notices::register( 'repair_not_completed', Notices::TYPE_ERROR, \__( 'There is nothing to repair: this learner has not completed the course.', 'anchor-schema' ) );
 	}
 
@@ -175,9 +180,31 @@ final class EnrollmentManager {
 				// `repair_not_tracked` shape it used to report can no longer
 				// occur through this path.
 				$module->completion->complete( $user_id, $course_id );
-				$effects     = $module->completion->effects( $user_id, $course_id );
-				$outstanding = \array_intersect( $effects, [ CompletionService::EFFECT_PENDING, CompletionService::EFFECT_FAILED ] );
-				Notices::redirect( [] === $outstanding ? 'repaired' : 'repair_incomplete', $target );
+
+				// `repaired` only when EVERY tracked effect is confirmed
+				// settled - `done` or `n/a` (Codex P1 + CodeRabbit, PR #32
+				// re-review). The old check reported success whenever
+				// nothing was `pending`/`failed`, which two other shapes
+				// also satisfy without anything actually being confirmed:
+				// a fresh `running` claim (a pipeline that crashed or is
+				// still mid-flight, less than
+				// CompletionService::EFFECTS_RUNNING_STALE_SECONDS old -
+				// run_effects() deliberately leaves that alone rather than
+				// re-running it, see its class docblock) is neither pending
+				// nor failed; an empty map (this complete() call could not
+				// get the completion lock, so it ran nothing at all) isn't
+				// either. Checking every expected key explicitly - rather
+				// than filtering for the two "bad" statuses - also catches
+				// a map that is simply missing a key.
+				$effects  = $module->completion->effects( $user_id, $course_id );
+				$repaired = true;
+				foreach ( CompletionService::EFFECTS as $effect ) {
+					if ( ! \in_array( $effects[ $effect ] ?? '', [ CompletionService::EFFECT_DONE, CompletionService::EFFECT_NA ], true ) ) {
+						$repaired = false;
+						break;
+					}
+				}
+				Notices::redirect( $repaired ? 'repaired' : 'repair_incomplete', $target );
 				break;
 		}
 	}

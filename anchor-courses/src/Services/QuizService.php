@@ -344,13 +344,34 @@ final class QuizService {
 		// (Task 26 review, IMPORTANT): a garbage/oversized payload is reduced
 		// to the intersection with the question's real answer ids, and
 		// single_choice/true_false keep at most one (Grading::normalize_answer()).
-		$valid_ids               = \array_column( (array) $question['answers'], 'id' );
-		$answers                 = $attempt->answers;
-		$answers[ $question_id ] = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
+		$valid_ids  = \array_column( (array) $question['answers'], 'id' );
+		$normalized = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
 
-		QuizAttemptRepository::update( $attempt_id, [ 'answers' => $answers ] );
+		// Compare-and-swap (audit F06): the whole map is written only if
+		// nobody wrote it since this request read it, and only while the
+		// attempt is still open. Losing the race means another save (or the
+		// submit claim) got there first: re-read and try ONCE more on top of
+		// what is now stored; a second loss is reported, never swallowed.
+		for ( $try = 0; $try < 2; $try++ ) {
+			$answers                 = $attempt->answers;
+			$answers[ $question_id ] = $normalized;
 
-		return true;
+			$written = QuizAttemptRepository::save_answers( $attempt_id, $answers, $attempt->revision );
+			if ( true === $written ) {
+				return true;
+			}
+			if ( null === $written ) {
+				Log::write( 'quiz_answer_save_failed', [ 'attempt' => $attempt_id ] );
+				return new \WP_Error( 'save_failed', \__( 'Your answer could not be saved. Please try again.', 'anchor-schema' ) );
+			}
+
+			$attempt = QuizAttemptRepository::find( $attempt_id );
+			if ( ! $attempt instanceof QuizAttempt || ! $attempt->is_open() ) {
+				return new \WP_Error( 'attempt_closed', \__( 'This attempt is already finished.', 'anchor-schema' ) );
+			}
+		}
+
+		return new \WP_Error( 'save_conflict', \__( 'Your answer was changed elsewhere at the same time. Please check it and save again.', 'anchor-schema' ) );
 	}
 
 	/**
@@ -462,6 +483,24 @@ final class QuizService {
 			return $expired;
 		}
 
+		// Claim the attempt before grading (final review: atomic submit). Two
+		// submits that both read it as open cannot both grade it: only the
+		// one whose conditional UPDATE moves it in_progress -> submitted goes
+		// on; the other returns the row as the winner left it.
+		if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'submitted' ) ) {
+			return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
+		}
+
+		// Re-read AFTER the claim (audit F06): an answer save acknowledged
+		// between this request's first read and its claim is in the row now,
+		// and no save can land after the claim (save_answers() requires
+		// `in_progress` on the write) - so what is graded below is exactly
+		// every acknowledged save plus this request's own answers.
+		$claimed = QuizAttemptRepository::find( $attempt_id );
+		if ( $claimed instanceof QuizAttempt ) {
+			$attempt = $claimed;
+		}
+
 		// In-window: merge the submitted answers over what was saved.
 		// Late + auto_submit: grade ONLY what was saved before the deadline.
 		// Starting from what was already saved (not an empty array) is what
@@ -483,14 +522,6 @@ final class QuizService {
 				$valid_ids                     = \array_column( (array) $question['answers'], 'id' );
 				$final_answers[ $question_id ] = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
 			}
-		}
-
-		// Claim the attempt before grading (final review: atomic submit). Two
-		// submits that both read it as open cannot both grade it: only the
-		// one whose conditional UPDATE moves it in_progress -> submitted goes
-		// on; the other returns the row as the winner left it.
-		if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'submitted' ) ) {
-			return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
 		}
 
 		$graded = Grading::grade( Questions::get( $attempt->quiz_id ), $final_answers );

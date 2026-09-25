@@ -78,7 +78,7 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 		$this->assertSame(
 			[ 'id', 'user_id', 'course_id', 'quiz_id', 'attempt_number', 'status', 'score',
 			  'points_earned', 'points_possible', 'passed', 'started_at', 'submitted_at',
-			  'duration_seconds', 'answers', 'grading_data', 'created_at', 'updated_at', 'metadata' ],
+			  'duration_seconds', 'answers', 'grading_data', 'created_at', 'updated_at', 'metadata', 'revision' ],
 			$this->columns( 'quiz_attempts' )
 		);
 	}

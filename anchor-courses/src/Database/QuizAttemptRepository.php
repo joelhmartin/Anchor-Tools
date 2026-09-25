@@ -135,6 +135,43 @@ final class QuizAttemptRepository {
 	}
 
 	/**
+	 * Write an open attempt's answer map IF nobody else wrote it since it was
+	 * read (audit F06) - a compare-and-swap on `revision`, conditional on the
+	 * attempt still being `in_progress`, in one statement:
+	 *
+	 *   UPDATE ... SET answers = %s, revision = revision + 1, updated_at = %s
+	 *   WHERE id = %d AND status = 'in_progress' AND revision = %d
+	 *
+	 * The status condition is ON THE WRITE, so a save that passed its own
+	 * open check before a submit claimed the attempt can no longer land after
+	 * the grade.
+	 *
+	 * @param array $answers           The whole map to store.
+	 * @param int   $expected_revision The revision the caller read.
+	 * @return bool|null True = written; false = lost the race (revision moved
+	 *                   or the attempt closed) - re-read and decide; null = a
+	 *                   database error.
+	 */
+	public static function save_answers( int $id, array $answers, int $expected_revision ): ?bool {
+		global $wpdb;
+
+		$result = $wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . self::table() . " SET answers = %s, revision = revision + 1, updated_at = %s WHERE id = %d AND status = 'in_progress' AND revision = %d", // phpcs:ignore WordPress.DB.PreparedSQL
+				Json::encode( $answers ),
+				Clock::now(),
+				$id,
+				$expected_revision
+			)
+		);
+
+		if ( false === $result ) {
+			return null;
+		}
+		return 1 === (int) $wpdb->rows_affected;
+	}
+
+	/**
 	 * Re-open `submitted` claims older than $cutoff (audit F03).
 	 *
 	 * `submitted` only ever exists between QuizService::submit()'s atomic

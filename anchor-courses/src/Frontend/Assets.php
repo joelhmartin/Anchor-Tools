@@ -75,6 +75,7 @@ final class Assets {
 					'submitted' => \__( 'Quiz submitted.', 'anchor-schema' ),
 					'timeUp'    => \__( 'Time is up - submitting your saved answers.', 'anchor-schema' ),
 					'error'     => \__( 'Something went wrong. Please refresh and try again.', 'anchor-schema' ),
+					'saveError' => \__( 'An answer could not be saved. It will be sent again when you change it or submit.', 'anchor-schema' ),
 				],
 			]
 		);

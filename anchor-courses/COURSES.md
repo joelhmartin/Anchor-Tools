@@ -196,6 +196,18 @@ one." for an enrolled learner locked by progression.
   `QuizService::STALE_CLAIM_SECONDS` (300) was orphaned by a crashed request
   and is re-opened, answers intact, by `QuizService::reopen_stale_claims()` -
   run by the daily sweep and by the learner's own next start.
+- **Answer autosave is a compare-and-swap** (audit F06): `quiz_attempts.revision`
+  (1.3.0) is bumped by every answers write;
+  `QuizAttemptRepository::save_answers( $id, $answers, $expected_revision )`
+  writes only `WHERE status = 'in_progress' AND revision = %d`. `save_answer()`
+  re-reads and retries once on a lost race, then returns
+  `WP_Error('save_conflict')` (REST 409); a database error is
+  `WP_Error('save_failed')` (503). A save can never land after the submit
+  claim, and `submit()` re-reads the row after claiming, so every acknowledged
+  save is graded and the stored answers always match the stored grade.
+  `quiz.js` keeps one save in flight, coalesces queued changes per question,
+  shows a save-error line (`.anchor-quiz-save-status`), and submit waits for
+  the queue to drain.
 - **A lesson and its quiz** (audit F04): under sequential progression a quiz
   is not blocked by its parent lesson - an earlier required lesson whose
   `completion_mode` is `quiz_pass` with this quiz as `quiz_id`
@@ -298,7 +310,7 @@ Service errors map through `Routes::error_response()`:
 403 `not_enrolled`, `locked`, `not_in_course`, `course_closed`,
 `missing_prerequisite`, `no_attempts_remaining`, `retry_delay`,
 `attempt_not_yours`; 404 `no_attempt`, `no_course`, `no_user`; 409
-`attempt_closed`, `no_questions`, `attempt_course_mismatch`; 503 `save_failed` (retry); 400
+`attempt_closed`, `no_questions`, `attempt_course_mismatch`, `save_conflict`; 503 `save_failed` (retry); 400
 `unknown_question` and anything unlisted.
 Responses only ever carry `QuizAttempt::for_learner()` (score hidden when
 `show_score` is off, grading data only with `show_correct_answers`).
@@ -332,7 +344,7 @@ Module constructor and `admin_init`.
 | 1.0.0 | initial schema; capabilities granted |
 | 1.1.0 | `quiz_attempts.metadata` (pinned timer settings) |
 | 1.2.0 | `certificates.verification_token` becomes UNIQUE |
-| 1.3.0 | `quiz_attempts` unique key becomes `user_course_quiz_attempt` (user, course, quiz, attempt_number) - audit F05 |
+| 1.3.0 | `quiz_attempts` unique key becomes `user_course_quiz_attempt` (user, course, quiz, attempt_number) - audit F05; `quiz_attempts.revision` (answers compare-and-swap) - audit F06 |
 
 Statuses: enrolment `enrolled`, `in_progress`, `completed`, `expired`,
 `cancelled`; progress `not_started`, `in_progress`, `completed`, `failed`;

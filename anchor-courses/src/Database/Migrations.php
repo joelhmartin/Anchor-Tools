@@ -297,7 +297,10 @@ final class Migrations {
 	 * 1.3.0 - quiz_attempts is scoped to the course (audit F05): the unique
 	 * attempt-number key becomes (user_id, course_id, quiz_id,
 	 * attempt_number), so the same learner's attempts at a quiz shared by
-	 * two courses are numbered - and counted - per course.
+	 * two courses are numbered - and counted - per course. It also gains
+	 * `revision` (audit F06): QuizAttemptRepository::save_answers() is a
+	 * compare-and-swap on it, so two overlapping answer saves cannot
+	 * overwrite each other.
 	 *
 	 * Same technique as migrate_1_2_0(): dbDelta never drops an index, so the
 	 * old `user_quiz_attempt` key is dropped explicitly before the full
@@ -334,6 +337,7 @@ final class Migrations {
 				answers LONGTEXT NULL,
 				grading_data LONGTEXT NULL,
 				metadata LONGTEXT NULL,
+				revision INT UNSIGNED NOT NULL DEFAULT 0,
 				created_at DATETIME NOT NULL,
 				updated_at DATETIME NOT NULL,
 				PRIMARY KEY  (id),

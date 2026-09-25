@@ -9,6 +9,8 @@ use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Database\EnrollmentRepository;
 use Anchor\Courses\Database\QuizAttemptRepository;
 use Anchor\Courses\Module;
+use Anchor\Courses\Services\CertificateService;
+use Anchor\Courses\Services\CreditService;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
 
@@ -19,7 +21,9 @@ final class Shortcodes {
 
 	public function __construct(
 		private ProgressService $progress,
-		private EnrollmentService $enrollments
+		private EnrollmentService $enrollments,
+		private CreditService $credits,
+		private CertificateService $certificates
 	) {
 		\add_shortcode( 'anchor_courses', [ $this, 'courses_index' ] );
 		\add_shortcode( 'anchor_course', [ $this, 'single_course' ] );
@@ -153,20 +157,83 @@ final class Shortcodes {
 		);
 	}
 
-	/** Filled in by Task 30 (CreditService). */
+	/**
+	 * [anchor_my_credits] - the signed-in learner's own CE credits.
+	 *
+	 * `CreditService::for_user()`/`::total_for_user()`, scoped to
+	 * `get_current_user_id()`, are the only Task 27 call sites this method
+	 * uses - never `Database\CreditRepository` directly. The Task 18
+	 * layering exception (a Frontend shortcode reading a repository because
+	 * the owning service was locked mid-review) is closed here on purpose,
+	 * not repeated (progress.md ruling).
+	 */
 	public function my_credits(): string {
-		if ( \get_current_user_id() <= 0 ) {
+		$user_id = \get_current_user_id();
+		if ( $user_id <= 0 ) {
 			return '<p class="anchor-courses-notice">' . \esc_html__( 'Please sign in to see your CE credits.', 'anchor-schema' ) . '</p>';
 		}
-		return '<p class="anchor-courses-notice">' . \esc_html__( 'No CE credits yet.', 'anchor-schema' ) . '</p>';
+
+		$credits = $this->credits->for_user( $user_id );
+		if ( [] === $credits ) {
+			return '<p class="anchor-courses-notice">' . \esc_html__( 'No CE credits yet.', 'anchor-schema' ) . '</p>';
+		}
+
+		\ob_start();
+		echo '<table class="anchor-courses-credits-table"><thead><tr>';
+		\printf(
+			'<th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr></thead><tbody>',
+			\esc_html__( 'Course', 'anchor-schema' ),
+			\esc_html__( 'Credits', 'anchor-schema' ),
+			\esc_html__( 'Type', 'anchor-schema' ),
+			\esc_html__( 'Awarded', 'anchor-schema' )
+		);
+		foreach ( $credits as $credit ) {
+			\printf(
+				'<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+				\esc_html( (string) \get_the_title( $credit->course_id ) ),
+				\esc_html( \number_format_i18n( $credit->credits, 1 ) ),
+				\esc_html( $credit->credit_type ),
+				\esc_html( \mysql2date( (string) \get_option( 'date_format' ), $credit->awarded_at ) )
+			);
+		}
+		\printf(
+			'</tbody><tfoot><tr><th>%s</th><th colspan="3">%s</th></tr></tfoot></table>',
+			\esc_html__( 'Total', 'anchor-schema' ),
+			\esc_html( \number_format_i18n( $this->credits->total_for_user( $user_id ), 1 ) )
+		);
+		return (string) \ob_get_clean();
 	}
 
-	/** Filled in by Task 30 (CertificateService). */
+	/**
+	 * [anchor_my_certificates] - the signed-in learner's own certificates,
+	 * each linking to its public `/certificate/{token}/` verification page
+	 * (`CertificatePage`). Scoped the same way as `my_credits()` above:
+	 * `CertificateService::for_user( $user_id )` only.
+	 */
 	public function my_certificates(): string {
-		if ( \get_current_user_id() <= 0 ) {
+		$user_id = \get_current_user_id();
+		if ( $user_id <= 0 ) {
 			return '<p class="anchor-courses-notice">' . \esc_html__( 'Please sign in to see your certificates.', 'anchor-schema' ) . '</p>';
 		}
-		return '<p class="anchor-courses-notice">' . \esc_html__( 'No certificates yet.', 'anchor-schema' ) . '</p>';
+
+		$certificates = $this->certificates->for_user( $user_id );
+		if ( [] === $certificates ) {
+			return '<p class="anchor-courses-notice">' . \esc_html__( 'No certificates yet.', 'anchor-schema' ) . '</p>';
+		}
+
+		\ob_start();
+		echo '<ul class="anchor-courses-certificates-list">';
+		foreach ( $certificates as $certificate ) {
+			\printf(
+				'<li><a href="%s">%s</a> <span class="anchor-certificate-number">%s</span> <span>%s</span></li>',
+				\esc_url( $certificate->url() ),
+				\esc_html( (string) \get_the_title( $certificate->course_id ) ),
+				\esc_html( $certificate->certificate_number ),
+				\esc_html( \mysql2date( (string) \get_option( 'date_format' ), $certificate->issued_at ) )
+			);
+		}
+		echo '</ul>';
+		return (string) \ob_get_clean();
 	}
 
 	/** Rendered by single-lesson.php; not a public shortcode. */

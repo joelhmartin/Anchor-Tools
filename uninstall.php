@@ -75,6 +75,8 @@ if ( get_option( 'anchor_courses_delete_data_on_uninstall' ) ) {
 
 	delete_option( 'anchor_courses_db_version' );
 	delete_option( 'anchor_courses_delete_data_on_uninstall' );
+	// The /certificate/{token}/ rewrite's self-healing flush marker (Task 30).
+	delete_option( 'anchor_courses_rewrite_version' );
 
 	// The eight minted capabilities live in wp_user_roles; strip them from
 	// every role. Literal names: no plugin classes are loaded here.

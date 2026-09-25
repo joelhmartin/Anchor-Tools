@@ -96,7 +96,10 @@ class Module {
 
 		new Frontend\Templates();
 		new Frontend\Assets();
-		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments );
+		$this->shortcodes = new Frontend\Shortcodes( $this->progress, $this->enrollments, $this->credits, $this->certificates );
+
+		// /certificate/{token}/ - the public verification route (Task 30).
+		new Frontend\CertificatePage( $this->certificates );
 
 		// Daily expiry sweep. Scheduled here rather than on activation because
 		// modules have no activation hook (see Migrations' note).

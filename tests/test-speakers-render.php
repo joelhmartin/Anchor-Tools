@@ -322,4 +322,42 @@ class Test_Speakers_Render extends WP_UnitTestCase {
 		$this->assertMatchesRegularExpression( '~<a class="anchor-speaker__photo" href="[^"]*"><img[^>]*></a>~', $html );
 		$this->assertStringNotContainsString( 'anchor-speaker-avatar__img--placeholder', $html );
 	}
+
+	/**
+	 * Review finding (round 4): .anchor-speaker-avatar__img's ring border is
+	 * meant for the overlapping "avatars" layout stack. list_card()'s
+	 * photo-less placeholder reuses that same class (photo_placeholder()),
+	 * so an unscoped border rule would draw a ring around a list row's
+	 * placeholder that its photo-having neighbors never get (confirmed
+	 * visually in fac-fix2.png before this fix). Parses speakers.css's
+	 * actual rules (same convention as
+	 * test-event-frontend-render.php::test_frontend_css_covers_every_class_...)
+	 * rather than a brittle string search, so a future reformatting of the
+	 * file can't accidentally satisfy this test without the selector
+	 * actually being scoped correctly.
+	 */
+	public function test_speakers_css_scopes_the_avatar_ring_border_to_avatars_layout_only() {
+		$css = file_get_contents( ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-speakers/assets/speakers.css' );
+		$this->assertNotFalse( $css, 'Could not read anchor-speakers/assets/speakers.css.' );
+		$css = (string) preg_replace( '#/\*.*?\*/#s', '', $css );
+
+		preg_match_all( '/([^{}]+)\{([^{}]*)\}/', $css, $rules, PREG_SET_ORDER );
+
+		$bare_rule_has_border   = false;
+		$scoped_rule_has_border = false;
+
+		foreach ( $rules as $rule ) {
+			$selectors = array_map( 'trim', explode( ',', $rule[1] ) );
+			$body      = $rule[2];
+			if ( in_array( '.anchor-speaker-avatar__img', $selectors, true ) && strpos( $body, 'border:' ) !== false ) {
+				$bare_rule_has_border = true;
+			}
+			if ( in_array( '.anchor-speakers--avatars .anchor-speaker-avatar__img', $selectors, true ) && strpos( $body, 'border:' ) !== false ) {
+				$scoped_rule_has_border = true;
+			}
+		}
+
+		$this->assertFalse( $bare_rule_has_border, 'The unscoped .anchor-speaker-avatar__img rule must not set a border - it would also ring a list-layout placeholder.' );
+		$this->assertTrue( $scoped_rule_has_border, 'The avatar ring border must be scoped to .anchor-speakers--avatars .anchor-speaker-avatar__img.' );
+	}
 }

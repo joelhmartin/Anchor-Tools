@@ -111,6 +111,32 @@ class Anchor_Speaker_Render {
 		return '<span class="anchor-speaker-avatar__img anchor-speaker-avatar__img--placeholder" aria-hidden="true">' . esc_html( $initial ) . '</span>';
 	}
 
+	/**
+	 * `.anchor-speaker__location` and `.anchor-speaker__excerpt`: identical
+	 * in `card()` and `list_card()` (only their photo/name/credentials/title
+	 * markup differs between grid/compact and list), so this is the one
+	 * implementation both call instead of each duplicating the same two
+	 * conditionals.
+	 */
+	private static function location_and_excerpt( WP_Post $post, array $meta, array $show ) {
+		$html = '';
+		if ( in_array( 'location', $show, true ) && $meta['location'] !== '' ) {
+			$html .= '<p class="anchor-speaker__location">' . esc_html( $meta['location'] ) . '</p>';
+		}
+		if ( in_array( 'excerpt', $show, true ) ) {
+			$excerpt = get_the_excerpt( $post );
+			if ( trim( (string) $excerpt ) !== '' ) {
+				// get_the_excerpt() is already HTML, not plain text: a manual
+				// excerpt may intentionally contain simple inline markup, the
+				// same way testimonials treats post_content as already-HTML
+				// via wp_kses_post( wpautop( ... ) ) rather than esc_html().
+				// esc_html() would strip that markup down to visible tag text.
+				$html .= '<p class="anchor-speaker__excerpt">' . wp_kses_post( $excerpt ) . '</p>';
+			}
+		}
+		return $html;
+	}
+
 	private static function card( WP_Post $post, array $show, $link ) {
 		$meta      = Anchor_Speaker_Meta::get( $post->ID );
 		$permalink = get_permalink( $post );
@@ -137,20 +163,7 @@ class Anchor_Speaker_Render {
 		if ( in_array( 'title', $show, true ) && $meta['title'] !== '' ) {
 			$html .= '<p class="anchor-speaker__title">' . esc_html( $meta['title'] ) . '</p>';
 		}
-		if ( in_array( 'location', $show, true ) && $meta['location'] !== '' ) {
-			$html .= '<p class="anchor-speaker__location">' . esc_html( $meta['location'] ) . '</p>';
-		}
-		if ( in_array( 'excerpt', $show, true ) ) {
-			$excerpt = get_the_excerpt( $post );
-			if ( trim( (string) $excerpt ) !== '' ) {
-				// get_the_excerpt() is already HTML, not plain text: a manual
-				// excerpt may intentionally contain simple inline markup, the
-				// same way testimonials treats post_content as already-HTML
-				// via wp_kses_post( wpautop( ... ) ) rather than esc_html().
-				// esc_html() would strip that markup down to visible tag text.
-				$html .= '<p class="anchor-speaker__excerpt">' . wp_kses_post( $excerpt ) . '</p>';
-			}
-		}
+		$html .= self::location_and_excerpt( $post, $meta, $show );
 
 		if ( $link ) {
 			$html .= '<a class="anchor-speaker__link" href="' . esc_url( $permalink ) . '">' . esc_html__( 'View profile', 'anchor-schema' ) . '</a>';
@@ -225,15 +238,7 @@ class Anchor_Speaker_Render {
 		if ( $role_line !== '' ) {
 			$html .= '<p class="anchor-speaker__title">' . esc_html( $role_line ) . '</p>';
 		}
-		if ( in_array( 'location', $show, true ) && $meta['location'] !== '' ) {
-			$html .= '<p class="anchor-speaker__location">' . esc_html( $meta['location'] ) . '</p>';
-		}
-		if ( in_array( 'excerpt', $show, true ) ) {
-			$excerpt = get_the_excerpt( $post );
-			if ( trim( (string) $excerpt ) !== '' ) {
-				$html .= '<p class="anchor-speaker__excerpt">' . wp_kses_post( $excerpt ) . '</p>';
-			}
-		}
+		$html .= self::location_and_excerpt( $post, $meta, $show );
 
 		$html .= '</div>';
 

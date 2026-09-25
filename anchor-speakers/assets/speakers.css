@@ -12,10 +12,11 @@
  *                               the previous one (default 12px)
  *   --as-avatar-ring            avatars layout: the ring/border color separating
  *                               overlapping avatars (default #fff)
- *   --as-avatar-placeholder-bg  avatars layout: a photo-less speaker's initial
- *                               placeholder background (default rgba(0,0,0,.08))
- *   --as-avatar-placeholder-fg  avatars layout: that placeholder's text color
- *                               (default rgba(0,0,0,.5))
+ *   --as-avatar-placeholder-bg  a photo-less speaker's initial placeholder
+ *                               background, avatars AND list layouts
+ *                               (default rgba(0,0,0,.08))
+ *   --as-avatar-placeholder-fg  that placeholder's text color, avatars AND
+ *                               list layouts (default rgba(0,0,0,.5))
  *   --as-cta-color              list layout: the trailing "View" link color
  *                               (default currentColor)
  *   --as-list-border            list layout: the hairline row divider color
@@ -193,8 +194,21 @@
 	height: 100%;
 	object-fit: cover;
 	border-radius: 50%;
-	border: 2px solid var( --as-avatar-ring, #fff );
 	box-sizing: border-box;
+}
+
+/*
+ * The ring border exists to separate overlapping avatars in the "avatars"
+ * layout's stack, so it's scoped there rather than living on the shared
+ * .anchor-speaker-avatar__img rule above: list_card() reuses that same
+ * class for its no-photo placeholder (see photo_placeholder() in
+ * class-speaker-render.php), and an unscoped border would draw a ring
+ * around a photo-less list row's placeholder that its photo-having
+ * neighbors, styled by the plain .anchor-speaker__photo rules further
+ * down, never get.
+ */
+.anchor-speakers--avatars .anchor-speaker-avatar__img {
+	border: 2px solid var( --as-avatar-ring, #fff );
 }
 
 .anchor-speaker-avatar__img--placeholder {

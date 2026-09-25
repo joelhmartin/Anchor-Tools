@@ -215,7 +215,7 @@ test.describe('mouse drag (shared carousel Pointer Events)', () => {
 		await expect(page.locator('.avg-modal')).toBeVisible();
 	});
 
-	test('a drag in progress sets .is-dragging on the root and shows the grabbing cursor on the track', async ({ page }) => {
+	test('a drag in progress sets .anchor-carousel-is-dragging on the root and shows the grabbing cursor on the track', async ({ page }) => {
 		const track = page.locator('.anchor-testimonials__track').first();
 
 		// Fires pointerdown + pointermove only (no pointerup yet), so the
@@ -235,14 +235,47 @@ test.describe('mouse drag (shared carousel Pointer Events)', () => {
 		});
 
 		const root = page.locator('.anchor-testimonials').first();
-		await expect(root).toHaveClass(/is-dragging/);
+		await expect(root).toHaveClass(/anchor-carousel-is-dragging/);
 		await expect(track).toHaveCSS('cursor', 'grabbing');
 
 		// Release, so the class/cursor don't leak into whatever runs next.
 		await page.evaluate(() => {
 			document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0 }));
 		});
-		await expect(root).not.toHaveClass(/is-dragging/);
+		await expect(root).not.toHaveClass(/anchor-carousel-is-dragging/);
+		await expect(track).toHaveCSS('cursor', 'grab');
+	});
+
+	test('losing window focus mid-drag (alt-tab) clears .anchor-carousel-is-dragging', async ({ page }) => {
+		// A drag interrupted by switching away entirely (alt-tab, another app
+		// stealing focus) never fires pointerup or pointercancel - the button
+		// state (down/up) at that point is unknowable to this page at all.
+		// Only a window blur signals it, which is what
+		// assets/shared/anchor-carousel.js's cancelDrag() listens for.
+		const track = page.locator('.anchor-testimonials__track').first();
+
+		await page.evaluate(() => {
+			const el = document.querySelector('.anchor-testimonials__track');
+			const box = el.getBoundingClientRect();
+			const y = box.top + box.height / 2;
+			const startX = box.left + box.width / 2;
+			const fire = (type, x) =>
+				el.dispatchEvent(
+					new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0, clientX: x, clientY: y })
+				);
+			fire('pointerdown', startX);
+			fire('pointermove', startX - 60);
+		});
+
+		const root = page.locator('.anchor-testimonials').first();
+		await expect(root).toHaveClass(/anchor-carousel-is-dragging/);
+		await expect(track).toHaveCSS('cursor', 'grabbing');
+
+		await page.evaluate(() => {
+			window.dispatchEvent(new Event('blur'));
+		});
+
+		await expect(root).not.toHaveClass(/anchor-carousel-is-dragging/);
 		await expect(track).toHaveCSS('cursor', 'grab');
 	});
 

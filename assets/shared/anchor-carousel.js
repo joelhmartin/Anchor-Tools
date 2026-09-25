@@ -207,10 +207,12 @@
     // driven from here: .anchor-carousel-drag (a permanent class this module
     // adds to the track, not a consumer-specific one) carries the default
     // grab cursor and the links/buttons-keep-pointer-cursor override in
-    // anchor-carousel.css, .is-dragging (toggled on `root` for the duration
-    // the button is held down, see setDragging() below) carries the
-    // grabbing cursor and user-select: none, and img/a inside the track get
-    // draggable = false up front.
+    // anchor-carousel.css, .anchor-carousel-is-dragging (toggled on `root`
+    // for the duration the button is held down, see setDragging() below -
+    // namespaced, not the bare .is-dragging a site's own admin/theme CSS
+    // may already use for something unrelated) carries the grabbing cursor
+    // and user-select: none, and img/a inside the track get draggable =
+    // false up front.
 
     if (mode === 'carousel') {
       track.style.touchAction = 'pan-y';
@@ -249,10 +251,11 @@
       var dragEndedAt = 0;
 
       // Both the grabbing cursor and the text-selection guard are keyed off
-      // one .is-dragging class added to `root` (not `track`) - the CSS
-      // scopes the grabbing cursor and user-select: none from there.
+      // one .anchor-carousel-is-dragging class added to `root` (not
+      // `track`) - the CSS scopes the grabbing cursor and user-select:
+      // none from there.
       function setDragging(active) {
-        root.classList.toggle('is-dragging', active);
+        root.classList.toggle('anchor-carousel-is-dragging', active);
       }
 
       // How long after a drag ends its trailing click stays suppressed.
@@ -296,12 +299,21 @@
         e.preventDefault();
       }, { passive: false });
 
-      function endDrag(e) {
-        if (!pointerActive || e.pointerId !== activePointerId) return;
-        var wasDragging = dragging;
+      // The shared cleanup: stop tracking the pointer and drop the
+      // grabbing cursor/text-selection guard. Never advances the slide on
+      // its own - only endDrag() below does that, and only for a real
+      // release that was still an active horizontal drag.
+      function cancelDrag() {
+        if (!pointerActive) return;
         dragging = false;
         pointerActive = false;
         setDragging(false);
+      }
+
+      function endDrag(e) {
+        if (!pointerActive || e.pointerId !== activePointerId) return;
+        var wasDragging = dragging;
+        cancelDrag();
         if (wasDragging && Math.abs(deltaX) > threshold) {
           dragEndedAt = Date.now();
           scrollSlider(deltaX < 0 ? 1 : -1);
@@ -311,9 +323,23 @@
       on(document, 'pointerup', endDrag);
       on(document, 'pointercancel', function(e) {
         if (e.pointerId !== activePointerId) return;
-        dragging = false;
-        pointerActive = false;
-        setDragging(false);
+        cancelDrag();
+      });
+
+      // A drag interrupted by switching away entirely (alt-tab, a browser
+      // shortcut that steals focus, switching tabs) never fires pointerup
+      // or pointercancel at all - the OS/browser just takes focus away
+      // mid-gesture, with the mouse button's up-event delivered to
+      // whatever the user clicks next, somewhere else entirely. Without
+      // these, pointerActive and the grabbing cursor/text-selection guard
+      // would stay stuck on until the user comes back AND completes
+      // another full drag cycle. `blur` covers the window losing focus
+      // (alt-tab, clicking another app); `visibilitychange` additionally
+      // covers switching browser tabs, which doesn't always blur the
+      // window itself.
+      on(window, 'blur', cancelDrag);
+      on(document, 'visibilitychange', function() {
+        if (document.hidden) cancelDrag();
       });
 
       // Prevent the browser's native "drag an image out of the page"
@@ -396,7 +422,7 @@
       boundListeners = [];
       // In case destroy() is called mid-drag (e.g. a re-render), don't leave
       // the grabbing cursor/text-selection guard stuck on.
-      root.classList.remove('is-dragging');
+      root.classList.remove('anchor-carousel-is-dragging');
     }
 
     return {

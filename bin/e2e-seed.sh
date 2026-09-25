@@ -78,11 +78,11 @@ log "Active theme: $(wp theme list --status=active --field=name | head -n1)"
 # treats that false as an error — breaking idempotency on a second `env:seed`
 # run against an already-seeded site. Skip the write when the value already
 # matches so the script stays idempotent.
-DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true}}'
+DESIRED_MODULES_JSON='{"modules":{"events_manager":true,"video_slider":true,"compliance":true,"courses":true}}'
 if [ "$(wp option get anchor_schema_settings --format=json 2>/dev/null || true)" != "${DESIRED_MODULES_JSON}" ]; then
   wp option update anchor_schema_settings "${DESIRED_MODULES_JSON}" --format=json --autoload=no >/dev/null
 fi
-log "Events + Gallery + Compliance modules enabled."
+log "Events + Gallery + Compliance + Courses modules enabled."
 
 # ---------------------------------------------------------------------------
 # WooCommerce: skip onboarding + store basics + currency + guest checkout.
@@ -745,6 +745,81 @@ IN_PERSON_TOGGLE_OFF_ROOM_URL="${TOGGLE_ROOM_URL[off]}"
 IN_PERSON_TOGGLE_ON_ROOM_URL="${TOGGLE_ROOM_URL[on]}"
 
 rm -f "${SAVE_EVENT_PHP}" "${SEAT_TOKEN_PHP}"
+# Anchor Courses fixture (brief section 38 milestone E2E).
+#
+# One course with one module, one lesson and one two-question quiz
+# (passing score 80, max attempts 2), plus a learner account the spec signs in
+# as. Idempotent: reuses the posts by slug.
+# ---------------------------------------------------------------------------
+COURSES_IDS="$(wp eval '
+  $find = function ( $type, $slug, $title ) {
+      $existing = get_posts( [ "post_type" => $type, "name" => $slug, "posts_per_page" => 1, "fields" => "ids", "post_status" => "any" ] );
+      return $existing ? (int) $existing[0] : (int) wp_insert_post( [
+          "post_type" => $type, "post_name" => $slug, "post_title" => $title, "post_status" => "publish",
+      ] );
+  };
+
+  $course = $find( "anchor_course", "courses-e2e-course", "Course A" );
+  $lesson = $find( "anchor_lesson", "courses-e2e-lesson", "Lesson 1" );
+  $quiz   = $find( "anchor_quiz", "courses-e2e-quiz", "Quiz 1" );
+
+  wp_update_post( [ "ID" => $lesson, "post_content" => "Read this lesson, then take the quiz." ] );
+
+  update_post_meta( $course, "_anchor_course_progression_mode", "sequential" );
+  update_post_meta( $course, "_anchor_course_completion_mode", "all_required_items" );
+  update_post_meta( $course, "_anchor_course_ce_credits", 2 );
+  update_post_meta( $course, "_anchor_course_ce_type", "Dental CE" );
+  update_post_meta( $course, "_anchor_course_ce_provider_name", "DEKA Academy" );
+  update_post_meta( $course, "_anchor_course_certificate_enabled", 1 );
+
+  update_post_meta( $lesson, "_anchor_lesson_completion_mode", "manual" );
+  update_post_meta( $lesson, "_anchor_lesson_required", 1 );
+
+  update_post_meta( $quiz, "_anchor_quiz_settings", [
+      "passing_score" => 80, "max_attempts" => 2, "time_limit_seconds" => 0,
+      "shuffle_questions" => 0, "shuffle_answers" => 0, "show_correct_answers" => 1,
+      "show_score" => 1, "allow_review" => 1, "retry_delay_seconds" => 0,
+      "required" => 1, "on_timer_expiry" => "auto_submit",
+  ] );
+
+  \Anchor\Courses\Content\Questions::save( $quiz, [
+      [ "type" => "single_choice", "prompt" => "Q1", "points" => 1, "answers" => [
+          [ "id" => "a1", "text" => "Wrong", "correct" => false ],
+          [ "id" => "a2", "text" => "Right", "correct" => true ],
+      ] ],
+      [ "type" => "single_choice", "prompt" => "Q2", "points" => 1, "answers" => [
+          [ "id" => "b1", "text" => "Right", "correct" => true ],
+          [ "id" => "b2", "text" => "Wrong", "correct" => false ],
+      ] ],
+  ] );
+
+  \Anchor\Courses\Content\Curriculum::save( $course, [
+      [ "title" => "Module 1", "items" => [
+          [ "type" => "lesson", "id" => $lesson ],
+          [ "type" => "quiz", "id" => $quiz ],
+      ] ],
+  ] );
+
+  echo $course . "|" . $lesson . "|" . $quiz;
+')"
+COURSES_COURSE_ID="${COURSES_IDS%%|*}"
+COURSES_REST="${COURSES_IDS#*|}"
+COURSES_LESSON_ID="${COURSES_REST%%|*}"
+COURSES_QUIZ_ID="${COURSES_REST##*|}"
+log "Course #${COURSES_COURSE_ID}, lesson #${COURSES_LESSON_ID}, quiz #${COURSES_QUIZ_ID}"
+
+# Learner account the courses spec signs in as, holding the course's ACCESS
+# role - which is what enrolment is (design spec 3.1). Granting it through
+# Support\Roles rather than wp user add-role exercises the same path the
+# Learners tab uses, so the seed cannot drift from production.
+if ! wp user get courses-learner >/dev/null 2>&1; then
+  wp user create courses-learner courses-learner@example.test --role=subscriber --user_pass=courses-pass --display_name="Courses Learner"
+fi
+wp eval '
+  $user = get_user_by( "login", "courses-learner" );
+  \Anchor\Courses\Support\Roles::grant_access( (int) $user->ID, '"${COURSES_COURSE_ID}"', "manual" );
+'
+log "Learner account: courses-learner (holds anchor_course_${COURSES_COURSE_ID})"
 
 # ---------------------------------------------------------------------------
 # Emit the fixture for the Playwright specs (written via WP so the path is
@@ -760,7 +835,7 @@ RECURRING_EVENT_URL="$(wp eval 'echo get_permalink('"${RECURRING_EVENT_ID}"');')
 GALLERY_PAGE_URL="$(wp eval 'echo get_permalink('"${GALLERY_PAGE_ID}"');')"
 COMPLIANCE_PAGE_URL="$(wp eval 'echo get_permalink('"${COMPLIANCE_PAGE_ID}"');')"
 mkdir -p "${PLUGIN_DIR}/e2e"
-wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"')], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
+wp eval 'file_put_contents("'"${PLUGIN_DIR}"'/e2e/.seed.json", json_encode(["event_id"=>(int)'"${EVENT_ID}"',"event_url"=>get_permalink('"${EVENT_ID}"'),"product_id"=>(int)'"${PRODUCT_ID}"',"manager_page_id"=>(int)'"${MANAGER_PAGE_ID}"',"manager_page_url"=>get_permalink('"${MANAGER_PAGE_ID}"'),"multisession_event_id"=>(int)'"${MULTI_EVENT_ID}"',"multisession_event_url"=>get_permalink('"${MULTI_EVENT_ID}"'),"external_event_id"=>(int)'"${EXT_EVENT_ID}"',"external_event_url"=>get_permalink('"${EXT_EVENT_ID}"'),"external_embed_event_id"=>(int)'"${EXT_EMBED_EVENT_ID}"',"external_embed_event_url"=>get_permalink('"${EXT_EMBED_EVENT_ID}"'),"offering_event_id"=>(int)'"${OFFERING_EVENT_ID}"',"offering_event_url"=>get_permalink('"${OFFERING_EVENT_ID}"'),"recurring_event_id"=>(int)'"${RECURRING_EVENT_ID}"',"recurring_event_url"=>get_permalink('"${RECURRING_EVENT_ID}"'),"gallery_id"=>(int)'"${GALLERY_ID}"',"gallery_page_url"=>get_permalink('"${GALLERY_PAGE_ID}"'),"compliance_page_id"=>(int)'"${COMPLIANCE_PAGE_ID}"',"compliance_page_url"=>get_permalink('"${COMPLIANCE_PAGE_ID}"'),"courses_course_id"=>(int)'"${COURSES_COURSE_ID}"',"courses_course_url"=>get_permalink('"${COURSES_COURSE_ID}"'),"courses_lesson_url"=>get_permalink('"${COURSES_LESSON_ID}"'),"courses_quiz_id"=>(int)'"${COURSES_QUIZ_ID}"',"courses_learner_user"=>"courses-learner","courses_learner_pass"=>"courses-pass"], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES) . "\n");'
 log "Event URL: ${EVENT_URL}"
 log "Manager form page URL: ${MANAGER_PAGE_URL}"
 log "Multisession event URL: ${MULTI_EVENT_URL}"
@@ -770,6 +845,7 @@ log "Offering event URL: ${OFFERING_EVENT_URL}"
 log "Recurring event URL: ${RECURRING_EVENT_URL}"
 log "Gallery page URL: ${GALLERY_PAGE_URL}"
 log "Compliance page URL: ${COMPLIANCE_PAGE_URL}"
+log "Courses page URL: $(wp eval 'echo get_permalink('"${COURSES_COURSE_ID}"');')"
 log "Wrote ${PLUGIN_DIR}/e2e/.seed.json"
 
 # ---------------------------------------------------------------------------

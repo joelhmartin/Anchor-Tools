@@ -106,6 +106,12 @@ class Test_Courses_Completion extends Anchor_Courses_TestCase {
 	 * check already short-circuits the second. This is what actually decides
 	 * a real concurrent double-submit: exactly one of two calls against the
 	 * SAME not-yet-completed row may succeed.
+	 *
+	 * Honesty note: PHPUnit runs on one connection, so this test cannot force
+	 * two UPDATEs to interleave; a read-then-write implementation would pass it
+	 * too. Atomicity rests on the single conditional UPDATE
+	 * (`… WHERE id = %d AND status <> 'completed'`) being row-locked by InnoDB,
+	 * verified by inspection, not by this test.
 	 */
 	public function test_the_atomic_transition_admits_only_one_of_two_racing_calls() {
 		$enrollment = $this->enrollments->get( $this->user, $this->course );
@@ -155,6 +161,24 @@ class Test_Courses_Completion extends Anchor_Courses_TestCase {
 	public function test_an_unenrolled_user_cannot_be_completed() {
 		$stranger = $this->make_learner();
 		$this->assertFalse( $this->completion->complete( $stranger, $this->course ) );
+	}
+
+	/** A learner whose access was pulled mid-attempt must not complete on submit. */
+	public function test_a_cancelled_or_expired_enrolment_cannot_be_completed() {
+		foreach ( [ 'cancelled', 'expired' ] as $status ) {
+			$user   = $this->make_learner();
+			$course = $this->make_course( [ 'progression_mode' => 'free', 'ce_credits' => '1' ] );
+			$lesson = $this->make_lesson();
+			Curriculum::save( $course, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+			Roles::grant_access( $user, $course );
+			// The item is done, so evaluate() is true; only the row status blocks completion.
+			$this->progress->record_item( $user, $course, $lesson, 'lesson', 'completed' );
+			( new \Anchor\Courses\Services\EnrollmentService() )->set_status( $user, $course, $status );
+
+			$this->assertFalse( $this->completion->complete( $user, $course ), $status );
+			$this->assertSame( $status, EnrollmentRepository::find( $user, $course )->status, $status );
+			$this->assertNull( CreditRepository::find( $user, $course ), $status );
+		}
 	}
 
 	public function test_a_course_with_no_certificate_still_completes_and_awards_credits() {

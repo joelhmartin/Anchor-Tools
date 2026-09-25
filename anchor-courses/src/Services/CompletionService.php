@@ -75,6 +75,13 @@ final class CompletionService {
 		if ( $enrollment->is_complete() ) {
 			return false; // Cheap short-circuit; see class docblock for what actually guards this.
 		}
+		// Only an active enrolment can complete. A learner cancelled or expired
+		// mid-attempt reaches here through QuizService::submit(), which does not
+		// re-check enrolment; without this line a closed row would flip straight
+		// to completed and mint credit, certificate and role for a revoked user.
+		if ( ! $enrollment->is_active() ) {
+			return false;
+		}
 		if ( ! $this->evaluate( $user_id, $course_id ) ) {
 			return false;
 		}

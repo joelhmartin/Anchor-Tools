@@ -13,15 +13,30 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 /**
  * Enrol a user in a course (brief section 15).
  *
- * Idempotent: enrolling an already-enrolled user returns the existing record.
+ * Holding the course's access role IS enrolment (spec 3.1), so this grants the
+ * role; the role listener writes the enrolment row. Idempotent: an already
+ * enrolled user keeps their record, a cancelled/expired one is reactivated.
  *
  * @param int   $user_id
  * @param int   $course_id
- * @param array $args source, source_id, metadata, bypass_checks.
+ * @param array $args source, source_id. `metadata` and `bypass_checks` are
+ *                    ignored: Roles::grant_access() runs can_enroll() (course
+ *                    published, prerequisites held) before granting, the same
+ *                    gate every other grant path goes through.
  * @return \Anchor\Courses\Domain\Enrollment|WP_Error
  */
 function anchor_courses_enroll_user( $user_id, $course_id, array $args = [] ) {
-	return ( new \Anchor\Courses\Services\EnrollmentService() )->enroll( (int) $user_id, (int) $course_id, $args );
+	$granted = \Anchor\Courses\Support\Roles::grant_access(
+		(int) $user_id,
+		(int) $course_id,
+		(string) ( $args['source'] ?? 'api' ),
+		(string) ( $args['source_id'] ?? '' )
+	);
+	if ( is_wp_error( $granted ) ) {
+		return $granted;
+	}
+	$enrollment = ( new \Anchor\Courses\Services\EnrollmentService() )->get( (int) $user_id, (int) $course_id );
+	return $enrollment ?? new WP_Error( 'not_enrolled', __( 'The enrolment could not be recorded.', 'anchor-schema' ) );
 }
 
 /**

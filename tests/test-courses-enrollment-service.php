@@ -171,6 +171,9 @@ class Test_Courses_Enrollment_Service extends Anchor_Courses_TestCase {
 
 		$this->assertInstanceOf( Enrollment::class, $enrollment );
 		$this->assertSame( 'api', $enrollment->source );
+		// The API grants the role, so the learner actually has access (R1).
+		$this->assertTrue( $this->service->is_enrolled( $user, $course ) );
+		$this->assertTrue( \Anchor\Courses\Support\Roles::user_has( $user, \Anchor\Courses\Support\Roles::access_slug( $course ) ) );
 	}
 
 	public function test_enroll_refuses_a_non_course_post() {

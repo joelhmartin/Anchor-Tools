@@ -116,6 +116,72 @@ class Test_Courses_Quiz_Shortcode extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( 'anchor-quiz-start', $html );
 	}
 
+	/**
+	 * Task 26 review, IMPORTANT: render_quiz() used to resolve the course via
+	 * Curriculum::course_for_item() (deterministic but arbitrary - lowest
+	 * course id), regardless of which course it was actually being rendered
+	 * for. A learner enrolled only in the SECOND course sharing this quiz
+	 * must still see the quiz shell (evaluated against that second course),
+	 * not the "not enrolled" notice course_for_item() would have produced by
+	 * silently checking the first course instead.
+	 */
+	public function test_a_quiz_shared_by_two_courses_renders_for_the_explicit_course_not_the_default_owner() {
+		$second = $this->make_course( [ 'progression_mode' => 'free' ], 'Second Course' );
+		Curriculum::save( $second, [ [ 'title' => 'M', 'items' => [ [ 'type' => 'quiz', 'id' => $this->quiz ] ] ] ] );
+
+		// $this->course (from set_up()) was created first, so course_for_item()
+		// would resolve to IT by default - the learner is enrolled only in $second.
+		$this->assertLessThan( $second, $this->course );
+		Roles::grant_access( $this->user, $second );
+		wp_set_current_user( $this->user );
+
+		$html = Module::instance()->shortcodes->render_quiz( $this->quiz, $second );
+
+		$this->assertStringContainsString( 'data-course="' . $second . '"', $html );
+		$this->assertStringContainsString( 'anchor-quiz-start', $html );
+		$this->assertStringNotContainsString( 'You are not enrolled', $html );
+	}
+
+	/** Omitting $course_id (the default 0) must still fall back to course_for_item(), unchanged. */
+	public function test_omitting_the_course_id_falls_back_to_course_for_item() {
+		Roles::grant_access( $this->user, $this->course );
+		wp_set_current_user( $this->user );
+
+		$html = Module::instance()->shortcodes->render_quiz( $this->quiz );
+
+		$this->assertStringContainsString( 'data-course="' . $this->course . '"', $html );
+	}
+
+	/** Task 26 review, MINOR: the "Best score" line must respect show_score, same as the REST payload. */
+	public function test_best_score_is_hidden_when_show_score_is_off() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'show_score' => 0 ] );
+		Roles::grant_access( $this->user, $this->course );
+		wp_set_current_user( $this->user );
+
+		$quiz_service = Module::instance()->quizzes;
+		$attempt      = $quiz_service->start_attempt( $this->user, $this->quiz, $this->course );
+		$quiz_service->submit( $attempt->id, [ Questions::get( $this->quiz )[0]['id'] => 'a2' ] );
+
+		$html = $this->render();
+
+		$this->assertStringNotContainsString( 'Best score', $html );
+		$this->assertStringNotContainsString( 'anchor-quiz-passed', $html );
+	}
+
+	/** The flip side is real, not just always-off. */
+	public function test_best_score_is_shown_when_show_score_is_on() {
+		Roles::grant_access( $this->user, $this->course );
+		wp_set_current_user( $this->user );
+
+		$quiz_service = Module::instance()->quizzes;
+		$attempt      = $quiz_service->start_attempt( $this->user, $this->quiz, $this->course );
+		$quiz_service->submit( $attempt->id, [ Questions::get( $this->quiz )[0]['id'] => 'a2' ] );
+
+		$html = $this->render();
+
+		$this->assertStringContainsString( 'Best score', $html );
+	}
+
 	public function test_templates_locate_finds_the_plugin_quiz_template() {
 		$path = Templates::locate( 'quiz' );
 		$this->assertStringContainsString( 'anchor-courses/templates/quiz.php', $path );

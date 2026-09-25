@@ -218,9 +218,19 @@ final class Shortcodes {
 	 * theme/integration that calls render_quiz() directly without checking
 	 * $available first - either way, a learner who may not start sees the
 	 * notice from can_start()'s WP_Error message, never the quiz.
+	 *
+	 * $course_id is the course this quiz is being rendered FOR (Task 26
+	 * review, IMPORTANT): a quiz may be shared by more than one course
+	 * (Curriculum::course_for_item()'s tie-break is deterministic but
+	 * arbitrary - lowest course id), so a caller that already knows which
+	 * course it is rendering must say so, or a learner enrolled only in the
+	 * second course would be evaluated (and would start attempts) against
+	 * the first. Left at 0 (the default), this falls back to
+	 * course_for_item() exactly as before, for any caller that genuinely has
+	 * no course context of its own.
 	 */
-	public function render_quiz( int $quiz_id ): string {
-		$course_id = Curriculum::course_for_item( $quiz_id, 'quiz' );
+	public function render_quiz( int $quiz_id, int $course_id = 0 ): string {
+		$course_id = $course_id > 0 ? $course_id : Curriculum::course_for_item( $quiz_id, 'quiz' );
 		$user_id   = \get_current_user_id();
 
 		if ( $course_id <= 0 || $user_id <= 0 ) {
@@ -241,6 +251,9 @@ final class Shortcodes {
 				'can_start'          => $module->quizzes->can_start( $user_id, $quiz_id, $course_id ),
 				'attempts_remaining' => $module->quizzes->attempts_remaining( $user_id, $quiz_id ),
 				'best'               => QuizAttemptRepository::best_for_quiz( $user_id, $quiz_id ),
+				// Gate the "Best score" line the same way the REST payload
+				// gates score/points_earned/passed (Task 26 review, MINOR).
+				'show_score'         => 1 === (int) $module->quizzes->settings( $quiz_id )['show_score'],
 			]
 		);
 	}

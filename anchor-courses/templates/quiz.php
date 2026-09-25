@@ -4,7 +4,9 @@
  * payload is ever in the page source before an attempt exists (brief 8.3).
  *
  * Variables: $quiz_id, $course_id, $user_id, $can_start (true|WP_Error),
- * $attempts_remaining (int), $best (QuizAttempt|null).
+ * $attempts_remaining (int), $best (QuizAttempt|null), $show_score (bool -
+ * the quiz's own show_score setting; the "Best score" line is not printed
+ * when it is off).
  *
  * Theme override: anchor-courses/quiz.php
  *
@@ -16,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 <div class="anchor-quiz" data-quiz="<?php echo esc_attr( (string) $quiz_id ); ?>" data-course="<?php echo esc_attr( (string) $course_id ); ?>">
 	<h3 class="anchor-quiz-title"><?php echo esc_html( get_the_title( $quiz_id ) ); ?></h3>
 
-	<?php if ( $best && $best->is_graded() ) : ?>
+	<?php if ( $best && $best->is_graded() && $show_score ) : ?>
 		<p class="anchor-quiz-best">
 			<?php
 			printf(

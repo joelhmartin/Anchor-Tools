@@ -87,8 +87,12 @@ $notice = Actions::notice();
 								// authority Frontend\Access delegates to for a lesson)
 								// - a non-enrolled or locked learner never reaches this
 								// branch at all. render_quiz() escapes its own output.
+								// $course_id is passed explicitly (Task 26 review, IMPORTANT):
+								// a quiz shared by more than one course must be evaluated
+								// against THIS course, not whichever one
+								// Curriculum::course_for_item() would guess.
 								$anchor_courses_module = \Anchor\Courses\Module::instance();
-								echo $anchor_courses_module ? $anchor_courses_module->shortcodes->render_quiz( (int) $item['id'] ) : ''; // phpcs:ignore WordPress.Security.EscapeOutput -- render_quiz() escapes internally.
+								echo $anchor_courses_module ? $anchor_courses_module->shortcodes->render_quiz( (int) $item['id'], (int) $course_id ) : ''; // phpcs:ignore WordPress.Security.EscapeOutput -- render_quiz() escapes internally.
 								?>
 							<?php endif; ?>
 						</li>

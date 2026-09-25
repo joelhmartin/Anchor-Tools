@@ -106,6 +106,35 @@ final class EnrollmentRepository {
 		return self::find_by_id( $id );
 	}
 
+	/**
+	 * Atomically flip ONE row from not-completed to completed (Task 29,
+	 * ruling R-once). Unlike update(), the guard is the WHERE clause itself,
+	 * checked by the database via `$wpdb->rows_affected` - not a status this
+	 * method or its caller read a moment earlier. Two concurrent callers can
+	 * therefore never both succeed: whichever UPDATE reaches MySQL first wins
+	 * the row, and the second's `status <> 'completed'` predicate no longer
+	 * matches, so it affects zero rows and returns false without touching
+	 * anything - the same shape as QuizAttemptRepository::create()'s
+	 * INSERT-IGNORE guard, applied to an UPDATE instead of an INSERT.
+	 *
+	 * @return bool True only for the caller whose UPDATE performed the transition.
+	 */
+	public static function complete( int $id, string $completed_at ): bool {
+		global $wpdb;
+
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . self::table() . " SET status = 'completed', completed_at = %s, updated_at = %s
+				 WHERE id = %d AND status <> 'completed'",
+				$completed_at,
+				$completed_at,
+				$id
+			)
+		);
+
+		return $wpdb->rows_affected > 0;
+	}
+
 	/** @return Enrollment[] */
 	public static function for_user( int $user_id, array $statuses = [] ): array {
 		global $wpdb;

@@ -2,12 +2,9 @@
 /**
  * Anchor Courses - certificate issuing (brief 13, 26).
  *
- * `Services\CreditService` (Task 27) is built in a sibling worktree and is
- * not present in every checkout of this branch (see progress.md: T27/T28
- * dispatched together from the same BASE, joined before T29). The two tests
- * that exercise the certificate<->credit link guard on class_exists() and
- * skip until the join lands; every other test here covers Task 28 alone and
- * runs unconditionally.
+ * `Services\CreditService` / `Database\CreditRepository` (Task 27) are
+ * unconditionally on this tree (joined before Task 29); the certificate<->
+ * credit link is exercised unconditionally below, no skip guard.
  *
  * @package Anchor\Courses\Tests
  */
@@ -91,9 +88,7 @@ class Test_Courses_Certificates extends Anchor_Courses_TestCase {
 	}
 
 	public function test_template_data_carries_every_brief_variable() {
-		if ( class_exists( CreditService::class ) ) {
-			( new CreditService() )->award( $this->user, $this->course );
-		}
+		( new CreditService() )->award( $this->user, $this->course );
 		$certificate = $this->certificates->issue( $this->user, $this->course );
 
 		$data = $this->certificates->template_data( $certificate );
@@ -142,16 +137,7 @@ class Test_Courses_Certificates extends Anchor_Courses_TestCase {
 		$this->assertCount( 2, $this->certificates->for_user( $this->user ) );
 	}
 
-	/**
-	 * Exercises the join, not Task 28 in isolation: Services\CreditService and
-	 * Database\CreditRepository (Task 27) are built in a sibling worktree and
-	 * are not present here until the two branches are joined (progress.md).
-	 */
 	public function test_a_credit_is_linked_to_the_certificate_when_both_exist() {
-		if ( ! class_exists( CreditService::class ) ) {
-			$this->markTestSkipped( 'Services\\CreditService (Task 27) is not present in this worktree yet; re-run after the Task 27/28 join.' );
-		}
-
 		$credit      = ( new CreditService() )->award( $this->user, $this->course );
 		$certificate = $this->certificates->issue( $this->user, $this->course );
 

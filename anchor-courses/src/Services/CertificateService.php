@@ -23,14 +23,15 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * route (Task 30); `file_path` is deliberately left empty so that adding PDF
  * generation later needs no schema change (design spec 1).
  *
- * `Database\CreditRepository` / `Domain\Credit` (Task 27) are built in a
- * sibling worktree and are not yet present in every checkout of this module
- * - every reference to them here is behind a `class_exists()` guard so this
- * class works standalone before the join and needs no change after it. The
- * seam: once Task 27 lands, `issue()` links a matching CE credit to the new
- * certificate, and `template_data()` prefers the learner's actual awarded
- * `credits` value over the course's configured default. Neither is required
- * for a certificate to be issued or rendered.
+ * `issue()` links a matching CE credit to the new certificate, and
+ * `template_data()` prefers the learner's actual awarded `credits` value over
+ * the course's configured default - both read `Database\CreditRepository`
+ * directly (Task 27/28 join; no `class_exists()` guard - credits are
+ * unconditionally on this tree). Neither is required for a certificate to be
+ * issued or rendered: `issue()` only links a credit that already exists, so
+ * `Services\CompletionService` (Task 29) awards the credit before issuing the
+ * certificate, and that pipeline wires the link explicitly too rather than
+ * depending solely on this fallback.
  */
 final class CertificateService {
 
@@ -95,13 +96,13 @@ final class CertificateService {
 			}
 		}
 
-		// Link a matching CE credit to this certificate when Task 27's tables
-		// exist and a credit row is already there (brief 12 step 3).
-		if ( \class_exists( CreditRepository::class ) ) {
-			$credit = CreditRepository::find( $user_id, $course_id );
-			if ( $credit instanceof Credit && 0 === $credit->certificate_id ) {
-				CreditRepository::attach_certificate( $credit->id, $certificate->id );
-			}
+		// Link a matching CE credit to this certificate when one is already
+		// there (brief 12 step 3). One-directional: a credit awarded AFTER
+		// this call is never linked retroactively, so CompletionService (Task
+		// 29) awards the credit before issuing the certificate.
+		$credit = CreditRepository::find( $user_id, $course_id );
+		if ( $credit instanceof Credit && 0 === $credit->certificate_id ) {
+			CreditRepository::attach_certificate( $credit->id, $certificate->id );
 		}
 
 		Log::write( 'certificate_issued', [ 'user' => $user_id, 'course' => $course_id, 'number' => $certificate->certificate_number ] );
@@ -137,13 +138,11 @@ final class CertificateService {
 
 		$ce_credits = (float) CourseEditor::setting( $certificate->course_id, 'ce_credits' );
 
-		// The learner's actual awarded credit (Task 27) can differ from the
-		// course's configured default; prefer it when it exists.
-		if ( \class_exists( CreditRepository::class ) ) {
-			$credit = CreditRepository::find( $certificate->user_id, $certificate->course_id );
-			if ( $credit instanceof Credit ) {
-				$ce_credits = $credit->credits;
-			}
+		// The learner's actual awarded credit can differ from the course's
+		// configured default; prefer it when it exists.
+		$credit = CreditRepository::find( $certificate->user_id, $certificate->course_id );
+		if ( $credit instanceof Credit ) {
+			$ce_credits = $credit->credits;
 		}
 
 		$data = [

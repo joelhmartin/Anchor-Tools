@@ -94,6 +94,14 @@ final class ProgressService {
 	 *
 	 * Sequential progression requires every REQUIRED item before it to be
 	 * complete; optional items never block.
+	 *
+	 * One exception (audit F04): a quiz is not blocked by its PARENT lesson -
+	 * an earlier lesson whose completion_mode is `quiz_pass` with this quiz
+	 * as its `quiz_id`. That lesson's completion depends on the quiz, not the
+	 * other way round, so requiring it first deadlocked the natural "lesson,
+	 * then its quiz" order. Every other earlier required item still gates,
+	 * which includes everything before the parent lesson - so the quiz opens
+	 * exactly when its lesson does.
 	 */
 	public function is_item_available( int $user_id, int $course_id, int $item_id, string $item_type = 'lesson' ): bool {
 		$allowed = true;
@@ -107,6 +115,9 @@ final class ProgressService {
 			foreach ( Curriculum::items_before( $course_id, $item_id, $item_type ) as $earlier ) {
 				if ( ! $earlier['required'] ) {
 					continue;
+				}
+				if ( 'quiz' === $item_type && 'lesson' === $earlier['type'] && self::lesson_completes_by_quiz( (int) $earlier['id'], $item_id ) ) {
+					continue; // The quiz's own parent lesson (see docblock).
 				}
 				if ( ! \in_array( $earlier['type'] . ':' . $earlier['id'], $completed, true ) ) {
 					$allowed = false;
@@ -225,6 +236,43 @@ final class ProgressService {
 		$this->recalculate_course( $user_id, $course_id );
 
 		return $progress;
+	}
+
+	/** Is this lesson completed by passing exactly this quiz (`quiz_pass` + `quiz_id`)? */
+	public static function lesson_completes_by_quiz( int $lesson_id, int $quiz_id ): bool {
+		return 'quiz_pass' === (string) LessonEditor::setting( $lesson_id, 'completion_mode' )
+			&& (int) LessonEditor::setting( $lesson_id, 'quiz_id' ) === $quiz_id
+			&& $quiz_id > 0;
+	}
+
+	/**
+	 * Required `quiz_pass` lessons whose quiz a learner could never reach in
+	 * this course (audit F04): the quiz is absent from the curriculum
+	 * (`quiz_absent`) or placed before the lesson (`quiz_before_lesson`).
+	 * Both leave the lesson uncompletable. Surfaced as a warning when the
+	 * curriculum is saved (Admin\CourseEditor::save_curriculum()).
+	 *
+	 * @return array<int,array{lesson_id:int,quiz_id:int,problem:string}>
+	 */
+	public static function quiz_link_problems( int $course_id ): array {
+		$problems = [];
+		foreach ( Curriculum::items( $course_id ) as $item ) {
+			if ( 'lesson' !== $item['type'] || ! $item['required'] ) {
+				continue;
+			}
+			$lesson_id = (int) $item['id'];
+			if ( 'quiz_pass' !== (string) LessonEditor::setting( $lesson_id, 'completion_mode' ) ) {
+				continue;
+			}
+			$quiz_id  = (int) LessonEditor::setting( $lesson_id, 'quiz_id' );
+			$position = $quiz_id > 0 ? Curriculum::position( $course_id, $quiz_id, 'quiz' ) : -1;
+			if ( $position < 0 ) {
+				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'quiz_absent' ];
+			} elseif ( $position < (int) $item['index'] ) {
+				$problems[] = [ 'lesson_id' => $lesson_id, 'quiz_id' => $quiz_id, 'problem' => 'quiz_before_lesson' ];
+			}
+		}
+		return $problems;
 	}
 
 	/** Has the lesson's quiz been passed already? */

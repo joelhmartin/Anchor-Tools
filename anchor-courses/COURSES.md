@@ -196,6 +196,14 @@ one." for an enrolled learner locked by progression.
   `QuizService::STALE_CLAIM_SECONDS` (300) was orphaned by a crashed request
   and is re-opened, answers intact, by `QuizService::reopen_stale_claims()` -
   run by the daily sweep and by the learner's own next start.
+- **A lesson and its quiz** (audit F04): under sequential progression a quiz
+  is not blocked by its parent lesson - an earlier required lesson whose
+  `completion_mode` is `quiz_pass` with this quiz as `quiz_id`
+  (`ProgressService::lesson_completes_by_quiz()`). The quiz opens exactly when
+  that lesson does; every other earlier required item still gates it. Saving a
+  curriculum in which a required `quiz_pass` lesson's quiz is absent or placed
+  before the lesson (`ProgressService::quiz_link_problems()`) saves anyway and
+  redirects with the `curriculum_quiz_link` warning notice.
 - **Best attempt counts:** a completed item is never downgraded by a later failed
   attempt; a repeat pass keeps the original `completed_at`.
 - **Admin reset** (`ProgressService::reset_course()`): deletes progress rows,

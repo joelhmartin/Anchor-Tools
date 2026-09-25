@@ -165,9 +165,19 @@ one." for an enrolled learner locked by progression.
 - **Completion pipeline** (`CompletionService::complete()`): requires
   `is_enrolled()`, then an atomic `status <> 'completed'` UPDATE, then credit
   award, certificate issue (+ credit link), completion role,
-  `anchor_courses_course_completed`. The transition happens exactly once per
-  (user, course). `uncomplete()` reopens the row (`in_progress`); credits,
-  certificate and completion role are kept.
+  `anchor_courses_course_completed`. `anchor_courses_course_completed` fires
+  exactly once per (user, course) lifetime. `uncomplete()` reopens the row
+  (`in_progress`); credits, certificate and completion role are kept, and so
+  is `metadata.completion_effects` (audit finding c, 2026-09-25) - in
+  particular a stored `hook: done` is durable history, not a value the next
+  completion starts fresh from. A later `complete()` call on that row is
+  still a real transition (`in_progress` -> `completed` again), so credit/
+  certificate/completion-role get their usual idempotent pass, but
+  `run_effects()` sees the preserved `hook: done` and treats it as a
+  RE-completion: `anchor_courses_course_completed` is never fired a second
+  time for the same (user, course); `anchor_courses_course_recompleted`
+  fires instead, exactly once per uncomplete()/complete() cycle, for
+  integrations that want to react on a re-completion specifically.
 - **Completion effects are tracked and repaired** (audit F02): the enrolment's
   `metadata.completion_effects` = `{ credit, certificate, completion_role, hook }`,
   each `pending` → `done` / `failed` / `n/a` (credit: nothing to award;
@@ -326,7 +336,8 @@ one." for an enrolled learner locked by progression.
 | `anchor_courses_quiz_submitted` | `QuizAttempt $attempt, $user_id, $quiz_id, $course_id` | an attempt was graded |
 | `anchor_courses_quiz_passed` / `anchor_courses_quiz_failed` | same | after `_submitted`, by outcome |
 | `anchor_courses_quiz_expired` | same | a timed attempt closed by the `expire` policy (nothing graded) |
-| `anchor_courses_course_completed` | `$user_id, $course_id, Enrollment $enrollment` | once per completion; fired again on repair only if a consumer threw (`completion_effects.hook = failed`) |
+| `anchor_courses_course_completed` | `$user_id, $course_id, Enrollment $enrollment` | once per (user, course) lifetime; fired again on repair only if a consumer threw (`completion_effects.hook = failed`); never re-fires after an uncomplete()/complete() cycle |
+| `anchor_courses_course_recompleted` | `$user_id, $course_id, Enrollment $enrollment` | once per uncomplete() -> complete() cycle, in place of `anchor_courses_course_completed` |
 | `anchor_courses_ce_credit_awarded` | `$user_id, $course_id, Credit $credit` | a credit record was created |
 | `anchor_courses_certificate_issued` | `$user_id, $course_id, Certificate $certificate` | a certificate was created |
 | `anchor_courses_curriculum_saved` | `$course_id, array $modules` | `Curriculum::save()` |

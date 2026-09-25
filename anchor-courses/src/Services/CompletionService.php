@@ -57,6 +57,18 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * the hook, which is not idempotent and may already have fired once for
  * this row with nothing recorded to prove it.
  *
+ * `uncomplete()` (an admin reversal) reopens the row but leaves
+ * `completion_effects` untouched, so a `hook: done` it already recorded is
+ * durable history, not a value the next completion starts fresh from (audit
+ * finding c, 2026-09-25). A later `complete()` call therefore still counts
+ * as a fresh transition for `EnrollmentRepository::complete()`'s purposes -
+ * the row's status really did go from `in_progress` back to `completed` -
+ * but `run_effects()` reads the preserved `hook: done` and treats it as a
+ * RE-completion: the idempotent effects above it get their usual pass, but
+ * `anchor_courses_course_completed` never fires a second time for the same
+ * (user, course). `anchor_courses_course_recompleted` fires instead, for
+ * integrations that want to know about a re-completion specifically.
+ *
  * Effect execution itself IS serialised per (user, course) (Codex review,
  * PR #32 finding 1): a caller that flips a fresh row and a caller that then
  * finds it already complete and takes the repair branch can both reach
@@ -274,6 +286,17 @@ final class CompletionService {
 	private function run_effects( Enrollment $enrollment, bool $fresh ): bool {
 		$stored = (array) ( $enrollment->metadata[ self::EFFECTS_META ] ?? [] );
 
+		// Durable history (audit finding c, 2026-09-25): uncomplete() reopens
+		// the row (status back to `in_progress`) but never touches
+		// completion_effects, so a `hook: done` recorded by an earlier
+		// completion survives it. That means `$fresh` alone - true again for
+		// the very next complete() call, since EnrollmentRepository::
+		// complete()'s guard is the STATUS, not this metadata - can no
+		// longer be read as "this (user, course) has never completed
+		// before". Check the stored hook state before it gets overwritten
+		// below.
+		$previously_fired_hook = self::EFFECT_DONE === ( $stored['hook'] ?? '' );
+
 		// An untracked completed row's real outcome is UNKNOWN, not done: it
 		// predates tracking, or the previous call's save_effects() failed
 		// while the effects themselves still ran. Treat it like a fresh
@@ -288,6 +311,16 @@ final class CompletionService {
 			$state = \array_fill_keys( self::EFFECTS, self::EFFECT_PENDING );
 			if ( $untracked ) {
 				$state['hook'] = self::EFFECT_NA;
+			} elseif ( $previously_fired_hook ) {
+				// A re-completion after uncomplete(), not a first-time one:
+				// anchor_courses_course_completed already fired once for
+				// this (user, course) and must never fire a second time
+				// (documented "once per user/course"). The idempotent
+				// effects above it (credit, certificate, completion role)
+				// still get a pass in the loop below - a re-issued
+				// certificate after a settings change, say - but `hook`
+				// stays `done` and is never queued into $todo.
+				$state['hook'] = self::EFFECT_DONE;
 			}
 		} else {
 			$state = $stored;
@@ -308,6 +341,33 @@ final class CompletionService {
 					}
 				}
 			}
+		}
+
+		// The re-completion signal (audit finding c, 2026-09-25): fires
+		// exactly once per actual re-completion, tied to the same one-caller
+		// guarantee as `hook` above - `$fresh` is true only for the call
+		// that just won EnrollmentRepository::complete()'s atomic UPDATE,
+		// and $previously_fired_hook can only be true here on a row
+		// uncomplete() reopened, never on this row's first-ever completion.
+		// Kept outside the $todo loop (and untracked by completion_effects)
+		// because it is not one of the once-per-lifetime pipeline effects -
+		// it is allowed to fire again on every subsequent uncomplete() ->
+		// complete() cycle.
+		if ( $fresh && $previously_fired_hook ) {
+			Log::write( 'course_recompleted', [ 'user' => $enrollment->user_id, 'course' => $enrollment->course_id ] );
+			/**
+			 * Fires when a learner completes a course they had already
+			 * completed once before (and later uncompleted). Integrations
+			 * that must react only once per lifetime should use
+			 * `anchor_courses_course_completed`, which never fires again for
+			 * the same (user, course); use this one to opt in to reacting on
+			 * every re-completion instead.
+			 *
+			 * @param int        $user_id
+			 * @param int        $course_id
+			 * @param Enrollment $enrollment
+			 */
+			\do_action( 'anchor_courses_course_recompleted', $enrollment->user_id, $enrollment->course_id, $enrollment );
 		}
 
 		$todo = \array_values( \array_filter(
@@ -405,11 +465,14 @@ final class CompletionService {
 				Log::write( 'course_completed', [ 'user' => $user_id, 'course' => $course_id ] );
 
 				/**
-				 * Fires once, when a learner completes a course. If a consumer
-				 * throws, the effect is recorded `failed` and the action is
-				 * fired again by the next complete() call (the repair path),
-				 * so a consumer must tolerate being called again after it
-				 * or a sibling threw.
+				 * Fires once per (user, course) lifetime, when a learner
+				 * first completes a course - including after an
+				 * uncomplete()/complete() cycle, which never re-fires this
+				 * (see `anchor_courses_course_recompleted` for that case). If
+				 * a consumer throws, the effect is recorded `failed` and the
+				 * action is fired again by the next complete() call (the
+				 * repair path), so a consumer must tolerate being called
+				 * again after it or a sibling threw.
 				 *
 				 * @param int        $user_id
 				 * @param int        $course_id
@@ -455,7 +518,11 @@ final class CompletionService {
 	 *
 	 * Credits and certificates are NOT revoked, and the completion role is NOT
 	 * removed: they are a record of something that happened, and quietly
-	 * deleting them would rewrite history.
+	 * deleting them would rewrite history. `completion_effects` (in
+	 * particular `hook: done`) is left alone for the same reason (audit
+	 * finding c, 2026-09-25): it is what tells a later `complete()` call this
+	 * is a RE-completion, so `anchor_courses_course_completed` is not fired
+	 * a second time for this (user, course).
 	 */
 	public function uncomplete( int $user_id, int $course_id ): bool {
 		$enrollment = EnrollmentRepository::find( $user_id, $course_id );

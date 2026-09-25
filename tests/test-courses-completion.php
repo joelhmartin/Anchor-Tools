@@ -44,6 +44,7 @@ class Test_Courses_Completion extends Anchor_Courses_TestCase {
 
 	public function tear_down() {
 		remove_all_actions( 'anchor_courses_course_completed' );
+		remove_all_actions( 'anchor_courses_course_recompleted' );
 		remove_all_actions( 'anchor_courses_ce_credit_awarded' );
 		remove_all_actions( 'anchor_courses_certificate_issued' );
 		remove_all_actions( 'anchor_courses_enrollment_status_changed' );
@@ -202,6 +203,54 @@ class Test_Courses_Completion extends Anchor_Courses_TestCase {
 		$this->assertFalse( $this->completion->is_complete( $this->user, $this->course ) );
 		$this->assertNotNull( CreditRepository::find( $this->user, $this->course ), 'Earned credits are never revoked.' );
 		$this->assertNotNull( CertificateRepository::find( $this->user, $this->course ) );
+	}
+
+	/**
+	 * Audit finding (c), 2026-09-25: uncomplete() must not clear the
+	 * `hook: done` marker `complete()` relies on to know this (user, course)
+	 * has already fired `anchor_courses_course_completed` once. A
+	 * complete() -> uncomplete() -> complete() cycle must fire the
+	 * once-per-lifetime hook exactly once, fire the new
+	 * `anchor_courses_course_recompleted` hook exactly once (for the
+	 * re-completion), and never mint a second credit or certificate row.
+	 */
+	public function test_recompletion_after_uncomplete_never_refires_the_completed_hook() {
+		remove_all_actions( 'anchor_courses_course_recompleted' );
+
+		$completed_count   = 0;
+		$recompleted_count = 0;
+		add_action( 'anchor_courses_course_completed', function () use ( &$completed_count ) { $completed_count++; } );
+		add_action( 'anchor_courses_course_recompleted', function () use ( &$recompleted_count ) { $recompleted_count++; } );
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->lesson );
+		$this->assertTrue( $this->completion->uncomplete( $this->user, $this->course ) );
+		$this->assertTrue( $this->completion->complete( $this->user, $this->course ) );
+
+		$this->assertSame( 1, $completed_count, 'anchor_courses_course_completed must fire exactly once per (user, course) lifetime.' );
+		$this->assertSame( 1, $recompleted_count, 'anchor_courses_course_recompleted must fire exactly once for the re-completion.' );
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ) );
+		$this->assertCount( 1, CreditRepository::for_user( $this->user ), 'A re-completion must not mint a second credit row.' );
+		$this->assertCount( 1, CertificateRepository::for_user( $this->user ), 'A re-completion must not mint a second certificate row.' );
+
+		remove_all_actions( 'anchor_courses_course_recompleted' );
+	}
+
+	/**
+	 * The recompletion signal only ever fires for an actual uncomplete() ->
+	 * complete() cycle - never on an ordinary repair pass against a row
+	 * that was never uncompleted.
+	 */
+	public function test_recompletion_hook_never_fires_on_an_ordinary_repair() {
+		remove_all_actions( 'anchor_courses_course_recompleted' );
+		$recompleted_count = 0;
+		add_action( 'anchor_courses_course_recompleted', function () use ( &$recompleted_count ) { $recompleted_count++; } );
+
+		$this->progress->complete_lesson( $this->user, $this->course, $this->lesson );
+		$this->completion->complete( $this->user, $this->course ); // Repair pass on an already-completed row.
+
+		$this->assertSame( 0, $recompleted_count );
+
+		remove_all_actions( 'anchor_courses_course_recompleted' );
 	}
 
 	/**

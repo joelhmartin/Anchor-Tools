@@ -22,6 +22,21 @@ class Test_Shared_Assets extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Owner feedback (drag cursor/text-selection): anchor-carousel.css now
+	 * carries rules (.anchor-carousel-drag, .is-dragging) that apply to any
+	 * carousel-mode track, gallery included - not just the non-gallery
+	 * layout rules it used to be scoped to. The gallery style must depend on
+	 * the carousel STYLE handle (previously only the script did), or those
+	 * rules never load on a gallery page at all.
+	 */
+	public function test_gallery_style_depends_on_carousel_style() {
+		do_action( 'wp_enqueue_scripts' );
+		$gallery_style = wp_styles()->registered['anchor-video-gallery'] ?? null;
+		$this->assertNotNull( $gallery_style, 'gallery module must be enabled in tests/bootstrap.php' );
+		$this->assertContains( 'anchor-carousel', $gallery_style->deps );
+	}
+
+	/**
 	 * Regression: enqueue_admin_assets() on the gallery edit screen used to
 	 * register 'anchor-video-gallery' with NO deps, so window.AnchorLightbox
 	 * and window.AnchorCarousel were undefined in wp-admin even though the
@@ -73,6 +88,7 @@ class Test_Shared_Assets extends WP_UnitTestCase {
 		$gallery_style = wp_styles()->registered['anchor-video-gallery'] ?? null;
 		$this->assertNotNull( $gallery_style, 'anchor-video-gallery style must be enqueued on the gallery edit screen.' );
 		$this->assertContains( 'anchor-lightbox', $gallery_style->deps );
+		$this->assertContains( 'anchor-carousel', $gallery_style->deps );
 
 		$post = null;
 		set_current_screen( 'front' );

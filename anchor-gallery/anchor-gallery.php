@@ -1402,7 +1402,11 @@ class Anchor_Gallery_Module {
             // hook) exactly like the front-end registration in
             // enqueue_assets() below, so window.AnchorLightbox and
             // window.AnchorCarousel are defined before this script runs.
-            wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), ['anchor-lightbox'], filemtime($base_dir . 'anchor-video-slider.css'));
+            // anchor-carousel is now also a style dependency (not just a
+            // script one): anchor-carousel.css carries the shared
+            // grab/grabbing cursor and drag text-selection guard, which
+            // apply to any carousel-mode track, gallery included.
+            wp_enqueue_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.css'));
             wp_enqueue_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.js'), true);
 
             // Admin
@@ -1436,7 +1440,7 @@ class Anchor_Gallery_Module {
             wp_register_style('up-frontend', Anchor_Asset_Loader::url('anchor-universal-popups/assets/frontend.css'), [], filemtime($up_css_path));
         }
 
-        wp_register_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), ['anchor-lightbox'], filemtime($base_dir . 'anchor-video-slider.css'));
+        wp_register_style('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.css'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.css'));
         wp_register_script('anchor-video-gallery', Anchor_Asset_Loader::url('anchor-gallery/assets/anchor-video-slider.js'), ['anchor-lightbox', 'anchor-carousel'], filemtime($base_dir . 'anchor-video-slider.js'), true);
     }
 

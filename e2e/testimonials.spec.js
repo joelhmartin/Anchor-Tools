@@ -214,6 +214,58 @@ test.describe('mouse drag (shared carousel Pointer Events)', () => {
 		await page.locator('.anchor-testimonial__media').nth(1).click();
 		await expect(page.locator('.avg-modal')).toBeVisible();
 	});
+
+	test('a drag in progress sets .is-dragging on the root and shows the grabbing cursor on the track', async ({ page }) => {
+		const track = page.locator('.anchor-testimonials__track').first();
+
+		// Fires pointerdown + pointermove only (no pointerup yet), so the
+		// drag is still "in progress" when we check state - mirrors a real
+		// click-and-hold. Cleans up with a real pointerup afterward.
+		await page.evaluate(() => {
+			const el = document.querySelector('.anchor-testimonials__track');
+			const box = el.getBoundingClientRect();
+			const y = box.top + box.height / 2;
+			const startX = box.left + box.width / 2;
+			const fire = (type, x) =>
+				el.dispatchEvent(
+					new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0, clientX: x, clientY: y })
+				);
+			fire('pointerdown', startX);
+			fire('pointermove', startX - 60);
+		});
+
+		const root = page.locator('.anchor-testimonials').first();
+		await expect(root).toHaveClass(/is-dragging/);
+		await expect(track).toHaveCSS('cursor', 'grabbing');
+
+		// Release, so the class/cursor don't leak into whatever runs next.
+		await page.evaluate(() => {
+			document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button: 0 }));
+		});
+		await expect(root).not.toHaveClass(/is-dragging/);
+		await expect(track).toHaveCSS('cursor', 'grab');
+	});
+
+	test('a real drag across quote text does not select it', async ({ page }) => {
+		// Unlike the synthetic-dispatch drags above (deterministic click
+		// targeting), native text selection only responds to trusted input -
+		// a synthetic PointerEvent dispatch wouldn't exercise the browser's
+		// own selection behavior at all, so this uses real OS-level-equivalent
+		// mouse actions (page.mouse), the same reasoning that applied to the
+		// native-scroll touch test in shared-carousel.spec.js.
+		const quote = page.locator('.anchor-testimonial__quote').first();
+		await expect(quote).toBeVisible();
+		const box = await quote.boundingBox();
+		const y = box.y + box.height / 2;
+
+		await page.mouse.move(box.x + 4, y);
+		await page.mouse.down();
+		await page.mouse.move(box.x + box.width - 4, y, { steps: 10 });
+		await page.mouse.up();
+
+		const selectedText = await page.evaluate(() => window.getSelection().toString());
+		expect(selectedText).toBe('');
+	});
 });
 
 test.describe('mobile viewport (390px)', () => {

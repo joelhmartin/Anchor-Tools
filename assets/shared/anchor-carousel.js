@@ -199,17 +199,62 @@
     // delegation (e.g. `e.target.closest('.anchor-testimonial__media')` in
     // testimonials.js, `.avg-tile` in the gallery), since the click's target
     // becomes the track itself instead of the tapped/clicked descendant.
+    //
+    // Owner feedback: dragging should look and feel like the standard
+    // "grab this and drag it" affordance - a grab cursor at rest, a
+    // grabbing cursor while the button is held down, and no accidental text
+    // selection or native image/link drag-out along the way. All of that is
+    // driven from here: .anchor-carousel-drag (a permanent class this module
+    // adds to the track, not a consumer-specific one) carries the default
+    // grab cursor and the links/buttons-keep-pointer-cursor override in
+    // anchor-carousel.css, .is-dragging (toggled on `root` for the duration
+    // the button is held down, see setDragging() below) carries the
+    // grabbing cursor and user-select: none, and img/a inside the track get
+    // draggable = false up front.
 
     if (mode === 'carousel') {
       track.style.touchAction = 'pan-y';
+
+      // A module-owned marker class (not a consumer-specific one like
+      // .anchor-carousel__track or .avg-track, which not every consumer
+      // adds to its track) that anchor-carousel.css hooks the default
+      // grab cursor, the grabbing-while-dragging cursor and the
+      // links/buttons-keep-their-own-cursor override onto, so this works
+      // identically for every consumer regardless of its own class names.
+      track.classList.add('anchor-carousel-drag');
+
+      // Prevent the browser's native "drag this image/link out of the
+      // page" gesture from starting at all (belt-and-suspenders alongside
+      // the dragstart preventDefault below, which stops it after the fact) -
+      // either way it would otherwise fight our own pointer-based drag and
+      // show the OS's own drag cursor/ghost instead of grab/grabbing.
+      Array.prototype.forEach.call(track.querySelectorAll('img, a'), function(el) {
+        el.draggable = false;
+      });
     }
 
     (function initDrag() {
       if (mode !== 'carousel') return;
 
-      var startX = 0, startY = 0, deltaX = 0, dragging = false, activePointerId = null;
+      // `dragging` and `pointerActive` are deliberately separate:
+      // `dragging` answers "should pointermove still treat this as a
+      // horizontal slide-drag" (false the moment a vertical scroll wins,
+      // see the pointermove handler below), while `pointerActive` answers
+      // "is the pointer/mouse button still physically held down" and stays
+      // true across that same abandonment - the owner asked for the
+      // standard "grabbing while click-holding" cursor, which tracks the
+      // button state, not whether a slide change will actually happen.
+      var startX = 0, startY = 0, deltaX = 0, dragging = false, pointerActive = false, activePointerId = null;
       var threshold = 40;
       var dragEndedAt = 0;
+
+      // Both the grabbing cursor and the text-selection guard are keyed off
+      // one .is-dragging class added to `root` (not `track`) - the CSS
+      // scopes the grabbing cursor and user-select: none from there.
+      function setDragging(active) {
+        root.classList.toggle('is-dragging', active);
+      }
+
       // How long after a drag ends its trailing click stays suppressed.
       // Because pointerup listens on `document` (not `track`, see above), a
       // drag that ends outside the track's bounds never fires a `click` on
@@ -233,7 +278,9 @@
         startY = e.clientY;
         deltaX = 0;
         dragging = true;
+        pointerActive = true;
         activePointerId = e.pointerId;
+        setDragging(true);
       });
 
       on(document, 'pointermove', function(e) {
@@ -241,15 +288,21 @@
         deltaX = e.clientX - startX;
         var deltaY = e.clientY - startY;
         // If vertical scroll is dominant, release the drag back to native
-        // scrolling instead of fighting it.
+        // scrolling instead of fighting it. pointerActive (and so the
+        // grabbing cursor/text-selection guard) deliberately stays on until
+        // the button is actually released - only the slide-drag logic
+        // itself is abandoned here.
         if (Math.abs(deltaY) > Math.abs(deltaX)) { dragging = false; return; }
         e.preventDefault();
       }, { passive: false });
 
       function endDrag(e) {
-        if (!dragging || e.pointerId !== activePointerId) return;
+        if (!pointerActive || e.pointerId !== activePointerId) return;
+        var wasDragging = dragging;
         dragging = false;
-        if (Math.abs(deltaX) > threshold) {
+        pointerActive = false;
+        setDragging(false);
+        if (wasDragging && Math.abs(deltaX) > threshold) {
           dragEndedAt = Date.now();
           scrollSlider(deltaX < 0 ? 1 : -1);
         }
@@ -259,6 +312,8 @@
       on(document, 'pointercancel', function(e) {
         if (e.pointerId !== activePointerId) return;
         dragging = false;
+        pointerActive = false;
+        setDragging(false);
       });
 
       // Prevent the browser's native "drag an image out of the page"
@@ -339,6 +394,9 @@
         l.el.removeEventListener(l.evt, l.handler, l.opts);
       });
       boundListeners = [];
+      // In case destroy() is called mid-drag (e.g. a re-render), don't leave
+      // the grabbing cursor/text-selection guard stuck on.
+      root.classList.remove('is-dragging');
     }
 
     return {

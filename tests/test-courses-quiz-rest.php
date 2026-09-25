@@ -350,6 +350,40 @@ class Test_Courses_Quiz_Rest extends Anchor_Courses_TestCase {
 		$this->assertNull( $response->get_data()['attempt']['score'] );
 	}
 
+	/**
+	 * Codex review, PR #32 finding 2: a failed submitted_at/duration_seconds
+	 * write - a second statement AFTER the atomic in_progress -> expired
+	 * transition - must never leave the REST response (or a later read)
+	 * reporting the pre-transition `in_progress` status.
+	 */
+	public function test_submitting_after_the_deadline_with_a_failed_detail_write_still_reports_expired() {
+		global $wpdb;
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		wp_set_current_user( $this->user );
+		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		$wpdb->suppress_errors( true );
+		$break = static function ( $query ) {
+			return preg_match( '/^UPDATE `?\S*anchor_courses_quiz_attempts`? SET `?submitted_at`?/', (string) $query )
+				? 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor'
+				: $query;
+		};
+		add_filter( 'query', $break );
+		$response = $this->request( 'POST', "/quiz-attempts/{$attempt_id}/submit", [ 'answers' => [ $this->q1 => 'a2', $this->q2 => 'b1' ] ] );
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame( 'expired', $response->get_data()['attempt']['status'], 'The transition happened for real; the response must not fall back to the stale in_progress object.' );
+
+		$reread = $this->request( 'GET', "/quiz-attempts/{$attempt_id}", [ 'course_id' => $this->course ] );
+		$this->assertSame( 'expired', $reread->get_data()['attempt']['status'], 'A later read must agree - not report stale in_progress data.' );
+	}
+
 	public function test_a_no_answer_submit_body_defaults_to_an_empty_object() {
 		wp_set_current_user( $this->user );
 		$attempt_id = $this->request( 'POST', "/quizzes/{$this->quiz}/attempts", [ 'course_id' => $this->course ] )->get_data()['attempt']['id'];

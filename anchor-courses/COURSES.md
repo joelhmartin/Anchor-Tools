@@ -229,6 +229,18 @@ one." for an enrolled learner locked by progression.
   `in_progress -> submitted` (or `-> expired`) UPDATE before grading, so
   concurrent submits grade once. A learner-initiated submit/answer from somebody
   no longer enrolled is refused (`not_enrolled`).
+- **The `expire` timer policy re-reads the row after its own transition**
+  (Codex review, PR #32 finding 2): it claims the attempt
+  (`in_progress -> expired`) first, then writes `submitted_at`/
+  `duration_seconds` in a second statement. If that second write fails
+  (`QuizAttemptRepository::update()`'s null-on-error contract), `submit()`
+  re-reads the row with `find()` rather than falling back to the
+  PRE-transition `in_progress` object it read at the top of the method - the
+  transition already happened for real, so the fired
+  `anchor_courses_quiz_expired` hook, a REST read and
+  `sweep_expired_attempts()`'s count must all see the real `expired` status,
+  never a stale one. A failed detail write is logged as
+  `quiz_expire_detail_save_failed`.
 - **A grade counts only once it is saved** (audit F03):
   `QuizAttemptRepository::update()` returns `null` when `$wpdb->update()`
   reports an error (a 0-row no-change update is still a success). `submit()`

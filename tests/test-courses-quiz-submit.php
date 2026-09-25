@@ -170,6 +170,62 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 		$this->assertNull( $result->score );
 	}
 
+	/**
+	 * Codex review, PR #32 finding 2: the `expire` policy claims the row
+	 * ('in_progress' -> 'expired') with an atomic transition, THEN writes
+	 * submitted_at/duration_seconds in a second statement. If that second
+	 * write fails, QuizAttemptRepository::update()'s null-on-error contract
+	 * must never make submit() fall back to the PRE-transition `in_progress`
+	 * object it read at the top of the method - the transition already
+	 * happened for real, so the returned object, the fired hook, a re-read
+	 * of the row and the sweep's count must all agree it is `expired`.
+	 */
+	public function test_a_failed_expire_detail_write_still_reports_expired_not_the_stale_in_progress_object() {
+		global $wpdb;
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+		$this->quizzes->save_answer( $attempt->id, $this->q1, 'a2' );
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+
+		$seen = [];
+		add_action(
+			'anchor_courses_quiz_expired',
+			static function ( $expired ) use ( &$seen ) {
+				$seen[] = $expired->status;
+			}
+		);
+
+		// Break only the DETAIL write (submitted_at/duration_seconds) - the
+		// earlier `in_progress -> expired` transition is a separate
+		// statement and still succeeds for real.
+		$wpdb->suppress_errors( true );
+		$break = static function ( $query ) {
+			return preg_match( '/^UPDATE `?\S*anchor_courses_quiz_attempts`? SET `?submitted_at`?/', (string) $query )
+				? 'SELECT anchor_courses_injected_failure FROM no_such_table_anchor'
+				: $query;
+		};
+		add_filter( 'query', $break );
+
+		// Drive it through the sweep (audit F03's real caller for this path,
+		// and the finding's own "the sweep's count is off" symptom) rather
+		// than calling submit() directly, so the count itself is proven, not
+		// just the return value.
+		$closed = $this->quizzes->sweep_expired_attempts();
+
+		remove_filter( 'query', $break );
+		$wpdb->suppress_errors( false );
+
+		$this->assertSame( 1, $closed, "The sweep's count must not be thrown off by the failed detail write." );
+		$this->assertSame( [ 'expired' ], $seen, 'The expiry hook must see the real status, not the pre-transition one.' );
+
+		$reread = QuizAttemptRepository::find( $attempt->id );
+		$this->assertSame( 'expired', $reread->status, 'The row itself really did transition.' );
+	}
+
 	public function test_an_in_window_submission_records_its_duration() {
 		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600 ] );
 		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );

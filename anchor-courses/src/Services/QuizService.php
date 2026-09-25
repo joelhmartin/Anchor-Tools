@@ -524,14 +524,25 @@ final class QuizService {
 			if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'expired' ) ) {
 				return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
 			}
-			$expired = QuizAttemptRepository::update(
+			$saved = QuizAttemptRepository::update(
 				$attempt_id,
 				[
 					'submitted_at'     => Clock::now(),
 					'duration_seconds' => \max( 0, $now - Clock::to_timestamp( $attempt->started_at ) ),
 				]
 			);
-			$expired = $expired instanceof QuizAttempt ? $expired : $attempt;
+			if ( ! $saved instanceof QuizAttempt ) {
+				Log::write( 'quiz_expire_detail_save_failed', [ 'attempt' => $attempt_id ] );
+			}
+			// The transition just above is the truth (Codex review, finding
+			// 2): re-read the row regardless of whether the detail write
+			// landed, so a failed second write never substitutes the
+			// PRE-transition `in_progress` $attempt for a row that IS now
+			// `expired` - the expiry hook, REST and the sweep must all see
+			// the real status even when submitted_at/duration_seconds did
+			// not get durably recorded.
+			$expired = QuizAttemptRepository::find( $attempt_id );
+			$expired = $expired instanceof QuizAttempt ? $expired : $attempt; // Defensive: the row we just transitioned should always be readable.
 			$this->progress->record_item( $attempt->user_id, $attempt->course_id, $attempt->quiz_id, 'quiz', 'failed' );
 
 			Log::write( 'quiz_expired', [ 'attempt' => $attempt_id ] );

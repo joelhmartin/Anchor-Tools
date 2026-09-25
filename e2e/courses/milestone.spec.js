@@ -89,7 +89,9 @@ test('milestone: complete a lesson, fail a quiz, retry, pass, finish the course'
   await page.locator('.anchor-quiz-question').nth(0).locator('input[value="a2"]').check();
   await page.locator('.anchor-quiz-question').nth(1).locator('input[value="b1"]').check();
   await page.locator('.anchor-quiz-form button[type="submit"]').click();
+  // "Not passed." also contains "passed" - rule it out explicitly.
   await expect(page.locator('.anchor-quiz-result')).toContainText(/passed/i);
+  await expect(page.locator('.anchor-quiz-result')).not.toContainText(/not passed/i);
 
   // 6) The course is finished: 100%, credits and a certificate.
   await page.reload();

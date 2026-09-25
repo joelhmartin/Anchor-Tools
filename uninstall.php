@@ -67,7 +67,8 @@ $wpdb->query(
  *
  *   update_option( 'anchor_courses_delete_data_on_uninstall', 1, false );
  *
- * Options and the minted capabilities go with the tables, never before them.
+ * Options, the minted capabilities, every anchor_course_* role and the
+ * _anchor_course_grants user meta go with the tables, never before them.
  */
 if ( get_option( 'anchor_courses_delete_data_on_uninstall' ) ) {
 	require_once __DIR__ . '/anchor-courses/uninstall-tables.php';
@@ -95,6 +96,18 @@ if ( get_option( 'anchor_courses_delete_data_on_uninstall' ) ) {
 			$anchor_courses_role->remove_cap( $anchor_courses_cap );
 		}
 	}
+
+	// Every minted course role - access `anchor_course_{id}` and completion
+	// `anchor_course_{id}_completed` - and the per-user grants map
+	// (Support\Roles::GRANTS_META). Literal pattern and key: no plugin
+	// classes are loaded here. remove_role() strips the definition; users
+	// who held one simply stop matching it.
+	foreach ( array_keys( wp_roles()->roles ) as $anchor_courses_role_slug ) {
+		if ( preg_match( '/^anchor_course_\d+(?:_completed)?$/', (string) $anchor_courses_role_slug ) ) {
+			remove_role( (string) $anchor_courses_role_slug );
+		}
+	}
+	delete_metadata( 'user', 0, '_anchor_course_grants', '', true );
 
 	// Daily expiry sweep (Task 14).
 	wp_clear_scheduled_hook( 'anchor_courses_expire_sweep' );

@@ -53,7 +53,7 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 	public function tear_down() {
 		remove_all_filters( 'anchor_courses_now' );
 		remove_all_filters( 'anchor_courses_quiz_result' );
-		foreach ( [ 'submitted', 'passed', 'failed' ] as $event ) {
+		foreach ( [ 'submitted', 'passed', 'failed', 'expired' ] as $event ) {
 			remove_all_actions( 'anchor_courses_quiz_' . $event );
 		}
 		parent::tear_down();
@@ -338,5 +338,60 @@ class Test_Courses_Quiz_Submit extends Anchor_Courses_TestCase {
 		$this->assertSame( 'completed', $row->status, 'A failed retake must not downgrade a passed quiz.' );
 		$this->assertSame( $completed_at, $row->completed_at, 'completed_at is the first pass, not the retake.' );
 		$this->assertTrue( $m->progress->is_item_available( $user, $course, $after, 'lesson' ), 'The next lesson must stay unlocked.' );
+	}
+
+	/**
+	 * Final review minor: submit() is atomic. A second submit racing the
+	 * first (simulated by re-entering submit() from inside the grading
+	 * filter, i.e. after the first call read the attempt as open) must find
+	 * the attempt already claimed and grade nothing.
+	 */
+	public function test_concurrent_submits_grade_once() {
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+		$fired   = 0;
+		add_action( 'anchor_courses_quiz_submitted', function () use ( &$fired ) { $fired++; }, 10, 4 );
+
+		$nested  = null;
+		$entered = false;
+		add_filter(
+			'anchor_courses_quiz_result',
+			function ( $result ) use ( $attempt, &$nested, &$entered ) {
+				if ( ! $entered ) {
+					$entered = true; // Set BEFORE re-entering: without the claim, the nested call grades and re-enters this filter.
+					$nested  = $this->quizzes->submit( $attempt->id, [ $this->q1 => 'a1', $this->q2 => 'b2' ] );
+				}
+				return $result;
+			}
+		);
+
+		$graded = $this->quizzes->submit( $attempt->id, [ $this->q1 => 'a2', $this->q2 => 'b1' ] );
+
+		$this->assertSame( 1, $fired, 'Two submits, one grading.' );
+		$this->assertSame( 'graded', $graded->status );
+		$this->assertSame( 100.0, $graded->score );
+		$this->assertInstanceOf( QuizAttempt::class, $nested );
+		$this->assertNotSame( 'graded', $nested->status, 'The losing submit returns the claimed attempt ungraded.' );
+	}
+
+	/** Final review minor: the `expire` timer path fires its own hook, once. */
+	public function test_the_expire_policy_fires_quiz_expired_once() {
+		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600, 'on_timer_expiry' => 'expire' ] );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:00:00 UTC' ) );
+		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
+
+		$seen = [];
+		add_action(
+			'anchor_courses_quiz_expired',
+			function ( $a, $user_id, $quiz_id, $course_id ) use ( &$seen ) { $seen[] = [ $a->status, $user_id, $quiz_id, $course_id ]; },
+			10,
+			4
+		);
+
+		remove_all_filters( 'anchor_courses_now' );
+		add_filter( 'anchor_courses_now', static fn() => strtotime( '2026-05-01 10:30:00 UTC' ) );
+		$this->quizzes->submit( $attempt->id, [] );
+		$this->quizzes->submit( $attempt->id, [] );
+
+		$this->assertSame( [ [ 'expired', $this->user, $this->quiz, $this->course ] ], $seen );
 	}
 }

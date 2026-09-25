@@ -119,6 +119,33 @@ final class QuizAttemptRepository {
 		return self::find( $id );
 	}
 
+	/**
+	 * Atomically move ONE attempt from $from to $to (final review: atomic
+	 * submit). The guard is the WHERE clause, checked by the database via
+	 * rows_affected - the same shape as EnrollmentRepository::complete():
+	 * of two concurrent callers exactly one matches the row, so exactly one
+	 * goes on to grade (or expire) it.
+	 *
+	 * @return bool True only for the caller whose UPDATE made the transition.
+	 */
+	public static function transition( int $id, string $from, string $to ): bool {
+		global $wpdb;
+
+		self::assert_enum( $to, QuizAttempt::STATUSES, 'quiz attempt status' );
+
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . self::table() . ' SET status = %s, updated_at = %s WHERE id = %d AND status = %s', // phpcs:ignore WordPress.DB.PreparedSQL
+				$to,
+				Clock::now(),
+				$id,
+				$from
+			)
+		);
+
+		return 1 === (int) $wpdb->rows_affected;
+	}
+
 	public static function open_attempt( int $user_id, int $quiz_id ): ?QuizAttempt {
 		global $wpdb;
 		$row = $wpdb->get_row(

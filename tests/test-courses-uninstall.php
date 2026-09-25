@@ -172,4 +172,39 @@ class Test_Courses_Uninstall extends Anchor_Courses_TestCase {
 			$this->assertFalse( $administrator->has_cap( $cap ), "administrator should have lost {$cap}." );
 		}
 	}
+
+	/**
+	 * Final review minor: the opt-in uninstall also removes every minted
+	 * course role (access and completion) and the grants user meta - and
+	 * nothing that merely looks similar.
+	 */
+	public function test_uninstall_with_the_option_removes_course_roles_and_grant_meta() {
+		$this->define_wp_uninstall_plugin();
+		$this->allow_real_ddl();
+		add_role( 'anchor_course_4242', 'Course: X', [] );
+		add_role( 'anchor_course_4242_completed', 'Completed: X', [] );
+		add_role( 'anchor_course_manager', 'Not a course role', [] );
+		$user = self::factory()->user->create();
+		update_user_meta( $user, '_anchor_course_grants', [ 4242 => [ 'source' => 'manual' ] ] );
+		update_option( 'anchor_courses_delete_data_on_uninstall', 1, false );
+
+		require ANCHOR_TOOLS_PLUGIN_DIR . 'uninstall.php';
+
+		$this->assertNull( get_role( 'anchor_course_4242' ) );
+		$this->assertNull( get_role( 'anchor_course_4242_completed' ) );
+		$this->assertNotNull( get_role( 'anchor_course_manager' ), 'Only anchor_course_{id}[_completed] slugs are course roles.' );
+		$this->assertSame( '', get_user_meta( $user, '_anchor_course_grants', true ) );
+		remove_role( 'anchor_course_manager' );
+	}
+
+	public function test_uninstall_without_the_option_keeps_course_roles() {
+		$this->define_wp_uninstall_plugin();
+		delete_option( 'anchor_courses_delete_data_on_uninstall' );
+		add_role( 'anchor_course_4243', 'Course: Y', [] );
+
+		require ANCHOR_TOOLS_PLUGIN_DIR . 'uninstall.php';
+
+		$this->assertNotNull( get_role( 'anchor_course_4243' ) );
+		remove_role( 'anchor_course_4243' );
+	}
 }

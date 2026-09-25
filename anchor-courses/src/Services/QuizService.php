@@ -357,7 +357,10 @@ final class QuizService {
 	 * Grade and close an attempt (brief 8.4).
 	 *
 	 * Idempotent: an attempt that is no longer in progress is returned as-is -
-	 * a second submit() neither re-grades nor re-fires (brief 26).
+	 * a second submit() neither re-grades nor re-fires (brief 26). Atomic
+	 * too: the attempt is claimed with a conditional UPDATE
+	 * (QuizAttemptRepository::transition()) before it is graded or expired,
+	 * so two concurrent submits grade it exactly once.
 	 *
 	 * The timer is checked BEFORE the submitted answers are accepted, so a late
 	 * POST can never overwrite what was saved inside the window (brief 8.5).
@@ -409,17 +412,37 @@ final class QuizService {
 		$policy   = $this->timer_policy( $attempt );
 
 		if ( $late && 'expire' === $policy ) {
+			// Claim the attempt first (atomic): a concurrent submit or sweep
+			// that got here too loses the UPDATE and returns the winner's row.
+			if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'expired' ) ) {
+				return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
+			}
 			$expired = QuizAttemptRepository::update(
 				$attempt_id,
 				[
-					'status'           => 'expired',
 					'submitted_at'     => Clock::now(),
 					'duration_seconds' => \max( 0, $now - Clock::to_timestamp( $attempt->started_at ) ),
 				]
 			);
+			$expired = $expired instanceof QuizAttempt ? $expired : $attempt;
 			$this->progress->record_item( $attempt->user_id, $attempt->course_id, $attempt->quiz_id, 'quiz', 'failed' );
+
+			Log::write( 'quiz_expired', [ 'attempt' => $attempt_id ] );
+
+			/**
+			 * Fires once, when a timed attempt is closed by the `expire`
+			 * timer policy (nothing graded). A graded attempt fires
+			 * anchor_courses_quiz_submitted + _passed/_failed instead.
+			 *
+			 * @param QuizAttempt $expired
+			 * @param int         $user_id
+			 * @param int         $quiz_id
+			 * @param int         $course_id
+			 */
+			\do_action( 'anchor_courses_quiz_expired', $expired, $attempt->user_id, $attempt->quiz_id, $attempt->course_id );
+
 			$this->progress->recalculate_course( $attempt->user_id, $attempt->course_id );
-			return $expired instanceof QuizAttempt ? $expired : $attempt;
+			return $expired;
 		}
 
 		// In-window: merge the submitted answers over what was saved.
@@ -443,6 +466,14 @@ final class QuizService {
 				$valid_ids                     = \array_column( (array) $question['answers'], 'id' );
 				$final_answers[ $question_id ] = Grading::normalize_answer( (string) $question['type'], $value, $valid_ids );
 			}
+		}
+
+		// Claim the attempt before grading (final review: atomic submit). Two
+		// submits that both read it as open cannot both grade it: only the
+		// one whose conditional UPDATE moves it in_progress -> submitted goes
+		// on; the other returns the row as the winner left it.
+		if ( ! QuizAttemptRepository::transition( $attempt_id, 'in_progress', 'submitted' ) ) {
+			return QuizAttemptRepository::find( $attempt_id ) ?? $attempt;
 		}
 
 		$graded = Grading::grade( Questions::get( $attempt->quiz_id ), $final_answers );

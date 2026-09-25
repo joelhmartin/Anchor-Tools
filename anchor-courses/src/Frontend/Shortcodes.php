@@ -7,6 +7,8 @@ use Anchor\Courses\Admin\CourseEditor;
 use Anchor\Courses\Content\CoursePostType;
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Database\EnrollmentRepository;
+use Anchor\Courses\Database\QuizAttemptRepository;
+use Anchor\Courses\Module;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
 
@@ -198,6 +200,47 @@ final class Shortcodes {
 				'complete'  => $course_progress && \in_array( 'lesson:' . $lesson_id, $course_progress->completed_item_keys, true ),
 				'previous'  => $previous,
 				'next'      => $next,
+			]
+		);
+	}
+
+	/**
+	 * Rendered inside a course's curriculum item loop, never as a public
+	 * shortcode (QuizPostType::CPT is not publicly_queryable - a quiz has no
+	 * URL of its own; see QuizPostType.php).
+	 *
+	 * `templates/course.php` only calls this once its own $available check
+	 * (ProgressService::is_item_available() - the same authority
+	 * Frontend\Access delegates to for a lesson) is true, so a non-enrolled or
+	 * sequentially-locked learner never reaches this method at all. can_start()
+	 * below is a second, independent check on top of that: it also covers
+	 * exhausted attempts and an active retry delay, and it self-gates a
+	 * theme/integration that calls render_quiz() directly without checking
+	 * $available first - either way, a learner who may not start sees the
+	 * notice from can_start()'s WP_Error message, never the quiz.
+	 */
+	public function render_quiz( int $quiz_id ): string {
+		$course_id = Curriculum::course_for_item( $quiz_id, 'quiz' );
+		$user_id   = \get_current_user_id();
+
+		if ( $course_id <= 0 || $user_id <= 0 ) {
+			return '';
+		}
+
+		$module = Module::instance();
+		if ( ! $module instanceof Module ) {
+			return '';
+		}
+
+		return Templates::render(
+			'quiz',
+			[
+				'quiz_id'            => $quiz_id,
+				'course_id'          => $course_id,
+				'user_id'            => $user_id,
+				'can_start'          => $module->quizzes->can_start( $user_id, $quiz_id, $course_id ),
+				'attempts_remaining' => $module->quizzes->attempts_remaining( $user_id, $quiz_id ),
+				'best'               => QuizAttemptRepository::best_for_quiz( $user_id, $quiz_id ),
 			]
 		);
 	}

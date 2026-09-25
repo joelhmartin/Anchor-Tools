@@ -14,8 +14,12 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  *
  * jQuery only (brief rule), and only on the screens that need it: a course or
  * lesson singular, the course archive, or any page carrying one of the Phase 1
- * shortcodes. Task 26 adds a quiz.js enqueue behind the same gate plus a
- * `[anchor_quiz]` check; nothing here needs to change to admit it.
+ * shortcodes. Task 26 enqueues quiz.js behind the same gate - unconditionally
+ * once that gate passes, since a quiz is never reached through its own
+ * shortcode (there isn't one; QuizPostType::CPT has no public URL and
+ * `render_quiz()` is called from templates/course.php's item loop, not from
+ * do_shortcode()) so there is no `[anchor_quiz]` tag for is_courses_screen()
+ * to look for.
  */
 final class Assets {
 
@@ -48,6 +52,29 @@ final class Assets {
 			[
 				'restUrl' => \esc_url_raw( \rest_url( 'anchor-courses/v1/' ) ),
 				'nonce'   => \wp_create_nonce( 'wp_rest' ),
+			]
+		);
+
+		\wp_enqueue_script(
+			'anchor-courses-quiz',
+			Module::assets_url() . 'quiz.js',
+			[ 'jquery' ],
+			Module::VERSION,
+			true
+		);
+		\wp_localize_script(
+			'anchor-courses-quiz',
+			'anchorCoursesQuizRuntime',
+			[
+				'restUrl' => \esc_url_raw( \rest_url( 'anchor-courses/v1/' ) ),
+				'nonce'   => \wp_create_nonce( 'wp_rest' ),
+				'strings' => [
+					'submit' => \__( 'Submit quiz', 'anchor-schema' ),
+					'passed' => \__( 'Passed.', 'anchor-schema' ),
+					'failed' => \__( 'Not passed.', 'anchor-schema' ),
+					'timeUp' => \__( 'Time is up - submitting your saved answers.', 'anchor-schema' ),
+					'error'  => \__( 'Something went wrong. Please refresh and try again.', 'anchor-schema' ),
+				],
 			]
 		);
 	}

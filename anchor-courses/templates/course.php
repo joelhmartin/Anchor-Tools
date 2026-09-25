@@ -80,6 +80,17 @@ $notice = Actions::notice();
 							<?php if ( ! $item['required'] ) : ?>
 								<em class="anchor-course-optional"><?php esc_html_e( 'Optional', 'anchor-schema' ); ?></em>
 							<?php endif; ?>
+							<?php if ( 'quiz' === $item['type'] && $available ) : ?>
+								<?php
+								// $available already required enrolment + progression
+								// (ProgressService::is_item_available(), the same
+								// authority Frontend\Access delegates to for a lesson)
+								// - a non-enrolled or locked learner never reaches this
+								// branch at all. render_quiz() escapes its own output.
+								$anchor_courses_module = \Anchor\Courses\Module::instance();
+								echo $anchor_courses_module ? $anchor_courses_module->shortcodes->render_quiz( (int) $item['id'] ) : ''; // phpcs:ignore WordPress.Security.EscapeOutput -- render_quiz() escapes internally.
+								?>
+							<?php endif; ?>
 						</li>
 					<?php endforeach; ?>
 				</ul>

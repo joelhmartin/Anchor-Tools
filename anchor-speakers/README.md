@@ -45,15 +45,17 @@ Renders nothing (and enqueues no assets) when the resolved query is empty.
 | `featured` | `1` to limit to featured | `''` (off) |
 | `ids` | comma list of speaker post IDs, overrides `event` when both given | `''` |
 | `event` | `current` (resolves `get_queried_object_id()`) or an event post ID; ignored if `ids` is non-empty | `''` |
-| `layout` | `grid`, `list`, `compact` | `grid` (invalid values fall back to `grid`) |
-| `columns` | int, clamped 1-6 (grid/compact layouts) | `3` |
+| `layout` | `grid`, `list`, `compact`, `avatars` | `grid` (invalid values fall back to `grid`) |
+| `columns` | int, clamped 1-6 (grid/compact layouts; ignored by `avatars`) | `3` |
 | `limit` | int, `-1` = no limit | `-1` |
-| `link` | `1`/`0`, wrap photo/name/CTA in a link to the speaker's single page | `1` |
-| `show` | comma list, any of `credentials,title,location,excerpt` | `credentials,title,excerpt` |
+| `link` | `1`/`0`, wrap photo/name/CTA (or, in `avatars`, the whole avatar) in a link to the speaker's single page | `1` |
+| `show` | comma list, any of `credentials,title,location,excerpt` (ignored by `avatars`, which never shows text) | `credentials,title,excerpt` |
 
 Ordering: `ids` order when `ids` is given, else event order when `event` resolves to a non-empty list (via `Anchor_Speakers_Module::event_speaker_ids()`), else `menu_order` ASC then `title` ASC. On a group-parent or group-child event, `event="current"`/an explicit event ID both resolve through the parent-fallback described above. When `event` is given and resolves to no speakers (no speakers linked, an invalid event ID, or the Events module inactive), the shortcode renders nothing rather than falling back to the full speaker roster.
 
 ## Markup contract
+
+This is the `grid`/`compact` contract. `list` diverges in two places (credentials nest inside `.anchor-speaker__name` instead of their own `<p>`, and the trailing link is "View" + an arrow with an extra `.anchor-speaker__cta` class instead of "View profile") - see "List layout row design" below. `avatars` is a different markup shape entirely - see its own contract below.
 
 ```html
 <div class="anchor-speakers anchor-speakers--{grid|list|compact}" style="--as-cols:{columns};">
@@ -61,11 +63,11 @@ Ordering: `ids` order when `ids` is given, else event order when `event` resolve
     <!-- photo, only if a thumbnail is set; wrapped in <a> when link=1, else <span> -->
     <a class="anchor-speaker__photo" href="{permalink}"><!-- medium-size thumbnail, loading=lazy --></a>
     <h3 class="anchor-speaker__name"><a href="{permalink}">{name}</a></h3> <!-- <a> only when link=1 -->
-    <p class="anchor-speaker__credentials">{credentials}</p> <!-- only if in `show` and non-empty -->
+    <p class="anchor-speaker__credentials">{credentials}</p> <!-- only if in `show` and non-empty; list nests this inside __name instead, see below -->
     <p class="anchor-speaker__title">{title}</p> <!-- only if in `show` and non-empty -->
     <p class="anchor-speaker__location">{location}</p> <!-- only if in `show` and non-empty -->
     <p class="anchor-speaker__excerpt">{excerpt}</p> <!-- only if 'excerpt' in `show`; get_the_excerpt(), passed through wp_kses_post() not esc_html() since a manual excerpt may contain inline markup -->
-    <a class="anchor-speaker__link" href="{permalink}">View profile</a> <!-- only when link=1 -->
+    <a class="anchor-speaker__link" href="{permalink}">View profile</a> <!-- only when link=1; list adds .anchor-speaker__cta and renders "View" + an arrow instead, see below -->
   </article>
   <!-- one article per post -->
 </div>
@@ -73,9 +75,33 @@ Ordering: `ids` order when `ids` is given, else event order when `event` resolve
 
 `show` filters against `Anchor_Speaker_Render::ALLOWED_SHOW` (`credentials`, `title`, `location`, `excerpt`); an unknown token in `show` is silently dropped rather than erroring.
 
+### `layout="avatars"` markup contract
+
+A compact overlapping stack of circular headshots only - no names, credentials or titles rendered as text. Each avatar's accessible name is the photo's `alt` attribute (or an `aria-label` on the wrapper when a speaker has no photo, since there is then no `<img>` to carry one).
+
+```html
+<div class="anchor-speakers anchor-speakers--avatars">
+  <a class="anchor-speaker-avatar" href="{permalink}"> <!-- or <span> when link=0 -->
+    <img class="anchor-speaker-avatar__img" src="{thumbnail}" alt="{name}" loading="lazy">
+  </a>
+  <!-- a speaker with no photo gets a placeholder instead of the <img>, and
+       aria-label="{name}" on the wrapper: -->
+  <a class="anchor-speaker-avatar" href="{permalink}" aria-label="{name}">
+    <span class="anchor-speaker-avatar__img anchor-speaker-avatar__img--placeholder" aria-hidden="true">{first letter of name}</span>
+  </a>
+  <!-- one avatar per post, in query order (menu_order/title, ids order, or event order - same as any other layout) -->
+</div>
+```
+
+`featured="1" limit="3"` (per the brief) resolves through the same query every other layout uses, so it's just `[anchor_speakers layout="avatars" featured="1" limit="3"]`; no avatars-specific query logic exists.
+
+## List layout row design
+
+`layout=list` renders each speaker as a row: a round photo, "Name, credentials" on one line (the credentials nest inside `.anchor-speaker__name` as a `.anchor-speaker__credentials` span so they flow inline after the name instead of wrapping to their own line, only for this layout - grid/compact keep credentials as a separate `<p>`), the role/title line below it, and a trailing "View" link with a right-arrow glyph (`.anchor-speaker__link.anchor-speaker__cta`) vertically centered at the row's right edge. Rows are separated by a hairline bottom border (omitted on the last row). CSS Grid (`grid-template-columns: [64px photo] [1fr text] [auto cta]`, `grid-row: 1 / -1` on the photo and CTA) does the row layout; no new markup wrapper was needed beyond the `__cta` modifier.
+
 ## CSS custom properties
 
-Set inline by the renderer: `--as-cols` (column count).
+Set inline by the renderer: `--as-cols` (column count; not set for `avatars`, which isn't a grid).
 
 Theme-overridable, read by `assets/speakers.css` with fallback defaults, not set inline:
 
@@ -83,8 +109,12 @@ Theme-overridable, read by `assets/speakers.css` with fallback defaults, not set
 |---|---|---|
 | `--as-gap` | `24px` | Grid/list gap |
 | `--as-photo-radius` | `50%` (a circle) | Speaker photo corner radius, on both the card photo and the single-template photo |
+| `--as-cta-color` | `currentColor` | List layout's trailing "View" link color |
+| `--as-avatar-size` | `40px` | Avatars layout: each headshot's diameter |
+| `--as-avatar-overlap` | `12px` | Avatars layout: how far each avatar tucks under the previous one |
+| `--as-avatar-ring` | `#fff` | Avatars layout: the ring/border color separating overlapping avatars |
 
-`layout=list` lays cards out as a flex row (photo fixed at 96px wide) instead of a grid. `layout=compact` is the same grid as `grid` at half the gap.
+`layout=list` lays cards out as a CSS grid row (photo at a fixed 64px, per the row design above) instead of a grid of cards. `layout=compact` is the same grid as `grid` at half the gap. `layout=avatars` is a flex row of overlapping circles, not a grid at all.
 
 ## Single template fallback
 

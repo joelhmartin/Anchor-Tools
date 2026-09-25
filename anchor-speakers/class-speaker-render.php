@@ -7,7 +7,7 @@
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Anchor_Speaker_Render {
-	const ALLOWED_LAYOUTS = [ 'grid', 'list', 'compact' ];
+	const ALLOWED_LAYOUTS = [ 'grid', 'list', 'compact', 'avatars' ];
 	const ALLOWED_SHOW    = [ 'credentials', 'title', 'location', 'excerpt' ];
 
 	private static function layout( array $atts ) {
@@ -39,24 +39,71 @@ class Anchor_Speaker_Render {
 		}
 
 		$layout  = self::layout( $atts );
-		$columns = self::columns( $atts );
-		$show    = self::show( $atts );
 		$link    = self::link_enabled( $atts );
 
-		$style = '--as-cols:' . $columns . ';';
+		if ( $layout === 'avatars' ) {
+			return '<div class="anchor-speakers anchor-speakers--avatars">' . self::avatars( $posts, $link ) . '</div>';
+		}
+
+		$columns = self::columns( $atts );
+		$show    = self::show( $atts );
+		$style   = '--as-cols:' . $columns . ';';
 
 		$cards = '';
 		foreach ( $posts as $post ) {
-			$cards .= self::card( $post, $show, $link );
+			$cards .= self::card( $post, $show, $link, $layout );
 		}
 
 		return '<div class="anchor-speakers anchor-speakers--' . esc_attr( $layout ) . '" style="' . esc_attr( $style ) . '">' . $cards . '</div>';
 	}
 
-	private static function card( WP_Post $post, array $show, $link ) {
+	/**
+	 * `layout="avatars"`: a compact overlapping stack of circular headshots,
+	 * no names/credentials/title visible - just the photo, with the name as
+	 * its accessible label (the `<img>` alt, or an aria-label on the wrapper
+	 * when there is no photo to carry an alt attribute).
+	 */
+	private static function avatars( array $posts, $link ) {
+		$html = '';
+		foreach ( $posts as $post ) {
+			$permalink   = get_permalink( $post );
+			$name        = get_the_title( $post );
+			$has_photo   = has_post_thumbnail( $post->ID );
+			$tag         = $link ? 'a' : 'span';
+
+			$html .= '<' . $tag . ' class="anchor-speaker-avatar"';
+			if ( $link ) {
+				$html .= ' href="' . esc_url( $permalink ) . '"';
+			}
+			if ( ! $has_photo ) {
+				// No <img> to carry an alt attribute, so the accessible name
+				// lives on the wrapper instead.
+				$html .= ' aria-label="' . esc_attr( $name ) . '"';
+			}
+			$html .= '>';
+
+			if ( $has_photo ) {
+				$html .= get_the_post_thumbnail( $post->ID, 'thumbnail', [
+					'class'   => 'anchor-speaker-avatar__img',
+					'alt'     => $name,
+					'loading' => 'lazy',
+				] );
+			} else {
+				$initial = function_exists( 'mb_substr' ) ? mb_substr( $name, 0, 1 ) : substr( $name, 0, 1 );
+				$html   .= '<span class="anchor-speaker-avatar__img anchor-speaker-avatar__img--placeholder" aria-hidden="true">' . esc_html( $initial ) . '</span>';
+			}
+
+			$html .= '</' . $tag . '>';
+		}
+		return $html;
+	}
+
+	private static function card( WP_Post $post, array $show, $link, $layout = 'grid' ) {
 		$meta      = Anchor_Speaker_Meta::get( $post->ID );
 		$permalink = get_permalink( $post );
 		$name      = get_the_title( $post );
+		$is_list   = $layout === 'list';
+		$has_credentials = in_array( 'credentials', $show, true ) && $meta['credentials'] !== '';
 
 		$html = '<article class="anchor-speaker">';
 
@@ -69,11 +116,19 @@ class Anchor_Speaker_Render {
 			}
 		}
 
+		// List layout puts "Name, credentials" on one visual line: the
+		// credentials part nests inside the same heading (as
+		// .anchor-speaker__credentials, same class other layouts render as a
+		// sibling <p>) so it flows inline after the name instead of wrapping
+		// to its own line.
 		$html .= '<h3 class="anchor-speaker__name">';
 		$html .= $link ? '<a href="' . esc_url( $permalink ) . '">' . esc_html( $name ) . '</a>' : esc_html( $name );
+		if ( $is_list && $has_credentials ) {
+			$html .= '<span class="anchor-speaker__credentials">, ' . esc_html( $meta['credentials'] ) . '</span>';
+		}
 		$html .= '</h3>';
 
-		if ( in_array( 'credentials', $show, true ) && $meta['credentials'] !== '' ) {
+		if ( ! $is_list && $has_credentials ) {
 			$html .= '<p class="anchor-speaker__credentials">' . esc_html( $meta['credentials'] ) . '</p>';
 		}
 		if ( in_array( 'title', $show, true ) && $meta['title'] !== '' ) {
@@ -95,7 +150,14 @@ class Anchor_Speaker_Render {
 		}
 
 		if ( $link ) {
-			$html .= '<a class="anchor-speaker__link" href="' . esc_url( $permalink ) . '">' . esc_html__( 'View profile', 'anchor-schema' ) . '</a>';
+			if ( $is_list ) {
+				// The row design's trailing "View" link with an arrow glyph;
+				// __cta is an additional modifier on the same __link part
+				// (same href, same underlying link), not a replacement.
+				$html .= '<a class="anchor-speaker__link anchor-speaker__cta" href="' . esc_url( $permalink ) . '">' . esc_html__( 'View', 'anchor-schema' ) . '<span aria-hidden="true"> &#8594;</span></a>';
+			} else {
+				$html .= '<a class="anchor-speaker__link" href="' . esc_url( $permalink ) . '">' . esc_html__( 'View profile', 'anchor-schema' ) . '</a>';
+			}
 		}
 
 		$html .= '</article>';

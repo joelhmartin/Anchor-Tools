@@ -1,13 +1,23 @@
 /*
  * [anchor_speakers] front-end styles. Layout only, driven by the custom
- * properties the renderer sets inline on .anchor-speakers:
+ * properties the renderer sets inline on .anchor-speakers (grid/list/compact
+ * only - avatars layout takes no inline style, see below):
  *   --as-cols          number of columns (grid layout)
  *   --as-gap           gap between cards (default 24px)
  *   --as-photo-radius  speaker photo corner radius (default 50%, a circle)
  *
+ * Theme-overridable, not set inline:
+ *   --as-avatar-size     avatars layout: each headshot's diameter (default 40px)
+ *   --as-avatar-overlap  avatars layout: how far each avatar tucks under the
+ *                        previous one (default 12px)
+ *   --as-avatar-ring     avatars layout: the ring/border color separating
+ *                        overlapping avatars (default #fff)
+ *   --as-cta-color       list layout: the trailing "View" link color
+ *                        (default currentColor)
+ *
  * The single-speaker fallback template (templates/single-anchor_speaker.php)
  * uses the separate .anchor-speaker-single block below, unrelated to the
- * shortcode's grid/list/compact layouts.
+ * shortcode's grid/list/compact/avatars layouts.
  */
 
 .anchor-speakers--grid {
@@ -31,26 +41,42 @@
 /*
  * .anchor-speaker sets flex-direction:column (below) with nothing here to
  * override it, so list cards stayed vertical instead of the row layout this
- * modifier intends. Grid instead: a single column when the card has no
- * photo (nothing to sit beside), and a 96px photo column + content column
- * only when a .anchor-speaker__photo child actually exists, so a
- * photo-less card never gets a blank first column.
+ * modifier intends. Grid instead: a single text column when the card has no
+ * photo (nothing to sit beside), a photo column only when a
+ * .anchor-speaker__photo child actually exists (so a photo-less card never
+ * gets a blank first column), and a trailing CTA column that spans the full
+ * row height so "View ->" sits vertically centered at the row's edge
+ * regardless of how many text lines (name, title, excerpt, ...) sit next to
+ * it. `grid-row: 1 / -1` on the photo/CTA spans "however many rows this row
+ * actually has" without the card needing to know that count up front.
  */
 .anchor-speakers--list .anchor-speaker {
 	display: grid;
-	grid-template-columns: 1fr;
-	align-items: flex-start;
+	grid-template-columns: minmax( 0, 1fr ) auto;
+	align-items: center;
 	column-gap: var( --as-gap, 24px );
-	align-content: start;
-	margin-bottom: var( --as-gap, 24px );
+	padding: 16px 0;
+	border-bottom: 1px solid rgba( 0, 0, 0, 0.08 );
+}
+
+.anchor-speakers--list .anchor-speaker:last-child {
+	border-bottom: 0;
 }
 
 .anchor-speakers--list .anchor-speaker > * {
 	grid-column: 1;
 }
 
+.anchor-speakers--list .anchor-speaker > .anchor-speaker__link,
+.anchor-speakers--list .anchor-speaker > .anchor-speaker__cta {
+	grid-column: 2;
+	grid-row: 1 / -1;
+	align-self: center;
+	justify-self: end;
+}
+
 .anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) {
-	grid-template-columns: 96px minmax( 0, 1fr );
+	grid-template-columns: 64px minmax( 0, 1fr ) auto;
 }
 
 .anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > * {
@@ -59,13 +85,104 @@
 
 .anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__photo {
 	grid-column: 1;
-	grid-row: 1 / span 6;
+	grid-row: 1 / -1;
+	align-self: center;
+}
+
+.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__link,
+.anchor-speakers--list .anchor-speaker:has( > .anchor-speaker__photo ) > .anchor-speaker__cta {
+	grid-column: 3;
+}
+
+.anchor-speakers--list .anchor-speaker__name {
+	margin: 0;
+	font-size: 1.05em;
+}
+
+.anchor-speakers--list .anchor-speaker__name .anchor-speaker__credentials {
+	margin: 0;
+	font-weight: inherit;
+}
+
+.anchor-speakers--list .anchor-speaker__title {
+	color: rgba( 0, 0, 0, 0.6 );
+	margin: 0.25em 0 0;
+}
+
+.anchor-speakers--list .anchor-speaker__link {
+	/* Overrides the grid/compact .anchor-speaker__link margin-top below so
+	   the list row's trailing link stays vertically centered in its cell. */
+	margin-top: 0;
+}
+
+.anchor-speakers--list .anchor-speaker__cta {
+	color: var( --as-cta-color, currentColor );
+	font-weight: 600;
+	white-space: nowrap;
+	text-decoration: none;
+}
+
+.anchor-speakers--list .anchor-speaker__cta:hover,
+.anchor-speakers--list .anchor-speaker__cta:focus-visible {
+	text-decoration: underline;
+}
+
+.anchor-speakers--list .anchor-speaker__photo,
+.anchor-speakers--list .anchor-speaker__photo img {
+	width: 64px;
 }
 
 .anchor-speakers--compact {
 	display: grid;
 	grid-template-columns: repeat( var( --as-cols, 3 ), minmax( 0, 1fr ) );
 	gap: calc( var( --as-gap, 24px ) / 2 );
+}
+
+/*
+ * layout="avatars": a compact overlapping stack of circular headshots
+ * (no names, per the brief). Flex row with a negative margin-left on every
+ * avatar after the first pulls each one under the previous one by
+ * --as-avatar-overlap; the ring (a solid border matching the page
+ * background by default) is what makes the overlap read as a stack
+ * instead of tiles touching edge to edge. Later avatars stack visually on
+ * top via source order (later flex children paint after earlier ones).
+ */
+.anchor-speakers--avatars {
+	display: flex;
+	align-items: center;
+}
+
+.anchor-speaker-avatar {
+	display: block;
+	flex: 0 0 auto;
+	width: var( --as-avatar-size, 40px );
+	height: var( --as-avatar-size, 40px );
+	border-radius: 50%;
+}
+
+.anchor-speaker-avatar:not( :first-child ) {
+	margin-left: calc( -1 * var( --as-avatar-overlap, 12px ) );
+}
+
+.anchor-speaker-avatar__img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: 50%;
+	border: 2px solid var( --as-avatar-ring, #fff );
+	box-sizing: border-box;
+}
+
+.anchor-speaker-avatar__img--placeholder {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba( 0, 0, 0, 0.08 );
+	color: rgba( 0, 0, 0, 0.5 );
+	font-size: 0.85em;
+	font-weight: 600;
+	text-transform: uppercase;
 }
 
 .anchor-speaker {
@@ -80,11 +197,6 @@
 	aspect-ratio: 1 / 1;
 	object-fit: cover;
 	border-radius: var( --as-photo-radius, 50% );
-}
-
-.anchor-speakers--list .anchor-speaker__photo,
-.anchor-speakers--list .anchor-speaker__photo img {
-	width: 96px;
 }
 
 .anchor-speaker__name {

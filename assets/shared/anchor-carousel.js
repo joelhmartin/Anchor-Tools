@@ -105,7 +105,12 @@
 
     function goToSlide(index) {
       var visibleCount = getVisibleCount();
-      var maxIndex = items.length - visibleCount;
+      // When there are fewer items than the responsive visible count (e.g.
+      // 1-2 items with 3 desktop columns), items.length - visibleCount is
+      // negative; clamp to 0 so a negative currentIndex never happens (it
+      // would otherwise produce an invalid transform string and break the
+      // active item/dot state).
+      var maxIndex = Math.max(0, items.length - visibleCount);
 
       if (loopEnabled) {
         if (index > maxIndex) index = 0;

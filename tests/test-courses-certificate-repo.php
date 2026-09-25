@@ -70,6 +70,31 @@ class Test_Courses_Certificate_Repo extends Anchor_Courses_TestCase {
 		$this->assertCount( 1, CertificateRepository::for_user( $this->user ) );
 	}
 
+	/**
+	 * 1.2.0 (pre-gate cleanup round): verification_token is now UNIQUE.
+	 * insert_ignore() uses INSERT IGNORE (see the class docblock), so a
+	 * collision on ANY unique key - not only (user_id, course_id) - must be a
+	 * clean no-op: find() afterwards is keyed on the pair that was never
+	 * actually written, so it returns null instead of the colliding row.
+	 * This is the exact primitive CertificateService::issue() calls; its
+	 * `if ( ! $certificate instanceof Certificate ) { return null; }` guard
+	 * (Services/CertificateService.php) turns this null into a plain failed
+	 * issue, never a fatal.
+	 */
+	public function test_a_verification_token_collision_across_different_pairs_fails_cleanly() {
+		$other_user   = $this->make_learner();
+		$other_course = $this->make_course();
+
+		$first  = $this->insert( [ 'verification_token' => 'shared-token' ] );
+		$second = CertificateRepository::insert_ignore(
+			[ 'user_id' => $other_user, 'course_id' => $other_course, 'verification_token' => 'shared-token' ]
+		);
+
+		$this->assertInstanceOf( Certificate::class, $first );
+		$this->assertNull( $second, 'A token collision across different pairs must fail cleanly, not create a row.' );
+		$this->assertNull( CertificateRepository::find( $other_user, $other_course ) );
+	}
+
 	public function test_expires_at_is_sql_null_when_omitted() {
 		$certificate = $this->insert();
 

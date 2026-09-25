@@ -79,6 +79,14 @@ final class CertificateService {
 			]
 		);
 
+		// Also the clean-failure path for an (astronomically unlikely)
+		// verification_token collision: insert_ignore() is INSERT IGNORE, so
+		// a collision on the now-UNIQUE verification_token key (Migrations
+		// 1.2.0) - not only the (user_id, course_id) key - silently writes no
+		// row, and find() for THIS pair then finds nothing either. Same plain
+		// null return as any other failed insert; never a fatal (see
+		// tests/test-courses-certificate-repo.php's collision test for the
+		// repository-level proof).
 		if ( ! $certificate instanceof Certificate ) {
 			return null;
 		}

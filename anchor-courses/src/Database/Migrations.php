@@ -18,7 +18,7 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  */
 final class Migrations {
 
-	public const DB_VERSION = '1.1.0';
+	public const DB_VERSION = '1.2.0';
 	public const OPTION     = 'anchor_courses_db_version';
 
 	public const TABLES = [ 'enrollments', 'progress', 'quiz_attempts', 'ce_credits', 'certificates' ];
@@ -48,6 +48,10 @@ final class Migrations {
 
 		if ( \version_compare( $from, '1.1.0', '<' ) ) {
 			self::migrate_1_1_0();
+		}
+
+		if ( \version_compare( $from, '1.2.0', '<' ) ) {
+			self::migrate_1_2_0();
 		}
 
 		\update_option( self::OPTION, self::DB_VERSION, false );
@@ -149,6 +153,19 @@ final class Migrations {
 			) {$charset};"
 		);
 
+		// verification_token is declared UNIQUE here too (not a plain KEY, as
+		// it genuinely was at 1.0.0) so this CREATE TABLE stays safe to REPLAY
+		// against a table a later migrate_1_2_0() already converted: run()
+		// re-executes every step below the recorded DB_VERSION, and dbDelta
+		// only ever ADDS a missing/mismatched index - it never reconciles two
+		// same-named indexes that differ only in uniqueness, so a plain-KEY
+		// replay here against an already-UNIQUE table errors "Duplicate key
+		// name" (verified: reproduces on every process boot once a table has
+		// been migrated to 1.2.0 and the version option is later reset, e.g.
+		// tests/test-courses-uninstall.php's tear_down(), or a real site
+		// whose version option is lost while its tables survive). A truly
+		// fresh install is unaffected either way - dbDelta just creates the
+		// (already-correct) unique index once.
 		\dbDelta(
 			"CREATE TABLE " . self::table( 'certificates' ) . " (
 				id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -164,7 +181,7 @@ final class Migrations {
 				PRIMARY KEY  (id),
 				UNIQUE KEY user_course (user_id,course_id),
 				UNIQUE KEY certificate_number (certificate_number),
-				KEY verification_token (verification_token)
+				UNIQUE KEY verification_token (verification_token)
 			) {$charset};"
 		);
 
@@ -213,6 +230,56 @@ final class Migrations {
 				UNIQUE KEY user_quiz_attempt (user_id,quiz_id,attempt_number),
 				KEY quiz_status (quiz_id,status),
 				KEY user_course (user_id,course_id)
+			) {$charset};"
+		);
+	}
+
+	/**
+	 * 1.2.0 - certificates.verification_token becomes a UNIQUE key (was a
+	 * plain KEY - pre-gate cleanup round; flagged as follow-up hardening in
+	 * the Task 28 review, progress.md). The token is a UUID v4
+	 * (`Support\Uuid::v4()`), so a collision is astronomically unlikely, but
+	 * "unlikely" is not "impossible" and nothing enforced it at the schema
+	 * level.
+	 *
+	 * migrate_1_1_0()'s "re-issue the full CREATE TABLE and let dbDelta ALTER
+	 * what's missing" technique does NOT extend to changing an existing
+	 * index's uniqueness in place - verified against a real migration run,
+	 * not assumed: dbDelta tried `ALTER TABLE ... ADD UNIQUE KEY
+	 * verification_token (...)` while the old plain KEY of the same name was
+	 * still there, and MySQL rejected it with "Duplicate key name" (a
+	 * long-standing dbDelta limitation - it only ever ADDs a missing index,
+	 * never drops a conflicting one first). The old key is dropped explicitly
+	 * before dbDelta re-adds it as UNIQUE; do not reformat the SQL below.
+	 */
+	private static function migrate_1_2_0(): void {
+		global $wpdb;
+		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+		$table    = self::table( 'certificates' );
+		$existing = $wpdb->get_row( "SHOW INDEX FROM {$table} WHERE Key_name = 'verification_token'", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+		if ( \is_array( $existing ) && '1' === (string) $existing['Non_unique'] ) {
+			$wpdb->query( "ALTER TABLE {$table} DROP INDEX verification_token" ); // phpcs:ignore WordPress.DB.PreparedSQL
+		}
+
+		$charset = $wpdb->get_charset_collate();
+
+		\dbDelta(
+			"CREATE TABLE " . self::table( 'certificates' ) . " (
+				id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+				user_id BIGINT UNSIGNED NOT NULL,
+				course_id BIGINT UNSIGNED NOT NULL,
+				certificate_number VARCHAR(100) NOT NULL,
+				issued_at DATETIME NOT NULL,
+				expires_at DATETIME NULL,
+				file_path TEXT NULL,
+				verification_token VARCHAR(191) NULL,
+				metadata LONGTEXT NULL,
+				created_at DATETIME NOT NULL,
+				PRIMARY KEY  (id),
+				UNIQUE KEY user_course (user_id,course_id),
+				UNIQUE KEY certificate_number (certificate_number),
+				UNIQUE KEY verification_token (verification_token)
 			) {$charset};"
 		);
 	}

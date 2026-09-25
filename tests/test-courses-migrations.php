@@ -22,6 +22,18 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 		return array_unique( array_column( (array) $rows, 'Key_name' ) );
 	}
 
+	/** '0' means UNIQUE, '1' means a plain (non-unique) KEY - MySQL's SHOW INDEX convention. */
+	private function is_unique_index( string $table, string $key_name ): bool {
+		global $wpdb;
+		$rows = $wpdb->get_results( 'SHOW INDEX FROM ' . Migrations::table( $table ), ARRAY_A ); // phpcs:ignore WordPress.DB
+		foreach ( (array) $rows as $row ) {
+			if ( $row['Key_name'] === $key_name ) {
+				return '0' === (string) $row['Non_unique'];
+			}
+		}
+		return false;
+	}
+
 	public function test_all_five_tables_exist_after_bootstrap() {
 		global $wpdb;
 		foreach ( Migrations::TABLES as $name ) {
@@ -94,6 +106,36 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 		$this->assertContains( 'certificate_number', $this->index_names( 'certificates' ) );
 	}
 
+	/**
+	 * 1.2.0 (pre-gate cleanup round): verification_token was a plain KEY, so
+	 * two certificates could in principle share a token. dbDelta ALTERs the
+	 * existing index in place when the full CREATE TABLE is re-issued with a
+	 * different key type (verified here against the real test DB, not
+	 * assumed).
+	 */
+	public function test_verification_token_is_a_unique_index() {
+		$this->assertTrue(
+			$this->is_unique_index( 'certificates', 'verification_token' ),
+			'verification_token must be a UNIQUE key, not a plain KEY.'
+		);
+	}
+
+	public function test_duplicate_verification_token_insert_is_rejected_by_the_database() {
+		global $wpdb;
+		$row = [
+			'user_id' => 1, 'course_id' => 1, 'certificate_number' => 'AC-2026-00000001',
+			'issued_at' => '2026-01-01 00:00:00', 'verification_token' => 'dupe-token',
+			'created_at' => '2026-01-01 00:00:00',
+		];
+		$this->assertSame( 1, $wpdb->insert( Migrations::table( 'certificates' ), $row ) );
+
+		$row['user_id']             = 2;
+		$row['certificate_number']  = 'AC-2026-00000002';
+		$wpdb->suppress_errors( true );
+		$this->assertFalse( $wpdb->insert( Migrations::table( 'certificates' ), $row ) );
+		$wpdb->suppress_errors( false );
+	}
+
 	public function test_duplicate_enrollment_insert_is_rejected_by_the_database() {
 		global $wpdb;
 		$row = [
@@ -121,5 +163,33 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 		Migrations::run();
 		$this->assertSame( Migrations::DB_VERSION, Migrations::installed_version() );
 		$this->assertCount( 13, $this->columns( 'enrollments' ) );
+	}
+
+	/**
+	 * Replay safety (found while adding 1.2.0): the version option and the
+	 * physical tables can fall out of sync - deliberately in
+	 * tests/test-courses-uninstall.php's tear_down(), or on a real site if the
+	 * option is ever lost while the tables survive. run() always re-executes
+	 * every step below the recorded version, including migrate_1_0_0(), so
+	 * that CREATE TABLE must not conflict with a table already carrying a
+	 * later migration's changes. Before the fix, replaying migrate_1_0_0()'s
+	 * originally-plain `KEY verification_token` against an already-UNIQUE
+	 * table failed with a MySQL "Duplicate key name" error.
+	 */
+	public function test_run_replays_cleanly_when_the_version_option_is_lost() {
+		global $wpdb;
+		Migrations::run();
+		$this->assertTrue( $this->is_unique_index( 'certificates', 'verification_token' ), 'Precondition.' );
+
+		delete_option( Migrations::OPTION );
+		$wpdb->suppress_errors( true );
+		$wpdb->last_error = '';
+		Migrations::run();
+		$error = $wpdb->last_error;
+		$wpdb->suppress_errors( false );
+
+		$this->assertSame( '', $error, 'Replaying every migration step must raise no database error.' );
+		$this->assertSame( Migrations::DB_VERSION, Migrations::installed_version() );
+		$this->assertTrue( $this->is_unique_index( 'certificates', 'verification_token' ) );
 	}
 }

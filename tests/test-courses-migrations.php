@@ -183,12 +183,21 @@ class Test_Courses_Migrations extends Anchor_Courses_TestCase {
 
 		delete_option( Migrations::OPTION );
 		$wpdb->suppress_errors( true );
-		$wpdb->last_error = '';
+		// wpdb::query() calls flush() before every query, which resets
+		// last_error to '' - so a "Duplicate key name" from migrate_1_0_0()'s
+		// replay would be cleared by the several queries run() makes AFTER it
+		// (Capabilities::sync(), migrate_1_1_0(), migrate_1_2_0(), the
+		// update_option() call) before this could ever read it back
+		// (CodeRabbit PR #29). wpdb::print_error() appends every error to the
+		// global $EZSQL_ERROR before it checks suppress_errors, so that is
+		// what must be counted across the whole run instead.
+		global $EZSQL_ERROR;
+		$before = \is_array( $EZSQL_ERROR ) ? \count( $EZSQL_ERROR ) : 0;
 		Migrations::run();
-		$error = $wpdb->last_error;
+		$errors = \array_slice( (array) $EZSQL_ERROR, $before );
 		$wpdb->suppress_errors( false );
 
-		$this->assertSame( '', $error, 'Replaying every migration step must raise no database error.' );
+		$this->assertSame( [], $errors, 'Replaying every migration step must raise no database error.' );
 		$this->assertSame( Migrations::DB_VERSION, Migrations::installed_version() );
 		$this->assertTrue( $this->is_unique_index( 'certificates', 'verification_token' ) );
 	}

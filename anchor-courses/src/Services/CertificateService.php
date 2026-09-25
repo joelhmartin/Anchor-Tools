@@ -80,8 +80,15 @@ final class CertificateService {
 				// What the certificate vouches for, frozen now (final review
 				// I7): template_data() renders these, so a later rename of the
 				// learner or the course cannot rewrite an issued certificate.
+				// $configured_fallback = false: the certificate vouches for
+				// what was actually AWARDED (CodeRabbit PR #29). award() can
+				// return null with no Credit row - a free course, or the
+				// anchor_courses_ce_credit_amount filter zeroing the amount -
+				// and this snapshot must record 0, never the course's
+				// configured ce_credits, or the public verification page
+				// shows credits nobody received.
 				'metadata'           => [ 'template' => (string) CourseEditor::setting( $course_id, 'certificate_template' ) ]
-					+ self::live_values( $user_id, $course_id ),
+					+ self::live_values( $user_id, $course_id, false ),
 			]
 		);
 
@@ -153,15 +160,29 @@ final class CertificateService {
 	 */
 	public const SNAPSHOT_KEYS = [ 'learner_name', 'course_name', 'credits', 'provider_name', 'provider_number', 'instructor_name' ];
 
-	/** @return array{learner_name:string,course_name:string,credits:float,provider_name:string,provider_number:string,instructor_name:string} */
-	private static function live_values( int $user_id, int $course_id ): array {
+	/**
+	 * @param bool $configured_fallback Whether an absent Credit row falls back
+	 *                                  to the course's CONFIGURED ce_credits.
+	 *                                  issue() passes false: the certificate
+	 *                                  vouches for what was awarded, and "no
+	 *                                  credit row" must snapshot 0, not the
+	 *                                  setting (CodeRabbit PR #29).
+	 *                                  template_data()'s legacy-certificate
+	 *                                  fallback (no snapshot at all) keeps the
+	 *                                  default true, since that path renders a
+	 *                                  certificate issued before this existed.
+	 * @return array{learner_name:string,course_name:string,credits:float,provider_name:string,provider_number:string,instructor_name:string}
+	 */
+	private static function live_values( int $user_id, int $course_id, bool $configured_fallback = true ): array {
 		$user   = \get_userdata( $user_id );
 		$credit = CreditRepository::find( $user_id, $course_id );
 
 		return [
 			'learner_name'    => $user ? (string) $user->display_name : '',
 			'course_name'     => (string) \get_the_title( $course_id ),
-			'credits'         => $credit instanceof Credit ? $credit->credits : (float) CourseEditor::setting( $course_id, 'ce_credits' ),
+			'credits'         => $credit instanceof Credit
+				? $credit->credits
+				: ( $configured_fallback ? (float) CourseEditor::setting( $course_id, 'ce_credits' ) : 0.0 ),
 			'provider_name'   => (string) CourseEditor::setting( $course_id, 'ce_provider_name' ),
 			'provider_number' => (string) CourseEditor::setting( $course_id, 'ce_provider_number' ),
 			'instructor_name' => (string) CourseEditor::setting( $course_id, 'instructor' ),

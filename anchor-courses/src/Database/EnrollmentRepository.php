@@ -164,7 +164,11 @@ final class EnrollmentRepository {
 			$params = \array_merge( $params, \array_values( $statuses ) );
 		}
 
-		$sql     .= ' ORDER BY enrolled_at DESC LIMIT %d OFFSET %d';
+		// enrolled_at has one-second resolution; a unique tie-breaker keeps a
+		// bulk grant's or a seed's same-second rows in a stable order across
+		// separate paginated queries (CodeRabbit PR #29) - without it MySQL
+		// may show a learner on two report pages, or skip one.
+		$sql     .= ' ORDER BY enrolled_at DESC, id DESC LIMIT %d OFFSET %d';
 		$params[] = \max( 1, $limit );
 		$params[] = \max( 0, $offset );
 

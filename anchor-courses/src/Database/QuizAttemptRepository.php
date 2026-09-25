@@ -240,8 +240,11 @@ final class QuizAttemptRepository {
 	 * a page of learners, keyed by user_id - one query for the whole page
 	 * rather than scanning for_user_course() per row (Task 31 N+1 ruling).
 	 * Same "any attempt with a recorded score" rule for_user_course() callers
-	 * already use - no status filter, since an attempt can carry a score
-	 * before it is marked 'graded'. A user id with no scored attempt is
+	 * already use - no GRADED filter, since an attempt can carry a score
+	 * before it is marked 'graded'. `abandoned` IS excluded (CodeRabbit PR
+	 * #29): abandon_for_course() voids an attempt on an admin reset without
+	 * clearing its score column, and a voided attempt must not still win
+	 * "best score". A user id with no (non-abandoned) scored attempt is
 	 * simply absent from the result.
 	 *
 	 * @param int[] $user_ids
@@ -258,7 +261,7 @@ final class QuizAttemptRepository {
 		$rows         = $wpdb->get_results(
 			$wpdb->prepare(
 				'SELECT user_id, MAX(score) AS best_score FROM ' . self::table()
-				. " WHERE course_id = %d AND score IS NOT NULL AND user_id IN ({$placeholders}) GROUP BY user_id", // phpcs:ignore WordPress.DB.PreparedSQL
+				. " WHERE course_id = %d AND score IS NOT NULL AND status <> 'abandoned' AND user_id IN ({$placeholders}) GROUP BY user_id", // phpcs:ignore WordPress.DB.PreparedSQL
 				\array_merge( [ $course_id ], $user_ids )
 			),
 			ARRAY_A

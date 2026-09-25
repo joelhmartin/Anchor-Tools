@@ -6,6 +6,7 @@
  */
 
 use Anchor\Courses\Content\Curriculum;
+use Anchor\Courses\Database\ProgressRepository;
 use Anchor\Courses\Domain\CourseProgress;
 use Anchor\Courses\Domain\Progress;
 use Anchor\Courses\Services\EnrollmentService;
@@ -172,7 +173,9 @@ class Test_Courses_Progress_Service extends Anchor_Courses_TestCase {
 		$this->progress->start_lesson( $this->user, $this->course, $this->l1 );
 
 		$this->assertSame( 1, $fired );
-		$this->assertSame( 'in_progress', $this->progress->get_course_progress( $this->user, $this->course )->percent > 0 ? 'in_progress' : 'in_progress' );
+		$row = ProgressRepository::find( $this->user, $this->course, $this->l1, 'lesson' );
+		$this->assertNotNull( $row, 'start_lesson() must write a progress row for the lesson.' );
+		$this->assertSame( 'in_progress', $row->status );
 		$this->assertNotNull( $this->enrollments->get( $this->user, $this->course )->started_at );
 	}
 

@@ -145,6 +145,23 @@ class Test_Courses_Certificates extends Anchor_Courses_TestCase {
 		$this->assertSame( 'Laser Safety', $data['course_name'] );
 	}
 
+	/**
+	 * award() returns null (no Credit row written) when a course has no
+	 * credits configured, or when `anchor_courses_ce_credit_amount` filters
+	 * the amount to <= 0 (CompletionService::complete() always calls award()
+	 * before issue()). The certificate must vouch for what was actually
+	 * awarded - nothing - not silently freeze the course's CONFIGURED
+	 * ce_credits into a snapshot the public verification page then shows as
+	 * real (CodeRabbit PR #29).
+	 */
+	public function test_issue_snapshots_zero_credits_when_none_were_awarded() {
+		// This course's fixture sets ce_credits=2, but no CreditService::award()
+		// call ever ran, so no Credit row exists for this user+course.
+		$certificate = $this->certificates->issue( $this->user, $this->course );
+
+		$this->assertSame( 0.0, $this->certificates->template_data( $certificate )['ce_credits'] );
+	}
+
 	public function test_the_certificate_data_filter_can_override_values() {
 		add_filter(
 			'anchor_courses_certificate_data',

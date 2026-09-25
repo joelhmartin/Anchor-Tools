@@ -96,6 +96,32 @@ class Test_Courses_Unit_Questions extends TestCase {
 		$this->assertTrue( $out[0]['answers'][1]['correct'] );
 	}
 
+	/**
+	 * `Questions::get()` runs sanitize() again on every read (Content\Questions
+	 * class docblock), and the stored text is always the CURRENT locale's
+	 * `__( 'True' )`/`__( 'False' )` - so on a non-English site, matching by
+	 * text alone finds neither English word and silently flips the key back
+	 * to True on the very next read (CodeRabbit PR #29). admin-quiz.js always
+	 * round-trips the fixed `true`/`false` id, so matching by id first must
+	 * survive translated text, and survive being sanitised twice.
+	 */
+	public function test_true_false_matches_by_id_before_falling_back_to_translated_text() {
+		$out = Questions::sanitize(
+			[ $this->q( [ 'type' => 'true_false', 'answers' => [
+				[ 'id' => 'true', 'text' => 'Vrai', 'correct' => false ],
+				[ 'id' => 'false', 'text' => 'Faux', 'correct' => true ],
+			] ] ) ]
+		);
+		$this->assertFalse( $out[0]['answers'][0]['correct'], 'id=true must not become the key from unmatched translated text.' );
+		$this->assertTrue( $out[0]['answers'][1]['correct'], 'id=false must stay the key.' );
+
+		// Questions::get() re-sanitises on every read - the key must not drift
+		// on a second pass.
+		$again = Questions::sanitize( $out );
+		$this->assertFalse( $again[0]['answers'][0]['correct'] );
+		$this->assertTrue( $again[0]['answers'][1]['correct'] );
+	}
+
 	public function test_points_default_to_one_and_are_never_negative() {
 		$this->assertSame( 1.0, Questions::sanitize( [ $this->q( [ 'points' => null ] ) ] )[0]['points'] );
 		$this->assertSame( 0.0, Questions::sanitize( [ $this->q( [ 'points' => -5 ] ) ] )[0]['points'] );

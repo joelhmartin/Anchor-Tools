@@ -89,6 +89,33 @@ class Test_Courses_Enrollment_Repo extends Anchor_Courses_TestCase {
 		$this->assertSame( 0, EnrollmentRepository::count_for_course( $a, [ 'completed' ] ) );
 	}
 
+	/**
+	 * enrolled_at has one-second resolution, so a bulk grant or a seeded
+	 * fixture easily ties several rows to the same second. MySQL does not
+	 * guarantee a stable order for tied rows across separate LIMIT/OFFSET
+	 * queries, so the Learners report (LearnerReports::rows(), paginated
+	 * through this method) can show a learner on two pages, or skip one,
+	 * unless the sort has a unique tie-breaker (CodeRabbit PR #29).
+	 */
+	public function test_for_course_pagination_is_stable_when_enrolled_at_ties() {
+		$course = $this->make_course();
+		$ids    = [];
+		foreach ( range( 1, 5 ) as $n ) {
+			$user      = $this->make_learner();
+			$enrolment = EnrollmentRepository::insert_ignore( $this->row( $user, $course ) );
+			$ids[]     = $enrolment->id;
+		}
+
+		$page1 = array_map( fn( $e ) => $e->id, EnrollmentRepository::for_course( $course, [], 2, 0 ) );
+		$page2 = array_map( fn( $e ) => $e->id, EnrollmentRepository::for_course( $course, [], 2, 2 ) );
+		$page3 = array_map( fn( $e ) => $e->id, EnrollmentRepository::for_course( $course, [], 2, 4 ) );
+
+		$seen = array_merge( $page1, $page2, $page3 );
+		sort( $ids );
+		sort( $seen );
+		$this->assertSame( $ids, $seen, 'Every row tied on enrolled_at must appear on exactly one page, across separate paginated queries.' );
+	}
+
 	public function test_expire_due_flips_only_past_active_rows() {
 		$user = $this->make_learner();
 		$past = $this->make_course( [], 'Past' );

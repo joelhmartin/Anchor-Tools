@@ -67,12 +67,24 @@ final class Questions {
 		if ( 'true_false' === $type ) {
 			// Always exactly two rows with fixed ids, so grading never depends on
 			// authored order or wording.
+			// Match the fixed answer id first - admin-quiz.js always round-trips
+			// `true`/`false` through data-id - and fall back to English answer
+			// TEXT only when no row carries a usable id. Text alone breaks on a
+			// non-English site: the stored text is always the current locale's
+			// __( 'True' )/__( 'False' ), and Questions::get() re-sanitises on
+			// every read, so a text-only match silently flips the key back on
+			// the very next read (CodeRabbit PR #29).
 			$true_is_key = true;
 			foreach ( $answers as $answer ) {
-				$text = \strtolower( \trim( (string) ( $answer['text'] ?? '' ) ) );
 				if ( empty( $answer['correct'] ) ) {
 					continue;
 				}
+				$id = \strtolower( \trim( (string) ( $answer['id'] ?? '' ) ) );
+				if ( \in_array( $id, [ 'true', 'false' ], true ) ) {
+					$true_is_key = 'true' === $id;
+					break;
+				}
+				$text = \strtolower( \trim( (string) ( $answer['text'] ?? '' ) ) );
 				if ( \in_array( $text, [ 'false', 'no', '0' ], true ) ) {
 					$true_is_key = false;
 					break;

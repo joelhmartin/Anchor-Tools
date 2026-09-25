@@ -208,6 +208,34 @@ class Test_Courses_Attempt_Repo extends Anchor_Courses_TestCase {
 		$this->assertArrayNotHasKey( $without, $map );
 	}
 
+	/**
+	 * abandon_for_course() voids attempts as 'abandoned' on an admin reset,
+	 * but their `score` column stays as-is. Without a status filter here, the
+	 * Learners report would show a best score from an attempt the admin just
+	 * voided (CodeRabbit PR #29).
+	 */
+	public function test_best_scores_for_users_in_course_excludes_abandoned_attempts() {
+		$scored = $this->create();
+		QuizAttemptRepository::update( $scored->id, [ 'status' => 'graded', 'score' => 40.0 ] );
+		$voided = $this->create(); // A legitimate retake, then reset/abandoned - its score must not count.
+		QuizAttemptRepository::update( $voided->id, [ 'status' => 'graded', 'score' => 95.0 ] );
+		QuizAttemptRepository::update( $voided->id, [ 'status' => 'abandoned' ] );
+
+		$map = QuizAttemptRepository::best_scores_for_users_in_course( [ $this->user ], $this->course );
+
+		$this->assertSame( 40.0, $map[ $this->user ], 'An abandoned attempt\'s score must not be counted as the best score.' );
+	}
+
+	/** A submitted-but-not-yet-graded score must still count - only 'abandoned' is excluded. */
+	public function test_best_scores_for_users_in_course_still_counts_ungraded_scored_attempts() {
+		$submitted = $this->create();
+		QuizAttemptRepository::update( $submitted->id, [ 'status' => 'submitted', 'score' => 55.0 ] );
+
+		$map = QuizAttemptRepository::best_scores_for_users_in_course( [ $this->user ], $this->course );
+
+		$this->assertSame( 55.0, $map[ $this->user ] );
+	}
+
 	public function test_best_scores_for_users_in_course_with_no_user_ids_makes_no_query() {
 		$this->assertSame( [], QuizAttemptRepository::best_scores_for_users_in_course( [], $this->course ) );
 	}

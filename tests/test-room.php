@@ -219,6 +219,50 @@ class Test_Room extends Anchor_Events_TestCase {
 		$this->assertStringNotContainsString( 'player.vimeo.com', $html );
 	}
 
+	/**
+	 * Audit finding (a), 2026-09-25: a registered attendee opens the room
+	 * during a multisession event's first (embed-less) session while only
+	 * the SECOND session carries a stream override. Before the fix, the
+	 * embed-less session's window still entered the state machine, could be
+	 * chosen as the live/countdown target, and can_access_stream() correctly
+	 * refused it — so the attendee saw "This account isn't registered" even
+	 * though they hold a confirmed seat. They must see the countdown to the
+	 * next streamed session instead.
+	 */
+	public function test_render_room_during_embedless_session_shows_countdown_not_denial() {
+		$event_id = $this->make_event( [
+			'type'                => 'multisession',
+			'registration_mode'   => 'free',
+			'access_role_enabled' => true,
+			'timezone'            => 'UTC',
+			'sessions'            => [
+				[ 'date' => '2027-06-01', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 1', 'modality' => 'virtual' ],
+				[
+					'date' => '2027-06-02', 'start_time' => '09:00', 'end_time' => '11:00', 'label' => 'Day 2', 'modality' => 'virtual',
+					'stream_embed' => [ 'provider' => 'vimeo', 'kind' => 'iframe', 'src' => 'https://player.vimeo.com/video/91', 'raw' => '' ],
+				],
+			],
+		] );
+		$this->minted[] = $event_id;
+
+		$user_id = self::factory()->user->create( [ 'user_email' => 'day1@example.test' ] );
+		$this->make_seat( $event_id, [ 'email' => 'day1@example.test' ] );
+		wp_set_current_user( $user_id );
+
+		// Inside session 1's window (09:00-11:00 +/- the 15/30 defaults),
+		// which has no embed of its own.
+		$now      = strtotime( '2027-06-01 10:00:00 UTC' );
+		$override = function () use ( $now ) { return $now; };
+		add_filter( 'anchor_events_stream_now', $override );
+		$html = $this->module()->render_room( $event_id );
+		remove_filter( 'anchor_events_stream_now', $override );
+
+		$this->assertStringNotContainsString( "isn't registered", $html, 'A confirmed seat must not be told it is unregistered during the embed-less session.' );
+		$this->assertStringContainsString( 'data-state="countdown"', $html );
+		$this->assertStringContainsString( 'data-session-index="1"', $html, 'The countdown must target session 2 (the one with an embed), not session 1.' );
+		$this->assertStringNotContainsString( 'player.vimeo.com', $html );
+	}
+
 	/** Entitled, inside the window: the embed is present. */
 	public function test_render_room_live_shows_the_embed() {
 		$event_id = $this->stream_event();

@@ -6,7 +6,9 @@
  */
 
 use Anchor\Courses\Admin\LearnerReports;
+use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Services\EnrollmentService;
+use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Accounts;
 use Anchor\Courses\Support\Roles;
 
@@ -35,6 +37,7 @@ class Test_Courses_Learners extends Anchor_Courses_TestCase {
 		remove_all_filters( 'anchor_courses_role_loss_policy' );
 		$_POST    = [];
 		$_REQUEST = [];
+		$_GET     = [];
 		parent::tear_down();
 	}
 
@@ -178,6 +181,16 @@ class Test_Courses_Learners extends Anchor_Courses_TestCase {
 		$this->assertSame( 'cancelled', $this->enrollments->get( $learner, $this->course )->status );
 	}
 
+	/** Roles::revoke_access() returns false for a user who never held the role - the redirect must say so, not lie with "access_revoked". */
+	public function test_revoke_reports_failure_when_the_user_never_held_the_role() {
+		$bystander = $this->make_learner();
+		wp_set_current_user( $this->admin );
+
+		$url = $this->post_learner_action( 'revoke', [ 'user_id' => (string) $bystander ] );
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=revoke_failed', $url );
+	}
+
 	/* ----- The table ----------------------------------------------------- */
 
 	public function test_rows_carry_the_phase_two_columns() {
@@ -196,7 +209,12 @@ class Test_Courses_Learners extends Anchor_Courses_TestCase {
 		// with nothing required is 100%" - see its docblock, and
 		// test_a_new_learner_is_at_zero_percent() for the populated-curriculum
 		// case, which is 0.0). This assertion follows that existing contract
-		// rather than the brief's literal 0.0.
+		// rather than the brief's literal 0.0 - rows()'s numeric 'percent' is
+		// unchanged by the fix-round ruling below. What changed is the
+		// RENDERED table: it shows an em dash instead of "100%" for this same
+		// empty-curriculum case, because 100% reads as "finished" to a human
+		// looking at the Learners tab (fix round 1 review ruling). See
+		// test_progress_cell_shows_an_em_dash_for_a_course_with_no_curriculum().
 		$this->assertSame( 100.0, $rows[0]['percent'] );
 		$this->assertTrue( $rows[0]['has_access'] );
 	}
@@ -211,6 +229,71 @@ class Test_Courses_Learners extends Anchor_Courses_TestCase {
 
 		$this->assertCount( 1, $rows, 'The row is kept by default (anchor_courses_role_loss_policy).' );
 		$this->assertFalse( $rows[0]['has_access'] );
+	}
+
+	/** design brief: rows() paginates but render_learners() never surfaced it - a 51st learner was silently truncated. */
+	public function test_the_learners_table_paginates_at_fifty_rows() {
+		for ( $i = 0; $i < 51; $i++ ) {
+			Roles::grant_access( $this->make_learner(), $this->course, 'manual' );
+		}
+		wp_set_current_user( $this->admin );
+
+		// Page 1: 50 rows, a next link, the running total.
+		ob_start();
+		( new LearnerReports() )->render_learners( get_post( $this->course ) );
+		$page1 = (string) ob_get_clean();
+		$this->assertSame( 50, substr_count( $page1, '<tr><td' ) );
+		$this->assertStringContainsString( 'of 51', $page1 );
+		$this->assertStringContainsString( 'anchor_learners_page=2', $page1 );
+
+		// Page 2: the one remaining row, a prev link, and no next link (last page).
+		$_GET['anchor_learners_page'] = '2';
+		ob_start();
+		( new LearnerReports() )->render_learners( get_post( $this->course ) );
+		$page2 = (string) ob_get_clean();
+		$this->assertSame( 1, substr_count( $page2, '<tr><td' ) );
+		$this->assertStringContainsString( 'of 51', $page2 );
+		$this->assertStringContainsString( 'anchor_learners_page=1', $page2 );
+		$this->assertStringNotContainsString( 'anchor_learners_page=3', $page2 );
+
+		// A page number of 0, negative, or non-numeric all fall back to page 1.
+		foreach ( [ '0', '-4', 'nope' ] as $garbage ) {
+			$_GET['anchor_learners_page'] = $garbage;
+			ob_start();
+			( new LearnerReports() )->render_learners( get_post( $this->course ) );
+			$html = (string) ob_get_clean();
+			$this->assertSame( 50, substr_count( $html, '<tr><td' ), "page={$garbage} should behave like page 1" );
+		}
+	}
+
+	/** Ruling (fix round 1 review): 100% reads as "finished", so an empty curriculum must not render as one. */
+	public function test_progress_cell_shows_an_em_dash_for_a_course_with_no_curriculum() {
+		Roles::grant_access( $this->make_learner(), $this->course, 'manual' );
+		wp_set_current_user( $this->admin );
+
+		ob_start();
+		( new LearnerReports() )->render_learners( get_post( $this->course ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringContainsString( '—', $html );
+		$this->assertStringNotContainsString( '100%', $html );
+	}
+
+	public function test_progress_cell_shows_a_percentage_once_the_one_required_item_is_complete() {
+		$lesson = $this->make_lesson( [], 'L1' );
+		Curriculum::save( $this->course, [ [ 'title' => 'M1', 'items' => [ [ 'type' => 'lesson', 'id' => $lesson ] ] ] ] );
+
+		$learner = $this->make_learner();
+		Roles::grant_access( $learner, $this->course, 'manual' );
+		( new ProgressService() )->complete_lesson( $learner, $this->course, $lesson );
+
+		wp_set_current_user( $this->admin );
+		ob_start();
+		( new LearnerReports() )->render_learners( get_post( $this->course ) );
+		$html = (string) ob_get_clean();
+
+		$this->assertStringContainsString( '100%', $html );
+		$this->assertStringNotContainsString( '—', $html );
 	}
 
 	public function test_the_metabox_needs_the_reports_capability_and_escapes_its_output() {

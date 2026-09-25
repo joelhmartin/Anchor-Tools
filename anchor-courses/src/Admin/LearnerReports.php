@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Anchor\Courses\Admin;
 
 use Anchor\Courses\Content\CoursePostType;
+use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Database\EnrollmentRepository;
 use Anchor\Courses\Services\ProgressService;
 use Anchor\Courses\Support\Accounts;
@@ -24,10 +25,18 @@ if ( ! \defined( 'ABSPATH' ) ) { exit; }
  * The table prints learner email addresses, so it is gated on the REPORTS
  * capability, not on edit_posts; the two write handlers need
  * manage_anchor_enrollments.
+ *
+ * rows() calls ProgressService::get_course_progress() once per enrolled
+ * learner (an N+1 query per page). Known, reviewed, and deliberately left
+ * alone here - it is carried to Task 31, which touches this same loop to add
+ * the credits/certificate columns.
  */
 final class LearnerReports {
 
 	public const NONCE = 'anchor_courses_learners';
+
+	/** Rows per page of the Learners table. */
+	private const PER_PAGE = 50;
 
 	public function __construct() {
 		\add_action( 'add_meta_boxes', [ $this, 'add_metabox' ] );
@@ -85,10 +94,19 @@ final class LearnerReports {
 		}
 
 		$course_id = (int) $post->ID;
-		$rows      = self::rows( $course_id );
+		$page      = $this->current_page();
+		$offset    = ( $page - 1 ) * self::PER_PAGE;
+		$rows      = self::rows( $course_id, self::PER_PAGE, $offset );
+		$total     = EnrollmentRepository::count_for_course( $course_id );
 		$may_write = Capabilities::current_user_can( 'enrollments' );
 
-		if ( [] === $rows ) {
+		// The empty-curriculum question is per COURSE, not per learner - every
+		// row in this table shares the same answer, so this is one call, not
+		// one per row (the N+1 progress lookup below is a separate, known,
+		// carried-forward issue - see class docblock).
+		$has_curriculum = [] !== Curriculum::required_items( $course_id );
+
+		if ( 0 === $total ) {
 			echo '<p>' . \esc_html__( 'Nobody is enrolled yet.', 'anchor-schema' ) . '</p>';
 		} else {
 			echo '<table class="widefat striped anchor-courses-report"><thead><tr>';
@@ -110,10 +128,22 @@ final class LearnerReports {
 				\printf( '<td>%s</td>', \esc_html( (string) $row['display_name'] ) );
 				\printf( '<td>%s</td>', \esc_html( (string) $row['user_email'] ) );
 				\printf( '<td>%s</td>', \esc_html( \mysql2date( 'Y-m-d', (string) $row['enrolled_at'] ) ) );
-				\printf(
-					'<td class="progress"><div class="anchor-courses-bar"><span style="width:%1$s%%"></span></div>%1$s%%</td>',
-					\esc_html( \number_format_i18n( (float) $row['percent'], 0 ) )
-				);
+				if ( $has_curriculum ) {
+					\printf(
+						'<td class="progress"><div class="anchor-courses-bar"><span style="width:%1$s%%"></span></div>%1$s%%</td>',
+						\esc_html( \number_format_i18n( (float) $row['percent'], 0 ) )
+					);
+				} else {
+					// A course with nothing required is 100% by ProgressService's
+					// contract (nothing left to do) - but printing "100%" here
+					// reads as "this learner finished", which is false; there is
+					// simply no content yet.
+					\printf(
+						'<td class="progress"><span title="%s">%s</span></td>',
+						\esc_attr__( 'This course has no content yet.', 'anchor-schema' ),
+						\esc_html__( '—', 'anchor-schema' )
+					);
+				}
 				\printf( '<td>%s</td>', \esc_html( (string) $row['status'] ) );
 				\printf( '<td>%s</td>', \esc_html( '' === $row['completed_at'] ? '-' : \mysql2date( 'Y-m-d', (string) $row['completed_at'] ) ) );
 
@@ -128,11 +158,62 @@ final class LearnerReports {
 			}
 
 			echo '</tbody></table>';
+
+			$this->render_pagination( $course_id, $page, $offset, \count( $rows ), $total );
 		}
 
 		if ( $may_write ) {
 			$this->render_add_learner_form( $course_id );
 		}
+	}
+
+	/**
+	 * The page number riding on the course edit URL - min 1, garbage collapses
+	 * to 1. Not `absint()`: that takes an absolute value, so a negative page
+	 * like "-4" would become page 4 instead of falling back to page 1.
+	 */
+	private function current_page(): int {
+		// phpcs:ignore WordPress.Security.NonceVerification -- a read, not a state change.
+		$raw  = \wp_unslash( $_GET['anchor_learners_page'] ?? 1 );
+		$page = \is_numeric( $raw ) ? (int) $raw : 1;
+
+		return \max( 1, $page );
+	}
+
+	/** "Showing X-Y of N" plus prev/next links, built on the course's own edit URL. */
+	private function render_pagination( int $course_id, int $page, int $offset, int $shown, int $total ): void {
+		if ( 0 === $shown ) {
+			return;
+		}
+
+		$base = (string) \get_edit_post_link( $course_id, 'raw' );
+
+		echo '<p class="anchor-courses-pagination">';
+		\printf(
+			/* translators: 1: first row number shown, 2: last row number shown, 3: total learners. */
+			\esc_html__( 'Showing %1$d–%2$d of %3$d', 'anchor-schema' ),
+			$offset + 1,
+			$offset + $shown,
+			$total
+		);
+
+		if ( $page > 1 ) {
+			\printf(
+				' <a href="%s">%s</a>',
+				\esc_url( \add_query_arg( 'anchor_learners_page', $page - 1, $base ) ),
+				\esc_html__( 'Previous', 'anchor-schema' )
+			);
+		}
+
+		if ( $offset + self::PER_PAGE < $total ) {
+			\printf(
+				' <a href="%s">%s</a>',
+				\esc_url( \add_query_arg( 'anchor_learners_page', $page + 1, $base ) ),
+				\esc_html__( 'Next', 'anchor-schema' )
+			);
+		}
+
+		echo '</p>';
 	}
 
 	public function render_add_learner_form( int $course_id ): void {
@@ -195,9 +276,11 @@ final class LearnerReports {
 			$this->redirect( $course_id, 'no_user' );
 		}
 
-		Roles::revoke_access( $user_id, $course_id, 'manual', (string) \get_current_user_id() );
+		// revoke_access() returns false when the user never held the role - a
+		// no-op that must not be reported as a success.
+		$revoked = Roles::revoke_access( $user_id, $course_id, 'manual', (string) \get_current_user_id() );
 
-		$this->redirect( $course_id, 'access_revoked' );
+		$this->redirect( $course_id, $revoked ? 'access_revoked' : 'revoke_failed' );
 	}
 
 	/** Nonce + capability, or redirect and stop. @return int The course id. */

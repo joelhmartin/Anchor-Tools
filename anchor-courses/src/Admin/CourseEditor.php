@@ -246,6 +246,12 @@ final class CourseEditor {
 			return;
 		}
 
+		// An empty <select multiple> posts no `anchor_course[prerequisites]`
+		// key at all, so save() cannot tell "clear everything" apart from
+		// "this field wasn't in the form" and skips the meta update. This
+		// sentinel guarantees the key is always present; sanitize_value()
+		// already drops the empty string, so "nothing selected" stores [].
+		echo '<input type="hidden" name="anchor_course[prerequisites][]" value="" />';
 		echo '<select multiple size="6" id="ac-prerequisites" name="anchor_course[prerequisites][]" class="anchor-courses-roles">';
 		foreach ( $choices as $slug => $role ) {
 			\printf(

@@ -140,6 +140,65 @@ class Test_Courses_Course_Editor extends Anchor_Courses_TestCase {
 		remove_role( 'anchor_course_77_completed' );
 	}
 
+	/**
+	 * An empty `<select multiple>` posts no `anchor_course[prerequisites]` key
+	 * at all, so save() must be able to tell "clear everything" apart from
+	 * "this field wasn't in the form" (CodeRabbit PR #29). The hidden empty
+	 * option the picker renders is what turns "nothing selected" into a real
+	 * `prerequisites => ['']` POST value, which sanitize_value() then reduces
+	 * to `[]`.
+	 */
+	public function test_saving_with_none_selected_clears_stored_prerequisites() {
+		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
+		add_role( 'anchor_course_9_completed', 'Completed: Prereq', [] );
+		$course = $this->make_course();
+
+		$this->post_course_settings( $course, [
+			'prerequisites' => [ 'anchor_course_9_completed' ],
+		] );
+		$this->assertSame(
+			[ 'anchor_course_9_completed' ],
+			get_post_meta( $course, '_anchor_course_prerequisites', true )
+		);
+
+		// What the hidden sentinel input contributes when the <select> itself
+		// posts nothing: the array key survives with only the empty value.
+		$this->post_course_settings( $course, [
+			'prerequisites' => [ '' ],
+		] );
+		$this->assertSame(
+			[],
+			get_post_meta( $course, '_anchor_course_prerequisites', true ),
+			'A save with no options selected must be able to clear a previously stored prerequisite.'
+		);
+
+		remove_role( 'anchor_course_9_completed' );
+	}
+
+	/**
+	 * The hidden sentinel input must be printed BEFORE the select so its
+	 * empty value is present in the posted array regardless of what else is
+	 * selected.
+	 */
+	public function test_prerequisite_picker_renders_a_hidden_empty_sentinel_before_the_select() {
+		add_role( 'anchor_course_9_completed', 'Completed: Prereq', [] );
+		$course = $this->make_course();
+		$post   = get_post( $course );
+
+		\ob_start();
+		( new CourseEditor() )->render_settings( $post );
+		$html = \ob_get_clean();
+
+		$hidden_pos = \strpos( $html, '<input type="hidden" name="anchor_course[prerequisites][]" value="" />' );
+		$select_pos = \strpos( $html, '<select multiple size="6" id="ac-prerequisites"' );
+
+		$this->assertNotFalse( $hidden_pos, 'The picker must render a hidden empty prerequisites sentinel.' );
+		$this->assertNotFalse( $select_pos, 'The prerequisites select must still render.' );
+		$this->assertLessThan( $select_pos, $hidden_pos, 'The sentinel must come before the select in the markup.' );
+
+		remove_role( 'anchor_course_9_completed' );
+	}
+
 	/** Fails if the `add_action( 'save_post_' . CPT, ... )` line is ever removed. */
 	public function test_save_runs_through_the_real_save_post_hook() {
 		new CourseEditor();

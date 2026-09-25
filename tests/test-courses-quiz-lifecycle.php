@@ -191,7 +191,15 @@ class Test_Courses_Quiz_Lifecycle extends Anchor_Courses_TestCase {
 		$attempt = $this->quizzes->start_attempt( $this->user, $this->quiz, $this->course );
 		$this->assertSame( 0, $this->quizzes->deadline( $attempt ) );
 
+		// Task 24 review, ruling R3: time_limit_seconds is pinned into the
+		// attempt at start(), so a settings change afterwards is invisible to
+		// deadline() for THIS attempt - it only affects the next one started.
 		update_post_meta( $this->quiz, '_anchor_quiz_settings', [ 'passing_score' => 80, 'time_limit_seconds' => 600 ] );
-		$this->assertSame( strtotime( '2026-05-01 10:10:00 UTC' ), $this->quizzes->deadline( $attempt ) );
+		$this->assertSame( 0, $this->quizzes->deadline( $attempt ), 'Untimed was pinned at start; a later edit must not retroactively time this attempt.' );
+
+		$second_learner = $this->make_learner();
+		( new EnrollmentService() )->enroll( $second_learner, $this->course );
+		$timed = $this->quizzes->start_attempt( $second_learner, $this->quiz, $this->course );
+		$this->assertSame( strtotime( '2026-05-01 10:10:00 UTC' ), $this->quizzes->deadline( $timed ), 'A NEW attempt started after the edit pins the new limit.' );
 	}
 }

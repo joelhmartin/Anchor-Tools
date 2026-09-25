@@ -3,9 +3,11 @@ declare(strict_types=1);
 
 namespace Anchor\Courses\Services;
 
+use Anchor\Courses\Admin\LessonEditor;
 use Anchor\Courses\Admin\QuizEditor;
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Content\Questions;
+use Anchor\Courses\Database\Migrations;
 use Anchor\Courses\Database\QuizAttemptRepository;
 use Anchor\Courses\Domain\QuizAttempt;
 use Anchor\Courses\Support\Clock;
@@ -112,17 +114,40 @@ final class QuizService {
 			return $open;
 		}
 
+		$settings = $this->settings( $quiz_id );
+
 		$attempt = QuizAttemptRepository::create(
 			[
 				'user_id'         => $user_id,
 				'course_id'       => $course_id,
 				'quiz_id'         => $quiz_id,
 				'points_possible' => Questions::points_possible( $quiz_id ),
+				// Pinned now, read by deadline()/enforce_timer()/submit() for the
+				// life of this attempt - never the live setting again (Task 24
+				// review, ruling R3).
+				'metadata'        => [
+					'time_limit_seconds' => (int) $settings['time_limit_seconds'],
+					'on_timer_expiry'    => (string) $settings['on_timer_expiry'],
+				],
 			]
 		);
 
+		// A genuine insert vs. a unique-key collision with a concurrent start on
+		// the same (user, quiz) that raced past the open_attempt() check above
+		// (Task 24 review, ruling R1). Only a genuine insert gets the
+		// side effects below; a collision resolves to the winner's row exactly
+		// like the ordinary resume path.
+		$created = $attempt instanceof QuizAttempt;
+		if ( ! $created ) {
+			$attempt = QuizAttemptRepository::open_attempt( $user_id, $quiz_id );
+		}
+
 		if ( ! $attempt instanceof QuizAttempt ) {
 			return new \WP_Error( 'attempt_failed', \__( 'The attempt could not be started.', 'anchor-schema' ) );
+		}
+
+		if ( ! $created ) {
+			return $attempt;
 		}
 
 		$this->enrollments->start( $user_id, $course_id );
@@ -132,7 +157,8 @@ final class QuizService {
 
 		/**
 		 * Fires when a new quiz attempt begins (never on a resume - see
-		 * start_attempt()'s open-attempt short-circuit above).
+		 * start_attempt()'s open-attempt short-circuit above, nor on a
+		 * collision resolving to another request's winning row).
 		 *
 		 * @param QuizAttempt $attempt
 		 * @param int         $user_id
@@ -198,13 +224,32 @@ final class QuizService {
 		);
 	}
 
-	/** Unix timestamp the attempt must be submitted by; 0 when untimed. */
+	/**
+	 * Unix timestamp the attempt must be submitted by; 0 when untimed.
+	 *
+	 * Reads the time_limit_seconds pinned into the attempt at start(), never
+	 * the quiz's live setting (Task 24 review, ruling R3) - so a mid-attempt
+	 * settings edit cannot move a deadline already in force.
+	 */
 	public function deadline( QuizAttempt $attempt ): int {
-		$limit = (int) $this->settings( $attempt->quiz_id )['time_limit_seconds'];
+		$limit = (int) ( $attempt->metadata['time_limit_seconds'] ?? 0 );
 		if ( $limit <= 0 ) {
 			return 0;
 		}
 		return Clock::to_timestamp( $attempt->started_at ) + $limit;
+	}
+
+	/**
+	 * The on_timer_expiry policy pinned into the attempt at start(); never the
+	 * live setting (ruling R3, same reasoning as deadline()). Falls back to
+	 * QuizEditor's default for an attempt with no pinned policy (none should
+	 * exist post-migration, but a stray legacy row must not fatal).
+	 */
+	private function timer_policy( QuizAttempt $attempt ): string {
+		$policy = (string) ( $attempt->metadata['on_timer_expiry'] ?? '' );
+		return \in_array( $policy, QuizEditor::TIMER_POLICIES, true )
+			? $policy
+			: (string) QuizEditor::defaults()['on_timer_expiry'];
 	}
 
 	/**
@@ -239,5 +284,209 @@ final class QuizService {
 		QuizAttemptRepository::update( $attempt_id, [ 'answers' => $answers ] );
 
 		return true;
+	}
+
+	/**
+	 * Grade and close an attempt (brief 8.4).
+	 *
+	 * Idempotent: an attempt that is no longer in progress is returned as-is -
+	 * a second submit() neither re-grades nor re-fires (brief 26).
+	 *
+	 * The timer is checked BEFORE the submitted answers are accepted, so a late
+	 * POST can never overwrite what was saved inside the window (brief 8.5).
+	 * Both the deadline and the on_timer_expiry policy come from the attempt's
+	 * pinned metadata, never the quiz's live settings (ruling R3).
+	 *
+	 * @param array $answers question_id => answer id | id[] (merged over saved
+	 *                       answers; ignored entirely on a late auto_submit -
+	 *                       only what was saved inside the window is graded).
+	 * @return QuizAttempt|\WP_Error
+	 */
+	public function submit( int $attempt_id, array $answers = [] ) {
+		$attempt = QuizAttemptRepository::find( $attempt_id );
+		if ( ! $attempt instanceof QuizAttempt ) {
+			return new \WP_Error( 'no_attempt', \__( 'That attempt does not exist.', 'anchor-schema' ) );
+		}
+		if ( ! $attempt->is_open() ) {
+			return $attempt; // Already graded / expired: nothing to do, nothing to fire.
+		}
+
+		$settings = $this->settings( $attempt->quiz_id );
+		$deadline = $this->deadline( $attempt );
+		$now      = Clock::timestamp();
+		$late     = $deadline > 0 && $now > $deadline;
+		$policy   = $this->timer_policy( $attempt );
+
+		if ( $late && 'expire' === $policy ) {
+			$expired = QuizAttemptRepository::update(
+				$attempt_id,
+				[
+					'status'           => 'expired',
+					'submitted_at'     => Clock::now(),
+					'duration_seconds' => \max( 0, $now - Clock::to_timestamp( $attempt->started_at ) ),
+				]
+			);
+			$this->progress->record_item( $attempt->user_id, $attempt->course_id, $attempt->quiz_id, 'quiz', 'failed' );
+			$this->progress->recalculate_course( $attempt->user_id, $attempt->course_id );
+			return $expired instanceof QuizAttempt ? $expired : $attempt;
+		}
+
+		// In-window: merge the submitted answers over what was saved.
+		// Late + auto_submit: grade ONLY what was saved before the deadline.
+		$final_answers = $attempt->answers;
+		if ( ! $late ) {
+			$questions_by_id = [];
+			foreach ( Questions::get( $attempt->quiz_id ) as $question ) {
+				$questions_by_id[ (string) $question['id'] ] = (string) $question['type'];
+			}
+			foreach ( $answers as $question_id => $value ) {
+				$question_id = (string) $question_id;
+				if ( ! isset( $questions_by_id[ $question_id ] ) ) {
+					continue;
+				}
+				$final_answers[ $question_id ] = Grading::normalize_answer( $questions_by_id[ $question_id ], $value );
+			}
+		}
+
+		$graded = Grading::grade( Questions::get( $attempt->quiz_id ), $final_answers );
+
+		$result = \array_merge(
+			$graded,
+			[
+				'passed'        => Grading::passed( $graded['score'], (int) $settings['passing_score'] ),
+				'passing_score' => (int) $settings['passing_score'],
+			]
+		);
+
+		/**
+		 * Filter the graded result before it is stored.
+		 *
+		 * @param array       $result points_earned, points_possible, score,
+		 *                            per_question, passed, passing_score.
+		 * @param QuizAttempt $attempt
+		 */
+		$result = (array) \apply_filters( 'anchor_courses_quiz_result', $result, $attempt );
+
+		$passed = ! empty( $result['passed'] );
+
+		$saved = QuizAttemptRepository::update(
+			$attempt_id,
+			[
+				'status'           => 'graded',
+				'score'            => (float) $result['score'],
+				'points_earned'    => (float) $result['points_earned'],
+				'points_possible'  => (float) $result['points_possible'],
+				'passed'           => $passed ? 1 : 0,
+				'submitted_at'     => Clock::now(),
+				'duration_seconds' => \max( 0, $now - Clock::to_timestamp( $attempt->started_at ) ),
+				'answers'          => $final_answers,
+				'grading_data'     => (array) $result['per_question'],
+			]
+		);
+
+		if ( ! $saved instanceof QuizAttempt ) {
+			return new \WP_Error( 'save_failed', \__( 'The attempt could not be graded.', 'anchor-schema' ) );
+		}
+
+		$this->progress->record_item(
+			$saved->user_id,
+			$saved->course_id,
+			$saved->quiz_id,
+			'quiz',
+			$passed ? 'completed' : 'failed',
+			[ 'metadata' => [ 'attempt_id' => $saved->id, 'score' => $saved->score ] ]
+		);
+
+		Log::write( 'quiz_submitted', [ 'attempt' => $saved->id, 'score' => $saved->score, 'passed' => $passed ] );
+
+		/**
+		 * Fires after an attempt is graded, pass or fail.
+		 *
+		 * @param QuizAttempt $saved
+		 * @param int         $user_id
+		 * @param int         $quiz_id
+		 * @param int         $course_id
+		 */
+		\do_action( 'anchor_courses_quiz_submitted', $saved, $saved->user_id, $saved->quiz_id, $saved->course_id );
+		\do_action(
+			$passed ? 'anchor_courses_quiz_passed' : 'anchor_courses_quiz_failed',
+			$saved,
+			$saved->user_id,
+			$saved->quiz_id,
+			$saved->course_id
+		);
+
+		if ( $passed ) {
+			$this->complete_gated_lessons( $saved );
+		}
+
+		$this->progress->recalculate_course( $saved->user_id, $saved->course_id );
+
+		return $saved;
+	}
+
+	/**
+	 * Complete any lesson in this course whose completion_mode is quiz_pass and
+	 * whose quiz_id is the quiz just passed (brief 9.2).
+	 */
+	private function complete_gated_lessons( QuizAttempt $attempt ): void {
+		foreach ( Curriculum::items( $attempt->course_id ) as $item ) {
+			if ( 'lesson' !== $item['type'] ) {
+				continue;
+			}
+			$lesson_id = (int) $item['id'];
+			if ( 'quiz_pass' !== (string) LessonEditor::setting( $lesson_id, 'completion_mode' ) ) {
+				continue;
+			}
+			if ( (int) LessonEditor::setting( $lesson_id, 'quiz_id' ) !== $attempt->quiz_id ) {
+				continue;
+			}
+			$this->progress->complete_lesson( $attempt->user_id, $attempt->course_id, $lesson_id );
+		}
+	}
+
+	/**
+	 * Apply the timer policy to an attempt without a learner request.
+	 *
+	 * Used by the cron sweep and by any read path that wants a truthful status;
+	 * returns the attempt unchanged when untimed or still inside the window.
+	 */
+	public function enforce_timer( QuizAttempt $attempt ): QuizAttempt {
+		if ( ! $attempt->is_open() ) {
+			return $attempt;
+		}
+		$deadline = $this->deadline( $attempt );
+		if ( 0 === $deadline || Clock::timestamp() <= $deadline ) {
+			return $attempt;
+		}
+
+		$result = $this->submit( $attempt->id );
+		return $result instanceof QuizAttempt ? $result : $attempt;
+	}
+
+	/**
+	 * Close out timed attempts whose window has passed but whose learner never
+	 * came back.
+	 *
+	 * @return int attempts closed.
+	 */
+	public function sweep_expired_attempts(): int {
+		global $wpdb;
+
+		$rows = $wpdb->get_results(
+			'SELECT * FROM ' . Migrations::table( 'quiz_attempts' ) . " WHERE status = 'in_progress'", // phpcs:ignore WordPress.DB.PreparedSQL
+			ARRAY_A
+		);
+
+		$closed = 0;
+		foreach ( (array) $rows as $row ) {
+			$attempt = QuizAttempt::from_row( $row );
+			$after   = $this->enforce_timer( $attempt );
+			if ( $after->status !== $attempt->status ) {
+				$closed++;
+			}
+		}
+
+		return $closed;
 	}
 }

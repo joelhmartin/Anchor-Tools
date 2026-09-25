@@ -77,6 +77,8 @@ class Module {
 		// Daily expiry sweep. Scheduled here rather than on activation because
 		// modules have no activation hook (see Migrations' note).
 		\add_action( Services\EnrollmentService::CRON_HOOK, [ $this->enrollments, 'sweep_expired' ] );
+		// Quiz timers share the same daily sweep - one cron, two closers (Task 25).
+		\add_action( Services\EnrollmentService::CRON_HOOK, [ $this->quizzes, 'sweep_expired_attempts' ] );
 		if ( ! \wp_next_scheduled( Services\EnrollmentService::CRON_HOOK ) ) {
 			\wp_schedule_event( \time() + HOUR_IN_SECONDS, 'daily', Services\EnrollmentService::CRON_HOOK );
 		}

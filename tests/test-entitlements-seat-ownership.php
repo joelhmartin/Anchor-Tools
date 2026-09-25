@@ -121,6 +121,34 @@ class Test_Entitlements_Seat_Ownership extends Anchor_Events_TestCase {
 		$this->assertFalse( $this->ent()->holds_role( $event_id, $buyer ), 'The buyer\'s stale seat grant is reconciled too.' );
 	}
 
+	/**
+	 * CodeRabbit PR #32 (audit F01 re-review): maybe_revoke_seat_grant() must
+	 * require the buyer's OWN grant record to actually be SOURCE_SEAT before
+	 * revoking. A role held with NO grant record at all (minted outside
+	 * Entitlements::grant() - e.g. by another plugin, or data older than
+	 * grant-record tracking) is left alone by a colleague's refund, exactly
+	 * like reconcile() leaves a record-less role untouched.
+	 */
+	public function test_a_buyer_role_with_no_grant_record_survives_a_colleagues_refund() {
+		$event_id  = $this->enabled_event();
+		$buyer     = self::factory()->user->create( [ 'user_email' => 'f01-recordless-buyer@example.test' ] );
+		$colleague = self::factory()->user->create( [ 'user_email' => 'f01-recordless-colleague@example.test' ] );
+
+		// The buyer holds the role with NO grant record - bypassing grant() entirely.
+		$slug = $this->ent()->role_for( $event_id );
+		get_userdata( $buyer )->add_role( $slug );
+		$this->assertSame( [], $this->ent()->grant_record( $event_id, $buyer ), 'Precondition: no grant record for the buyer.' );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $buyer ) );
+
+		$seat = $this->make_seat( $event_id, [ 'email' => 'f01-recordless-colleague@example.test', 'customer_id' => $buyer, 'order_id' => 9199 ] );
+		$this->registrations()->update_status( $seat, Registrations::STATUS_REFUNDED );
+
+		$this->assertTrue(
+			$this->ent()->holds_role( $event_id, $buyer ),
+			'A record-less role is not a seat grant, so a colleague\'s refund must not touch it.'
+		);
+	}
+
 	/** Multiple seats for the same attendee: the role survives until the LAST one goes. */
 	public function test_multiple_seats_for_one_attendee_keep_the_role_until_the_last_goes() {
 		$event_id = $this->enabled_event();
@@ -146,6 +174,38 @@ class Test_Entitlements_Seat_Ownership extends Anchor_Events_TestCase {
 		$this->assertTrue( $this->ent()->holds_role( $event_id, $buyer ) );
 		$this->assertSame( 'manual', $this->ent()->grant_record( $event_id, $buyer )['source'] );
 		$this->assertFalse( $this->ent()->holds_role( $event_id, $colleague ) );
+	}
+
+	/**
+	 * CodeRabbit PR #32 (audit F01 re-review): the seat's resolved account
+	 * (`_anchor_event_user_id`) is AUTHORITATIVE for ownership. A seat bound
+	 * to account A never counts as account B's, even when the seat's stored
+	 * email happens to equal B's - email is an ownership fallback only for a
+	 * seat with no bound account at all.
+	 */
+	public function test_a_seat_bound_to_one_account_never_matches_another_by_email() {
+		$event_id = $this->enabled_event();
+		$owner    = self::factory()->user->create( [ 'user_email' => 'f01-owner@example.test' ] );
+		$other    = self::factory()->user->create( [ 'user_email' => 'f01-other@example.test' ] );
+		// Bound to $owner, but its stored email now equals $other's - e.g. an
+		// account that changed its email address to one another user later
+		// registered with.
+		$this->make_seat( $event_id, [ 'email' => 'f01-other@example.test', 'user_id' => $owner ] );
+
+		$this->assertTrue( $this->ent()->has_confirmed_seat( $event_id, $owner ), 'The bound account owns the seat.' );
+		$this->assertFalse( $this->ent()->has_confirmed_seat( $event_id, $other ), 'A matching email does not override a DIFFERENT bound account.' );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $owner ), 'The seat grants the bound account, not the email match.' );
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $other ) );
+
+		// A pre-fix orphaned grant on $other (the shape a stale role from
+		// before this fix, or a manual mistake, would leave behind) is
+		// reconciled away: $other's email does not resurrect it.
+		$this->ent()->grant( $event_id, $other, 'seat' );
+		$report = $this->ent()->reconcile( $event_id, false );
+		$this->assertSame( [ $other ], array_column( $report['orphaned'], 'user_id' ) );
+		$this->assertSame( 1, $report['revoked'] );
+		$this->assertFalse( $this->ent()->holds_role( $event_id, $other ) );
+		$this->assertTrue( $this->ent()->holds_role( $event_id, $owner ), 'The real owner is untouched by reconciling the other account.' );
 	}
 
 	/**

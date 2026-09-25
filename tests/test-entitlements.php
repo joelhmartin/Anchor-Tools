@@ -617,6 +617,27 @@ class Test_Entitlements extends Anchor_Events_TestCase {
 		$this->assertSame( 'in_person', $this->ent()->seat_tier_modality( $event_id, $buyer_id ) );
 	}
 
+	/**
+	 * CodeRabbit PR #32 (audit F01 re-review): the same owner-only identity
+	 * match must not fall back to email when a DIFFERENT account is bound to
+	 * the seat. A virtual seat bound to account A, whose stored email later
+	 * equals account B's, entitles A to the stream and gives B nothing.
+	 */
+	public function test_seat_tier_modality_ignores_an_email_match_against_a_seat_bound_to_someone_else() {
+		[ $event_id, , $virtual_id ] = $this->stream_event();
+		$owner = self::factory()->user->create( [ 'user_email' => 'f01-modality-owner@example.test' ] );
+		$other = self::factory()->user->create( [ 'user_email' => 'f01-modality-other@example.test' ] );
+
+		$this->make_seat( $event_id, [
+			'email'          => 'f01-modality-other@example.test',
+			'user_id'        => $owner,
+			'ticket_type_id' => $virtual_id,
+		] );
+
+		$this->assertSame( 'virtual', $this->ent()->seat_tier_modality( $event_id, $owner ) );
+		$this->assertSame( '', $this->ent()->seat_tier_modality( $event_id, $other ), 'A matching email must not resolve to a seat bound to someone else.' );
+	}
+
 	public function test_in_person_tier_follows_the_toggle() {
 		[ $on_id, $in_person_on ] = $this->stream_event( [ 'in_person_includes_stream' => true ] );
 		$a = self::factory()->user->create( [ 'user_email' => 'a2@example.test' ] );

@@ -530,7 +530,14 @@ class Entitlements {
 
     /**
      * Revoke a SEAT grant only when nothing else entitles the user: no other
-     * confirmed seat on this event, and no manual grant on record.
+     * confirmed seat on this event, and the role's own grant record is
+     * actually seat-derived.
+     *
+     * CodeRabbit PR #32: requiring `SOURCE_SEAT` (rather than merely
+     * rejecting `SOURCE_MANUAL`) also leaves a MISSING grant record alone -
+     * a role held with no record at all is not undone by a seat refund
+     * either, matching reconcile() (which only ever revokes a role whose
+     * grant record is `SOURCE_SEAT`).
      *
      * @param int $event_id
      * @param int $user_id
@@ -541,8 +548,8 @@ class Entitlements {
         if ( $event_id <= 0 || $user_id <= 0 || ! $this->enabled( $event_id ) ) {
             return;
         }
-        if ( ( $this->grant_record( $event_id, $user_id )['source'] ?? '' ) === self::SOURCE_MANUAL ) {
-            return; // A comp is not undone by a refund.
+        if ( ( $this->grant_record( $event_id, $user_id )['source'] ?? '' ) !== self::SOURCE_SEAT ) {
+            return; // A comp - or a role with no grant record at all - is not undone by a refund.
         }
         if ( $this->has_confirmed_seat( $event_id, $user_id ) ) {
             return; // Another seat still entitles them.

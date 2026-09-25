@@ -118,7 +118,9 @@ final class CompletionService {
 			// Not a second transition (see class docblock for what guards
 			// that) - but any effect the first run left pending or failed is
 			// re-run now (audit F02).
-			$this->run_effects( $enrollment, false );
+			if ( ! $this->run_effects( $enrollment, false ) ) {
+				Log::write( 'completion_effects_untracked', [ 'user' => $user_id, 'course' => $course_id ] );
+			}
 			return false;
 		}
 		// Only a learner who is enrolled RIGHT NOW can complete (final review
@@ -152,7 +154,9 @@ final class CompletionService {
 		/** This action is documented in EnrollmentService::set_status(). */
 		\do_action( 'anchor_courses_enrollment_status_changed', $user_id, $course_id, $from, 'completed' );
 
-		$this->run_effects( $updated, true );
+		if ( ! $this->run_effects( $updated, true ) ) {
+			Log::write( 'completion_effects_untracked', [ 'user' => $user_id, 'course' => $course_id ] );
+		}
 
 		return true;
 	}
@@ -161,8 +165,15 @@ final class CompletionService {
 	 * Run every effect that is not yet done (all of them on a fresh
 	 * transition), recording each outcome as it lands so a crash mid-way
 	 * leaves the rest `pending` for the next call.
+	 *
+	 * @return bool False when any `save_effects()` write in this call failed
+	 *              (re-review, audit F02): the effects themselves still ran -
+	 *              this only means their outcome was not durably recorded, so
+	 *              the row can look completed with no tracked state (the same
+	 *              shape as one that predates tracking, which the admin
+	 *              Repair action reports as `repair_not_tracked`).
 	 */
-	private function run_effects( Enrollment $enrollment, bool $fresh ): void {
+	private function run_effects( Enrollment $enrollment, bool $fresh ): bool {
 		$state = $fresh
 			? \array_fill_keys( self::EFFECTS, self::EFFECT_PENDING )
 			: (array) ( $enrollment->metadata[ self::EFFECTS_META ] ?? [] );
@@ -172,10 +183,12 @@ final class CompletionService {
 			static fn ( string $effect ): bool => \in_array( $state[ $effect ] ?? '', [ self::EFFECT_PENDING, self::EFFECT_FAILED ], true )
 		) );
 		if ( [] === $todo ) {
-			return; // Nothing outstanding - or a row completed before tracking existed.
+			return true; // Nothing outstanding - or a row completed before tracking existed.
 		}
+
+		$tracked = true;
 		if ( $fresh ) {
-			$this->save_effects( $enrollment->id, $state );
+			$tracked = $this->save_effects( $enrollment->id, $state );
 		}
 
 		$user_id   = $enrollment->user_id;
@@ -197,8 +210,9 @@ final class CompletionService {
 				Log::write( 'completion_effect_failed', [ 'user' => $user_id, 'course' => $course_id, 'effect' => $effect ] );
 			}
 			$state[ $effect ] = $outcome;
-			$this->save_effects( $enrollment->id, $state );
+			$tracked          = $this->save_effects( $enrollment->id, $state ) && $tracked;
 		}
+		return $tracked;
 	}
 
 	/** @return string done|failed|n/a */
@@ -267,12 +281,24 @@ final class CompletionService {
 		return self::EFFECT_FAILED;
 	}
 
-	/** Merge the effect state into the row's metadata. */
-	private function save_effects( int $enrollment_id, array $state ): void {
+	/**
+	 * Merge the effect state into the row's metadata.
+	 *
+	 * @return bool False when EnrollmentRepository::update() reports a
+	 *              database error (re-review, audit F02) - a fresh read of
+	 *              the row with the OLD metadata would otherwise look
+	 *              identical to a successful write.
+	 */
+	private function save_effects( int $enrollment_id, array $state ): bool {
 		$current  = EnrollmentRepository::find_by_id( $enrollment_id );
 		$metadata = $current instanceof Enrollment ? $current->metadata : [];
 		$metadata[ self::EFFECTS_META ] = $state;
-		EnrollmentRepository::update( $enrollment_id, [ 'metadata' => $metadata ] );
+
+		if ( ! EnrollmentRepository::update( $enrollment_id, [ 'metadata' => $metadata ] ) instanceof Enrollment ) {
+			Log::write( 'completion_effects_save_failed', [ 'enrollment' => $enrollment_id ] );
+			return false;
+		}
+		return true;
 	}
 
 	/**

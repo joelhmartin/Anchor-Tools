@@ -87,6 +87,14 @@ final class EnrollmentRepository {
 	/**
 	 * @param array $data Column => value, limited to self::UPDATABLE (anything else
 	 *                    is dropped). `metadata` may be an array.
+	 * @return Enrollment|null The row as it now stands, or NULL when the
+	 *                         database reported an error (audit F02,
+	 *                         re-review, mirroring QuizAttemptRepository::
+	 *                         update()'s F03 fix): `$wpdb->update()` returning
+	 *                         false is a failed write, and handing back a
+	 *                         fresh read of the unchanged row would make it
+	 *                         look like success. A 0-row "nothing changed"
+	 *                         update is a success.
 	 * @throws \InvalidArgumentException When `status` is not one of Enrollment::STATUSES.
 	 */
 	public static function update( int $id, array $data ): ?Enrollment {
@@ -101,7 +109,9 @@ final class EnrollmentRepository {
 		}
 		$data['updated_at'] = Clock::now();
 
-		$wpdb->update( self::table(), $data, [ 'id' => $id ] );
+		if ( false === $wpdb->update( self::table(), $data, [ 'id' => $id ] ) ) {
+			return null;
+		}
 
 		return self::find_by_id( $id );
 	}

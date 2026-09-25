@@ -16,6 +16,7 @@
 use Anchor\Courses\Content\Curriculum;
 use Anchor\Courses\Database\CertificateRepository;
 use Anchor\Courses\Database\CreditRepository;
+use Anchor\Courses\Database\EnrollmentRepository;
 use Anchor\Courses\Services\CertificateService;
 use Anchor\Courses\Services\CompletionService;
 use Anchor\Courses\Services\CreditService;
@@ -211,6 +212,52 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 		$this->assert_all_done_once();
 	}
 
+	/**
+	 * Re-review (Low): `save_effects()` - the write that records each effect's
+	 * OUTCOME, not one of the tracked effects itself - must tell a genuine
+	 * database error apart from success, the same way award()/issue() already
+	 * do. Exercised directly (it is CompletionService's own private method)
+	 * so this proves the exact contract, independent of which caller uses it.
+	 */
+	public function test_save_effects_distinguishes_a_database_error_from_success() {
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		$method     = new ReflectionMethod( CompletionService::class, 'save_effects' );
+		$method->setAccessible( true );
+		$state = [ 'credit' => 'done', 'certificate' => 'done', 'completion_role' => 'done', 'hook' => 'done' ];
+
+		$this->assertTrue( $method->invoke( $this->completion, $enrollment->id, $state ), 'A healthy write succeeds.' );
+
+		$this->break_queries( '/^UPDATE `?\S*anchor_courses_enrollments`? SET `metadata`/' );
+		$failed = $method->invoke( $this->completion, $enrollment->id, $state );
+		$this->heal();
+
+		$this->assertFalse( $failed, 'A database error must not look like a successful save.' );
+	}
+
+	/**
+	 * Re-review (Low): a failed write of that tracking record must not look
+	 * like success from the outside either. The transition and every
+	 * effect's real side effect still happen (separate queries) - only the
+	 * bookkeeping write is broken here - so the row ends up completed with a
+	 * real credit/certificate/role/hook, but `effects()` reports nothing: the
+	 * same "untracked" shape as a row that predates tracking, and the admin
+	 * Repair action must say so (`repair_not_tracked`), not claim `repaired`.
+	 */
+	public function test_a_failed_effects_metadata_write_leaves_the_row_untracked_but_still_completes_it() {
+		$this->break_queries( '/^UPDATE `?\S*anchor_courses_enrollments`? SET `metadata`/' );
+		$this->finish_lesson();
+		$this->heal();
+
+		$this->assertTrue( $this->completion->is_complete( $this->user, $this->course ), 'The atomic transition is a different write - unaffected.' );
+		$this->assertSame( [], $this->effects(), 'The tracking write never landed.' );
+		$this->assertNotNull( CreditRepository::find( $this->user, $this->course ), 'The credit effect itself still ran.' );
+		$this->assertNotNull( CertificateRepository::find( $this->user, $this->course ) );
+		$this->assertTrue( Roles::user_has( $this->user, Roles::completion_slug( $this->course ) ) );
+		$this->assertSame( 1, $this->fired['course'], 'The hook still fired for real.' );
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=repair_not_tracked', $this->post_repair() );
+	}
+
 	/* --- award() / issue(): not-applicable (null + reason) vs failed (WP_Error) --- */
 
 	public function test_award_distinguishes_nothing_to_award_from_a_failed_insert() {
@@ -282,5 +329,21 @@ class Test_Courses_Completion_Effects extends Anchor_Courses_TestCase {
 
 		$this->assertStringContainsString( 'anchor_courses_admin_notice=repaired', $this->post_repair() );
 		$this->assertNotNull( CreditRepository::find( $this->user, $this->course ) );
+	}
+
+	/**
+	 * Re-review (Low): a row completed before effect tracking existed at all
+	 * (never went through run_effects(), so metadata has no
+	 * completion_effects key) is complete but has nothing to verify. Repair
+	 * must say so distinctly - `repair_not_tracked` - rather than claim
+	 * `repaired`, which would wrongly imply credit/certificate/role/hook were
+	 * just confirmed present.
+	 */
+	public function test_the_repair_action_reports_untracked_for_a_row_that_predates_effect_tracking() {
+		$enrollment = $this->enrollments->get( $this->user, $this->course );
+		EnrollmentRepository::complete( $enrollment->id, '2026-01-01 00:00:00' );
+		$this->assertSame( [], $this->completion->effects( $this->user, $this->course ), 'Precondition: nothing was ever tracked.' );
+
+		$this->assertStringContainsString( 'anchor_courses_admin_notice=repair_not_tracked', $this->post_repair() );
 	}
 }

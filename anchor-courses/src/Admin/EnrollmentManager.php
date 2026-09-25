@@ -45,6 +45,7 @@ final class EnrollmentManager {
 		Notices::register( 'repaired', Notices::TYPE_SUCCESS, \__( 'Completion repaired: credits, certificate, completion role and notifications are all in place.', 'anchor-schema' ) );
 		Notices::register( 'repair_incomplete', Notices::TYPE_ERROR, \__( 'Some completion steps still failed. Check the log and try again.', 'anchor-schema' ) );
 		Notices::register( 'repair_not_completed', Notices::TYPE_ERROR, \__( 'There is nothing to repair: this learner has not completed the course.', 'anchor-schema' ) );
+		Notices::register( 'repair_not_tracked', Notices::TYPE_ERROR, \__( 'This completion has no recorded effect state to verify (it predates tracking, or the last attempt to record it failed) - credits, certificate, completion role and notifications were not just confirmed present.', 'anchor-schema' ) );
 	}
 
 	/**
@@ -166,10 +167,17 @@ final class EnrollmentManager {
 					Notices::redirect( 'repair_not_completed', $target );
 				}
 				$module->completion->complete( $user_id, $course_id );
-				$outstanding = \array_intersect(
-					$module->completion->effects( $user_id, $course_id ),
-					[ CompletionService::EFFECT_PENDING, CompletionService::EFFECT_FAILED ]
-				);
+				$effects = $module->completion->effects( $user_id, $course_id );
+				if ( [] === $effects ) {
+					// Audit F02 re-review: a completed row with no tracked
+					// effect state at all - either it predates tracking, or
+					// the tracking write itself just failed (complete()
+					// logged `completion_effects_untracked`) - is not the
+					// same as "verified in place". Say so distinctly rather
+					// than claim `repaired`.
+					Notices::redirect( 'repair_not_tracked', $target );
+				}
+				$outstanding = \array_intersect( $effects, [ CompletionService::EFFECT_PENDING, CompletionService::EFFECT_FAILED ] );
 				Notices::redirect( [] === $outstanding ? 'repaired' : 'repair_incomplete', $target );
 				break;
 		}

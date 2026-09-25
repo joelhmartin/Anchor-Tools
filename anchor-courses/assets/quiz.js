@@ -7,6 +7,13 @@
  * pinned `deadline` a response returns, never from a live quiz setting - the
  * server, not this file, is the only clock that can close an attempt.
  *
+ * A course page can render more than one quiz (e.g. a module quiz and a
+ * final exam) - initQuiz() is called once per `.anchor-quiz` element found on
+ * the page, and every piece of per-attempt state (attemptId, timerHandle)
+ * lives in that call's own closure, scoped to its own $root, so two quizzes
+ * on the same page never share an attempt or a timer (Task 26 review,
+ * IMPORTANT).
+ *
  * Progressive enhancement: templates/quiz.php ships a <noscript> notice, so a
  * visitor with JavaScript disabled sees "This quiz needs JavaScript" instead
  * of a dead button, rather than a silent no-op.
@@ -48,10 +55,8 @@
             '</fieldset>';
     }
 
-    $(function () {
-        var $root = $('.anchor-quiz');
-        if (!$root.length) { return; }
-
+    /** Wire up a single `.anchor-quiz` element. */
+    function initQuiz($root) {
         var quizId = $root.data('quiz');
         var courseId = $root.data('course');
         var attemptId = 0;
@@ -81,6 +86,26 @@
             }, 1000);
         }
 
+        /**
+         * A resumed attempt (start() returns the already-open row, answers
+         * and all - QuizService::start_attempt()'s resume path) must have its
+         * previously-saved choices re-checked in the freshly-rendered form
+         * (Task 26 review, MINOR): without this, a reload shows every input
+         * unchecked, and submitting from there sends an empty array for a
+         * question that was already answered, clearing it server-side even
+         * though submit() itself would otherwise have kept it.
+         */
+        function preCheckSavedAnswers(answers) {
+            if (!answers) { return; }
+            $root.find('.anchor-quiz-question').each(function () {
+                var $q = $(this);
+                var saved = answers[$q.data('question')] || [];
+                $q.find('input').each(function () {
+                    this.checked = saved.indexOf(this.value) !== -1;
+                });
+            });
+        }
+
         function renderResult(data) {
             var a = data.attempt || {};
             var text = a.passed ? (S.passed || '') : (S.failed || '');
@@ -103,6 +128,7 @@
                         '<p><button type="submit" class="anchor-courses-button">' + esc(S.submit) + '</button></p>';
                     $root.find('.anchor-quiz-form').html(html).prop('hidden', false);
                     $btn.prop('hidden', true);
+                    preCheckSavedAnswers(data.attempt.answers);
                     startCountdown(data.deadline, data.server_now);
                 })
                 .fail(function (xhr) {
@@ -138,5 +164,9 @@
                     $root.find('.anchor-quiz-result').prop('hidden', false).text(S.error);
                 });
         });
+    }
+
+    $(function () {
+        $('.anchor-quiz').each(function () { initQuiz($(this)); });
     });
 })(jQuery);

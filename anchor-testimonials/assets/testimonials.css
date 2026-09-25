@@ -28,7 +28,7 @@
 @media ( max-width: 1023px ) {
 	.anchor-testimonials--grid .anchor-testimonials__track,
 	.anchor-testimonials--video-grid .anchor-testimonials__track {
-		grid-template-columns: repeat( 2, minmax( 0, 1fr ) );
+		grid-template-columns: repeat( min( var( --at-cols, 3 ), 2 ), minmax( 0, 1fr ) );
 	}
 }
 

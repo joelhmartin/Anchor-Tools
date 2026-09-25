@@ -76,4 +76,41 @@ class Test_Testimonials_Render extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'Video Person', $html_quote, 'type="quote" is still forced to video in video-grid, so the video testimonial renders.' );
 		$this->assertStringNotContainsString( 'Quote Person', $html_quote, 'type="quote" must not surface a quote-only testimonial in video-grid.' );
 	}
+
+	/**
+	 * PR #28 review finding K (Codex P1): the shortcode normally runs during
+	 * the_content, after wp_head has already printed the style queue, so
+	 * WordPress would only pick testimonials.css up via print_late_styles()
+	 * in the footer instead of the head. maybe_enqueue_frontend_assets(),
+	 * hooked on wp_enqueue_scripts (which runs before wp_head), covers the
+	 * common case of a singular post/page whose content literally contains
+	 * the shortcode.
+	 */
+	public function test_maybe_enqueue_frontend_assets_enqueues_early_on_a_singular_page_with_the_shortcode() {
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_content' => 'Intro copy. [anchor_testimonials]' ] );
+		$this->go_to( get_permalink( $page ) );
+
+		( new Anchor_Testimonials_Module() )->maybe_enqueue_frontend_assets();
+
+		$this->assertTrue( wp_style_is( 'anchor-testimonials', 'enqueued' ) );
+		$this->assertTrue( wp_script_is( 'anchor-testimonials', 'enqueued' ) );
+	}
+
+	public function test_maybe_enqueue_frontend_assets_is_a_noop_on_a_singular_page_without_the_shortcode() {
+		// The style/script queues are process-global, not reset between test
+		// methods, so start from a known-clean state (same convention as
+		// tests/test-compliance-banner.php) rather than relying on test order.
+		wp_dequeue_style( 'anchor-testimonials' );
+		wp_deregister_style( 'anchor-testimonials' );
+		wp_dequeue_script( 'anchor-testimonials' );
+		wp_deregister_script( 'anchor-testimonials' );
+
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_content' => 'Nothing to see here.' ] );
+		$this->go_to( get_permalink( $page ) );
+
+		( new Anchor_Testimonials_Module() )->maybe_enqueue_frontend_assets();
+
+		$this->assertFalse( wp_style_is( 'anchor-testimonials', 'enqueued' ) );
+		$this->assertFalse( wp_script_is( 'anchor-testimonials', 'enqueued' ) );
+	}
 }

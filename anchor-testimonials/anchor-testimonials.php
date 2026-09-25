@@ -24,6 +24,7 @@ class Anchor_Testimonials_Module {
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 		add_action( 'wp_ajax_anchor_testimonials_search_posts', [ $this, 'ajax_search_posts' ] );
 		add_shortcode( 'anchor_testimonials', [ $this, 'shortcode' ] );
+		add_action( 'wp_enqueue_scripts', [ $this, 'maybe_enqueue_frontend_assets' ] );
 
 		add_filter( 'manage_' . self::CPT . '_posts_columns', [ $this, 'admin_columns' ] );
 		add_action( 'manage_' . self::CPT . '_posts_custom_column', [ $this, 'render_admin_column' ], 10, 2 );
@@ -229,9 +230,33 @@ class Anchor_Testimonials_Module {
 	}
 
 	/**
-	 * Registers and enqueues the front-end script/style, called directly
-	 * from the shortcode handler (not hooked on wp_enqueue_scripts) so
-	 * nothing loads on pages that never render the shortcode.
+	 * Early enqueue for a singular post/page whose content already contains
+	 * the shortcode: wp_enqueue_scripts runs before wp_head, so this avoids
+	 * the late-enqueue-from-inside-the_content path below having to rely on
+	 * WordPress printing the style/script late in the footer
+	 * (print_late_styles()/print_late_scripts()) instead of the head. Not a
+	 * replacement for the shortcode handler's own call: this only covers a
+	 * shortcode literally present in post_content (has_shortcode()), not one
+	 * assembled by a block/widget or injected some other way, so the
+	 * shortcode handler still enqueues directly too (harmless to call twice;
+	 * wp_enqueue_style()/wp_enqueue_script() are idempotent per handle).
+	 */
+	public function maybe_enqueue_frontend_assets() {
+		if ( ! is_singular() ) {
+			return;
+		}
+		$post = get_post();
+		if ( $post && has_shortcode( (string) $post->post_content, 'anchor_testimonials' ) ) {
+			$this->enqueue_frontend_assets();
+		}
+	}
+
+	/**
+	 * Registers and enqueues the front-end script/style. Called directly
+	 * from the shortcode handler (not solely hooked on wp_enqueue_scripts)
+	 * so nothing loads on pages that never render the shortcode; also called
+	 * early by maybe_enqueue_frontend_assets() above when a singular post's
+	 * content contains the shortcode.
 	 */
 	public function enqueue_frontend_assets() {
 		$base_dir = ANCHOR_TOOLS_PLUGIN_DIR . 'anchor-testimonials/assets/';

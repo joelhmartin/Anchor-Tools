@@ -377,14 +377,27 @@ class Anchor_Speakers_Module {
 	}
 
 	/**
-	 * Only fires the front-end enqueue on a singular speaker page (the
-	 * fallback single template); the shortcode enqueues directly from its
-	 * own handler (not hooked on wp_enqueue_scripts) so nothing loads on
-	 * pages that never render a speaker.
+	 * Fires the front-end enqueue early (wp_enqueue_scripts runs before
+	 * wp_head) on a singular speaker page (the fallback single template),
+	 * and on any other singular post/page whose content already contains
+	 * the [anchor_speakers] shortcode, so it doesn't have to rely on
+	 * WordPress printing the style late in the footer
+	 * (print_late_styles()) instead of the head. That has_shortcode() check
+	 * only catches a shortcode literally present in post_content, not one
+	 * assembled by a block/widget or injected some other way, so the
+	 * shortcode handler still enqueues directly too (harmless to call
+	 * twice; wp_enqueue_style() is idempotent per handle).
 	 */
 	public function maybe_enqueue_frontend_assets() {
 		if ( is_singular( self::CPT ) ) {
 			$this->enqueue_frontend_assets();
+			return;
+		}
+		if ( is_singular() ) {
+			$post = get_post();
+			if ( $post && has_shortcode( (string) $post->post_content, 'anchor_speakers' ) ) {
+				$this->enqueue_frontend_assets();
+			}
 		}
 	}
 

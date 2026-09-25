@@ -80,4 +80,37 @@ class Test_Speakers_Render extends WP_UnitTestCase {
 		$html = do_shortcode( '[anchor_speakers event="not-a-real-id"]' );
 		$this->assertSame( '', $html );
 	}
+
+	/**
+	 * PR #28 review finding K (Codex P2): [anchor_speakers] embedded on a
+	 * non-speaker page normally runs during the_content, after wp_head has
+	 * already printed the style queue, so speakers.css would only be picked
+	 * up via print_late_styles() in the footer. maybe_enqueue_frontend_assets(),
+	 * hooked on wp_enqueue_scripts (before wp_head), covers a singular
+	 * post/page whose content literally contains the shortcode, in addition
+	 * to the existing is_singular(self::CPT) case.
+	 */
+	public function test_maybe_enqueue_frontend_assets_enqueues_early_on_a_singular_page_with_the_shortcode() {
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_content' => 'Meet our team. [anchor_speakers]' ] );
+		$this->go_to( get_permalink( $page ) );
+
+		( new Anchor_Speakers_Module() )->maybe_enqueue_frontend_assets();
+
+		$this->assertTrue( wp_style_is( 'anchor-speakers', 'enqueued' ) );
+	}
+
+	public function test_maybe_enqueue_frontend_assets_is_a_noop_on_a_singular_page_without_the_shortcode() {
+		// The style queue is process-global, not reset between test methods,
+		// so start from a known-clean state (same convention as
+		// tests/test-compliance-banner.php) rather than relying on test order.
+		wp_dequeue_style( 'anchor-speakers' );
+		wp_deregister_style( 'anchor-speakers' );
+
+		$page = self::factory()->post->create( [ 'post_type' => 'page', 'post_content' => 'Nothing to see here.' ] );
+		$this->go_to( get_permalink( $page ) );
+
+		( new Anchor_Speakers_Module() )->maybe_enqueue_frontend_assets();
+
+		$this->assertFalse( wp_style_is( 'anchor-speakers', 'enqueued' ) );
+	}
 }

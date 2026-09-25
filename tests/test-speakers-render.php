@@ -56,4 +56,28 @@ class Test_Speakers_Render extends WP_UnitTestCase {
 		$html = do_shortcode( "[anchor_speakers ids=\"$id\"]" );
 		$this->assertStringContainsString( '<strong>orofacial pain</strong>', $html );
 	}
+
+	/**
+	 * PR #28 review finding A: an `event` attribute that resolves to no
+	 * linked speakers (a real event with none linked, or the Events module
+	 * being inactive so event_speaker_ids() always returns []) must render
+	 * nothing, not fall through to the unscoped query and list every
+	 * published speaker.
+	 */
+	public function test_event_with_no_linked_speakers_renders_nothing() {
+		self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_title' => 'Dr. Everyone' ] );
+		$event = self::factory()->post->create( [ 'post_type' => 'post', 'post_title' => 'Some Event' ] );
+		$html  = do_shortcode( "[anchor_speakers event=\"$event\"]" );
+		$this->assertSame( '', $html );
+	}
+
+	/**
+	 * An invalid/non-numeric event id (resolves to 0) must behave the same
+	 * as a valid event with no linked speakers: nothing renders.
+	 */
+	public function test_invalid_event_id_renders_nothing() {
+		self::factory()->post->create( [ 'post_type' => 'anchor_speaker', 'post_title' => 'Dr. Everyone' ] );
+		$html = do_shortcode( '[anchor_speakers event="not-a-real-id"]' );
+		$this->assertSame( '', $html );
+	}
 }

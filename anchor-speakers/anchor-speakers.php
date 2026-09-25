@@ -305,8 +305,13 @@ class Anchor_Speakers_Module {
 
 		if ( empty( $ids ) && (string) $atts['event'] !== '' && method_exists( __CLASS__, 'event_speaker_ids' ) ) {
 			$event_id = $atts['event'] === 'current' ? get_queried_object_id() : absint( $atts['event'] );
-			if ( $event_id ) {
-				$ids = self::event_speaker_ids( $event_id );
+			$ids      = $event_id ? self::event_speaker_ids( $event_id ) : [];
+			// An event scope that resolves to no speakers (a real event with
+			// none linked, an invalid event id, or the Events module being
+			// inactive) must render nothing, not fall through to every
+			// published speaker.
+			if ( empty( $ids ) ) {
+				return [];
 			}
 		}
 

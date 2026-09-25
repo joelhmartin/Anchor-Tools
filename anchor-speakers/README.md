@@ -51,7 +51,7 @@ Renders nothing (and enqueues no assets) when the resolved query is empty.
 | `link` | `1`/`0`, wrap photo/name/CTA in a link to the speaker's single page | `1` |
 | `show` | comma list, any of `credentials,title,location,excerpt` | `credentials,title,excerpt` |
 
-Ordering: `ids` order when `ids` is given, else event order when `event` resolves to a non-empty list (via `Anchor_Speakers_Module::event_speaker_ids()`), else `menu_order` ASC then `title` ASC. On a group-parent or group-child event, `event="current"`/an explicit event ID both resolve through the parent-fallback described above.
+Ordering: `ids` order when `ids` is given, else event order when `event` resolves to a non-empty list (via `Anchor_Speakers_Module::event_speaker_ids()`), else `menu_order` ASC then `title` ASC. On a group-parent or group-child event, `event="current"`/an explicit event ID both resolve through the parent-fallback described above. When `event` is given and resolves to no speakers (no speakers linked, an invalid event ID, or the Events module inactive), the shortcode renders nothing rather than falling back to the full speaker roster.
 
 ## Markup contract
 

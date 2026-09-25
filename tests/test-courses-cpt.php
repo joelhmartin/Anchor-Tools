@@ -28,6 +28,27 @@ class Test_Courses_Cpt extends Anchor_Courses_TestCase {
 		$this->assertFalse( get_post_type_object( 'anchor_quiz' )->publicly_queryable );
 	}
 
+	/**
+	 * Task 18 review fix round, ruling (a). `anchor_lesson` used to ship
+	 * `show_in_rest => true` with no permission callback, so
+	 * `GET /wp-json/wp/v2/anchor_lesson/{id}` returned the full lesson body -
+	 * video/live-session markup included - to any anonymous caller, and the
+	 * lesson leaked into feeds and search excerpts too. Task 26 ships its own
+	 * permission-checked REST routes for lesson/quiz data, so core REST must
+	 * never carry either post type; `publicly_queryable` stays true so the
+	 * single template can still serve the gated page (Frontend\ContentGuard
+	 * enforces the notice there, not the post type).
+	 */
+	public function test_lessons_and_quizzes_are_excluded_from_rest_and_lessons_from_search() {
+		$lesson = get_post_type_object( LessonPostType::CPT );
+		$quiz   = get_post_type_object( QuizPostType::CPT );
+
+		$this->assertFalse( $lesson->show_in_rest, 'anchor_lesson must not ride core REST (Task 26 owns permission-checked routes).' );
+		$this->assertFalse( $quiz->show_in_rest, 'anchor_quiz must not ride core REST (quiz questions/answers must never leak).' );
+		$this->assertTrue( $lesson->exclude_from_search, 'A lesson body must not surface in search excerpts.' );
+		$this->assertTrue( $lesson->publicly_queryable, 'The gated single-lesson template must still resolve.' );
+	}
+
 	public function test_each_post_type_uses_its_own_edit_capability() {
 		$this->assertSame(
 			Capabilities::cap( 'edit_courses' ),

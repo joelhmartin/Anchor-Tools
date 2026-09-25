@@ -22,6 +22,16 @@ final class Templates {
 
 	public function __construct() {
 		\add_filter( 'template_include', [ $this, 'template_include' ] );
+
+		// ContentGuard has no constructor call site of its own: it would
+		// naturally sit beside `new Frontend\Templates()` in
+		// Module::__construct() (anchor-courses.php), but that file is
+		// locked to this task while a sibling worktree edits it, so its
+		// registration rides along with the other Frontend class already
+		// constructed unconditionally on every request. FOLLOW-UP: give it
+		// its own `new`/call site in Module::__construct() once that file is
+		// free to touch again (Task 18 review fix round, ruling (b)).
+		ContentGuard::register();
 	}
 
 	public static function locate( string $name ): string {

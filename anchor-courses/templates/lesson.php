@@ -28,11 +28,19 @@ $notice = Actions::notice();
 		<span><?php echo esc_html( get_the_title( $lesson_id ) ); ?></span>
 	</nav>
 
-	<?php if ( ! $available ) : ?>
-		<p class="anchor-courses-notice"><?php esc_html_e( 'Finish the earlier lessons to unlock this one.', 'anchor-schema' ); ?></p>
-	<?php else : ?>
-		<div class="anchor-lesson-content"><?php echo wp_kses_post( apply_filters( 'the_content', get_post_field( 'post_content', $lesson_id ) ) ); ?></div>
+	<?php
+	/*
+	 * The body always goes through the_content - never a second
+	 * `if ( ! $available )` branch here. Frontend\ContentGuard hooks that
+	 * same filter and substitutes the access notice for anyone
+	 * Access::can_view_lesson() refuses, so this template, a feed, and a
+	 * search excerpt can never disagree about who sees the real content
+	 * (Task 18 review fix round, ruling (b)).
+	 */
+	?>
+	<div class="anchor-lesson-content"><?php echo wp_kses_post( apply_filters( 'the_content', get_post_field( 'post_content', $lesson_id ) ) ); ?></div>
 
+	<?php if ( $available ) : ?>
 		<?php if ( ! $complete ) : ?>
 			<form class="anchor-lesson-complete" method="post" action="<?php echo esc_url( Actions::complete_url( $course_id, $lesson_id ) ); ?>">
 				<?php wp_nonce_field( Actions::NONCE_COMPLETE . '_' . $lesson_id ); ?>

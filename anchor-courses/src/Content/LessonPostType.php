@@ -7,7 +7,18 @@ use Anchor\Courses\Support\Capabilities;
 
 if ( ! \defined( 'ABSPATH' ) ) { exit; }
 
-/** The `anchor_lesson` post type (brief sections 6.1, 9; design spec 3.3). */
+/**
+ * The `anchor_lesson` post type (brief sections 6.1, 9; design spec 3.3).
+ *
+ * `show_in_rest => false` and `exclude_from_search => true` (Task 18 review
+ * fix round, ruling (a)): a lesson body - video/live-session markup included
+ * - must never ride core REST (`GET /wp-json/wp/v2/anchor_lesson/{id}` has no
+ * permission callback of its own and would hand it to anyone; Task 26 ships
+ * its own permission-checked routes) or a search excerpt. `public` and
+ * `publicly_queryable` stay true so the single template still resolves for a
+ * logged-out visitor - it renders the access notice, not the body, via
+ * Frontend\ContentGuard on `the_content`/`the_excerpt`.
+ */
 final class LessonPostType {
 
 	public const CPT         = 'anchor_lesson';
@@ -41,15 +52,17 @@ final class LessonPostType {
 					'edit_item'     => \__( 'Edit Lesson', 'anchor-schema' ),
 					'menu_name'     => \__( 'Lessons', 'anchor-schema' ),
 				],
-				'public'          => true,
-				'show_in_rest'    => true,
-				'has_archive'     => false,
-				'show_in_menu'    => CoursePostType::parent_menu(),
-				'supports'        => [ 'title', 'editor', 'excerpt', 'thumbnail', 'revisions' ],
-				'rewrite'         => [ 'slug' => 'lessons', 'with_front' => false ],
-				'capability_type' => [ 'anchor_lesson', 'anchor_lessons' ],
-				'map_meta_cap'    => true,
-				'capabilities'    => Capabilities::post_type_capabilities( $cap ),
+				'public'              => true,
+				'publicly_queryable'  => true,
+				'show_in_rest'        => false,
+				'exclude_from_search' => true,
+				'has_archive'         => false,
+				'show_in_menu'        => CoursePostType::parent_menu(),
+				'supports'            => [ 'title', 'editor', 'excerpt', 'thumbnail', 'revisions' ],
+				'rewrite'             => [ 'slug' => 'lessons', 'with_front' => false ],
+				'capability_type'     => [ 'anchor_lesson', 'anchor_lessons' ],
+				'map_meta_cap'        => true,
+				'capabilities'        => Capabilities::post_type_capabilities( $cap ),
 			]
 		);
 	}

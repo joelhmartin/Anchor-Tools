@@ -85,12 +85,17 @@ final class Shortcodes {
 		return Templates::render(
 			'course',
 			[
-				'course_id'  => $course_id,
-				'user_id'    => $user_id,
-				'modules'    => Curriculum::get( $course_id ),
-				'progress'   => $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null,
-				'enrollment' => $user_id > 0 ? $this->enrollments->get( $user_id, $course_id ) : null,
-				'service'    => $this->progress,
+				'course_id'   => $course_id,
+				'user_id'     => $user_id,
+				'modules'     => Curriculum::get( $course_id ),
+				'progress'    => $user_id > 0 ? $this->progress->get_course_progress( $user_id, $course_id ) : null,
+				// EnrollmentService::get() returns a cancelled/expired row too
+				// (it is still "the" row for this user/course) - the template
+				// must not treat that as access. is_enrolled() is the boolean
+				// authority for "does this learner currently have access"
+				// (Task 18 review fix round, ruling (c)).
+				'is_enrolled' => $user_id > 0 && $this->enrollments->is_enrolled( $user_id, $course_id ),
+				'service'     => $this->progress,
 			]
 		);
 	}

@@ -3,7 +3,8 @@
  * Course page body.
  *
  * Variables: $course_id, $user_id, $modules, $progress (CourseProgress|null),
- * $enrollment (Enrollment|null), $service (ProgressService).
+ * $is_enrolled (bool - true only for an ACTIVE enrolment; a cancelled or
+ * expired row reads false, same as no row at all), $service (ProgressService).
  *
  * Theme override: anchor-courses/course.php
  *
@@ -53,7 +54,7 @@ $notice = Actions::notice();
 
 	<div class="anchor-course-description"><?php echo wp_kses_post( get_the_excerpt( $course_id ) ); ?></div>
 
-	<?php if ( $progress && $enrollment ) : ?>
+	<?php if ( $progress && $is_enrolled ) : ?>
 		<?php echo do_shortcode( '[anchor_course_progress course_id="' . (int) $course_id . '"]' ); ?>
 	<?php endif; ?>
 
@@ -92,7 +93,7 @@ $notice = Actions::notice();
 	 * supplied (a WooCommerce product that grants this course), or a line of
 	 * text telling the visitor how to ask. See Frontend\Access.
 	 */
-	if ( ! $enrollment ) :
+	if ( ! $is_enrolled ) :
 		$cta = Access::cta( $course_id, $user_id );
 		?>
 		<?php if ( '' !== $cta['url'] ) : ?>

@@ -6,7 +6,9 @@
  */
 
 use Anchor\Courses\Content\Curriculum;
+use Anchor\Courses\Frontend\Actions;
 use Anchor\Courses\Frontend\Templates;
+use Anchor\Courses\Module;
 use Anchor\Courses\Services\EnrollmentService;
 use Anchor\Courses\Services\ProgressService;
 
@@ -54,6 +56,21 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 		$this->assertStringNotContainsString( '<button', $html );
 	}
 
+	/**
+	 * Task 18 review fix round, ruling (d) / LOW finding 4: no logged-out
+	 * `[anchor_course]` coverage existed. A logged-out visitor has no user
+	 * id at all, not merely an inactive enrolment - both must land on the
+	 * same "ask us" CTA, never a progress bar.
+	 */
+	public function test_a_logged_out_visitor_sees_the_access_cta_and_no_progress_bar() {
+		wp_set_current_user( 0 );
+
+		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
+
+		$this->assertStringContainsString( 'Ask us about access', $html );
+		$this->assertStringNotContainsString( 'anchor-courses-progress', $html );
+	}
+
 	public function test_the_no_access_message_is_filterable() {
 		wp_set_current_user( $this->user );
 		add_filter( 'anchor_courses_no_access_message', static fn() => 'Call the Academy on 555-0100.' );
@@ -90,6 +107,38 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
 
 		$this->assertStringNotContainsString( 'Ask us about access', $html );
+	}
+
+	/**
+	 * Task 18 review fix round, ruling (c). `EnrollmentService::get()`
+	 * returns a cancelled/expired row too (it is still "the" row for that
+	 * user/course), so gating the CTA on the row's mere truthiness hid the
+	 * "ask us" message from exactly the learners who most need it, while
+	 * gating the progress bar the same way showed a tracker to someone with
+	 * no access at all.
+	 */
+	public function test_a_cancelled_learner_sees_the_access_cta_and_no_progress_bar() {
+		wp_set_current_user( $this->user );
+		$enrollments = new EnrollmentService();
+		$enrollments->enroll( $this->user, $this->course );
+		$enrollments->cancel( $this->user, $this->course );
+
+		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
+
+		$this->assertStringContainsString( 'Ask us about access', $html, 'A cancelled learner is not enrolled - they get the CTA back.' );
+		$this->assertStringNotContainsString( 'anchor-courses-progress', $html, 'A cancelled learner has no active enrolment to show progress against.' );
+	}
+
+	public function test_an_expired_learner_sees_the_access_cta_and_no_progress_bar() {
+		wp_set_current_user( $this->user );
+		$enrollments = new EnrollmentService();
+		$enrollments->enroll( $this->user, $this->course );
+		$enrollments->expire( $this->user, $this->course );
+
+		$html = do_shortcode( '[anchor_course id="' . $this->course . '"]' );
+
+		$this->assertStringContainsString( 'Ask us about access', $html );
+		$this->assertStringNotContainsString( 'anchor-courses-progress', $html );
 	}
 
 	public function test_progress_shortcode_reflects_completion() {
@@ -158,5 +207,81 @@ class Test_Courses_Shortcodes extends Anchor_Courses_TestCase {
 		}
 
 		$this->assertSame( $theme_file, $result, 'A theme-supplied anchor-courses/course.php must win over the plugin template.' );
+	}
+
+	/**
+	 * Task 18 review fix round, ruling (d): render_lesson()/lesson.php had
+	 * zero test coverage. These cover every combination the finding named -
+	 * non-enrolled (logged in and out), enrolled + available, and enrolled
+	 * but locked by sequential progression - and assert the body/form only
+	 * ever appear together, never the form alone (Actions::NONCE_COMPLETE
+	 * is the field that lets a POST through Actions::handle_complete_lesson()
+	 * at all, so its absence is what "no way to mark complete" means here).
+	 */
+	public function test_render_lesson_for_a_non_enrolled_logged_in_user_shows_notice_only() {
+		wp_set_current_user( $this->user );
+		global $post;
+		$post = get_post( $this->lesson );
+
+		$html = Module::instance()->shortcodes->render_lesson( $this->lesson );
+
+		$this->assertStringContainsString( 'Finish the earlier lessons to unlock this one.', $html );
+		$this->assertStringNotContainsString( '<form', $html );
+		$this->assertStringNotContainsString( Actions::NONCE_COMPLETE, $html );
+	}
+
+	public function test_render_lesson_for_a_logged_out_user_shows_notice_only() {
+		wp_set_current_user( 0 );
+		global $post;
+		$post = get_post( $this->lesson );
+
+		$html = Module::instance()->shortcodes->render_lesson( $this->lesson );
+
+		$this->assertStringContainsString( 'Finish the earlier lessons to unlock this one.', $html );
+		$this->assertStringNotContainsString( '<form', $html );
+		$this->assertStringNotContainsString( Actions::NONCE_COMPLETE, $html );
+	}
+
+	public function test_render_lesson_for_an_enrolled_available_lesson_shows_the_body_and_the_complete_form() {
+		wp_set_current_user( $this->user );
+		( new EnrollmentService() )->enroll( $this->user, $this->course );
+		wp_update_post( [ 'ID' => $this->lesson, 'post_content' => 'Real lesson body text.', 'post_excerpt' => '' ] );
+		global $post;
+		$post = get_post( $this->lesson );
+
+		$html = Module::instance()->shortcodes->render_lesson( $this->lesson );
+
+		$this->assertStringContainsString( 'Real lesson body text.', $html );
+		$this->assertStringContainsString( '<form', $html );
+		$this->assertStringContainsString( Actions::NONCE_COMPLETE, $html );
+	}
+
+	public function test_render_lesson_for_an_enrolled_but_sequentially_locked_lesson_shows_notice_no_form() {
+		$course = $this->make_course( [ 'progression_mode' => 'sequential' ], 'Sequential Course' );
+		$first  = $this->make_lesson( [], 'First' );
+		$second = $this->make_lesson( [], 'Second' );
+		Curriculum::save(
+			$course,
+			[
+				[
+					'title' => 'Module',
+					'items' => [
+						[ 'type' => 'lesson', 'id' => $first ],
+						[ 'type' => 'lesson', 'id' => $second ],
+					],
+				],
+			]
+		);
+
+		wp_set_current_user( $this->user );
+		( new EnrollmentService() )->enroll( $this->user, $course );
+		global $post;
+		$post = get_post( $second );
+
+		$html = Module::instance()->shortcodes->render_lesson( $second );
+
+		$this->assertStringContainsString( 'Finish the earlier lessons to unlock this one.', $html );
+		$this->assertStringNotContainsString( '<form', $html );
+		$this->assertStringNotContainsString( Actions::NONCE_COMPLETE, $html );
 	}
 }
